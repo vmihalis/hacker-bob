@@ -38,6 +38,20 @@ Then:
 /bountyagent resume target.com  # pick up where you left off
 ```
 
+## Development
+
+If you are developing the framework itself and want to sync the current repo into
+your local Claude Code test workspace with one command:
+
+```bash
+cd bounty-agent
+./dev-sync.sh /absolute/path/to/test-workspace
+```
+
+This backs up the target workspace's `.mcp.json` and `.claude/settings.json`,
+re-runs the installer, writes the repo-backed dev config, and runs
+`claude mcp list` as a smoke check.
+
 ## What it does
 
 ```
