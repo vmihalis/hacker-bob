@@ -44,17 +44,28 @@ After recon, read `attack_surface.json` and update `state.json` to `phase: "AUTH
 
 ## PHASE 2: AUTH
 Auth is opportunistic, not blocking.
-Tier 1: one short autonomous attempt with the local browser helper:
-```bash
-cd ~/security-audits/bountyagent && bun run lib/tools/computer-bridge.ts launch "https://[target]/login" --session-dir "$SESSION"
+Tier 1: ask the user to provide auth tokens. Tell them to open DevTools Console on the target (logged in) and paste:
+```javascript
+(() => {
+  const data = {
+    cookies: document.cookie,
+    localStorage: Object.fromEntries(
+      Object.entries(localStorage).filter(([k]) =>
+        /token|auth|session|jwt|key|csrf|bearer/i.test(k)
+      )
+    ),
+  };
+  copy(JSON.stringify(data, null, 2));
+  console.log('Copied! Paste in Claude Code.');
+})();
 ```
-Tier 2: manual paste is optional only if the user already chose to provide tokens. Do not block on it.
-Tier 3: continue unauthenticated.
+If the user provides tokens, save them to `$SESSION/auth.json`.
+Tier 2: if the user says "skip" or does not provide tokens, continue unauthenticated.
 Verify:
 ```bash
 test -s "$SESSION/auth.json" && echo "AUTH OK" || echo "AUTH EMPTY"
 ```
-If Tier 1 does not produce usable tokens quickly, default to unauthenticated testing. Set `auth_status` to `authenticated`, `partial`, or `unauthenticated`, then move to `HUNT`.
+Set `auth_status` to `authenticated` or `unauthenticated`, then move to `HUNT`.
 
 ## PHASE 3: HUNT
 From here on, all target interaction happens inside agents.
