@@ -51,7 +51,6 @@ if [ -f "$MCP_JSON" ]; then
     echo "  Add this to your mcpServers:"
     echo ""
     echo '    "bountyagent": {'
-    echo '      "type": "stdio",'
     echo "      \"command\": \"node\","
     echo "      \"args\": [\"$TARGET_ABS/mcp/server.js\"]"
     echo '    }'
@@ -62,7 +61,6 @@ else
 {
   "mcpServers": {
     "bountyagent": {
-      "type": "stdio",
       "command": "node",
       "args": ["$TARGET_ABS/mcp/server.js"]
     }
@@ -73,14 +71,13 @@ EOF
 fi
 
 # Configure settings.json
-HOOKS_DIR="$(cd "$CLAUDE_DIR/hooks" && pwd)"
 if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo ""
   echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
   echo "  Merge these hooks + statusLine manually:"
   echo ""
-  echo "  hooks.PreToolUse: bash \"$HOOKS_DIR/scope-guard.sh\" (matcher: Bash, timeout: 5)"
-  echo "  statusLine: node \"$HOOKS_DIR/bounty-statusline.js\""
+  echo '  hooks.PreToolUse: bash "$PROJECT_DIR/.claude/hooks/scope-guard.sh" (matcher: Bash, timeout: 5)'
+  echo '  statusLine: node "$PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
 else
   cat > "$CLAUDE_DIR/settings.json" <<EOF
@@ -92,7 +89,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOOKS_DIR/scope-guard.sh\"",
+            "command": "bash \"\$PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
             "timeout": 5
           }
         ]
@@ -101,7 +98,7 @@ else
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"$HOOKS_DIR/bounty-statusline.js\""
+    "command": "node \"\$PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
   }
 }
 EOF

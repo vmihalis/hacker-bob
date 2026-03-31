@@ -5,13 +5,25 @@ Autonomous bug bounty hunting framework for Claude Code. Spawns specialized agen
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/bounty-agent.git
+git clone https://github.com/vmihalis/bounty-agent.git
 cd bounty-agent
 chmod +x install.sh
 ./install.sh /path/to/your/project
 ```
 
 The installer copies everything into your project's `.claude/` directory, sets up the MCP server in `.mcp.json`, and configures hooks + status line. If you already have a `.claude/settings.json` or `.mcp.json`, it prints exactly what to merge.
+
+## For Coding Agents
+
+If a user pastes this repo URL into Claude Code and says "install this framework", the correct flow is:
+
+```bash
+git clone https://github.com/vmihalis/bounty-agent.git
+cd bounty-agent
+./install.sh /absolute/path/to/their/project
+```
+
+Install into the project where Claude Code will actually run. Do not assume the cloned `bounty-agent` repo itself is the user's working project unless they explicitly ask for that.
 
 ## Usage
 
@@ -33,7 +45,7 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 ```
 
 1. **RECON** — subdomain enum, live hosts, archived URLs, nuclei scan, JS secret extraction
-2. **AUTH** — attempts automated login, falls back to unauthenticated
+2. **AUTH** — accepts user-provided auth material when available, otherwise continues unauthenticated
 3. **HUNT** — parallel hunter agents per attack surface (2-6 waves)
 4. **CHAIN** — finds A→B exploit chains across findings
 5. **VERIFY** — 3 rounds: brutalist (skeptical), balanced (catch false negatives), final (fresh PoCs)
@@ -93,13 +105,13 @@ All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
 
 ## What works out of the box
 
-Everything. The installer sets up the full pipeline: agents, orchestrator, MCP server, hooks, status line. Hunters get `bounty_http_scan` with auto-analysis out of the box.
+The full core pipeline: agents, orchestrator, MCP server, hooks, and status line. Hunters get `bounty_http_scan` with auto-analysis out of the box.
 
 ## Optional extras (degrade gracefully)
 
 | Feature | What it needs | Without it |
 |---|---|---|
-| **Auto-login (AUTH phase)** | Computer-bridge tool (not included) | Skips to unauthenticated testing (Tier 3) |
+| **Authenticated testing** | User-provided cookies/localStorage auth data | Falls back to unauthenticated testing |
 | **Recon tools** | `subfinder`, `httpx`, `nuclei` | Steps that need missing tools are skipped, recon continues with what's available |
 
 The orchestrator handles all fallbacks automatically.

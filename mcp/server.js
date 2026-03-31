@@ -363,8 +363,14 @@ async function executeTool(name, args) {
 }
 
 // ── MCP stdio transport ──
+let transportMode = "framed";
+
 function send(msg) {
   const json = JSON.stringify(msg);
+  if (transportMode === "raw") {
+    process.stdout.write(`${json}\n`);
+    return;
+  }
   process.stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
 }
 
@@ -375,7 +381,37 @@ process.stdin.on("data", (chunk) => {
   buffer += chunk;
   while (true) {
     const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd === -1) break;
+    if (headerEnd === -1) {
+      const trimmed = buffer.trim();
+      if (!trimmed) break;
+
+      // Claude Code health checks may send a single raw JSON-RPC message
+      // without Content-Length framing. Accept that shape too.
+      try {
+        const msg = JSON.parse(trimmed);
+        transportMode = "raw";
+        buffer = "";
+        handleMessage(msg);
+        continue;
+      } catch {
+        if (buffer.includes("\n")) {
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          let parsedAny = false;
+          for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
+            try {
+              transportMode = "raw";
+              handleMessage(JSON.parse(line));
+              parsedAny = true;
+            } catch {
+              buffer = `${line}\n${buffer}`;
+            }
+          }
+          if (parsedAny) continue;
+        }
+      }
+      break;
+    }
 
     const headerPart = buffer.slice(0, headerEnd);
     const match = headerPart.match(/Content-Length:\s*(\d+)/i);
@@ -396,6 +432,7 @@ process.stdin.on("data", (chunk) => {
     }
 
     const contentLength = parseInt(match[1], 10);
+    transportMode = "framed";
     const bodyStart = headerEnd + 4;
     if (buffer.length < bodyStart + contentLength) break;
 
@@ -418,10 +455,18 @@ async function handleMessage(rpc) {
         jsonrpc: "2.0",
         id: rpc.id,
         result: {
-          protocolVersion: "2024-11-05",
+          protocolVersion: rpc.params?.protocolVersion || "2025-11-25",
           capabilities: { tools: {} },
           serverInfo: { name: "bountyagent", version: "1.0.0" },
         },
+      });
+      break;
+
+    case "ping":
+      send({
+        jsonrpc: "2.0",
+        id: rpc.id,
+        result: {},
       });
       break;
 
