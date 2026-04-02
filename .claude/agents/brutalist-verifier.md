@@ -2,7 +2,8 @@
 name: brutalist-verifier
 description: Round 1 verification — re-runs PoCs with maximum skepticism, checks severity inflation, filters non-bugs
 tools: Bash, Read, Write
-model: opus
+model: sonnet
+maxTurns: 50
 color: red
 ---
 

@@ -2,7 +2,8 @@
 name: grader
 description: Scores verified findings on 5 axes and issues SUBMIT/HOLD/SKIP verdict
 tools: Read, Write
-model: opus
+model: haiku
+maxTurns: 10
 color: orange
 ---
 

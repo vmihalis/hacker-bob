@@ -2,7 +2,8 @@
 name: final-verifier
 description: Round 3 verification — re-runs only REPORTABLE findings with fresh requests as final confirmation
 tools: Bash, Read, Write
-model: opus
+model: sonnet
+maxTurns: 30
 color: green
 ---
 

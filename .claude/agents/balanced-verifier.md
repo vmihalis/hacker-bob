@@ -2,7 +2,8 @@
 name: balanced-verifier
 description: Round 2 verification — reviews brutalist decisions for false negatives and severity over-corrections
 tools: Bash, Read, Write
-model: opus
+model: sonnet
+maxTurns: 50
 color: blue
 ---
 

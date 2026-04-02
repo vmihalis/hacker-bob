@@ -2,7 +2,8 @@
 name: report-writer
 description: Generates submission-ready bug bounty report from verified and graded findings
 tools: Read, Write
-model: opus
+model: sonnet
+maxTurns: 20
 color: green
 ---
 

@@ -29,9 +29,10 @@ echo "  hunting + reporting rules"
 
 # Copy hooks
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/"
+cp "$SCRIPT_DIR/.claude/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/bounty-statusline.js" "$CLAUDE_DIR/hooks/"
-chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh"
-echo "  scope guard hook + status line"
+chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh"
+echo "  scope guard hooks (Bash + MCP) + status line"
 
 # Copy MCP server
 mkdir -p "$TARGET_ABS/mcp"
@@ -74,14 +75,39 @@ fi
 if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo ""
   echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
-  echo "  Merge these hooks + statusLine manually:"
+  echo "  Merge these settings manually:"
   echo ""
-  echo '  hooks.PreToolUse: bash "$PROJECT_DIR/.claude/hooks/scope-guard.sh" (matcher: Bash, timeout: 5)'
+  echo '  permissions.allow: bountyagent MCP tools, Bash(mkdir/test/cat/ls), Read, Glob, Grep'
+  echo '  hooks.PreToolUse: scope-guard.sh (Bash) + scope-guard-mcp.sh (bounty_http_scan)'
   echo '  statusLine: node "$PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
 else
   cat > "$CLAUDE_DIR/settings.json" <<EOF
 {
+  "permissions": {
+    "allow": [
+      "mcp__bountyagent__bounty_http_scan",
+      "mcp__bountyagent__bounty_record_finding",
+      "mcp__bountyagent__bounty_list_findings",
+      "mcp__bountyagent__bounty_write_handoff",
+      "mcp__bountyagent__bounty_read_handoff",
+      "mcp__bountyagent__bounty_auth_manual",
+      "Bash(mkdir *)",
+      "Bash(test *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(sort *)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(jq *)",
+      "Bash(printf *)",
+      "Bash(echo *)",
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -90,6 +116,16 @@ else
           {
             "type": "command",
             "command": "bash \"\$PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"\$PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
             "timeout": 5
           }
         ]
@@ -102,7 +138,7 @@ else
   }
 }
 EOF
-  echo "  settings.json"
+  echo "  settings.json (permissions + hooks + statusLine)"
 fi
 
 # Create session directory
