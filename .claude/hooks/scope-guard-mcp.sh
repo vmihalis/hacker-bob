@@ -52,6 +52,16 @@ for s in data.get('surfaces', []):
 $SURFACE_HOSTS"
 fi
 
+# Recon infrastructure — always allowed
+INFRA="web.archive.org
+otx.alienvault.com
+crt.sh
+api.github.com
+raw.githubusercontent.com"
+
+ALLOWED="$ALLOWED
+$INFRA"
+
 # --- WARN CHECK (exit 0 = allow, but log) ---
 MATCH=0
 while IFS= read -r allowed; do

@@ -3,7 +3,6 @@ name: chain-builder
 description: Analyzes proven findings for credible exploit chains that elevate severity
 tools: Read, Write, Bash
 model: opus
-maxTurns: 20
 color: purple
 ---
 

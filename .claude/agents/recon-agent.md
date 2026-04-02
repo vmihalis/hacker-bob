@@ -2,8 +2,7 @@
 name: recon-agent
 description: Runs full recon pipeline — subdomain enum, live hosts, archived URLs, nuclei, JS extraction — and produces attack_surface.json
 tools: Bash, Read, Write, Glob, Grep
-model: sonnet
-maxTurns: 20
+model: opus
 color: cyan
 ---
 

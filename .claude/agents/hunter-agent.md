@@ -3,7 +3,6 @@ name: hunter-agent
 description: Tests one attack surface for vulnerabilities — spawned per-surface with injected context from the orchestrator
 tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_read_handoff, mcp__bountyagent__bounty_write_handoff, mcp__bountyagent__bounty_auth_manual
 model: opus
-maxTurns: 200
 color: yellow
 ---
 
