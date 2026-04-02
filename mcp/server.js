@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Bounty Agent MCP Server — stdio transport, zero dependencies
 // Provides: bounty_http_scan, bounty_record_finding, bounty_list_findings,
-//           bounty_write_handoff, bounty_read_handoff, bounty_auth_manual
+//           bounty_write_handoff, bounty_read_handoff, bounty_auth_manual,
+//           bounty_wave_status
 
 const fs = require("fs");
 const path = require("path");
@@ -9,6 +10,8 @@ const os = require("os");
 
 // ── In-memory state ──
 const authProfiles = new Map();
+let findingCounter = 0;
+let counterLoaded = false;
 
 // ── Tool definitions ──
 const TOOLS = [
@@ -46,6 +49,8 @@ const TOOLS = [
         response_evidence: { type: "string" },
         impact: { type: "string" },
         validated: { type: "boolean" },
+        wave: { type: "string" },
+        agent: { type: "string" },
       },
       required: ["target_domain", "title", "severity", "endpoint", "description", "proof_of_concept", "validated"],
     },
@@ -102,6 +107,15 @@ const TOOLS = [
         local_storage: { type: "object", additionalProperties: { type: "string" } },
       },
       required: ["profile_name"],
+    },
+  },
+  {
+    name: "bounty_wave_status",
+    description: "Read-only hunt status summary for wave decisions. Returns finding counts, severity breakdown, and per-finding metadata.",
+    inputSchema: {
+      type: "object",
+      properties: { target_domain: { type: "string" } },
+      required: ["target_domain"],
     },
   },
 ];
@@ -255,15 +269,43 @@ function recordFinding(args) {
   fs.mkdirSync(dir, { recursive: true });
 
   const findingsPath = path.join(dir, "findings.md");
-  let existing = "";
-  try { existing = fs.readFileSync(findingsPath, "utf8"); } catch {}
 
-  const count = (existing.match(/^## FINDING/gm) || []).length + 1;
-  const id = `F-${count}`;
-  const entry = `## FINDING ${count} (${args.severity.toUpperCase()}): ${args.title}\n- **ID:** ${id}\n- **CWE:** ${args.cwe || "N/A"}\n- **Endpoint:** ${args.endpoint}\n- **Validated:** ${args.validated ? "YES" : "NO"}\n- **Description:** ${args.description}\n- **PoC:** \`${args.proof_of_concept.slice(0, 300)}\`\n- **Evidence:** ${args.response_evidence || "See PoC"}\n- **Impact:** ${args.impact || "N/A"}\n---\n\n`;
+  // Lazy-load counter from disk on first call (survives server restart)
+  if (!counterLoaded) {
+    try {
+      const existing = fs.readFileSync(findingsPath, "utf8");
+      findingCounter = (existing.match(/^## FINDING/gm) || []).length;
+    } catch {}
+    counterLoaded = true;
+  }
+
+  // Monotonic increment — no TOCTOU race (Node.js single-threaded)
+  findingCounter++;
+  const id = `F-${findingCounter}`;
+
+  const waveAgent = args.wave || args.agent
+    ? `\n- **Wave/Agent:** ${args.wave || "?"}/${args.agent || "?"}`
+    : "";
+
+  const entry = [
+    `## FINDING ${findingCounter} (${args.severity.toUpperCase()}): ${args.title}`,
+    `- **ID:** ${id}`,
+    `- **CWE:** ${args.cwe || "N/A"}`,
+    `- **Endpoint:** ${args.endpoint}`,
+    `- **Validated:** ${args.validated ? "YES" : "NO"}`,
+    `- **Description:** ${args.description}`,
+    `- **PoC:**`,
+    "```",
+    args.proof_of_concept,
+    "```",
+    `- **Evidence:** ${args.response_evidence || "See PoC"}`,
+    `- **Impact:** ${args.impact || "N/A"}`,
+    waveAgent,
+    "---\n\n",
+  ].join("\n");
 
   fs.appendFileSync(findingsPath, entry);
-  return JSON.stringify({ recorded: true, finding_id: id });
+  return JSON.stringify({ recorded: true, finding_id: id, total: findingCounter });
 }
 
 function listFindings(args) {
@@ -271,10 +313,56 @@ function listFindings(args) {
   const findingsPath = path.join(dir, "findings.md");
   try {
     const content = fs.readFileSync(findingsPath, "utf8");
-    const count = (content.match(/^## FINDING/gm) || []).length;
-    return JSON.stringify({ count, findings: content });
+    const findings = [];
+    const blocks = content.split(/^## FINDING /gm).slice(1);
+    for (const block of blocks) {
+      const titleMatch = block.match(/^\d+\s*\((\w+)\):\s*(.+)/);
+      const endpointMatch = block.match(/\*\*Endpoint:\*\*\s*(.+)/);
+      const idMatch = block.match(/\*\*ID:\*\*\s*(F-\d+)/);
+      findings.push({
+        id: idMatch ? idMatch[1] : null,
+        severity: titleMatch ? titleMatch[1].toLowerCase() : null,
+        title: titleMatch ? titleMatch[2].trim() : null,
+        endpoint: endpointMatch ? endpointMatch[1].trim() : null,
+      });
+    }
+    return JSON.stringify({ count: findings.length, findings });
   } catch {
-    return JSON.stringify({ count: 0, findings: "" });
+    return JSON.stringify({ count: 0, findings: [] });
+  }
+}
+
+function waveStatus(args) {
+  const dir = sessionDir(args.target_domain);
+  const findingsPath = path.join(dir, "findings.md");
+  try {
+    const content = fs.readFileSync(findingsPath, "utf8");
+    const findings = [];
+    const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    const blocks = content.split(/^## FINDING /gm).slice(1);
+    for (const block of blocks) {
+      const titleMatch = block.match(/^\d+\s*\((\w+)\):\s*(.+)/);
+      const endpointMatch = block.match(/\*\*Endpoint:\*\*\s*(.+)/);
+      const idMatch = block.match(/\*\*ID:\*\*\s*(F-\d+)/);
+      const waveMatch = block.match(/\*\*Wave\/Agent:\*\*\s*(.+)/);
+      const sev = titleMatch ? titleMatch[1].toLowerCase() : "info";
+      if (bySeverity[sev] !== undefined) bySeverity[sev]++;
+      findings.push({
+        id: idMatch ? idMatch[1] : null,
+        severity: sev,
+        title: titleMatch ? titleMatch[2].trim() : null,
+        endpoint: endpointMatch ? endpointMatch[1].trim() : null,
+        wave_agent: waveMatch ? waveMatch[1].trim() : null,
+      });
+    }
+    return JSON.stringify({
+      total: findings.length,
+      by_severity: bySeverity,
+      has_high_or_critical: bySeverity.critical + bySeverity.high > 0,
+      findings_summary: findings,
+    });
+  } catch {
+    return JSON.stringify({ total: 0, by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, has_high_or_critical: false, findings_summary: [] });
   }
 }
 
@@ -358,6 +446,7 @@ async function executeTool(name, args) {
     case "bounty_write_handoff": return writeHandoff(args);
     case "bounty_read_handoff": return readHandoff(args);
     case "bounty_auth_manual": return authManual(args);
+    case "bounty_wave_status": return waveStatus(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }

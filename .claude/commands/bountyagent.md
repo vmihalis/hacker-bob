@@ -99,15 +99,16 @@ Use only the relevant bypass table:
 ```
 
 After each wave:
-1. Read all `findings-w*.md` and `handoff-w*.md`.
-2. Merge deduped findings into `findings.md`.
+1. Call `bounty_wave_status` to get finding count, severity breakdown, and per-finding summary.
+2. Read `handoff-w[current_wave]-a*.md` only (not all waves — prior dead_ends already in state.json).
 3. Extract `dead_ends` and `waf_blocked_endpoints` from handoffs into `state.json`.
-4. Update `hunt_wave`, `total_findings`, `explored`, `dead_ends`, `waf_blocked_endpoints`.
-5. Check `$SESSION/scope-warnings.log` — if any out-of-scope domains were hit, note them and add to dead_ends so future waves don't repeat.
+4. Update `hunt_wave`, `total_findings` (from wave_status total), `explored`, `dead_ends`, `waf_blocked_endpoints`.
+5. Check `$SESSION/scope-warnings.log` — add any out-of-scope domains to dead_ends.
 
 Wave decisions:
 - `wave < 2` → always run another wave.
-- `wave >= 2` and at least one `HIGH`/`CRITICAL` finding exists and at least 70% of non-LOW surfaces are in `explored` or `dead_ends` → `CHAIN`.
+- Use `bounty_wave_status.has_high_or_critical` for the HIGH/CRITICAL finding gate and `bounty_wave_status.total` for finding-count checks.
+- `wave >= 2` and `bounty_wave_status.has_high_or_critical` is true and at least 70% of non-LOW surfaces are in `explored` or `dead_ends` → `CHAIN`.
 - `wave >= 4` and no unexplored `HIGH` surfaces remain → `CHAIN`.
 - All surfaces exhausted or dead-ended → `CHAIN`.
 - `wave < 6` and live surfaces remain → next wave with updated dead-end injection.
