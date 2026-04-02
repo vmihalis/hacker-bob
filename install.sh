@@ -79,7 +79,7 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo ""
   echo '  permissions.allow: bountyagent MCP tools, Bash(mkdir/test/cat/ls), Read, Glob, Grep'
   echo '  hooks.PreToolUse: scope-guard.sh (Bash) + scope-guard-mcp.sh (bounty_http_scan)'
-  echo '  statusLine: node "$PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
+  echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
 else
   cat > "$CLAUDE_DIR/settings.json" <<EOF
@@ -116,7 +116,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"\$PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
             "timeout": 5
           }
         ]
@@ -126,7 +126,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"\$PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
             "timeout": 5
           }
         ]
@@ -135,7 +135,7 @@ else
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"\$PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
+    "command": "node \"\$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
   }
 }
 EOF

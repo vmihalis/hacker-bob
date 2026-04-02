@@ -83,7 +83,7 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
             "timeout": 5
           }
         ]
@@ -92,7 +92,7 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"$PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
+    "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
   }
 }
 EOF

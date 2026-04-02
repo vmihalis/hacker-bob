@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
             "timeout": 5
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
             "timeout": 5
           }
         ]
@@ -50,6 +50,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"$PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
+    "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
   }
 }
