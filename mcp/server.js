@@ -10,8 +10,7 @@ const os = require("os");
 
 // ── In-memory state ──
 const authProfiles = new Map();
-let findingCounter = 0;
-let counterLoaded = false;
+const findingCounters = new Map(); // domain → counter
 
 // ── Tool definitions ──
 const TOOLS = [
@@ -270,25 +269,27 @@ function recordFinding(args) {
 
   const findingsPath = path.join(dir, "findings.md");
 
-  // Lazy-load counter from disk on first call (survives server restart)
-  if (!counterLoaded) {
+  // Lazy-load counter from disk per domain (survives server restart)
+  if (!findingCounters.has(domain)) {
+    let count = 0;
     try {
       const existing = fs.readFileSync(findingsPath, "utf8");
-      findingCounter = (existing.match(/^## FINDING/gm) || []).length;
+      count = (existing.match(/^## FINDING/gm) || []).length;
     } catch {}
-    counterLoaded = true;
+    findingCounters.set(domain, count);
   }
 
   // Monotonic increment — no TOCTOU race (Node.js single-threaded)
-  findingCounter++;
-  const id = `F-${findingCounter}`;
+  const counter = findingCounters.get(domain) + 1;
+  findingCounters.set(domain, counter);
+  const id = `F-${counter}`;
 
   const waveAgent = args.wave || args.agent
     ? `\n- **Wave/Agent:** ${args.wave || "?"}/${args.agent || "?"}`
     : "";
 
   const entry = [
-    `## FINDING ${findingCounter} (${args.severity.toUpperCase()}): ${args.title}`,
+    `## FINDING ${counter} (${args.severity.toUpperCase()}): ${args.title}`,
     `- **ID:** ${id}`,
     `- **CWE:** ${args.cwe || "N/A"}`,
     `- **Endpoint:** ${args.endpoint}`,
@@ -305,7 +306,7 @@ function recordFinding(args) {
   ].join("\n");
 
   fs.appendFileSync(findingsPath, entry);
-  return JSON.stringify({ recorded: true, finding_id: id, total: findingCounter });
+  return JSON.stringify({ recorded: true, finding_id: id, total: counter });
 }
 
 function listFindings(args) {
