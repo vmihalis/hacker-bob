@@ -36,7 +36,10 @@ Then:
 ```
 /bountyagent target.com         # full autonomous run
 /bountyagent resume target.com  # pick up where you left off
+/bountyagent resume target.com force-merge  # recover a stuck/interrupted partial wave
 ```
+
+Pending hunt waves reconcile on explicit `/bountyagent resume [domain]`. The launch turn that spawns background hunters stops after reporting wave launch status; merge/requeue decisions happen later on resume. Use `force-merge` only when a wave is interrupted or stuck and you need to reconcile with missing/invalid handoffs requeued by the existing merge behavior.
 
 ## Development
 
@@ -90,12 +93,15 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | `bounty_list_findings` | List recorded findings for a target |
 | `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for cross-session resume only |
 | `bounty_write_wave_handoff` | Write one hunter wave handoff as `handoff-wN-aN.md` plus `handoff-wN-aN.json` |
+| `bounty_wave_handoff_status` | Readiness/count check for one wave based on assignment and handoff file presence |
 | `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
 | `bounty_read_handoff` | Read previous handoff to resume |
 | `bounty_auth_manual` | Store auth tokens as reusable profiles |
 | `bounty_wave_status` | Read-only summary of findings for wave-to-wave decisions |
 
 Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
+
+`bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
 
 If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable finding helpers and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 
@@ -112,7 +118,7 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 ## Session data
 
 All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
-- `state.json` — FSM phase, wave count, pending wave, findings, explored surface IDs, exclusions, and lead routing hints
+- `state.json` — FSM phase, wave count, pending wave, findings, explored surface IDs, exclusions, and lead routing hints; pending waves reconcile on explicit `resume`
 - `attack_surface.json` — recon output grouped by priority
 - `wave-N-assignments.json` — persisted per-wave `agent -> surface_id` assignments
 - `handoff-wN-aN.md` — freeform hunter handoff markdown for humans and chain-building

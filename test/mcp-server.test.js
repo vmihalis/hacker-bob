@@ -7,6 +7,7 @@ const path = require("path");
 const {
   mergeWaveHandoffs,
   sessionDir,
+  waveHandoffStatus,
   writeFileAtomic,
   writeHandoff,
   writeWaveHandoff,
@@ -79,6 +80,98 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
     });
+  });
+});
+
+test("bounty_wave_handoff_status reports complete when all assigned handoffs exist", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+
+    writeFileAtomic(path.join(dir, "wave-1-assignments.json"), `${JSON.stringify({
+      wave_number: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+      ],
+    }, null, 2)}\n`);
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# A1",
+    });
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-b",
+      surface_status: "partial",
+      content: "# A2",
+    });
+
+    const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 1 }));
+
+    assert.deepEqual(status, {
+      assignments_total: 2,
+      handoffs_total: 2,
+      received_agents: ["a1", "a2"],
+      missing_agents: [],
+      unexpected_agents: [],
+      is_complete: true,
+    });
+  });
+});
+
+test("bounty_wave_handoff_status reports partial completion and unexpected handoffs without parsing payloads", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+
+    writeFileAtomic(path.join(dir, "wave-2-assignments.json"), `${JSON.stringify({
+      wave_number: 2,
+      assignments: [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+        { agent: "a3", surface_id: "surface-c" },
+      ],
+    }, null, 2)}\n`);
+
+    writeFileAtomic(path.join(dir, "handoff-w2-a1.json"), "{bad json");
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w2",
+      agent: "a9",
+      surface_id: "surface-z",
+      surface_status: "complete",
+      content: "# unexpected",
+    });
+
+    const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 2 }));
+
+    assert.deepEqual(status, {
+      assignments_total: 3,
+      handoffs_total: 2,
+      received_agents: ["a1"],
+      missing_agents: ["a2", "a3"],
+      unexpected_agents: ["a9"],
+      is_complete: false,
+    });
+  });
+});
+
+test("bounty_wave_handoff_status hard-fails when the assignment file is missing", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => waveHandoffStatus({ target_domain: "example.com", wave_number: 7 }),
+      /Missing assignment file/,
+    );
   });
 });
 

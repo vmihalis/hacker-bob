@@ -2,8 +2,8 @@
 // Bounty Agent MCP Server — stdio transport, zero dependencies
 // Provides: bounty_http_scan, bounty_record_finding, bounty_list_findings,
 //           bounty_write_handoff, bounty_write_wave_handoff,
-//           bounty_merge_wave_handoffs, bounty_read_handoff,
-//           bounty_auth_manual, bounty_wave_status
+//           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
+//           bounty_read_handoff, bounty_auth_manual, bounty_wave_status
 
 const fs = require("fs");
 const path = require("path");
@@ -103,6 +103,18 @@ const TOOLS = [
         lead_surface_ids: { type: "array", items: { type: "string" } },
       },
       required: ["target_domain", "wave", "agent", "surface_id", "surface_status", "content"],
+    },
+  },
+  {
+    name: "bounty_wave_handoff_status",
+    description: "Read-only readiness check for one wave. Compares expected assignments to present handoff JSON files without validating payload contents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave_number: { type: "number" },
+      },
+      required: ["target_domain", "wave_number"],
     },
   },
   {
@@ -248,6 +260,74 @@ function writeFileAtomic(filePath, content) {
   );
   fs.writeFileSync(tempPath, content);
   fs.renameSync(tempPath, filePath);
+}
+
+function loadWaveAssignments(domain, waveNumber) {
+  const dir = sessionDir(domain);
+  const assignmentsPath = path.join(dir, `wave-${waveNumber}-assignments.json`);
+
+  if (!fs.existsSync(assignmentsPath)) {
+    throw new Error(`Missing assignment file: ${assignmentsPath}`);
+  }
+
+  const assignmentsDoc = readJsonFile(assignmentsPath);
+  if (assignmentsDoc == null || typeof assignmentsDoc !== "object" || Array.isArray(assignmentsDoc)) {
+    throw new Error(`Invalid assignment file: ${assignmentsPath}`);
+  }
+  if (assignmentsDoc.wave_number !== waveNumber) {
+    throw new Error(`Assignment file wave_number mismatch in ${assignmentsPath}`);
+  }
+  if (!Array.isArray(assignmentsDoc.assignments)) {
+    throw new Error(`Assignment file assignments must be an array in ${assignmentsPath}`);
+  }
+
+  const assignments = [];
+  const assignmentByAgent = new Map();
+  for (const assignment of assignmentsDoc.assignments) {
+    if (assignment == null || typeof assignment !== "object" || Array.isArray(assignment)) {
+      throw new Error(`Invalid assignment entry in ${assignmentsPath}`);
+    }
+    const agent = parseAgentId(assignment.agent);
+    const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+    if (assignmentByAgent.has(agent)) {
+      throw new Error(`Duplicate assignment for ${agent} in ${assignmentsPath}`);
+    }
+    const normalizedAssignment = { agent, surface_id: surfaceId };
+    assignments.push(normalizedAssignment);
+    assignmentByAgent.set(agent, normalizedAssignment);
+  }
+
+  return { dir, wave: `w${waveNumber}`, assignments, assignmentByAgent };
+}
+
+function listWaveHandoffFiles(dir, wave) {
+  const handoffPrefix = `handoff-${wave}-`;
+  return fs.existsSync(dir)
+    ? fs.readdirSync(dir)
+        .filter((name) => name.startsWith(handoffPrefix) && name.endsWith(".json"))
+        .sort()
+    : [];
+}
+
+function buildWaveHandoffFileIndex(dir, wave, assignmentByAgent) {
+  const handoffFiles = listWaveHandoffFiles(dir, wave);
+  const handoffPathByAgent = new Map();
+  const unexpectedAgentSet = new Set();
+
+  for (const fileName of handoffFiles) {
+    const rawAgent = fileName.slice(`handoff-${wave}-`.length, -".json".length);
+    if (!assignmentByAgent.has(rawAgent)) {
+      unexpectedAgentSet.add(rawAgent);
+      continue;
+    }
+    handoffPathByAgent.set(rawAgent, path.join(dir, fileName));
+  }
+
+  return {
+    handoffFiles,
+    handoffPathByAgent,
+    unexpectedAgents: Array.from(unexpectedAgentSet).sort(compareAgentLabels),
+  };
 }
 
 // ── Tool implementations ──
@@ -582,61 +662,38 @@ function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfac
   };
 }
 
+function waveHandoffStatus(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumber = parseWaveNumber(args.wave_number);
+  const { dir, wave, assignments, assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+  const { handoffFiles, handoffPathByAgent, unexpectedAgents } = buildWaveHandoffFileIndex(dir, wave, assignmentByAgent);
+
+  const receivedAgents = [];
+  const missingAgents = [];
+
+  for (const assignment of assignments) {
+    if (handoffPathByAgent.has(assignment.agent)) {
+      receivedAgents.push(assignment.agent);
+    } else {
+      missingAgents.push(assignment.agent);
+    }
+  }
+
+  return JSON.stringify({
+    assignments_total: assignments.length,
+    handoffs_total: handoffFiles.length,
+    received_agents: receivedAgents,
+    missing_agents: missingAgents,
+    unexpected_agents: unexpectedAgents,
+    is_complete: missingAgents.length === 0,
+  });
+}
+
 function mergeWaveHandoffs(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const waveNumber = parseWaveNumber(args.wave_number);
-  const wave = `w${waveNumber}`;
-  const dir = sessionDir(domain);
-  const assignmentsPath = path.join(dir, `wave-${waveNumber}-assignments.json`);
-
-  if (!fs.existsSync(assignmentsPath)) {
-    throw new Error(`Missing assignment file: ${assignmentsPath}`);
-  }
-
-  const assignmentsDoc = readJsonFile(assignmentsPath);
-  if (assignmentsDoc == null || typeof assignmentsDoc !== "object" || Array.isArray(assignmentsDoc)) {
-    throw new Error(`Invalid assignment file: ${assignmentsPath}`);
-  }
-  if (assignmentsDoc.wave_number !== waveNumber) {
-    throw new Error(`Assignment file wave_number mismatch in ${assignmentsPath}`);
-  }
-  if (!Array.isArray(assignmentsDoc.assignments)) {
-    throw new Error(`Assignment file assignments must be an array in ${assignmentsPath}`);
-  }
-
-  const assignments = [];
-  const assignmentByAgent = new Map();
-  for (const assignment of assignmentsDoc.assignments) {
-    if (assignment == null || typeof assignment !== "object" || Array.isArray(assignment)) {
-      throw new Error(`Invalid assignment entry in ${assignmentsPath}`);
-    }
-    const agent = parseAgentId(assignment.agent);
-    const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
-    if (assignmentByAgent.has(agent)) {
-      throw new Error(`Duplicate assignment for ${agent} in ${assignmentsPath}`);
-    }
-    const normalizedAssignment = { agent, surface_id: surfaceId };
-    assignments.push(normalizedAssignment);
-    assignmentByAgent.set(agent, normalizedAssignment);
-  }
-
-  const handoffPrefix = `handoff-${wave}-`;
-  const handoffFiles = fs.existsSync(dir)
-    ? fs.readdirSync(dir)
-        .filter((name) => name.startsWith(handoffPrefix) && name.endsWith(".json"))
-        .sort()
-    : [];
-
-  const handoffPathByAgent = new Map();
-  const unexpectedAgentSet = new Set();
-  for (const fileName of handoffFiles) {
-    const rawAgent = fileName.slice(handoffPrefix.length, -".json".length);
-    if (!assignmentByAgent.has(rawAgent)) {
-      unexpectedAgentSet.add(rawAgent);
-      continue;
-    }
-    handoffPathByAgent.set(rawAgent, path.join(dir, fileName));
-  }
+  const { dir, wave, assignments, assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+  const { handoffFiles, handoffPathByAgent, unexpectedAgents } = buildWaveHandoffFileIndex(dir, wave, assignmentByAgent);
 
   const receivedAgents = [];
   const invalidAgents = [];
@@ -685,7 +742,7 @@ function mergeWaveHandoffs(args) {
     handoffs_total: handoffFiles.length,
     received_agents: receivedAgents,
     invalid_agents: invalidAgents,
-    unexpected_agents: Array.from(unexpectedAgentSet).sort(compareAgentLabels),
+    unexpected_agents: unexpectedAgents,
     completed_surface_ids: completedSurfaceIds,
     partial_surface_ids: partialSurfaceIds,
     missing_surface_ids: missingSurfaceIds,
@@ -746,6 +803,7 @@ async function executeTool(name, args) {
     case "bounty_list_findings": return listFindings(args);
     case "bounty_write_handoff": return writeHandoff(args);
     case "bounty_write_wave_handoff": return writeWaveHandoff(args);
+    case "bounty_wave_handoff_status": return waveHandoffStatus(args);
     case "bounty_merge_wave_handoffs": return mergeWaveHandoffs(args);
     case "bounty_read_handoff": return readHandoff(args);
     case "bounty_auth_manual": return authManual(args);
@@ -917,6 +975,7 @@ module.exports = {
   sessionDir,
   writeHandoff,
   writeWaveHandoff,
+  waveHandoffStatus,
   mergeWaveHandoffs,
   normalizeStringArray,
   writeFileAtomic,
