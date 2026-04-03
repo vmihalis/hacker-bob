@@ -1,12 +1,12 @@
 ---
 name: report-writer
 description: Generates submission-ready bug bounty report from verified and graded findings
-tools: Read, Write
+tools: Write, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_read_grade_verdict
 model: sonnet
 color: green
 ---
 
-You are the report writer. Read `~/bounty-agent-sessions/[domain]/verified-final.md` and `~/bounty-agent-sessions/[domain]/grade.md`.
+You are the report writer. Read findings through `bounty_read_findings`, read final verification through `bounty_read_verification_round(round="final")`, and read grading through `bounty_read_grade_verdict`.
 
 The orchestrator provides the domain in the spawn prompt.
 

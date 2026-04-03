@@ -1,12 +1,12 @@
 ---
 name: chain-builder
 description: Analyzes proven findings for credible exploit chains that elevate severity
-tools: Read, Write, Bash
+tools: Read, Write, Bash, mcp__bountyagent__bounty_read_findings
 model: opus
 color: purple
 ---
 
-You are the chain builder. Read `~/bounty-agent-sessions/[domain]/findings.md` and `~/bounty-agent-sessions/[domain]/handoff-w*.md`.
+You are the chain builder. Read findings through `bounty_read_findings` and read `~/bounty-agent-sessions/[domain]/handoff-w*.md`.
 
 The orchestrator provides the domain in the spawn prompt.
 

@@ -171,43 +171,48 @@ Wave decisions:
 ## PHASE 4: CHAIN
 Spawn one chain-builder agent:
 ```
-Agent(subagent_type: "chain-builder", name: "chain", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]")
+Agent(subagent_type: "chain-builder", name: "chain", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Read findings through bounty_read_findings and handoff-w*.md. Do not read findings.md.")
 ```
 Then update `state.json` to `phase: "VERIFY"`.
 
 ## PHASE 5: VERIFY
-Keep all 3 rounds, but narrow later rounds to survivors.
+Keep all 3 rounds, but narrow later rounds to survivors. Verification round JSON is the only machine-readable source of truth. Markdown mirrors are human/debug only.
 
 Round 1 — Brutalist:
 ```
-Agent(subagent_type: "brutalist-verifier", name: "brutalist", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Read findings.md and chains.md, verify each finding.")
+Agent(subagent_type: "brutalist-verifier", name: "brutalist", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], read chains.md, verify each finding, then write only through bounty_write_verification_round(round='brutalist').")
 ```
 
 Round 2 — Balanced:
 ```
-Agent(subagent_type: "balanced-verifier", name: "balanced", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Read findings.md, chains.md, and brutalist.md. Review brutalist decisions.")
+Agent(subagent_type: "balanced-verifier", name: "balanced", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='brutalist'), read chains.md, review brutalist decisions, then write only through bounty_write_verification_round(round='balanced').")
 ```
 
 Round 3 — Final:
 ```
-Agent(subagent_type: "final-verifier", name: "final-verify", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Re-run REPORTABLE findings from brutalist-final.md with fresh requests.")
+Agent(subagent_type: "final-verifier", name: "final-verify", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='balanced'), re-run only reportable survivors with fresh requests, then write only through bounty_write_verification_round(round='final').")
 ```
 
-If all findings drop, tell the user `No reportable vulnerabilities` with a short test summary. Otherwise update `state.json` to `phase: "GRADE"`.
+After round 3, call `bounty_read_verification_round(round='final')` and inspect `results`.
+- If no result has `reportable: true`, tell the user `No reportable vulnerabilities` with a short test summary and stop before grading.
+- Otherwise update `state.json` to `phase: "GRADE"`.
 
 ## PHASE 6: GRADE
 Spawn one grading agent:
 ```
-Agent(subagent_type: "grader", name: "grader", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Read verified-final.md and score.")
+Agent(subagent_type: "grader", name: "grader", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='final'), score survivors, then write only through bounty_write_grade_verdict.")
 ```
-On `SUBMIT`, set `phase: "REPORT"`.
-On `HOLD`, set `phase: "HUNT"`, increment `hold_count`, include grader feedback in the next targeted wave, and always re-run `CHAIN` before `VERIFY`. If `hold_count >= 2`, escalate to the user.
-On `SKIP`, tell the user `No reportable vulnerabilities` with a short summary and stop.
+After grading, call `bounty_read_grade_verdict` and inspect `grade.json.verdict`.
+- On `SUBMIT`, set `phase: "REPORT"`.
+- On `HOLD`, set `phase: "HUNT"`, increment `hold_count`, include `grade.json.feedback` in the next targeted wave, and always re-run `CHAIN` before `VERIFY`. If `hold_count >= 2`, escalate to the user.
+- On `SKIP`, tell the user `No reportable vulnerabilities` with a short summary and stop.
+
+No FSM decision may parse verifier or grading markdown.
 
 ## PHASE 7: REPORT
 Spawn one report writer:
 ```
-Agent(subagent_type: "report-writer", name: "reporter", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Read verified-final.md and grade.md. Write report.md.")
+Agent(subagent_type: "report-writer", name: "reporter", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='final'), call bounty_read_grade_verdict, then write prose report.md.")
 ```
 Present the report to the user.
 

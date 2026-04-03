@@ -3,7 +3,12 @@
     "allow": [
       "mcp__bountyagent__bounty_http_scan",
       "mcp__bountyagent__bounty_record_finding",
+      "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
+      "mcp__bountyagent__bounty_write_verification_round",
+      "mcp__bountyagent__bounty_read_verification_round",
+      "mcp__bountyagent__bounty_write_grade_verdict",
+      "mcp__bountyagent__bounty_read_grade_verdict",
       "mcp__bountyagent__bounty_write_handoff",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",

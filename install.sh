@@ -84,7 +84,7 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
   echo "  Merge these settings manually:"
   echo ""
-  echo '  permissions.allow: bountyagent MCP tools (including wave handoff tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
+  echo '  permissions.allow: bountyagent MCP tools (including findings/verification/grade control-plane tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
   echo '  hooks.PreToolUse: scope-guard.sh (Bash) + scope-guard-mcp.sh (bounty_http_scan)'
   echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
@@ -95,7 +95,12 @@ else
     "allow": [
       "mcp__bountyagent__bounty_http_scan",
       "mcp__bountyagent__bounty_record_finding",
+      "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
+      "mcp__bountyagent__bounty_write_verification_round",
+      "mcp__bountyagent__bounty_read_verification_round",
+      "mcp__bountyagent__bounty_write_grade_verdict",
+      "mcp__bountyagent__bounty_read_grade_verdict",
       "mcp__bountyagent__bounty_write_handoff",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",

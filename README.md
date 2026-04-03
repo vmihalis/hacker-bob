@@ -75,12 +75,12 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 |---|---|---|
 | recon-agent | Subdomain enum, URL crawling, nuclei, JS extraction | Bash, Read, Write, Glob, Grep |
 | hunter-agent | Tests one attack surface per spawn | Bash, Read, Write, Grep, Glob, MCP |
-| brutalist-verifier | Round 1: maximum skepticism | Bash, Read, Write |
-| balanced-verifier | Round 2: catch false negatives | Bash, Read, Write |
-| final-verifier | Round 3: fresh PoC confirmation | Bash, Read, Write |
-| chain-builder | A→B exploit chain analysis | Read, Write, Bash |
-| grader | 5-axis scoring + verdict | Read, Write |
-| report-writer | Submission-ready report | Read, Write |
+| brutalist-verifier | Round 1: maximum skepticism | Bash, Read, MCP |
+| balanced-verifier | Round 2: catch false negatives | Bash, Read, MCP |
+| final-verifier | Round 3: fresh PoC confirmation | Bash, MCP |
+| chain-builder | A→B exploit chain analysis | Read, Write, Bash, MCP |
+| grader | 5-axis scoring + verdict | MCP |
+| report-writer | Submission-ready report | Write, MCP |
 
 ## MCP Server
 
@@ -89,8 +89,13 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | Tool | What it does |
 |---|---|
 | `bounty_http_scan` | HTTP request + auto-analysis (tech fingerprinting, secret detection, endpoint extraction) |
-| `bounty_record_finding` | Write findings to disk (survives context rotation) |
-| `bounty_list_findings` | List recorded findings for a target |
+| `bounty_record_finding` | Append an authoritative finding record to `findings.jsonl` and best-effort mirror it to `findings.md` |
+| `bounty_read_findings` | Read the authoritative structured findings document for a target |
+| `bounty_list_findings` | List recorded findings for a target for hunter dedupe |
+| `bounty_write_verification_round` | Write one verification round JSON plus a best-effort markdown mirror |
+| `bounty_read_verification_round` | Read one verification round JSON document |
+| `bounty_write_grade_verdict` | Write the grade verdict JSON plus a best-effort markdown mirror |
+| `bounty_read_grade_verdict` | Read the grade verdict JSON document |
 | `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for cross-session resume only |
 | `bounty_write_wave_handoff` | Write one hunter wave handoff as `handoff-wN-aN.md` plus `handoff-wN-aN.json` |
 | `bounty_wave_handoff_status` | Readiness/count check for one wave based on assignment and handoff file presence |
@@ -101,9 +106,11 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 
 Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
 
+Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never intended to be parsed by code or prompts.
+
 `bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
 
-If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable finding helpers and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
+If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable findings, structured verification/grade artifacts, and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 
 ## Hooks
 
@@ -124,10 +131,13 @@ All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
 - `handoff-wN-aN.md` — freeform hunter handoff markdown for humans and chain-building
 - `handoff-wN-aN.json` — structured hunter handoff fields used for deterministic merge/requeue
 - `SESSION_HANDOFF.md` — session-only resume handoff written by `bounty_write_handoff`
-- `findings.md` — merged findings across waves
+- `findings.jsonl` — append-only authoritative finding storage across waves
+- `findings.md` — human/debug mirror of recorded findings
 - `chains.md` — exploit chain analysis
-- `verified-final.md` — final verified findings
-- `grade.md` — scoring and verdict
+- `brutalist.json` / `brutalist.md` — round 1 control-plane JSON plus human/debug markdown
+- `brutalist-final.json` / `brutalist-final.md` — round 2 control-plane JSON plus human/debug markdown
+- `verified-final.json` / `verified-final.md` — round 3 control-plane JSON plus human/debug markdown
+- `grade.json` / `grade.md` — grading control-plane JSON plus human/debug markdown
 - `report.md` — submission-ready report
 
 ## What works out of the box
