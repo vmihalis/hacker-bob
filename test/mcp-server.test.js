@@ -599,6 +599,62 @@ test("bounty_write_verification_round accepts notes null and validates duplicate
   });
 });
 
+test("bounty_write_verification_round rejects balanced/final rounds that drop prior-round findings", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+    seedFinding(domain, { title: "Second finding", endpoint: "/api/second" });
+
+    const fullResult = (id) => ({
+      finding_id: id,
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Valid.",
+    });
+
+    // Write brutalist round with both findings
+    writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      results: [fullResult("F-1"), fullResult("F-2")],
+    });
+
+    // Balanced round missing F-2 should fail
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "balanced",
+      notes: null,
+      results: [fullResult("F-1")],
+    }), /balanced round is missing 1 finding.*F-2/);
+
+    // Balanced round with both findings should succeed
+    writeVerificationRound({
+      target_domain: domain,
+      round: "balanced",
+      notes: null,
+      results: [fullResult("F-1"), fullResult("F-2")],
+    });
+
+    // Final round missing F-1 should fail
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      results: [fullResult("F-2")],
+    }), /final round is missing 1 finding.*F-1/);
+
+    // Final round with both findings should succeed
+    writeVerificationRound({
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      results: [fullResult("F-1"), fullResult("F-2")],
+    });
+  });
+});
+
 test("bounty_read_verification_round hard-fails on missing or malformed JSON", () => {
   withTempHome(() => {
     const domain = "example.com";
