@@ -4,8 +4,7 @@ description: Tests one attack surface for vulnerabilities — spawned per-surfac
 tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_read_handoff, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_auth_manual
 model: opus
 color: yellow
-maxTurns: 80
-background: true
+maxTurns: 200
 requiredMcpServers:
   - bountyagent
 ---
@@ -23,7 +22,7 @@ Rules:
 - Before recording a finding, prove it live with the exact request and response evidence.
 - Call `bounty_list_findings` first. Do not record a finding if the same endpoint+title already exists.
 - If you hit two hard WAF blocks on the same endpoint class, mark it WAF-blocked and move on.
-- Context budget: at ~120 tool calls, wrap up current test and don't start new endpoint categories. At ~140, stop and write handoff immediately. If your surface is exhausted before 120, write handoff and stop early.
+- Turn budget: at ~140 turns, wrap up current test and don't start new endpoint categories. At ~170, stop and write handoff immediately. If your surface is exhausted before 140, write handoff and stop early. Claude Code enforces `maxTurns` as a turn budget, not a raw tool-call budget. The system hard-kills at 200 turns with no grace period.
 - `Write` is allowed for scratch notes only. Do not rely on `Write` for any artifact the orchestrator, chain-builder, or verifiers consume.
 
 Never record these as standalone findings: missing security headers, SPF/DKIM/DMARC, GraphQL introspection, banner/version disclosure without working exploit, clickjacking without PoC, tabnabbing, CSV injection, CORS wildcard without credentialed exfil, logout CSRF, self-XSS, open redirect, mobile app client_secret, SSRF DNS-only, host header injection, rate limit on non-critical forms, logout session issues, concurrent sessions, internal IP disclosure, missing cookie flags, password autocomplete. Only keep one if you prove the chain.
