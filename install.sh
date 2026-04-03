@@ -109,6 +109,7 @@ else
       "mcp__bountyagent__bounty_merge_wave_handoffs",
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
+      "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_wave_status",
       "Bash(mkdir *)",
       "Bash(test *)",

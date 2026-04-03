@@ -6,7 +6,8 @@
 //           bounty_read_grade_verdict, bounty_write_handoff,
 //           bounty_write_wave_handoff, bounty_wave_handoff_status,
 //           bounty_merge_wave_handoffs, bounty_read_handoff,
-//           bounty_auth_manual, bounty_wave_status
+//           bounty_log_dead_ends, bounty_auth_manual,
+//           bounty_wave_status
 
 const fs = require("fs");
 const path = require("path");
@@ -261,6 +262,23 @@ const TOOLS = [
         local_storage: { type: "object", additionalProperties: { type: "string" } },
       },
       required: ["profile_name"],
+    },
+  },
+  {
+    name: "bounty_log_dead_ends",
+    description:
+      "Append dead ends and WAF-blocked endpoints discovered so far. Call periodically (~every 30 turns) so terrain survives if the hunter hits maxTurns. Validated against wave assignments.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave: { type: "string", pattern: "^w[0-9]+$" },
+        agent: { type: "string", pattern: "^a[0-9]+$" },
+        surface_id: { type: "string" },
+        dead_ends: { type: "array", items: { type: "string" } },
+        waf_blocked_endpoints: { type: "array", items: { type: "string" } },
+      },
+      required: ["target_domain", "wave", "agent", "surface_id"],
     },
   },
   {
@@ -1217,6 +1235,48 @@ function writeHandoff(args) {
   return JSON.stringify({ written: handoffPath });
 }
 
+function logDeadEnds(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const wave = parseWaveId(args.wave);
+  const agent = parseAgentId(args.agent);
+  const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
+
+  // Validate against wave assignments — reject if wave/agent/surface_id not in assignments file
+  const waveNumber = Number(wave.slice(1));
+  const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+  const assignment = assignmentByAgent.get(agent);
+  if (!assignment) {
+    throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
+  }
+  if (assignment.surface_id !== surfaceId) {
+    throw new Error(`Agent ${agent} is assigned surface ${assignment.surface_id}, not ${surfaceId}`);
+  }
+
+  const deadEnds = normalizeStringArray(args.dead_ends, "dead_ends");
+  const wafBlocked = normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints");
+
+  if (deadEnds.length === 0 && wafBlocked.length === 0) {
+    return JSON.stringify({ appended: 0, message: "Nothing to log" });
+  }
+
+  const dir = sessionDir(domain);
+  const logPath = path.join(dir, `live-dead-ends-${wave}-${agent}.jsonl`);
+  const record = {
+    ts: new Date().toISOString(),
+    surface_id: surfaceId,
+    dead_ends: deadEnds,
+    waf_blocked_endpoints: wafBlocked,
+  };
+  appendJsonlLine(logPath, record);
+
+  return JSON.stringify({
+    appended: deadEnds.length + wafBlocked.length,
+    dead_ends: deadEnds.length,
+    waf_blocked_endpoints: wafBlocked.length,
+    log_path: logPath,
+  });
+}
+
 function writeWaveHandoff(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -1353,6 +1413,26 @@ function mergeWaveHandoffs(args) {
     }
   }
 
+  // Merge live dead-end logs (survive maxTurns kills even without a handoff)
+  for (const assignment of assignments) {
+    const logPath = path.join(dir, `live-dead-ends-${wave}-${assignment.agent}.jsonl`);
+    if (!fs.existsSync(logPath)) continue;
+    let raw;
+    try { raw = fs.readFileSync(logPath, "utf8"); } catch { continue; }
+    const lines = raw.trim().split("\n");
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record.surface_id !== assignment.surface_id) continue;
+        pushUnique(deadEnds, deadEndSet, normalizeStringArray(record.dead_ends, "live_dead_ends"));
+        pushUnique(wafBlockedEndpoints, wafSet, normalizeStringArray(record.waf_blocked_endpoints, "live_waf_blocked"));
+      } catch {
+        // Skip malformed line, keep processing remaining records
+      }
+    }
+  }
+
   return JSON.stringify({
     assignments_total: assignments.length,
     handoffs_total: handoffFiles.length,
@@ -1423,6 +1503,7 @@ async function executeTool(name, args) {
     case "bounty_write_grade_verdict": return writeGradeVerdict(args);
     case "bounty_read_grade_verdict": return readGradeVerdict(args);
     case "bounty_write_handoff": return writeHandoff(args);
+    case "bounty_log_dead_ends": return logDeadEnds(args);
     case "bounty_write_wave_handoff": return writeWaveHandoff(args);
     case "bounty_wave_handoff_status": return waveHandoffStatus(args);
     case "bounty_merge_wave_handoffs": return mergeWaveHandoffs(args);

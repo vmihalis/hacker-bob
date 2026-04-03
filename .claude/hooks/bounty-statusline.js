@@ -57,6 +57,14 @@ process.stdin.on('end', () => {
       }
     } catch {}
 
-    process.stdout.write(`\x1b[2m${model}\x1b[0m │ \x1b[2m${dir}\x1b[0m${bounty}${ctx}`);
+    // Rate limit warning
+    let rate = '';
+    const fiveHr = data.rate_limits?.five_hour?.used_percentage;
+    const sevenDay = data.rate_limits?.seven_day?.used_percentage;
+    const worst = Math.max(fiveHr || 0, sevenDay || 0);
+    if (worst >= 80) rate = ` \x1b[5;31m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
+    else if (worst >= 60) rate = ` \x1b[33m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
+
+    process.stdout.write(`\x1b[2m${model}\x1b[0m │ \x1b[2m${dir}\x1b[0m${bounty}${ctx}${rate}`);
   } catch {}
 });
