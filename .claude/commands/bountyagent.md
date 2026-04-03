@@ -19,15 +19,17 @@ Persist state in `~/bounty-agent-sessions/[domain]/state.json`:
   "target_url": "[url]",
   "phase": "RECON",
   "hunt_wave": 0,
+  "pending_wave": null,
   "total_findings": 0,
   "explored": [],
   "dead_ends": [],
   "waf_blocked_endpoints": [],
+  "lead_surface_ids": [],
   "hold_count": 0,
   "auth_status": "pending"
 }
 ```
-Read `state.json` before every decision. Write it after every phase change and after every wave merge. If `$ARGUMENTS` starts with `resume`, read `~/bounty-agent-sessions/[domain]/state.json` and continue from `phase`.
+Read `state.json` before every decision. Write it after every phase change, after persisting wave assignments, and after every wave merge. If `$ARGUMENTS` starts with `resume`, read `~/bounty-agent-sessions/[domain]/state.json` and continue from `phase`. On HUNT entry and on resume, if `pending_wave` is non-null, reconcile that wave first with `bounty_merge_wave_handoffs` before spawning anything new.
 
 ## PHASE 1: RECON
 Create the session dir:
@@ -70,10 +72,25 @@ Set `auth_status` to `authenticated` or `unauthenticated`, then move to `HUNT`.
 ## PHASE 3: HUNT
 From here on, all target interaction happens inside agents.
 Read `attack_surface.json`, group by priority, and read `state.json` before every wave.
+
+Semantics:
+- `explored` means completed surface IDs only.
+- `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only. They never mark a surface explored.
+- `lead_surface_ids` are deterministic next-wave routing hints only.
+- Coverage decisions use `explored` only, never `explored or dead_ends`.
+
 Wave policy:
 - Wave 1: all `HIGH` and `CRITICAL` surfaces in parallel.
-- Wave 2+: leads first, then remaining `MEDIUM`, then `LOW` if capacity remains.
+- Wave 2+: requeues first, then `lead_surface_ids`, then remaining `MEDIUM`, then `LOW` if capacity remains.
 - Minimum 2 waves, target 4, maximum 6.
+
+Before spawning any wave:
+1. If `state.pending_wave` is non-null, call `bounty_merge_wave_handoffs` for that wave and reconcile it before continuing.
+2. Compute assignments from the current requeue set plus the wave policy.
+3. Write `~/bounty-agent-sessions/[domain]/wave-[N]-assignments.json` with shape `{"wave_number":N,"assignments":[{"agent":"a1","surface_id":"surface-id"}]}`.
+4. Set `state.pending_wave = N`.
+5. Persist `state.json`.
+6. Only after the assignment file and `pending_wave` are durable may hunters start.
 
 For each hunter, spawn:
 ```
@@ -81,9 +98,12 @@ Agent(subagent_type: "hunter-agent", name: "hunter-w[wave]-a[agent]", mode: "byp
 You are Hunter W[wave]A[agent]. Test one surface only.
 
 Target: [url]
-Surface:
+Surface assignment:
 [paste one surface from attack_surface.json]
 [paste related nuclei hits if any]
+
+Valid surface IDs for `lead_surface_ids`:
+[paste attack_surface.json.surfaces[].id]
 
 Auth:
 - Read ~/bounty-agent-sessions/[domain]/auth.json if it exists.
@@ -95,23 +115,33 @@ Hard exclusions for this wave:
 
 Use only the relevant bypass table:
 [inject one tech-specific bypass table from BYPASS TABLES below]
+
+Final step before stopping:
+- Call `bounty_write_wave_handoff` exactly once with target_domain, wave, agent, surface_id='[surface.id]', surface_status, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids.
 ")
 ```
 
 After each wave:
 1. Call `bounty_wave_status` to get finding count, severity breakdown, and per-finding summary.
-2. Read `handoff-w[current_wave]-a*.md` only (not all waves — prior dead_ends already in state.json).
-3. Extract `dead_ends` and `waf_blocked_endpoints` from handoffs into `state.json`.
-4. Update `hunt_wave`, `total_findings` (from wave_status total), `explored`, `dead_ends`, `waf_blocked_endpoints`.
-5. Check `$SESSION/scope-warnings.log` — add any out-of-scope domains to dead_ends.
+2. Call `bounty_merge_wave_handoffs` with `target_domain` and `wave_number`.
+3. Treat a missing `wave-[N]-assignments.json` as a hard error. Missing or malformed handoffs do not fail the merge; they requeue their assigned surfaces.
+4. Update `state.explored` from `completed_surface_ids` only.
+5. Union `dead_ends`, `waf_blocked_endpoints`, and `lead_surface_ids` from the merge result into state.
+6. Keep only `lead_surface_ids` that still exist in `attack_surface.json.surfaces[].id`.
+7. Drop any `lead_surface_ids` already present in `explored`.
+8. Requeue all `partial_surface_ids`, all `missing_surface_ids`, and, by looking up `invalid_agents` in `wave-[N]-assignments.json`, any surface assigned to an invalid agent.
+9. Ignore `unexpected_agents` for state advancement, but surface them in logs/output.
+10. Clear `state.pending_wave` once the merge completes successfully.
+11. Update `hunt_wave` and `total_findings` (from `bounty_wave_status.total`).
+12. Check `$SESSION/scope-warnings.log` and add out-of-scope endpoints/paths only to exclusion tracking, not to `explored`.
 
 Wave decisions:
 - `wave < 2` → always run another wave.
 - Use `bounty_wave_status.has_high_or_critical` for the HIGH/CRITICAL finding gate and `bounty_wave_status.total` for finding-count checks.
-- `wave >= 2` and `bounty_wave_status.has_high_or_critical` is true and at least 70% of non-LOW surfaces are in `explored` or `dead_ends` → `CHAIN`.
+- `wave >= 2` and `bounty_wave_status.has_high_or_critical` is true and at least 70% of non-LOW surfaces are in `explored` → `CHAIN`.
 - `wave >= 4` and no unexplored `HIGH` surfaces remain → `CHAIN`.
-- All surfaces exhausted or dead-ended → `CHAIN`.
-- `wave < 6` and live surfaces remain → next wave with updated dead-end injection.
+- All surfaces are exhausted only when there are no remaining assignable or requeueable surface IDs beyond `explored`.
+- `wave < 6` and live surfaces remain → next wave with updated exclusions and `lead_surface_ids`.
 - `HOLD` from grading → targeted hunt wave with grader feedback, then re-run `CHAIN` before `VERIFY`.
 
 ## PHASE 4: CHAIN
@@ -197,7 +227,7 @@ redirect_uri manipulation, state CSRF, token in Referer, scope escalation, PKCE 
 1. Recon, hunt, chain, verify, grade, and report are agent-driven. The orchestrator coordinates files and phase transitions only.
 2. Hunters run in parallel by default with fresh context per surface.
 3. State lives in `~/bounty-agent-sessions/[domain]/`. Read it before decisions; update it after every wave and phase.
-4. Dead ends persist across waves and must be injected prominently so hunters stop wasting requests.
+4. Dead ends and WAF blocks persist as endpoint/path exclusions across waves and must be injected prominently so hunters stop wasting requests.
 5. On repeated failure: one retry for transient agent/runtime issues, then dead-end; repeated WAF blocks become WAF dead ends; auth decay falls back to unauthenticated testing unless new auth already exists.
 6. Minimum 2 hunt waves, maximum 6. `HOLD` loops back to `HUNT`, but only twice.
 7. Full autonomy after target input unless the user explicitly chooses to provide auth material.

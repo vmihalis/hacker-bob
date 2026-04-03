@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Bounty Agent MCP Server — stdio transport, zero dependencies
 // Provides: bounty_http_scan, bounty_record_finding, bounty_list_findings,
-//           bounty_write_handoff, bounty_read_handoff, bounty_auth_manual,
-//           bounty_wave_status
+//           bounty_write_handoff, bounty_write_wave_handoff,
+//           bounty_merge_wave_handoffs, bounty_read_handoff,
+//           bounty_auth_manual, bounty_wave_status
 
 const fs = require("fs");
 const path = require("path");
@@ -86,6 +87,37 @@ const TOOLS = [
     },
   },
   {
+    name: "bounty_write_wave_handoff",
+    description: "Write one structured wave handoff as both markdown and JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave: { type: "string", pattern: "^w[0-9]+$" },
+        agent: { type: "string", pattern: "^a[0-9]+$" },
+        surface_id: { type: "string" },
+        surface_status: { type: "string", enum: ["complete", "partial"] },
+        content: { type: "string" },
+        dead_ends: { type: "array", items: { type: "string" } },
+        waf_blocked_endpoints: { type: "array", items: { type: "string" } },
+        lead_surface_ids: { type: "array", items: { type: "string" } },
+      },
+      required: ["target_domain", "wave", "agent", "surface_id", "surface_status", "content"],
+    },
+  },
+  {
+    name: "bounty_merge_wave_handoffs",
+    description: "Merge structured wave handoffs for one wave using the persisted assignment file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave_number: { type: "number" },
+      },
+      required: ["target_domain", "wave_number"],
+    },
+  },
+  {
     name: "bounty_read_handoff",
     description: "Read previous session handoff to resume hunting.",
     inputSchema: {
@@ -122,6 +154,100 @@ const TOOLS = [
 // ── Session path helper ──
 function sessionDir(domain) {
   return path.join(os.homedir(), "bounty-agent-sessions", domain);
+}
+
+const WAVE_ID_RE = /^w([1-9]\d*)$/;
+const AGENT_ID_RE = /^a([1-9]\d*)$/;
+
+function assertNonEmptyString(value, fieldName) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function parseWaveId(value, fieldName = "wave") {
+  const wave = assertNonEmptyString(value, fieldName);
+  if (!WAVE_ID_RE.test(wave)) {
+    throw new Error(`${fieldName} must match wN`);
+  }
+  return wave;
+}
+
+function parseAgentId(value, fieldName = "agent") {
+  const agent = assertNonEmptyString(value, fieldName);
+  if (!AGENT_ID_RE.test(agent)) {
+    throw new Error(`${fieldName} must match aN`);
+  }
+  return agent;
+}
+
+function parseWaveNumber(value, fieldName = "wave_number") {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+  return value;
+}
+
+function parseSurfaceStatus(value) {
+  if (value !== "complete" && value !== "partial") {
+    throw new Error(`surface_status must be "complete" or "partial"`);
+  }
+  return value;
+}
+
+function normalizeStringArray(value, fieldName) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings`);
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error(`${fieldName} must contain only strings`);
+    }
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function pushUnique(target, seen, values) {
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    target.push(value);
+  }
+}
+
+function compareAgentLabels(a, b) {
+  const aMatch = typeof a === "string" && a.match(AGENT_ID_RE);
+  const bMatch = typeof b === "string" && b.match(AGENT_ID_RE);
+
+  if (aMatch && bMatch) {
+    return Number(aMatch[1]) - Number(bMatch[1]);
+  }
+  if (aMatch) return -1;
+  if (bMatch) return 1;
+  return String(a).localeCompare(String(b));
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function writeFileAtomic(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  fs.writeFileSync(tempPath, content);
+  fs.renameSync(tempPath, filePath);
 }
 
 // ── Tool implementations ──
@@ -395,6 +521,180 @@ function writeHandoff(args) {
   return JSON.stringify({ written: handoffPath });
 }
 
+function writeWaveHandoff(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const wave = parseWaveId(args.wave);
+  const agent = parseAgentId(args.agent);
+  const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
+  const surfaceStatus = parseSurfaceStatus(args.surface_status);
+
+  if (typeof args.content !== "string") {
+    throw new Error("content must be a string");
+  }
+
+  const handoff = {
+    target_domain: domain,
+    wave,
+    agent,
+    surface_id: surfaceId,
+    surface_status: surfaceStatus,
+    dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
+    waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
+    lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
+  };
+
+  const dir = sessionDir(domain);
+  const markdownPath = path.join(dir, `handoff-${wave}-${agent}.md`);
+  const jsonPath = path.join(dir, `handoff-${wave}-${agent}.json`);
+
+  writeFileAtomic(markdownPath, args.content);
+  writeFileAtomic(jsonPath, JSON.stringify(handoff, null, 2) + "\n");
+
+  return JSON.stringify({
+    written_md: markdownPath,
+    written_json: jsonPath,
+  });
+}
+
+function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfaceId }) {
+  if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("handoff payload must be an object");
+  }
+
+  if (payload.target_domain != null && assertNonEmptyString(payload.target_domain, "target_domain") !== targetDomain) {
+    throw new Error("handoff target_domain does not match merge target");
+  }
+
+  const payloadWave = parseWaveId(payload.wave);
+  const payloadAgent = parseAgentId(payload.agent);
+  const payloadSurfaceId = assertNonEmptyString(payload.surface_id, "surface_id");
+  const surfaceStatus = parseSurfaceStatus(payload.surface_status);
+
+  if (payloadWave !== wave) throw new Error("handoff wave does not match assignment wave");
+  if (payloadAgent !== agent) throw new Error("handoff agent does not match assignment");
+  if (payloadSurfaceId !== surfaceId) throw new Error("handoff surface_id does not match assignment");
+
+  return {
+    dead_ends: normalizeStringArray(payload.dead_ends, "dead_ends"),
+    waf_blocked_endpoints: normalizeStringArray(payload.waf_blocked_endpoints, "waf_blocked_endpoints"),
+    lead_surface_ids: normalizeStringArray(payload.lead_surface_ids, "lead_surface_ids"),
+    surface_status: surfaceStatus,
+  };
+}
+
+function mergeWaveHandoffs(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumber = parseWaveNumber(args.wave_number);
+  const wave = `w${waveNumber}`;
+  const dir = sessionDir(domain);
+  const assignmentsPath = path.join(dir, `wave-${waveNumber}-assignments.json`);
+
+  if (!fs.existsSync(assignmentsPath)) {
+    throw new Error(`Missing assignment file: ${assignmentsPath}`);
+  }
+
+  const assignmentsDoc = readJsonFile(assignmentsPath);
+  if (assignmentsDoc == null || typeof assignmentsDoc !== "object" || Array.isArray(assignmentsDoc)) {
+    throw new Error(`Invalid assignment file: ${assignmentsPath}`);
+  }
+  if (assignmentsDoc.wave_number !== waveNumber) {
+    throw new Error(`Assignment file wave_number mismatch in ${assignmentsPath}`);
+  }
+  if (!Array.isArray(assignmentsDoc.assignments)) {
+    throw new Error(`Assignment file assignments must be an array in ${assignmentsPath}`);
+  }
+
+  const assignments = [];
+  const assignmentByAgent = new Map();
+  for (const assignment of assignmentsDoc.assignments) {
+    if (assignment == null || typeof assignment !== "object" || Array.isArray(assignment)) {
+      throw new Error(`Invalid assignment entry in ${assignmentsPath}`);
+    }
+    const agent = parseAgentId(assignment.agent);
+    const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+    if (assignmentByAgent.has(agent)) {
+      throw new Error(`Duplicate assignment for ${agent} in ${assignmentsPath}`);
+    }
+    const normalizedAssignment = { agent, surface_id: surfaceId };
+    assignments.push(normalizedAssignment);
+    assignmentByAgent.set(agent, normalizedAssignment);
+  }
+
+  const handoffPrefix = `handoff-${wave}-`;
+  const handoffFiles = fs.existsSync(dir)
+    ? fs.readdirSync(dir)
+        .filter((name) => name.startsWith(handoffPrefix) && name.endsWith(".json"))
+        .sort()
+    : [];
+
+  const handoffPathByAgent = new Map();
+  const unexpectedAgentSet = new Set();
+  for (const fileName of handoffFiles) {
+    const rawAgent = fileName.slice(handoffPrefix.length, -".json".length);
+    if (!assignmentByAgent.has(rawAgent)) {
+      unexpectedAgentSet.add(rawAgent);
+      continue;
+    }
+    handoffPathByAgent.set(rawAgent, path.join(dir, fileName));
+  }
+
+  const receivedAgents = [];
+  const invalidAgents = [];
+  const completedSurfaceIds = [];
+  const partialSurfaceIds = [];
+  const missingSurfaceIds = [];
+  const deadEnds = [];
+  const wafBlockedEndpoints = [];
+  const leadSurfaceIds = [];
+
+  const deadEndSet = new Set();
+  const wafSet = new Set();
+  const leadSet = new Set();
+
+  for (const assignment of assignments) {
+    const filePath = handoffPathByAgent.get(assignment.agent);
+    if (!filePath) {
+      missingSurfaceIds.push(assignment.surface_id);
+      continue;
+    }
+
+    try {
+      const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
+        targetDomain: domain,
+        wave,
+        agent: assignment.agent,
+        surfaceId: assignment.surface_id,
+      });
+
+      receivedAgents.push(assignment.agent);
+      if (payload.surface_status === "complete") {
+        completedSurfaceIds.push(assignment.surface_id);
+      } else {
+        partialSurfaceIds.push(assignment.surface_id);
+      }
+      pushUnique(deadEnds, deadEndSet, payload.dead_ends);
+      pushUnique(wafBlockedEndpoints, wafSet, payload.waf_blocked_endpoints);
+      pushUnique(leadSurfaceIds, leadSet, payload.lead_surface_ids);
+    } catch {
+      invalidAgents.push(assignment.agent);
+    }
+  }
+
+  return JSON.stringify({
+    assignments_total: assignments.length,
+    handoffs_total: handoffFiles.length,
+    received_agents: receivedAgents,
+    invalid_agents: invalidAgents,
+    unexpected_agents: Array.from(unexpectedAgentSet).sort(compareAgentLabels),
+    completed_surface_ids: completedSurfaceIds,
+    partial_surface_ids: partialSurfaceIds,
+    missing_surface_ids: missingSurfaceIds,
+    dead_ends: deadEnds,
+    waf_blocked_endpoints: wafBlockedEndpoints,
+    lead_surface_ids: leadSurfaceIds,
+  });
+}
+
 function readHandoff(args) {
   const dir = sessionDir(args.target_domain);
   const handoffPath = path.join(dir, "SESSION_HANDOFF.md");
@@ -445,6 +745,8 @@ async function executeTool(name, args) {
     case "bounty_record_finding": return recordFinding(args);
     case "bounty_list_findings": return listFindings(args);
     case "bounty_write_handoff": return writeHandoff(args);
+    case "bounty_write_wave_handoff": return writeWaveHandoff(args);
+    case "bounty_merge_wave_handoffs": return mergeWaveHandoffs(args);
     case "bounty_read_handoff": return readHandoff(args);
     case "bounty_auth_manual": return authManual(args);
     case "bounty_wave_status": return waveStatus(args);
@@ -454,6 +756,7 @@ async function executeTool(name, args) {
 
 // ── MCP stdio transport ──
 let transportMode = "framed";
+let buffer = "";
 
 function send(msg) {
   const json = JSON.stringify(msg);
@@ -463,80 +766,6 @@ function send(msg) {
   }
   process.stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
 }
-
-let buffer = "";
-
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
-  buffer += chunk;
-  while (true) {
-    const headerEnd = buffer.indexOf("\r\n\r\n");
-    if (headerEnd === -1) {
-      const trimmed = buffer.trim();
-      if (!trimmed) break;
-
-      // Claude Code health checks may send a single raw JSON-RPC message
-      // without Content-Length framing. Accept that shape too.
-      try {
-        const msg = JSON.parse(trimmed);
-        transportMode = "raw";
-        buffer = "";
-        handleMessage(msg);
-        continue;
-      } catch {
-        if (buffer.includes("\n")) {
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          let parsedAny = false;
-          for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
-            try {
-              transportMode = "raw";
-              handleMessage(JSON.parse(line));
-              parsedAny = true;
-            } catch {
-              buffer = `${line}\n${buffer}`;
-            }
-          }
-          if (parsedAny) continue;
-        }
-      }
-      break;
-    }
-
-    const headerPart = buffer.slice(0, headerEnd);
-    const match = headerPart.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      // Try parsing as raw JSON (some clients skip Content-Length)
-      try {
-        const lines = buffer.split("\n").filter(l => l.trim());
-        for (const line of lines) {
-          const msg = JSON.parse(line);
-          handleMessage(msg);
-        }
-        buffer = "";
-        return;
-      } catch {
-        buffer = buffer.slice(headerEnd + 4);
-        continue;
-      }
-    }
-
-    const contentLength = parseInt(match[1], 10);
-    transportMode = "framed";
-    const bodyStart = headerEnd + 4;
-    if (buffer.length < bodyStart + contentLength) break;
-
-    const body = buffer.slice(bodyStart, bodyStart + contentLength);
-    buffer = buffer.slice(bodyStart + contentLength);
-
-    try {
-      const msg = JSON.parse(body);
-      handleMessage(msg);
-    } catch (e) {
-      send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
-    }
-  }
-});
 
 async function handleMessage(rpc) {
   switch (rpc.method) {
@@ -607,4 +836,94 @@ async function handleMessage(rpc) {
   }
 }
 
-process.stderr.write("bountyagent MCP server running (stdio)\n");
+function startServer() {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    while (true) {
+      const headerEnd = buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) {
+        const trimmed = buffer.trim();
+        if (!trimmed) break;
+
+        // Claude Code health checks may send a single raw JSON-RPC message
+        // without Content-Length framing. Accept that shape too.
+        try {
+          const msg = JSON.parse(trimmed);
+          transportMode = "raw";
+          buffer = "";
+          handleMessage(msg);
+          continue;
+        } catch {
+          if (buffer.includes("\n")) {
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+            let parsedAny = false;
+            for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
+              try {
+                transportMode = "raw";
+                handleMessage(JSON.parse(line));
+                parsedAny = true;
+              } catch {
+                buffer = `${line}\n${buffer}`;
+              }
+            }
+            if (parsedAny) continue;
+          }
+        }
+        break;
+      }
+
+      const headerPart = buffer.slice(0, headerEnd);
+      const match = headerPart.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
+        // Try parsing as raw JSON (some clients skip Content-Length)
+        try {
+          const lines = buffer.split("\n").filter((l) => l.trim());
+          for (const line of lines) {
+            const msg = JSON.parse(line);
+            handleMessage(msg);
+          }
+          buffer = "";
+          return;
+        } catch {
+          buffer = buffer.slice(headerEnd + 4);
+          continue;
+        }
+      }
+
+      const contentLength = parseInt(match[1], 10);
+      transportMode = "framed";
+      const bodyStart = headerEnd + 4;
+      if (buffer.length < bodyStart + contentLength) break;
+
+      const body = buffer.slice(bodyStart, bodyStart + contentLength);
+      buffer = buffer.slice(bodyStart + contentLength);
+
+      try {
+        const msg = JSON.parse(body);
+        handleMessage(msg);
+      } catch {
+        send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      }
+    }
+  });
+
+  process.stderr.write("bountyagent MCP server running (stdio)\n");
+}
+
+module.exports = {
+  TOOLS,
+  sessionDir,
+  writeHandoff,
+  writeWaveHandoff,
+  mergeWaveHandoffs,
+  normalizeStringArray,
+  writeFileAtomic,
+  executeTool,
+  startServer,
+};
+
+if (require.main === module) {
+  startServer();
+}

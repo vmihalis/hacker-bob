@@ -27,6 +27,13 @@ echo "  orchestrator command (/bountyagent)"
 cp "$SCRIPT_DIR/.claude/rules/"*.md "$CLAUDE_DIR/rules/"
 echo "  hunting + reporting rules"
 
+# Copy bypass tables when present
+if [ -d "$SCRIPT_DIR/.claude/bypass-tables" ]; then
+  mkdir -p "$CLAUDE_DIR/bypass-tables"
+  cp "$SCRIPT_DIR/.claude/bypass-tables/"* "$CLAUDE_DIR/bypass-tables/" 2>/dev/null || true
+  echo "  bypass tables"
+fi
+
 # Copy hooks
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/"
@@ -77,7 +84,7 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
   echo "  Merge these settings manually:"
   echo ""
-  echo '  permissions.allow: bountyagent MCP tools, Bash(mkdir/test/cat/ls), Read, Glob, Grep'
+  echo '  permissions.allow: bountyagent MCP tools (including wave handoff tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
   echo '  hooks.PreToolUse: scope-guard.sh (Bash) + scope-guard-mcp.sh (bounty_http_scan)'
   echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
@@ -90,6 +97,8 @@ else
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_list_findings",
       "mcp__bountyagent__bounty_write_handoff",
+      "mcp__bountyagent__bounty_write_wave_handoff",
+      "mcp__bountyagent__bounty_merge_wave_handoffs",
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_wave_status",

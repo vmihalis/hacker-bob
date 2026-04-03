@@ -88,13 +88,16 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | `bounty_http_scan` | HTTP request + auto-analysis (tech fingerprinting, secret detection, endpoint extraction) |
 | `bounty_record_finding` | Write findings to disk (survives context rotation) |
 | `bounty_list_findings` | List recorded findings for a target |
-| `bounty_write_handoff` | Write session handoff for next wave |
+| `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for cross-session resume only |
+| `bounty_write_wave_handoff` | Write one hunter wave handoff as `handoff-wN-aN.md` plus `handoff-wN-aN.json` |
+| `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
 | `bounty_read_handoff` | Read previous handoff to resume |
 | `bounty_auth_manual` | Store auth tokens as reusable profiles |
+| `bounty_wave_status` | Read-only summary of findings for wave-to-wave decisions |
 
 Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
 
-If the MCP server isn't available, hunters fall back to `curl` for HTTP requests and `Read`/`Write` for findings. No functionality is lost.
+If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable finding helpers and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 
 ## Hooks
 
@@ -109,8 +112,12 @@ If the MCP server isn't available, hunters fall back to `curl` for HTTP requests
 ## Session data
 
 All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
-- `state.json` — FSM phase, wave count, findings, dead ends
+- `state.json` — FSM phase, wave count, pending wave, findings, explored surface IDs, exclusions, and lead routing hints
 - `attack_surface.json` — recon output grouped by priority
+- `wave-N-assignments.json` — persisted per-wave `agent -> surface_id` assignments
+- `handoff-wN-aN.md` — freeform hunter handoff markdown for humans and chain-building
+- `handoff-wN-aN.json` — structured hunter handoff fields used for deterministic merge/requeue
+- `SESSION_HANDOFF.md` — session-only resume handoff written by `bounty_write_handoff`
 - `findings.md` — merged findings across waves
 - `chains.md` — exploit chain analysis
 - `verified-final.md` — final verified findings

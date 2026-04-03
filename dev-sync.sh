@@ -82,6 +82,8 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_list_findings",
       "mcp__bountyagent__bounty_write_handoff",
+      "mcp__bountyagent__bounty_write_wave_handoff",
+      "mcp__bountyagent__bounty_merge_wave_handoffs",
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_wave_status",
