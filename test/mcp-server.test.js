@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const {
+  executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
@@ -851,4 +852,77 @@ test("bounty_read_grade_verdict rejects JSON that references non-existent findin
       /Unknown finding_id: F-99/,
     );
   });
+});
+
+test("bounty_auth_manual writes auth.json to the correct session dir when target_domain is provided", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "alpha.com"), { recursive: true });
+    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_manual", {
+      profile_name: "test",
+      target_domain: "alpha.com",
+      headers: { "Authorization": "Bearer tok123" },
+    }));
+
+    assert.equal(result.success, true);
+    assert.ok(fs.existsSync(path.join(sessionsDir, "alpha.com", "auth.json")));
+    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
+
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "alpha.com", "auth.json"), "utf8"));
+    assert.equal(saved.Authorization, "Bearer tok123");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_manual falls back to last session dir when target_domain is absent", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "alpha.com"), { recursive: true });
+    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_manual", {
+      profile_name: "test",
+      headers: { "Authorization": "Bearer fallback" },
+    }));
+
+    assert.equal(result.success, true);
+    // Falls back to last alphabetical dir (zebra.com)
+    assert.ok(fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
+    assert.ok(!fs.existsSync(path.join(sessionsDir, "alpha.com", "auth.json")));
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_manual falls back when target_domain session dir does not exist", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_manual", {
+      profile_name: "test",
+      target_domain: "nonexistent.com",
+      headers: { "Authorization": "Bearer fb" },
+    }));
+
+    assert.equal(result.success, true);
+    assert.ok(fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
 });

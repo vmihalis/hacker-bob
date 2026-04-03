@@ -256,6 +256,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        target_domain: { type: "string" },
         profile_name: { type: "string" },
         cookies: { type: "object", additionalProperties: { type: "string" } },
         headers: { type: "object", additionalProperties: { type: "string" } },
@@ -1478,13 +1479,20 @@ function authManual(args) {
 
   authProfiles.set(name, profile);
 
-  // Also save to session dir if we can find one
+  // Save to the target's session dir if provided, otherwise best-effort last session
   const sessionsDir = path.join(os.homedir(), "bounty-agent-sessions");
   try {
-    const dirs = fs.readdirSync(sessionsDir).sort();
-    if (dirs.length > 0) {
-      const authPath = path.join(sessionsDir, dirs[dirs.length - 1], "auth.json");
-      fs.writeFileSync(authPath, JSON.stringify(profile, null, 2));
+    const targetDir = args.target_domain
+      ? path.join(sessionsDir, args.target_domain.trim())
+      : null;
+
+    if (targetDir && fs.existsSync(targetDir)) {
+      fs.writeFileSync(path.join(targetDir, "auth.json"), JSON.stringify(profile, null, 2));
+    } else {
+      const dirs = fs.readdirSync(sessionsDir).sort();
+      if (dirs.length > 0) {
+        fs.writeFileSync(path.join(sessionsDir, dirs[dirs.length - 1], "auth.json"), JSON.stringify(profile, null, 2));
+      }
     }
   } catch {}
 
