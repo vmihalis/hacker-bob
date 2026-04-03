@@ -130,7 +130,7 @@ Hard exclusions for this wave:
 [paste waf_blocked_endpoints from state.json]
 
 Use only the relevant bypass table:
-[inject one tech-specific bypass table from BYPASS TABLES below]
+[inject one tech-specific bypass table — read from .claude/bypass-tables/ per BYPASS TABLES map]
 
 Final step before stopping:
 - Call `bounty_write_wave_handoff` exactly once with target_domain, wave, agent, surface_id='[surface.id]', surface_status, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids.
@@ -217,40 +217,19 @@ Agent(subagent_type: "report-writer", name: "reporter", mode: "bypassPermissions
 Present the report to the user.
 
 ## BYPASS TABLES
-Inject only the table matching the surface tech stack.
+Bypass tables live in `.claude/bypass-tables/`. Read exactly one file per hunter before injecting into the spawn prompt.
 
-### WordPress
-```text
-/wp-json/wp/v2/users, /?_fields=id,slug, /wp-json/wp/v2/posts?status=draft, /?author=1..20, /wp-content/debug.log, /wp-config.php.bak|.old|.save|~, /wp-content/uploads/, /?rest_route=/wp/v2/users, xmlrpc.php system.multicall, /wp-admin/admin-ajax.php action enum
-```
-### GraphQL
-```text
-Introspection, __type fallback, batched queries, alias-based enum, mutation discovery, deep nesting
-```
-### SSRF
-```text
-2130706433, 0x7f000001, 0177.0.0.1, [::1], 127.1, 0, evil.com@127.0.0.1, 302→169.254.169.254, gopher://127.0.0.1:6379/_, cloud metadata, Unicode IP forms
-```
-### JWT
-```text
-alg:none, HS256/RS256 confusion, sub/role/admin/email tampering, expired-token validation, kid injection, jku/x5u attacker JWKS
-```
-### Firebase
-```text
-/users.json, /admin.json, /config.json, ?auth=null, Firestore rules, /_ah/api/explorer
-```
-### Next.js
-```text
-/_next/data/[buildId]/[page].json, /api/, /__nextjs_original-stack-frame, /_next/static/, Server Actions with Next-Action
-```
-### OAuth/OIDC
-```text
-redirect_uri manipulation, state CSRF, token in Referer, scope escalation, PKCE bypass
-```
-### REST API
-```text
-/api/v1 vs /api/v2 rollback, Content-Type confusion, X-HTTP-Method-Override, parameter pollution, mass assignment, pagination dump, sort injection
-```
+Tech-to-file map:
+- WordPress → `wordpress.txt`
+- GraphQL → `graphql.txt`
+- SSRF → `ssrf.txt`
+- JWT → `jwt.txt`
+- Firebase → `firebase.txt`
+- Next.js → `nextjs.txt`
+- OAuth/OIDC → `oauth-oidc.txt`
+- (default) → `rest-api.txt`
+
+Match the surface's `tech_stack` from `attack_surface.json` against the keys above. If no key matches, use `rest-api.txt`. Read the file content and inject it verbatim into the hunter prompt where `[inject one tech-specific bypass table]` appears.
 
 ## ORCHESTRATOR RULES
 1. Recon, hunt, chain, verify, grade, and report are agent-driven. The orchestrator coordinates files and phase transitions only.

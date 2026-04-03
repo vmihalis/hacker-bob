@@ -27,12 +27,14 @@ echo "  orchestrator command (/bountyagent)"
 cp "$SCRIPT_DIR/.claude/rules/"*.md "$CLAUDE_DIR/rules/"
 echo "  hunting + reporting rules"
 
-# Copy bypass tables when present
-if [ -d "$SCRIPT_DIR/.claude/bypass-tables" ]; then
-  mkdir -p "$CLAUDE_DIR/bypass-tables"
-  cp "$SCRIPT_DIR/.claude/bypass-tables/"* "$CLAUDE_DIR/bypass-tables/" 2>/dev/null || true
-  echo "  bypass tables"
+# Copy bypass tables (required for HUNT phase)
+if [ ! -d "$SCRIPT_DIR/.claude/bypass-tables" ] || [ -z "$(ls "$SCRIPT_DIR/.claude/bypass-tables/"*.txt 2>/dev/null)" ]; then
+  echo "ERROR: .claude/bypass-tables/ is missing or empty. HUNT phase requires these files." >&2
+  exit 1
 fi
+mkdir -p "$CLAUDE_DIR/bypass-tables"
+cp "$SCRIPT_DIR/.claude/bypass-tables/"*.txt "$CLAUDE_DIR/bypass-tables/"
+echo "  bypass tables"
 
 # Copy hooks
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/"
