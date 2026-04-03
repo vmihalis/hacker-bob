@@ -4,76 +4,134 @@
 # Warn-only for out-of-scope (logs to scope-warnings.log)
 # Hard-block for deny-listed domains (exit 2)
 
-# Read tool input from stdin
 INPUT=$(cat)
-URL=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('url',''))" 2>/dev/null)
+export SCOPE_GUARD_INPUT="$INPUT"
 
-[ -z "$URL" ] && exit 0
-
-# Extract domain from URL
-DOMAIN=$(echo "$URL" | python3 -c "import sys; from urllib.parse import urlparse; print(urlparse(sys.stdin.read().strip()).hostname or '')" 2>/dev/null)
-[ -z "$DOMAIN" ] && exit 0
-
-# Find the active session directory
-SESSION_DIR=$(ls -dt ~/bounty-agent-sessions/*/ 2>/dev/null | head -1)
-[ -z "$SESSION_DIR" ] && exit 0
-
-# --- HARD DENY CHECK (exit 2 = block) ---
-if [ -f "$SESSION_DIR/deny-list.txt" ]; then
-  while IFS= read -r denied; do
-    [ -z "$denied" ] && continue
-    if [ "$DOMAIN" = "$denied" ] || echo "$DOMAIN" | grep -qE "(^|\.)${denied//./\\.}$"; then
-      echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] BLOCKED (deny-list): $DOMAIN via http_scan" >> "$SESSION_DIR/scope-warnings.log"
-      echo "BLOCKED: $DOMAIN is on the deny list"
-      exit 2
-    fi
-  done < "$SESSION_DIR/deny-list.txt"
-fi
-
-# --- BUILD ALLOWED LIST ---
-ALLOWED=""
-
-# From state.json target
-if [ -f "$SESSION_DIR/state.json" ]; then
-  TARGET=$(python3 -c "import json; print(json.load(open('$SESSION_DIR/state.json')).get('target',''))" 2>/dev/null)
-  [ -n "$TARGET" ] && ALLOWED="$TARGET"
-fi
-
-# From attack_surface.json hosts
-if [ -f "$SESSION_DIR/attack_surface.json" ]; then
-  SURFACE_HOSTS=$(python3 -c "
+python3 - <<'PY'
+import datetime
 import json
-data = json.load(open('$SESSION_DIR/attack_surface.json'))
-for s in data.get('surfaces', []):
-    for h in s.get('hosts', []):
-        print(h.replace('https://','').replace('http://','').split('/')[0])
-" 2>/dev/null)
-  ALLOWED="$ALLOWED
-$SURFACE_HOSTS"
-fi
+import os
+import pathlib
+import sys
+from urllib.parse import urlsplit
 
-# Recon infrastructure — always allowed
-INFRA="web.archive.org
-otx.alienvault.com
-crt.sh
-api.github.com
-raw.githubusercontent.com"
 
-ALLOWED="$ALLOWED
-$INFRA"
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# --- WARN CHECK (exit 0 = allow, but log) ---
-MATCH=0
-while IFS= read -r allowed; do
-  [ -z "$allowed" ] && continue
-  if [ "$DOMAIN" = "$allowed" ] || echo "$DOMAIN" | grep -qE "(^|\.)${allowed//./\\.}$"; then
-    MATCH=1
-    break
-  fi
-done <<< "$ALLOWED"
 
-if [ "$MATCH" -eq 0 ]; then
-  echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] OUT-OF-SCOPE (http_scan): $DOMAIN (url: $(echo "$URL" | head -c 200))" >> "$SESSION_DIR/scope-warnings.log"
-fi
+def normalize_host(value):
+    try:
+        host = urlsplit(value.strip()).hostname
+    except Exception:
+        host = None
+    if not host:
+        return None
+    return host.strip().strip(".").lower()
 
-exit 0
+
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+
+def load_scope(session_dir):
+    if session_dir in scope_cache:
+        return scope_cache[session_dir]
+
+    allowed = {session_dir.name.lower()}
+
+    state = load_json(session_dir / "state.json")
+    target = state.get("target", "").strip().lower()
+    if target:
+        allowed.add(target)
+
+    attack_surface = load_json(session_dir / "attack_surface.json")
+    for surface in attack_surface.get("surfaces", []):
+        for host in surface.get("hosts", []):
+            normalized = normalize_host(host)
+            if normalized:
+                allowed.add(normalized)
+
+    scope_cache[session_dir] = allowed
+    return allowed
+
+
+def matches_scope(domain, allowed_domains):
+    for allowed in allowed_domains:
+        if domain == allowed or domain.endswith("." + allowed):
+            return True
+    return False
+
+
+def log_line(session_dir, message):
+    with open(session_dir / "scope-warnings.log", "a", encoding="utf-8") as handle:
+        handle.write(f"[{utc_now()}] {message}\n")
+
+
+def block(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+payload = {}
+try:
+    payload = json.loads(os.environ.get("SCOPE_GUARD_INPUT", ""))
+except Exception:
+    payload = {}
+
+url = payload.get("tool_input", {}).get("url", "")
+if not url:
+    raise SystemExit(0)
+
+domain = normalize_host(url)
+if not domain:
+    raise SystemExit(0)
+
+sessions_root = pathlib.Path.home() / "bounty-agent-sessions"
+session_dirs = []
+if sessions_root.is_dir():
+    session_dirs = sorted(path for path in sessions_root.iterdir() if path.is_dir())
+
+scope_cache = {}
+matched_sessions = [session for session in session_dirs if matches_scope(domain, load_scope(session))]
+
+if len(matched_sessions) == 1:
+    session_dir = matched_sessions[0]
+elif len(matched_sessions) > 1:
+    block("BLOCKED: unable to resolve a single session for http_scan")
+elif len(session_dirs) == 1:
+    session_dir = session_dirs[0]
+else:
+    block("BLOCKED: unable to resolve session for http_scan")
+
+deny_list = session_dir / "deny-list.txt"
+if deny_list.is_file():
+    with open(deny_list, "r", encoding="utf-8", errors="ignore") as handle:
+        for raw_line in handle:
+            denied = raw_line.strip().strip(".").lower()
+            if not denied:
+                continue
+            if matches_scope(domain, {denied}):
+                log_line(session_dir, f"BLOCKED (deny-list): {domain} via http_scan")
+                block(f"BLOCKED: {domain} is on the deny list")
+
+allowed = set(load_scope(session_dir))
+allowed.update(
+    {
+        "web.archive.org",
+        "otx.alienvault.com",
+        "crt.sh",
+        "api.github.com",
+        "raw.githubusercontent.com",
+    }
+)
+
+if not matches_scope(domain, allowed):
+    log_line(session_dir, f"OUT-OF-SCOPE (http_scan): {domain} (url: {url[:200]})")
+
+raise SystemExit(0)
+PY

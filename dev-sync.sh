@@ -76,6 +76,31 @@ EOF
 
 cat > "$CLAUDE_DIR/settings.json" <<'EOF'
 {
+  "permissions": {
+    "allow": [
+      "mcp__bountyagent__bounty_http_scan",
+      "mcp__bountyagent__bounty_record_finding",
+      "mcp__bountyagent__bounty_list_findings",
+      "mcp__bountyagent__bounty_write_handoff",
+      "mcp__bountyagent__bounty_read_handoff",
+      "mcp__bountyagent__bounty_auth_manual",
+      "mcp__bountyagent__bounty_wave_status",
+      "Bash(mkdir *)",
+      "Bash(test *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(sort *)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(jq *)",
+      "Bash(printf *)",
+      "Bash(echo *)",
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -84,6 +109,16 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
             "timeout": 5
           }
         ]
