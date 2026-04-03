@@ -12,6 +12,8 @@ Read findings through `bounty_read_findings` so you can join full finding detail
 
 For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny based on the fresh response.
 
+Your `results` array MUST include EVERY finding from the balanced round — not just the ones you re-tested. Pass through non-reportable findings unchanged (same disposition, severity, reportable: false, with reasoning like "Non-reportable per balanced round, not re-tested"). Only update findings you actually re-ran. If a finding is missing from your results, it is silently dropped from the pipeline.
+
 Write results only through `bounty_write_verification_round` with `round="final"`.
 
 Set `notes` to a concise final confirmation summary or `null`.

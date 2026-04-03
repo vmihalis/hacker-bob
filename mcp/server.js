@@ -1084,6 +1084,27 @@ function writeVerificationRound(args) {
     return normalizedResult;
   });
 
+  // Completeness guard: balanced/final rounds must cover every finding from the prior round
+  const PRIOR_ROUND = { balanced: "brutalist", final: "balanced" };
+  if (PRIOR_ROUND[round]) {
+    const priorPaths = verificationRoundPaths(domain, PRIOR_ROUND[round]);
+    try {
+      const priorDoc = JSON.parse(fs.readFileSync(priorPaths.json, "utf8"));
+      const priorIds = new Set((priorDoc.results || []).map((r) => r.finding_id));
+      const currentIds = new Set(results.map((r) => r.finding_id));
+      const missing = [...priorIds].filter((id) => !currentIds.has(id));
+      if (missing.length > 0) {
+        throw new Error(
+          `${round} round is missing ${missing.length} finding(s) from ${PRIOR_ROUND[round]} round: ${missing.join(", ")}. ` +
+          `Include ALL findings from the prior round — pass through unchanged findings you did not re-test.`
+        );
+      }
+    } catch (e) {
+      if (e.message.includes("round is missing")) throw e;
+      // Prior round file doesn't exist yet (e.g., brutalist hasn't run) — skip check
+    }
+  }
+
   const document = {
     version: 1,
     target_domain: domain,
