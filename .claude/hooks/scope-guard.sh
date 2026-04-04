@@ -100,7 +100,7 @@ def session_scopes(session_dir):
 
     state = load_json(session_dir / "state.json")
     target = normalize_host(state.get("target", ""), bare=True)
-    if target:
+    if target and target == session_dir.name.lower():
         allowed.add(target)
 
     attack_surface = load_json(session_dir / "attack_surface.json")

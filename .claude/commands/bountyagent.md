@@ -190,10 +190,20 @@ Round 1 — Brutalist:
 Agent(subagent_type: "brutalist-verifier", name: "brutalist", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], read chains.md, verify each finding, then write only through bounty_write_verification_round(round='brutalist').")
 ```
 
+After the brutalist agent completes, validate the artifact:
+Call `bounty_read_verification_round({ target_domain: "[domain]", round: "brutalist" })`.
+- If it returns results: proceed to Round 2.
+- If it errors or returns no results: the agent failed to write through MCP. Re-spawn the brutalist agent exactly once. If the retry also fails, report the error to the user and stop.
+
 Round 2 — Balanced:
 ```
 Agent(subagent_type: "balanced-verifier", name: "balanced", mode: "bypassPermissions", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='brutalist'), read chains.md, review brutalist decisions, then write only through bounty_write_verification_round(round='balanced').")
 ```
+
+After the balanced agent completes, validate the artifact:
+Call `bounty_read_verification_round({ target_domain: "[domain]", round: "balanced" })`.
+- If it returns results: proceed to Round 3.
+- If it errors or returns no results: re-spawn the balanced agent exactly once. If the retry also fails, report the error to the user and stop.
 
 Round 3 — Final:
 ```

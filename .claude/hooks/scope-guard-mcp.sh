@@ -46,7 +46,7 @@ def load_scope(session_dir):
 
     state = load_json(session_dir / "state.json")
     target = state.get("target", "").strip().lower()
-    if target:
+    if target and target == session_dir.name.lower():
         allowed.add(target)
 
     attack_surface = load_json(session_dir / "attack_surface.json")

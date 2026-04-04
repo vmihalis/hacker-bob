@@ -33,6 +33,78 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(tools.includes("mcp__bountyagent__bounty_record_finding"));
 });
 
+test("chain-builder and report-writer declare requiredMcpServers bountyagent", () => {
+  for (const agent of ["chain-builder", "report-writer"]) {
+    const document = readFile(`.claude/agents/${agent}.md`);
+    assert.match(
+      document,
+      /requiredMcpServers:\s*\n\s*-\s*bountyagent/,
+      `${agent}.md missing requiredMcpServers: bountyagent`
+    );
+  }
+});
+
+test("all MCP-writing agents declare requiredMcpServers bountyagent", () => {
+  const agents = [
+    "hunter-agent",
+    "brutalist-verifier",
+    "balanced-verifier",
+    "final-verifier",
+    "grader",
+  ];
+  for (const agent of agents) {
+    const document = readFile(`.claude/agents/${agent}.md`);
+    assert.match(
+      document,
+      /requiredMcpServers:\s*\n\s*-\s*bountyagent/,
+      `${agent}.md missing requiredMcpServers: bountyagent`
+    );
+  }
+});
+
+test("orchestrator validates brutalist and balanced rounds before proceeding", () => {
+  const orchestrator = readFile(".claude/commands/bountyagent.md");
+  assert.match(
+    orchestrator,
+    /After the brutalist agent completes, validate/,
+    "Missing post-brutalist validation"
+  );
+  assert.match(
+    orchestrator,
+    /bounty_read_verification_round.*round.*brutalist/,
+    "Missing brutalist read-back validation call"
+  );
+  assert.match(
+    orchestrator,
+    /After the balanced agent completes, validate/,
+    "Missing post-balanced validation"
+  );
+  assert.match(
+    orchestrator,
+    /bounty_read_verification_round.*round.*balanced/,
+    "Missing balanced read-back validation call"
+  );
+});
+
+test("settings.json registers session-write-guard for Bash and Write", () => {
+  const settings = JSON.parse(readFile(".claude/settings.json"));
+  const preToolUse = settings.hooks.PreToolUse;
+
+  const bashEntry = preToolUse.find((e) => e.matcher === "Bash");
+  assert.ok(bashEntry, "No Bash matcher in PreToolUse");
+  assert.ok(
+    bashEntry.hooks.some((h) => h.command.includes("session-write-guard.sh")),
+    "session-write-guard.sh not registered for Bash"
+  );
+
+  const writeEntry = preToolUse.find((e) => e.matcher === "Write");
+  assert.ok(writeEntry, "No Write matcher in PreToolUse");
+  assert.ok(
+    writeEntry.hooks.some((h) => h.command.includes("session-write-guard.sh")),
+    "session-write-guard.sh not registered for Write"
+  );
+});
+
 test("hunter and orchestrator prompts keep the structured handoff contract explicit", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
   const orchestratorPrompt = readFile(".claude/commands/bountyagent.md");

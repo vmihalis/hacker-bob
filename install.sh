@@ -17,7 +17,8 @@ mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/rules" "$CLAUD
 
 # Copy agents
 cp "$SCRIPT_DIR/.claude/agents/"*.md "$CLAUDE_DIR/agents/"
-echo "  8 agent definitions"
+AGENT_COUNT=$(ls "$SCRIPT_DIR/.claude/agents/"*.md 2>/dev/null | wc -l | tr -d ' ')
+echo "  $AGENT_COUNT agent definitions"
 
 # Copy orchestrator command
 cp "$SCRIPT_DIR/.claude/commands/bountyagent.md" "$CLAUDE_DIR/commands/"
@@ -103,6 +104,11 @@ else
       "mcp__bountyagent__bounty_read_verification_round",
       "mcp__bountyagent__bounty_write_grade_verdict",
       "mcp__bountyagent__bounty_read_grade_verdict",
+      "mcp__bountyagent__bounty_init_session",
+      "mcp__bountyagent__bounty_read_session_state",
+      "mcp__bountyagent__bounty_transition_phase",
+      "mcp__bountyagent__bounty_start_wave",
+      "mcp__bountyagent__bounty_apply_wave_merge",
       "mcp__bountyagent__bounty_write_handoff",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",

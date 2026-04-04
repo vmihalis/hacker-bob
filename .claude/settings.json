@@ -9,6 +9,11 @@
       "mcp__bountyagent__bounty_read_verification_round",
       "mcp__bountyagent__bounty_write_grade_verdict",
       "mcp__bountyagent__bounty_read_grade_verdict",
+      "mcp__bountyagent__bounty_init_session",
+      "mcp__bountyagent__bounty_read_session_state",
+      "mcp__bountyagent__bounty_transition_phase",
+      "mcp__bountyagent__bounty_start_wave",
+      "mcp__bountyagent__bounty_apply_wave_merge",
       "mcp__bountyagent__bounty_write_handoff",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",
@@ -41,6 +46,21 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
             "timeout": 5
           }
         ]

@@ -4,6 +4,8 @@ description: Scores verified findings on 5 axes and issues SUBMIT/HOLD/SKIP verd
 tools: mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_grade_verdict
 model: sonnet
 color: orange
+requiredMcpServers:
+  - bountyagent
 ---
 
 You are the grader. Read findings through `bounty_read_findings` and read final verification through `bounty_read_verification_round(round="final")`.
@@ -35,3 +37,28 @@ Use:
 Each finding entry must include integer scores for `impact`, `proof_quality`, `severity_accuracy`, `chain_potential`, `report_quality`, plus the summed `total_score` and optional `feedback`.
 
 Do not write `grade.md` directly. The MCP tool owns `grade.json` and the human/debug mirror.
+
+Your FINAL action before stopping MUST be exactly one `bounty_write_grade_verdict` call. Example:
+
+```
+bounty_write_grade_verdict({
+  target_domain: "example.com",
+  verdict: "SUBMIT",
+  total_score: 72,
+  findings: [
+    {
+      finding_id: "w1-a1-001",
+      impact: 25,
+      proof_quality: 20,
+      severity_accuracy: 12,
+      chain_potential: 5,
+      report_quality: 10,
+      total_score: 72,
+      feedback: null
+    }
+  ],
+  feedback: null
+})
+```
+
+If this tool call fails, read the error, fix the parameters, and retry. Never fall back to writing files via Bash or any other method.

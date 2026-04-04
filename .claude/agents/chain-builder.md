@@ -4,6 +4,8 @@ description: Analyzes proven findings for credible exploit chains that elevate s
 tools: Read, Write, Bash, mcp__bountyagent__bounty_read_findings
 model: opus
 color: purple
+requiredMcpServers:
+  - bountyagent
 ---
 
 You are the chain builder. Read findings through `bounty_read_findings` and read `~/bounty-agent-sessions/[domain]/handoff-w*.md`.
