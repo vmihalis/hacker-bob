@@ -74,7 +74,7 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 | Agent | Role | Tools |
 |---|---|---|
 | recon-agent | Subdomain enum, URL crawling, nuclei, JS extraction | Bash, Read, Write, Glob, Grep |
-| hunter-agent | Tests one attack surface per spawn | Bash, Read, Write, Grep, Glob, MCP |
+| hunter-agent | Tests one attack surface per spawn | Bash, Read, Grep, Glob, MCP |
 | brutalist-verifier | Round 1: maximum skepticism | Bash, Read, MCP |
 | balanced-verifier | Round 2: catch false negatives | Bash, Read, MCP |
 | final-verifier | Round 3: fresh PoC confirmation | Bash, MCP |
@@ -97,7 +97,7 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | `bounty_write_grade_verdict` | Write the grade verdict JSON plus a best-effort markdown mirror |
 | `bounty_read_grade_verdict` | Read the grade verdict JSON document |
 | `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for cross-session resume only |
-| `bounty_write_wave_handoff` | Write one hunter wave handoff as `handoff-wN-aN.md` plus `handoff-wN-aN.json` |
+| `bounty_write_wave_handoff` | Hunter-final writer for one wave handoff as `handoff-wN-aN.md` plus authoritative `handoff-wN-aN.json` |
 | `bounty_wave_handoff_status` | Readiness/count check for one wave based on assignment and handoff file presence |
 | `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
 | `bounty_read_handoff` | Read previous handoff to resume |
@@ -109,6 +109,8 @@ Runs as a stdio MCP server — zero dependencies, just Node.js. Configured autom
 Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never intended to be parsed by code or prompts.
 
 `bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
+
+`bounty_apply_wave_merge` and `bounty_merge_wave_handoffs` never synthesize missing structured handoffs from markdown or `SESSION_HANDOFF.md`. Prompt/tool hardening reduces accidental drift, but true write-path enforcement would require MCP-side provenance checks and is out of scope for this patch.
 
 If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable findings, structured verification/grade artifacts, and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 

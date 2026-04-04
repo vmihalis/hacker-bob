@@ -5,10 +5,16 @@ const os = require("os");
 const path = require("path");
 
 const {
+  SESSION_LOCK_STALE_MS,
+  applyWaveMerge,
+  attackSurfacePath,
   executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
+  initSession,
+  readScopeExclusions,
+  readSessionState,
   listFindings,
   mergeWaveHandoffs,
   readFindings,
@@ -16,6 +22,10 @@ const {
   readVerificationRound,
   recordFinding,
   sessionDir,
+  sessionLockPath,
+  startWave,
+  statePath,
+  transitionPhase,
   verificationRoundPaths,
   waveHandoffStatus,
   waveStatus,
@@ -43,7 +53,83 @@ function withTempHome(fn) {
   }
 }
 
+function seedSessionState(domain, overrides = {}) {
+  const dir = sessionDir(domain);
+  fs.mkdirSync(dir, { recursive: true });
+  const state = {
+    target: domain,
+    target_url: "https://example.com",
+    phase: "HUNT",
+    hunt_wave: 0,
+    pending_wave: null,
+    total_findings: 0,
+    explored: [],
+    dead_ends: [],
+    waf_blocked_endpoints: [],
+    lead_surface_ids: [],
+    scope_exclusions: [],
+    hold_count: 0,
+    auth_status: "pending",
+    ...overrides,
+  };
+  writeFileAtomic(statePath(domain), `${JSON.stringify(state, null, 2)}\n`);
+  return state;
+}
+
+function seedAssignments(domain, waveNumber, assignments) {
+  const dir = sessionDir(domain);
+  fs.mkdirSync(dir, { recursive: true });
+  writeFileAtomic(path.join(dir, `wave-${waveNumber}-assignments.json`), `${JSON.stringify({
+    wave_number: waveNumber,
+    assignments,
+  }, null, 2)}\n`);
+}
+
+function seedAttackSurface(domain, surfaceIds = ["surface-a", "surface-b", "surface-c"]) {
+  const surfaces = surfaceIds.map((surfaceId) => ({
+    id: surfaceId,
+    hosts: [`https://${domain}`],
+  }));
+  writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`);
+}
+
+function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
+  const dir = sessionDir(domain);
+  fs.mkdirSync(dir, { recursive: true });
+  writeFileAtomic(path.join(dir, `handoff-${wave}-${agent}.json`), `${JSON.stringify({
+    target_domain: domain,
+    wave,
+    agent,
+    surface_id: "surface-z",
+    surface_status: "complete",
+    dead_ends: [],
+    waf_blocked_endpoints: [],
+    lead_surface_ids: [],
+    ...payload,
+  }, null, 2)}\n`);
+}
+
+function ensureFindingAssignment(domain, wave, agent) {
+  if (wave == null || agent == null) {
+    return;
+  }
+
+  const waveNumber = Number(String(wave).slice(1));
+  const assignmentsPath = path.join(sessionDir(domain), `wave-${waveNumber}-assignments.json`);
+  if (fs.existsSync(assignmentsPath)) {
+    return;
+  }
+
+  seedAssignments(domain, waveNumber, [
+    { agent, surface_id: "surface-a" },
+  ]);
+}
+
 function seedFinding(domain, overrides = {}) {
+  const wave = Object.prototype.hasOwnProperty.call(overrides, "wave") ? overrides.wave : "w1";
+  const agent = Object.prototype.hasOwnProperty.call(overrides, "agent") ? overrides.agent : "a1";
+  ensureFindingAssignment(domain, wave, agent);
+
   return JSON.parse(recordFinding({
     target_domain: domain,
     title: "IDOR on account export",
@@ -55,11 +141,688 @@ function seedFinding(domain, overrides = {}) {
     response_evidence: "{\"account_id\":2}",
     impact: "Cross-account PII disclosure.",
     validated: true,
-    wave: "w1",
-    agent: "a1",
+    wave,
+    agent,
     ...overrides,
   }));
 }
+
+test("bounty_init_session creates the initial state and bounty_read_session_state returns public fields only", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const targetUrl = "https://example.com";
+    const expectedState = {
+      target: domain,
+      target_url: targetUrl,
+      phase: "RECON",
+      hunt_wave: 0,
+      pending_wave: null,
+      total_findings: 0,
+      explored: [],
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: [],
+      scope_exclusions: [],
+      hold_count: 0,
+      auth_status: "pending",
+    };
+
+    const created = JSON.parse(initSession({ target_domain: domain, target_url: targetUrl }));
+    assert.deepEqual(created, {
+      version: 1,
+      created: true,
+      session_dir: sessionDir(domain),
+      state: expectedState,
+    });
+
+    const rawState = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
+    assert.deepEqual(rawState, expectedState);
+    assert.deepEqual(JSON.parse(readSessionState({ target_domain: domain })), {
+      version: 1,
+      state: expectedState,
+    });
+  });
+});
+
+test("bounty_init_session rejects existing state and non-empty session dirs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "RECON" });
+    assert.throws(
+      () => initSession({ target_domain: domain, target_url: "https://example.com" }),
+      /Session already initialized:/,
+    );
+
+    const otherDomain = "example.org";
+    const otherDir = sessionDir(otherDomain);
+    fs.mkdirSync(otherDir, { recursive: true });
+    fs.writeFileSync(path.join(otherDir, "stray.txt"), "x");
+    assert.throws(
+      () => initSession({ target_domain: otherDomain, target_url: "https://example.org" }),
+      /Session directory is not empty:/,
+    );
+  });
+});
+
+test("bounty_init_session ignores .session.lock when checking if the session dir is empty", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(sessionLockPath(domain));
+
+    const staleDate = new Date(Date.now() - SESSION_LOCK_STALE_MS - 1_000);
+    fs.utimesSync(sessionLockPath(domain), staleDate, staleDate);
+
+    const result = JSON.parse(initSession({ target_domain: domain, target_url: "https://example.com" }));
+    assert.equal(result.created, true);
+    assert.ok(fs.existsSync(statePath(domain)));
+  });
+});
+
+test("missing session state errors surface on read and mutating state tools", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+
+    assert.throws(() => readSessionState({ target_domain: domain }), /Missing session state:/);
+    assert.throws(() => transitionPhase({ target_domain: domain, to_phase: "AUTH" }), /Missing session state:/);
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      /Missing session state:/,
+    );
+    assert.throws(
+      () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
+      /Missing session state:/,
+    );
+  });
+});
+
+test("legacy state normalization is applied while unknown fields remain on disk across writes", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    writeFileAtomic(statePath(domain), `${JSON.stringify({
+      target: "other.com",
+      target_url: "https://example.com",
+      phase: "RECON",
+      extra_field: "keep-me",
+    }, null, 2)}\n`);
+
+    assert.deepEqual(JSON.parse(readSessionState({ target_domain: domain })), {
+      version: 1,
+      state: {
+        target: domain,
+        target_url: "https://example.com",
+        phase: "RECON",
+        hunt_wave: 0,
+        pending_wave: null,
+        total_findings: 0,
+        explored: [],
+        dead_ends: [],
+        waf_blocked_endpoints: [],
+        lead_surface_ids: [],
+        scope_exclusions: [],
+        hold_count: 0,
+        auth_status: "pending",
+      },
+    });
+
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+    const rawState = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
+    assert.equal(rawState.extra_field, "keep-me");
+    assert.equal(rawState.target, domain);
+    assert.equal(rawState.phase, "AUTH");
+  });
+});
+
+test("malformed legacy state hard-fails session reads", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    writeFileAtomic(statePath(domain), `${JSON.stringify({
+      target_url: "https://example.com",
+      phase: "BOGUS",
+    }, null, 2)}\n`);
+
+    assert.throws(() => readSessionState({ target_domain: domain }), /Malformed session state:/);
+  });
+});
+
+test("bounty_transition_phase allows the configured edges and increments hold_count on GRADE -> HUNT", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const cases = [
+      { from: "RECON", to: "AUTH" },
+      { from: "AUTH", to: "HUNT", auth_status: "authenticated" },
+      { from: "HUNT", to: "CHAIN" },
+      { from: "CHAIN", to: "VERIFY" },
+      { from: "VERIFY", to: "GRADE" },
+      { from: "GRADE", to: "REPORT" },
+      { from: "GRADE", to: "HUNT", hold_count: 1 },
+    ];
+
+    for (const scenario of cases) {
+      seedSessionState(domain, {
+        phase: scenario.from,
+        hold_count: scenario.hold_count ?? 0,
+      });
+
+      const result = JSON.parse(transitionPhase({
+        target_domain: domain,
+        to_phase: scenario.to,
+        auth_status: scenario.auth_status,
+      }));
+
+      assert.equal(result.transitioned, true);
+      assert.equal(result.from_phase, scenario.from);
+      assert.equal(result.to_phase, scenario.to);
+      assert.equal(result.state.phase, scenario.to);
+
+      if (scenario.from === "AUTH") {
+        assert.equal(result.state.auth_status, "authenticated");
+      }
+      if (scenario.from === "GRADE" && scenario.to === "HUNT") {
+        assert.equal(result.state.hold_count, 2);
+      }
+    }
+  });
+});
+
+test("bounty_transition_phase rejects invalid edges and stray auth_status", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "RECON" });
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "HUNT" }),
+      /Invalid phase transition: RECON -> HUNT/,
+    );
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "AUTH", auth_status: "authenticated" }),
+      /auth_status is only allowed for AUTH -> HUNT/,
+    );
+
+    seedSessionState(domain, { phase: "AUTH" });
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "HUNT" }),
+      /auth_status is required for AUTH -> HUNT/,
+    );
+  });
+});
+
+test("session lock busy blocks mutating tools and stale locks are recoverable", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.mkdirSync(sessionLockPath(domain));
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "AUTH" }),
+      new RegExp(`Session lock busy: ${sessionDir(domain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      new RegExp(`Session lock busy: ${sessionDir(domain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    assert.throws(
+      () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
+      new RegExp(`Session lock busy: ${sessionDir(domain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    assert.throws(
+      () => initSession({ target_domain: domain, target_url: "https://example.com" }),
+      new RegExp(`Session lock busy: ${sessionDir(domain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+
+    const staleDate = new Date(Date.now() - SESSION_LOCK_STALE_MS - 1_000);
+    fs.utimesSync(sessionLockPath(domain), staleDate, staleDate);
+    const created = JSON.parse(initSession({ target_domain: domain, target_url: "https://example.com" }));
+    assert.equal(created.created, true);
+  });
+});
+
+test("bounty_start_wave validates inputs, writes assignments, and updates pending_wave", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1 });
+    const expectedState = {
+      target: domain,
+      target_url: "https://example.com",
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: 2,
+      total_findings: 0,
+      explored: [],
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: [],
+      scope_exclusions: [],
+      hold_count: 0,
+      auth_status: "pending",
+    };
+
+    const result = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 2,
+      assignments: [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+      ],
+    }));
+
+    assert.deepEqual(result, {
+      version: 1,
+      started: true,
+      wave_number: 2,
+      assignments: [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+      ],
+      assignments_path: path.join(sessionDir(domain), "wave-2-assignments.json"),
+      state: expectedState,
+    });
+  });
+});
+
+test("bounty_start_wave rejects invalid state, duplicate inputs, and pre-existing assignment files", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+
+    seedSessionState(domain, { phase: "AUTH" });
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      /Wave start requires phase HUNT/,
+    );
+
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 3 });
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 4, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      /Wave start requires pending_wave null/,
+    );
+
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1 });
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 5, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      /wave_number must equal hunt_wave \+ 1/,
+    );
+    assert.throws(
+      () => startWave({
+        target_domain: domain,
+        wave_number: 2,
+        assignments: [
+          { agent: "a1", surface_id: "surface-a" },
+          { agent: "a1", surface_id: "surface-b" },
+        ],
+      }),
+      /Duplicate assignment for a1/,
+    );
+    assert.throws(
+      () => startWave({
+        target_domain: domain,
+        wave_number: 2,
+        assignments: [
+          { agent: "a1", surface_id: "surface-a" },
+          { agent: "a2", surface_id: "surface-a" },
+        ],
+      }),
+      /Duplicate surface_id in assignments: surface-a/,
+    );
+
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 2, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+      /Assignment file already exists:/,
+    );
+  });
+});
+
+test("bounty_start_wave rolls back the assignment file if the state write fails", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+
+    const originalRenameSync = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === statePath(domain)) {
+        throw new Error("boom");
+      }
+      return originalRenameSync(from, to);
+    };
+
+    try {
+      assert.throws(
+        () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
+        /State write failed after writing assignments; rollback succeeded:/,
+      );
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.ok(!fs.existsSync(path.join(sessionDir(domain), "wave-1-assignments.json")));
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).pending_wave, null);
+  });
+});
+
+test("bounty_apply_wave_merge returns pending without mutating state when handoffs are incomplete", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# A1",
+    });
+
+    const before = fs.readFileSync(statePath(domain), "utf8");
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+
+    assert.deepEqual(result, {
+      version: 1,
+      status: "pending",
+      wave_number: 1,
+      force_merge: false,
+      readiness: {
+        assignments_total: 2,
+        handoffs_total: 1,
+        received_agents: ["a1"],
+        missing_agents: ["a2"],
+        unexpected_agents: [],
+        is_complete: false,
+      },
+      state: JSON.parse(readSessionState({ target_domain: domain })).state,
+    });
+    assert.equal(fs.readFileSync(statePath(domain), "utf8"), before);
+  });
+});
+
+test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclusions", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+      dead_ends: ["/existing"],
+      waf_blocked_endpoints: ["/old-waf"],
+      lead_surface_ids: ["surface-c"],
+    });
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+    seedAttackSurface(domain, ["surface-a", "surface-b", "surface-c", "surface-d"]);
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# A1",
+      dead_ends: ["/new-dead-end"],
+      lead_surface_ids: ["surface-a", "surface-c"],
+    });
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-b",
+      surface_status: "partial",
+      content: "# A2",
+      waf_blocked_endpoints: ["/new-waf"],
+      lead_surface_ids: ["surface-d", "surface-x"],
+    });
+
+    seedFinding(domain, { wave: "w1", agent: "a1", severity: "high" });
+    seedFinding(domain, {
+      wave: "w1",
+      agent: "a2",
+      title: "Verbose stack trace leak",
+      severity: "low",
+      endpoint: "/boom",
+      description: "Exception page leaks internal paths.",
+      proof_of_concept: "curl https://example.com/boom",
+      response_evidence: "ReferenceError",
+      impact: "Improves exploit development.",
+    });
+
+    fs.writeFileSync(path.join(sessionDir(domain), "scope-warnings.log"), [
+      "[2026-01-01T00:00:00Z] OUT-OF-SCOPE: OOS.example.net (command: curl https://OOS.example.net)",
+      "[2026-01-01T00:00:01Z] OUT-OF-SCOPE (http_scan): api.other.example (url: https://api.other.example/admin)",
+    ].join("\n"));
+
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+
+    assert.deepEqual(result.readiness, {
+      assignments_total: 2,
+      handoffs_total: 2,
+      received_agents: ["a1", "a2"],
+      missing_agents: [],
+      unexpected_agents: [],
+      is_complete: true,
+    });
+    assert.deepEqual(result.merge, {
+      received_agents: ["a1", "a2"],
+      invalid_agents: [],
+      unexpected_agents: [],
+      completed_surface_ids: ["surface-a"],
+      partial_surface_ids: ["surface-b"],
+      missing_surface_ids: [],
+      dead_ends: ["/new-dead-end"],
+      waf_blocked_endpoints: ["/new-waf"],
+      lead_surface_ids: ["surface-a", "surface-c", "surface-d", "surface-x"],
+      requeue_surface_ids: ["surface-b"],
+    });
+    assert.deepEqual(result.findings, {
+      total: 2,
+      by_severity: { critical: 0, high: 1, medium: 0, low: 1, info: 0 },
+      has_high_or_critical: true,
+    });
+    assert.deepEqual(result.state.scope_exclusions, ["oos.example.net", "api.other.example"]);
+    assert.deepEqual(result.state.explored, ["surface-a"]);
+    assert.deepEqual(result.state.dead_ends, ["/existing", "/new-dead-end"]);
+    assert.deepEqual(result.state.waf_blocked_endpoints, ["/old-waf", "/new-waf"]);
+    assert.deepEqual(result.state.lead_surface_ids, ["surface-c", "surface-d"]);
+    assert.equal(result.state.pending_wave, null);
+    assert.equal(result.state.hunt_wave, 1);
+    assert.equal(result.state.total_findings, 2);
+    assert.deepEqual(readScopeExclusions(domain), ["oos.example.net", "api.other.example"]);
+  });
+});
+
+test("bounty_apply_wave_merge preserves existing scope exclusions when the log is absent", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+      scope_exclusions: ["legacy.example"],
+    });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    seedAttackSurface(domain, ["surface-a"]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# A1",
+    });
+
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+
+    assert.deepEqual(result.state.scope_exclusions, ["legacy.example"]);
+  });
+});
+
+test("bounty_apply_wave_merge force-merges missing and invalid handoffs and computes requeue_surface_ids", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 2, hunt_wave: 1 });
+    seedAssignments(domain, 2, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+      { agent: "a3", surface_id: "surface-c" },
+    ]);
+    seedAttackSurface(domain, ["surface-a", "surface-b", "surface-c"]);
+
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w2-a1.json"), "{bad json");
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w2",
+      agent: "a3",
+      surface_id: "surface-c",
+      surface_status: "partial",
+      content: "# A3",
+    });
+
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 2,
+      force_merge: true,
+    }));
+
+    assert.equal(result.status, "merged");
+    assert.equal(result.force_merge, true);
+    assert.deepEqual(result.merge.invalid_agents, ["a1"]);
+    assert.deepEqual(result.merge.missing_surface_ids, ["surface-b"]);
+    assert.deepEqual(result.merge.partial_surface_ids, ["surface-c"]);
+    assert.deepEqual(result.merge.requeue_surface_ids, ["surface-c", "surface-b", "surface-a"]);
+    assert.equal(result.state.pending_wave, null);
+    assert.equal(result.state.hunt_wave, 2);
+  });
+});
+
+test("bounty_apply_wave_merge rejects invalid state invariants and hard-fails on missing or malformed attack_surface.json", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "CHAIN", pending_wave: 1 });
+    assert.throws(
+      () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
+      /Wave merge requires phase HUNT/,
+    );
+
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# A1",
+    });
+
+    assert.throws(
+      () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
+      /Missing attack surface JSON:/,
+    );
+
+    writeFileAtomic(attackSurfacePath(domain), "{bad json");
+    assert.throws(
+      () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
+      /Malformed attack surface JSON:/,
+    );
+  });
+});
+
+test("bounty_write_wave_handoff rejects unassigned or mismatched handoffs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    assert.throws(
+      () => writeWaveHandoff({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a2",
+        surface_id: "surface-b",
+        surface_status: "complete",
+        content: "# nope",
+      }),
+      /Agent a2 is not assigned in wave w1/,
+    );
+
+    assert.throws(
+      () => writeWaveHandoff({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-b",
+        surface_status: "complete",
+        content: "# nope",
+      }),
+      /Agent a1 is assigned surface surface-a, not surface-b/,
+    );
+  });
+});
+
+test("bounty_record_finding rejects partial or invalid wave metadata and still allows null/null", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+
+    assert.throws(
+      () => recordFinding({
+        target_domain: domain,
+        title: "A",
+        severity: "high",
+        endpoint: "/a",
+        description: "d",
+        proof_of_concept: "poc",
+        validated: true,
+        wave: "w1",
+      }),
+      /wave and agent must either both be provided or both be omitted/,
+    );
+
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(
+      () => recordFinding({
+        target_domain: domain,
+        title: "A",
+        severity: "high",
+        endpoint: "/a",
+        description: "d",
+        proof_of_concept: "poc",
+        validated: true,
+        wave: "w1",
+        agent: "a2",
+      }),
+      /Agent a2 is not assigned in wave w1/,
+    );
+
+    const recorded = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Unscoped finding",
+      severity: "low",
+      endpoint: "/b",
+      description: "d",
+      proof_of_concept: "poc",
+      validated: true,
+      wave: null,
+      agent: null,
+    }));
+    assert.equal(recorded.recorded, true);
+
+    const finding = JSON.parse(fs.readFileSync(findingsJsonlPath(domain), "utf8").trim());
+    assert.equal(finding.wave, null);
+    assert.equal(finding.agent, null);
+  });
+});
 
 test("bounty_write_handoff still writes SESSION_HANDOFF.md without wave fields", () => {
   withTempHome(() => {
@@ -86,6 +849,7 @@ test("bounty_write_handoff still writes SESSION_HANDOFF.md without wave fields",
 test("bounty_write_wave_handoff writes matching markdown and json with normalized defaults", () => {
   withTempHome(() => {
     const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
     const content = "# Handoff\n\nFreeform markdown.";
     const result = JSON.parse(writeWaveHandoff({
       target_domain: domain,
@@ -117,16 +881,10 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
 test("bounty_wave_handoff_status reports complete when all assigned handoffs exist", () => {
   withTempHome(() => {
     const domain = "example.com";
-    const dir = sessionDir(domain);
-    fs.mkdirSync(dir, { recursive: true });
-
-    writeFileAtomic(path.join(dir, "wave-1-assignments.json"), `${JSON.stringify({
-      wave_number: 1,
-      assignments: [
-        { agent: "a1", surface_id: "surface-a" },
-        { agent: "a2", surface_id: "surface-b" },
-      ],
-    }, null, 2)}\n`);
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
 
     writeWaveHandoff({
       target_domain: domain,
@@ -159,30 +917,76 @@ test("bounty_wave_handoff_status reports complete when all assigned handoffs exi
   });
 });
 
+test("markdown-only handoffs do not satisfy readiness or advance merges", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAttackSurface(domain, ["surface-a"]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeFileAtomic(path.join(dir, "handoff-w1-a1.md"), "# markdown only\n");
+
+    const before = fs.readFileSync(statePath(domain), "utf8");
+    const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 1 }));
+    assert.deepEqual(status, {
+      assignments_total: 1,
+      handoffs_total: 0,
+      received_agents: [],
+      missing_agents: ["a1"],
+      unexpected_agents: [],
+      is_complete: false,
+    });
+
+    const pending = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+    assert.equal(pending.status, "pending");
+    assert.deepEqual(pending.readiness, status);
+    assert.equal(fs.readFileSync(statePath(domain), "utf8"), before);
+    assert.ok(!fs.existsSync(path.join(dir, "wave-2-assignments.json")));
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# structured handoff",
+    });
+
+    const merged = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+    assert.equal(merged.status, "merged");
+    assert.deepEqual(merged.readiness, {
+      assignments_total: 1,
+      handoffs_total: 1,
+      received_agents: ["a1"],
+      missing_agents: [],
+      unexpected_agents: [],
+      is_complete: true,
+    });
+  });
+});
+
 test("bounty_wave_handoff_status reports partial completion and unexpected handoffs without parsing payloads", () => {
   withTempHome(() => {
     const domain = "example.com";
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
 
-    writeFileAtomic(path.join(dir, "wave-2-assignments.json"), `${JSON.stringify({
-      wave_number: 2,
-      assignments: [
-        { agent: "a1", surface_id: "surface-a" },
-        { agent: "a2", surface_id: "surface-b" },
-        { agent: "a3", surface_id: "surface-c" },
-      ],
-    }, null, 2)}\n`);
+    seedAssignments(domain, 2, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+      { agent: "a3", surface_id: "surface-c" },
+    ]);
 
     writeFileAtomic(path.join(dir, "handoff-w2-a1.json"), "{bad json");
-    writeWaveHandoff({
-      target_domain: domain,
-      wave: "w2",
-      agent: "a9",
-      surface_id: "surface-z",
-      surface_status: "complete",
-      content: "# unexpected",
-    });
+    writeUnexpectedHandoff(domain, "w2", "a9");
 
     const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 2 }));
 
@@ -209,16 +1013,10 @@ test("bounty_wave_handoff_status hard-fails when the assignment file is missing"
 test("bounty_merge_wave_handoffs merges valid handoffs and dedupes optional arrays", () => {
   withTempHome(() => {
     const domain = "example.com";
-    const dir = sessionDir(domain);
-    fs.mkdirSync(dir, { recursive: true });
-
-    writeFileAtomic(path.join(dir, "wave-2-assignments.json"), `${JSON.stringify({
-      wave_number: 2,
-      assignments: [
-        { agent: "a1", surface_id: "surface-a" },
-        { agent: "a2", surface_id: "surface-b" },
-      ],
-    }, null, 2)}\n`);
+    seedAssignments(domain, 2, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
 
     writeWaveHandoff({
       target_domain: domain,
@@ -268,24 +1066,13 @@ test("bounty_merge_wave_handoffs requeues missing and invalid assigned handoffs 
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
 
-    writeFileAtomic(path.join(dir, "wave-3-assignments.json"), `${JSON.stringify({
-      wave_number: 3,
-      assignments: [
-        { agent: "a1", surface_id: "surface-a" },
-        { agent: "a2", surface_id: "surface-b" },
-      ],
-    }, null, 2)}\n`);
+    seedAssignments(domain, 3, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
 
     writeFileAtomic(path.join(dir, "handoff-w3-a1.json"), "{bad json");
-    writeWaveHandoff({
-      target_domain: domain,
-      wave: "w3",
-      agent: "a9",
-      surface_id: "surface-z",
-      surface_status: "complete",
-      content: "# unexpected",
-      dead_ends: ["/ignored"],
-    });
+    writeUnexpectedHandoff(domain, "w3", "a9", { dead_ends: ["/ignored"] });
 
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 3 }));
 

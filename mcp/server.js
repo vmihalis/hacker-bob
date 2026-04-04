@@ -3,11 +3,13 @@
 // Provides: bounty_http_scan, bounty_record_finding, bounty_read_findings,
 //           bounty_list_findings, bounty_write_verification_round,
 //           bounty_read_verification_round, bounty_write_grade_verdict,
-//           bounty_read_grade_verdict, bounty_write_handoff,
-//           bounty_write_wave_handoff, bounty_wave_handoff_status,
-//           bounty_merge_wave_handoffs, bounty_read_handoff,
-//           bounty_log_dead_ends, bounty_auth_manual,
-//           bounty_wave_status
+//           bounty_read_grade_verdict, bounty_init_session,
+//           bounty_read_session_state, bounty_transition_phase,
+//           bounty_start_wave, bounty_apply_wave_merge,
+//           bounty_write_handoff, bounty_write_wave_handoff,
+//           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
+//           bounty_read_handoff, bounty_log_dead_ends,
+//           bounty_auth_manual, bounty_wave_status
 
 const fs = require("fs");
 const path = require("path");
@@ -19,9 +21,28 @@ const findingCounters = new Map(); // findings.jsonl path → counter
 
 const FINDING_ID_RE = /^F-([1-9]\d*)$/;
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+const PHASE_VALUES = ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT"];
+const AUTH_STATUS_VALUES = ["pending", "authenticated", "unauthenticated"];
 const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
 const VERIFICATION_DISPOSITION_VALUES = ["confirmed", "denied", "downgraded"];
 const GRADE_VERDICT_VALUES = ["SUBMIT", "HOLD", "SKIP"];
+const SESSION_LOCK_NAME = ".session.lock";
+const SESSION_LOCK_STALE_MS = 60_000;
+const SESSION_PUBLIC_STATE_FIELDS = [
+  "target",
+  "target_url",
+  "phase",
+  "hunt_wave",
+  "pending_wave",
+  "total_findings",
+  "explored",
+  "dead_ends",
+  "waf_blocked_endpoints",
+  "lead_surface_ids",
+  "scope_exclusions",
+  "hold_count",
+  "auth_status",
+];
 const VERIFICATION_ROUND_FILE_MAP = {
   brutalist: { json: "brutalist.json", markdown: "brutalist.md" },
   balanced: { json: "brutalist-final.json", markdown: "brutalist-final.md" },
@@ -177,6 +198,76 @@ const TOOLS = [
     },
   },
   {
+    name: "bounty_init_session",
+    description: "Initialize a new session state.json for a target domain.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        target_url: { type: "string" },
+      },
+      required: ["target_domain", "target_url"],
+    },
+  },
+  {
+    name: "bounty_read_session_state",
+    description: "Read normalized orchestrator session state from authoritative storage.",
+    inputSchema: {
+      type: "object",
+      properties: { target_domain: { type: "string" } },
+      required: ["target_domain"],
+    },
+  },
+  {
+    name: "bounty_transition_phase",
+    description: "Apply one validated FSM phase transition to the persisted session state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        to_phase: { type: "string", enum: PHASE_VALUES },
+        auth_status: { type: "string", enum: AUTH_STATUS_VALUES.filter((value) => value !== "pending") },
+      },
+      required: ["target_domain", "to_phase"],
+    },
+  },
+  {
+    name: "bounty_start_wave",
+    description: "Persist a new wave assignment file and set pending_wave in session state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave_number: { type: "number" },
+        assignments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              agent: { type: "string", pattern: "^a[0-9]+$" },
+              surface_id: { type: "string" },
+            },
+            required: ["agent", "surface_id"],
+          },
+        },
+      },
+      required: ["target_domain", "wave_number", "assignments"],
+    },
+  },
+  {
+    name: "bounty_apply_wave_merge",
+    description: "Apply one wave merge to session state from authoritative structured handoff JSON, including exclusions, leads, and findings summary.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave_number: { type: "number" },
+        force_merge: { type: "boolean" },
+      },
+      required: ["target_domain", "wave_number", "force_merge"],
+    },
+  },
+  {
     name: "bounty_write_handoff",
     description: "Write session handoff for context rotation.",
     inputSchema: {
@@ -200,7 +291,7 @@ const TOOLS = [
   },
   {
     name: "bounty_write_wave_handoff",
-    description: "Write one structured wave handoff as both markdown and JSON.",
+    description: "Hunter-final writer for one structured wave handoff as markdown plus authoritative JSON.",
     inputSchema: {
       type: "object",
       properties: {
@@ -298,6 +389,51 @@ function sessionDir(domain) {
   return path.join(os.homedir(), "bounty-agent-sessions", domain);
 }
 
+function statePath(domain) {
+  return path.join(sessionDir(domain), "state.json");
+}
+
+function attackSurfacePath(domain) {
+  return path.join(sessionDir(domain), "attack_surface.json");
+}
+
+function sessionLockPath(domain) {
+  return path.join(sessionDir(domain), SESSION_LOCK_NAME);
+}
+
+function waveAssignmentsPath(domain, waveNumber) {
+  return path.join(sessionDir(domain), `wave-${waveNumber}-assignments.json`);
+}
+
+function scopeWarningsPath(domain) {
+  return path.join(sessionDir(domain), "scope-warnings.log");
+}
+
+function buildInitialSessionState(domain, targetUrl) {
+  return {
+    target: domain,
+    target_url: targetUrl,
+    phase: "RECON",
+    hunt_wave: 0,
+    pending_wave: null,
+    total_findings: 0,
+    explored: [],
+    dead_ends: [],
+    waf_blocked_endpoints: [],
+    lead_surface_ids: [],
+    scope_exclusions: [],
+    hold_count: 0,
+    auth_status: "pending",
+  };
+}
+
+function publicSessionState(state) {
+  return SESSION_PUBLIC_STATE_FIELDS.reduce((result, field) => {
+    result[field] = state[field];
+    return result;
+  }, {});
+}
+
 const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
@@ -392,9 +528,149 @@ function writeFileAtomic(filePath, content) {
   fs.renameSync(tempPath, filePath);
 }
 
+function normalizeSessionStateDocument(document, requestedDomain) {
+  if (document == null || typeof document !== "object" || Array.isArray(document)) {
+    throw new Error("expected object");
+  }
+
+  if (document.target != null) {
+    assertNonEmptyString(document.target, "target");
+  }
+
+  return {
+    target: requestedDomain,
+    target_url: assertNonEmptyString(document.target_url, "target_url"),
+    phase: assertEnumValue(document.phase, PHASE_VALUES, "phase"),
+    hunt_wave: document.hunt_wave == null
+      ? 0
+      : assertInteger(document.hunt_wave, "hunt_wave", { min: 0 }),
+    pending_wave: document.pending_wave == null
+      ? null
+      : assertInteger(document.pending_wave, "pending_wave", { min: 1 }),
+    total_findings: document.total_findings == null
+      ? 0
+      : assertInteger(document.total_findings, "total_findings", { min: 0 }),
+    explored: normalizeStringArray(document.explored, "explored"),
+    dead_ends: normalizeStringArray(document.dead_ends, "dead_ends"),
+    waf_blocked_endpoints: normalizeStringArray(document.waf_blocked_endpoints, "waf_blocked_endpoints"),
+    lead_surface_ids: normalizeStringArray(document.lead_surface_ids, "lead_surface_ids"),
+    scope_exclusions: normalizeStringArray(document.scope_exclusions, "scope_exclusions"),
+    hold_count: document.hold_count == null
+      ? 0
+      : assertInteger(document.hold_count, "hold_count", { min: 0 }),
+    auth_status: document.auth_status == null
+      ? "pending"
+      : assertEnumValue(document.auth_status, AUTH_STATUS_VALUES, "auth_status"),
+  };
+}
+
+function readSessionStateStrict(domain) {
+  const normalizedDomain = assertNonEmptyString(domain, "target_domain");
+  const filePath = statePath(normalizedDomain);
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Missing session state: ${filePath}`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Malformed session state: ${filePath} (${error.message || String(error)})`);
+  }
+
+  try {
+    return {
+      dir: sessionDir(normalizedDomain),
+      path: filePath,
+      raw: parsed,
+      state: normalizeSessionStateDocument(parsed, normalizedDomain),
+    };
+  } catch (error) {
+    throw new Error(`Malformed session state: ${filePath} (${error.message || String(error)})`);
+  }
+}
+
+function composeSessionStateDocument(rawDocument, state) {
+  return {
+    ...rawDocument,
+    ...publicSessionState(state),
+  };
+}
+
+function writeSessionStateDocument(domain, rawDocument, state) {
+  const filePath = statePath(domain);
+  const nextDocument = composeSessionStateDocument(rawDocument, state);
+  writeFileAtomic(filePath, `${JSON.stringify(nextDocument, null, 2)}\n`);
+  return nextDocument;
+}
+
+function isSessionDirEffectivelyEmpty(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    return true;
+  }
+
+  const entries = fs.readdirSync(dirPath).filter((entry) => entry !== SESSION_LOCK_NAME);
+  return entries.length === 0;
+}
+
+function tryAcquireSessionLock(lockPathValue) {
+  try {
+    fs.mkdirSync(lockPathValue);
+    return true;
+  } catch (error) {
+    if (error && error.code === "EEXIST") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function acquireSessionLock(domain) {
+  const dir = sessionDir(domain);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const lockPathValue = sessionLockPath(domain);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (tryAcquireSessionLock(lockPathValue)) {
+      return () => {
+        try {
+          fs.rmdirSync(lockPathValue);
+        } catch {}
+      };
+    }
+
+    let isStale = false;
+    try {
+      const stats = fs.statSync(lockPathValue);
+      isStale = Date.now() - stats.mtimeMs > SESSION_LOCK_STALE_MS;
+    } catch {}
+
+    if (attempt === 0 && isStale) {
+      try {
+        fs.rmSync(lockPathValue, { recursive: true, force: true });
+      } catch {}
+      continue;
+    }
+
+    throw new Error(`Session lock busy: ${dir}`);
+  }
+
+  throw new Error(`Session lock busy: ${dir}`);
+}
+
+function withSessionLock(domain, callback) {
+  const release = acquireSessionLock(domain);
+  try {
+    return callback();
+  } finally {
+    release();
+  }
+}
+
 function loadWaveAssignments(domain, waveNumber) {
   const dir = sessionDir(domain);
-  const assignmentsPath = path.join(dir, `wave-${waveNumber}-assignments.json`);
+  const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
 
   if (!fs.existsSync(assignmentsPath)) {
     throw new Error(`Missing assignment file: ${assignmentsPath}`);
@@ -427,11 +703,12 @@ function loadWaveAssignments(domain, waveNumber) {
     assignmentByAgent.set(agent, normalizedAssignment);
   }
 
-  return { dir, wave: `w${waveNumber}`, assignments, assignmentByAgent };
+  return { dir, wave: `w${waveNumber}`, assignmentsPath, assignments, assignmentByAgent };
 }
 
 function listWaveHandoffFiles(dir, wave) {
   const handoffPrefix = `handoff-${wave}-`;
+  // Readiness intentionally indexes only structured handoff JSON. Markdown handoffs are for humans/debugging.
   return fs.existsSync(dir)
     ? fs.readdirSync(dir)
         .filter((name) => name.startsWith(handoffPrefix) && name.endsWith(".json"))
@@ -458,6 +735,300 @@ function buildWaveHandoffFileIndex(dir, wave, assignmentByAgent) {
     handoffPathByAgent,
     unexpectedAgents: Array.from(unexpectedAgentSet).sort(compareAgentLabels),
   };
+}
+
+function normalizeWaveAssignmentsInput(assignments) {
+  if (!Array.isArray(assignments) || assignments.length === 0) {
+    throw new Error("assignments must be a non-empty array");
+  }
+
+  const normalizedAssignments = [];
+  const seenAgents = new Set();
+  const seenSurfaceIds = new Set();
+
+  for (const assignment of assignments) {
+    if (assignment == null || typeof assignment !== "object" || Array.isArray(assignment)) {
+      throw new Error("assignments entries must be objects");
+    }
+
+    const agent = parseAgentId(assignment.agent);
+    const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+
+    if (seenAgents.has(agent)) {
+      throw new Error(`Duplicate assignment for ${agent}`);
+    }
+    if (seenSurfaceIds.has(surfaceId)) {
+      throw new Error(`Duplicate surface_id in assignments: ${surfaceId}`);
+    }
+
+    seenAgents.add(agent);
+    seenSurfaceIds.add(surfaceId);
+    normalizedAssignments.push({ agent, surface_id: surfaceId });
+  }
+
+  return normalizedAssignments;
+}
+
+function validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId) {
+  const waveNumber = Number(wave.slice(1));
+  const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+  const assignment = assignmentByAgent.get(agent);
+  if (!assignment) {
+    throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
+  }
+  if (assignment.surface_id !== surfaceId) {
+    throw new Error(`Agent ${agent} is assigned surface ${assignment.surface_id}, not ${surfaceId}`);
+  }
+  return assignment;
+}
+
+function loadWaveArtifacts(domain, waveNumber) {
+  const assignmentsInfo = loadWaveAssignments(domain, waveNumber);
+  const handoffInfo = buildWaveHandoffFileIndex(
+    assignmentsInfo.dir,
+    assignmentsInfo.wave,
+    assignmentsInfo.assignmentByAgent,
+  );
+
+  return {
+    ...assignmentsInfo,
+    ...handoffInfo,
+  };
+}
+
+function buildWaveReadiness(artifacts) {
+  const receivedAgents = [];
+  const missingAgents = [];
+
+  for (const assignment of artifacts.assignments) {
+    if (artifacts.handoffPathByAgent.has(assignment.agent)) {
+      receivedAgents.push(assignment.agent);
+    } else {
+      missingAgents.push(assignment.agent);
+    }
+  }
+
+  return {
+    assignments_total: artifacts.assignments.length,
+    handoffs_total: artifacts.handoffFiles.length,
+    received_agents: receivedAgents,
+    missing_agents: missingAgents,
+    unexpected_agents: artifacts.unexpectedAgents,
+    is_complete: missingAgents.length === 0,
+  };
+}
+
+function mergeWaveHandoffsInternal(domain, waveNumber) {
+  const artifacts = loadWaveArtifacts(domain, waveNumber);
+  const readiness = buildWaveReadiness(artifacts);
+
+  const receivedAgents = [];
+  const invalidAgents = [];
+  const completedSurfaceIds = [];
+  const partialSurfaceIds = [];
+  const missingSurfaceIds = [];
+  const deadEnds = [];
+  const wafBlockedEndpoints = [];
+  const leadSurfaceIds = [];
+
+  const deadEndSet = new Set();
+  const wafSet = new Set();
+  const leadSet = new Set();
+
+  for (const assignment of artifacts.assignments) {
+    const filePath = artifacts.handoffPathByAgent.get(assignment.agent);
+    if (!filePath) {
+      missingSurfaceIds.push(assignment.surface_id);
+      continue;
+    }
+
+    try {
+      const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
+        targetDomain: domain,
+        wave: artifacts.wave,
+        agent: assignment.agent,
+        surfaceId: assignment.surface_id,
+      });
+
+      receivedAgents.push(assignment.agent);
+      if (payload.surface_status === "complete") {
+        completedSurfaceIds.push(assignment.surface_id);
+      } else {
+        partialSurfaceIds.push(assignment.surface_id);
+      }
+      pushUnique(deadEnds, deadEndSet, payload.dead_ends);
+      pushUnique(wafBlockedEndpoints, wafSet, payload.waf_blocked_endpoints);
+      pushUnique(leadSurfaceIds, leadSet, payload.lead_surface_ids);
+    } catch {
+      invalidAgents.push(assignment.agent);
+    }
+  }
+
+  for (const assignment of artifacts.assignments) {
+    const logPath = path.join(artifacts.dir, `live-dead-ends-${artifacts.wave}-${assignment.agent}.jsonl`);
+    if (!fs.existsSync(logPath)) continue;
+    let raw;
+    try {
+      raw = fs.readFileSync(logPath, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = raw.trim().split("\n");
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record.surface_id !== assignment.surface_id) continue;
+        pushUnique(deadEnds, deadEndSet, normalizeStringArray(record.dead_ends, "live_dead_ends"));
+        pushUnique(wafBlockedEndpoints, wafSet, normalizeStringArray(record.waf_blocked_endpoints, "live_waf_blocked"));
+      } catch {
+        // Skip malformed line, keep processing remaining records
+      }
+    }
+  }
+
+  return {
+    artifacts,
+    readiness,
+    merge: {
+      received_agents: receivedAgents,
+      invalid_agents: invalidAgents,
+      unexpected_agents: readiness.unexpected_agents,
+      completed_surface_ids: completedSurfaceIds,
+      partial_surface_ids: partialSurfaceIds,
+      missing_surface_ids: missingSurfaceIds,
+      dead_ends: deadEnds,
+      waf_blocked_endpoints: wafBlockedEndpoints,
+      lead_surface_ids: leadSurfaceIds,
+    },
+  };
+}
+
+function computeRequeueSurfaceIds(artifacts, merge) {
+  const requeueSurfaceIds = [];
+  const seen = new Set();
+  pushUnique(requeueSurfaceIds, seen, merge.partial_surface_ids);
+  pushUnique(requeueSurfaceIds, seen, merge.missing_surface_ids);
+
+  for (const agent of merge.invalid_agents) {
+    const assignment = artifacts.assignmentByAgent.get(agent);
+    if (!assignment) continue;
+    pushUnique(requeueSurfaceIds, seen, [assignment.surface_id]);
+  }
+
+  return requeueSurfaceIds;
+}
+
+function readAttackSurfaceStrict(domain) {
+  const filePath = attackSurfacePath(domain);
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Missing attack surface JSON: ${filePath}`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Malformed attack surface JSON: ${filePath} (${error.message || String(error)})`);
+  }
+
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.surfaces)) {
+    throw new Error(`Malformed attack surface JSON: ${filePath} (expected object with surfaces array)`);
+  }
+
+  const surfaceIds = [];
+  const surfaceIdSet = new Set();
+  for (const surface of parsed.surfaces) {
+    let surfaceId;
+    try {
+      if (surface == null || typeof surface !== "object" || Array.isArray(surface)) {
+        throw new Error("invalid surface entry");
+      }
+      surfaceId = assertNonEmptyString(surface.id, "surface.id");
+    } catch (error) {
+      throw new Error(`Malformed attack surface JSON: ${filePath} (${error.message || String(error)})`);
+    }
+    if (surfaceIdSet.has(surfaceId)) continue;
+    surfaceIdSet.add(surfaceId);
+    surfaceIds.push(surfaceId);
+  }
+
+  return {
+    path: filePath,
+    document: parsed,
+    surface_ids: surfaceIds,
+    surface_id_set: surfaceIdSet,
+  };
+}
+
+function summarizeFindings(findings) {
+  const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+
+  for (const finding of findings) {
+    bySeverity[finding.severity] += 1;
+  }
+
+  return {
+    total: findings.length,
+    by_severity: bySeverity,
+    has_high_or_critical: bySeverity.critical + bySeverity.high > 0,
+  };
+}
+
+function normalizeScopeExclusionToken(token) {
+  if (typeof token !== "string") {
+    return null;
+  }
+
+  const trimmed = token.trim().replace(/^["']+|["']+$/g, "");
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname) {
+      return parsed.hostname.trim().toLowerCase();
+    }
+  } catch {}
+
+  const hostCandidate = trimmed
+    .split(/[/?#]/, 1)[0]
+    .split(":", 1)[0]
+    .trim()
+    .replace(/\.+$/, "");
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{2,63}$/.test(hostCandidate)) {
+    return hostCandidate.toLowerCase();
+  }
+
+  return trimmed;
+}
+
+function readScopeExclusions(domain) {
+  const logPath = scopeWarningsPath(domain);
+  if (!fs.existsSync(logPath)) {
+    return [];
+  }
+
+  let raw;
+  try {
+    raw = fs.readFileSync(logPath, "utf8");
+  } catch {
+    return [];
+  }
+
+  const exclusions = [];
+  const seen = new Set();
+  for (const line of raw.split("\n")) {
+    const match = line.match(/OUT-OF-SCOPE(?: \(http_scan\))?:\s*(.+?)\s*\((?:command|url):/);
+    if (!match) continue;
+    const normalized = normalizeScopeExclusionToken(match[1]);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    exclusions.push(normalized);
+  }
+
+  return exclusions;
 }
 
 function assertRequiredText(value, fieldName) {
@@ -1003,6 +1574,25 @@ function analyzeResponse(url, status, headers, body) {
 
 function recordFinding(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const hasWave = args.wave != null;
+  const hasAgent = args.agent != null;
+  if (hasWave !== hasAgent) {
+    throw new Error("wave and agent must either both be provided or both be omitted");
+  }
+
+  let wave = null;
+  let agent = null;
+  if (hasWave) {
+    wave = parseWaveId(args.wave);
+    agent = parseAgentId(args.agent);
+
+    const waveNumber = Number(wave.slice(1));
+    const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+    if (!assignmentByAgent.has(agent)) {
+      throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
+    }
+  }
+
   const structuredPath = findingsJsonlPath(domain);
   if (!findingCounters.has(structuredPath) || !fs.existsSync(structuredPath)) {
     findingCounters.set(structuredPath, readFindingsFromJsonl(domain).length);
@@ -1021,8 +1611,8 @@ function recordFinding(args) {
     response_evidence: args.response_evidence,
     impact: args.impact,
     validated: args.validated,
-    wave: args.wave ?? null,
-    agent: args.agent ?? null,
+    wave,
+    agent,
   }, { expectedDomain: domain });
 
   appendJsonlLine(structuredPath, finding);
@@ -1064,16 +1654,10 @@ function listFindings(args) {
 
 function waveStatus(args) {
   const findings = readFindingsFromJsonl(assertNonEmptyString(args.target_domain, "target_domain"));
-  const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-
-  for (const finding of findings) {
-    bySeverity[finding.severity] += 1;
-  }
+  const summary = summarizeFindings(findings);
 
   return JSON.stringify({
-    total: findings.length,
-    by_severity: bySeverity,
-    has_high_or_critical: bySeverity.critical + bySeverity.high > 0,
+    ...summary,
     findings_summary: findings.map((finding) => ({
       id: finding.id,
       severity: finding.severity,
@@ -1208,6 +1792,233 @@ function readGradeVerdict(args) {
   }));
 }
 
+function initSession(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const targetUrl = assertNonEmptyString(args.target_url, "target_url");
+
+  return withSessionLock(domain, () => {
+    const dir = sessionDir(domain);
+    const filePath = statePath(domain);
+
+    if (fs.existsSync(filePath)) {
+      throw new Error(`Session already initialized: ${filePath}`);
+    }
+    if (!isSessionDirEffectivelyEmpty(dir)) {
+      throw new Error(`Session directory is not empty: ${dir}`);
+    }
+
+    const state = buildInitialSessionState(domain, targetUrl);
+    writeFileAtomic(filePath, `${JSON.stringify(state, null, 2)}\n`);
+
+    return JSON.stringify({
+      version: 1,
+      created: true,
+      session_dir: dir,
+      state: publicSessionState(state),
+    });
+  });
+}
+
+function readSessionState(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const { state } = readSessionStateStrict(domain);
+  return JSON.stringify({
+    version: 1,
+    state: publicSessionState(state),
+  });
+}
+
+function transitionPhase(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const toPhase = assertEnumValue(args.to_phase, PHASE_VALUES, "to_phase");
+
+  return withSessionLock(domain, () => {
+    const { raw, state } = readSessionStateStrict(domain);
+    const fromPhase = state.phase;
+    const allowedTransitions = {
+      RECON: ["AUTH"],
+      AUTH: ["HUNT"],
+      HUNT: ["CHAIN"],
+      CHAIN: ["VERIFY"],
+      VERIFY: ["GRADE"],
+      GRADE: ["REPORT", "HUNT"],
+    };
+
+    if (!(allowedTransitions[fromPhase] || []).includes(toPhase)) {
+      throw new Error(`Invalid phase transition: ${fromPhase} -> ${toPhase}`);
+    }
+
+    let nextAuthStatus = state.auth_status;
+    if (fromPhase === "AUTH" && toPhase === "HUNT") {
+      if (args.auth_status == null) {
+        throw new Error("auth_status is required for AUTH -> HUNT");
+      }
+      nextAuthStatus = assertEnumValue(
+        args.auth_status,
+        AUTH_STATUS_VALUES.filter((value) => value !== "pending"),
+        "auth_status",
+      );
+    } else if (args.auth_status != null) {
+      throw new Error("auth_status is only allowed for AUTH -> HUNT");
+    }
+
+    const nextState = {
+      ...state,
+      phase: toPhase,
+      auth_status: nextAuthStatus,
+      hold_count: fromPhase === "GRADE" && toPhase === "HUNT"
+        ? state.hold_count + 1
+        : state.hold_count,
+    };
+
+    writeSessionStateDocument(domain, raw, nextState);
+    return JSON.stringify({
+      version: 1,
+      transitioned: true,
+      from_phase: fromPhase,
+      to_phase: toPhase,
+      state: publicSessionState(nextState),
+    });
+  });
+}
+
+function startWave(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumber = parseWaveNumber(args.wave_number);
+  const assignments = normalizeWaveAssignmentsInput(args.assignments);
+
+  return withSessionLock(domain, () => {
+    const { raw, state } = readSessionStateStrict(domain);
+    if (state.phase !== "HUNT") {
+      throw new Error(`Wave start requires phase HUNT, found ${state.phase}`);
+    }
+    if (state.pending_wave != null) {
+      throw new Error(`Wave start requires pending_wave null, found ${state.pending_wave}`);
+    }
+    if (waveNumber !== state.hunt_wave + 1) {
+      throw new Error(`wave_number must equal hunt_wave + 1 (${state.hunt_wave + 1})`);
+    }
+
+    const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
+    if (fs.existsSync(assignmentsPath)) {
+      throw new Error(`Assignment file already exists: ${assignmentsPath}`);
+    }
+
+    writeFileAtomic(assignmentsPath, `${JSON.stringify({
+      wave_number: waveNumber,
+      assignments,
+    }, null, 2)}\n`);
+
+    const nextState = {
+      ...state,
+      pending_wave: waveNumber,
+    };
+
+    try {
+      writeSessionStateDocument(domain, raw, nextState);
+    } catch (error) {
+      let rollbackSucceeded = false;
+      try {
+        fs.rmSync(assignmentsPath, { force: true });
+        rollbackSucceeded = true;
+      } catch {}
+
+      const rollbackStatus = rollbackSucceeded ? "rollback succeeded" : "rollback failed";
+      throw new Error(
+        `State write failed after writing assignments; ${rollbackStatus}: ${assignmentsPath} (${error.message || String(error)})`,
+      );
+    }
+
+    return JSON.stringify({
+      version: 1,
+      started: true,
+      wave_number: waveNumber,
+      assignments,
+      assignments_path: assignmentsPath,
+      state: publicSessionState(nextState),
+    });
+  });
+}
+
+function applyWaveMerge(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumber = parseWaveNumber(args.wave_number);
+  const forceMerge = assertBoolean(args.force_merge, "force_merge");
+
+  return withSessionLock(domain, () => {
+    const { raw, state } = readSessionStateStrict(domain);
+    if (state.phase !== "HUNT") {
+      throw new Error(`Wave merge requires phase HUNT, found ${state.phase}`);
+    }
+    if (state.pending_wave == null) {
+      throw new Error("Wave merge requires pending_wave to be set");
+    }
+    if (state.pending_wave !== waveNumber) {
+      throw new Error(`Wave merge requires pending_wave ${waveNumber}, found ${state.pending_wave}`);
+    }
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, waveNumber));
+    if (!readiness.is_complete && !forceMerge) {
+      return JSON.stringify({
+        version: 1,
+        status: "pending",
+        wave_number: waveNumber,
+        force_merge: false,
+        readiness,
+        state: publicSessionState(state),
+      });
+    }
+
+    const attackSurface = readAttackSurfaceStrict(domain);
+    const { artifacts, merge } = mergeWaveHandoffsInternal(domain, waveNumber);
+    const requeueSurfaceIds = computeRequeueSurfaceIds(artifacts, merge);
+    const findings = summarizeFindings(readFindingsFromJsonl(domain));
+    const scopeExclusions = [...state.scope_exclusions];
+    pushUnique(scopeExclusions, new Set(scopeExclusions), readScopeExclusions(domain));
+
+    const explored = [...state.explored];
+    const deadEnds = [...state.dead_ends];
+    const wafBlockedEndpoints = [...state.waf_blocked_endpoints];
+    const leadSurfaceIds = [...state.lead_surface_ids];
+
+    pushUnique(explored, new Set(explored), merge.completed_surface_ids);
+    pushUnique(deadEnds, new Set(deadEnds), merge.dead_ends);
+    pushUnique(wafBlockedEndpoints, new Set(wafBlockedEndpoints), merge.waf_blocked_endpoints);
+    pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), merge.lead_surface_ids);
+
+    const filteredLeadSurfaceIds = leadSurfaceIds.filter(
+      (surfaceId) => attackSurface.surface_id_set.has(surfaceId) && !explored.includes(surfaceId),
+    );
+
+    const nextState = {
+      ...state,
+      explored,
+      dead_ends: deadEnds,
+      waf_blocked_endpoints: wafBlockedEndpoints,
+      lead_surface_ids: filteredLeadSurfaceIds,
+      scope_exclusions: scopeExclusions,
+      pending_wave: null,
+      hunt_wave: waveNumber,
+      total_findings: findings.total,
+    };
+
+    writeSessionStateDocument(domain, raw, nextState);
+    return JSON.stringify({
+      version: 1,
+      status: "merged",
+      wave_number: waveNumber,
+      force_merge: forceMerge,
+      readiness,
+      merge: {
+        ...merge,
+        requeue_surface_ids: requeueSurfaceIds,
+      },
+      findings,
+      state: publicSessionState(nextState),
+    });
+  });
+}
+
 function writeHandoff(args) {
   const domain = args.target_domain;
   const dir = sessionDir(domain);
@@ -1242,16 +2053,7 @@ function logDeadEnds(args) {
   const agent = parseAgentId(args.agent);
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
 
-  // Validate against wave assignments — reject if wave/agent/surface_id not in assignments file
-  const waveNumber = Number(wave.slice(1));
-  const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
-  const assignment = assignmentByAgent.get(agent);
-  if (!assignment) {
-    throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
-  }
-  if (assignment.surface_id !== surfaceId) {
-    throw new Error(`Agent ${agent} is assigned surface ${assignment.surface_id}, not ${surfaceId}`);
-  }
+  validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
 
   const deadEnds = normalizeStringArray(args.dead_ends, "dead_ends");
   const wafBlocked = normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints");
@@ -1304,6 +2106,7 @@ function writeWaveHandoff(args) {
   const markdownPath = path.join(dir, `handoff-${wave}-${agent}.md`);
   const jsonPath = path.join(dir, `handoff-${wave}-${agent}.json`);
 
+  validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
   writeFileAtomic(markdownPath, args.content);
   writeFileAtomic(jsonPath, JSON.stringify(handoff, null, 2) + "\n");
 
@@ -1342,110 +2145,26 @@ function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfac
 function waveHandoffStatus(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const waveNumber = parseWaveNumber(args.wave_number);
-  const { dir, wave, assignments, assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
-  const { handoffFiles, handoffPathByAgent, unexpectedAgents } = buildWaveHandoffFileIndex(dir, wave, assignmentByAgent);
-
-  const receivedAgents = [];
-  const missingAgents = [];
-
-  for (const assignment of assignments) {
-    if (handoffPathByAgent.has(assignment.agent)) {
-      receivedAgents.push(assignment.agent);
-    } else {
-      missingAgents.push(assignment.agent);
-    }
-  }
-
-  return JSON.stringify({
-    assignments_total: assignments.length,
-    handoffs_total: handoffFiles.length,
-    received_agents: receivedAgents,
-    missing_agents: missingAgents,
-    unexpected_agents: unexpectedAgents,
-    is_complete: missingAgents.length === 0,
-  });
+  return JSON.stringify(buildWaveReadiness(loadWaveArtifacts(domain, waveNumber)));
 }
 
 function mergeWaveHandoffs(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const waveNumber = parseWaveNumber(args.wave_number);
-  const { dir, wave, assignments, assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
-  const { handoffFiles, handoffPathByAgent, unexpectedAgents } = buildWaveHandoffFileIndex(dir, wave, assignmentByAgent);
-
-  const receivedAgents = [];
-  const invalidAgents = [];
-  const completedSurfaceIds = [];
-  const partialSurfaceIds = [];
-  const missingSurfaceIds = [];
-  const deadEnds = [];
-  const wafBlockedEndpoints = [];
-  const leadSurfaceIds = [];
-
-  const deadEndSet = new Set();
-  const wafSet = new Set();
-  const leadSet = new Set();
-
-  for (const assignment of assignments) {
-    const filePath = handoffPathByAgent.get(assignment.agent);
-    if (!filePath) {
-      missingSurfaceIds.push(assignment.surface_id);
-      continue;
-    }
-
-    try {
-      const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
-        targetDomain: domain,
-        wave,
-        agent: assignment.agent,
-        surfaceId: assignment.surface_id,
-      });
-
-      receivedAgents.push(assignment.agent);
-      if (payload.surface_status === "complete") {
-        completedSurfaceIds.push(assignment.surface_id);
-      } else {
-        partialSurfaceIds.push(assignment.surface_id);
-      }
-      pushUnique(deadEnds, deadEndSet, payload.dead_ends);
-      pushUnique(wafBlockedEndpoints, wafSet, payload.waf_blocked_endpoints);
-      pushUnique(leadSurfaceIds, leadSet, payload.lead_surface_ids);
-    } catch {
-      invalidAgents.push(assignment.agent);
-    }
-  }
-
-  // Merge live dead-end logs (survive maxTurns kills even without a handoff)
-  for (const assignment of assignments) {
-    const logPath = path.join(dir, `live-dead-ends-${wave}-${assignment.agent}.jsonl`);
-    if (!fs.existsSync(logPath)) continue;
-    let raw;
-    try { raw = fs.readFileSync(logPath, "utf8"); } catch { continue; }
-    const lines = raw.trim().split("\n");
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line);
-        if (record.surface_id !== assignment.surface_id) continue;
-        pushUnique(deadEnds, deadEndSet, normalizeStringArray(record.dead_ends, "live_dead_ends"));
-        pushUnique(wafBlockedEndpoints, wafSet, normalizeStringArray(record.waf_blocked_endpoints, "live_waf_blocked"));
-      } catch {
-        // Skip malformed line, keep processing remaining records
-      }
-    }
-  }
+  const { readiness, merge } = mergeWaveHandoffsInternal(domain, waveNumber);
 
   return JSON.stringify({
-    assignments_total: assignments.length,
-    handoffs_total: handoffFiles.length,
-    received_agents: receivedAgents,
-    invalid_agents: invalidAgents,
-    unexpected_agents: unexpectedAgents,
-    completed_surface_ids: completedSurfaceIds,
-    partial_surface_ids: partialSurfaceIds,
-    missing_surface_ids: missingSurfaceIds,
-    dead_ends: deadEnds,
-    waf_blocked_endpoints: wafBlockedEndpoints,
-    lead_surface_ids: leadSurfaceIds,
+    assignments_total: readiness.assignments_total,
+    handoffs_total: readiness.handoffs_total,
+    received_agents: merge.received_agents,
+    invalid_agents: merge.invalid_agents,
+    unexpected_agents: merge.unexpected_agents,
+    completed_surface_ids: merge.completed_surface_ids,
+    partial_surface_ids: merge.partial_surface_ids,
+    missing_surface_ids: merge.missing_surface_ids,
+    dead_ends: merge.dead_ends,
+    waf_blocked_endpoints: merge.waf_blocked_endpoints,
+    lead_surface_ids: merge.lead_surface_ids,
   });
 }
 
@@ -1510,6 +2229,11 @@ async function executeTool(name, args) {
     case "bounty_read_verification_round": return readVerificationRound(args);
     case "bounty_write_grade_verdict": return writeGradeVerdict(args);
     case "bounty_read_grade_verdict": return readGradeVerdict(args);
+    case "bounty_init_session": return initSession(args);
+    case "bounty_read_session_state": return readSessionState(args);
+    case "bounty_transition_phase": return transitionPhase(args);
+    case "bounty_start_wave": return startWave(args);
+    case "bounty_apply_wave_merge": return applyWaveMerge(args);
     case "bounty_write_handoff": return writeHandoff(args);
     case "bounty_log_dead_ends": return logDeadEnds(args);
     case "bounty_write_wave_handoff": return writeWaveHandoff(args);
@@ -1682,23 +2406,35 @@ function startServer() {
 
 module.exports = {
   TOOLS,
+  SESSION_LOCK_STALE_MS,
+  attackSurfacePath,
   appendJsonlLine,
+  applyWaveMerge,
   gradeArtifactPaths,
+  initSession,
   listFindings,
   mergeWaveHandoffs,
   normalizeFindingRecord,
   normalizeGradeVerdictDocument,
+  normalizeSessionStateDocument,
   sessionDir,
+  sessionLockPath,
+  statePath,
+  startWave,
   findingsJsonlPath,
   findingsMarkdownPath,
   readFindings,
   readFindingsFromJsonl,
   readGradeVerdict,
+  readScopeExclusions,
+  readSessionState,
   readVerificationRound,
   recordFinding,
   renderFindingMarkdownEntry,
   renderGradeVerdictMarkdown,
   renderVerificationRoundMarkdown,
+  summarizeFindings,
+  transitionPhase,
   verificationRoundPaths,
   waveHandoffStatus,
   waveStatus,
