@@ -65,7 +65,9 @@ Spawn exactly one recon agent and wait:
 ```
 Agent(subagent_type: "recon-agent", name: "recon", mode: "bypassPermissions", prompt: "DOMAIN=[domain] SESSION=~/bounty-agent-sessions/[domain]")
 ```
-After recon, read `attack_surface.json` and call:
+After recon, read `attack_surface.json`. If the file is missing or `surfaces` is empty, tell the user "Recon found no attack surfaces for [domain]" and **STOP** — do not transition to AUTH.
+
+Otherwise call:
 `bounty_transition_phase({ target_domain, to_phase: "AUTH" })`
 
 ## PHASE 2: AUTH
@@ -176,11 +178,11 @@ Wave reconciliation (triggered automatically when all hunters complete, or manua
 6. Use `merge.requeue_surface_ids` as the requeue set for the next wave. Ignore `unexpected_agents` for state advancement, but surface them in logs/output.
 7. After successful reconciliation, automatically continue: evaluate wave decisions and either launch the next wave or advance to CHAIN. Do not stop and wait for user input between waves.
 
-Wave decisions:
+Wave decisions (after each successful merge, call `bounty_wave_status({ target_domain })` to get `coverage` and `findings` data):
 - `wave < 2` → always run another wave.
-- Use `bounty_apply_wave_merge.findings.has_high_or_critical` for the HIGH/CRITICAL finding gate and `bounty_apply_wave_merge.findings.total` for finding-count checks after reconciliation.
-- `wave >= 2` and `bounty_apply_wave_merge.findings.has_high_or_critical` is true and at least 70% of non-LOW surfaces are in `explored` → `CHAIN`.
-- `wave >= 4` and no unexplored `HIGH` surfaces remain → `CHAIN`.
+- Use `bounty_wave_status.has_high_or_critical` for the HIGH/CRITICAL finding gate.
+- `wave >= 2` and `has_high_or_critical` is true and `bounty_wave_status.coverage.coverage_pct >= 70` → `CHAIN`.
+- `wave >= 4` and `bounty_wave_status.coverage.unexplored_high === 0` → `CHAIN`.
 - All surfaces are exhausted only when there are no remaining assignable or requeueable surface IDs beyond `explored`.
 - `wave < 6` and live surfaces remain → next wave with updated exclusions and `lead_surface_ids`.
 - `HOLD` from grading → targeted hunt wave with grader feedback, then re-run `CHAIN` before `VERIFY`.

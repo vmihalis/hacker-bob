@@ -20,7 +20,6 @@ const os = require("os");
 // ── In-memory state ──
 const authProfiles = new Map();
 const tempMailboxes = new Map(); // email_address → { provider, address, password, token, domain, login }
-const findingCounters = new Map(); // findings.jsonl path → counter
 
 const FINDING_ID_RE = /^F-([1-9]\d*)$/;
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
@@ -30,7 +29,7 @@ const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
 const VERIFICATION_DISPOSITION_VALUES = ["confirmed", "denied", "downgraded"];
 const GRADE_VERDICT_VALUES = ["SUBMIT", "HOLD", "SKIP"];
 const SESSION_LOCK_NAME = ".session.lock";
-const SESSION_LOCK_STALE_MS = 60_000;
+const SESSION_LOCK_STALE_MS = 300_000;
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
@@ -48,7 +47,7 @@ const SESSION_PUBLIC_STATE_FIELDS = [
 ];
 const VERIFICATION_ROUND_FILE_MAP = {
   brutalist: { json: "brutalist.json", markdown: "brutalist.md" },
-  balanced: { json: "brutalist-final.json", markdown: "brutalist-final.md" },
+  balanced: { json: "balanced.json", markdown: "balanced.md" },
   final: { json: "verified-final.json", markdown: "verified-final.md" },
 };
 
@@ -1631,16 +1630,19 @@ async function httpScan(args) {
 
     const ct = resp.headers.get("content-type") || "";
     let respBody;
+    let analysisBody;
     if (ct.includes("text") || ct.includes("json") || ct.includes("xml") || ct.includes("javascript") || ct.includes("html")) {
       const text = await resp.text();
+      analysisBody = text;
       respBody = text.slice(0, 12000);
       if (text.length > 12000) respBody += `\n[TRUNCATED — ${text.length} chars]`;
     } else {
       const buf = await resp.arrayBuffer();
       respBody = `[Binary: ${buf.byteLength} bytes, type: ${ct}]`;
+      analysisBody = respBody;
     }
 
-    const analysis = analyzeResponse(url, resp.status, respHeaders, respBody);
+    const analysis = analyzeResponse(url, resp.status, respHeaders, analysisBody);
 
     return JSON.stringify({
       status: resp.status,
@@ -1754,41 +1756,38 @@ function recordFinding(args) {
     }
   }
 
-  const structuredPath = findingsJsonlPath(domain);
-  if (!findingCounters.has(structuredPath) || !fs.existsSync(structuredPath)) {
-    findingCounters.set(structuredPath, readFindingsFromJsonl(domain).length);
-  }
+  return withSessionLock(domain, () => {
+    const structuredPath = findingsJsonlPath(domain);
+    const counter = readFindingsFromJsonl(domain).length + 1;
 
-  const counter = findingCounters.get(structuredPath) + 1;
-  const finding = normalizeFindingRecord({
-    id: `F-${counter}`,
-    target_domain: domain,
-    title: args.title,
-    severity: args.severity,
-    cwe: args.cwe,
-    endpoint: args.endpoint,
-    description: args.description,
-    proof_of_concept: args.proof_of_concept,
-    response_evidence: args.response_evidence,
-    impact: args.impact,
-    validated: args.validated,
-    wave,
-    agent,
-  }, { expectedDomain: domain });
+    const finding = normalizeFindingRecord({
+      id: `F-${counter}`,
+      target_domain: domain,
+      title: args.title,
+      severity: args.severity,
+      cwe: args.cwe,
+      endpoint: args.endpoint,
+      description: args.description,
+      proof_of_concept: args.proof_of_concept,
+      response_evidence: args.response_evidence,
+      impact: args.impact,
+      validated: args.validated,
+      wave,
+      agent,
+    }, { expectedDomain: domain });
 
-  appendJsonlLine(structuredPath, finding);
+    appendJsonlLine(structuredPath, finding);
 
-  findingCounters.set(structuredPath, counter);
+    const response = {
+      recorded: true,
+      finding_id: finding.id,
+      total: counter,
+      written_jsonl: structuredPath,
+    };
 
-  const response = {
-    recorded: true,
-    finding_id: finding.id,
-    total: counter,
-    written_jsonl: structuredPath,
-  };
-
-  appendMarkdownMirror(findingsMarkdownPath(domain), renderFindingMarkdownEntry(finding), response);
-  return JSON.stringify(response);
+    appendMarkdownMirror(findingsMarkdownPath(domain), renderFindingMarkdownEntry(finding), response);
+    return JSON.stringify(response);
+  });
 }
 
 function readFindings(args) {
@@ -1814,11 +1813,35 @@ function listFindings(args) {
 }
 
 function waveStatus(args) {
-  const findings = readFindingsFromJsonl(assertNonEmptyString(args.target_domain, "target_domain"));
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const findings = readFindingsFromJsonl(domain);
   const summary = summarizeFindings(findings);
+
+  // Compute surface coverage for deterministic wave decisions
+  let coverage = null;
+  try {
+    const { state } = readSessionStateStrict(domain);
+    const attackSurface = readAttackSurfaceStrict(domain);
+    const exploredSet = new Set(state.explored);
+    const nonLowSurfaces = attackSurface.document.surfaces.filter(
+      (s) => s.priority && s.priority.toUpperCase() !== "LOW",
+    );
+    const totalNonLow = nonLowSurfaces.length;
+    const exploredNonLow = nonLowSurfaces.filter((s) => exploredSet.has(s.id)).length;
+    coverage = {
+      total_surfaces: attackSurface.document.surfaces.length,
+      non_low_total: totalNonLow,
+      non_low_explored: exploredNonLow,
+      coverage_pct: totalNonLow > 0 ? Math.round((exploredNonLow / totalNonLow) * 100) : 100,
+      unexplored_high: attackSurface.document.surfaces.filter(
+        (s) => ["CRITICAL", "HIGH"].includes((s.priority || "").toUpperCase()) && !exploredSet.has(s.id),
+      ).length,
+    };
+  } catch {}
 
   return JSON.stringify({
     ...summary,
+    coverage,
     findings_summary: findings.map((finding) => ({
       id: finding.id,
       severity: finding.severity,

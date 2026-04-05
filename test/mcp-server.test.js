@@ -1220,6 +1220,7 @@ test("bounty_read_findings, bounty_list_findings, and bounty_wave_status return 
       total: 0,
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
+      coverage: null,
       findings_summary: [],
     });
   });
@@ -1293,6 +1294,7 @@ test("bounty_list_findings and bounty_wave_status keep their external shapes whi
       total: 2,
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
+      coverage: null,
       findings_summary: [
         {
           id: "F-1",
@@ -2253,5 +2255,99 @@ test("session lock creates marker file inside lock directory", () => {
 
     // Cleanup
     fs.rmSync(lockPath, { recursive: true, force: true });
+  });
+});
+
+// ── Fix 1: Verification round filename mapping ──
+
+test("verificationRoundPaths returns balanced.json for balanced round (not brutalist-final.json)", () => {
+  withTempHome(() => {
+    const paths = verificationRoundPaths("example.com", "balanced");
+    assert.ok(paths.json.endsWith("balanced.json"), `Expected balanced.json, got ${paths.json}`);
+    assert.ok(paths.markdown.endsWith("balanced.md"), `Expected balanced.md, got ${paths.markdown}`);
+    assert.ok(!paths.json.includes("brutalist-final"), "Should not contain brutalist-final");
+  });
+});
+
+// ── Fix 2: Finding counter race condition (sequential IDs under lock) ──
+
+test("recordFinding produces sequential IDs without gaps when called rapidly", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const ids = [];
+    for (let i = 0; i < 5; i++) {
+      const result = JSON.parse(recordFinding({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        title: `Finding ${i}`,
+        severity: "medium",
+        endpoint: `/api/test${i}`,
+        description: "Test",
+        proof_of_concept: "curl test",
+        response_evidence: "200 OK",
+        impact: "Test impact",
+        validated: true,
+      }));
+      ids.push(result.finding_id);
+    }
+
+    assert.deepEqual(ids, ["F-1", "F-2", "F-3", "F-4", "F-5"]);
+  });
+});
+
+// ── Fix 3: Session lock stale timeout ──
+
+test("SESSION_LOCK_STALE_MS is 300 seconds", () => {
+  assert.equal(SESSION_LOCK_STALE_MS, 300_000);
+});
+
+// ── Fix 6: waveStatus returns coverage data ──
+
+test("bounty_wave_status returns coverage_pct when attack surface and state exist", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: null,
+      explored: ["surface-a"],
+    });
+
+    // Seed attack surface with priorities
+    const surfaces = [
+      { id: "surface-a", hosts: ["https://example.com"], priority: "CRITICAL" },
+      { id: "surface-b", hosts: ["https://api.example.com"], priority: "HIGH" },
+      { id: "surface-c", hosts: ["https://cdn.example.com"], priority: "LOW" },
+    ];
+    writeFileAtomic(attackSurfacePath(domain), JSON.stringify({ surfaces }) + "\n");
+
+    const result = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.ok(result.coverage != null, "coverage should not be null");
+    assert.equal(result.coverage.total_surfaces, 3);
+    assert.equal(result.coverage.non_low_total, 2);     // CRITICAL + HIGH
+    assert.equal(result.coverage.non_low_explored, 1);   // only surface-a explored
+    assert.equal(result.coverage.coverage_pct, 50);       // 1/2 = 50%
+    assert.equal(result.coverage.unexplored_high, 1);     // surface-b is HIGH and unexplored
+  });
+});
+
+test("bounty_wave_status coverage_pct is 100 when all surfaces are LOW", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0, pending_wave: null });
+
+    const surfaces = [
+      { id: "surface-a", hosts: ["https://cdn.example.com"], priority: "LOW" },
+      { id: "surface-b", hosts: ["https://static.example.com"], priority: "LOW" },
+    ];
+    writeFileAtomic(attackSurfacePath(domain), JSON.stringify({ surfaces }) + "\n");
+
+    const result = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.equal(result.coverage.non_low_total, 0);
+    assert.equal(result.coverage.coverage_pct, 100);  // 0/0 → 100% (no non-LOW to explore)
   });
 });

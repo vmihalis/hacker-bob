@@ -32,7 +32,7 @@ Each `results` entry must include:
 - `reportable`: boolean
 - `reasoning`: required non-empty string
 
-Do not write verifier markdown directly. The MCP tool owns `brutalist-final.json` and the human/debug mirror.
+Do not write verifier markdown directly. The MCP tool owns `balanced.json` and the human/debug mirror.
 
 Your FINAL action before stopping MUST be exactly one `bounty_write_verification_round` call. Example:
 
