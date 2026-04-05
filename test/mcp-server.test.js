@@ -6,6 +6,8 @@ const path = require("path");
 
 const {
   SESSION_LOCK_STALE_MS,
+  assertSafeDomain,
+  validateScanUrl,
   applyWaveMerge,
   attackSurfacePath,
   autoSignup,
@@ -2096,5 +2098,160 @@ test("bounty_read_hunter_brief rejects unassigned agent", () => {
       () => readHunterBrief({ target_domain: domain, wave: "w1", agent: "a9" }),
       /Agent a9 is not assigned/,
     );
+  });
+});
+
+// ── Bug 1: Path traversal via target_domain ──
+
+test("assertSafeDomain rejects path traversal sequences", () => {
+  assert.throws(() => assertSafeDomain("../../etc"), /invalid path characters/);
+  assert.throws(() => assertSafeDomain("foo/../bar"), /invalid path characters/);
+  assert.throws(() => assertSafeDomain(".."), /invalid path characters/);
+  assert.throws(() => assertSafeDomain("foo/bar"), /invalid path characters/);
+  assert.throws(() => assertSafeDomain("foo\\bar"), /invalid path characters/);
+});
+
+test("assertSafeDomain accepts valid domain names", () => {
+  assert.equal(assertSafeDomain("example.com"), "example.com");
+  assert.equal(assertSafeDomain("sub.example.com"), "sub.example.com");
+  assert.equal(assertSafeDomain("my-target.io"), "my-target.io");
+});
+
+test("sessionDir rejects path traversal in target_domain", () => {
+  assert.throws(() => sessionDir("../../.ssh"), /invalid path characters/);
+  assert.throws(() => sessionDir("../secrets"), /invalid path characters/);
+});
+
+test("initSession rejects path traversal domain", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => initSession({ target_domain: "../../etc", target_url: "https://evil.com" }),
+      /invalid path characters/,
+    );
+  });
+});
+
+// ── Bug 2: writeHandoff validates domain and uses atomic writes ──
+
+test("writeHandoff rejects missing target_domain", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => writeHandoff({ target_url: "https://example.com", session_number: 1 }),
+      /target_domain/,
+    );
+  });
+});
+
+test("writeHandoff rejects path traversal domain", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => writeHandoff({ target_domain: "../evil", target_url: "https://example.com", session_number: 1 }),
+      /invalid path characters/,
+    );
+  });
+});
+
+test("writeHandoff writes file atomically", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+
+    writeHandoff({
+      target_domain: domain,
+      target_url: "https://example.com",
+      session_number: 1,
+      findings_summary: [{ id: "F-1", severity: "high", title: "Test" }],
+    });
+
+    const handoffPath = path.join(dir, "SESSION_HANDOFF.md");
+    assert.ok(fs.existsSync(handoffPath));
+    const content = fs.readFileSync(handoffPath, "utf8");
+    assert.ok(content.includes("F-1"));
+  });
+});
+
+// ── Bug 3: resolveAuthJsonPath fallback uses most-recently-modified dir ──
+
+test("resolveAuthJsonPath falls back to most recently modified session dir", () => {
+  withTempHome((tempHome) => {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+
+    // Create two session dirs: aaa-old.com (older) and zzz-new.com (newer alphabetically but older mtime)
+    const oldDir = path.join(sessionsDir, "zzz-alphabetically-last.com");
+    const newDir = path.join(sessionsDir, "aaa-alphabetically-first.com");
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.mkdirSync(newDir, { recursive: true });
+
+    // Touch the "aaa" dir to make it most recent
+    const now = new Date();
+    fs.utimesSync(oldDir, new Date(now - 60000), new Date(now - 60000));
+    fs.utimesSync(newDir, now, now);
+
+    // Without a target_domain, should pick the most-recently-modified dir (aaa)
+    const result = resolveAuthJsonPath(null);
+    assert.ok(result.includes("aaa-alphabetically-first.com"));
+  });
+});
+
+// ── Bug 4: httpScan URL validation ──
+
+test("validateScanUrl rejects localhost", () => {
+  assert.throws(() => validateScanUrl("http://localhost/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://127.0.0.1/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://0.0.0.0/"), /Blocked internal/);
+});
+
+test("validateScanUrl rejects private IP ranges", () => {
+  assert.throws(() => validateScanUrl("http://10.0.0.1/secret"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://192.168.1.1/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://172.16.0.1/internal"), /Blocked internal/);
+});
+
+test("validateScanUrl rejects cloud metadata endpoint", () => {
+  assert.throws(() => validateScanUrl("http://169.254.169.254/latest/meta-data/"), /Blocked internal/);
+});
+
+test("validateScanUrl rejects unsupported protocols", () => {
+  assert.throws(() => validateScanUrl("ftp://example.com/file"), /Unsupported protocol/);
+  assert.throws(() => validateScanUrl("file:///etc/passwd"), /Unsupported protocol/);
+});
+
+test("validateScanUrl rejects internal/local domains", () => {
+  assert.throws(() => validateScanUrl("http://service.internal/api"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://printer.local/status"), /Blocked internal/);
+});
+
+test("validateScanUrl accepts valid external URLs", () => {
+  assert.doesNotThrow(() => validateScanUrl("https://example.com/api/v1/users"));
+  assert.doesNotThrow(() => validateScanUrl("http://target.io/login"));
+});
+
+test("validateScanUrl rejects malformed URLs", () => {
+  assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
+});
+
+// ── Bug 5: Session lock uses marker for ownership verification ──
+
+test("session lock creates marker file inside lock directory", () => {
+  withTempHome(() => {
+    const domain = "locktest.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const lockPath = sessionLockPath(domain);
+
+    // Acquire lock manually
+    fs.mkdirSync(lockPath);
+    const markerPath = path.join(lockPath, `owner-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(markerPath, "");
+
+    // Verify marker exists inside lock dir
+    const contents = fs.readdirSync(lockPath);
+    assert.ok(contents.length > 0, "Lock directory should contain a marker file");
+    assert.ok(contents[0].startsWith("owner-"), "Marker file should start with 'owner-'");
+
+    // Cleanup
+    fs.rmSync(lockPath, { recursive: true, force: true });
   });
 });

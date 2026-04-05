@@ -474,8 +474,17 @@ const TOOLS = [
 ];
 
 // ── Session path helper ──
+function assertSafeDomain(domain) {
+  const trimmed = assertNonEmptyString(domain, "target_domain");
+  if (/[\/\\]/.test(trimmed) || /(?:^|\.)\.\.(?:\.|$)/.test(trimmed)) {
+    throw new Error(`target_domain contains invalid path characters: ${trimmed}`);
+  }
+  return trimmed;
+}
+
 function sessionDir(domain) {
-  return path.join(os.homedir(), "bounty-agent-sessions", domain);
+  const safe = assertSafeDomain(domain);
+  return path.join(os.homedir(), "bounty-agent-sessions", safe);
 }
 
 function statePath(domain) {
@@ -722,9 +731,12 @@ function acquireSessionLock(domain) {
   const lockPathValue = sessionLockPath(domain);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (tryAcquireSessionLock(lockPathValue)) {
+      // Write a marker file so we can verify lock ownership
+      const markerPath = path.join(lockPathValue, `owner-${process.pid}-${Date.now()}`);
+      try { fs.writeFileSync(markerPath, ""); } catch {}
       return () => {
         try {
-          fs.rmdirSync(lockPathValue);
+          fs.rmSync(lockPathValue, { recursive: true, force: true });
         } catch {}
       };
     }
@@ -739,6 +751,8 @@ function acquireSessionLock(domain) {
       try {
         fs.rmSync(lockPathValue, { recursive: true, force: true });
       } catch {}
+      // Re-check: if another process grabbed it between rmSync and our next mkdirSync,
+      // tryAcquireSessionLock will return false and we'll throw "lock busy" on attempt 1
       continue;
     }
 
@@ -1525,9 +1539,33 @@ function renderGradeVerdictMarkdown(document) {
 
 // ── Tool implementations ──
 
+function validateScanUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Unsupported protocol: ${parsed.protocol}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]" || host === "::1" ||
+    host === "0.0.0.0" ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    host === "169.254.169.254" ||
+    host.endsWith(".internal") ||
+    host.endsWith(".local")
+  ) {
+    throw new Error(`Blocked internal/private host: ${host}`);
+  }
+}
+
 async function httpScan(args) {
   const method = args.method;
   const url = args.url;
+  validateScanUrl(url);
   const headers = args.headers || {};
   const body = args.body || undefined;
   const followRedirects = args.follow_redirects ?? false;
@@ -2225,7 +2263,7 @@ function applyWaveMerge(args) {
 }
 
 function writeHandoff(args) {
-  const domain = args.target_domain;
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -2248,7 +2286,7 @@ function writeHandoff(args) {
   for (const p of args.promising_leads || []) lines.push(`- ${p}`);
 
   const handoffPath = path.join(dir, `SESSION_HANDOFF.md`);
-  fs.writeFileSync(handoffPath, lines.join("\n") + "\n");
+  writeFileAtomic(handoffPath, lines.join("\n") + "\n");
   return JSON.stringify({ written: handoffPath });
 }
 
@@ -2407,10 +2445,17 @@ function resolveAuthJsonPath(targetDomain) {
     if (fs.existsSync(targetDir)) return path.join(targetDir, "auth.json");
   }
   try {
-    const dirs = fs.readdirSync(sessionsDir).filter((d) =>
-      fs.statSync(path.join(sessionsDir, d)).isDirectory()
-    ).sort();
-    if (dirs.length > 0) return path.join(sessionsDir, dirs[dirs.length - 1], "auth.json");
+    const entries = fs.readdirSync(sessionsDir)
+      .map((d) => {
+        const full = path.join(sessionsDir, d);
+        try {
+          const stat = fs.statSync(full);
+          return stat.isDirectory() ? { name: d, mtimeMs: stat.mtimeMs } : null;
+        } catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (entries.length > 0) return path.join(sessionsDir, entries[0].name, "auth.json");
   } catch {}
   return null;
 }
@@ -3106,6 +3151,8 @@ function startServer() {
 module.exports = {
   TOOLS,
   SESSION_LOCK_STALE_MS,
+  assertSafeDomain,
+  validateScanUrl,
   attackSurfacePath,
   appendJsonlLine,
   applyWaveMerge,
