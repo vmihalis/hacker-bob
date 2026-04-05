@@ -105,6 +105,25 @@ test("settings.json registers session-write-guard for Bash and Write", () => {
   );
 });
 
+test("orchestrator documents --no-auth flag and skips AUTH when set", () => {
+  const orchestrator = readFile(".claude/commands/bountyagent.md");
+  assert.match(
+    orchestrator,
+    /--no-auth/,
+    "Missing --no-auth flag documentation"
+  );
+  assert.match(
+    orchestrator,
+    /--no-auth.*skip/is,
+    "Missing --no-auth skip behavior"
+  );
+  assert.match(
+    orchestrator,
+    /auth_status.*unauthenticated/,
+    "Missing unauthenticated transition when --no-auth is set"
+  );
+});
+
 test("hunter and orchestrator prompts keep the structured handoff contract explicit", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
   const orchestratorPrompt = readFile(".claude/commands/bountyagent.md");
