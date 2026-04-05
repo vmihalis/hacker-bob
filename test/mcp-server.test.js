@@ -2351,3 +2351,54 @@ test("bounty_wave_status coverage_pct is 100 when all surfaces are LOW", () => {
     assert.equal(result.coverage.coverage_pct, 100);  // 0/0 → 100% (no non-LOW to explore)
   });
 });
+
+// ── Auth silent fallback: httpScan returns error when auth_profile not found ──
+
+test("httpScan returns error when auth_profile is requested but not found", async () => {
+  const previousHome = process.env.HOME;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-authtest-"));
+  process.env.HOME = tempHome;
+  try {
+    const result = JSON.parse(await executeTool("bounty_http_scan", {
+      method: "GET",
+      url: "https://example.com/",
+      auth_profile: "nonexistent_test_profile_xyz",
+    }));
+    assert.ok(result.error, `Should return an error, got keys: ${JSON.stringify(Object.keys(result))}`);
+    assert.ok(result.error.includes("not found"), `Error should mention profile not found: ${result.error}`);
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+// ── Verification completeness: malformed prior round is a hard error, not skipped ──
+
+test("writeVerificationRound rejects balanced round when brutalist JSON is malformed", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "VERIFY" });
+    seedFinding(domain, { severity: "high" });
+
+    // Write valid brutalist round first
+    writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      results: [{ finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true, reasoning: "Valid" }],
+    });
+
+    // Corrupt the brutalist JSON
+    const brutalistPath = verificationRoundPaths(domain, "brutalist").json;
+    fs.writeFileSync(brutalistPath, "NOT VALID JSON{{{");
+
+    // Balanced round should fail because prior round is malformed (not silently skip)
+    assert.throws(
+      () => writeVerificationRound({
+        target_domain: domain,
+        round: "balanced",
+        results: [{ finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true, reasoning: "Valid" }],
+      }),
+      /Unexpected token/,  // JSON.parse error
+    );
+  });
+});

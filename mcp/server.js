@@ -1609,6 +1609,10 @@ async function httpScan(args) {
       for (const [k, v] of Object.entries(auth)) {
         if (k !== "credentials" && !headers[k]) headers[k] = v;
       }
+    } else {
+      return JSON.stringify({
+        error: `auth_profile "${authProfile}" requested but not found — request was NOT sent. Store auth first via bounty_auth_store or bounty_auth_manual.`,
+      });
     }
   }
 
@@ -1957,7 +1961,10 @@ function writeVerificationRound(args) {
   const PRIOR_ROUND = { balanced: "brutalist", final: "balanced" };
   if (PRIOR_ROUND[round]) {
     const priorPaths = verificationRoundPaths(domain, PRIOR_ROUND[round]);
-    try {
+    if (!fs.existsSync(priorPaths.json)) {
+      // Prior round file doesn't exist yet (e.g., brutalist hasn't run) — skip check
+    } else {
+      // File exists — parse it; malformed JSON is a hard error, not a skip
       const priorDoc = JSON.parse(fs.readFileSync(priorPaths.json, "utf8"));
       const priorIds = new Set((priorDoc.results || []).map((r) => r.finding_id));
       const currentIds = new Set(results.map((r) => r.finding_id));
@@ -1968,9 +1975,6 @@ function writeVerificationRound(args) {
           `Include ALL findings from the prior round — pass through unchanged findings you did not re-test.`
         );
       }
-    } catch (e) {
-      if (e.message.includes("round is missing")) throw e;
-      // Prior round file doesn't exist yet (e.g., brutalist hasn't run) — skip check
     }
   }
 
