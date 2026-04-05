@@ -9,7 +9,9 @@
 //           bounty_write_handoff, bounty_write_wave_handoff,
 //           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
 //           bounty_read_handoff, bounty_log_dead_ends,
-//           bounty_auth_manual, bounty_wave_status
+//           bounty_auth_manual, bounty_wave_status,
+//           bounty_temp_email, bounty_signup_detect, bounty_auth_store,
+//           bounty_auto_signup
 
 const fs = require("fs");
 const path = require("path");
@@ -17,6 +19,7 @@ const os = require("os");
 
 // ── In-memory state ──
 const authProfiles = new Map();
+const tempMailboxes = new Map(); // email_address → { provider, address, password, token, domain, login }
 const findingCounters = new Map(); // findings.jsonl path → counter
 
 const FINDING_ID_RE = /^F-([1-9]\d*)$/;
@@ -380,6 +383,92 @@ const TOOLS = [
       type: "object",
       properties: { target_domain: { type: "string" } },
       required: ["target_domain"],
+    },
+  },
+  {
+    name: "bounty_temp_email",
+    description:
+      "Manage temporary email addresses for automated account registration. Operations: create (new mailbox), poll (check inbox), extract (parse verification code/link from message).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        operation: { type: "string", enum: ["create", "poll", "extract"] },
+        provider: { type: "string", enum: ["mail.tm", "guerrillamail"] },
+        email_address: { type: "string" },
+        message_id: { type: "string" },
+        from_filter: { type: "string" },
+      },
+      required: ["operation"],
+    },
+  },
+  {
+    name: "bounty_signup_detect",
+    description:
+      "Probe a target for registration/signup endpoints and analyze form requirements. Returns detected endpoints, form fields, CAPTCHA presence, and signup feasibility.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        target_url: { type: "string" },
+      },
+      required: ["target_domain", "target_url"],
+    },
+  },
+  {
+    name: "bounty_auth_store",
+    description:
+      "Store authentication profile for a specific role (attacker/victim). Supports multi-profile auth.json v2 format. Use instead of bounty_auth_manual for new sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        role: { type: "string", enum: ["attacker", "victim"] },
+        cookies: { type: "object", additionalProperties: { type: "string" } },
+        headers: { type: "object", additionalProperties: { type: "string" } },
+        local_storage: { type: "object", additionalProperties: { type: "string" } },
+        credentials: {
+          type: "object",
+          properties: {
+            email: { type: "string" },
+            password: { type: "string" },
+          },
+        },
+      },
+      required: ["target_domain", "role"],
+    },
+  },
+  {
+    name: "bounty_auto_signup",
+    description:
+      "Automated browser-based account registration using Patchright (stealth Playwright fork) with CAPTCHA solving. Fills signup forms with human-like interaction, solves reCAPTCHA/hCaptcha/Turnstile via CapSolver, and returns extracted auth tokens. Requires patchright to be installed (optional dep). Set CAPSOLVER_API_KEY env var for CAPTCHA solving.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        signup_url: { type: "string" },
+        email: { type: "string" },
+        password: { type: "string" },
+        name: { type: "string" },
+        role: { type: "string", enum: ["attacker", "victim"], default: "attacker" },
+        proxy: { type: "string" },
+        headless: { type: "boolean" },
+        timeout_ms: { type: "number" },
+      },
+      required: ["target_domain", "signup_url", "email", "password"],
+    },
+  },
+  {
+    name: "bounty_read_hunter_brief",
+    description:
+      "Return everything a hunter needs to start testing: assigned surface, exclusions, valid surface IDs, and bypass table. Hunters call this once on startup instead of receiving everything via spawn prompt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave: { type: "string", pattern: "^w[0-9]+$" },
+        agent: { type: "string", pattern: "^a[0-9]+$" },
+      },
+      required: ["target_domain", "wave", "agent"],
     },
   },
 ];
@@ -1445,10 +1534,44 @@ async function httpScan(args) {
   const timeoutMs = args.timeout_ms || 10000;
   const authProfile = args.auth_profile;
 
-  if (authProfile && authProfiles.has(authProfile)) {
-    const auth = authProfiles.get(authProfile);
-    for (const [k, v] of Object.entries(auth)) {
-      if (!headers[k]) headers[k] = v;
+  if (authProfile) {
+    let auth = null;
+
+    // 1. Exact match in memory (legacy profile_name or domain:role)
+    if (authProfiles.has(authProfile)) {
+      auth = authProfiles.get(authProfile);
+    }
+
+    // 2. Try domain-qualified key from URL (e.g. "attacker" → "target.com:attacker")
+    if (!auth) {
+      try {
+        const urlHost = new URL(url).hostname;
+        const domainKey = `${urlHost}:${authProfile}`;
+        if (authProfiles.has(domainKey)) auth = authProfiles.get(domainKey);
+      } catch {}
+    }
+
+    // 3. Fallback: load from auth.json on disk (v2 format)
+    if (!auth) {
+      try {
+        const urlHost = new URL(url).hostname;
+        const authPath = resolveAuthJsonPath(urlHost);
+        if (authPath) {
+          const doc = readAuthJson(authPath);
+          if (doc && doc.version === 2 && doc.profiles && doc.profiles[authProfile]) {
+            auth = doc.profiles[authProfile];
+          } else if (doc && !doc.version) {
+            // Legacy flat format — use as-is
+            auth = doc;
+          }
+        }
+      } catch {}
+    }
+
+    if (auth) {
+      for (const [k, v] of Object.entries(auth)) {
+        if (k !== "credentials" && !headers[k]) headers[k] = v;
+      }
     }
   }
 
@@ -1666,6 +1789,88 @@ function waveStatus(args) {
       wave_agent: finding.wave || finding.agent ? `${finding.wave || "?"}/${finding.agent || "?"}` : null,
     })),
   });
+}
+
+// Bypass table tech-to-file map (matches .claude/commands/bountyagent.md BYPASS TABLES section)
+const BYPASS_TABLE_MAP = {
+  wordpress: "wordpress.txt",
+  graphql: "graphql.txt",
+  ssrf: "ssrf.txt",
+  jwt: "jwt.txt",
+  firebase: "firebase.txt",
+  "next.js": "nextjs.txt",
+  nextjs: "nextjs.txt",
+  oauth: "oauth-oidc.txt",
+  oidc: "oauth-oidc.txt",
+};
+const BYPASS_TABLE_DEFAULT = "rest-api.txt";
+
+function resolveBypassTable(techStack) {
+  if (!Array.isArray(techStack)) return BYPASS_TABLE_DEFAULT;
+  for (const tech of techStack) {
+    const key = String(tech).toLowerCase();
+    for (const [pattern, file] of Object.entries(BYPASS_TABLE_MAP)) {
+      if (key.includes(pattern)) return file;
+    }
+  }
+  return BYPASS_TABLE_DEFAULT;
+}
+
+function readHunterBrief(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const wave = parseWaveId(args.wave);
+  const agent = parseAgentId(args.agent);
+  const waveNumber = Number(wave.slice(1));
+
+  // 1. Load and validate assignment
+  const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
+  const assignment = assignmentByAgent.get(agent);
+  if (!assignment) {
+    throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
+  }
+
+  // 2. Load attack surface and find assigned surface
+  const attackSurface = readAttackSurfaceStrict(domain);
+  const surfaceObj = attackSurface.document.surfaces.find(
+    (s) => s.id === assignment.surface_id,
+  );
+  if (!surfaceObj) {
+    throw new Error(`Surface ${assignment.surface_id} not found in attack_surface.json`);
+  }
+
+  // 3. Read session state for exclusions
+  const { state } = readSessionStateStrict(domain);
+
+  // 4. Resolve bypass table
+  const bypassFile = resolveBypassTable(surfaceObj.tech_stack);
+  let bypassTable = "";
+  try {
+    // Look for bypass tables relative to project dir, install location, or global install
+    const candidates = [
+      path.join(process.env.CLAUDE_PROJECT_DIR || "", ".claude", "bypass-tables", bypassFile),
+      path.join(__dirname, "..", ".claude", "bypass-tables", bypassFile),
+      path.join(os.homedir(), ".claude", "bypass-tables", bypassFile),
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        bypassTable = fs.readFileSync(candidate, "utf8").trim();
+        break;
+      }
+    }
+  } catch {}
+
+  return JSON.stringify({
+    target_url: state.target_url,
+    wave,
+    agent,
+    surface: surfaceObj,
+    valid_surface_ids: attackSurface.surface_ids,
+    dead_ends: state.dead_ends,
+    waf_blocked_endpoints: state.waf_blocked_endpoints,
+    scope_exclusions: state.scope_exclusions,
+    bypass_table: bypassTable || null,
+    auth_hint: "Read ~/bounty-agent-sessions/" + domain + "/auth.json if it exists.",
+  }, null, 2);
 }
 
 function writeVerificationRound(args) {
@@ -2179,13 +2384,10 @@ function readHandoff(args) {
   }
 }
 
-function authManual(args) {
-  const name = args.profile_name;
-  const profile = {};
-  const headers = args.headers || {};
-  const cookies = args.cookies || {};
-  const storage = args.local_storage || {};
+// ── Auth store (v2 multi-profile) ──
 
+function buildHeaderProfile(headers, cookies, storage) {
+  const profile = {};
   Object.assign(profile, headers);
   if (Object.keys(cookies).length) {
     profile["Cookie"] = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
@@ -2195,27 +2397,519 @@ function authManual(args) {
       profile["Authorization"] = `Bearer ${v}`;
     }
   }
+  return profile;
+}
 
-  authProfiles.set(name, profile);
-
-  // Save to the target's session dir if provided, otherwise best-effort last session
+function resolveAuthJsonPath(targetDomain) {
   const sessionsDir = path.join(os.homedir(), "bounty-agent-sessions");
+  if (targetDomain) {
+    const targetDir = path.join(sessionsDir, targetDomain.trim());
+    if (fs.existsSync(targetDir)) return path.join(targetDir, "auth.json");
+  }
   try {
-    const targetDir = args.target_domain
-      ? path.join(sessionsDir, args.target_domain.trim())
-      : null;
+    const dirs = fs.readdirSync(sessionsDir).filter((d) =>
+      fs.statSync(path.join(sessionsDir, d)).isDirectory()
+    ).sort();
+    if (dirs.length > 0) return path.join(sessionsDir, dirs[dirs.length - 1], "auth.json");
+  } catch {}
+  return null;
+}
 
-    if (targetDir && fs.existsSync(targetDir)) {
-      fs.writeFileSync(path.join(targetDir, "auth.json"), JSON.stringify(profile, null, 2));
-    } else {
-      const dirs = fs.readdirSync(sessionsDir).sort();
-      if (dirs.length > 0) {
-        fs.writeFileSync(path.join(sessionsDir, dirs[dirs.length - 1], "auth.json"), JSON.stringify(profile, null, 2));
+function readAuthJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function migrateAuthJson(existing) {
+  if (!existing || typeof existing !== "object") return { version: 2, profiles: {} };
+  if (existing.version === 2) return existing;
+  // Legacy format: flat header object → wrap as attacker profile
+  return { version: 2, profiles: { attacker: existing } };
+}
+
+function authStore(args) {
+  const domain = args.target_domain;
+  const role = args.role;
+  const headers = args.headers || {};
+  const cookies = args.cookies || {};
+  const storage = args.local_storage || {};
+  const credentials = args.credentials || null;
+
+  const profile = buildHeaderProfile(headers, cookies, storage);
+  if (credentials) profile.credentials = credentials;
+
+  // Update in-memory cache with domain-qualified key
+  const cacheKey = domain ? `${domain}:${role}` : role;
+  authProfiles.set(cacheKey, profile);
+
+  // Write to disk
+  const authPath = resolveAuthJsonPath(domain);
+  if (authPath) {
+    try {
+      const existing = readAuthJson(authPath);
+      const doc = migrateAuthJson(existing);
+      const profileForDisk = Object.assign({}, profile);
+      doc.profiles[role] = profileForDisk;
+      writeFileAtomic(authPath, JSON.stringify(doc, null, 2) + "\n");
+    } catch {}
+  }
+
+  // Check which profiles exist
+  let hasAttacker = false;
+  let hasVictim = false;
+  if (authPath) {
+    try {
+      const saved = readAuthJson(authPath);
+      if (saved && saved.version === 2 && saved.profiles) {
+        hasAttacker = !!saved.profiles.attacker;
+        hasVictim = !!saved.profiles.victim;
       }
+    } catch {}
+  }
+
+  return JSON.stringify({
+    success: true,
+    role,
+    keys: Object.keys(profile).filter((k) => k !== "credentials"),
+    has_attacker: hasAttacker,
+    has_victim: hasVictim,
+  });
+}
+
+// Backward-compat wrapper for bounty_auth_manual
+function authManual(args) {
+  const result = authStore({
+    target_domain: args.target_domain,
+    role: "attacker",
+    cookies: args.cookies,
+    headers: args.headers,
+    local_storage: args.local_storage,
+  });
+  // Also set the old profile_name key for backward compat with existing httpScan callers
+  if (args.profile_name) {
+    const headers = args.headers || {};
+    const cookies = args.cookies || {};
+    const storage = args.local_storage || {};
+    const profile = buildHeaderProfile(headers, cookies, storage);
+    authProfiles.set(args.profile_name, profile);
+  }
+  return result;
+}
+
+// ── Temp email ──
+
+const TEMP_EMAIL_PROVIDERS = ["mail.tm", "guerrillamail"];
+
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+function generatePassword(len = 16) {
+  const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%";
+  let pw = "";
+  for (let i = 0; i < len; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+  return pw;
+}
+
+function generateUsername(len = 10) {
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+  let name = "hunt_";
+  for (let i = 0; i < len; i++) name += chars[Math.floor(Math.random() * chars.length)];
+  return name;
+}
+
+async function failDetail(resp, prefix) {
+  let body = "";
+  try { body = (await resp.text()).slice(0, 200); } catch { /* ignore */ }
+  return `${prefix}: HTTP ${resp.status}${body ? ` — ${body}` : ""}`;
+}
+
+async function tempEmailCreate(preferredProvider) {
+  const providers = preferredProvider
+    ? [preferredProvider, ...TEMP_EMAIL_PROVIDERS.filter((p) => p !== preferredProvider)]
+    : [...TEMP_EMAIL_PROVIDERS];
+  const tried = [];
+
+  for (const provider of providers) {
+    try {
+      if (provider === "mail.tm") {
+        // Get available domain
+        const domainResp = await fetch("https://api.mail.tm/domains", {
+          headers: { ...BROWSER_HEADERS, Accept: "application/json" },
+        });
+        if (!domainResp.ok) throw new Error(await failDetail(domainResp, "mail.tm domains"));
+        const domainData = await domainResp.json();
+        const domains = domainData["hydra:member"] || domainData.member || [];
+        if (!domains.length) throw new Error("mail.tm: no domains available");
+        const emailDomain = domains[0].domain;
+        const login = generateUsername();
+        const password = generatePassword();
+        const address = `${login}@${emailDomain}`;
+
+        // Create account
+        const createResp = await fetch("https://api.mail.tm/accounts", {
+          method: "POST",
+          headers: { ...BROWSER_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify({ address, password }),
+        });
+        if (!createResp.ok) throw new Error(await failDetail(createResp, "mail.tm create"));
+
+        // Get auth token
+        const tokenResp = await fetch("https://api.mail.tm/token", {
+          method: "POST",
+          headers: { ...BROWSER_HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify({ address, password }),
+        });
+        if (!tokenResp.ok) throw new Error(await failDetail(tokenResp, "mail.tm token"));
+        const tokenData = await tokenResp.json();
+
+        const mailbox = { provider: "mail.tm", address, password, token: tokenData.token, domain: emailDomain, login };
+        tempMailboxes.set(address, mailbox);
+        return JSON.stringify({ success: true, email_address: address, password, provider: "mail.tm" });
+      }
+
+      if (provider === "guerrillamail") {
+        const resp = await fetch("https://api.guerrillamail.com/ajax.php?f=get_email_address", {
+          headers: BROWSER_HEADERS,
+        });
+        if (!resp.ok) throw new Error(await failDetail(resp, "guerrillamail get_email_address"));
+        const data = await resp.json();
+        const address = data.email_addr;
+        if (!address) throw new Error("guerrillamail: no email_addr in response");
+        const sidToken = data.sid_token;
+        if (!sidToken) throw new Error("guerrillamail: no sid_token in response");
+        const [login, emailDomain] = address.split("@");
+        const password = generatePassword();
+
+        const mailbox = { provider: "guerrillamail", address, password, token: sidToken, domain: emailDomain, login };
+        tempMailboxes.set(address, mailbox);
+        return JSON.stringify({ success: true, email_address: address, password, provider: "guerrillamail" });
+      }
+    } catch (err) {
+      tried.push({ provider, error: err.message || String(err) });
     }
+  }
+
+  return JSON.stringify({ success: false, error: "All temp email providers failed", providers_tried: tried });
+}
+
+async function tempEmailPoll(emailAddress, fromFilter) {
+  const mailbox = tempMailboxes.get(emailAddress);
+  if (!mailbox) return JSON.stringify({ error: `Unknown email address: ${emailAddress}. Call create first.` });
+
+  try {
+    let messages = [];
+
+    if (mailbox.provider === "mail.tm") {
+      const resp = await fetch("https://api.mail.tm/messages", {
+        headers: { ...BROWSER_HEADERS, Authorization: `Bearer ${mailbox.token}`, Accept: "application/json" },
+      });
+      if (!resp.ok) return JSON.stringify({ error: await failDetail(resp, "mail.tm poll") });
+      const data = await resp.json();
+      messages = (data["hydra:member"] || data.member || []).map((m) => ({
+        id: m.id || m["@id"],
+        from: m.from?.address || "",
+        subject: m.subject || "",
+        date: m.createdAt || "",
+      }));
+    }
+
+    if (mailbox.provider === "guerrillamail") {
+      const resp = await fetch(
+        `https://api.guerrillamail.com/ajax.php?f=check_email&seq=0&sid_token=${encodeURIComponent(mailbox.token)}`,
+        { headers: BROWSER_HEADERS }
+      );
+      if (!resp.ok) return JSON.stringify({ error: await failDetail(resp, "guerrillamail poll") });
+      const data = await resp.json();
+      messages = (data.list || []).map((m) => ({
+        id: String(m.mail_id),
+        from: m.mail_from || "",
+        subject: m.mail_subject || "",
+        date: m.mail_date || "",
+      }));
+    }
+
+    if (fromFilter) {
+      const filter = fromFilter.toLowerCase();
+      messages = messages.filter((m) => m.from.toLowerCase().includes(filter));
+    }
+
+    return JSON.stringify({ success: true, messages });
+  } catch (err) {
+    return JSON.stringify({ error: err.message || String(err) });
+  }
+}
+
+async function tempEmailExtract(emailAddress, messageId) {
+  const mailbox = tempMailboxes.get(emailAddress);
+  if (!mailbox) return JSON.stringify({ error: `Unknown email address: ${emailAddress}. Call create first.` });
+
+  try {
+    let bodyText = "";
+
+    if (mailbox.provider === "mail.tm") {
+      const resp = await fetch(`https://api.mail.tm/messages/${encodeURIComponent(messageId)}`, {
+        headers: { ...BROWSER_HEADERS, Authorization: `Bearer ${mailbox.token}`, Accept: "application/json" },
+      });
+      if (!resp.ok) return JSON.stringify({ error: await failDetail(resp, "mail.tm read") });
+      const data = await resp.json();
+      bodyText = data.text || data.html || "";
+    }
+
+    if (mailbox.provider === "guerrillamail") {
+      const resp = await fetch(
+        `https://api.guerrillamail.com/ajax.php?f=fetch_email&email_id=${encodeURIComponent(messageId)}&sid_token=${encodeURIComponent(mailbox.token)}`,
+        { headers: BROWSER_HEADERS }
+      );
+      if (!resp.ok) return JSON.stringify({ error: await failDetail(resp, "guerrillamail read") });
+      const data = await resp.json();
+      bodyText = data.mail_body || "";
+    }
+
+    // Strip HTML tags for code extraction
+    const plainText = bodyText.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+
+    // Extract verification codes (4-8 digit numbers)
+    const codeMatches = plainText.match(/\b(\d{4,8})\b/g) || [];
+    const verificationCodes = [...new Set(codeMatches)];
+
+    // Extract verification links
+    const linkPattern = /https?:\/\/[^\s"'<>]+(?:verify|confirm|activate|token|code|validate|email)[^\s"'<>]*/gi;
+    const linkMatches = bodyText.match(linkPattern) || [];
+    const verificationLinks = [...new Set(linkMatches)];
+
+    return JSON.stringify({
+      success: true,
+      verification_codes: verificationCodes,
+      verification_links: verificationLinks,
+      raw_text_preview: plainText.slice(0, 500),
+    });
+  } catch (err) {
+    return JSON.stringify({ error: err.message || String(err) });
+  }
+}
+
+async function tempEmail(args) {
+  const op = args.operation;
+  if (op === "create") return tempEmailCreate(args.provider);
+  if (op === "poll") return tempEmailPoll(args.email_address, args.from_filter);
+  if (op === "extract") return tempEmailExtract(args.email_address, args.message_id);
+  return JSON.stringify({ error: `Unknown operation: ${op}` });
+}
+
+// ── Signup detect ──
+
+const SIGNUP_PATHS = [
+  "/register", "/signup", "/sign-up", "/join", "/create-account",
+  "/api/register", "/api/signup", "/api/auth/register", "/api/auth/signup",
+  "/api/v1/register", "/api/v1/signup", "/api/v1/auth/register",
+  "/auth/register", "/auth/signup", "/account/create",
+  "/free-trial", "/try", "/get-started", "/start", "/onboarding",
+  "/pricing", "/plans", "/account/signup", "/users/sign_up",
+];
+
+const CAPTCHA_INDICATORS = ["recaptcha", "hcaptcha", "turnstile", "captcha", "g-recaptcha", "cf-turnstile", "h-captcha"];
+
+const FORM_FIELD_PATTERNS = [
+  { name: "email", pattern: /name=["']?(?:email|e-mail|user_email|userEmail)["'\s>]/i },
+  { name: "password", pattern: /name=["']?(?:password|passwd|pass|user_password)["'\s>]/i },
+  { name: "username", pattern: /name=["']?(?:username|user_name|login|handle)["'\s>]/i },
+  { name: "name", pattern: /name=["']?(?:name|full_name|fullName|first_name|firstName)["'\s>]/i },
+  { name: "phone", pattern: /name=["']?(?:phone|telephone|mobile|tel)["'\s>]/i },
+];
+
+async function signupDetect(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const targetUrl = assertNonEmptyString(args.target_url, "target_url").replace(/\/+$/, "");
+
+  const endpointsFound = [];
+  const formFieldsSet = new Set();
+  let hasCaptcha = false;
+  let captchaType = null;
+  let oauthOnly = false;
+  let emailRestrictions = false;
+
+  for (const signupPath of SIGNUP_PATHS) {
+    try {
+      const url = `${targetUrl}${signupPath}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; security-testing)", Accept: "text/html,application/json" },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (resp.status >= 200 && resp.status < 400) {
+        const ct = resp.headers.get("content-type") || "";
+        let body = "";
+        if (ct.includes("text") || ct.includes("json") || ct.includes("html")) {
+          body = (await resp.text()).slice(0, 20000);
+        }
+
+        endpointsFound.push({ path: signupPath, method: "GET", status: resp.status });
+
+        // Detect form fields
+        for (const { name, pattern } of FORM_FIELD_PATTERNS) {
+          if (pattern.test(body)) formFieldsSet.add(name);
+        }
+
+        // Detect CAPTCHA
+        const bodyLower = body.toLowerCase();
+        for (const indicator of CAPTCHA_INDICATORS) {
+          if (bodyLower.includes(indicator)) {
+            hasCaptcha = true;
+            captchaType = captchaType || indicator;
+          }
+        }
+
+        // Detect email restrictions
+        if (/disposable|temporary email|business email only|corporate email/i.test(body)) {
+          emailRestrictions = true;
+        }
+
+        // Detect OAuth-only
+        if (!formFieldsSet.has("email") && !formFieldsSet.has("password")) {
+          const hasOAuth = /oauth|google.*sign|facebook.*sign|github.*sign|sign.*with.*google|sign.*with.*github/i.test(body);
+          if (hasOAuth && endpointsFound.length === 1) oauthOnly = true;
+        }
+      }
+    } catch {
+      // Timeout or connection error — skip this path
+    }
+  }
+
+  // Determine feasibility
+  let feasibility = "manual";
+  if (endpointsFound.length > 0) {
+    if (oauthOnly) {
+      feasibility = "manual";
+    } else if (hasCaptcha) {
+      feasibility = "assisted";
+    } else {
+      feasibility = "automated";
+    }
+  }
+
+  // Override: if OAuth-only was a premature guess and we found email fields later, correct it
+  if (formFieldsSet.has("email") && formFieldsSet.has("password")) {
+    oauthOnly = false;
+  }
+
+  return JSON.stringify({
+    endpoints_found: endpointsFound,
+    form_fields: [...formFieldsSet],
+    has_captcha: hasCaptcha,
+    captcha_type: captchaType,
+    oauth_only: oauthOnly,
+    email_restrictions_detected: emailRestrictions,
+    signup_feasibility: feasibility,
+  });
+}
+
+// ── Auto signup (browser-based) ──
+
+const { execFile } = require("child_process");
+
+async function autoSignup(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const signupUrl = assertNonEmptyString(args.signup_url, "signup_url");
+  const email = assertNonEmptyString(args.email, "email");
+  const password = assertNonEmptyString(args.password, "password");
+  const role = args.role || "attacker";
+  const name = args.name || "Hunter Test";
+
+  // Check if patchright is available before spawning the script
+  let patchrightAvailable = false;
+  try {
+    require.resolve("patchright");
+    patchrightAvailable = true;
   } catch {}
 
-  return JSON.stringify({ success: true, profile_name: name, keys: Object.keys(profile) });
+  if (!patchrightAvailable) {
+    return JSON.stringify({
+      success: false,
+      error: "patchright not installed. Run: npm install && npx patchright install chromium",
+      fallback: "manual",
+    });
+  }
+
+  const scriptPath = path.join(__dirname, "auto-signup.js");
+  if (!fs.existsSync(scriptPath)) {
+    return JSON.stringify({ success: false, error: "auto-signup.js not found", fallback: "manual" });
+  }
+
+  const config = {
+    signup_url: signupUrl,
+    email,
+    password,
+    name,
+    capsolver_api_key: process.env.CAPSOLVER_API_KEY || null,
+    proxy: args.proxy || process.env.BOUNTY_PROXY || null,
+    timeout_ms: args.timeout_ms || 45000,
+    headless: args.headless !== undefined ? args.headless : false,
+  };
+
+  return new Promise((resolve) => {
+    const timeout = (config.timeout_ms || 45000) + 10000; // script timeout + buffer
+    const child = execFile(
+      process.execPath,
+      [scriptPath, JSON.stringify(config)],
+      { timeout, maxBuffer: 5 * 1024 * 1024, env: { ...process.env } },
+      async (err, stdout, stderr) => {
+        if (err && !stdout) {
+          resolve(JSON.stringify({
+            success: false,
+            error: err.message || String(err),
+            stderr: (stderr || "").slice(0, 500),
+            fallback: "manual",
+          }));
+          return;
+        }
+
+        let result;
+        try {
+          result = JSON.parse(stdout);
+        } catch {
+          resolve(JSON.stringify({
+            success: false,
+            error: "auto-signup returned invalid JSON",
+            raw_output: (stdout || "").slice(0, 500),
+            fallback: "manual",
+          }));
+          return;
+        }
+
+        // If signup succeeded, auto-store auth
+        if (result.success && (Object.keys(result.cookies || {}).length > 0 || Object.keys(result.headers || {}).length > 0)) {
+          try {
+            await authStore({
+              target_domain: domain,
+              role,
+              cookies: result.cookies || {},
+              headers: result.headers || {},
+              local_storage: result.local_storage || {},
+              credentials: { email, password },
+            });
+            result.auth_stored = true;
+            result.auth_role = role;
+          } catch (storeErr) {
+            result.auth_stored = false;
+            result.auth_store_error = storeErr.message;
+          }
+        }
+
+        resolve(JSON.stringify(result));
+      }
+    );
+  });
 }
 
 // ── Tool dispatch ──
@@ -2242,6 +2936,11 @@ async function executeTool(name, args) {
     case "bounty_read_handoff": return readHandoff(args);
     case "bounty_auth_manual": return authManual(args);
     case "bounty_wave_status": return waveStatus(args);
+    case "bounty_temp_email": return tempEmail(args);
+    case "bounty_signup_detect": return signupDetect(args);
+    case "bounty_auth_store": return authStore(args);
+    case "bounty_auto_signup": return autoSignup(args);
+    case "bounty_read_hunter_brief": return readHunterBrief(args);
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
@@ -2410,13 +3109,19 @@ module.exports = {
   attackSurfacePath,
   appendJsonlLine,
   applyWaveMerge,
+  autoSignup,
+  authStore,
+  buildHeaderProfile,
   gradeArtifactPaths,
   initSession,
   listFindings,
   mergeWaveHandoffs,
+  migrateAuthJson,
   normalizeFindingRecord,
   normalizeGradeVerdictDocument,
   normalizeSessionStateDocument,
+  readAuthJson,
+  resolveAuthJsonPath,
   sessionDir,
   sessionLockPath,
   statePath,
@@ -2425,6 +3130,7 @@ module.exports = {
   findingsMarkdownPath,
   readFindings,
   readFindingsFromJsonl,
+  readHunterBrief,
   readGradeVerdict,
   readScopeExclusions,
   readSessionState,
@@ -2433,7 +3139,9 @@ module.exports = {
   renderFindingMarkdownEntry,
   renderGradeVerdictMarkdown,
   renderVerificationRoundMarkdown,
+  signupDetect,
   summarizeFindings,
+  tempEmail,
   transitionPhase,
   verificationRoundPaths,
   waveHandoffStatus,

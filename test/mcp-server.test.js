@@ -8,11 +8,15 @@ const {
   SESSION_LOCK_STALE_MS,
   applyWaveMerge,
   attackSurfacePath,
+  autoSignup,
+  authStore,
+  buildHeaderProfile,
   executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
   initSession,
+  migrateAuthJson,
   readScopeExclusions,
   readSessionState,
   listFindings,
@@ -21,10 +25,12 @@ const {
   readGradeVerdict,
   readVerificationRound,
   recordFinding,
+  resolveAuthJsonPath,
   sessionDir,
   sessionLockPath,
   startWave,
   statePath,
+  tempEmail,
   transitionPhase,
   verificationRoundPaths,
   waveHandoffStatus,
@@ -34,6 +40,7 @@ const {
   writeHandoff,
   writeVerificationRound,
   writeWaveHandoff,
+  readHunterBrief,
 } = require("../mcp/server.js");
 
 function withTempHome(fn) {
@@ -1661,7 +1668,8 @@ test("bounty_auth_manual writes auth.json to the correct session dir when target
     assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
 
     const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "alpha.com", "auth.json"), "utf8"));
-    assert.equal(saved.Authorization, "Bearer tok123");
+    assert.equal(saved.version, 2);
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer tok123");
   } finally {
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -1712,4 +1720,381 @@ test("bounty_auth_manual falls back when target_domain session dir does not exis
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
+});
+
+// ── bounty_auth_store tests ──
+
+test("bounty_auth_store writes v2 auth.json with attacker profile", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "target.com"), { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { "Authorization": "Bearer atok" },
+      cookies: { "session": "abc123" },
+    }));
+
+    assert.equal(result.success, true);
+    assert.equal(result.role, "attacker");
+    assert.equal(result.has_attacker, true);
+    assert.equal(result.has_victim, false);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
+    assert.equal(saved.version, 2);
+    assert.ok(saved.profiles.attacker);
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer atok");
+    assert.equal(saved.profiles.attacker.Cookie, "session=abc123");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_store adds victim profile to existing v2 auth.json", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    const targetDir = path.join(sessionsDir, "target.com");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    // Write attacker first
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { "Authorization": "Bearer atok" },
+    });
+
+    // Now add victim
+    const result = JSON.parse(await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "victim",
+      headers: { "Authorization": "Bearer vtok" },
+    }));
+
+    assert.equal(result.success, true);
+    assert.equal(result.has_attacker, true);
+    assert.equal(result.has_victim, true);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(targetDir, "auth.json"), "utf8"));
+    assert.equal(saved.version, 2);
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer atok");
+    assert.equal(saved.profiles.victim.Authorization, "Bearer vtok");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_store migrates legacy auth.json", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    const targetDir = path.join(sessionsDir, "target.com");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    // Write legacy format (flat object, no version)
+    fs.writeFileSync(path.join(targetDir, "auth.json"), JSON.stringify({
+      Authorization: "Bearer legacy",
+      Cookie: "old=val",
+    }));
+
+    // Add victim — should migrate legacy to attacker and add victim
+    const result = JSON.parse(await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "victim",
+      headers: { "Authorization": "Bearer vtok" },
+    }));
+
+    assert.equal(result.success, true);
+    assert.equal(result.has_attacker, true);
+    assert.equal(result.has_victim, true);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(targetDir, "auth.json"), "utf8"));
+    assert.equal(saved.version, 2);
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer legacy");
+    assert.equal(saved.profiles.victim.Authorization, "Bearer vtok");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_store stores credentials alongside headers", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "target.com"), { recursive: true });
+
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { "Authorization": "Bearer t" },
+      credentials: { email: "test@mail.tm", password: "secret123" },
+    });
+
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
+    assert.equal(saved.profiles.attacker.credentials.email, "test@mail.tm");
+    assert.equal(saved.profiles.attacker.credentials.password, "secret123");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_manual backward compat writes v2 as attacker", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
+    fs.mkdirSync(path.join(sessionsDir, "target.com"), { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_manual", {
+      profile_name: "default",
+      target_domain: "target.com",
+      headers: { "Authorization": "Bearer compat" },
+    }));
+
+    assert.equal(result.success, true);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
+    assert.equal(saved.version, 2);
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer compat");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+// ── bounty_temp_email tests ──
+
+test("bounty_temp_email create returns email with mocked mail.tm", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (url, opts) => {
+      if (url.includes("mail.tm/domains")) {
+        return { ok: true, json: async () => ({ "hydra:member": [{ domain: "test.tm" }] }) };
+      }
+      if (url.includes("mail.tm/accounts")) {
+        return { ok: true, status: 201, json: async () => ({ id: "abc", address: "x@test.tm" }) };
+      }
+      if (url.includes("mail.tm/token")) {
+        return { ok: true, json: async () => ({ token: "jwt123" }) };
+      }
+      return { ok: false, status: 500 };
+    };
+
+    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
+    assert.equal(result.success, true);
+    assert.ok(result.email_address.endsWith("@test.tm"));
+    assert.equal(result.provider, "mail.tm");
+    assert.ok(result.password.length > 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bounty_temp_email create falls back to guerrillamail on mail.tm failure", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      if (url.includes("mail.tm")) {
+        return { ok: false, status: 500, text: async () => "Service Unavailable" };
+      }
+      if (url.includes("guerrillamail") && url.includes("get_email_address")) {
+        return { ok: true, json: async () => ({ email_addr: "test_user@guerrillamail.com", sid_token: "sid123" }) };
+      }
+      return { ok: false, status: 500, text: async () => "" };
+    };
+
+    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
+    assert.equal(result.success, true);
+    assert.equal(result.email_address, "test_user@guerrillamail.com");
+    assert.equal(result.provider, "guerrillamail");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bounty_temp_email create returns error when all providers fail", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({ ok: false, status: 500, text: async () => "Internal Server Error" });
+
+    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
+    assert.equal(result.success, false);
+    assert.ok(result.providers_tried.length > 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bounty_temp_email poll returns messages with mocked mail.tm", async () => {
+  const originalFetch = global.fetch;
+  try {
+    // First create a mailbox to populate tempMailboxes
+    global.fetch = async (url) => {
+      if (url.includes("mail.tm/domains")) {
+        return { ok: true, json: async () => ({ "hydra:member": [{ domain: "test.tm" }] }) };
+      }
+      if (url.includes("mail.tm/accounts")) {
+        return { ok: true, status: 201, json: async () => ({ id: "abc" }) };
+      }
+      if (url.includes("mail.tm/token")) {
+        return { ok: true, json: async () => ({ token: "jwt123" }) };
+      }
+      if (url.includes("mail.tm/messages") && !url.includes("/messages/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            "hydra:member": [
+              { id: "msg1", from: { address: "noreply@target.com" }, subject: "Verify your email", createdAt: "2026-01-01" },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 500 };
+    };
+
+    const createResult = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
+    const pollResult = JSON.parse(await executeTool("bounty_temp_email", {
+      operation: "poll",
+      email_address: createResult.email_address,
+    }));
+
+    assert.equal(pollResult.success, true);
+    assert.equal(pollResult.messages.length, 1);
+    assert.equal(pollResult.messages[0].from, "noreply@target.com");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bounty_temp_email extract finds codes and links", async () => {
+  const originalFetch = global.fetch;
+  try {
+    // Create mailbox first
+    global.fetch = async (url) => {
+      if (url.includes("mail.tm/domains")) {
+        return { ok: true, json: async () => ({ "hydra:member": [{ domain: "test.tm" }] }) };
+      }
+      if (url.includes("mail.tm/accounts")) {
+        return { ok: true, status: 201, json: async () => ({ id: "abc" }) };
+      }
+      if (url.includes("mail.tm/token")) {
+        return { ok: true, json: async () => ({ token: "jwt123" }) };
+      }
+      if (url.includes("mail.tm/messages/msg1")) {
+        return {
+          ok: true,
+          json: async () => ({
+            text: "Your verification code is 847291. Or click https://target.com/verify?token=abc123 to confirm.",
+          }),
+        };
+      }
+      return { ok: false, status: 500 };
+    };
+
+    const createResult = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
+    const extractResult = JSON.parse(await executeTool("bounty_temp_email", {
+      operation: "extract",
+      email_address: createResult.email_address,
+      message_id: "msg1",
+    }));
+
+    assert.equal(extractResult.success, true);
+    assert.ok(extractResult.verification_codes.includes("847291"));
+    assert.ok(extractResult.verification_links.some((l) => l.includes("target.com/verify")));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bounty_temp_email poll for unknown email returns error", async () => {
+  const result = JSON.parse(await executeTool("bounty_temp_email", {
+    operation: "poll",
+    email_address: "nonexistent@nowhere.com",
+  }));
+  assert.ok(result.error);
+  assert.ok(result.error.includes("Unknown email"));
+});
+
+// ── migrateAuthJson unit tests ──
+
+test("migrateAuthJson wraps legacy flat object as attacker profile", () => {
+  const legacy = { Authorization: "Bearer old", Cookie: "s=1" };
+  const result = migrateAuthJson(legacy);
+  assert.equal(result.version, 2);
+  assert.deepStrictEqual(result.profiles.attacker, legacy);
+});
+
+test("migrateAuthJson returns v2 unchanged", () => {
+  const v2 = { version: 2, profiles: { attacker: { Authorization: "Bearer a" } } };
+  const result = migrateAuthJson(v2);
+  assert.equal(result, v2);
+});
+
+test("migrateAuthJson handles null/undefined", () => {
+  assert.deepStrictEqual(migrateAuthJson(null), { version: 2, profiles: {} });
+  assert.deepStrictEqual(migrateAuthJson(undefined), { version: 2, profiles: {} });
+});
+
+// ── bounty_read_hunter_brief tests ──
+
+test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: 1,
+      dead_ends: ["/api/old"],
+      waf_blocked_endpoints: ["/admin"],
+      scope_exclusions: ["third-party.com"],
+    });
+    seedAttackSurface(domain, ["surface-a", "surface-b"]);
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+
+    const brief = JSON.parse(readHunterBrief({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+    }));
+
+    assert.equal(brief.wave, "w1");
+    assert.equal(brief.agent, "a1");
+    assert.equal(brief.surface.id, "surface-a");
+    assert.deepEqual(brief.valid_surface_ids, ["surface-a", "surface-b"]);
+    assert.deepEqual(brief.dead_ends, ["/api/old"]);
+    assert.deepEqual(brief.waf_blocked_endpoints, ["/admin"]);
+    assert.deepEqual(brief.scope_exclusions, ["third-party.com"]);
+  });
+});
+
+test("bounty_read_hunter_brief rejects unassigned agent", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurface(domain, ["surface-a"]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    assert.throws(
+      () => readHunterBrief({ target_domain: domain, wave: "w1", agent: "a9" }),
+      /Agent a9 is not assigned/,
+    );
+  });
 });

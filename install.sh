@@ -44,11 +44,12 @@ cp "$SCRIPT_DIR/.claude/hooks/bounty-statusline.js" "$CLAUDE_DIR/hooks/"
 chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh"
 echo "  scope guard hooks (Bash + MCP) + status line"
 
-# Copy MCP server
+# Copy MCP server + auto-signup script
 mkdir -p "$TARGET_ABS/mcp"
 cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
+cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
 chmod +x "$TARGET_ABS/mcp/server.js"
-echo "  MCP server (mcp/server.js)"
+echo "  MCP server (mcp/server.js + auto-signup.js)"
 
 # Configure .mcp.json
 MCP_JSON="$TARGET_ABS/.mcp.json"
@@ -117,6 +118,11 @@ else
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_wave_status",
+      "mcp__bountyagent__bounty_temp_email",
+      "mcp__bountyagent__bounty_signup_detect",
+      "mcp__bountyagent__bounty_auth_store",
+      "mcp__bountyagent__bounty_auto_signup",
+      "mcp__bountyagent__bounty_read_hunter_brief",
       "Bash(mkdir *)",
       "Bash(test *)",
       "Bash(cat *)",
@@ -147,6 +153,16 @@ else
       },
       {
         "matcher": "mcp__bountyagent__bounty_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_signup_detect",
         "hooks": [
           {
             "type": "command",
@@ -185,6 +201,22 @@ for tool in node curl python3; do
 done
 
 # Optional recon tools
+# Optional: patchright for browser-based auto-signup
+echo ""
+echo "Optional browser automation (auto-signup with CAPTCHA solving):"
+if node -e "require.resolve('patchright')" 2>/dev/null; then
+  echo "  OK: patchright"
+else
+  echo "  MISSING: patchright (optional — enables Tier 2 auto-signup)"
+  echo "    Install: cd $TARGET_ABS && npm init -y && npm install patchright && npx patchright install chromium"
+fi
+if [ -n "$CAPSOLVER_API_KEY" ]; then
+  echo "  OK: CAPSOLVER_API_KEY is set"
+else
+  echo "  NOT SET: CAPSOLVER_API_KEY (optional — enables CAPTCHA solving)"
+  echo "    Get a key at https://capsolver.com and export CAPSOLVER_API_KEY=..."
+fi
+
 echo ""
 echo "Optional recon tools (hunting works without these, recon steps are skipped):"
 for tool in subfinder nuclei; do

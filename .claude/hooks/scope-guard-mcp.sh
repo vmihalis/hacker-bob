@@ -83,7 +83,8 @@ try:
 except Exception:
     payload = {}
 
-url = payload.get("tool_input", {}).get("url", "")
+ti = payload.get("tool_input", {})
+url = ti.get("url", "") or ti.get("target_url", "")
 if not url:
     raise SystemExit(0)
 

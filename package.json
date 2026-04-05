@@ -1,0 +1,13 @@
+{
+  "name": "bountyagent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Autonomous bug bounty hunting framework for Claude Code",
+  "scripts": {
+    "test": "node --test test/mcp-server.test.js",
+    "install-browser": "npx patchright install chromium"
+  },
+  "optionalDependencies": {
+    "patchright": "^1.0.0"
+  }
+}

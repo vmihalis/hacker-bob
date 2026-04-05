@@ -69,11 +69,33 @@ After recon, read `attack_surface.json` and call:
 `bounty_transition_phase({ target_domain, to_phase: "AUTH" })`
 
 ## PHASE 2: AUTH
-Auth is opportunistic, not blocking.
-Tier 1: ask the user to provide auth tokens. Tell them to open DevTools Console on the target (logged in) and paste:
+This phase uses a 4-tier automated signup system. Follow the tiers in order — escalate only when the current tier fails. Do not jump to manual unless all automated tiers have been attempted.
+
+**Step 1 — Detect + Create Email (mandatory, always do both first):**
+Call `bounty_signup_detect({ target_domain, target_url })` and `bounty_temp_email({ operation: "create" })` in parallel. These two calls are mandatory — make them before saying anything to the user.
+
+**Step 2 — Attempt signup using the tiered system:**
+
+After both tools return, work through the tiers in order. Stop at the first tier that succeeds.
+
+**Tier 1 — API POST (feasibility = "automated"):**
+Use `bounty_http_scan` to POST to the detected signup endpoint with the temp email and password. If signup succeeds (2xx response with success indicators), proceed to email verification below.
+
+**Tier 2 — Browser auto-signup (any feasibility, including when Tier 1 fails):**
+Call `bounty_auto_signup({ target_domain, signup_url: "<best signup URL from detect results or target_url + '/signup'>", email: "<temp email>", password: "<generated password>", role: "attacker" })`. This launches a stealth browser (Patchright) that fills the signup form with human-like interaction. If `has_captcha` is true and `CAPSOLVER_API_KEY` is set, it auto-solves reCAPTCHA/hCaptcha/Turnstile. Check the result:
+- If `success: true` and `auth_stored: true` → auth is already saved, skip to verification.
+- If `success: true` but no cookies/tokens extracted → proceed to email verification, then manually login via `bounty_http_scan`.
+- If `success: false` with `fallback: "manual"` (patchright not installed) → skip to Tier 3.
+- If `success: false` with page_errors → report errors to user and try Tier 3.
+
+**Tier 3 — Assisted manual (user registers with temp email):**
+Tell the user the temp email and password you created and ask them to register at the target's signup page using those credentials. When they say "done", poll for the confirmation email and extract the verification code or link for them. Then attempt login and store via `bounty_auth_store`.
+
+**Tier 4 — Manual token capture (last resort):**
+If the user says "skip" or all above tiers failed: ask the user to log in to an existing account, open DevTools Console, and paste:
 ```javascript
 (() => {
-  const data = {
+  const d = {
     cookies: document.cookie,
     localStorage: Object.fromEntries(
       Object.entries(localStorage).filter(([k]) =>
@@ -81,18 +103,20 @@ Tier 1: ask the user to provide auth tokens. Tell them to open DevTools Console 
       )
     ),
   };
-  copy(JSON.stringify(data, null, 2));
+  copy(JSON.stringify(d, null, 2));
   console.log('Copied! Paste in Claude Code.');
 })();
 ```
-If the user provides tokens, save them to `$SESSION/auth.json`.
-Tier 2: if the user says "skip" or does not provide tokens, continue unauthenticated.
-Verify:
-```bash
-test -s "$SESSION/auth.json" && echo "AUTH OK" || echo "AUTH EMPTY"
-```
-Set `auth_status` to `authenticated` or `unauthenticated` by calling:
-`bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`
+Store via `bounty_auth_store({ target_domain, role: "attacker", cookies, headers, local_storage })`. If user says "skip" again, store nothing and move on.
+
+**Step 3 — Email verification (after any successful signup):**
+Poll for confirmation with `bounty_temp_email({ operation: "poll", email_address, from_filter: target_domain })` (loop 12 times, 10 seconds apart). When a message arrives, call `bounty_temp_email({ operation: "extract", email_address, message_id })` and use the verification link or code. If a verification link is returned, visit it with `bounty_http_scan` GET. If a code is returned, submit it via `bounty_http_scan` POST to the target's verify endpoint.
+
+**Step 4 — Repeat for victim:**
+Repeat Steps 1-3 for role "victim" with a new temp email (call `bounty_temp_email({ operation: "create" })` again). Use `role: "victim"` in `bounty_auto_signup` and `bounty_auth_store`.
+
+**Step 5 — Verify and transition:**
+Verify auth works with `bounty_http_scan` GET to a protected endpoint using `auth_profile`, then call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`.
 
 ## PHASE 3: HUNT
 From here on, all target interaction happens inside agents.
@@ -119,31 +143,21 @@ For each hunter, spawn (note: the Agent `name` is for display only; the `agent` 
 ```
 Agent(subagent_type: "hunter-agent", name: "hunter-w[wave]-a[agent]", mode: "bypassPermissions", run_in_background: true, prompt: "
 You are Hunter W[wave]A[agent]. Your agent ID for all MCP calls is a[agent]. Test one surface only.
+Domain: [domain]
+Wave: w[wave]
+Agent: a[agent]
 
-Target: [url]
-Surface assignment:
-[paste one surface from attack_surface.json]
-[paste related nuclei hits if any]
-
-Valid surface IDs for `lead_surface_ids`:
-[paste attack_surface.json.surfaces[].id]
+First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]' }) to load your surface assignment, exclusions, valid surface IDs, and bypass table.
 
 Auth:
 - Read ~/bounty-agent-sessions/[domain]/auth.json if it exists.
-- Otherwise test unauthenticated only.
-
-Hard exclusions for this wave:
-[paste dead_ends from state]
-[paste waf_blocked_endpoints from state]
-
-Out-of-scope hosts/URLs:
-[paste scope_exclusions from state]
-
-Use only the relevant bypass table:
-[inject one tech-specific bypass table — read from .claude/bypass-tables/ per BYPASS TABLES map]
+- If auth.json has "version":2 with "profiles", use "attacker" profile for general testing.
+- For IDOR / access-control bugs: repeat the same request with auth_profile="victim".
+- If auth.json is legacy format (no version field), use it as a single profile.
+- If missing or empty, test unauthenticated only.
 
 Final step before stopping:
-- Call `bounty_write_wave_handoff` exactly once with target_domain, wave, agent, surface_id='[surface.id]', surface_status, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids.
+- Call `bounty_write_wave_handoff` exactly once with target_domain, wave, agent, surface_id (from brief), surface_status, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids.
 ")
 ```
 
@@ -235,19 +249,7 @@ Agent(subagent_type: "report-writer", name: "reporter", mode: "bypassPermissions
 Present the report to the user.
 
 ## BYPASS TABLES
-Bypass tables live in `.claude/bypass-tables/`. Read exactly one file per hunter before injecting into the spawn prompt.
-
-Tech-to-file map:
-- WordPress → `wordpress.txt`
-- GraphQL → `graphql.txt`
-- SSRF → `ssrf.txt`
-- JWT → `jwt.txt`
-- Firebase → `firebase.txt`
-- Next.js → `nextjs.txt`
-- OAuth/OIDC → `oauth-oidc.txt`
-- (default) → `rest-api.txt`
-
-Match the surface's `tech_stack` from `attack_surface.json` against the keys above. If no key matches, use `rest-api.txt`. Read the file content and inject it verbatim into the hunter prompt where `[inject one tech-specific bypass table]` appears.
+Bypass tables are now served by `bounty_read_hunter_brief`. The orchestrator does not need to read or inject them. The hunter calls the brief tool on startup and receives the correct bypass table for its surface's `tech_stack`.
 
 ## ORCHESTRATOR RULES
 1. Recon, hunt, chain, verify, grade, and report are agent-driven. The orchestrator coordinates files and phase transitions only.

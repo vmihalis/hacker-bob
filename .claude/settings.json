@@ -22,6 +22,10 @@
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_wave_status",
+      "mcp__bountyagent__bounty_temp_email",
+      "mcp__bountyagent__bounty_signup_detect",
+      "mcp__bountyagent__bounty_auth_store",
+      "mcp__bountyagent__bounty_read_hunter_brief",
       "Bash(mkdir *)",
       "Bash(test *)",
       "Bash(cat *)",
@@ -67,6 +71,16 @@
       },
       {
         "matcher": "mcp__bountyagent__bounty_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_signup_detect",
         "hooks": [
           {
             "type": "command",
