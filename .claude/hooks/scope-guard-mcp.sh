@@ -98,16 +98,26 @@ if sessions_root.is_dir():
     session_dirs = sorted(path for path in sessions_root.iterdir() if path.is_dir())
 
 scope_cache = {}
-matched_sessions = [session for session in session_dirs if matches_scope(domain, load_scope(session))]
 
-if len(matched_sessions) == 1:
-    session_dir = matched_sessions[0]
-elif len(matched_sessions) > 1:
-    block("BLOCKED: unable to resolve a single session for http_scan")
-elif len(session_dirs) == 1:
-    session_dir = session_dirs[0]
-else:
-    block("BLOCKED: unable to resolve session for http_scan")
+# If target_domain is provided, resolve session directly from it
+target_domain = (ti.get("target_domain") or "").strip().lower()
+session_dir = None
+if target_domain:
+    candidate = sessions_root / target_domain
+    if candidate.is_dir():
+        session_dir = candidate
+
+if session_dir is None:
+    matched_sessions = [session for session in session_dirs if matches_scope(domain, load_scope(session))]
+
+    if len(matched_sessions) == 1:
+        session_dir = matched_sessions[0]
+    elif len(matched_sessions) > 1:
+        block("BLOCKED: unable to resolve a single session for http_scan")
+    elif len(session_dirs) == 1:
+        session_dir = session_dirs[0]
+    else:
+        block("BLOCKED: unable to resolve session for http_scan")
 
 deny_list = session_dir / "deny-list.txt"
 if deny_list.is_file():

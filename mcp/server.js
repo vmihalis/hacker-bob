@@ -4,7 +4,8 @@
 //           bounty_list_findings, bounty_write_verification_round,
 //           bounty_read_verification_round, bounty_write_grade_verdict,
 //           bounty_read_grade_verdict, bounty_init_session,
-//           bounty_read_session_state, bounty_transition_phase,
+//           bounty_read_session_state, bounty_read_state_summary,
+//           bounty_transition_phase,
 //           bounty_start_wave, bounty_apply_wave_merge,
 //           bounty_write_handoff, bounty_write_wave_handoff,
 //           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
@@ -23,7 +24,7 @@ const tempMailboxes = new Map(); // email_address → { provider, address, passw
 
 const FINDING_ID_RE = /^F-([1-9]\d*)$/;
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
-const PHASE_VALUES = ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT"];
+const PHASE_VALUES = ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"];
 const AUTH_STATUS_VALUES = ["pending", "authenticated", "unauthenticated"];
 const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
 const VERIFICATION_DISPOSITION_VALUES = ["confirmed", "denied", "downgraded"];
@@ -67,6 +68,13 @@ const TOOLS = [
         follow_redirects: { type: "boolean" },
         timeout_ms: { type: "number" },
         auth_profile: { type: "string" },
+        target_domain: { type: "string", description: "Session domain for scope resolution when scanning cross-domain URLs (e.g. third-party APIs discovered on the target)." },
+        response_mode: {
+          type: "string",
+          enum: ["full", "status_only", "headers_only", "body_truncate"],
+          description: "Control response size. 'full' (default): complete response. 'status_only': status code + redirect info only (~100 tokens). 'headers_only': status + headers, no body. 'body_truncate': status + headers + first body_limit chars of body.",
+        },
+        body_limit: { type: "number", description: "Max body chars when response_mode is 'body_truncate'. Default 2000." },
       },
       required: ["method", "url"],
     },
@@ -457,6 +465,15 @@ const TOOLS = [
     },
   },
   {
+    name: "bounty_read_state_summary",
+    description: "Lightweight session state view (~500 tokens). Returns phase, wave, finding count, coverage, and array sizes without the full dead_ends/waf arrays. Use this instead of bounty_read_session_state when you only need to check progress.",
+    inputSchema: {
+      type: "object",
+      properties: { target_domain: { type: "string" } },
+      required: ["target_domain"],
+    },
+  },
+  {
     name: "bounty_read_hunter_brief",
     description:
       "Return everything a hunter needs to start testing: assigned surface, exclusions, valid surface IDs, and bypass table. Hunters call this once on startup instead of receiving everything via spawn prompt.",
@@ -529,6 +546,22 @@ function publicSessionState(state) {
     result[field] = state[field];
     return result;
   }, {});
+}
+
+function compactSessionState(state) {
+  return {
+    target: state.target,
+    phase: state.phase,
+    hunt_wave: state.hunt_wave,
+    pending_wave: state.pending_wave,
+    total_findings: state.total_findings,
+    explored_count: (state.explored || []).length,
+    dead_ends_count: (state.dead_ends || []).length,
+    waf_blocked_count: (state.waf_blocked_endpoints || []).length,
+    lead_surface_ids: state.lead_surface_ids || [],
+    hold_count: state.hold_count,
+    auth_status: state.auth_status,
+  };
 }
 
 const WAVE_ID_RE = /^w([1-9]\d*)$/;
@@ -1646,7 +1679,41 @@ async function httpScan(args) {
       analysisBody = respBody;
     }
 
+    const responseMode = args.response_mode || "full";
+    const bodyLimit = args.body_limit || 2000;
+
+    if (responseMode === "status_only") {
+      return JSON.stringify({
+        status: resp.status,
+        status_text: resp.statusText,
+        redirected: resp.redirected,
+        final_url: resp.url,
+      });
+    }
+
+    if (responseMode === "headers_only") {
+      return JSON.stringify({
+        status: resp.status,
+        status_text: resp.statusText,
+        headers: respHeaders,
+        redirected: resp.redirected,
+        final_url: resp.url,
+      });
+    }
+
     const analysis = analyzeResponse(url, resp.status, respHeaders, analysisBody);
+
+    if (responseMode === "body_truncate") {
+      return JSON.stringify({
+        status: resp.status,
+        status_text: resp.statusText,
+        headers: respHeaders,
+        body: respBody.slice(0, bodyLimit) + (respBody.length > bodyLimit ? `\n[TRUNCATED at ${bodyLimit}/${respBody.length} chars]` : ""),
+        redirected: resp.redirected,
+        final_url: resp.url,
+        analysis,
+      }, null, 2);
+    }
 
     return JSON.stringify({
       status: resp.status,
@@ -1881,6 +1948,32 @@ function resolveBypassTable(techStack) {
   return BYPASS_TABLE_DEFAULT;
 }
 
+function filterExclusionsByHosts(entries, hosts, cap = 100) {
+  if (!entries || entries.length === 0) {
+    return { filtered: [], total: 0, omitted: 0 };
+  }
+  const hostnames = (hosts || []).map((h) => {
+    try { return new URL(h).hostname; } catch { return h.replace(/^https?:\/\//, ""); }
+  });
+  const surfaceRelevant = [];
+  const generic = [];
+  for (const entry of entries) {
+    const firstToken = entry.split(/[\s\-\/]/)[0];
+    const looksLikeHost = firstToken.includes(".") &&
+      /^[a-zA-Z0-9][a-zA-Z0-9.\-]*\.[a-zA-Z]{2,}$/.test(firstToken);
+    if (looksLikeHost) {
+      if (hostnames.some((h) => firstToken === h || firstToken.endsWith("." + h))) {
+        surfaceRelevant.push(entry);
+      }
+    } else {
+      generic.push(entry);
+    }
+  }
+  const combined = [...surfaceRelevant, ...generic];
+  const filtered = combined.slice(0, cap);
+  return { filtered, total: entries.length, omitted: Math.max(0, combined.length - filtered.length) };
+}
+
 function readHunterBrief(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -1924,15 +2017,25 @@ function readHunterBrief(args) {
     }
   } catch {}
 
+  const deadEndResult = filterExclusionsByHosts(state.dead_ends, surfaceObj.hosts);
+  const wafResult = filterExclusionsByHosts(state.waf_blocked_endpoints, surfaceObj.hosts);
+
   return JSON.stringify({
     target_url: state.target_url,
     wave,
     agent,
     surface: surfaceObj,
     valid_surface_ids: attackSurface.surface_ids,
-    dead_ends: state.dead_ends,
-    waf_blocked_endpoints: state.waf_blocked_endpoints,
-    scope_exclusions: state.scope_exclusions,
+    dead_ends: deadEndResult.filtered,
+    waf_blocked_endpoints: wafResult.filtered,
+    exclusions_summary: {
+      dead_ends_total: deadEndResult.total,
+      dead_ends_shown: deadEndResult.filtered.length,
+      dead_ends_omitted: deadEndResult.omitted,
+      waf_blocked_total: wafResult.total,
+      waf_blocked_shown: wafResult.filtered.length,
+      waf_blocked_omitted: wafResult.omitted,
+    },
     bypass_table: bypassTable || null,
     auth_hint: "Read ~/bounty-agent-sessions/" + domain + "/auth.json if it exists.",
   }, null, 2);
@@ -2098,6 +2201,15 @@ function readSessionState(args) {
   });
 }
 
+function readStateSummary(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const { state } = readSessionStateStrict(domain);
+  return JSON.stringify({
+    version: 1,
+    state: compactSessionState(state),
+  });
+}
+
 function transitionPhase(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const toPhase = assertEnumValue(args.to_phase, PHASE_VALUES, "to_phase");
@@ -2112,6 +2224,8 @@ function transitionPhase(args) {
       CHAIN: ["VERIFY"],
       VERIFY: ["GRADE"],
       GRADE: ["REPORT", "HUNT"],
+      REPORT: ["EXPLORE"],
+      EXPLORE: ["CHAIN"],
     };
 
     if (!(allowedTransitions[fromPhase] || []).includes(toPhase)) {
@@ -2147,7 +2261,7 @@ function transitionPhase(args) {
       transitioned: true,
       from_phase: fromPhase,
       to_phase: toPhase,
-      state: publicSessionState(nextState),
+      state: compactSessionState(nextState),
     });
   });
 }
@@ -2159,8 +2273,8 @@ function startWave(args) {
 
   return withSessionLock(domain, () => {
     const { raw, state } = readSessionStateStrict(domain);
-    if (state.phase !== "HUNT") {
-      throw new Error(`Wave start requires phase HUNT, found ${state.phase}`);
+    if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
+      throw new Error(`Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
     }
     if (state.pending_wave != null) {
       throw new Error(`Wave start requires pending_wave null, found ${state.pending_wave}`);
@@ -2205,7 +2319,7 @@ function startWave(args) {
       wave_number: waveNumber,
       assignments,
       assignments_path: assignmentsPath,
-      state: publicSessionState(nextState),
+      state: compactSessionState(nextState),
     });
   });
 }
@@ -2217,8 +2331,8 @@ function applyWaveMerge(args) {
 
   return withSessionLock(domain, () => {
     const { raw, state } = readSessionStateStrict(domain);
-    if (state.phase !== "HUNT") {
-      throw new Error(`Wave merge requires phase HUNT, found ${state.phase}`);
+    if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
+      throw new Error(`Wave merge requires phase HUNT or EXPLORE, found ${state.phase}`);
     }
     if (state.pending_wave == null) {
       throw new Error("Wave merge requires pending_wave to be set");
@@ -2235,7 +2349,7 @@ function applyWaveMerge(args) {
         wave_number: waveNumber,
         force_merge: false,
         readiness,
-        state: publicSessionState(state),
+        state: compactSessionState(state),
       });
     }
 
@@ -2280,11 +2394,19 @@ function applyWaveMerge(args) {
       force_merge: forceMerge,
       readiness,
       merge: {
-        ...merge,
+        received_agents: merge.received_agents,
+        invalid_agents: merge.invalid_agents,
+        unexpected_agents: merge.unexpected_agents,
+        completed_surface_ids: merge.completed_surface_ids,
+        partial_surface_ids: merge.partial_surface_ids,
+        missing_surface_ids: merge.missing_surface_ids,
         requeue_surface_ids: requeueSurfaceIds,
+        new_dead_ends_count: merge.dead_ends.length,
+        new_waf_blocked_count: merge.waf_blocked_endpoints.length,
+        lead_surface_ids: merge.lead_surface_ids,
       },
       findings,
-      state: publicSessionState(nextState),
+      state: compactSessionState(nextState),
     });
   });
 }
@@ -2997,6 +3119,7 @@ async function executeTool(name, args) {
     case "bounty_read_grade_verdict": return readGradeVerdict(args);
     case "bounty_init_session": return initSession(args);
     case "bounty_read_session_state": return readSessionState(args);
+    case "bounty_read_state_summary": return readStateSummary(args);
     case "bounty_transition_phase": return transitionPhase(args);
     case "bounty_start_wave": return startWave(args);
     case "bounty_apply_wave_merge": return applyWaveMerge(args);
@@ -3204,10 +3327,13 @@ module.exports = {
   findingsMarkdownPath,
   readFindings,
   readFindingsFromJsonl,
+  filterExclusionsByHosts,
   readHunterBrief,
   readGradeVerdict,
   readScopeExclusions,
   readSessionState,
+  readStateSummary,
+  compactSessionState,
   readVerificationRound,
   recordFinding,
   renderFindingMarkdownEntry,

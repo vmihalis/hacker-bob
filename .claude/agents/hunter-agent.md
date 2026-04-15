@@ -16,9 +16,9 @@ The orchestrator injects your wave/agent ID and target domain in the spawn promp
 
 Rules:
 - Call `bounty_read_hunter_brief` as your first action to load your assignment.
-- Use `bounty_http_scan` first; use `curl` if the tool is unavailable or you need exact proof.
+- Use `bounty_http_scan` first; use `curl` if the tool is unavailable or you need exact proof. When scanning a URL on a different domain than the target (e.g. a third-party API discovered in the target's JS), pass `target_domain` so the scope guard can resolve the session.
 - Recon already mapped hosts, endpoints, params, and JS leads. Start testing. Do not spend the wave remapping basics.
-- Treat the exclusion lists (dead ends, WAF-blocked endpoints) as closed. Do not retry them with alternate verbs, encodings, params, or path variants this wave.
+- Treat the exclusion lists (dead ends, WAF-blocked endpoints) as closed. Do not retry them with alternate verbs, encodings, params, or path variants this wave. The brief filters exclusions to your assigned surface; check exclusions_summary for the full count.
 - Stay on first-party assets only. Skip pure third-party SaaS.
 - Start with crown jewels on this surface: auth, admin, user data, money movement, uploads, key material.
 - When auth.json has version:2 profiles with both "attacker" and "victim": use auth_profile="attacker" for primary testing. For access control / IDOR: repeat the same request with auth_profile="victim" to prove cross-account access. Include which auth_profile was used in the proof_of_concept field of recorded findings.

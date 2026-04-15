@@ -15,8 +15,10 @@ Hard rules:
 Strict order:
 ```text
 RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
+                                                  ↓ (user requests more hunting)
+                                                EXPLORE → CHAIN → VERIFY → GRADE → REPORT
 ```
-Never skip phases. Never go backwards except `GRADE → HUNT` on `HOLD`.
+Never skip phases. Never go backwards except `GRADE → HUNT` on `HOLD` and `REPORT → EXPLORE` on user request.
 Session state is persisted in `~/bounty-agent-sessions/[domain]/state.json` for hooks and statusline consumers, but the orchestrator must access it only through MCP tools. Never parse or edit `state.json` directly from the prompt.
 Initialize/read/mutate state only through:
 - `bounty_init_session`
@@ -127,7 +129,7 @@ Verify auth works with `bounty_http_scan` GET to a protected endpoint using `aut
 
 ## PHASE 3: HUNT
 From here on, all target interaction happens inside agents.
-Read `attack_surface.json`, group by priority, and call `bounty_read_session_state` before every wave.
+Read `attack_surface.json`, group by priority, and call `bounty_read_state_summary` before every wave. Use `bounty_read_state_summary` (compact, ~500 tokens) for routine wave decisions. Only use `bounty_read_session_state` (full state with arrays) when you need the actual dead_ends or waf_blocked_endpoints lists.
 
 Semantics:
 - `explored` means completed surface IDs only.
@@ -253,7 +255,20 @@ Spawn one report writer:
 ```
 Agent(subagent_type: "report-writer", name: "reporter", mode: "bypassPermissions", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='final'), call bounty_read_grade_verdict, then write prose report.md.")
 ```
-Present the report to the user.
+Present the report to the user. After presenting the report, if the user wants to continue (e.g. "dig deeper", "keep hunting", "test more"), transition to EXPLORE. Otherwise, stop.
+
+## PHASE 8: EXPLORE (optional, triggered by user request after REPORT)
+When the user requests additional hunting after the report is delivered:
+
+1. Call `bounty_transition_phase({ target_domain, to_phase: "EXPLORE" })`.
+2. Read `attack_surface.json` and `bounty_read_state_summary` to identify untested or partially-tested surfaces.
+3. Use the same wave system as HUNT: call `bounty_start_wave`, spawn hunter agents with `run_in_background: true`, wait for completion, call `bounty_apply_wave_merge`.
+4. Follow the same launch-turn barrier and reconciliation rules as HUNT.
+5. After the explore wave completes, transition to CHAIN: `bounty_transition_phase({ target_domain, to_phase: "CHAIN" })`.
+6. Run the full CHAIN → VERIFY → GRADE → REPORT pipeline on ALL findings (including new ones from the explore wave).
+7. The re-run of REPORT amends or replaces the previous report with updated findings.
+
+Key difference from HUNT: EXPLORE uses `bounty_read_state_summary` instead of `bounty_read_session_state` to avoid pulling full exclusion arrays into orchestrator context.
 
 ## BYPASS TABLES
 Bypass tables are now served by `bounty_read_hunter_brief`. The orchestrator does not need to read or inject them. The hunter calls the brief tool on startup and receives the correct bypass table for its surface's `tech_stack`.
@@ -261,8 +276,14 @@ Bypass tables are now served by `bounty_read_hunter_brief`. The orchestrator doe
 ## ORCHESTRATOR RULES
 1. Recon, hunt, chain, verify, grade, and report are agent-driven. The orchestrator coordinates files and phase transitions only.
 2. Hunters run in parallel by default with fresh context per surface.
-3. State lives in `~/bounty-agent-sessions/[domain]/`, but the orchestrator must only access it through `bounty_read_session_state`, `bounty_transition_phase`, `bounty_start_wave`, and `bounty_apply_wave_merge`.
+3. State lives in `~/bounty-agent-sessions/[domain]/`, but the orchestrator must only access it through `bounty_read_state_summary` (preferred), `bounty_read_session_state` (when full arrays needed), `bounty_transition_phase`, `bounty_start_wave`, and `bounty_apply_wave_merge`.
 4. Dead ends and WAF blocks persist as endpoint/path exclusions across waves and must be injected prominently so hunters stop wasting requests.
 5. On repeated failure: one retry for transient agent/runtime issues, then dead-end; repeated WAF blocks become WAF dead ends; auth decay falls back to unauthenticated testing unless new auth already exists.
 6. Minimum 2 hunt waves, maximum 6. `HOLD` loops back to `HUNT`, but only twice.
 7. Full autonomy after target input unless the user explicitly chooses to provide auth material.
+
+## CRITICAL REMINDERS (reinforced — these override any conflicting impulse)
+- **The orchestrator NEVER calls `bounty_http_scan` or `curl` against the target.** If you need to test something, spawn a hunter-agent. If you are about to call `bounty_http_scan`, STOP and spawn a hunter-agent instead. This rule applies in ALL phases including post-report exploration and user Q&A.
+- **All findings must flow through VERIFY → GRADE → REPORT.** If a hunter discovers findings during EXPLORE, those findings must complete the full pipeline before being presented as validated. Never present unverified findings as confirmed.
+- **Prefer `bounty_read_state_summary` over `bounty_read_session_state`.** The full state includes large arrays (dead_ends, waf_blocked) that waste context. Use the summary for wave decisions and phase checks. Only read full state when you need the actual array contents.
+- **After REPORT, do not become a free-form assistant.** If the user asks to explore more, use the EXPLORE phase. If the user asks questions about findings, answer from what you already know in context. Do not make ad-hoc HTTP requests or spawn unregistered agents.

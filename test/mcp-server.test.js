@@ -21,6 +21,8 @@ const {
   migrateAuthJson,
   readScopeExclusions,
   readSessionState,
+  readStateSummary,
+  compactSessionState,
   listFindings,
   mergeWaveHandoffs,
   readFindings,
@@ -42,6 +44,7 @@ const {
   writeHandoff,
   writeVerificationRound,
   writeWaveHandoff,
+  filterExclusionsByHosts,
   readHunterBrief,
 } = require("../mcp/server.js");
 
@@ -392,16 +395,14 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
     seedSessionState(domain, { phase: "HUNT", hunt_wave: 1 });
     const expectedState = {
       target: domain,
-      target_url: "https://example.com",
       phase: "HUNT",
       hunt_wave: 1,
       pending_wave: 2,
       total_findings: 0,
-      explored: [],
-      dead_ends: [],
-      waf_blocked_endpoints: [],
+      explored_count: 0,
+      dead_ends_count: 0,
+      waf_blocked_count: 0,
       lead_surface_ids: [],
-      scope_exclusions: [],
       hold_count: 0,
       auth_status: "pending",
     };
@@ -436,7 +437,7 @@ test("bounty_start_wave rejects invalid state, duplicate inputs, and pre-existin
     seedSessionState(domain, { phase: "AUTH" });
     assert.throws(
       () => startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "surface-a" }] }),
-      /Wave start requires phase HUNT/,
+      /Wave start requires phase HUNT or EXPLORE/,
     );
 
     seedSessionState(domain, { phase: "HUNT", pending_wave: 3 });
@@ -545,7 +546,7 @@ test("bounty_apply_wave_merge returns pending without mutating state when handof
         unexpected_agents: [],
         is_complete: false,
       },
-      state: JSON.parse(readSessionState({ target_domain: domain })).state,
+      state: JSON.parse(readStateSummary({ target_domain: domain })).state,
     });
     assert.equal(fs.readFileSync(statePath(domain), "utf8"), before);
   });
@@ -627,24 +628,30 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
       completed_surface_ids: ["surface-a"],
       partial_surface_ids: ["surface-b"],
       missing_surface_ids: [],
-      dead_ends: ["/new-dead-end"],
-      waf_blocked_endpoints: ["/new-waf"],
-      lead_surface_ids: ["surface-a", "surface-c", "surface-d", "surface-x"],
       requeue_surface_ids: ["surface-b"],
+      new_dead_ends_count: 1,
+      new_waf_blocked_count: 1,
+      lead_surface_ids: ["surface-a", "surface-c", "surface-d", "surface-x"],
     });
     assert.deepEqual(result.findings, {
       total: 2,
       by_severity: { critical: 0, high: 1, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
     });
-    assert.deepEqual(result.state.scope_exclusions, ["oos.example.net", "api.other.example"]);
-    assert.deepEqual(result.state.explored, ["surface-a"]);
-    assert.deepEqual(result.state.dead_ends, ["/existing", "/new-dead-end"]);
-    assert.deepEqual(result.state.waf_blocked_endpoints, ["/old-waf", "/new-waf"]);
+    // compact state returns counts, not arrays — verify via full state read
+    assert.equal(result.state.explored_count, 1);
+    assert.equal(result.state.dead_ends_count, 2);
+    assert.equal(result.state.waf_blocked_count, 2);
     assert.deepEqual(result.state.lead_surface_ids, ["surface-c", "surface-d"]);
     assert.equal(result.state.pending_wave, null);
     assert.equal(result.state.hunt_wave, 1);
     assert.equal(result.state.total_findings, 2);
+    // verify full state on disk has the arrays
+    const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
+    assert.deepEqual(fullState.explored, ["surface-a"]);
+    assert.deepEqual(fullState.dead_ends, ["/existing", "/new-dead-end"]);
+    assert.deepEqual(fullState.waf_blocked_endpoints, ["/old-waf", "/new-waf"]);
+    assert.deepEqual(fullState.scope_exclusions, ["oos.example.net", "api.other.example"]);
     assert.deepEqual(readScopeExclusions(domain), ["oos.example.net", "api.other.example"]);
   });
 });
@@ -674,7 +681,9 @@ test("bounty_apply_wave_merge preserves existing scope exclusions when the log i
       force_merge: false,
     }));
 
-    assert.deepEqual(result.state.scope_exclusions, ["legacy.example"]);
+    // compact state doesn't include scope_exclusions — verify via full state read
+    const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
+    assert.deepEqual(fullState.scope_exclusions, ["legacy.example"]);
   });
 });
 
@@ -722,7 +731,7 @@ test("bounty_apply_wave_merge rejects invalid state invariants and hard-fails on
     seedSessionState(domain, { phase: "CHAIN", pending_wave: 1 });
     assert.throws(
       () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
-      /Wave merge requires phase HUNT/,
+      /Wave merge requires phase HUNT or EXPLORE/,
     );
 
     seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
@@ -2085,7 +2094,10 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
     assert.deepEqual(brief.valid_surface_ids, ["surface-a", "surface-b"]);
     assert.deepEqual(brief.dead_ends, ["/api/old"]);
     assert.deepEqual(brief.waf_blocked_endpoints, ["/admin"]);
-    assert.deepEqual(brief.scope_exclusions, ["third-party.com"]);
+    assert.strictEqual(brief.scope_exclusions, undefined);
+    assert.ok(brief.exclusions_summary);
+    assert.equal(brief.exclusions_summary.dead_ends_total, 1);
+    assert.equal(brief.exclusions_summary.waf_blocked_total, 1);
   });
 });
 
@@ -2101,6 +2113,83 @@ test("bounty_read_hunter_brief rejects unassigned agent", () => {
       /Agent a9 is not assigned/,
     );
   });
+});
+
+// ── filterExclusionsByHosts tests ──
+
+test("filterExclusionsByHosts filters dead ends by surface hosts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: 1,
+      dead_ends: [
+        "api.example.com - /v1/users returns 404",
+        "admin.example.com - /panel gives 403",
+        "All /api/* endpoints return 401",
+      ],
+      waf_blocked_endpoints: [
+        "api.example.com - /v1/debug blocked by WAF",
+        "admin.example.com - /admin/config blocked",
+        "Generic WAF rule on POST",
+      ],
+    });
+
+    // Create surfaces with distinct hosts
+    const surfaces = [
+      { id: "surface-api", hosts: ["https://api.example.com"] },
+      { id: "surface-admin", hosts: ["https://admin.example.com"] },
+    ];
+    writeFileAtomic(
+      attackSurfacePath(domain),
+      `${JSON.stringify({ surfaces }, null, 2)}\n`,
+    );
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-api" },
+      { agent: "a2", surface_id: "surface-admin" },
+    ]);
+
+    // Agent a1 should see api.example.com dead ends + generic
+    const brief1 = JSON.parse(readHunterBrief({
+      target_domain: domain, wave: "w1", agent: "a1",
+    }));
+    assert.deepEqual(brief1.dead_ends, [
+      "api.example.com - /v1/users returns 404",
+      "All /api/* endpoints return 401",
+    ]);
+    assert.deepEqual(brief1.waf_blocked_endpoints, [
+      "api.example.com - /v1/debug blocked by WAF",
+      "Generic WAF rule on POST",
+    ]);
+
+    // Agent a2 should see admin.example.com dead ends + generic
+    const brief2 = JSON.parse(readHunterBrief({
+      target_domain: domain, wave: "w1", agent: "a2",
+    }));
+    assert.deepEqual(brief2.dead_ends, [
+      "admin.example.com - /panel gives 403",
+      "All /api/* endpoints return 401",
+    ]);
+    assert.deepEqual(brief2.waf_blocked_endpoints, [
+      "admin.example.com - /admin/config blocked",
+      "Generic WAF rule on POST",
+    ]);
+  });
+});
+
+test("filterExclusionsByHosts caps at limit and reports omitted count", () => {
+  const entries = Array.from({ length: 150 }, (_, i) => `generic entry ${i}`);
+  const result = filterExclusionsByHosts(entries, ["https://example.com"], 100);
+  assert.equal(result.filtered.length, 100);
+  assert.equal(result.total, 150);
+  assert.equal(result.omitted, 50);
+});
+
+test("filterExclusionsByHosts handles empty and null input", () => {
+  assert.deepStrictEqual(filterExclusionsByHosts([], []), { filtered: [], total: 0, omitted: 0 });
+  assert.deepStrictEqual(filterExclusionsByHosts(null, []), { filtered: [], total: 0, omitted: 0 });
+  assert.deepStrictEqual(filterExclusionsByHosts(undefined, []), { filtered: [], total: 0, omitted: 0 });
 });
 
 // ── Bug 1: Path traversal via target_domain ──
