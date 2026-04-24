@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bounty Agent MCP Server — stdio transport, zero dependencies
+// Bounty Agent MCP Server facade — tool registry, public exports, and CLI startup
 // Provides: bounty_http_scan, bounty_record_finding, bounty_read_findings,
 //           bounty_list_findings, bounty_write_verification_round,
 //           bounty_read_verification_round, bounty_write_grade_verdict,
@@ -16,6 +16,13 @@
 //           bounty_read_http_audit, bounty_public_intel
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
+const {
+  bountyPublicIntel,
+  executeTool,
+  importHttpTraffic,
+  readHttpAudit,
+} = require("./lib/dispatch.js");
+const { startStdioServer } = require("./lib/transport.js");
 const {
   AUTH_STATUS_VALUES,
   COVERAGE_STATUS_VALUES,
@@ -63,17 +70,12 @@ const {
 } = require("./lib/coverage.js");
 const {
   buildCircuitBreakerSummary,
-  importHttpTraffic: importHttpTrafficRecords,
   normalizeHttpAuditRecord,
   normalizeTrafficRecord,
-  readHttpAudit: readHttpAuditRecordsTool,
   readHttpAuditRecordsFromJsonl,
   readTrafficRecordsFromJsonl,
 } = require("./lib/http-records.js");
 const { validateScanUrl } = require("./lib/url-surface.js");
-const {
-  bountyPublicIntel: bountyPublicIntelTool,
-} = require("./lib/public-intel.js");
 const {
   listFindings,
   normalizeFindingRecord,
@@ -91,9 +93,6 @@ const {
   writeGradeVerdict,
   writeVerificationRound,
 } = require("./lib/findings.js");
-const {
-  readAttackSurfaceStrict,
-} = require("./lib/attack-surface.js");
 const {
   rankAttackSurfaces,
 } = require("./lib/ranking.js");
@@ -113,7 +112,6 @@ const {
   readAuthJson,
   resolveAuthJsonPath,
 } = require("./lib/auth.js");
-const { httpScan } = require("./lib/http-scan.js");
 const { tempEmail } = require("./lib/temp-email.js");
 const {
   autoSignup,
@@ -658,212 +656,8 @@ const TOOLS = [
   },
 ];
 
-function importHttpTraffic(args) {
-  return importHttpTrafficRecords(args, { rankAttackSurfaces });
-}
-
-function readHttpAudit(args) {
-  return readHttpAuditRecordsTool(args, { readAttackSurfaceStrict });
-}
-
-async function bountyPublicIntel(args) {
-  return bountyPublicIntelTool(args, { rankAttackSurfaces });
-}
-
-// ── Tool dispatch ──
-async function executeTool(name, args) {
-  switch (name) {
-    case "bounty_http_scan": return httpScan(args);
-    case "bounty_record_finding": return recordFinding(args);
-    case "bounty_read_findings": return readFindings(args);
-    case "bounty_list_findings": return listFindings(args);
-    case "bounty_write_verification_round": return writeVerificationRound(args);
-    case "bounty_read_verification_round": return readVerificationRound(args);
-    case "bounty_write_grade_verdict": return writeGradeVerdict(args);
-    case "bounty_read_grade_verdict": return readGradeVerdict(args);
-    case "bounty_init_session": return initSession(args);
-    case "bounty_read_session_state": return readSessionState(args);
-    case "bounty_read_state_summary": return readStateSummary(args);
-    case "bounty_transition_phase": return transitionPhase(args);
-    case "bounty_start_wave": return startWave(args);
-    case "bounty_apply_wave_merge": return applyWaveMerge(args);
-    case "bounty_write_handoff": return writeHandoff(args);
-    case "bounty_log_dead_ends": return logDeadEnds(args);
-    case "bounty_log_coverage": return logCoverage(args);
-    case "bounty_write_wave_handoff": return writeWaveHandoff(args);
-    case "bounty_wave_handoff_status": return waveHandoffStatus(args);
-    case "bounty_merge_wave_handoffs": return mergeWaveHandoffs(args);
-    case "bounty_read_handoff": return readHandoff(args);
-    case "bounty_auth_manual": return authManual(args);
-    case "bounty_wave_status": return waveStatus(args);
-    case "bounty_import_http_traffic": return importHttpTraffic(args);
-    case "bounty_read_http_audit": return readHttpAudit(args);
-    case "bounty_public_intel": return bountyPublicIntel(args);
-    case "bounty_temp_email": return tempEmail(args);
-    case "bounty_signup_detect": return signupDetect(args);
-    case "bounty_auth_store": return authStore(args);
-    case "bounty_auto_signup": return autoSignup(args);
-    case "bounty_read_hunter_brief": return readHunterBrief(args);
-    default: return JSON.stringify({ error: `Unknown tool: ${name}` });
-  }
-}
-
-// ── MCP stdio transport ──
-let transportMode = "framed";
-let buffer = "";
-
-function send(msg) {
-  const json = JSON.stringify(msg);
-  if (transportMode === "raw") {
-    process.stdout.write(`${json}\n`);
-    return;
-  }
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
-}
-
-async function handleMessage(rpc) {
-  switch (rpc.method) {
-    case "initialize":
-      send({
-        jsonrpc: "2.0",
-        id: rpc.id,
-        result: {
-          protocolVersion: rpc.params?.protocolVersion || "2025-11-25",
-          capabilities: { tools: {} },
-          serverInfo: { name: "bountyagent", version: "1.0.0" },
-        },
-      });
-      break;
-
-    case "ping":
-      send({
-        jsonrpc: "2.0",
-        id: rpc.id,
-        result: {},
-      });
-      break;
-
-    case "notifications/initialized":
-      // No response needed for notifications
-      break;
-
-    case "tools/list":
-      send({
-        jsonrpc: "2.0",
-        id: rpc.id,
-        result: { tools: TOOLS },
-      });
-      break;
-
-    case "tools/call": {
-      const { name, arguments: args } = rpc.params;
-      try {
-        const result = await executeTool(name, args || {});
-        send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: {
-            content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
-          },
-        });
-      } catch (e) {
-        send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          result: {
-            content: [{ type: "text", text: JSON.stringify({ error: e.message || String(e) }) }],
-          },
-        });
-      }
-      break;
-    }
-
-    default:
-      if (rpc.id) {
-        send({
-          jsonrpc: "2.0",
-          id: rpc.id,
-          error: { code: -32601, message: `Method not found: ${rpc.method}` },
-        });
-      }
-      break;
-  }
-}
-
 function startServer() {
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => {
-    buffer += chunk;
-    while (true) {
-      const headerEnd = buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) {
-        const trimmed = buffer.trim();
-        if (!trimmed) break;
-
-        // Claude Code health checks may send a single raw JSON-RPC message
-        // without Content-Length framing. Accept that shape too.
-        try {
-          const msg = JSON.parse(trimmed);
-          transportMode = "raw";
-          buffer = "";
-          handleMessage(msg);
-          continue;
-        } catch {
-          if (buffer.includes("\n")) {
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-            let parsedAny = false;
-            for (const line of lines.map((l) => l.trim()).filter(Boolean)) {
-              try {
-                transportMode = "raw";
-                handleMessage(JSON.parse(line));
-                parsedAny = true;
-              } catch {
-                buffer = `${line}\n${buffer}`;
-              }
-            }
-            if (parsedAny) continue;
-          }
-        }
-        break;
-      }
-
-      const headerPart = buffer.slice(0, headerEnd);
-      const match = headerPart.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        // Try parsing as raw JSON (some clients skip Content-Length)
-        try {
-          const lines = buffer.split("\n").filter((l) => l.trim());
-          for (const line of lines) {
-            const msg = JSON.parse(line);
-            handleMessage(msg);
-          }
-          buffer = "";
-          return;
-        } catch {
-          buffer = buffer.slice(headerEnd + 4);
-          continue;
-        }
-      }
-
-      const contentLength = parseInt(match[1], 10);
-      transportMode = "framed";
-      const bodyStart = headerEnd + 4;
-      if (buffer.length < bodyStart + contentLength) break;
-
-      const body = buffer.slice(bodyStart, bodyStart + contentLength);
-      buffer = buffer.slice(bodyStart + contentLength);
-
-      try {
-        const msg = JSON.parse(body);
-        handleMessage(msg);
-      } catch {
-        send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
-      }
-    }
-  });
-
-  process.stderr.write("bountyagent MCP server running (stdio)\n");
+  startStdioServer({ tools: TOOLS, executeTool });
 }
 
 module.exports = {

@@ -5,6 +5,13 @@ const os = require("os");
 const path = require("path");
 const serverModule = require("../mcp/server.js");
 const {
+  TOOL_HANDLERS,
+} = require("../mcp/lib/dispatch.js");
+const {
+  createMcpMessageHandler,
+  createStdioServer,
+} = require("../mcp/lib/transport.js");
+const {
   COVERAGE_LOG_MAX_RECORDS,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   TRAFFIC_IMPORT_MAX_ENTRIES,
@@ -288,15 +295,91 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
   assert.ok(toolNames.every((name) => name.startsWith("bounty_")));
 
-  const serverSource = fs.readFileSync(path.join(__dirname, "..", "mcp", "server.js"), "utf8");
-  const executeToolBody = serverSource.match(/async function executeTool\(name, args\) \{([\s\S]*?)\n\}/);
-  assert.ok(executeToolBody, "executeTool body should be discoverable");
-  const dispatchNames = Array.from(executeToolBody[1].matchAll(/case "([^"]+)":/g), (match) => match[1]);
+  const dispatchNames = Object.keys(TOOL_HANDLERS);
 
   assert.deepEqual([...dispatchNames].sort(), [...toolNames].sort());
   assert.deepEqual(JSON.parse(await executeTool("__unknown_tool__", {})), {
     error: "Unknown tool: __unknown_tool__",
   });
+});
+
+test("MCP message handler lists tools, routes calls, and wraps thrown errors", async () => {
+  const sent = [];
+  const calls = [];
+  const handleMessage = createMcpMessageHandler({
+    tools: [{ name: "bounty_fake", inputSchema: { type: "object" } }],
+    executeTool: async (name, args) => {
+      calls.push({ name, args });
+      if (name === "bounty_throw") {
+        throw new Error("boom");
+      }
+      return { ok: true, args };
+    },
+    send: (message) => sent.push(message),
+  });
+
+  await handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  await handleMessage({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: { name: "bounty_fake", arguments: { x: 1 } },
+  });
+  await handleMessage({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: { name: "bounty_throw", arguments: {} },
+  });
+
+  assert.deepEqual(sent[0], {
+    jsonrpc: "2.0",
+    id: 1,
+    result: { tools: [{ name: "bounty_fake", inputSchema: { type: "object" } }] },
+  });
+  assert.deepEqual(calls, [
+    { name: "bounty_fake", args: { x: 1 } },
+    { name: "bounty_throw", args: {} },
+  ]);
+  assert.deepEqual(JSON.parse(sent[1].result.content[0].text), { ok: true, args: { x: 1 } });
+  assert.deepEqual(JSON.parse(sent[2].result.content[0].text), { error: "boom" });
+});
+
+test("stdio transport accepts framed and raw JSON-RPC messages", () => {
+  const framedOutput = [];
+  const framedServer = createStdioServer({
+    tools: [],
+    executeTool: async () => ({ ok: true }),
+    stdin: {
+      setEncoding() {},
+      on() {},
+    },
+    stdout: { write: (chunk) => framedOutput.push(String(chunk)) },
+    stderr: { write() {} },
+  });
+  const framedBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+
+  framedServer.handleChunk(`Content-Length: ${Buffer.byteLength(framedBody)}\r\n\r\n${framedBody}`);
+
+  const framedResponse = framedOutput.join("");
+  const framedPayload = JSON.parse(framedResponse.slice(framedResponse.indexOf("\r\n\r\n") + 4));
+  assert.deepEqual(framedPayload, { jsonrpc: "2.0", id: 1, result: {} });
+
+  const rawOutput = [];
+  const rawServer = createStdioServer({
+    tools: [],
+    executeTool: async () => ({ ok: true }),
+    stdin: {
+      setEncoding() {},
+      on() {},
+    },
+    stdout: { write: (chunk) => rawOutput.push(String(chunk)) },
+    stderr: { write() {} },
+  });
+
+  rawServer.handleChunk(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })}\n`);
+
+  assert.deepEqual(JSON.parse(rawOutput.join("").trim()), { jsonrpc: "2.0", id: 2, result: {} });
 });
 
 test("bounty_init_session creates the initial state and bounty_read_session_state returns public fields only", () => {
