@@ -68,6 +68,18 @@ const HUNTER_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
   high_value_flows: 20,
   evidence: 25,
 });
+const HUNTER_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
+  id: 120,
+  priority: 40,
+  original_priority: 40,
+  surface_type: 80,
+  name: 160,
+  title: 160,
+  description: 500,
+});
+const HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS = 500;
+const HUNTER_BRIEF_RANKING_REASON_LIMIT = 10;
+const HUNTER_BRIEF_RANKING_REASON_MAX_CHARS = 160;
 
 function resolveBypassTable(techStack) {
   if (!Array.isArray(techStack)) return BYPASS_TABLE_DEFAULT;
@@ -312,21 +324,58 @@ function isBriefScalar(value) {
   return value == null || ["string", "number", "boolean"].includes(typeof value);
 }
 
+function capStringValue(value, maxChars) {
+  if (typeof value !== "string" || value.length <= maxChars) {
+    return { value, truncated: false, total_chars: typeof value === "string" ? value.length : null };
+  }
+  return {
+    value: value.slice(0, maxChars),
+    truncated: true,
+    total_chars: value.length,
+  };
+}
+
 function cappedSurfaceArray(value, limit) {
   const values = Array.isArray(value)
     ? value
     : value == null
       ? []
       : [value];
-  const shownValues = values.slice(0, limit);
+  let truncatedValues = 0;
+  const shownValues = values.filter((item) => item != null).slice(0, limit).map((item) => {
+    const capped = capStringValue(String(item), HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS);
+    if (capped.truncated) truncatedValues += 1;
+    return capped.value;
+  });
+  const limits = {
+    shown: shownValues.length,
+    total: values.length,
+    omitted: Math.max(0, values.length - shownValues.length),
+  };
+  if (truncatedValues > 0) {
+    limits.truncated_values = truncatedValues;
+    limits.max_value_chars = HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS;
+  }
   return {
     values: shownValues,
-    limits: {
-      shown: shownValues.length,
-      total: values.length,
-      omitted: Math.max(0, values.length - shownValues.length),
-    },
+    limits,
   };
+}
+
+function slimRankingForBrief(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const ranking = {};
+  if (Number.isFinite(value.version)) ranking.version = value.version;
+  if (Number.isFinite(value.score)) ranking.score = value.score;
+  if (isBriefScalar(value.priority)) {
+    ranking.priority = capStringValue(String(value.priority), HUNTER_BRIEF_SURFACE_SCALAR_LIMITS.priority).value;
+  }
+  const cappedReasons = cappedSurfaceArray(value.reasons, HUNTER_BRIEF_RANKING_REASON_LIMIT);
+  ranking.reasons = cappedReasons.values.map((reason) => {
+    const capped = capStringValue(reason, HUNTER_BRIEF_RANKING_REASON_MAX_CHARS);
+    return capped.value;
+  });
+  return ranking;
 }
 
 function slimSurfaceForBrief(surface) {
@@ -334,17 +383,24 @@ function slimSurfaceForBrief(surface) {
   const slimSurface = {};
   const surfaceLimits = {};
 
-  for (const [field, value] of Object.entries(source)) {
-    if (Object.prototype.hasOwnProperty.call(HUNTER_BRIEF_SURFACE_ARRAY_LIMITS, field)) {
-      continue;
+  for (const [field, maxChars] of Object.entries(HUNTER_BRIEF_SURFACE_SCALAR_LIMITS)) {
+    const value = source[field];
+    if (!isBriefScalar(value) || value == null) continue;
+    const normalizedValue = typeof value === "string" ? value : String(value);
+    const capped = capStringValue(normalizedValue, maxChars);
+    slimSurface[field] = capped.value;
+    if (capped.truncated) {
+      surfaceLimits[field] = {
+        shown_chars: capped.value.length,
+        total_chars: capped.total_chars,
+        omitted_chars: capped.total_chars - capped.value.length,
+      };
     }
-    if (field === "ranking" && value && typeof value === "object" && !Array.isArray(value)) {
-      slimSurface.ranking = value;
-      continue;
-    }
-    if (isBriefScalar(value)) {
-      slimSurface[field] = value;
-    }
+  }
+
+  const ranking = slimRankingForBrief(source.ranking);
+  if (ranking) {
+    slimSurface.ranking = ranking;
   }
 
   for (const [field, limit] of Object.entries(HUNTER_BRIEF_SURFACE_ARRAY_LIMITS)) {

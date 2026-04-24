@@ -125,34 +125,6 @@ function verifyStructuredHandoff(server, marker, waveNumber) {
   }
 }
 
-function maybeMergeWave(server, marker, waveNumber) {
-  const stateSummary = parseToolJson(server.readStateSummary({
-    target_domain: marker.target_domain,
-  }), "bounty_read_state_summary");
-  const pendingWave = stateSummary.state?.pending_wave;
-  if (pendingWave == null || pendingWave !== waveNumber) {
-    allow("wave is not pending");
-  }
-
-  const readiness = parseToolJson(server.waveHandoffStatus({
-    target_domain: marker.target_domain,
-    wave_number: waveNumber,
-  }), "bounty_wave_handoff_status");
-  if (!readiness.is_complete) {
-    allow("wave still has pending handoffs");
-  }
-
-  const merge = parseToolJson(server.applyWaveMerge({
-    target_domain: marker.target_domain,
-    wave_number: waveNumber,
-    force_merge: false,
-  }), "bounty_apply_wave_merge");
-  if (merge.status !== "merged") {
-    block(`Wave ${waveNumber} did not merge cleanly: ${merge.status || "unknown status"}`);
-  }
-  allow(`merged wave ${waveNumber}`);
-}
-
 function main() {
   let payload = {};
   try {
@@ -171,7 +143,7 @@ function main() {
   const server = loadServer();
   const waveNumber = Number(marker.wave.slice(1));
   verifyStructuredHandoff(server, marker, waveNumber);
-  maybeMergeWave(server, marker, waveNumber);
+  allow("handoff valid");
 }
 
 if (require.main === module) {

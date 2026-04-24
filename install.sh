@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Bounty Agent — Claude Code installer
+# Hacker Bob — Claude Code installer
 # Copies agent definitions, command shim, skills, rules, hooks, MCP server, and settings into your project
 
 TARGET="${1:-.}"
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$TARGET/.claude"
 TARGET_ABS="$(cd "$TARGET" && pwd)"
 
-echo "Installing Bounty Agent into $TARGET/.claude/"
+echo "Installing Hacker Bob into $TARGET/.claude/"
 echo ""
 
 # Create directories
@@ -61,8 +61,11 @@ cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
+rm -rf "$TARGET_ABS/mcp/lib/tools"
+mkdir -p "$TARGET_ABS/mcp/lib/tools"
+cp "$SCRIPT_DIR/mcp/lib/tools/"*.js "$TARGET_ABS/mcp/lib/tools/"
 chmod +x "$TARGET_ABS/mcp/server.js"
-echo "  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js)"
+echo "  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js)"
 
 # Configure .mcp.json and .claude/settings.json without clobbering unrelated user config
 node "$SCRIPT_DIR/scripts/merge-claude-config.js" "$TARGET_ABS" >/dev/null

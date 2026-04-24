@@ -15,7 +15,6 @@
       "mcp__bountyagent__bounty_read_session_state",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",
-      "mcp__bountyagent__bounty_merge_wave_handoffs",
       "mcp__bountyagent__bounty_read_wave_handoffs",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_log_coverage",

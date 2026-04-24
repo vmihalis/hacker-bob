@@ -5,6 +5,7 @@ argument-hint: "[target-url | resume <domain> [force-merge]]"
 allowed-tools:
   - Task
   - Read
+  - mcp__bountyagent__bounty_start_wave
   - mcp__bountyagent__bounty_import_http_traffic
   - mcp__bountyagent__bounty_public_intel
   - mcp__bountyagent__bounty_list_findings
@@ -13,7 +14,6 @@ allowed-tools:
   - mcp__bountyagent__bounty_init_session
   - mcp__bountyagent__bounty_read_session_state
   - mcp__bountyagent__bounty_transition_phase
-  - mcp__bountyagent__bounty_start_wave
   - mcp__bountyagent__bounty_apply_wave_merge
   - mcp__bountyagent__bounty_write_handoff
   - mcp__bountyagent__bounty_wave_handoff_status
@@ -78,6 +78,7 @@ Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_ses
 
 ## Resume
 - `resume [domain]` accepts one optional non-flag token: `force-merge`.
+- First call `bounty_read_state_summary({ target_domain })` and use `result.data.state` for the resume decision.
 - If `state.pending_wave` is null, continue from `state.phase`.
 - If `state.pending_wave` is non-null, call `bounty_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge })` and use `result.data`.
 - If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bountyagent resume [domain] force-merge to reconcile now.` Then stop.
@@ -156,12 +157,14 @@ Launch-turn barrier:
 4. If context is lost, the user can run `/bountyagent resume [domain]`.
 
 Wave reconciliation:
-1. Call `bounty_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge })` and use `result.data`.
-2. If status is `"pending"`, report the pending count and stop.
-3. If status is `"merged"`, use returned `state`, `merge`, `findings`, and `readiness`.
-4. `bounty_apply_wave_merge` owns reconciliation-side state mutation.
-5. Use `merge.requeue_surface_ids` for the next wave; surface `unexpected_agents` in output only.
-6. After merge, continue automatically to the next wave decision or CHAIN.
+1. First call `bounty_read_state_summary({ target_domain })` and use `result.data.state`.
+2. If `state.pending_wave` is null, skip merge and continue from the current phase; this is the expected result of a repeated resume or stale completion notice.
+3. If `state.pending_wave` is non-null, call `bounty_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge })` and use `result.data`.
+4. If status is `"pending"`, report the pending count and stop.
+5. If status is `"merged"`, use returned `state`, `merge`, `findings`, and `readiness`.
+6. `bounty_apply_wave_merge` owns reconciliation-side state mutation.
+7. Use `merge.requeue_surface_ids` for the next wave; surface `unexpected_agents` in output only.
+8. After merge, continue automatically to the next wave decision or CHAIN.
 
 Wave decisions use `bounty_wave_status({ target_domain }).data`:
 - `wave < 2` → run another wave.

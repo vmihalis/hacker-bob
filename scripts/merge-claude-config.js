@@ -21,6 +21,10 @@ function uniqueStrings(values) {
   return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim())));
 }
 
+const STALE_GLOBAL_MCP_PERMISSIONS = Object.freeze([
+  "mcp__bountyagent__bounty_merge_wave_handoffs",
+]);
+
 function hookKey(hook) {
   return JSON.stringify({
     type: hook && hook.type,
@@ -79,10 +83,11 @@ function mergeSettings(existing, bobSettings) {
   const existingPermissions = next.permissions && typeof next.permissions === "object"
     ? next.permissions
     : {};
+  const existingAllow = Array.isArray(existingPermissions.allow) ? existingPermissions.allow : [];
   next.permissions = {
     ...existingPermissions,
     allow: uniqueStrings([
-      ...(Array.isArray(existingPermissions.allow) ? existingPermissions.allow : []),
+      ...existingAllow.filter((permission) => !STALE_GLOBAL_MCP_PERMISSIONS.includes(permission)),
       ...bobSettings.permissions.allow,
     ]),
   };
@@ -126,6 +131,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  STALE_GLOBAL_MCP_PERMISSIONS,
   mergeMcp,
   mergeHookEntries,
   mergeHooks,

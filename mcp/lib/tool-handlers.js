@@ -2,16 +2,14 @@
 
 const {
   importHttpTraffic: importHttpTrafficRecords,
-  readHttpAudit: readHttpAuditRecordsTool,
 } = require("./http-records.js");
-const { httpScan } = require("./http-scan.js");
 const { bountyPublicIntel: bountyPublicIntelTool } = require("./public-intel.js");
 const {
   importStaticArtifact,
   staticScan,
 } = require("./static-artifacts.js");
-const { readAttackSurfaceStrict } = require("./attack-surface.js");
 const { rankAttackSurfaces } = require("./ranking.js");
+const { readHttpAudit } = require("./tools/read-http-audit.js");
 const {
   listAuthProfiles,
   authStore,
@@ -43,7 +41,6 @@ const {
   logDeadEnds,
   mergeWaveHandoffs,
   readWaveHandoffs,
-  startWave,
   waveHandoffStatus,
   waveStatus,
   writeHandoff,
@@ -54,16 +51,11 @@ function importHttpTraffic(args) {
   return importHttpTrafficRecords(args, { rankAttackSurfaces });
 }
 
-function readHttpAudit(args) {
-  return readHttpAuditRecordsTool(args, { readAttackSurfaceStrict });
-}
-
 async function bountyPublicIntel(args) {
   return bountyPublicIntelTool(args, { rankAttackSurfaces });
 }
 
 const RAW_TOOL_HANDLERS = Object.freeze({
-  bounty_http_scan: httpScan,
   bounty_record_finding: recordFinding,
   bounty_read_findings: readFindings,
   bounty_list_findings: listFindings,
@@ -75,7 +67,6 @@ const RAW_TOOL_HANDLERS = Object.freeze({
   bounty_read_session_state: readSessionState,
   bounty_read_state_summary: readStateSummary,
   bounty_transition_phase: transitionPhase,
-  bounty_start_wave: startWave,
   bounty_apply_wave_merge: applyWaveMerge,
   bounty_write_handoff: writeHandoff,
   bounty_log_dead_ends: logDeadEnds,
@@ -87,7 +78,6 @@ const RAW_TOOL_HANDLERS = Object.freeze({
   bounty_list_auth_profiles: listAuthProfiles,
   bounty_wave_status: waveStatus,
   bounty_import_http_traffic: importHttpTraffic,
-  bounty_read_http_audit: readHttpAudit,
   bounty_public_intel: bountyPublicIntel,
   bounty_import_static_artifact: importStaticArtifact,
   bounty_static_scan: staticScan,

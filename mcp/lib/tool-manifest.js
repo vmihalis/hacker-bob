@@ -1,19 +1,10 @@
 "use strict";
 
 const TOOL_MANIFEST = Object.freeze({
-  bounty_http_scan: {
-    role_bundles: ["hunter", "verifier", "auth"],
-    mutating: true,
-    network_access: true,
-    browser_access: false,
-    scope_required: true,
-    sensitive_output: true,
-    session_artifacts_written: ["http-audit.jsonl"],
-    hook_required: true,
-  },
   bounty_import_http_traffic: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: true,
@@ -21,19 +12,10 @@ const TOOL_MANIFEST = Object.freeze({
     session_artifacts_written: ["traffic.jsonl"],
     hook_required: false,
   },
-  bounty_read_http_audit: {
-    role_bundles: ["hunter", "verifier"],
-    mutating: false,
-    network_access: false,
-    browser_access: false,
-    scope_required: false,
-    sensitive_output: false,
-    session_artifacts_written: [],
-    hook_required: false,
-  },
   bounty_public_intel: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: true,
     browser_access: false,
     scope_required: true,
@@ -44,6 +26,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_import_static_artifact: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -54,6 +37,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_static_scan: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -64,6 +48,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_record_finding: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -74,6 +59,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_findings: {
     role_bundles: ["chain", "verifier", "grader", "reporter"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -84,6 +70,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_list_findings: {
     role_bundles: ["hunter", "orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -94,6 +81,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_write_verification_round: {
     role_bundles: ["verifier"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -104,6 +92,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_verification_round: {
     role_bundles: ["verifier", "grader", "reporter", "orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -114,6 +103,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_write_grade_verdict: {
     role_bundles: ["grader"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -124,6 +114,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_grade_verdict: {
     role_bundles: ["grader", "reporter", "orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -134,6 +125,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_init_session: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -144,6 +136,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_session_state: {
     role_bundles: ["orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -154,6 +147,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_state_summary: {
     role_bundles: ["orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -164,6 +158,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_transition_phase: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -171,19 +166,10 @@ const TOOL_MANIFEST = Object.freeze({
     session_artifacts_written: ["state.json"],
     hook_required: false,
   },
-  bounty_start_wave: {
-    role_bundles: ["orchestrator"],
-    mutating: true,
-    network_access: false,
-    browser_access: false,
-    scope_required: false,
-    sensitive_output: false,
-    session_artifacts_written: ["wave-N-assignments.json", "state.json"],
-    hook_required: false,
-  },
   bounty_apply_wave_merge: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -194,6 +180,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_write_handoff: {
     role_bundles: ["orchestrator"],
     mutating: true,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -204,6 +191,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_log_dead_ends: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -214,6 +202,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_log_coverage: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -224,6 +213,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_write_wave_handoff: {
     role_bundles: ["hunter"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -234,6 +224,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_wave_handoff_status: {
     role_bundles: ["orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -244,6 +235,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_merge_wave_handoffs: {
     role_bundles: ["orchestrator"],
     mutating: false,
+    global_preapproval: false,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -254,6 +246,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_wave_handoffs: {
     role_bundles: ["chain", "orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -264,6 +257,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_auth_store: {
     role_bundles: ["auth"],
     mutating: true,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -274,6 +268,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_list_auth_profiles: {
     role_bundles: ["auth", "hunter", "verifier", "orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -284,6 +279,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_wave_status: {
     role_bundles: ["orchestrator"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,
@@ -294,6 +290,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_temp_email: {
     role_bundles: ["auth"],
     mutating: true,
+    global_preapproval: true,
     network_access: true,
     browser_access: false,
     scope_required: false,
@@ -304,6 +301,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_signup_detect: {
     role_bundles: ["auth"],
     mutating: false,
+    global_preapproval: true,
     network_access: true,
     browser_access: false,
     scope_required: true,
@@ -314,6 +312,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_auto_signup: {
     role_bundles: ["auth"],
     mutating: true,
+    global_preapproval: true,
     network_access: true,
     browser_access: true,
     scope_required: true,
@@ -324,6 +323,7 @@ const TOOL_MANIFEST = Object.freeze({
   bounty_read_hunter_brief: {
     role_bundles: ["hunter"],
     mutating: false,
+    global_preapproval: true,
     network_access: false,
     browser_access: false,
     scope_required: false,

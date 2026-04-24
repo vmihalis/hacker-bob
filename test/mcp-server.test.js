@@ -14,6 +14,9 @@ const {
   TOOL_HANDLERS,
 } = require("../mcp/lib/dispatch.js");
 const {
+  buildToolRegistry,
+} = require("../mcp/lib/tool-registry.js");
+const {
   createMcpMessageHandler,
   createStdioServer,
 } = require("../mcp/lib/transport.js");
@@ -461,6 +464,7 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.ok(metadata, `${tool.name} missing manifest metadata`);
     assert.ok(Array.isArray(metadata.role_bundles) && metadata.role_bundles.length > 0);
     assert.equal(typeof metadata.mutating, "boolean");
+    assert.equal(typeof metadata.global_preapproval, "boolean");
     assert.equal(typeof metadata.network_access, "boolean");
     assert.equal(typeof metadata.browser_access, "boolean");
     assert.equal(typeof metadata.scope_required, "boolean");
@@ -468,6 +472,130 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.ok(Array.isArray(metadata.session_artifacts_written));
     assert.equal(typeof metadata.hook_required, "boolean");
   }
+});
+
+test("MCP per-tool module pilot preserves representative tool behavior", () => {
+  const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
+  assert.equal(byName.get("bounty_read_http_audit").inputSchema.required[0], "target_domain");
+  assert.equal(byName.get("bounty_start_wave").inputSchema.properties.assignments.type, "array");
+  assert.equal(byName.get("bounty_http_scan").inputSchema.properties.url.type, "string");
+  assert.equal(TOOL_MANIFEST.bounty_read_http_audit.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
+  assert.equal(TOOL_MANIFEST.bounty_http_scan.network_access, true);
+  assert.equal(TOOL_MANIFEST.bounty_http_scan.global_preapproval, true);
+  assert.equal(TOOL_MANIFEST.bounty_http_scan.scope_required, true);
+  assert.equal(TOOL_MANIFEST.bounty_http_scan.hook_required, true);
+});
+
+test("MCP tool registry validation rejects incomplete or inconsistent entries", () => {
+  const completeModule = {
+    name: "bounty_test_tool",
+    description: "Test tool.",
+    inputSchema: { type: "object", properties: {} },
+    handler: () => ({}),
+    role_bundles: ["hunter"],
+    mutating: false,
+    global_preapproval: true,
+    network_access: false,
+    browser_access: false,
+    scope_required: false,
+    sensitive_output: false,
+    session_artifacts_written: [],
+    hook_required: false,
+  };
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [completeModule, { ...completeModule }],
+      toolDefinitions: [],
+      toolMetadata: {},
+      toolHandlers: {},
+    }),
+    /Duplicate tool name/,
+  );
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [{ ...completeModule, handler: undefined }],
+      toolDefinitions: [],
+      toolMetadata: {},
+      toolHandlers: {},
+    }),
+    /has no handler/,
+  );
+
+  const missingGlobalPreapproval = { ...completeModule };
+  delete missingGlobalPreapproval.global_preapproval;
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [missingGlobalPreapproval],
+      toolDefinitions: [],
+      toolMetadata: {},
+      toolHandlers: {},
+    }),
+    /missing global_preapproval/,
+  );
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [{ ...completeModule, global_preapproval: "yes" }],
+      toolDefinitions: [],
+      toolMetadata: {},
+      toolHandlers: {},
+    }),
+    /invalid global_preapproval/,
+  );
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [{ ...completeModule, role_bundles: ["mystery"] }],
+      toolDefinitions: [],
+      toolMetadata: {},
+      toolHandlers: {},
+    }),
+    /unknown role bundle mystery/,
+  );
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [],
+      toolDefinitions: [{
+        name: "bounty_legacy_tool",
+        description: "Legacy test tool.",
+        inputSchema: { type: "object", properties: {} },
+      }],
+      toolMetadata: {},
+      toolHandlers: { bounty_legacy_tool: () => ({}) },
+    }),
+    /Missing tool manifest metadata/,
+  );
+
+  assert.throws(
+    () => buildToolRegistry({
+      toolModules: [],
+      toolDefinitions: [{
+        name: "bounty_legacy_tool",
+        description: "Legacy test tool.",
+        inputSchema: { type: "object", properties: {} },
+      }],
+      toolMetadata: {
+        bounty_legacy_tool: {
+          role_bundles: ["hunter"],
+          mutating: false,
+          global_preapproval: true,
+          network_access: false,
+          browser_access: false,
+          scope_required: false,
+          sensitive_output: false,
+          session_artifacts_written: [],
+          hook_required: false,
+        },
+      },
+      toolHandlers: {},
+    }),
+    /has no handler/,
+  );
 });
 
 test("executeTool rejects unknown top-level arguments while allowing nested map-like fields", async () => {
@@ -1721,6 +1849,21 @@ test("hunter SubagentStop hook blocks missing structured handoff", async () => {
   });
 });
 
+test("hunter SubagentStop hook blocks invalid structured handoff", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w1-a1.json"), "{bad json");
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /wrote an invalid handoff/);
+  });
+});
+
 test("hunter SubagentStop hook allows incomplete waves without merging", async () => {
   await withTempHome(async (tempHome) => {
     const domain = "example.com";
@@ -1757,7 +1900,7 @@ test("hunter SubagentStop hook allows incomplete waves without merging", async (
   });
 });
 
-test("hunter SubagentStop hook merges when the last valid handoff completes the wave", async () => {
+test("hunter SubagentStop hook allows a complete wave without merging", async () => {
   await withTempHome(async (tempHome) => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
@@ -1783,6 +1926,47 @@ test("hunter SubagentStop hook merges when the last valid handoff completes the 
     }, { home: tempHome });
 
     assert.equal(result.status, 0);
+    assert.match(result.stdout, /handoff valid/);
+    const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
+    assert.equal(state.pending_wave, 1);
+    assert.equal(state.hunt_wave, 0);
+  });
+});
+
+test("hunter SubagentStop hook treats stale completion notifications as valid handoffs", async () => {
+  await withTempHome(async (tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a"]);
+    const started = await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    });
+    await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: started.data.assignments[0].handoff_token,
+      summary: "a1 complete",
+      content: "# a1",
+    });
+    const merged = await executeTool("bounty_apply_wave_merge", {
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    });
+    assert.equal(merged.ok, true);
+    assert.equal(merged.data.status, "merged");
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /handoff valid/);
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
     assert.equal(state.pending_wave, null);
     assert.equal(state.hunt_wave, 1);
@@ -4323,6 +4507,45 @@ test("bounty_read_hunter_brief caps assigned surface arrays and reports surface_
     assert.equal(brief.surface.js_hints, undefined);
     assert.deepEqual(brief.surface_limits.hosts, { shown: 20, total: 25, omitted: 5 });
     assert.deepEqual(brief.surface_limits.endpoints, { shown: 80, total: 90, omitted: 10 });
+  });
+});
+
+test("bounty_read_hunter_brief caps scalar strings and omits unknown scalar fields", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    const huge = "x".repeat(5000);
+    seedAttackSurfaces(domain, [{
+      id: "surface-scalar",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: [`/${huge}`],
+      interesting_params: ["id"],
+      priority: "HIGH",
+      surface_type: huge,
+      description: huge,
+      recon_blob: huge,
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-scalar" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.surface.surface_type.length, 80);
+    assert.equal(brief.surface.description.length, 500);
+    assert.equal(brief.surface.endpoints[0].length, 500);
+    assert.equal(brief.surface.recon_blob, undefined);
+    assert.deepEqual(brief.surface_limits.surface_type, {
+      shown_chars: 80,
+      total_chars: 5000,
+      omitted_chars: 4920,
+    });
+    assert.deepEqual(brief.surface_limits.description, {
+      shown_chars: 500,
+      total_chars: 5000,
+      omitted_chars: 4500,
+    });
+    assert.equal(brief.surface_limits.endpoints.truncated_values, 1);
+    assert.equal(brief.surface_limits.endpoints.max_value_chars, 500);
+    assert.doesNotMatch(JSON.stringify(brief), new RegExp("x{1000}"));
   });
 });
 

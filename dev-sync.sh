@@ -73,6 +73,9 @@ cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
+rm -rf "$TARGET_ABS/mcp/lib/tools"
+mkdir -p "$TARGET_ABS/mcp/lib/tools"
+cp "$SCRIPT_DIR/mcp/lib/tools/"*.js "$TARGET_ABS/mcp/lib/tools/"
 chmod +x "$TARGET_ABS/mcp/server.js"
 
 node "$SCRIPT_DIR/scripts/merge-claude-config.js" "$TARGET_ABS" >/dev/null

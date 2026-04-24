@@ -24,6 +24,7 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(installedServer));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
 
@@ -51,7 +52,14 @@ test("installer merges existing MCP/settings config idempotently", () => {
       },
     }, null, 2)}\n`);
     fs.writeFileSync(path.join(workspace, ".claude", "settings.json"), `${JSON.stringify({
-      permissions: { allow: ["Read", "custom-tool"] },
+      permissions: {
+        allow: [
+          "Read",
+          "custom-tool",
+          "mcp__bountyagent__bounty_merge_wave_handoffs",
+          "mcp__bountyagent__custom_user_tool",
+        ],
+      },
       hooks: {
         PreToolUse: [{
           matcher: "Bash",
@@ -82,7 +90,9 @@ test("installer merges existing MCP/settings config idempotently", () => {
     assert.equal(settings.customSetting, true);
     assert.equal(settings.permissions.allow.length, new Set(settings.permissions.allow).size);
     assert.ok(settings.permissions.allow.includes("custom-tool"));
+    assert.ok(settings.permissions.allow.includes("mcp__bountyagent__custom_user_tool"));
     assert.ok(settings.permissions.allow.includes("mcp__bountyagent__bounty_http_scan"));
+    assert.ok(!settings.permissions.allow.includes("mcp__bountyagent__bounty_merge_wave_handoffs"));
 
     const bashEntry = settings.hooks.PreToolUse.find((entry) => entry.matcher === "Bash");
     assert.ok(bashEntry);

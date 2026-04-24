@@ -10,34 +10,6 @@ const {
 
 const TOOLS = [
   {
-    name: "bounty_http_scan",
-    description:
-      "Make an HTTP request and auto-analyze for security issues. Returns status, headers, body, plus detected tech stack, leaked secrets, misconfigs, and endpoints.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"] },
-        url: { type: "string" },
-        headers: { type: "object", additionalProperties: { type: "string" } },
-        body: { type: "string" },
-        follow_redirects: { type: "boolean" },
-        timeout_ms: { type: "number" },
-        auth_profile: { type: "string" },
-        target_domain: { type: "string", description: "Session domain for scope resolution when scanning cross-domain URLs (e.g. third-party APIs discovered on the target)." },
-        wave: { type: "string", pattern: "^w[0-9]+$", description: "Optional wave ID for request audit correlation." },
-        agent: { type: "string", pattern: "^a[0-9]+$", description: "Optional agent ID for request audit correlation." },
-        surface_id: { type: "string", description: "Optional assigned surface ID for request audit correlation." },
-        response_mode: {
-          type: "string",
-          enum: ["full", "status_only", "headers_only", "body_truncate"],
-          description: "Control response size. 'full' (default): complete response. 'status_only': status code + redirect info only (~100 tokens). 'headers_only': status + headers, no body. 'body_truncate': status + headers + first body_limit chars of body.",
-        },
-        body_limit: { type: "number", description: "Max body chars when response_mode is 'body_truncate'. Default 2000." },
-      },
-      required: ["method", "url"],
-    },
-  },
-  {
     name: "bounty_import_http_traffic",
     description:
       "Import Burp/HAR-style request history into session-owned traffic.jsonl. Entries are validated, capped, deduped, and limited to the target's first-party hosts.",
@@ -56,20 +28,6 @@ const TOOLS = [
         },
       },
       required: ["target_domain", "source"],
-    },
-  },
-  {
-    name: "bounty_read_http_audit",
-    description:
-      "Read a capped HTTP request audit summary from session-owned http-audit.jsonl, optionally filtered to one attack surface.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        target_domain: { type: "string" },
-        surface_id: { type: "string" },
-        limit: { type: "number" },
-      },
-      required: ["target_domain"],
     },
   },
   {
@@ -288,29 +246,6 @@ const TOOLS = [
         auth_status: { type: "string", enum: AUTH_STATUS_VALUES.filter((value) => value !== "pending") },
       },
       required: ["target_domain", "to_phase"],
-    },
-  },
-  {
-    name: "bounty_start_wave",
-    description: "Persist a new wave assignment file and set pending_wave in session state.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        target_domain: { type: "string" },
-        wave_number: { type: "number" },
-        assignments: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              agent: { type: "string", pattern: "^a[0-9]+$" },
-              surface_id: { type: "string" },
-            },
-            required: ["agent", "surface_id"],
-          },
-        },
-      },
-      required: ["target_domain", "wave_number", "assignments"],
     },
   },
   {

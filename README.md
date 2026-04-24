@@ -1,12 +1,12 @@
-# Bounty Agent
+# Hacker Bob
 
-Autonomous bug bounty hunting framework for Claude Code. Spawns specialized agents for recon, hunting, verification, grading, and reporting — fully orchestrated through a 7-phase FSM.
+Autonomous bug bounty hunting framework for Claude Code. Spawns specialized agents for recon, hunting, verification, grading, reporting, and optional post-report exploration through a skill-based FSM.
 
 ## Install
 
 ```bash
-git clone https://github.com/vmihalis/bounty-agent.git
-cd bounty-agent
+git clone https://github.com/vmihalis/hacker-bob.git
+cd hacker-bob
 chmod +x install.sh
 ./install.sh /path/to/your/project
 ```
@@ -18,12 +18,12 @@ The installer copies agents, the `/bountyagent` skill, rules, hooks, and knowled
 If a user pastes this repo URL into Claude Code and says "install this framework", the correct flow is:
 
 ```bash
-git clone https://github.com/vmihalis/bounty-agent.git
-cd bounty-agent
+git clone https://github.com/vmihalis/hacker-bob.git
+cd hacker-bob
 ./install.sh /absolute/path/to/their/project
 ```
 
-Install into the project where Claude Code will actually run. Do not assume the cloned `bounty-agent` repo itself is the user's working project unless they explicitly ask for that.
+Install into the project where Claude Code will actually run. Do not assume the cloned `hacker-bob` repo itself is the user's working project unless they explicitly ask for that.
 
 ## Usage
 
@@ -47,27 +47,31 @@ If you are developing the framework itself and want to sync the current repo int
 your local Claude Code test workspace with one command:
 
 ```bash
-cd bounty-agent
+cd hacker-bob
 ./dev-sync.sh /absolute/path/to/test-workspace
 ```
 
 This backs up the target workspace's `.mcp.json` and `.claude/settings.json`,
-re-runs the installer, writes the repo-backed dev config, and runs
-`claude mcp list` as a smoke check.
+runs the installer, recopies the repo-backed MCP runtime including per-tool
+modules, re-merges the repo-backed dev config, and runs `claude mcp list` as
+a smoke check unless `--no-health-check` is supplied.
 
 ## What it does
 
 ```
 RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
+                                                  ↓
+                                                EXPLORE
 ```
 
 1. **RECON** — subdomain enum, live hosts, archived URLs, nuclei scan, JS secret extraction
-2. **AUTH** — accepts user-provided auth material when available, otherwise continues unauthenticated
+2. **AUTH** — detects signup, stores attacker/victim auth profiles when possible, or continues unauthenticated/`--no-auth`
 3. **HUNT** — parallel hunter agents per attack surface (2-6 waves)
 4. **CHAIN** — finds A→B exploit chains across findings
 5. **VERIFY** — 3 rounds: brutalist (skeptical), balanced (catch false negatives), final (fresh PoCs)
 6. **GRADE** — 5-axis scoring, SUBMIT/HOLD/SKIP verdict
 7. **REPORT** — submission-ready report with PoCs and evidence
+8. **EXPLORE** — optional user-requested post-report hunt loop that returns to CHAIN → VERIFY → GRADE → REPORT
 
 ## Agents
 
@@ -84,40 +88,13 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 
 ## MCP Server
 
-The installer configures a local MCP server (`mcp/server.js`) that gives hunter agents structured tools:
+The installer configures a local stdio MCP server (`mcp/server.js`). Its tool surface covers HTTP scanning and audit reads, optional Burp/HAR traffic import, optional public intel, safe static-artifact import and token-contract scans, auth profile storage/listing, session FSM operations, wave assignment/merge operations, hunter handoff and coverage logging, finding/verification/grade storage, and bounded hunter briefs.
 
-| Tool | What it does |
-|---|---|
-| `bounty_http_scan` | HTTP request + auto-analysis (tech fingerprinting, secret detection, endpoint extraction) |
-| `bounty_import_http_traffic` | Import Burp/HAR-style first-party request history into session-owned `traffic.jsonl` |
-| `bounty_read_http_audit` | Read a capped summary of Bob-generated request audit entries from `http-audit.jsonl` |
-| `bounty_public_intel` | Fetch optional public bounty intel: policy summary, program stats, scopes, and disclosed report hints |
-| `bounty_import_static_artifact` | Import pasted token contract source into session-owned `static-imports/`; path imports are rejected and stored content is redacted |
-| `bounty_static_scan` | Run deterministic token-contract checks on an imported artifact and write redacted structured results to `static-scan-results.jsonl` |
-| `bounty_record_finding` | Append an authoritative finding record to `findings.jsonl` and best-effort mirror it to `findings.md` |
-| `bounty_read_findings` | Read the authoritative structured findings document for a target |
-| `bounty_list_findings` | List recorded findings for a target for hunter dedupe |
-| `bounty_write_verification_round` | Write one verification round JSON plus a best-effort markdown mirror |
-| `bounty_read_verification_round` | Read one verification round JSON document |
-| `bounty_write_grade_verdict` | Write the grade verdict JSON plus a best-effort markdown mirror |
-| `bounty_read_grade_verdict` | Read the grade verdict JSON document |
-| `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for human/debug resume notes only |
-| `bounty_write_wave_handoff` | Hunter-final writer for one wave handoff as `handoff-wN-aN.md` plus authoritative `handoff-wN-aN.json` |
-| `bounty_wave_handoff_status` | Readiness/count check for one wave based on assignment and handoff file presence |
-| `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
-| `bounty_auth_store` | Store auth tokens as reusable `profile_name` profiles |
-| `bounty_list_auth_profiles` | List redacted auth profile names and freshness hints |
-| `bounty_log_coverage` | Append per-session endpoint/bug-class/auth-profile coverage records to `coverage.jsonl` |
-| `bounty_auto_signup` | Optional browser-assisted signup that stores attacker/victim auth profiles when Patchright is installed |
-| `bounty_wave_status` | Read-only summary of findings for wave-to-wave decisions |
-| `bounty_read_state_summary` | Compact phase/wave/finding/coverage state for orchestration decisions |
-| `bounty_read_hunter_brief` | Per-hunter startup brief with assigned surface, exclusions, coverage, traffic, audit/circuit-breaker, ranking, intel, static scan hints, bypass table, and bounded curated technique guidance |
-
-Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
+The source of truth for the exported MCP surface is the registry in `mcp/lib/tool-registry.js`. A pilot set of tools already uses per-tool modules under `mcp/lib/tools/`, where the schema, role metadata, side-effect metadata, sensitivity/scope flags, and handler binding live together. Legacy tools continue to flow through `tool-definitions.js`, `tool-manifest.js`, and `tool-handlers.js` during the transition. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill frontmatter, generated agent tool frontmatter, and Claude settings all derive from the registry.
 
 Every MCP tool response is wrapped in a standard envelope: success responses use `{ "ok": true, "data": ..., "meta": { "tool": "...", "version": 1 } }`; failures use `{ "ok": false, "error": { "code": "...", "message": "..." }, "meta": ... }`. Prompts and integrations should read successful payloads from `.data`.
 
-Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never parsed by code or prompts. `SESSION_HANDOFF.md` is human/debug only. Chain-building uses structured `summary` and `chain_notes` from `bounty_read_wave_handoffs`, not markdown handoffs.
+Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown mirrors remain for humans/debugging only and are never parsed as state. `SESSION_HANDOFF.md`, `findings.md`, handoff markdown, verification markdown, and grade markdown are human/debug only. Chain-building uses structured `summary` and `chain_notes` from `bounty_read_wave_handoffs`, not markdown handoffs. The legacy prose exceptions are `chains.md`, which verifiers may read as narrative chain context, and `report.md`, which is the final human-facing report.
 
 Coverage, traffic, request audit, public intel, and static scans are session-scoped and MCP-owned. Hunters append concise coverage entries through `bounty_log_coverage`; `bounty_http_scan` appends Bob-generated request results to `http-audit.jsonl`; `bounty_import_http_traffic` imports optional Burp/HAR request history to `traffic.jsonl`; `bounty_public_intel` stores optional public program/report hints in `public-intel.json`; and `bounty_import_static_artifact` plus `bounty_static_scan` store redacted token-contract scan artifacts/results without ever reading arbitrary filesystem paths. `bounty_read_hunter_brief` returns only the assigned surface's capped latest-per-endpoint/class/auth coverage, relevant observed traffic, audit/circuit-breaker feedback, ranking reasons, intel hints, and bounded static scan hints. Wave merge uses unfinished coverage statuses to requeue surfaces without introducing cross-target memory.
 
@@ -129,7 +106,7 @@ Recon may enrich `attack_surface.json` surfaces with optional `surface_type`, `b
 
 `bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
 
-`bounty_apply_wave_merge` and `bounty_merge_wave_handoffs` never synthesize missing structured handoffs from markdown or `SESSION_HANDOFF.md`. New waves include per-agent handoff tokens; only token hashes are stored in `wave-N-assignments.json`, and merge/read responses report whether handoffs are `verified` or `legacy_unverified`.
+`bounty_apply_wave_merge` and `bounty_merge_wave_handoffs` never synthesize missing structured handoffs from markdown or `SESSION_HANDOFF.md`. New waves include per-agent handoff tokens; only token hashes are stored in `wave-N-assignments.json`, and merge/read responses report whether handoffs are `verified` or `legacy_unverified`. Lifecycle hooks validate hunter completion only; the orchestrator skill is the normal owner of wave merge state mutation.
 
 If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable findings, structured verification/grade artifacts, and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 
@@ -137,7 +114,7 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 
 - **scope-guard.sh** — PreToolUse hook on Bash. Logs out-of-scope HTTP requests. Hard-blocks domains in `deny-list.txt`.
 - **scope-guard-mcp.sh** — PreToolUse hook on MCP scans. Preflights/logs scope drift while `bounty_http_scan` itself enforces out-of-scope blocking and auditing.
-- **hunter-subagent-stop.js** — SubagentStop hook for hunter agents. Requires the final marker plus a valid structured handoff and merges a wave once all handoffs are present.
+- **hunter-subagent-stop.js** — SubagentStop hook for hunter agents. Requires the final marker plus a valid structured handoff, then exits successfully without mutating wave/session state.
 - **bounty-statusline.js** — Shows phase, wave, finding count, target, and context usage in the terminal footer.
 
 ## Rules (always active)
@@ -163,7 +140,7 @@ All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
 - `static-imports/` — MCP-owned redacted imported static artifacts
 - `static-artifacts.jsonl` — MCP-owned static artifact manifest
 - `static-scan-results.jsonl` — MCP-owned redacted static scan results
-- `chains.md` — exploit chain analysis
+- `chains.md` — legacy prose exploit chain analysis read by verifiers as narrative context only
 - `brutalist.json` / `brutalist.md` — round 1 control-plane JSON plus human/debug markdown
 - `balanced.json` / `balanced.md` — round 2 control-plane JSON plus human/debug markdown
 - `verified-final.json` / `verified-final.md` — round 3 control-plane JSON plus human/debug markdown
@@ -188,7 +165,7 @@ The orchestrator handles all fallbacks automatically.
 
 ## Tool Development Contract
 
-Adding a Bob MCP tool should be boring: add one registry-backed tool definition with schema, handler, role bundles, side-effect metadata, scope-hook requirement, and sensitivity flags; add or update the handler; then add focused tests. `TOOLS`, dispatcher lookup, role-bundle permissions, and Claude settings are generated from the registry/config helpers, so do not hand-maintain duplicate permission lists in installer scripts.
+Adding a Bob MCP tool should be boring: prefer a per-tool module in `mcp/lib/tools/` that owns the schema, handler binding, role bundles, side-effect metadata, scope-hook requirement, and sensitivity flags. Legacy registry entries still exist for unmigrated tools, but new tool work should avoid manually editing separate definition, manifest, and handler-map files when a per-tool module is sufficient. Add focused tests for validation, envelope behavior, metadata, and role permissions. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill/agent tool frontmatter, and Claude settings are generated from the registry/config helpers, so do not hand-maintain duplicate permission lists in installer scripts.
 
 ## Requirements
 

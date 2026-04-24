@@ -54,7 +54,7 @@ function isOrchestratorOnlyMutator(toolName) {
 function defaultGlobalMcpPermissions() {
   return TOOLS
     .map((tool) => tool.name)
-    .filter((toolName) => !isOrchestratorOnlyMutator(toolName))
+    .filter((toolName) => TOOL_MANIFEST[toolName].global_preapproval === true)
     .map(mcpPermissionForTool);
 }
 

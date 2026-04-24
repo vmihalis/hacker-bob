@@ -124,11 +124,27 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.deepEqual([...sourceAllowed].sort(), [...expectedGlobalAllowed].sort());
   assert.deepEqual([...generatedAllowed].sort(), [...expectedGlobalAllowed].sort());
 
-  for (const toolName of manifestTools) {
+  for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
+    assert.equal(typeof metadata.global_preapproval, "boolean", `${toolName} missing global_preapproval`);
+    assert.equal(
+      sourceAllowed.has(toolName),
+      metadata.global_preapproval,
+      `${toolName} source global preapproval mismatch`,
+    );
+    assert.equal(
+      generatedAllowed.has(toolName),
+      metadata.global_preapproval,
+      `${toolName} generated global preapproval mismatch`,
+    );
     if (isOrchestratorOnlyMutator(toolName)) {
       assert.ok(!sourceAllowed.has(toolName), `${toolName} should not be globally pre-approved`);
     }
   }
+  assert.equal(TOOL_MANIFEST.bounty_merge_wave_handoffs.global_preapproval, false);
+  assert.equal(TOOL_MANIFEST.bounty_merge_wave_handoffs.mutating, false);
+  assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
+  assert.ok(!generatedAllowed.has("bounty_merge_wave_handoffs"));
+  assert.ok(sourceAllowed.has("bounty_wave_handoff_status"));
 
   const hookMatchers = settingsHookMatchers();
   for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
@@ -266,6 +282,7 @@ test("bountyagent skill allowed-tools match orchestrator and auth bundles", () =
   );
   assert.ok(allowedTools.includes("Task"));
   assert.ok(allowedTools.includes("Read"));
+  assert.ok(allowedTools.includes("mcp__bountyagent__bounty_merge_wave_handoffs"));
   assert.ok(!allowedTools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
 });
 
@@ -344,6 +361,8 @@ test("installer and dev-sync copy and configure session-write-guard", () => {
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
   assert.match(install, /\.claude\/skills\/bountyagent\/SKILL\.md/);
   assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
+  assert.match(install, /mcp\/lib\/tools/);
+  assert.match(devSync, /mcp\/lib\/tools/);
   assert.match(install, /merge-claude-config\.js/);
   assert.match(devSync, /merge-claude-config\.js/);
 
