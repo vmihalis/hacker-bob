@@ -5,6 +5,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { assertNonEmptyString } = require("./validation.js");
 const { authStore } = require("./auth.js");
+const { safeFetch } = require("./safe-fetch.js");
 
 const SIGNUP_PATHS = [
   "/register", "/signup", "/sign-up", "/join", "/create-account",
@@ -25,11 +26,81 @@ const FORM_FIELD_PATTERNS = [
   { name: "phone", pattern: /name=["']?(?:phone|telephone|mobile|tel)["'\s>]/i },
 ];
 
+const AUTH_EVIDENCE_KEY_RE = /(sid|session|auth|token|jwt|access|refresh)/i;
+
+function authEvidenceFromResult(result) {
+  const headers = result && result.headers && typeof result.headers === "object" ? result.headers : {};
+  const cookies = result && result.cookies && typeof result.cookies === "object" ? result.cookies : {};
+  const localStorage = result && result.local_storage && typeof result.local_storage === "object" ? result.local_storage : {};
+  const sessionStorage = result && result.session_storage && typeof result.session_storage === "object" ? result.session_storage : {};
+
+  return {
+    authorization_header: Object.keys(headers).some((name) => name.toLowerCase() === "authorization"),
+    cookie_keys: Object.keys(cookies).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    local_storage_keys: Object.keys(localStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    session_storage_keys: Object.keys(sessionStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+  };
+}
+
+function hasAuthEvidence(evidence) {
+  return !!(
+    evidence.authorization_header ||
+    evidence.cookie_keys.length ||
+    evidence.local_storage_keys.length ||
+    evidence.session_storage_keys.length
+  );
+}
+
+function normalizeUrlForSignupSuccess(urlValue) {
+  try {
+    const parsed = new URL(urlValue);
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return String(urlValue || "").replace(/#.*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function normalizeAutoSignupResult(result, signupUrl) {
+  const normalized = result && typeof result === "object" ? result : {};
+  const evidence = authEvidenceFromResult(normalized);
+  const pageErrors = Array.isArray(normalized.page_errors) ? normalized.page_errors.filter(Boolean) : [];
+  const submitted = normalized.submitted === true;
+  const redirectUrl = normalized.redirect_url || null;
+  const redirected = redirectUrl
+    ? normalizeUrlForSignupSuccess(redirectUrl) !== normalizeUrlForSignupSuccess(signupUrl)
+    : false;
+  const evidencePresent = hasAuthEvidence(evidence);
+
+  normalized.auth_evidence = evidence;
+  normalized.page_errors = pageErrors;
+
+  if (normalized.success === true && submitted && pageErrors.length === 0 && evidencePresent && redirected) {
+    return normalized;
+  }
+
+  if (normalized.success === true || normalized.success == null) {
+    normalized.success = false;
+    normalized.fallback = "manual";
+  }
+
+  normalized.diagnostics = {
+    submitted,
+    page_errors: pageErrors,
+    filled_fields: normalized.filled_fields || {},
+    redirect_url: redirectUrl,
+    auth_evidence: evidence,
+  };
+  return normalized;
+}
+
 async function signupDetect(args) {
-  assertNonEmptyString(args.target_domain, "target_domain");
+  const targetDomain = assertNonEmptyString(args.target_domain, "target_domain");
   const targetUrl = assertNonEmptyString(args.target_url, "target_url").replace(/\/+$/, "");
 
   const endpointsFound = [];
+  const blockedRequests = [];
   const formFieldsSet = new Set();
   let hasCaptcha = false;
   let captchaType = null;
@@ -39,15 +110,14 @@ async function signupDetect(args) {
   for (const signupPath of SIGNUP_PATHS) {
     try {
       const url = `${targetUrl}${signupPath}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const resp = await fetch(url, {
+      const resp = await safeFetch(url, {
         method: "GET",
         headers: { "User-Agent": "Mozilla/5.0 (compatible; security-testing)", Accept: "text/html,application/json" },
-        redirect: "follow",
-        signal: controller.signal,
+        followRedirects: true,
+        timeoutMs: 5000,
+        targetDomain,
+        maxResponseBytes: 20000,
       });
-      clearTimeout(timeout);
 
       if (resp.status >= 200 && resp.status < 400) {
         const ct = resp.headers.get("content-type") || "";
@@ -56,7 +126,7 @@ async function signupDetect(args) {
           body = (await resp.text()).slice(0, 20000);
         }
 
-        endpointsFound.push({ path: signupPath, method: "GET", status: resp.status });
+        endpointsFound.push({ path: signupPath, method: "GET", status: resp.status, final_url: resp.url });
 
         // Detect form fields
         for (const { name, pattern } of FORM_FIELD_PATTERNS) {
@@ -83,7 +153,10 @@ async function signupDetect(args) {
           if (hasOAuth && endpointsFound.length === 1) oauthOnly = true;
         }
       }
-    } catch {
+    } catch (error) {
+      if (error && error.scope_decision === "blocked") {
+        blockedRequests.push({ path: signupPath, error: error.message || String(error) });
+      }
       // Timeout or connection error — skip this path
     }
   }
@@ -113,6 +186,7 @@ async function signupDetect(args) {
     oauth_only: oauthOnly,
     email_restrictions_detected: emailRestrictions,
     signup_feasibility: feasibility,
+    blocked_requests: blockedRequests,
   });
 }
 
@@ -185,8 +259,10 @@ async function autoSignup(args) {
           return;
         }
 
-        // If signup succeeded, auto-store auth
-        if (result.success && (Object.keys(result.cookies || {}).length > 0 || Object.keys(result.headers || {}).length > 0)) {
+        result = normalizeAutoSignupResult(result, signupUrl);
+
+        // If signup succeeded with auth-shaped evidence, auto-store auth.
+        if (result.success === true && hasAuthEvidence(result.auth_evidence)) {
           try {
             await authStore({
               target_domain: domain,
@@ -211,6 +287,9 @@ async function autoSignup(args) {
 }
 
 module.exports = {
+  authEvidenceFromResult,
   autoSignup,
+  hasAuthEvidence,
+  normalizeAutoSignupResult,
   signupDetect,
 };

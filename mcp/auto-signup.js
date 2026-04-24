@@ -18,6 +18,7 @@
 
 const CAPTCHA_POLL_INTERVAL_MS = 3000;
 const CAPTCHA_POLL_MAX_MS = 60000;
+const AUTH_EVIDENCE_KEY_RE = /(sid|session|auth|token|jwt|access|refresh)/i;
 
 // ── Helpers ──
 
@@ -36,6 +37,39 @@ function humanType(chars) {
 function output(obj) {
   process.stdout.write(JSON.stringify(obj));
   process.exit(0);
+}
+
+function normalizeUrlForSignupSuccess(urlValue) {
+  try {
+    const parsed = new URL(urlValue);
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return String(urlValue || "").replace(/#.*$/, "").replace(/\/+$/, "");
+  }
+}
+
+function authEvidenceFromAuthData(authData) {
+  const headers = authData.headers || {};
+  const cookies = authData.cookies || {};
+  const localStorage = authData.local_storage || {};
+  const sessionStorage = authData.session_storage || {};
+  return {
+    authorization_header: Object.keys(headers).some((name) => name.toLowerCase() === "authorization"),
+    cookie_keys: Object.keys(cookies).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    local_storage_keys: Object.keys(localStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+    session_storage_keys: Object.keys(sessionStorage).filter((name) => AUTH_EVIDENCE_KEY_RE.test(name)),
+  };
+}
+
+function hasAuthEvidence(evidence) {
+  return !!(
+    evidence.authorization_header ||
+    evidence.cookie_keys.length ||
+    evidence.local_storage_keys.length ||
+    evidence.session_storage_keys.length
+  );
 }
 
 // ── CAPTCHA Solving via CapSolver ──
@@ -658,24 +692,38 @@ async function main() {
     // Extract auth data
     const authData = await extractAuth(context);
     const finalUrl = page.url();
+    const authEvidence = authEvidenceFromAuthData(authData);
+    const success = submitted &&
+      pageErrors.length === 0 &&
+      hasAuthEvidence(authEvidence) &&
+      normalizeUrlForSignupSuccess(finalUrl) !== normalizeUrlForSignupSuccess(signup_url);
 
     clearTimeout(deadline);
     await browser.close();
 
     output({
-      success: true,
+      success,
+      fallback: success ? undefined : "manual",
       filled_fields: filled,
       captcha: captchaResult,
       submitted,
       redirect_url: finalUrl,
       page_errors: pageErrors,
+      auth_evidence: authEvidence,
+      diagnostics: success ? undefined : {
+        submitted,
+        page_errors: pageErrors,
+        filled_fields: filled,
+        redirect_url: finalUrl,
+        auth_evidence: authEvidence,
+      },
       ...authData,
     });
   } catch (err) {
     clearTimeout(deadline);
     try { await browser.close(); } catch {}
-    output({ error: err.message, stack: err.stack?.split("\n").slice(0, 3).join(" | ") });
+    output({ success: false, fallback: "manual", error: err.message, stack: err.stack?.split("\n").slice(0, 3).join(" | ") });
   }
 }
 
-main().catch((err) => output({ error: err.message }));
+main().catch((err) => output({ success: false, fallback: "manual", error: err.message }));

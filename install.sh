@@ -49,12 +49,14 @@ cp "$SCRIPT_DIR/.claude/hooks/bounty-statusline.js" "$CLAUDE_DIR/hooks/"
 chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/session-write-guard.sh"
 echo "  scope/session guard hooks (Bash + MCP) + status line"
 
-# Copy MCP server + auto-signup script
-mkdir -p "$TARGET_ABS/mcp"
+# Copy complete MCP runtime
+mkdir -p "$TARGET_ABS/mcp/lib"
 cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
 cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
+cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
+cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
 chmod +x "$TARGET_ABS/mcp/server.js"
-echo "  MCP server (mcp/server.js + auto-signup.js)"
+echo "  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js)"
 
 # Configure .mcp.json
 MCP_JSON="$TARGET_ABS/.mcp.json"

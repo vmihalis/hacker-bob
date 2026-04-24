@@ -119,8 +119,10 @@ function readHttpAuditRecordsFromJsonl(domain) {
 function appendHttpAuditRecord(record) {
   if (!record || !record.target_domain) return;
   const normalized = normalizeHttpAuditRecord(record, { expectedDomain: record.target_domain });
-  appendJsonlLine(httpAuditJsonlPath(normalized.target_domain), normalized, {
-    maxRecords: HTTP_AUDIT_LOG_MAX_RECORDS,
+  withSessionLock(normalized.target_domain, () => {
+    appendJsonlLine(httpAuditJsonlPath(normalized.target_domain), normalized, {
+      maxRecords: HTTP_AUDIT_LOG_MAX_RECORDS,
+    });
   });
 }
 
@@ -462,11 +464,8 @@ function importHttpTraffic(args, { rankAttackSurfaces = null } = {}) {
   const inputEntries = normalizeTrafficImportEntries(args);
   const entries = inputEntries.slice(0, TRAFFIC_IMPORT_MAX_ENTRIES);
   const importedAt = new Date().toISOString();
-  const existingRecords = readTrafficRecordsFromJsonl(domain);
-  const seen = new Set(existingRecords.map(trafficRecordKey));
-  const records = [];
+  const normalizedRecords = [];
   const rejected = [];
-  let duplicateCount = 0;
 
   for (let index = 0; index < entries.length; index += 1) {
     const normalized = normalizeImportedTrafficEntry(entries[index], index, {
@@ -479,16 +478,25 @@ function importHttpTraffic(args, { rankAttackSurfaces = null } = {}) {
       continue;
     }
 
-    const key = trafficRecordKey(normalized.record);
-    if (seen.has(key)) {
-      duplicateCount += 1;
-      continue;
-    }
-    seen.add(key);
-    records.push(normalized.record);
+    normalizedRecords.push(normalized.record);
   }
 
   return withSessionLock(domain, () => {
+    const existingRecords = readTrafficRecordsFromJsonl(domain);
+    const seen = new Set(existingRecords.map(trafficRecordKey));
+    const records = [];
+    let duplicateCount = 0;
+
+    for (const record of normalizedRecords) {
+      const key = trafficRecordKey(record);
+      if (seen.has(key)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seen.add(key);
+      records.push(record);
+    }
+
     const logPath = trafficJsonlPath(domain);
     appendJsonlLines(logPath, records, { maxRecords: TRAFFIC_LOG_MAX_RECORDS });
     if (rankAttackSurfaces) {

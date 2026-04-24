@@ -1,7 +1,7 @@
 #!/bin/bash
 # Scope guard hook — PreToolUse on Bash
-# Warn-only for out-of-scope domains (logs to scope-warnings.log)
-# Hard-block for deny-listed domains (exit 2)
+# Hard-block out-of-scope and deny-listed domains (exit 2).
+# Set BOUNTY_SCOPE_LOG_ONLY=1 to restore warn-only out-of-scope logging.
 
 INPUT=$(cat)
 export SCOPE_GUARD_INPUT="$INPUT"
@@ -125,6 +125,23 @@ def log_line(session_dir, message):
     log_path = session_dir / "scope-warnings.log"
     with open(log_path, "a", encoding="utf-8") as handle:
         handle.write(f"[{utc_now()}] {message}\n")
+
+
+def sanitize_command_snippet(command_text):
+    def redact_url(match):
+        raw_url = match.group(0)
+        try:
+            parsed = urlsplit(raw_url)
+        except Exception:
+            return raw_url.split("?", 1)[0].split("#", 1)[0]
+
+        redacted = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            redacted += "?REDACTED"
+        return redacted
+
+    sanitized = re.sub(r"https?://[^\s\"'<>|;]+", redact_url, command_text, flags=re.IGNORECASE)
+    return sanitized[:200]
 
 
 def resolve_path(raw_path, session_dir=None):
@@ -518,10 +535,16 @@ allowed.update(
     }
 )
 
-command_snippet = command[:200]
+command_snippet = sanitize_command_snippet(command)
+out_of_scope_domains = []
 for domain in sorted(domains):
     if not matches_scope(domain, allowed):
+        out_of_scope_domains.append(domain)
         log_line(session_dir, f"OUT-OF-SCOPE: {domain} (command: {command_snippet})")
+
+if out_of_scope_domains and os.environ.get("BOUNTY_SCOPE_LOG_ONLY") != "1":
+    first_domain = out_of_scope_domains[0]
+    block(f"BLOCKED: out-of-scope host {first_domain} for session target {session_dir.name}")
 
 raise SystemExit(0)
 PY

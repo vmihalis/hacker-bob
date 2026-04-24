@@ -10,9 +10,6 @@ const {
   assertSafeDomain,
   sessionDir,
 } = require("./paths.js");
-const {
-  writeFileAtomic,
-} = require("./storage.js");
 
 const authProfiles = new Map();
 
@@ -33,8 +30,7 @@ function buildHeaderProfile(headers, cookies, storage) {
 function resolveAuthJsonPath(targetDomain) {
   const sessionsDir = path.join(os.homedir(), "bounty-agent-sessions");
   if (targetDomain) {
-    const targetDir = sessionDir(targetDomain);
-    if (fs.existsSync(targetDir)) return path.join(targetDir, "auth.json");
+    return path.join(sessionDir(targetDomain), "auth.json");
   }
   try {
     const entries = fs.readdirSync(sessionsDir)
@@ -68,6 +64,31 @@ function migrateAuthJson(existing) {
   return { version: 2, profiles: { attacker: existing } };
 }
 
+function writeAuthFile(authPath, content) {
+  fs.mkdirSync(path.dirname(authPath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(authPath),
+    `.${path.basename(authPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+
+  let fd = null;
+  try {
+    fd = fs.openSync(tempPath, "wx", 0o600);
+    fs.writeFileSync(fd, content, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tempPath, authPath);
+    fs.chmodSync(authPath, 0o600);
+  } catch (error) {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    try { fs.rmSync(tempPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
 function authStore(args) {
   const domain = args.target_domain == null
     ? null
@@ -83,21 +104,32 @@ function authStore(args) {
   if (credentials) profile.credentials = credentials;
 
   const cacheKey = domain ? `${domain}:${role}` : role;
-  authProfiles.set(cacheKey, profile);
 
   const authPath = resolveAuthJsonPath(domain);
+  let persistenceError = null;
   if (authPath) {
     try {
       const existing = readAuthJson(authPath);
       const doc = migrateAuthJson(existing);
       const profileForDisk = Object.assign({}, profile);
       doc.profiles[role] = profileForDisk;
-      writeFileAtomic(authPath, JSON.stringify(doc, null, 2) + "\n");
-    } catch {}
+      writeAuthFile(authPath, JSON.stringify(doc, null, 2) + "\n");
+    } catch (error) {
+      persistenceError = error;
+    }
   }
 
   let hasAttacker = false;
   let hasVictim = false;
+  if (persistenceError) {
+    return JSON.stringify({
+      success: false,
+      role,
+      error: `failed to persist auth profile: ${persistenceError.message || String(persistenceError)}`,
+      auth_path: authPath,
+    });
+  }
+
   if (authPath) {
     try {
       const saved = readAuthJson(authPath);
@@ -105,13 +137,23 @@ function authStore(args) {
         hasAttacker = !!saved.profiles.attacker;
         hasVictim = !!saved.profiles.victim;
       }
-    } catch {}
+    } catch (error) {
+      return JSON.stringify({
+        success: false,
+        role,
+        error: `failed to verify persisted auth profile: ${error.message || String(error)}`,
+        auth_path: authPath,
+      });
+    }
   }
+
+  authProfiles.set(cacheKey, profile);
 
   return JSON.stringify({
     success: true,
     role,
     keys: Object.keys(profile).filter((k) => k !== "credentials"),
+    persisted: !!authPath,
     has_attacker: hasAttacker,
     has_victim: hasVictim,
   });
@@ -171,4 +213,5 @@ module.exports = {
   readAuthJson,
   resolveAuthJsonPath,
   resolveAuthProfile,
+  writeAuthFile,
 };

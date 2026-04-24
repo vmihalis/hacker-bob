@@ -9,19 +9,31 @@ const {
 } = require("./validation.js");
 const { appendHttpAuditRecord } = require("./http-records.js");
 const {
-  hostnameFromUrl,
   safeUrlObject,
-  validateScanUrl,
 } = require("./url-surface.js");
 const { resolveAuthProfile } = require("./auth.js");
+const {
+  resolveHttpScanTargetDomain,
+} = require("./scope.js");
+const {
+  assertSafeRequestUrl,
+  safeFetch,
+} = require("./safe-fetch.js");
 
 async function httpScan(args) {
   const method = assertRequiredText(args.method, "method").toUpperCase();
   const url = assertRequiredText(args.url, "url");
   const startedAt = Date.now();
-  const targetDomain = args.target_domain
+  const explicitTargetDomain = args.target_domain
     ? assertNonEmptyString(args.target_domain, "target_domain")
-    : (hostnameFromUrl(url) || null);
+    : null;
+  const targetDomain = resolveHttpScanTargetDomain(url, explicitTargetDomain);
+  if (!targetDomain) {
+    return JSON.stringify({
+      error: "target_domain is required for scoped HTTP scans",
+      scope_decision: "blocked",
+    });
+  }
   const parsedUrl = safeUrlObject(url);
   const auditUrl = redactUrlSensitiveValues(url);
   const auditParsedUrl = safeUrlObject(auditUrl) || parsedUrl;
@@ -49,14 +61,17 @@ async function httpScan(args) {
   };
 
   try {
-    validateScanUrl(url);
+    assertSafeRequestUrl(url, targetDomain);
   } catch (error) {
     audit({
       status: null,
       error: error.message || String(error),
       scope_decision: "blocked",
     });
-    return JSON.stringify({ error: error.message || String(error) });
+    return JSON.stringify({
+      error: error.message || String(error),
+      scope_decision: "blocked",
+    });
   }
 
   const headers = args.headers || {};
@@ -85,96 +100,113 @@ async function httpScan(args) {
   }
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    const resp = await fetch(url, {
+    const {
+      status,
+      statusText,
+      headers: responseHeaders,
+      url: finalUrl,
+      redirected,
+      redirectCount,
+      bodyByteLength,
+      bodyTruncated,
+      text,
+      arrayBuffer,
+    } = await safeFetch(url, {
       method,
       headers,
       body,
-      redirect: followRedirects ? "follow" : "manual",
-      signal: controller.signal,
+      followRedirects,
+      timeoutMs,
+      targetDomain,
     });
-    clearTimeout(timeout);
 
     const respHeaders = {};
-    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+    responseHeaders.forEach((v, k) => { respHeaders[k] = v; });
 
-    const ct = resp.headers.get("content-type") || "";
+    const ct = responseHeaders.get("content-type") || "";
     let respBody;
     let analysisBody;
     if (ct.includes("text") || ct.includes("json") || ct.includes("xml") || ct.includes("javascript") || ct.includes("html")) {
-      const text = await resp.text();
-      analysisBody = text;
-      respBody = text.slice(0, 12000);
-      if (text.length > 12000) respBody += `\n[TRUNCATED — ${text.length} chars]`;
+      const bodyText = await text();
+      analysisBody = bodyText;
+      respBody = bodyText.slice(0, 12000);
+      if (bodyText.length > 12000 || bodyTruncated) {
+        respBody += `\n[TRUNCATED — ${bodyTruncated ? `${bodyByteLength} bytes exceeded transport cap` : `${bodyText.length} chars`}]`;
+      }
     } else {
-      const buf = await resp.arrayBuffer();
-      respBody = `[Binary: ${buf.byteLength} bytes, type: ${ct}]`;
+      const buf = await arrayBuffer();
+      respBody = `[Binary: ${buf.byteLength} bytes${bodyTruncated ? ` (truncated from ${bodyByteLength})` : ""}, type: ${ct}]`;
       analysisBody = respBody;
     }
 
     const responseMode = args.response_mode || "full";
     const bodyLimit = args.body_limit || 2000;
     audit({
-      status: resp.status,
+      status,
       error: null,
       scope_decision: "allowed",
-      final_url: redactUrlSensitiveValues(resp.url),
+      final_url: redactUrlSensitiveValues(finalUrl),
     });
 
     if (responseMode === "status_only") {
       return JSON.stringify({
-        status: resp.status,
-        status_text: resp.statusText,
-        redirected: resp.redirected,
-        final_url: resp.url,
+        status,
+        status_text: statusText,
+        redirected,
+        redirect_count: redirectCount,
+        final_url: finalUrl,
       });
     }
 
     if (responseMode === "headers_only") {
       return JSON.stringify({
-        status: resp.status,
-        status_text: resp.statusText,
+        status,
+        status_text: statusText,
         headers: respHeaders,
-        redirected: resp.redirected,
-        final_url: resp.url,
+        redirected,
+        redirect_count: redirectCount,
+        final_url: finalUrl,
       });
     }
 
-    const analysis = analyzeResponse(url, resp.status, respHeaders, analysisBody);
+    const analysis = analyzeResponse(url, status, respHeaders, analysisBody);
 
     if (responseMode === "body_truncate") {
       return JSON.stringify({
-        status: resp.status,
-        status_text: resp.statusText,
+        status,
+        status_text: statusText,
         headers: respHeaders,
         body: respBody.slice(0, bodyLimit) + (respBody.length > bodyLimit ? `\n[TRUNCATED at ${bodyLimit}/${respBody.length} chars]` : ""),
-        redirected: resp.redirected,
-        final_url: resp.url,
+        redirected,
+        redirect_count: redirectCount,
+        final_url: finalUrl,
         analysis,
       }, null, 2);
     }
 
     return JSON.stringify({
-      status: resp.status,
-      status_text: resp.statusText,
+      status,
+      status_text: statusText,
       headers: respHeaders,
       body: respBody,
-      redirected: resp.redirected,
-      final_url: resp.url,
+      redirected,
+      redirect_count: redirectCount,
+      final_url: finalUrl,
       analysis,
     }, null, 2);
   } catch (err) {
     const errorMessage = err && err.name === "AbortError"
       ? `timeout after ${timeoutMs}ms`
       : (err.message || String(err));
+    const isBlocked = err && err.scope_decision === "blocked";
     audit({
       status: null,
       error: errorMessage,
-      scope_decision: "request_error",
+      scope_decision: isBlocked ? "blocked" : "request_error",
     });
-    return JSON.stringify({ error: errorMessage });
+    return JSON.stringify(isBlocked
+      ? { error: errorMessage, scope_decision: "blocked" }
+      : { error: errorMessage });
   }
 }
 

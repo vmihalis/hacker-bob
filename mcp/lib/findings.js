@@ -1,7 +1,10 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const {
+  GRADE_HOLD_MIN_SCORE,
+  GRADE_SUBMIT_MIN_SCORE,
   GRADE_VERDICT_VALUES,
   SEVERITY_VALUES,
   VERIFICATION_DISPOSITION_VALUES,
@@ -35,6 +38,47 @@ const {
 const {
   loadWaveAssignments,
 } = require("./assignments.js");
+
+function normalizeEndpointForDedupe(endpoint) {
+  const raw = String(endpoint || "").trim();
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    const queryKeys = Array.from(parsed.searchParams.keys()).sort();
+    parsed.search = queryKeys.map((key) => `${encodeURIComponent(key)}=*`).join("&");
+    return parsed.toString().toLowerCase();
+  } catch {
+    return raw
+      .replace(/#.*$/, "")
+      .replace(/\?.*$/, (query) => {
+        const keys = query.slice(1).split("&").map((part) => part.split("=", 1)[0]).filter(Boolean).sort();
+        return keys.length ? `?${keys.map((key) => `${key}=*`).join("&")}` : "";
+      })
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  }
+}
+
+function normalizeTextForDedupe(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function shortFingerprint(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16);
+}
+
+function computeFindingDedupeKey(record) {
+  const endpoint = normalizeEndpointForDedupe(record.endpoint);
+  const classification = normalizeTextForDedupe(record.title || record.cwe || record.severity);
+  const authContext = normalizeTextForDedupe(record.auth_profile || "");
+  const evidence = shortFingerprint(`${record.response_evidence || ""}\n${record.proof_of_concept || ""}`);
+  return crypto.createHash("sha256")
+    .update(JSON.stringify([endpoint, classification, authContext, evidence]))
+    .digest("hex")
+    .slice(0, 24);
+}
 
 function summarizeFindings(findings) {
   const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
@@ -72,7 +116,14 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       validated: assertBoolean(record.validated, "validated"),
       wave: record.wave == null ? null : parseWaveId(record.wave),
       agent: record.agent == null ? null : parseAgentId(record.agent),
+      dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
+    if (!finding.dedupe_key) {
+      finding.dedupe_key = computeFindingDedupeKey(record);
+    }
+    if (record.force_record === true) {
+      finding.force_record = true;
+    }
 
     if (expectedDomain != null && finding.target_domain !== expectedDomain) {
       throw new Error("target_domain mismatch");
@@ -166,7 +217,8 @@ function recordFinding(args) {
 
   return withSessionLock(domain, () => {
     const structuredPath = findingsJsonlPath(domain);
-    const counter = readFindingsFromJsonl(domain).length + 1;
+    const existingFindings = readFindingsFromJsonl(domain);
+    const counter = existingFindings.length + 1;
 
     const finding = normalizeFindingRecord({
       id: `F-${counter}`,
@@ -182,7 +234,23 @@ function recordFinding(args) {
       validated: args.validated,
       wave,
       agent,
+      dedupe_key: args.dedupe_key,
+      auth_profile: args.auth_profile,
+      force_record: args.force_record === true,
     }, { expectedDomain: domain });
+
+    const duplicate = existingFindings.find((existing) => existing.dedupe_key === finding.dedupe_key);
+    if (duplicate && args.force_record !== true) {
+      return JSON.stringify({
+        recorded: false,
+        duplicate: true,
+        finding_id: duplicate.id,
+        existing_finding_id: duplicate.id,
+        dedupe_key: duplicate.dedupe_key,
+        total: existingFindings.length,
+        written_jsonl: structuredPath,
+      });
+    }
 
     appendJsonlLine(structuredPath, finding);
 
@@ -190,8 +258,12 @@ function recordFinding(args) {
       recorded: true,
       finding_id: finding.id,
       total: counter,
+      dedupe_key: finding.dedupe_key,
       written_jsonl: structuredPath,
     };
+    if (finding.force_record) {
+      response.force_record = true;
+    }
 
     appendMarkdownMirror(findingsMarkdownPath(domain), renderFindingMarkdownEntry(finding), response);
     return JSON.stringify(response);
@@ -280,6 +352,20 @@ function normalizeVerificationRoundDocument(document, { expectedDomain, expected
   return normalized;
 }
 
+function requirePriorVerificationRound(domain, round, findingIdSet) {
+  const priorRoundByRound = { balanced: "brutalist", final: "balanced" };
+  const priorRound = priorRoundByRound[round];
+  if (!priorRound) return null;
+
+  const priorPaths = verificationRoundPaths(domain, priorRound);
+  const priorDocument = loadJsonDocumentStrict(priorPaths.json, `${priorRound} verification round JSON`);
+  return normalizeVerificationRoundDocument(priorDocument, {
+    expectedDomain: domain,
+    expectedRound: priorRound,
+    findingIdSet,
+  });
+}
+
 function renderVerificationRoundMarkdown(document) {
   const lines = [
     `# Verification Round: ${document.round}`,
@@ -326,24 +412,16 @@ function writeVerificationRound(args) {
     return normalizedResult;
   });
 
-  // Completeness guard: balanced/final rounds must cover every finding from the prior round
-  const PRIOR_ROUND = { balanced: "brutalist", final: "balanced" };
-  if (PRIOR_ROUND[round]) {
-    const priorPaths = verificationRoundPaths(domain, PRIOR_ROUND[round]);
-    if (!fs.existsSync(priorPaths.json)) {
-      // Prior round file doesn't exist yet (e.g., brutalist hasn't run) — skip check
-    } else {
-      // File exists — parse it; malformed JSON is a hard error, not a skip
-      const priorDoc = JSON.parse(fs.readFileSync(priorPaths.json, "utf8"));
-      const priorIds = new Set((priorDoc.results || []).map((r) => r.finding_id));
-      const currentIds = new Set(results.map((r) => r.finding_id));
-      const missing = [...priorIds].filter((id) => !currentIds.has(id));
-      if (missing.length > 0) {
-        throw new Error(
-          `${round} round is missing ${missing.length} finding(s) from ${PRIOR_ROUND[round]} round: ${missing.join(", ")}. ` +
-          `Include ALL findings from the prior round — pass through unchanged findings you did not re-test.`
-        );
-      }
+  const priorDocument = requirePriorVerificationRound(domain, round, findingIdSet);
+  if (priorDocument) {
+    const priorIds = new Set(priorDocument.results.map((result) => result.finding_id));
+    const currentIds = new Set(results.map((result) => result.finding_id));
+    const missing = [...priorIds].filter((id) => !currentIds.has(id));
+    if (missing.length > 0) {
+      throw new Error(
+        `${round} round is missing ${missing.length} finding(s) from ${priorDocument.round} round: ${missing.join(", ")}. ` +
+        "Include ALL findings from the prior round — pass through unchanged findings you did not re-test."
+      );
     }
   }
 
@@ -447,7 +525,62 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
     throw new Error(`grade verdict target_domain mismatch: expected ${expectedDomain}`);
   }
 
+  enforceGradeVerdictConsistency(normalized, {
+    finalReportableSeveritySet: expectedDomain == null ? null : finalReportableSeveritySet(expectedDomain, findingIdSet),
+  });
+
   return normalized;
+}
+
+function isMediumOrHigher(severity) {
+  return ["medium", "high", "critical"].includes(severity);
+}
+
+function finalReportableSeveritySet(domain, findingIdSet) {
+  const paths = verificationRoundPaths(domain, "final");
+  if (!fs.existsSync(paths.json)) {
+    return null;
+  }
+  const document = loadJsonDocumentStrict(paths.json, "final verification round JSON");
+  const normalized = normalizeVerificationRoundDocument(document, {
+    expectedDomain: domain,
+    expectedRound: "final",
+    findingIdSet,
+  });
+  return new Set(
+    normalized.results
+      .filter((result) => result.reportable && isMediumOrHigher(result.severity))
+      .map((result) => result.finding_id),
+  );
+}
+
+function enforceGradeVerdictConsistency(document, { finalReportableSeveritySet: reportableSet = null } = {}) {
+  const maxFindingScore = document.findings.reduce(
+    (maxScore, finding) => Math.max(maxScore, finding.total_score),
+    0,
+  );
+  if (document.total_score !== maxFindingScore) {
+    throw new Error(`grade total_score must equal the maximum per-finding score (${maxFindingScore})`);
+  }
+
+  const hasReportableMedium = reportableSet == null
+    ? document.findings.length > 0
+    : document.findings.some((finding) => reportableSet.has(finding.finding_id));
+
+  let expectedVerdict;
+  if (!hasReportableMedium || document.total_score < GRADE_HOLD_MIN_SCORE) {
+    expectedVerdict = "SKIP";
+  } else if (document.total_score < GRADE_SUBMIT_MIN_SCORE) {
+    expectedVerdict = "HOLD";
+  } else {
+    expectedVerdict = "SUBMIT";
+  }
+
+  if (document.verdict !== expectedVerdict) {
+    throw new Error(
+      `grade verdict ${document.verdict} does not match total_score ${document.total_score} and reportable findings; expected ${expectedVerdict}`,
+    );
+  }
 }
 
 function renderGradeVerdictMarkdown(document) {
@@ -509,6 +642,9 @@ function writeGradeVerdict(args) {
     findings,
     feedback,
   };
+  enforceGradeVerdictConsistency(document, {
+    finalReportableSeveritySet: finalReportableSeveritySet(domain, findingIdSet),
+  });
 
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");
@@ -535,7 +671,9 @@ function readGradeVerdict(args) {
 
 module.exports = {
   listFindings,
+  computeFindingDedupeKey,
   normalizeFindingRecord,
+  enforceGradeVerdictConsistency,
   normalizeGradeVerdictDocument,
   normalizeVerificationRoundDocument,
   readFindings,

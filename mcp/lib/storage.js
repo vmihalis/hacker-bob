@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   SESSION_LOCK_NAME,
@@ -122,15 +123,74 @@ function isSessionDirEffectivelyEmpty(dirPath) {
 }
 
 function tryAcquireSessionLock(lockPathValue) {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const payload = `${JSON.stringify({
+    pid: process.pid,
+    hostname: os.hostname(),
+    timestamp: new Date().toISOString(),
+    token,
+  }, null, 2)}\n`;
+  let fd = null;
   try {
-    fs.mkdirSync(lockPathValue);
-    return true;
+    fd = fs.openSync(lockPathValue, "wx", 0o600);
+    fs.writeFileSync(fd, payload, "utf8");
+    fs.closeSync(fd);
+    fd = null;
+    return token;
   } catch (error) {
     if (error && error.code === "EEXIST") {
-      return false;
+      return null;
     }
     throw error;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
   }
+}
+
+function readSessionLockSnapshot(lockPathValue) {
+  let stats;
+  try {
+    stats = fs.statSync(lockPathValue);
+  } catch {
+    return null;
+  }
+
+  let timestampMs = Number.NaN;
+  if (stats.isFile()) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(lockPathValue, "utf8"));
+      timestampMs = Date.parse(parsed.timestamp);
+    } catch {}
+  }
+
+  const staleReferenceMs = Number.isFinite(timestampMs) ? timestampMs : stats.mtimeMs;
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    isDirectory: stats.isDirectory(),
+    isStale: Date.now() - staleReferenceMs > SESSION_LOCK_STALE_MS,
+  };
+}
+
+function removeStaleSessionLock(lockPathValue, snapshot) {
+  if (!snapshot || !snapshot.isStale) {
+    return false;
+  }
+
+  let currentStats;
+  try {
+    currentStats = fs.statSync(lockPathValue);
+  } catch {
+    return false;
+  }
+  if (currentStats.dev !== snapshot.dev || currentStats.ino !== snapshot.ino) {
+    return false;
+  }
+
+  fs.rmSync(lockPathValue, { recursive: snapshot.isDirectory, force: true });
+  return true;
 }
 
 function acquireSessionLock(domain) {
@@ -139,25 +199,22 @@ function acquireSessionLock(domain) {
 
   const lockPathValue = sessionLockPath(domain);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (tryAcquireSessionLock(lockPathValue)) {
-      const markerPath = path.join(lockPathValue, `owner-${process.pid}-${Date.now()}`);
-      try { fs.writeFileSync(markerPath, ""); } catch {}
+    const token = tryAcquireSessionLock(lockPathValue);
+    if (token) {
       return () => {
         try {
-          fs.rmSync(lockPathValue, { recursive: true, force: true });
+          const current = JSON.parse(fs.readFileSync(lockPathValue, "utf8"));
+          if (current && current.token === token) {
+            fs.rmSync(lockPathValue, { force: true });
+          }
         } catch {}
       };
     }
 
-    let isStale = false;
-    try {
-      const stats = fs.statSync(lockPathValue);
-      isStale = Date.now() - stats.mtimeMs > SESSION_LOCK_STALE_MS;
-    } catch {}
-
-    if (attempt === 0 && isStale) {
+    const staleSnapshot = readSessionLockSnapshot(lockPathValue);
+    if (attempt === 0 && staleSnapshot && staleSnapshot.isStale) {
       try {
-        fs.rmSync(lockPathValue, { recursive: true, force: true });
+        removeStaleSessionLock(lockPathValue, staleSnapshot);
       } catch {}
       continue;
     }
@@ -186,6 +243,8 @@ module.exports = {
   loadJsonDocumentStrict,
   readJsonFile,
   trimJsonlFile,
+  readSessionLockSnapshot,
+  removeStaleSessionLock,
   tryAcquireSessionLock,
   withSessionLock,
   writeFileAtomic,

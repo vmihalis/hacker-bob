@@ -10,6 +10,8 @@ const AUTH_STATUS_VALUES = ["pending", "authenticated", "unauthenticated"];
 const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
 const VERIFICATION_DISPOSITION_VALUES = ["confirmed", "denied", "downgraded"];
 const GRADE_VERDICT_VALUES = ["SUBMIT", "HOLD", "SKIP"];
+const GRADE_HOLD_MIN_SCORE = 20;
+const GRADE_SUBMIT_MIN_SCORE = 40;
 
 const COVERAGE_STATUS_VALUES = ["tested", "blocked", "promising", "needs_auth", "requeue"];
 const COVERAGE_UNFINISHED_STATUS_VALUES = ["promising", "needs_auth", "requeue"];
@@ -63,6 +65,8 @@ module.exports = {
   COVERAGE_SUMMARY_MAX_ITEMS,
   COVERAGE_UNFINISHED_STATUS_VALUES,
   FINDING_ID_RE,
+  GRADE_HOLD_MIN_SCORE,
+  GRADE_SUBMIT_MIN_SCORE,
   GRADE_VERDICT_VALUES,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,

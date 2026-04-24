@@ -1,7 +1,7 @@
 #!/bin/bash
 # Scope guard hook — PreToolUse on mcp__bountyagent__bounty_http_scan
 # Validates the URL parameter against in-scope domains
-# Warn-only for out-of-scope (logs to scope-warnings.log)
+# Warn-only for out-of-scope so the MCP server can return a structured blocked audit record
 # Hard-block for deny-listed domains (exit 2)
 
 INPUT=$(cat)

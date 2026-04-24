@@ -119,6 +119,8 @@ Structured artifacts are the only control-plane source of truth for the FSM and 
 
 Coverage, traffic, request audit, public intel, and static scans are session-scoped and MCP-owned. Hunters append concise coverage entries through `bounty_log_coverage`; `bounty_http_scan` appends Bob-generated request results to `http-audit.jsonl`; `bounty_import_http_traffic` imports optional Burp/HAR request history to `traffic.jsonl`; `bounty_public_intel` stores optional public program/report hints in `public-intel.json`; and `bounty_import_static_artifact` plus `bounty_static_scan` store redacted token-contract scan artifacts/results without ever reading arbitrary filesystem paths. `bounty_read_hunter_brief` returns only the assigned surface's capped latest-per-endpoint/class/auth coverage, relevant observed traffic, audit/circuit-breaker feedback, ranking reasons, intel hints, and bounded static scan hints. Wave merge uses unfinished coverage statuses to requeue surfaces without introducing cross-target memory.
 
+`bounty_http_scan` blocks out-of-scope hosts by default and writes blocked attempts to `http-audit.jsonl` with `scope_decision: "blocked"`. Allowed destinations are the session target domain, hosts listed in `attack_surface.json`, and explicit public-intel hosts only when the URL references the current target. Deny-listed hosts remain hard-blocked.
+
 The `.claude/knowledge/` layer is curated read-only reference input distilled from `claude-bug-bounty` methodology, web2 bug-class notes, payload hints, and selected wordlist patterns. It is not an imported execution system: no external scanners, extra slash commands, broad web3 automation, shell fuzzing, or memory stores are used by this phase. Burp/HAR traffic, public intel, and safe static artifact scans are optional MCP-owned inputs only; Bob still works without them. `bounty_read_hunter_brief` selects a few bounded snippets by surface tech, endpoint patterns, params, nuclei hits, JS hints, optional recon metadata, observed traffic, public intel, and static scan hints.
 
 Recon may enrich `attack_surface.json` surfaces with optional `surface_type`, `bug_class_hints`, `high_value_flows`, `evidence`, and `ranking` fields. The original required fields remain compatible: `id`, `hosts`, `tech_stack`, `endpoints`, `interesting_params`, `nuclei_hits`, and `priority`. MCP ranking can raise priority and add reasons using API-ness, auth/admin/billing/data flows, GraphQL/WebSocket, object IDs, nuclei hits, JS secrets, imported traffic, and disclosed-report hints. This improves hunter prioritization only; it does not add scanners, web3 automation, or cross-target memory.
@@ -132,6 +134,7 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 ## Hooks
 
 - **scope-guard.sh** — PreToolUse hook on Bash. Logs out-of-scope HTTP requests. Hard-blocks domains in `deny-list.txt`.
+- **scope-guard-mcp.sh** — PreToolUse hook on MCP scans. Preflights/logs scope drift while `bounty_http_scan` itself enforces out-of-scope blocking and auditing.
 - **bounty-statusline.js** — Shows phase, wave, finding count, target, and context usage in the terminal footer.
 
 ## Rules (always active)
