@@ -36,7 +36,7 @@ const {
   writeMarkdownMirror,
 } = require("./storage.js");
 const {
-  loadWaveAssignments,
+  validateAssignedWaveAgentSurface,
 } = require("./assignments.js");
 
 function normalizeEndpointForDedupe(endpoint) {
@@ -116,6 +116,8 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       validated: assertBoolean(record.validated, "validated"),
       wave: record.wave == null ? null : parseWaveId(record.wave),
       agent: record.agent == null ? null : parseAgentId(record.agent),
+      surface_id: normalizeOptionalText(record.surface_id, "surface_id"),
+      auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
     if (!finding.dedupe_key) {
@@ -175,6 +177,8 @@ function renderFindingMarkdownEntry(finding) {
   const waveAgent = finding.wave || finding.agent
     ? `\n- **Wave/Agent:** ${finding.wave || "?"}/${finding.agent || "?"}`
     : "";
+  const surface = finding.surface_id ? `\n- **Surface:** ${finding.surface_id}` : "";
+  const authProfile = finding.auth_profile ? `\n- **Auth Profile:** ${finding.auth_profile}` : "";
 
   return [
     `## FINDING ${finding.id.slice(2)} (${finding.severity.toUpperCase()}): ${finding.title}`,
@@ -190,6 +194,8 @@ function renderFindingMarkdownEntry(finding) {
     `- **Evidence:** ${finding.response_evidence || "See PoC"}`,
     `- **Impact:** ${finding.impact || "N/A"}`,
     waveAgent,
+    surface,
+    authProfile,
     "---\n\n",
   ].join("\n");
 }
@@ -204,15 +210,14 @@ function recordFinding(args) {
 
   let wave = null;
   let agent = null;
+  let surfaceId = null;
   if (hasWave) {
     wave = parseWaveId(args.wave);
     agent = parseAgentId(args.agent);
-
-    const waveNumber = Number(wave.slice(1));
-    const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
-    if (!assignmentByAgent.has(agent)) {
-      throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
-    }
+    surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
+    validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
+  } else {
+    surfaceId = args.surface_id == null ? null : assertNonEmptyString(args.surface_id, "surface_id");
   }
 
   return withSessionLock(domain, () => {
@@ -234,6 +239,7 @@ function recordFinding(args) {
       validated: args.validated,
       wave,
       agent,
+      surface_id: surfaceId,
       dedupe_key: args.dedupe_key,
       auth_profile: args.auth_profile,
       force_record: args.force_record === true,

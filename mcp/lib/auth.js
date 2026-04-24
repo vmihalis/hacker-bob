@@ -10,8 +10,17 @@ const {
   assertSafeDomain,
   sessionDir,
 } = require("./paths.js");
+const {
+  isFirstPartyHost,
+  safeUrlObject,
+} = require("./url-surface.js");
 
 const authProfiles = new Map();
+
+function authCacheKey(domain, profileName) {
+  const authPath = resolveAuthJsonPath(domain);
+  return `${authPath || domain}:${profileName}`;
+}
 
 function buildHeaderProfile(headers, cookies, storage) {
   const profile = {};
@@ -27,10 +36,14 @@ function buildHeaderProfile(headers, cookies, storage) {
   return profile;
 }
 
-function resolveAuthJsonPath(targetDomain) {
+function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
   const sessionsDir = path.join(os.homedir(), "bounty-agent-sessions");
   if (targetDomain) {
+    assertSafeDomain(targetDomain);
     return path.join(sessionDir(targetDomain), "auth.json");
+  }
+  if (!allowLegacyFallback) {
+    return null;
   }
   try {
     const entries = fs.readdirSync(sessionsDir)
@@ -90,10 +103,8 @@ function writeAuthFile(authPath, content) {
 }
 
 function authStore(args) {
-  const domain = args.target_domain == null
-    ? null
-    : assertNonEmptyString(args.target_domain, "target_domain");
-  if (domain) assertSafeDomain(domain);
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  assertSafeDomain(domain);
   const role = args.role;
   const headers = args.headers || {};
   const cookies = args.cookies || {};
@@ -103,7 +114,7 @@ function authStore(args) {
   const profile = buildHeaderProfile(headers, cookies, storage);
   if (credentials) profile.credentials = credentials;
 
-  const cacheKey = domain ? `${domain}:${role}` : role;
+  const cacheKey = authCacheKey(domain, role);
 
   const authPath = resolveAuthJsonPath(domain);
   let persistenceError = null;
@@ -160,8 +171,9 @@ function authStore(args) {
 }
 
 function authManual(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const result = authStore({
-    target_domain: args.target_domain,
+    target_domain: domain,
     role: "attacker",
     cookies: args.cookies,
     headers: args.headers,
@@ -172,43 +184,167 @@ function authManual(args) {
     const cookies = args.cookies || {};
     const storage = args.local_storage || {};
     const profile = buildHeaderProfile(headers, cookies, storage);
-    authProfiles.set(args.profile_name, profile);
+    authProfiles.set(authCacheKey(domain, args.profile_name), profile);
   }
   return result;
 }
 
-function resolveAuthProfile(authProfile, urlValue) {
-  if (authProfiles.has(authProfile)) {
-    return authProfiles.get(authProfile);
+function candidateAuthDomains(targetDomain, urlValue) {
+  const normalizedTarget = targetDomain
+    ? String(targetDomain).toLowerCase().replace(/\.+$/, "")
+    : null;
+  const candidates = [];
+  const seen = new Set();
+  const add = (domain) => {
+    const value = String(domain || "").toLowerCase().replace(/\.+$/, "");
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    candidates.push(value);
+  };
+
+  add(normalizedTarget);
+
+  const parsed = safeUrlObject(urlValue);
+  const urlHost = parsed ? parsed.hostname.toLowerCase().replace(/\.+$/, "") : null;
+  if (urlHost && normalizedTarget && isFirstPartyHost(urlHost, normalizedTarget)) {
+    add(normalizedTarget);
   }
 
-  try {
-    const urlHost = new URL(urlValue).hostname;
-    const domainKey = `${urlHost}:${authProfile}`;
-    if (authProfiles.has(domainKey)) return authProfiles.get(domainKey);
-  } catch {}
-
-  try {
-    const urlHost = new URL(urlValue).hostname;
-    const authPath = resolveAuthJsonPath(urlHost);
-    if (authPath) {
-      const doc = readAuthJson(authPath);
-      if (doc && doc.version === 2 && doc.profiles && doc.profiles[authProfile]) {
-        return doc.profiles[authProfile];
+  if (normalizedTarget) {
+    const labels = normalizedTarget.split(".");
+    for (let index = 1; index < labels.length - 1; index += 1) {
+      const parent = labels.slice(index).join(".");
+      if (!urlHost || isFirstPartyHost(urlHost, parent) || isFirstPartyHost(normalizedTarget, parent)) {
+        add(parent);
       }
-      if (doc && !doc.version) {
-        return doc;
+    }
+  }
+
+  return candidates;
+}
+
+function resolveAuthProfile(authProfile, urlValue, targetDomain) {
+  const profileName = assertNonEmptyString(authProfile, "auth_profile");
+  const domains = candidateAuthDomains(targetDomain, urlValue);
+
+  for (const domain of domains) {
+    const cacheKey = authCacheKey(domain, profileName);
+    if (authProfiles.has(cacheKey)) {
+      return authProfiles.get(cacheKey);
+    }
+  }
+
+  for (const domain of domains) {
+    const authPath = resolveAuthJsonPath(domain);
+    const doc = authPath ? readAuthJson(authPath) : null;
+    if (doc && doc.version === 2 && doc.profiles && doc.profiles[profileName]) {
+      authProfiles.set(authCacheKey(domain, profileName), doc.profiles[profileName]);
+      return doc.profiles[profileName];
+    }
+    if (doc && !doc.version && ["attacker", "default", "legacy"].includes(profileName)) {
+      authProfiles.set(authCacheKey(domain, profileName), doc);
+      return doc;
+    }
+  }
+
+  return null;
+}
+
+function parseCookieNames(cookieHeader) {
+  if (typeof cookieHeader !== "string") return [];
+  return cookieHeader
+    .split(";")
+    .map((part) => part.split("=", 1)[0].trim())
+    .filter(Boolean)
+    .sort();
+}
+
+function profileExpiryHint(profile, mtimeMs) {
+  const expiryCandidate = profile.expires_at || profile.expiresAt || profile.expiry || profile.expires;
+  let expiresAt = null;
+  try {
+    if (expiryCandidate) {
+      const parsed = new Date(expiryCandidate);
+      if (!Number.isNaN(parsed.getTime())) {
+        expiresAt = parsed.toISOString();
       }
     }
   } catch {}
 
-  return null;
+  const staleAfterMs = 7 * 24 * 60 * 60 * 1000;
+  const ageMs = Number.isFinite(mtimeMs) ? Date.now() - mtimeMs : null;
+
+  return {
+    expires_at: expiresAt,
+    is_expired: expiresAt == null ? null : Date.parse(expiresAt) <= Date.now(),
+    last_updated: Number.isFinite(mtimeMs) ? new Date(mtimeMs).toISOString() : null,
+    stale_after_days: 7,
+    is_stale: ageMs == null ? null : ageMs > staleAfterMs,
+  };
+}
+
+function summarizeAuthProfile(name, profile, fileStats) {
+  const normalizedProfile = profile && typeof profile === "object" ? profile : {};
+  const headerKeys = Object.keys(normalizedProfile)
+    .filter((key) => key !== "credentials" && key !== "local_storage" && key !== "session_storage")
+    .sort();
+  const credentials = normalizedProfile.credentials && typeof normalizedProfile.credentials === "object"
+    ? normalizedProfile.credentials
+    : null;
+
+  return {
+    profile_name: name,
+    role: name,
+    header_keys: headerKeys,
+    cookie_names: parseCookieNames(normalizedProfile.Cookie),
+    local_storage_keys: normalizedProfile.local_storage && typeof normalizedProfile.local_storage === "object"
+      ? Object.keys(normalizedProfile.local_storage).sort()
+      : [],
+    has_credentials: !!credentials,
+    credential_fields: credentials ? Object.keys(credentials).sort() : [],
+    expiry: profileExpiryHint(normalizedProfile, fileStats ? fileStats.mtimeMs : null),
+  };
+}
+
+function listAuthProfiles(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  assertSafeDomain(domain);
+  const profilesByName = new Map();
+  for (const candidateDomain of candidateAuthDomains(domain, `https://${domain}/`)) {
+    const authPath = resolveAuthJsonPath(candidateDomain);
+    let doc = null;
+    let stats = null;
+    try {
+      stats = fs.statSync(authPath);
+      doc = readAuthJson(authPath);
+    } catch {
+      doc = null;
+    }
+
+    const migrated = migrateAuthJson(doc);
+    for (const [name, profile] of Object.entries(migrated.profiles || {})) {
+      if (profilesByName.has(name) || !profile || typeof profile !== "object") continue;
+      profilesByName.set(name, summarizeAuthProfile(name, profile, stats));
+    }
+  }
+
+  const profiles = Array.from(profilesByName.values());
+
+  return JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    profiles,
+    has_attacker: profiles.some((profile) => profile.profile_name === "attacker"),
+    has_victim: profiles.some((profile) => profile.profile_name === "victim"),
+  });
 }
 
 module.exports = {
   authManual,
   authStore,
   buildHeaderProfile,
+  candidateAuthDomains,
+  listAuthProfiles,
   migrateAuthJson,
   readAuthJson,
   resolveAuthJsonPath,

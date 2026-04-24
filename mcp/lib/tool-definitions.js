@@ -141,6 +141,7 @@ const TOOLS = [
         response_evidence: { type: "string" },
         impact: { type: "string" },
         auth_profile: { type: "string" },
+        surface_id: { type: "string" },
         validated: { type: "boolean" },
         wave: { type: "string" },
         agent: { type: "string" },
@@ -391,6 +392,19 @@ const TOOLS = [
     },
   },
   {
+    name: "bounty_read_wave_handoffs",
+    description:
+      "Read validated structured wave handoff summaries from handoff-wN-aN.json files only. Markdown handoffs are ignored.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        wave_number: { type: "number", description: "Optional wave number. When omitted, all assignment files are scanned." },
+      },
+      required: ["target_domain"],
+    },
+  },
+  {
     name: "bounty_read_handoff",
     description: "Read previous session handoff to resume hunting.",
     inputSchema: {
@@ -411,7 +425,7 @@ const TOOLS = [
         headers: { type: "object", additionalProperties: { type: "string" } },
         local_storage: { type: "object", additionalProperties: { type: "string" } },
       },
-      required: ["profile_name"],
+      required: ["target_domain", "profile_name"],
     },
   },
   {
@@ -521,6 +535,18 @@ const TOOLS = [
         },
       },
       required: ["target_domain", "role"],
+    },
+  },
+  {
+    name: "bounty_list_auth_profiles",
+    description:
+      "Return redacted auth profile status for a target. Shows profile names, roles, header/cookie key names, credential presence, and expiry/staleness hints without token, cookie, localStorage, or password values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+      },
+      required: ["target_domain"],
     },
   },
   {

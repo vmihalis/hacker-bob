@@ -548,6 +548,7 @@ async function main() {
 
   const {
     signup_url,
+    target_domain,
     email,
     password,
     name = "Hunter Test",
@@ -558,8 +559,21 @@ async function main() {
   } = config;
 
   if (!signup_url) output({ error: "signup_url is required" });
+  if (!target_domain) output({ error: "target_domain is required" });
   if (!email) output({ error: "email is required" });
   if (!password) output({ error: "password is required" });
+
+  try {
+    const { assertSafeRequestUrl } = require("./lib/safe-fetch.js");
+    assertSafeRequestUrl(signup_url, target_domain);
+  } catch (err) {
+    output({
+      success: false,
+      fallback: "manual",
+      scope_decision: "blocked",
+      error: err.message || String(err),
+    });
+  }
 
   let patchright;
   try {

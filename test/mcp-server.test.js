@@ -42,6 +42,7 @@ const {
 
 const {
   TOOLS,
+  TOOL_MANIFEST,
   SESSION_LOCK_STALE_MS,
   assertSafeDomain,
   validateScanUrl,
@@ -72,6 +73,7 @@ const {
   readTrafficRecordsFromJsonl,
   compactSessionState,
   listFindings,
+  listAuthProfiles,
   mergeWaveHandoffs,
   httpAuditJsonlPath,
   importStaticArtifact,
@@ -80,6 +82,7 @@ const {
   readFindings,
   readGradeVerdict,
   readVerificationRound,
+  readWaveHandoffs,
   recordFinding,
   redactUrlSensitiveValues,
   resolveAuthJsonPath,
@@ -198,24 +201,30 @@ function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
 
 function ensureFindingAssignment(domain, wave, agent) {
   if (wave == null || agent == null) {
-    return;
+    return null;
   }
 
   const waveNumber = Number(String(wave).slice(1));
   const assignmentsPath = path.join(sessionDir(domain), `wave-${waveNumber}-assignments.json`);
   if (fs.existsSync(assignmentsPath)) {
-    return;
+    const assignmentDoc = JSON.parse(fs.readFileSync(assignmentsPath, "utf8"));
+    const assignment = assignmentDoc.assignments.find((item) => item.agent === agent);
+    return assignment ? assignment.surface_id : "surface-a";
   }
 
   seedAssignments(domain, waveNumber, [
     { agent, surface_id: "surface-a" },
   ]);
+  return "surface-a";
 }
 
 function seedFinding(domain, overrides = {}) {
   const wave = Object.prototype.hasOwnProperty.call(overrides, "wave") ? overrides.wave : "w1";
   const agent = Object.prototype.hasOwnProperty.call(overrides, "agent") ? overrides.agent : "a1";
-  ensureFindingAssignment(domain, wave, agent);
+  const assignedSurfaceId = ensureFindingAssignment(domain, wave, agent);
+  const surfaceId = Object.prototype.hasOwnProperty.call(overrides, "surface_id")
+    ? overrides.surface_id
+    : assignedSurfaceId;
 
   return JSON.parse(recordFinding({
     target_domain: domain,
@@ -230,6 +239,7 @@ function seedFinding(domain, overrides = {}) {
     validated: true,
     wave,
     agent,
+    surface_id: surfaceId,
     ...overrides,
   }));
 }
@@ -313,6 +323,7 @@ test("mcp server public exports remain stable", () => {
   assert.deepEqual(Object.keys(serverModule).sort(), [
     "SESSION_LOCK_STALE_MS",
     "TOOLS",
+    "TOOL_MANIFEST",
     "appendJsonlLine",
     "applyWaveMerge",
     "assertSafeDomain",
@@ -335,6 +346,7 @@ test("mcp server public exports remain stable", () => {
     "importHttpTraffic",
     "importStaticArtifact",
     "initSession",
+    "listAuthProfiles",
     "listFindings",
     "logCoverage",
     "mergeWaveHandoffs",
@@ -363,6 +375,7 @@ test("mcp server public exports remain stable", () => {
     "readStaticScanResultsFromJsonl",
     "readTrafficRecordsFromJsonl",
     "readVerificationRound",
+    "readWaveHandoffs",
     "recordFinding",
     "redactUrlSensitiveValues",
     "renderFindingMarkdownEntry",
@@ -418,8 +431,59 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
   const dispatchNames = Object.keys(TOOL_HANDLERS);
 
   assert.deepEqual([...dispatchNames].sort(), [...toolNames].sort());
+  assert.deepEqual(Object.keys(TOOL_MANIFEST).sort(), [...toolNames].sort());
   assert.deepEqual(JSON.parse(await executeTool("__unknown_tool__", {})), {
     error: "Unknown tool: __unknown_tool__",
+  });
+});
+
+test("MCP tool manifest exposes required policy metadata for every tool", () => {
+  for (const tool of TOOLS) {
+    const metadata = TOOL_MANIFEST[tool.name];
+    assert.ok(metadata, `${tool.name} missing manifest metadata`);
+    assert.ok(Array.isArray(metadata.role_bundles) && metadata.role_bundles.length > 0);
+    assert.equal(typeof metadata.mutating, "boolean");
+    assert.equal(typeof metadata.network_access, "boolean");
+    assert.equal(typeof metadata.browser_access, "boolean");
+    assert.equal(typeof metadata.scope_required, "boolean");
+    assert.equal(typeof metadata.sensitive_output, "boolean");
+    assert.ok(Array.isArray(metadata.session_artifacts_written));
+    assert.equal(typeof metadata.hook_required, "boolean");
+  }
+});
+
+test("executeTool rejects unknown top-level arguments while allowing nested map-like fields", async () => {
+  await withTempHome(async () => {
+    const unknown = JSON.parse(await executeTool("bounty_http_scan", {
+      method: "GET",
+      url: "https://example.com/",
+      target_domain: "example.com",
+      surprise: true,
+    }));
+    assert.match(unknown.error, /Unknown argument.*surprise/);
+
+    const traffic = JSON.parse(await executeTool("bounty_import_http_traffic", {
+      target_domain: "example.com",
+      source: "har",
+      entries: [{
+        request: {
+          method: "GET",
+          url: "https://example.com/api",
+          headers: [{ name: "X-Test", value: "1", arbitrary_har_field: "kept" }],
+        },
+        response: { status: 200, nested_har_field: true },
+      }],
+    }));
+    assert.equal(traffic.imported, 1);
+
+    const auth = JSON.parse(await executeTool("bounty_auth_store", {
+      target_domain: "example.com",
+      role: "attacker",
+      headers: { "X-Custom": "ok" },
+      cookies: { session: "abc" },
+      local_storage: { access_token: "eyJabc" },
+    }));
+    assert.equal(auth.success, true);
   });
 });
 
@@ -736,6 +800,7 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "HUNT", hunt_wave: 1 });
+    seedAttackSurface(domain, ["surface-a", "surface-b"]);
     const expectedState = {
       target: domain,
       phase: "HUNT",
@@ -816,6 +881,11 @@ test("bounty_start_wave rejects invalid state, duplicate inputs, and pre-existin
       }),
       /Duplicate surface_id in assignments: surface-a/,
     );
+    seedAttackSurface(domain, ["surface-a"]);
+    assert.throws(
+      () => startWave({ target_domain: domain, wave_number: 2, assignments: [{ agent: "a1", surface_id: "surface-z" }] }),
+      /Unknown surface_id in assignments: surface-z/,
+    );
 
     seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-a" }]);
     assert.throws(
@@ -829,6 +899,7 @@ test("bounty_start_wave rolls back the assignment file if the state write fails"
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a"]);
 
     const originalRenameSync = fs.renameSync;
     fs.renameSync = (from, to) => {
@@ -1285,7 +1356,22 @@ test("bounty_record_finding rejects partial or invalid wave metadata and still a
         proof_of_concept: "poc",
         validated: true,
         wave: "w1",
+        agent: "a1",
+      }),
+      /surface_id must be a non-empty string/,
+    );
+    assert.throws(
+      () => recordFinding({
+        target_domain: domain,
+        title: "A",
+        severity: "high",
+        endpoint: "/a",
+        description: "d",
+        proof_of_concept: "poc",
+        validated: true,
+        wave: "w1",
         agent: "a2",
+        surface_id: "surface-a",
       }),
       /Agent a2 is not assigned in wave w1/,
     );
@@ -1306,6 +1392,8 @@ test("bounty_record_finding rejects partial or invalid wave metadata and still a
     const finding = JSON.parse(fs.readFileSync(findingsJsonlPath(domain), "utf8").trim());
     assert.equal(finding.wave, null);
     assert.equal(finding.agent, null);
+    assert.equal(finding.surface_id, null);
+    assert.equal(finding.auth_profile, null);
   });
 });
 
@@ -1784,6 +1872,44 @@ test("bounty_merge_wave_handoffs requeues missing and invalid assigned handoffs 
   });
 });
 
+test("bounty_read_wave_handoffs returns validated structured summaries and ignores markdown", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      content: "# ignored markdown details",
+      dead_ends: ["/old"],
+      lead_surface_ids: ["surface-b"],
+    });
+    writeFileAtomic(path.join(dir, "handoff-w1-a2.md"), "# markdown only\n");
+
+    const result = JSON.parse(readWaveHandoffs({ target_domain: domain }));
+    assert.deepEqual(result.wave_numbers, [1]);
+    assert.deepEqual(result.handoffs, [{
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      dead_ends: ["/old"],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: ["surface-b"],
+    }]);
+    assert.deepEqual(result.missing_handoffs, [{ wave: "w1", agent: "a2", surface_id: "surface-b" }]);
+    assert.deepEqual(result.invalid_handoffs, []);
+    assert.deepEqual(result.unexpected_handoffs, []);
+  });
+});
+
 test("bounty_merge_wave_handoffs hard-fails when the assignment file is missing", () => {
   withTempHome(() => {
     assert.throws(
@@ -1843,6 +1969,8 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           validated: true,
           wave: "w1",
           agent: "a1",
+          surface_id: "surface-a",
+          auth_profile: null,
         },
         {
           id: "F-2",
@@ -1858,6 +1986,8 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           validated: true,
           wave: "w2",
           agent: "a2",
+          surface_id: "surface-a",
+          auth_profile: null,
         },
       ],
     });
@@ -2514,7 +2644,7 @@ test("bounty_auth_manual writes auth.json to the correct session dir when target
   }
 });
 
-test("bounty_auth_manual falls back to last session dir when target_domain is absent", async () => {
+test("bounty_auth_manual rejects missing target_domain instead of falling back to another session", async () => {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
   const previousHome = process.env.HOME;
   process.env.HOME = tempHome;
@@ -2528,9 +2658,8 @@ test("bounty_auth_manual falls back to last session dir when target_domain is ab
       headers: { "Authorization": "Bearer fallback" },
     }));
 
-    assert.equal(result.success, true);
-    // Falls back to last alphabetical dir (zebra.com)
-    assert.ok(fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
+    assert.match(result.error, /Missing required argument.*target_domain/);
+    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
     assert.ok(!fs.existsSync(path.join(sessionsDir, "alpha.com", "auth.json")));
   } finally {
     process.env.HOME = previousHome;
@@ -2768,6 +2897,74 @@ test("bounty_auth_manual backward compat writes v2 as attacker", async () => {
   }
 });
 
+test("bounty_list_auth_profiles redacts secrets while reporting profile status", async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { "Authorization": "Bearer secret-token" },
+      cookies: { sessionid: "cookie-secret" },
+      credentials: { email: "attacker@example.com", password: "password-secret" },
+    });
+
+    const result = JSON.parse(listAuthProfiles({ target_domain: "target.com" }));
+    assert.equal(result.has_attacker, true);
+    assert.equal(result.profiles[0].profile_name, "attacker");
+    assert.deepEqual(result.profiles[0].header_keys.sort(), ["Authorization", "Cookie"].sort());
+    assert.deepEqual(result.profiles[0].cookie_names, ["sessionid"]);
+    assert.equal(result.profiles[0].has_credentials, true);
+    assert.deepEqual(result.profiles[0].credential_fields.sort(), ["email", "password"].sort());
+    assert.doesNotMatch(JSON.stringify(result), /secret-token|cookie-secret|password-secret|attacker@example\.com/);
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("bounty_http_scan resolves auth by explicit target_domain and first-party subdomain only", async () => {
+  await withTempHome(async () => {
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      role: "attacker",
+      headers: { Authorization: "Bearer target-token" },
+    });
+    await executeTool("bounty_auth_store", {
+      target_domain: "other.com",
+      role: "attacker",
+      headers: { Authorization: "Bearer other-token" },
+    });
+    const listed = JSON.parse(listAuthProfiles({ target_domain: "api.target.com" }));
+    assert.equal(listed.has_attacker, true);
+
+    await withMockSafeFetch((url, requestOptions) => ({
+      status: requestOptions.headers.Authorization === "Bearer target-token" ? 200 : 401,
+      body: "ok",
+    }), async (requestedUrls) => {
+      const allowed = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: "target.com",
+        method: "GET",
+        url: "https://api.target.com/private",
+        auth_profile: "attacker",
+        response_mode: "status_only",
+      }));
+      assert.equal(allowed.status, 200);
+
+      const blocked = JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: "missing.com",
+        method: "GET",
+        url: "https://api.missing.com/private",
+        auth_profile: "attacker",
+        response_mode: "status_only",
+      }));
+      assert.match(blocked.error, /auth_profile "attacker" requested but not found/);
+      assert.deepEqual(requestedUrls, ["https://api.target.com/private"]);
+    });
+  });
+});
+
 // ── bounty_temp_email tests ──
 
 test("bounty_temp_email create returns email with mocked mail.tm", async () => {
@@ -2953,6 +3150,30 @@ test("auto-signup result normalization fails ambiguous states and preserves diag
   }, signupUrl);
   assert.equal(successful.success, true);
   assert.deepEqual(successful.auth_evidence.cookie_keys, ["sessionid"]);
+});
+
+test("bounty_auto_signup blocks unsafe and out-of-scope signup URLs before browser launch", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
+
+    for (const signupUrl of [
+      "http://127.0.0.1/signup",
+      "https://third-party.example.net/signup",
+      "https://blocked.example.com/signup",
+    ]) {
+      const result = JSON.parse(await autoSignup({
+        target_domain: domain,
+        signup_url: signupUrl,
+        email: "a@example.test",
+        password: "Password123!",
+      }));
+      assert.equal(result.success, false);
+      assert.equal(result.scope_decision, "blocked");
+      assert.equal(result.fallback, "manual");
+    }
+  });
 });
 
 // ── migrateAuthJson unit tests ──
@@ -4205,9 +4426,9 @@ test("writeHandoff writes file atomically", () => {
   });
 });
 
-// ── Bug 3: resolveAuthJsonPath fallback uses most-recently-modified dir ──
+// ── Bug 3: auth path resolution requires explicit target domain ──
 
-test("resolveAuthJsonPath falls back to most recently modified session dir", () => {
+test("resolveAuthJsonPath requires an explicit domain by default and keeps fallback legacy-only", () => {
   withTempHome((tempHome) => {
     const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
 
@@ -4222,9 +4443,9 @@ test("resolveAuthJsonPath falls back to most recently modified session dir", () 
     fs.utimesSync(oldDir, new Date(now - 60000), new Date(now - 60000));
     fs.utimesSync(newDir, now, now);
 
-    // Without a target_domain, should pick the most-recently-modified dir (aaa)
-    const result = resolveAuthJsonPath(null);
-    assert.ok(result.includes("aaa-alphabetically-first.com"));
+    assert.equal(resolveAuthJsonPath(null), null);
+    const legacyResult = resolveAuthJsonPath(null, { allowLegacyFallback: true });
+    assert.ok(legacyResult.includes("aaa-alphabetically-first.com"));
   });
 });
 
@@ -4431,6 +4652,7 @@ test("recordFinding produces sequential IDs without gaps when called rapidly", (
         target_domain: domain,
         wave: "w1",
         agent: "a1",
+        surface_id: "surface-a",
         title: `Finding ${i}`,
         severity: "medium",
         endpoint: `/api/test${i}`,

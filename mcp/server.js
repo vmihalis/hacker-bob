@@ -14,9 +14,11 @@
 //           bounty_temp_email, bounty_signup_detect, bounty_auth_store,
 //           bounty_auto_signup, bounty_import_http_traffic,
 //           bounty_read_http_audit, bounty_public_intel,
-//           bounty_import_static_artifact, bounty_static_scan
+//           bounty_import_static_artifact, bounty_static_scan,
+//           bounty_list_auth_profiles, bounty_read_wave_handoffs
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
+const { TOOL_MANIFEST } = require("./lib/tool-manifest.js");
 const {
   bountyPublicIntel,
   executeTool,
@@ -113,6 +115,7 @@ const {
   authManual,
   authStore,
   buildHeaderProfile,
+  listAuthProfiles,
   migrateAuthJson,
   readAuthJson,
   resolveAuthJsonPath,
@@ -126,6 +129,7 @@ const {
   applyWaveMerge,
   logDeadEnds,
   mergeWaveHandoffs,
+  readWaveHandoffs,
   readHandoff,
   startWave,
   waveHandoffStatus,
@@ -142,6 +146,7 @@ function startServer() {
 
 module.exports = {
   TOOLS,
+  TOOL_MANIFEST,
   SESSION_LOCK_STALE_MS,
   assertSafeDomain,
   validateScanUrl,
@@ -161,6 +166,7 @@ module.exports = {
   importHttpTraffic,
   initSession,
   listFindings,
+  listAuthProfiles,
   logCoverage,
   mergeWaveHandoffs,
   migrateAuthJson,
@@ -197,6 +203,7 @@ module.exports = {
   redactUrlSensitiveValues,
   filterExclusionsByHosts,
   readHunterBrief,
+  readWaveHandoffs,
   rankAttackSurfaces,
   resolveHunterKnowledge,
   readGradeVerdict,

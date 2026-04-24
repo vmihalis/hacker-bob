@@ -111,8 +111,10 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",
       "mcp__bountyagent__bounty_merge_wave_handoffs",
+      "mcp__bountyagent__bounty_read_wave_handoffs",
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
+      "mcp__bountyagent__bounty_list_auth_profiles",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_log_coverage",
       "mcp__bountyagent__bounty_wave_status",
@@ -176,6 +178,16 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       },
       {
         "matcher": "mcp__bountyagent__bounty_signup_detect",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_auto_signup",
         "hooks": [
           {
             "type": "command",

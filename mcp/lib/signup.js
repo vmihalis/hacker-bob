@@ -5,7 +5,10 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { assertNonEmptyString } = require("./validation.js");
 const { authStore } = require("./auth.js");
-const { safeFetch } = require("./safe-fetch.js");
+const {
+  assertSafeRequestUrl,
+  safeFetch,
+} = require("./safe-fetch.js");
 
 const SIGNUP_PATHS = [
   "/register", "/signup", "/sign-up", "/join", "/create-account",
@@ -198,6 +201,17 @@ async function autoSignup(args) {
   const role = args.role || "attacker";
   const name = args.name || "Hunter Test";
 
+  try {
+    assertSafeRequestUrl(signupUrl, domain);
+  } catch (error) {
+    return JSON.stringify({
+      success: false,
+      error: error.message || String(error),
+      scope_decision: "blocked",
+      fallback: "manual",
+    });
+  }
+
   // Check if patchright is available before spawning the script
   let patchrightAvailable = false;
   try {
@@ -219,6 +233,7 @@ async function autoSignup(args) {
   }
 
   const config = {
+    target_domain: domain,
     signup_url: signupUrl,
     email,
     password,

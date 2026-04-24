@@ -328,6 +328,13 @@ function startWave(args) {
       throw new Error(`Assignment file already exists: ${assignmentsPath}`);
     }
 
+    const attackSurface = readAttackSurfaceStrict(domain);
+    for (const assignment of assignments) {
+      if (!attackSurface.surface_id_set.has(assignment.surface_id)) {
+        throw new Error(`Unknown surface_id in assignments: ${assignment.surface_id}`);
+      }
+    }
+
     writeFileAtomic(assignmentsPath, `${JSON.stringify({
       wave_number: waveNumber,
       assignments,
@@ -580,6 +587,84 @@ function mergeWaveHandoffs(args) {
   });
 }
 
+function listWaveAssignmentNumbers(domain) {
+  const dir = sessionDir(domain);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .map((fileName) => {
+      const match = fileName.match(/^wave-([1-9][0-9]*)-assignments\.json$/);
+      return match ? Number(match[1]) : null;
+    })
+    .filter((waveNumber) => Number.isInteger(waveNumber))
+    .sort((a, b) => a - b);
+}
+
+function readWaveHandoffs(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumbers = args.wave_number == null
+    ? listWaveAssignmentNumbers(domain)
+    : [parseWaveNumber(args.wave_number)];
+
+  const handoffs = [];
+  const missingHandoffs = [];
+  const invalidHandoffs = [];
+  const unexpectedHandoffs = [];
+
+  for (const waveNumber of waveNumbers) {
+    const artifacts = loadWaveArtifacts(domain, waveNumber);
+    for (const agent of artifacts.unexpectedAgents) {
+      unexpectedHandoffs.push({ wave: artifacts.wave, agent });
+    }
+
+    for (const assignment of artifacts.assignments) {
+      const filePath = artifacts.handoffPathByAgent.get(assignment.agent);
+      if (!filePath) {
+        missingHandoffs.push({
+          wave: artifacts.wave,
+          agent: assignment.agent,
+          surface_id: assignment.surface_id,
+        });
+        continue;
+      }
+
+      try {
+        const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
+          targetDomain: domain,
+          wave: artifacts.wave,
+          agent: assignment.agent,
+          surfaceId: assignment.surface_id,
+        });
+        handoffs.push({
+          wave: artifacts.wave,
+          agent: assignment.agent,
+          surface_id: assignment.surface_id,
+          surface_status: payload.surface_status,
+          dead_ends: payload.dead_ends,
+          waf_blocked_endpoints: payload.waf_blocked_endpoints,
+          lead_surface_ids: payload.lead_surface_ids,
+        });
+      } catch (error) {
+        invalidHandoffs.push({
+          wave: artifacts.wave,
+          agent: assignment.agent,
+          surface_id: assignment.surface_id,
+          error: error.message || String(error),
+        });
+      }
+    }
+  }
+
+  return JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    wave_numbers: waveNumbers,
+    handoffs,
+    missing_handoffs: missingHandoffs,
+    invalid_handoffs: invalidHandoffs,
+    unexpected_handoffs: unexpectedHandoffs,
+  });
+}
+
 function readHandoff(args) {
   const dir = sessionDir(args.target_domain);
   const handoffPath = path.join(dir, "SESSION_HANDOFF.md");
@@ -596,6 +681,7 @@ module.exports = {
   logDeadEnds,
   mergeWaveHandoffs,
   readHandoff,
+  readWaveHandoffs,
   startWave,
   waveHandoffStatus,
   waveStatus,

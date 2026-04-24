@@ -81,7 +81,7 @@ async function httpScan(args) {
   const authProfile = args.auth_profile;
 
   if (authProfile) {
-    const auth = resolveAuthProfile(authProfile, url);
+    const auth = resolveAuthProfile(authProfile, url, targetDomain);
 
     if (auth) {
       for (const [k, v] of Object.entries(auth)) {

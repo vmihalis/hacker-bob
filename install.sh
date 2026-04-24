@@ -96,7 +96,7 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo "  Merge these settings manually:"
   echo ""
   echo '  permissions.allow: bountyagent MCP tools (including traffic/audit/intel/static-scan and findings/verification/grade control-plane tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
-  echo '  hooks.PreToolUse: scope-guard.sh + session-write-guard.sh (Bash), session-write-guard.sh (Write), scope-guard-mcp.sh (bounty_http_scan/signup_detect)'
+  echo '  hooks.PreToolUse: scope-guard.sh + session-write-guard.sh (Bash), session-write-guard.sh (Write), scope-guard-mcp.sh (bounty_http_scan/signup_detect/auto_signup)'
   echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
 else
@@ -127,8 +127,10 @@ else
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",
       "mcp__bountyagent__bounty_merge_wave_handoffs",
+      "mcp__bountyagent__bounty_read_wave_handoffs",
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
+      "mcp__bountyagent__bounty_list_auth_profiles",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_log_coverage",
       "mcp__bountyagent__bounty_wave_status",
@@ -192,6 +194,16 @@ else
       },
       {
         "matcher": "mcp__bountyagent__bounty_signup_detect",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_auto_signup",
         "hooks": [
           {
             "type": "command",

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const { TOOLS, TOOL_MANIFEST } = require("../mcp/server.js");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -36,6 +37,17 @@ function orchestratorReferencedMcpTools() {
   );
 }
 
+function allMarkdown(relativeDir) {
+  return fs.readdirSync(path.join(ROOT, relativeDir))
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => path.join(relativeDir, name));
+}
+
+function settingsHookMatchers() {
+  const settings = JSON.parse(readFile(".claude/settings.json"));
+  return new Set((settings.hooks.PreToolUse || []).map((entry) => entry.matcher));
+}
+
 function parseFrontmatter(document, fileLabel) {
   const match = document.match(/^---\n([\s\S]*?)\n---\n/);
   assert.ok(match, `${fileLabel} is missing YAML frontmatter`);
@@ -58,12 +70,34 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(tools.includes("Bash"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_record_finding"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_list_auth_profiles"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_log_coverage"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_import_http_traffic"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_read_http_audit"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_public_intel"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_import_static_artifact"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_static_scan"));
+  assert.ok(!tools.includes("mcp__bountyagent__bounty_auth_manual"));
+  assert.ok(!tools.includes("mcp__bountyagent__bounty_read_handoff"));
+});
+
+test("manifest, settings, install, and dev-sync enumerate the same MCP tools", () => {
+  const manifestTools = new Set(Object.keys(TOOL_MANIFEST));
+  const registeredTools = new Set(TOOLS.map((tool) => tool.name));
+  const sourceAllowed = sourceAllowedMcpTools();
+  const installAllowed = scriptAllowedMcpTools("install.sh");
+  const devSyncAllowed = scriptAllowedMcpTools("dev-sync.sh");
+
+  assert.deepEqual([...manifestTools].sort(), [...registeredTools].sort());
+  assert.deepEqual([...sourceAllowed].sort(), [...manifestTools].sort());
+  assert.deepEqual([...installAllowed].sort(), [...manifestTools].sort());
+  assert.deepEqual([...devSyncAllowed].sort(), [...manifestTools].sort());
+
+  const hookMatchers = settingsHookMatchers();
+  for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
+    if (!metadata.hook_required) continue;
+    assert.ok(hookMatchers.has(`mcp__bountyagent__${toolName}`), `${toolName} requires a scope hook`);
+  }
 });
 
 test("MCP-dependent agents declare official mcpServers bountyagent metadata", () => {
@@ -154,6 +188,33 @@ test("settings.json registers session-write-guard for Bash and Write", () => {
     writeEntry.hooks.some((h) => h.command.includes("session-write-guard.sh")),
     "session-write-guard.sh not registered for Write"
   );
+});
+
+test("prompts do not tell agents to read auth.json directly", () => {
+  for (const relativePath of [
+    ".claude/commands/bountyagent.md",
+    ...allMarkdown(".claude/agents"),
+  ]) {
+    const document = readFile(relativePath);
+    assert.doesNotMatch(document, /auth\.json/i, `${relativePath} should use auth MCP tools`);
+  }
+});
+
+test("chain-builder uses structured handoffs without Bash or markdown dependency", () => {
+  const document = readFile(".claude/agents/chain-builder.md");
+  const frontmatter = parseFrontmatter(document, "chain-builder.md");
+  const tools = frontmatter.tools.split(/\s*,\s*/).filter(Boolean);
+
+  assert.ok(!tools.includes("Bash"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_read_wave_handoffs"));
+  assert.match(document, /bounty_read_wave_handoffs/);
+  assert.doesNotMatch(document, /handoff-w\*\.md/);
+});
+
+test("orchestrator has no blanket bypassPermissions rule", () => {
+  const orchestrator = readFile(".claude/commands/bountyagent.md");
+  assert.doesNotMatch(orchestrator, /Every Agent tool call MUST use `mode: "bypassPermissions"`/);
+  assert.doesNotMatch(orchestrator, /mode:\s*"bypassPermissions"/);
 });
 
 test("orchestrator-referenced MCP tools are allowed in source, install, and dev-sync settings", () => {

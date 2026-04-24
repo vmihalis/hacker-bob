@@ -12,6 +12,7 @@ const { readAttackSurfaceStrict } = require("./attack-surface.js");
 const { rankAttackSurfaces } = require("./ranking.js");
 const {
   authManual,
+  listAuthProfiles,
   authStore,
 } = require("./auth.js");
 const {
@@ -41,12 +42,16 @@ const {
   logDeadEnds,
   mergeWaveHandoffs,
   readHandoff,
+  readWaveHandoffs,
   startWave,
   waveHandoffStatus,
   waveStatus,
   writeHandoff,
   writeWaveHandoff,
 } = require("./waves.js");
+const {
+  validateToolArguments,
+} = require("./tool-validation.js");
 
 function importHttpTraffic(args) {
   return importHttpTrafficRecords(args, { rankAttackSurfaces });
@@ -81,8 +86,10 @@ const TOOL_HANDLERS = Object.freeze({
   bounty_write_wave_handoff: writeWaveHandoff,
   bounty_wave_handoff_status: waveHandoffStatus,
   bounty_merge_wave_handoffs: mergeWaveHandoffs,
+  bounty_read_wave_handoffs: readWaveHandoffs,
   bounty_read_handoff: readHandoff,
   bounty_auth_manual: authManual,
+  bounty_list_auth_profiles: listAuthProfiles,
   bounty_wave_status: waveStatus,
   bounty_import_http_traffic: importHttpTraffic,
   bounty_read_http_audit: readHttpAudit,
@@ -102,7 +109,13 @@ async function executeTool(name, args) {
     return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 
-  return handler(args);
+  try {
+    validateToolArguments(name, args || {});
+  } catch (error) {
+    return JSON.stringify({ error: error.message || String(error) });
+  }
+
+  return handler(args || {});
 }
 
 module.exports = {

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Scope guard hook — PreToolUse on mcp__bountyagent__bounty_http_scan
-# Validates the URL parameter against in-scope domains
+# Scope guard hook — PreToolUse on scoped bountyagent MCP tools
+# Validates URL parameters against in-scope domains
 # Warn-only for out-of-scope so the MCP server can return a structured blocked audit record
 # Hard-block for deny-listed domains (exit 2)
 
@@ -96,7 +96,7 @@ except Exception:
     payload = {}
 
 ti = payload.get("tool_input", {})
-url = ti.get("url", "") or ti.get("target_url", "")
+url = ti.get("url", "") or ti.get("target_url", "") or ti.get("signup_url", "")
 if not url:
     raise SystemExit(0)
 
@@ -125,11 +125,11 @@ if session_dir is None:
     if len(matched_sessions) == 1:
         session_dir = matched_sessions[0]
     elif len(matched_sessions) > 1:
-        block("BLOCKED: unable to resolve a single session for http_scan")
+        block("BLOCKED: unable to resolve a single session for scoped MCP tool")
     elif len(session_dirs) == 1:
         session_dir = session_dirs[0]
     else:
-        block("BLOCKED: unable to resolve session for http_scan")
+        block("BLOCKED: unable to resolve session for scoped MCP tool")
 
 deny_list = session_dir / "deny-list.txt"
 if deny_list.is_file():
@@ -139,7 +139,7 @@ if deny_list.is_file():
             if not denied:
                 continue
             if matches_scope(domain, {denied}):
-                log_line(session_dir, f"BLOCKED (deny-list): {domain} via http_scan")
+                log_line(session_dir, f"BLOCKED (deny-list): {domain} via scoped MCP tool")
                 block(f"BLOCKED: {domain} is on the deny list")
 
 allowed = set(load_scope(session_dir))

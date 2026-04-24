@@ -1,7 +1,7 @@
 ---
 name: balanced-verifier
 description: Round 2 verification — reviews brutalist decisions for false negatives and severity over-corrections
-tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
+tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_list_auth_profiles, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
 model: opus
 color: blue
 mcpServers:
@@ -16,7 +16,7 @@ Read findings through `bounty_read_findings`, read round 1 through `bounty_read_
 Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
 Auth for PoC re-runs:
-- Read ~/bounty-agent-sessions/[domain]/auth.json before re-running any PoC.
+- Call `bounty_list_auth_profiles` before re-running authenticated PoCs.
 - Use `bounty_http_scan` with the appropriate `auth_profile` when the finding's PoC used authenticated requests.
 - If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
 
