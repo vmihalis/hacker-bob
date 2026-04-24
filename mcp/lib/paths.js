@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const {
   SESSION_LOCK_NAME,
+  STATIC_ARTIFACT_ID_RE,
   VERIFICATION_ROUND_FILE_MAP,
   VERIFICATION_ROUND_VALUES,
 } = require("./constants.js");
@@ -69,6 +70,30 @@ function publicIntelPath(domain) {
   return path.join(sessionDir(domain), "public-intel.json");
 }
 
+function assertStaticArtifactId(artifactId) {
+  const normalized = assertNonEmptyString(artifactId, "artifact_id");
+  if (!STATIC_ARTIFACT_ID_RE.test(normalized)) {
+    throw new Error("artifact_id must match SA-N");
+  }
+  return normalized;
+}
+
+function staticArtifactImportDir(domain) {
+  return path.join(sessionDir(domain), "static-imports");
+}
+
+function staticArtifactPath(domain, artifactId) {
+  return path.join(staticArtifactImportDir(domain), `${assertStaticArtifactId(artifactId)}.txt`);
+}
+
+function staticArtifactsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "static-artifacts.jsonl");
+}
+
+function staticScanResultsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "static-scan-results.jsonl");
+}
+
 function verificationRoundPaths(domain, round) {
   const normalizedRound = assertEnumValue(round, VERIFICATION_ROUND_VALUES, "round");
   const fileNames = VERIFICATION_ROUND_FILE_MAP[normalizedRound];
@@ -90,6 +115,7 @@ function gradeArtifactPaths(domain) {
 
 module.exports = {
   assertSafeDomain,
+  assertStaticArtifactId,
   attackSurfacePath,
   coverageJsonlPath,
   findingsJsonlPath,
@@ -101,6 +127,10 @@ module.exports = {
   sessionDir,
   sessionLockPath,
   statePath,
+  staticArtifactImportDir,
+  staticArtifactPath,
+  staticArtifactsJsonlPath,
+  staticScanResultsJsonlPath,
   trafficJsonlPath,
   verificationRoundPaths,
   waveAssignmentsPath,

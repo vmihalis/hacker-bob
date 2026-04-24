@@ -1,0 +1,351 @@
+"use strict";
+
+const RISK_WEIGHTS = Object.freeze({
+  CRITICAL: 25,
+  HIGH: 10,
+  MEDIUM: 5,
+  LOW: 2,
+  INFO: 0,
+});
+
+const RISK_ORDER = Object.freeze({
+  CRITICAL: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+  INFO: 4,
+});
+
+const EVM_PATTERNS = Object.freeze({
+  hidden_mint: [
+    {
+      regex: /function\s+mint\s*\(/,
+      title: "Public mint function",
+      description: "Contract has a mint function. Check whether every mint path enforces a supply cap.",
+      risk: "HIGH",
+      recommendation: "Verify MAX_SUPPLY is enforced in every mint path.",
+    },
+    {
+      regex: /_mint\s*\([^)]*\)\s*;/,
+      title: "Internal _mint call",
+      description: "Direct _mint() call found. Verify it is bounded by a supply cap.",
+      risk: "MEDIUM",
+      recommendation: "Trace all callers of _mint() and confirm totalSupply + amount <= MAX_SUPPLY.",
+    },
+    {
+      regex: /_balances\s*\[.*\]\s*\+=/,
+      title: "Direct balance manipulation",
+      description: "Balance is increased directly without going through _mint, which can inflate supply silently.",
+      risk: "CRITICAL",
+      recommendation: "Balance changes should go through _mint/_burn rather than direct mapping writes.",
+    },
+    {
+      regex: /_totalSupply\s*\+=/,
+      title: "Direct totalSupply manipulation",
+      description: "Total supply is modified directly, bypassing ERC20 mint/burn flow.",
+      risk: "CRITICAL",
+      recommendation: "Total supply changes should go through _mint/_burn rather than direct assignment.",
+    },
+    {
+      regex: /delegatecall\s*\(/,
+      title: "Delegatecall present",
+      description: "delegatecall can execute arbitrary code, including mint logic, in the token context.",
+      risk: "HIGH",
+      recommendation: "Verify delegatecall targets are immutable and trusted.",
+    },
+  ],
+  honeypot: [
+    {
+      regex: /(?:_isBlacklisted|isBlacklisted|_blacklist|isBot|_bots|_blocked)\s*\[/,
+      title: "Blacklist mapping",
+      description: "Contract has a blacklist that can block addresses from transferring.",
+      risk: "CRITICAL",
+      recommendation: "Verify whether the owner can blacklist the DEX pair or arbitrary buyers.",
+    },
+    {
+      regex: /function\s+(?:blacklist|addBot|blockAddress|setBot)\s*\(/,
+      title: "Blacklist setter function",
+      description: "Owner-facing blacklist setter can be used as a honeypot vector.",
+      risk: "CRITICAL",
+      recommendation: "Confirm blacklist setters cannot block sells or arbitrary holders.",
+    },
+    {
+      regex: /maxTxAmount\s*=|_maxTxAmount|maxTransactionAmount|_maxWalletSize|maxWallet/,
+      title: "Max transaction/wallet limit",
+      description: "Transaction or wallet size limit exists. Check if setters have a meaningful floor.",
+      risk: "MEDIUM",
+      recommendation: "Verify setMaxTx/setMaxWallet style functions cannot set limits to zero or dust.",
+    },
+    {
+      regex: /function\s+(?:setMaxTx|setMaxWallet|updateMaxTx|updateMaxWallet)\s*\(/,
+      title: "Max tx/wallet setter",
+      description: "Owner can change max transaction or wallet limits.",
+      risk: "HIGH",
+      recommendation: "Require a minimum bound so limits cannot block all transfers.",
+    },
+    {
+      regex: /function\s+approve.*override/,
+      title: "Approve function override",
+      description: "approve() is overridden and can silently prevent DEX router approvals.",
+      risk: "HIGH",
+      recommendation: "Verify the override calls super.approve() or _approve().",
+    },
+    {
+      regex: /tradingEnabled|tradingActive|canTrade|_tradingOpen/,
+      title: "Trading toggle flag",
+      description: "Contract has a trading-enabled flag.",
+      risk: "MEDIUM",
+      recommendation: "Verify trading can only be enabled once and cannot later be disabled.",
+    },
+    {
+      regex: /cooldown\s*\[|_lastSell\s*\[|_lastTx\s*\[|tradeCooldown/,
+      title: "Transfer cooldown",
+      description: "Cooldown logic can block sells if owner-controlled values are extreme.",
+      risk: "MEDIUM",
+      recommendation: "Verify cooldown values are bounded to a short maximum.",
+    },
+  ],
+  fee_manipulation: [
+    {
+      regex: /(?:_taxFee|_sellFee|_buyFee|_liquidityFee|_marketingFee|_devFee)\s*=/,
+      title: "Tax/fee variable",
+      description: "Contract has configurable fees.",
+      risk: "MEDIUM",
+      recommendation: "Fee setters should enforce a low maximum, such as <= 10%.",
+    },
+    {
+      regex: /function\s+(?:setFee|updateFee|setTax|updateTax|setBuyFee|setSellFee|setFees)\s*\(/,
+      title: "Fee setter function",
+      description: "Owner can change buy/sell fees.",
+      risk: "HIGH",
+      recommendation: "Verify fee setters enforce a hard maximum and cannot set punitive sell taxes.",
+    },
+    {
+      regex: /_isExcludedFromFee\s*\[|isExcludedFromFee|excludeFromFee/,
+      title: "Fee exclusion mapping",
+      description: "Some addresses can be excluded from fees.",
+      risk: "MEDIUM",
+      recommendation: "Review whether owner or privileged wallets can sell tax-free while others cannot.",
+    },
+    {
+      regex: /(?:setMarketingWallet|setDevWallet|setTaxWallet|setFeeReceiver)\s*\(/,
+      title: "Fee recipient setter",
+      description: "Fee destination wallet can be changed.",
+      risk: "MEDIUM",
+      recommendation: "Require timelock or multisig controls for fee recipient changes.",
+    },
+  ],
+  lp_drain: [
+    {
+      regex: /function\s+(?:migrate|migrateLP|migrateLiquidity)\s*\(/,
+      title: "LP migration function",
+      description: "Contract can migrate liquidity to a new pair.",
+      risk: "CRITICAL",
+      recommendation: "Migration functions should not let the owner move liquidity to a controlled pair.",
+    },
+    {
+      regex: /(?:emergencyWithdraw|forceWithdraw|rescueTokens|recoverTokens|rescueETH)\s*\(/,
+      title: "Emergency withdraw function",
+      description: "Emergency withdrawal can drain contract balances or locked LP tokens.",
+      risk: "HIGH",
+      recommendation: "Verify emergency withdrawal cannot access LP tokens or paired assets.",
+    },
+    {
+      regex: /\.sync\s*\(\)/,
+      title: "Pair sync call",
+      description: "Direct pair.sync() call can manipulate pool reserves.",
+      risk: "HIGH",
+      recommendation: "Review sync() usage for price manipulation after direct token transfers to the pair.",
+    },
+    {
+      regex: /(?:setPair|setNewPair|updatePair|changePair)\s*\(/,
+      title: "Pair change function",
+      description: "DEX pair can be changed after deployment.",
+      risk: "CRITICAL",
+      recommendation: "Pair addresses should be immutable after launch.",
+    },
+    {
+      regex: /(?:setRouter|updateRouter|changeRouter)\s*\(/,
+      title: "Router change function",
+      description: "DEX router can be changed after deployment.",
+      risk: "HIGH",
+      recommendation: "Router changes should be impossible or heavily governed.",
+    },
+  ],
+  fake_renounce: [
+    {
+      regex: /function\s+renounceOwnership.*override/,
+      title: "renounceOwnership override",
+      description: "renounceOwnership is overridden and may not actually renounce.",
+      risk: "CRITICAL",
+      recommendation: "Verify the override transfers ownership to address(0).",
+    },
+    {
+      regex: /_shadowAdmin|_secondOwner|_backupOwner|_hiddenOwner/,
+      title: "Shadow admin pattern",
+      description: "Secondary admin address can survive ownership renounce.",
+      risk: "CRITICAL",
+      recommendation: "Remove shadow-admin paths or make them transparently governed.",
+    },
+    {
+      regex: /selfdestruct|SELFDESTRUCT/,
+      title: "selfdestruct present",
+      description: "Contract can self-destruct, possibly enabling destructive redeployment patterns.",
+      risk: "HIGH",
+      recommendation: "Remove selfdestruct from token contracts.",
+    },
+  ],
+  sandwich_amplification: [
+    {
+      regex: /swapExactTokensForETH.*,\s*0\s*,/,
+      title: "Zero slippage auto-swap",
+      description: "Auto-swap uses amountOutMin=0, making sandwich profit easier.",
+      risk: "HIGH",
+      recommendation: "Calculate minimum output with explicit slippage tolerance.",
+    },
+    {
+      regex: /swapTokensAtAmount|numTokensSellToAddToLiquidity|swapThreshold/,
+      title: "Auto-swap threshold",
+      description: "Public swap threshold can make auto-swaps predictable.",
+      risk: "MEDIUM",
+      recommendation: "Review whether the threshold enables predictable MEV extraction.",
+    },
+    {
+      regex: /_rebase\s*\(\)|rebase\s*\(\)|_reflect\s*\(\)/,
+      title: "Rebase on transfer",
+      description: "Rebasing or reflection mechanics can create predictable price impact.",
+      risk: "MEDIUM",
+      recommendation: "Review transfer-time rebasing for MEV amplification.",
+    },
+  ],
+});
+
+const SOLANA_PATTERNS = Object.freeze({
+  authority_retention: [
+    {
+      regex: /mint_authority/,
+      title: "Mint authority reference",
+      description: "Token references mint_authority. Retained authority can mint unlimited supply.",
+      risk: "HIGH",
+      recommendation: "Verify mint authority is revoked after initial mint.",
+    },
+    {
+      regex: /freeze_authority/,
+      title: "Freeze authority reference",
+      description: "Token references freeze_authority. Retained authority can freeze holders.",
+      risk: "HIGH",
+      recommendation: "Verify freeze authority is None for launched meme/token assets.",
+    },
+    {
+      regex: /update_authority|UpdateAuthority/,
+      title: "Update authority reference",
+      description: "Metadata update authority can change token identity after launch.",
+      risk: "MEDIUM",
+      recommendation: "Verify update authority is removed or metadata is immutable.",
+    },
+    {
+      regex: /close_authority|CloseAuthority/,
+      title: "Close authority reference",
+      description: "Token-2022 close authority can destroy token accounts.",
+      risk: "HIGH",
+      recommendation: "Verify close authority is None.",
+    },
+    {
+      regex: /MintTo\s*\{|mint_to\s*\(/,
+      title: "Mint instruction",
+      description: "Program can mint new tokens.",
+      risk: "HIGH",
+      recommendation: "Verify caller authorization, supply caps, and authority revocation.",
+    },
+  ],
+  token_2022_extensions: [
+    {
+      regex: /transfer_hook|TransferHook|spl_transfer_hook/,
+      title: "Transfer hook extension",
+      description: "Token-2022 transfer hooks execute on every transfer and can block sells.",
+      risk: "CRITICAL",
+      recommendation: "Verify hook logic is immutable and cannot block holders arbitrarily.",
+    },
+    {
+      regex: /permanent_delegate|PermanentDelegate/,
+      title: "Permanent delegate extension",
+      description: "Permanent delegate can transfer tokens from holders without approval.",
+      risk: "CRITICAL",
+      recommendation: "Remove permanent delegate for tradeable tokens.",
+    },
+    {
+      regex: /TransferFee|transfer_fee|TransferFeeConfig/,
+      title: "Transfer fee extension",
+      description: "Token-2022 transfer fee can be abused if owner-controlled.",
+      risk: "HIGH",
+      recommendation: "Verify transfer fees are immutable or tightly bounded.",
+    },
+    {
+      regex: /DefaultAccountState|default_account_state|AccountState::Frozen/,
+      title: "Default frozen account state",
+      description: "New token accounts may be frozen by default.",
+      risk: "HIGH",
+      recommendation: "Default frozen state is a honeypot signal unless the use case clearly requires it.",
+    },
+    {
+      regex: /NonTransferable|non_transferable/,
+      title: "Non-transferable extension",
+      description: "Token is marked non-transferable.",
+      risk: "HIGH",
+      recommendation: "Confirm this is intentional; non-transferable meme tokens cannot be sold.",
+    },
+  ],
+  program_safety: [
+    {
+      regex: /AccountInfo<'info>/,
+      title: "Unchecked AccountInfo",
+      description: "Raw AccountInfo requires careful signer/owner validation.",
+      risk: "MEDIUM",
+      recommendation: "Verify AccountInfo usage has explicit validation or a justified CHECK comment.",
+    },
+    {
+      regex: /invoke_signed|CpiContext::new_with_signer/,
+      title: "Signed CPI invocation",
+      description: "Program performs signed CPI calls through a PDA.",
+      risk: "MEDIUM",
+      recommendation: "Verify PDA seeds and authority scope are narrow.",
+    },
+    {
+      regex: /upgrade_authority|UpgradeAuthority/,
+      title: "Program upgrade authority",
+      description: "Upgradeable programs can change token logic after deployment.",
+      risk: "HIGH",
+      recommendation: "Verify upgrade authority is removed, timelocked, or multisig-controlled.",
+    },
+  ],
+  bonding_curve: [
+    {
+      regex: /virtual_token_reserves|virtual_sol_reserves|virtualReserve/,
+      title: "Virtual reserves",
+      description: "Bonding curve virtual reserves can manipulate price if mutable.",
+      risk: "MEDIUM",
+      recommendation: "Verify virtual reserves are immutable after initialization.",
+    },
+    {
+      regex: /graduate|graduation|migrate_to_raydium|create_raydium_pool/,
+      title: "Graduation/migration",
+      description: "Bonding curve migration logic needs safety review.",
+      risk: "MEDIUM",
+      recommendation: "Verify migration is permissionless and preserves the curve price.",
+    },
+    {
+      regex: /creator_fee|platform_fee|trade_fee/,
+      title: "Trading fees",
+      description: "Curve trade fees can extract value from traders.",
+      risk: "LOW",
+      recommendation: "Verify fees are bounded and immutable.",
+    },
+  ],
+});
+
+module.exports = {
+  EVM_PATTERNS,
+  RISK_ORDER,
+  RISK_WEIGHTS,
+  SOLANA_PATTERNS,
+};

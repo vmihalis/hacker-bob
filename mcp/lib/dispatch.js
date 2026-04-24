@@ -4,6 +4,10 @@ const {
 } = require("./http-records.js");
 const { httpScan } = require("./http-scan.js");
 const { bountyPublicIntel: bountyPublicIntelTool } = require("./public-intel.js");
+const {
+  importStaticArtifact,
+  staticScan,
+} = require("./static-artifacts.js");
 const { readAttackSurfaceStrict } = require("./attack-surface.js");
 const { rankAttackSurfaces } = require("./ranking.js");
 const {
@@ -83,6 +87,8 @@ const TOOL_HANDLERS = Object.freeze({
   bounty_import_http_traffic: importHttpTraffic,
   bounty_read_http_audit: readHttpAudit,
   bounty_public_intel: bountyPublicIntel,
+  bounty_import_static_artifact: importStaticArtifact,
+  bounty_static_scan: staticScan,
   bounty_temp_email: tempEmail,
   bounty_signup_detect: signupDetect,
   bounty_auth_store: authStore,
@@ -103,6 +109,8 @@ module.exports = {
   TOOL_HANDLERS,
   bountyPublicIntel,
   executeTool,
+  importStaticArtifact,
   importHttpTraffic,
   readHttpAudit,
+  staticScan,
 };

@@ -58,6 +58,8 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(tools.includes("mcp__bountyagent__bounty_import_http_traffic"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_read_http_audit"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_public_intel"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_import_static_artifact"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_static_scan"));
 });
 
 test("chain-builder and report-writer declare requiredMcpServers bountyagent", () => {
@@ -241,7 +243,7 @@ test("orchestrator documents --no-auth flag and skips AUTH when set", () => {
   );
 });
 
-test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel state", () => {
+test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel/static state", () => {
   const orchestrator = readFile(".claude/commands/bountyagent.md");
 
   assert.match(orchestrator, /--paranoid/);
@@ -251,6 +253,8 @@ test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel 
   assert.match(orchestrator, /bounty_import_http_traffic[\s\S]*traffic\.jsonl/);
   assert.match(orchestrator, /bounty_http_scan[\s\S]*http-audit\.jsonl/);
   assert.match(orchestrator, /bounty_public_intel[\s\S]*public-intel\.json/);
+  assert.match(orchestrator, /bounty_import_static_artifact[\s\S]*static-imports/);
+  assert.match(orchestrator, /bounty_static_scan[\s\S]*static-scan-results\.jsonl/);
 });
 
 test("hunter and orchestrator prompts keep the structured handoff contract explicit", () => {
@@ -259,15 +263,17 @@ test("hunter and orchestrator prompts keep the structured handoff contract expli
 
   assert.match(hunterPrompt, /surface_type[\s\S]*bug_class_hints[\s\S]*high_value_flows/);
   assert.match(orchestratorPrompt, /surface_type[\s\S]*bug_class_hints[\s\S]*high_value_flows/);
-  assert.match(hunterPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints/);
+  assert.match(hunterPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints[\s\S]*static_scan_hints/);
   assert.match(hunterPrompt, /Prefer real observed authenticated endpoints from `traffic_summary`/);
   assert.match(hunterPrompt, /Log coverage before switching away from a promising traffic-derived endpoint|log coverage before switching away from promising traffic-derived endpoints/i);
-  assert.match(orchestratorPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints/);
+  assert.match(orchestratorPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints[\s\S]*static_scan_hints/);
+  assert.match(hunterPrompt, /bounty_import_static_artifact[\s\S]*bounty_static_scan/);
+  assert.match(hunterPrompt, /never pass or scan arbitrary filesystem paths/i);
   assert.match(hunterPrompt, /Do not manually create orchestrator-consumed handoff files\./);
   assert.match(hunterPrompt, /Durable hunt state must flow only through MCP tools\./);
   assert.match(hunterPrompt, /bounty_log_coverage/);
   assert.match(hunterPrompt, /never write `coverage\.jsonl` through Bash/);
-  assert.match(hunterPrompt, /Never create or backfill[\s\S]*http-audit\.jsonl[\s\S]*traffic\.jsonl[\s\S]*public-intel\.json/);
+  assert.match(hunterPrompt, /Never create or backfill[\s\S]*http-audit\.jsonl[\s\S]*traffic\.jsonl[\s\S]*public-intel\.json[\s\S]*static-artifacts\.jsonl[\s\S]*static-scan-results\.jsonl/);
   assert.match(hunterPrompt, /status` \(`tested`, `blocked`, `promising`, `needs_auth`, or `requeue`\)/);
   assert.match(orchestratorPrompt, /MCP-owned JSON artifacts are authoritative for orchestration\./);
   assert.match(orchestratorPrompt, /must never call `bounty_write_wave_handoff`/);

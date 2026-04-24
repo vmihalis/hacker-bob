@@ -36,6 +36,12 @@ MCP_OWNED_EXACT = {
     "http-audit.jsonl",
     "traffic.jsonl",
     "public-intel.json",
+    "static-artifacts.jsonl",
+    "static-scan-results.jsonl",
+}
+
+MCP_OWNED_DIRS = {
+    "static-imports",
 }
 
 MCP_OWNED_PATTERNS = [
@@ -102,6 +108,9 @@ def check_file(raw_path):
         return None
 
     filename = resolved.name
+
+    if any(part in MCP_OWNED_DIRS for part in resolved.parts):
+        return filename
 
     if is_agent_allowed(filename):
         return None

@@ -14,6 +14,7 @@ const {
 const {
   COVERAGE_LOG_MAX_RECORDS,
   HTTP_AUDIT_LOG_MAX_RECORDS,
+  STATIC_ARTIFACT_MAX_CHARS,
   TRAFFIC_IMPORT_MAX_ENTRIES,
   TRAFFIC_LOG_MAX_RECORDS,
 } = require("../mcp/lib/constants.js");
@@ -58,6 +59,7 @@ const {
   listFindings,
   mergeWaveHandoffs,
   httpAuditJsonlPath,
+  importStaticArtifact,
   publicIntelPath,
   rankAttackSurfaces,
   readFindings,
@@ -70,6 +72,11 @@ const {
   sessionLockPath,
   startWave,
   statePath,
+  staticArtifactImportDir,
+  staticArtifactPath,
+  staticArtifactsJsonlPath,
+  staticScan,
+  staticScanResultsJsonlPath,
   tempEmail,
   transitionPhase,
   trafficJsonlPath,
@@ -83,6 +90,8 @@ const {
   writeWaveHandoff,
   filterExclusionsByHosts,
   readHunterBrief,
+  readStaticArtifactRecordsFromJsonl,
+  readStaticScanResultsFromJsonl,
 } = serverModule;
 
 function withTempHome(fn) {
@@ -234,6 +243,7 @@ test("mcp server public exports remain stable", () => {
     "gradeArtifactPaths",
     "httpAuditJsonlPath",
     "importHttpTraffic",
+    "importStaticArtifact",
     "initSession",
     "listFindings",
     "logCoverage",
@@ -259,6 +269,8 @@ test("mcp server public exports remain stable", () => {
     "readScopeExclusions",
     "readSessionState",
     "readStateSummary",
+    "readStaticArtifactRecordsFromJsonl",
+    "readStaticScanResultsFromJsonl",
     "readTrafficRecordsFromJsonl",
     "readVerificationRound",
     "recordFinding",
@@ -274,7 +286,13 @@ test("mcp server public exports remain stable", () => {
     "startServer",
     "startWave",
     "statePath",
+    "staticArtifactImportDir",
+    "staticArtifactPath",
+    "staticArtifactsJsonlPath",
+    "staticScan",
+    "staticScanResultsJsonlPath",
     "summarizeFindings",
+    "summarizeStaticScanHints",
     "tempEmail",
     "trafficJsonlPath",
     "transitionPhase",
@@ -294,6 +312,10 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
   const toolNames = TOOLS.map((tool) => tool.name);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
   assert.ok(toolNames.every((name) => name.startsWith("bounty_")));
+  assert.equal(
+    TOOLS.find((tool) => tool.name === "bounty_static_scan").inputSchema.properties.artifact_id.pattern,
+    "^SA-[1-9][0-9]*$",
+  );
 
   const dispatchNames = Object.keys(TOOL_HANDLERS);
 
@@ -2876,6 +2898,180 @@ test("legacy raw audit and traffic records are redacted on read", () => {
     assert.doesNotMatch(JSON.stringify({ auditRecords, trafficRecords }), /old-secret|final-secret|id=123|frag/);
     assert.equal(auditRecords[0].final_url, "https://example.com/done?code=REDACTED");
     assert.equal(trafficRecords[0].path, "/api/me?session=REDACTED&id=REDACTED");
+  });
+});
+
+test("bounty_import_static_artifact stores redacted session-owned content and rejects unsafe imports", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const source = `
+      contract RugToken {
+        string public apiKey = "super-secret-token-value";
+        mapping(address => bool) private _isBlacklisted;
+      }
+    `;
+
+    assert.throws(
+      () => importStaticArtifact({
+        target_domain: domain,
+        artifact_type: "evm_token_contract",
+        path: "/tmp/RugToken.sol",
+        content: source,
+      }),
+      /Path imports are not supported/,
+    );
+    assert.throws(
+      () => importStaticArtifact({
+        target_domain: domain,
+        artifact_type: "evm_token_contract",
+        content: "x".repeat(STATIC_ARTIFACT_MAX_CHARS + 1),
+      }),
+      /content exceeds static artifact cap/,
+    );
+    assert.throws(
+      () => importStaticArtifact({
+        target_domain: domain,
+        artifact_type: "evm_token_contract",
+        content: source,
+      }),
+      /Missing session state:/,
+    );
+    assert.throws(
+      () => staticScan({ target_domain: domain, artifact_id: "SA-1" }),
+      /Missing session state:/,
+    );
+    assert.equal(fs.existsSync(sessionDir(domain)), false);
+    assert.equal(JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` })).created, true);
+
+    const imported = JSON.parse(importStaticArtifact({
+      target_domain: domain,
+      artifact_type: "evm_token_contract",
+      source_name: "/tmp/RugToken.sol",
+      label: "Rug token",
+      surface_id: "surface-api",
+      content: source,
+    }));
+
+    assert.equal(imported.artifact_id, "SA-1");
+    assert.equal(imported.source_name, "RugToken.sol");
+    assert.ok(imported.artifact_path.startsWith(staticArtifactImportDir(domain)));
+    assert.equal(imported.artifact_path, staticArtifactPath(domain, "SA-1"));
+    assert.ok(fs.existsSync(staticArtifactsJsonlPath(domain)));
+    assert.ok(fs.existsSync(staticArtifactPath(domain, "SA-1")));
+    assert.equal(readStaticArtifactRecordsFromJsonl(domain).length, 1);
+
+    const stored = fs.readFileSync(staticArtifactPath(domain, "SA-1"), "utf8");
+    assert.match(stored, /REDACTED/);
+    assert.doesNotMatch(stored, /super-secret-token-value|\/tmp\/RugToken/);
+  });
+});
+
+test("bounty_static_scan reports deduped findings separately from capped returned findings", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    const imported = JSON.parse(importStaticArtifact({
+      target_domain: domain,
+      artifact_type: "evm_token_contract",
+      label: "Duplicate honeypot",
+      content: `
+        contract DuplicateHoneypot {
+          function block(address account) external {
+            _isBlacklisted[account] = true;
+            _isBlacklisted[account] = true;
+            _isBlacklisted[account] = true;
+          }
+        }
+      `,
+    }));
+
+    const scan = JSON.parse(staticScan({
+      target_domain: domain,
+      artifact_id: imported.artifact_id,
+      limit: 1,
+    }));
+
+    assert.equal(scan.findings_count, 1);
+    assert.equal(scan.findings_returned, 1);
+    assert.equal(scan.findings_capped, false);
+    assert.equal(scan.findings_shown, 1);
+    assert.equal(scan.findings_omitted, 0);
+    assert.equal(scan.risk_score, 25);
+  });
+});
+
+test("bounty_static_scan scans only imported artifacts and feeds bounded hunter brief hints", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [
+      {
+        id: "surface-token",
+        hosts: [`https://app.${domain}`],
+        tech_stack: ["EVM token"],
+        endpoints: ["/token"],
+        interesting_params: [],
+        nuclei_hits: [],
+        priority: "LOW",
+      },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-token" }]);
+
+    const imported = JSON.parse(importStaticArtifact({
+      target_domain: domain,
+      artifact_type: "evm_token_contract",
+      label: "Classic rug",
+      source_name: "ClassicRug.sol",
+      surface_id: "surface-token",
+      content: `
+        contract ClassicRug {
+          mapping(address => bool) private _isBlacklisted;
+          uint256 private _sellFee = 1;
+          function blacklist(address account) external onlyOwner {
+            _isBlacklisted[account] = true;
+          }
+          function setFees(uint256 fee) external onlyOwner {
+            _sellFee = fee;
+          }
+          function emergencyWithdraw(address token) external onlyOwner {}
+          function renounceOwnership() public override {}
+          string private token = "secret-static-token";
+        }
+      `,
+    }));
+
+    assert.throws(
+      () => staticScan({ target_domain: domain, artifact_id: "../SA-1" }),
+      /artifact_id must match SA-N/,
+    );
+    assert.throws(
+      () => staticScan({ target_domain: domain, artifact_id: "SA-999" }),
+      /Static artifact SA-999 not found/,
+    );
+
+    const scan = JSON.parse(staticScan({
+      target_domain: domain,
+      artifact_id: imported.artifact_id,
+      scan_type: "token_contract",
+      limit: 10,
+    }));
+    assert.equal(scan.artifact_id, "SA-1");
+    assert.equal(scan.chain, "evm");
+    assert.ok(scan.risk_score >= 25);
+    assert.match(scan.verdict, /RISK/);
+    assert.ok(scan.findings.some((finding) => finding.category === "honeypot"));
+    assert.ok(scan.findings.some((finding) => finding.category === "lp_drain"));
+    assert.ok(fs.existsSync(staticScanResultsJsonlPath(domain)));
+    assert.equal(readStaticScanResultsFromJsonl(domain).length, 1);
+    assert.doesNotMatch(JSON.stringify(scan), /secret-static-token/);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.static_scan_hints.available, true);
+    assert.equal(brief.static_scan_hints.total_results, 1);
+    assert.ok(brief.static_scan_hints.findings.length > 0);
+    assert.ok(brief.static_scan_hints.findings.length <= 10);
+    assert.equal(brief.static_scan_hints.artifacts[0].artifact_id, "SA-1");
+    assert.doesNotMatch(JSON.stringify(brief.static_scan_hints), /secret-static-token|_isBlacklisted|evidence/);
   });
 });
 

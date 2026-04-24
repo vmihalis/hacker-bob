@@ -32,11 +32,13 @@ Initialize/read/mutate state only through:
 - `bounty_start_wave`
 - `bounty_apply_wave_merge`
 
-Traffic, audit, and intel state is session-scoped and MCP-owned:
+Traffic, audit, intel, and static scan state is session-scoped and MCP-owned:
 - `bounty_import_http_traffic` writes imported Burp/HAR history to `traffic.jsonl`.
 - `bounty_http_scan` writes Bob-generated request audit to `http-audit.jsonl`.
 - `bounty_public_intel` writes optional public bounty intel to `public-intel.json`.
-- `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, ranking, and intel summaries so hunters do not read these files directly.
+- `bounty_import_static_artifact` writes redacted imported token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
+- `bounty_static_scan` reads only those imported artifacts and writes redacted structured findings to `static-scan-results.jsonl`.
+- `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, ranking, intel, and static scan summaries so hunters do not read these files directly.
 
 Initial state created by `bounty_init_session`:
 ```json
@@ -168,7 +170,7 @@ Wave: w[wave]
 Agent: a[agent]
 
 First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]' }) to load your surface assignment, exclusions, valid surface IDs, bypass table, coverage summary, and curated technique guidance. Use coverage_summary to avoid duplicate endpoint/class/auth-profile tests and continue promising/needs_auth/requeue entries. Use surface_type, bug_class_hints, high_value_flows, and evidence as prioritization signals for that one assigned surface.
-The brief also includes traffic_summary, audit_summary, circuit_breaker_summary, ranking_summary, and intel_hints. Prefer real observed authenticated endpoints from traffic_summary over generic endpoint guessing. Replay traffic-derived candidates through bounty_http_scan, use audit/circuit feedback to avoid repeated 403/429/timeout hosts, and log coverage before switching away from promising traffic-derived endpoints.
+The brief also includes traffic_summary, audit_summary, circuit_breaker_summary, ranking_summary, intel_hints, and static_scan_hints. Prefer real observed authenticated endpoints from traffic_summary over generic endpoint guessing. Replay traffic-derived candidates through bounty_http_scan, use audit/circuit feedback to avoid repeated 403/429/timeout hosts, and log coverage before switching away from promising traffic-derived endpoints. Treat static_scan_hints as redacted leads only; new token-contract scans must go through bounty_import_static_artifact then bounty_static_scan, never arbitrary path scanning.
 Checkpoint mode: [normal|paranoid|yolo]. In paranoid mode, call bounty_log_coverage and bounty_log_dead_ends more frequently and mark promising traffic-derived threads as requeue sooner. In normal mode, follow the standard cadence. In yolo mode, keep fewer checkpoints but never skip scope guard, MCP artifacts, request audit, coverage for meaningful tests, verifier pipeline, or final handoff.
 
 Auth:
@@ -180,7 +182,7 @@ Auth:
 
 Final step before stopping:
 - During the wave, call `bounty_log_coverage` after meaningful endpoint/class tests and before long pivots. Durable coverage must be MCP-owned; never write `coverage.jsonl` through Bash.
-- Never write `http-audit.jsonl`, `traffic.jsonl`, or `public-intel.json` directly; use Bob MCP tools only.
+- Never write `http-audit.jsonl`, `traffic.jsonl`, `public-intel.json`, `static-artifacts.jsonl`, `static-scan-results.jsonl`, or `static-imports/*` directly; use Bob MCP tools only.
 - Call `bounty_write_wave_handoff` exactly once with target_domain, wave, agent, surface_id (from brief), surface_status, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids.
 ")
 ```

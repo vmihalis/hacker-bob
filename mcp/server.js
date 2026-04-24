@@ -13,14 +13,17 @@
 //           bounty_auth_manual, bounty_wave_status,
 //           bounty_temp_email, bounty_signup_detect, bounty_auth_store,
 //           bounty_auto_signup, bounty_import_http_traffic,
-//           bounty_read_http_audit, bounty_public_intel
+//           bounty_read_http_audit, bounty_public_intel,
+//           bounty_import_static_artifact, bounty_static_scan
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
 const {
   bountyPublicIntel,
   executeTool,
+  importStaticArtifact,
   importHttpTraffic,
   readHttpAudit,
+  staticScan,
 } = require("./lib/dispatch.js");
 const { startStdioServer } = require("./lib/transport.js");
 const {
@@ -46,6 +49,10 @@ const {
   sessionDir,
   sessionLockPath,
   statePath,
+  staticArtifactImportDir,
+  staticArtifactPath,
+  staticArtifactsJsonlPath,
+  staticScanResultsJsonlPath,
   trafficJsonlPath,
   verificationRoundPaths,
 } = require("./lib/paths.js");
@@ -75,6 +82,11 @@ const {
   readHttpAuditRecordsFromJsonl,
   readTrafficRecordsFromJsonl,
 } = require("./lib/http-records.js");
+const {
+  readStaticArtifactRecordsFromJsonl,
+  readStaticScanResultsFromJsonl,
+  summarizeStaticScanHints,
+} = require("./lib/static-artifacts.js");
 const { validateScanUrl } = require("./lib/url-surface.js");
 const {
   listFindings,
@@ -213,6 +225,38 @@ const TOOLS = [
         limit: { type: "number" },
       },
       required: ["target_domain"],
+    },
+  },
+  {
+    name: "bounty_import_static_artifact",
+    description:
+      "Import a token contract source artifact into session-owned static-imports for later safe static scanning. Accepts content only; filesystem path imports are rejected. Stored content is redacted and capped.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        artifact_type: { type: "string", enum: ["evm_token_contract", "solana_token_contract"] },
+        content: { type: "string", maxLength: 200000 },
+        label: { type: "string", description: "Optional short display label for the artifact." },
+        source_name: { type: "string", description: "Optional source filename/display name. Used as a label only; no file is read." },
+        surface_id: { type: "string", description: "Optional attack_surface.json surface ID to scope hunter brief hints." },
+      },
+      required: ["target_domain", "artifact_type", "content"],
+    },
+  },
+  {
+    name: "bounty_static_scan",
+    description:
+      "Run a deterministic token-contract static scan on a previously imported session-owned artifact. Results are stored as redacted structured JSON in static-scan-results.jsonl and summarized in hunter briefs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_domain: { type: "string" },
+        artifact_id: { type: "string", pattern: "^SA-[1-9][0-9]*$" },
+        scan_type: { type: "string", enum: ["token_contract"], description: "Defaults to token_contract." },
+        limit: { type: "number", description: "Max findings to return in the immediate response. Stored results remain capped by Bob." },
+      },
+      required: ["target_domain", "artifact_id"],
     },
   },
   {
@@ -643,7 +687,7 @@ const TOOLS = [
   {
     name: "bounty_read_hunter_brief",
     description:
-      "Return everything a hunter needs to start testing: assigned surface, exclusions, valid surface IDs, bypass table, and bounded curated technique guidance. Hunters call this once on startup instead of receiving everything via spawn prompt.",
+      "Return everything a hunter needs to start testing: assigned surface, exclusions, valid surface IDs, bypass table, bounded curated technique guidance, and capped traffic/audit/intel/static-scan hints. Hunters call this once on startup instead of receiving everything via spawn prompt.",
     inputSchema: {
       type: "object",
       properties: {
@@ -677,6 +721,7 @@ module.exports = {
   coverageJsonlPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
+  importStaticArtifact,
   importHttpTraffic,
   initSession,
   listFindings,
@@ -696,6 +741,11 @@ module.exports = {
   sessionDir,
   sessionLockPath,
   statePath,
+  staticArtifactImportDir,
+  staticArtifactPath,
+  staticArtifactsJsonlPath,
+  staticScan,
+  staticScanResultsJsonlPath,
   startWave,
   findingsJsonlPath,
   findingsMarkdownPath,
@@ -704,6 +754,8 @@ module.exports = {
   readCoverageRecordsFromJsonl,
   readHttpAudit,
   readHttpAuditRecordsFromJsonl,
+  readStaticArtifactRecordsFromJsonl,
+  readStaticScanResultsFromJsonl,
   readTrafficRecordsFromJsonl,
   readFindingsFromJsonl,
   redactUrlSensitiveValues,
@@ -722,6 +774,7 @@ module.exports = {
   renderGradeVerdictMarkdown,
   renderVerificationRoundMarkdown,
   signupDetect,
+  summarizeStaticScanHints,
   summarizeFindings,
   tempEmail,
   transitionPhase,

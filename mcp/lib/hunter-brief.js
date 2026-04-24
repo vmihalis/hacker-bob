@@ -35,6 +35,9 @@ const {
   summarizePublicIntelForSurface,
 } = require("./public-intel.js");
 const {
+  summarizeStaticScanHints,
+} = require("./static-artifacts.js");
+const {
   filterExclusionsByHosts,
 } = require("./scope.js");
 
@@ -360,6 +363,7 @@ function readHunterBrief(args) {
   const auditSummary = summarizeHttpAuditRecords(auditRecords, { surface: surfaceObj });
   const circuitBreakerSummary = buildCircuitBreakerSummary(auditRecords, { surface: surfaceObj });
   const intelHints = summarizePublicIntelForSurface(domain, surfaceObj);
+  const staticScanHints = summarizeStaticScanHints(domain, { surface: surfaceObj });
 
   return JSON.stringify({
     target_url: state.target_url,
@@ -387,6 +391,7 @@ function readHunterBrief(args) {
     circuit_breaker_summary: circuitBreakerSummary,
     ranking_summary: surfaceObj.ranking || null,
     intel_hints: intelHints,
+    static_scan_hints: staticScanHints,
     auth_hint: "Read ~/bounty-agent-sessions/" + domain + "/auth.json if it exists.",
   }, null, 2);
 }

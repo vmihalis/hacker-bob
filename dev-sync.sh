@@ -85,6 +85,8 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       "mcp__bountyagent__bounty_import_http_traffic",
       "mcp__bountyagent__bounty_read_http_audit",
       "mcp__bountyagent__bounty_public_intel",
+      "mcp__bountyagent__bounty_import_static_artifact",
+      "mcp__bountyagent__bounty_static_scan",
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
