@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hacker Bob Update Analysis</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #18202f;
+      --muted: #5c667a;
+      --border: #d9dfeb;
+      --header: #24324a;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --green: #137a3f;
+      --green-soft: #e9f8ef;
+      --red: #b42318;
+      --red-soft: #fff0ed;
+      --amber: #9a5b00;
+      --amber-soft: #fff5db;
+      --gray-soft: #eef2f7;
+      --code: #f0f3f8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 18px 60px;
+    }
+
+    header {
+      background: var(--header);
+      color: #fff;
+      border-radius: 8px;
+      padding: 28px;
+      margin-bottom: 22px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 5vw, 48px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 30px 0 12px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 18px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    .subtitle {
+      color: #dce6f7;
+      max-width: 880px;
+      font-size: 17px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid rgba(255,255,255,.25);
+      border-radius: 999px;
+      color: #f5f8ff;
+      background: rgba(255,255,255,.08);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0 26px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(18, 28, 45, .05);
+    }
+
+    .metric {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 6px;
+      letter-spacing: 0;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .callout {
+      border-radius: 8px;
+      padding: 16px 18px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      margin: 16px 0;
+    }
+
+    .callout.good {
+      background: var(--green-soft);
+      border-color: #b8e5c8;
+    }
+
+    .callout.warn {
+      background: var(--amber-soft);
+      border-color: #efd58e;
+    }
+
+    .callout.bad {
+      background: var(--red-soft);
+      border-color: #f0b8af;
+    }
+
+    .verdict {
+      font-size: 18px;
+      font-weight: 650;
+      margin-bottom: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 12px 0 22px;
+    }
+
+    th, td {
+      vertical-align: top;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+
+    th {
+      background: #edf2fa;
+      color: #22304a;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    td:first-child {
+      font-weight: 650;
+      color: #22304a;
+      width: 22%;
+    }
+
+    .tag {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      margin: 0 4px 4px 0;
+      white-space: nowrap;
+    }
+
+    .tag.good {
+      color: var(--green);
+      background: var(--green-soft);
+      border: 1px solid #b8e5c8;
+    }
+
+    .tag.risk {
+      color: var(--red);
+      background: var(--red-soft);
+      border: 1px solid #f0b8af;
+    }
+
+    .tag.neutral {
+      color: #34425a;
+      background: var(--gray-soft);
+      border: 1px solid var(--border);
+    }
+
+    .tag.warn {
+      color: var(--amber);
+      background: var(--amber-soft);
+      border: 1px solid #efd58e;
+    }
+
+    code {
+      background: var(--code);
+      padding: 2px 5px;
+      border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+
+    .toc {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 22px;
+    }
+
+    .toc a {
+      color: var(--blue);
+      background: var(--blue-soft);
+      border: 1px solid #c6d8ff;
+      border-radius: 999px;
+      padding: 7px 10px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .section-note {
+      color: var(--muted);
+      max-width: 900px;
+      margin-bottom: 12px;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    ul {
+      margin-top: 8px;
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    @media (max-width: 860px) {
+      .grid,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding: 22px;
+      }
+
+      th, td {
+        display: block;
+        width: 100%;
+      }
+
+      th {
+        display: none;
+      }
+
+      td:first-child {
+        width: 100%;
+        background: #f8fafe;
+        border-bottom: 0;
+        padding-bottom: 4px;
+      }
+
+      td {
+        padding-top: 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <h1>Hacker Bob Update Analysis</h1>
+      <p class="subtitle">Clean comparison of the current working tree against commit <code>15860825964569c6d723416938a4760d8a5e0108</code>.</p>
+      <div class="meta">
+        <span class="pill">Baseline: 1586082</span>
+        <span class="pill">Current state: working tree</span>
+        <span class="pill">Verdict: stop refactoring, stabilize</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <a href="#verdict">Verdict</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#big-picture">Big Picture</a>
+      <a href="#added">Added</a>
+      <a href="#removed">Removed or Replaced</a>
+      <a href="#advantages">Advantages</a>
+      <a href="#risks">Risks</a>
+      <a href="#next">Next Step</a>
+    </nav>
+
+    <section id="verdict" class="callout good">
+      <div class="verdict">Honest verdict: this is a strong update, but it should be stabilized now.</div>
+      <p>The architecture is much better than the baseline. The dangerous giant server file has been split into owned modules, the tool contract is guarded by tests, sensitive URL data is redacted, and session artifacts are better protected.</p>
+      <p>The best move now is not more refactoring. The best move is a real MCP smoke test, review the diff, then commit a checkpoint.</p>
+    </section>
+
+    <section id="numbers">
+      <h2>Numbers At A Glance</h2>
+      <div class="grid">
+        <div class="card">
+          <div class="metric">27 -> 31</div>
+          <div class="metric-label">MCP tools. Four tools added, none removed.</div>
+        </div>
+        <div class="card">
+          <div class="metric">3361 -> 949</div>
+          <div class="metric-label"><code>mcp/server.js</code> lines. It is now a facade.</div>
+        </div>
+        <div class="card">
+          <div class="metric">19 tracked</div>
+          <div class="metric-label">Tracked files changed since the baseline commit.</div>
+        </div>
+        <div class="card">
+          <div class="metric">22 untracked</div>
+          <div class="metric-label">Important new files not yet tracked by Git.</div>
+        </div>
+      </div>
+
+      <div class="callout warn">
+        <div class="verdict">Important Git note</div>
+        <p>The tracked diff shows <code>19 files changed, 1981 insertions, 2694 deletions</code>, but that does not include untracked files like <code>mcp/lib/*</code>, <code>mcp/redaction.js</code>, and <code>REFACTOR_HARDENING_PLAN.md</code>. Those files are essential and must be staged before committing.</p>
+      </div>
+    </section>
+
+    <section id="big-picture">
+      <h2>Big Picture</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Before</th>
+            <th>Now</th>
+            <th>Plain-English Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Architecture</td>
+            <td>Most behavior lived in one large <code>mcp/server.js</code>.</td>
+            <td><code>mcp/server.js</code> is a compatibility facade. Behavior lives in focused modules.</td>
+            <td><span class="tag good">Better</span> Easier to review, test, and change without breaking unrelated code.</td>
+          </tr>
+          <tr>
+            <td>Tool surface</td>
+            <td>27 MCP tools.</td>
+            <td>31 MCP tools. Added coverage, traffic import, HTTP audit read, and public intel.</td>
+            <td><span class="tag good">Better</span> More durable context for hunters and orchestrator decisions.</td>
+          </tr>
+          <tr>
+            <td>Session artifacts</td>
+            <td>Core state, findings, handoffs, verification, grade.</td>
+            <td>Adds <code>coverage.jsonl</code>, <code>http-audit.jsonl</code>, <code>traffic.jsonl</code>, and <code>public-intel.json</code>.</td>
+            <td><span class="tag good">Better</span> More resumable. <span class="tag warn">Tradeoff</span> More files to understand.</td>
+          </tr>
+          <tr>
+            <td>Security and privacy</td>
+            <td>Some scope protection, less central redaction.</td>
+            <td>Central URL redaction, guarded auth paths, scan URL validation, redacted hook logs.</td>
+            <td><span class="tag good">Better</span> Lower chance of leaking tokens or writing outside the session.</td>
+          </tr>
+          <tr>
+            <td>Hunter guidance</td>
+            <td>Brief mostly gave assignment, exclusions, IDs, and bypass table.</td>
+            <td>Brief includes coverage, traffic, audit, circuit breaker, ranking, intel, and bounded techniques.</td>
+            <td><span class="tag good">Better</span> Less duplicate work, more targeted testing. <span class="tag risk">Risk</span> Bad hints can bias hunters.</td>
+          </tr>
+          <tr>
+            <td>Tests</td>
+            <td><code>npm test</code> ran MCP tests only.</td>
+            <td><code>npm test</code> runs MCP tests, prompt contract tests, and hook guard tests.</td>
+            <td><span class="tag good">Better</span> Much stronger regression coverage.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="added">
+      <h2>What Was Added</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Addition</th>
+            <th>Why It Exists</th>
+            <th>Impact</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>bounty_import_http_traffic</code></td>
+            <td>Imports Burp/HAR-style first-party request history into <code>traffic.jsonl</code>.</td>
+            <td>Hunters can test real observed endpoints instead of guessing from recon only.</td>
+          </tr>
+          <tr>
+            <td><code>bounty_read_http_audit</code></td>
+            <td>Reads capped summaries of Bob-generated scan audit entries.</td>
+            <td>Verifiers and hunters can see repeated 403, 429, timeout, and successful request patterns.</td>
+          </tr>
+          <tr>
+            <td><code>bounty_public_intel</code></td>
+            <td>Stores optional public program policy, scope, stats, and disclosed-report hints.</td>
+            <td>Ranking and hunter briefs can prioritize bug classes with public precedent.</td>
+          </tr>
+          <tr>
+            <td><code>bounty_log_coverage</code></td>
+            <td>Logs endpoint, bug class, auth profile, status, evidence, and next step.</td>
+            <td>Wave merge can requeue promising, needs-auth, or explicitly requeued work.</td>
+          </tr>
+          <tr>
+            <td><code>mcp/lib/*.js</code></td>
+            <td>Splits server behavior by domain: state, storage, auth, scan, waves, findings, coverage, ranking, hunter brief, and more.</td>
+            <td>The code is much more maintainable and reviewable.</td>
+          </tr>
+          <tr>
+            <td><code>mcp/redaction.js</code></td>
+            <td>Centralizes sensitive URL redaction.</td>
+            <td>Tokens, query values, credentials, and fragments are less likely to leak into logs.</td>
+          </tr>
+          <tr>
+            <td><code>.claude/knowledge/hunter-techniques.json</code></td>
+            <td>Curated, bounded hunter guidance for REST/API, GraphQL, WordPress, Next.js, JWT/OAuth, SSRF, upload, and business logic.</td>
+            <td>Hunters get better starting tactics without importing an external execution system.</td>
+          </tr>
+          <tr>
+            <td>Prompt contract tests</td>
+            <td>Checks that orchestrator, agents, settings, install, and dev-sync stay aligned.</td>
+            <td>Reduces prompt/tool drift, which is a common failure mode in agent systems.</td>
+          </tr>
+          <tr>
+            <td>Export and dispatch tests</td>
+            <td>Locks down the public server export list and tool registry/dispatcher consistency.</td>
+            <td>Future refactors are less likely to silently break the MCP API.</td>
+          </tr>
+          <tr>
+            <td>JSONL retention caps</td>
+            <td>Caps coverage, audit, and traffic logs at 5000 records.</td>
+            <td>Prevents unbounded session logs from growing forever.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="removed">
+      <h2>What Was Removed Or Replaced</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Change</th>
+            <th>Meaning</th>
+            <th>Good Or Bad?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>No public MCP tools removed</td>
+            <td>Existing external tool names remain available.</td>
+            <td><span class="tag good">Good</span> Backward compatibility is preserved.</td>
+          </tr>
+          <tr>
+            <td>Large local function bodies removed from <code>mcp/server.js</code></td>
+            <td>Behavior moved into focused modules rather than being deleted.</td>
+            <td><span class="tag good">Good</span> The server facade is smaller and safer to navigate.</td>
+          </tr>
+          <tr>
+            <td>Raw URL logging in scope guard replaced</td>
+            <td>Scope guard logs now redact query values and fragments.</td>
+            <td><span class="tag good">Good</span> Less sensitive data in logs.</td>
+          </tr>
+          <tr>
+            <td>Old verifier example IDs replaced</td>
+            <td>Examples changed from wave-agent IDs like <code>w1-a1-001</code> to finding IDs like <code>F-1</code>.</td>
+            <td><span class="tag good">Good</span> Matches actual finding IDs.</td>
+          </tr>
+          <tr>
+            <td>Round 2 docs corrected</td>
+            <td><code>brutalist-final.*</code> references became <code>balanced.*</code>.</td>
+            <td><span class="tag good">Good</span> Fixes misleading artifact names.</td>
+          </tr>
+          <tr>
+            <td>Direct writes to new MCP-owned artifacts blocked</td>
+            <td><code>coverage.jsonl</code>, <code>http-audit.jsonl</code>, <code>traffic.jsonl</code>, and <code>public-intel.json</code> must be written through MCP tools.</td>
+            <td><span class="tag good">Good</span> Safer state. <span class="tag warn">Tradeoff</span> More strict workflows.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="advantages">
+      <h2>Main Advantages</h2>
+      <div class="two-col">
+        <div class="card">
+          <h3>Engineering Advantages</h3>
+          <ul>
+            <li><strong>Clear ownership:</strong> auth, HTTP scan, storage, waves, findings, ranking, hunter brief, and coverage now have separate modules.</li>
+            <li><strong>Safer future edits:</strong> a bug in wave merge no longer requires reading the entire server file.</li>
+            <li><strong>Stable public API:</strong> export snapshot and dispatch tests protect compatibility.</li>
+            <li><strong>Better test command:</strong> <code>npm test</code> now exercises MCP, prompt contracts, and write guards.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Product Advantages</h3>
+          <ul>
+            <li><strong>Better hunter focus:</strong> briefs include real traffic, coverage, audit feedback, ranking, and curated tactics.</li>
+            <li><strong>Better resumability:</strong> coverage and audit history survive context loss.</li>
+            <li><strong>Better wave decisions:</strong> unfinished or promising coverage can requeue surfaces intelligently.</li>
+            <li><strong>Better verifier context:</strong> verifiers can inspect request audit summaries without reading raw files.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>Main Disadvantages And Risks</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Risk</th>
+            <th>Why It Matters</th>
+            <th>How To Handle It</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Untracked files</td>
+            <td>The repo currently has important untracked files: <code>mcp/lib/*</code>, <code>mcp/redaction.js</code>, and <code>REFACTOR_HARDENING_PLAN.md</code>.</td>
+            <td>Stage them before committing. Otherwise the update will be broken.</td>
+          </tr>
+          <tr>
+            <td>More moving parts</td>
+            <td>The architecture is cleaner, but there are more files and imports.</td>
+            <td>Keep module boundaries stable. Do not keep splitting without a concrete reason.</td>
+          </tr>
+          <tr>
+            <td>No real MCP smoke test yet</td>
+            <td>Unit tests passed, but the actual stdio/server/client path should be tested once.</td>
+            <td>Run one end-to-end MCP startup and one simple tool call before committing.</td>
+          </tr>
+          <tr>
+            <td>Ranking and intel bias</td>
+            <td>Heuristics can over-prioritize noisy surfaces or stale public report patterns.</td>
+            <td>Treat ranking as a suggestion, not truth. Findings still require live proof.</td>
+          </tr>
+          <tr>
+            <td>More artifacts to explain</td>
+            <td>Users and agents now need to understand coverage, audit, traffic, and intel files.</td>
+            <td>The README and prompts were updated, but this should be validated in a real run.</td>
+          </tr>
+          <tr>
+            <td>Dispatch and transport remain in server</td>
+            <td>This is not perfectly clean architecture.</td>
+            <td>Accept it for now. Splitting transport today is lower value and higher risk.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="next">
+      <h2>Best Next Step</h2>
+      <div class="callout warn">
+        <div class="verdict">Do not continue broad refactoring right now.</div>
+        <p>The update is good enough structurally. The mature move is to stabilize it.</p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Action</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Stage the untracked files.</td>
+            <td>They are required for the refactor to work.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Run one real MCP smoke test through the actual server path.</td>
+            <td>This checks startup, framing, dispatch, and tool execution beyond unit tests.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Review the diff once for accidental prompt or docs churn.</td>
+            <td>The code is strong, but prompts changed too and deserve human review.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Commit a checkpoint.</td>
+            <td>This is a stable architecture milestone.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Only then decide whether dispatch/transport needs splitting.</td>
+            <td>Right now, that split is not worth the risk.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

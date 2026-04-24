@@ -13,7 +13,7 @@ import json
 import os
 import pathlib
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def utc_now():
@@ -28,6 +28,18 @@ def normalize_host(value):
     if not host:
         return None
     return host.strip().strip(".").lower()
+
+
+def redact_url(value):
+    try:
+        parsed = urlsplit(value.strip())
+        query = urlencode([(key, "REDACTED") for key, _ in parse_qsl(parsed.query, keep_blank_values=True)])
+        netloc = parsed.hostname or ""
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, query, ""))
+    except Exception:
+        return "[invalid-url]"
 
 
 def load_json(path):
@@ -142,7 +154,7 @@ allowed.update(
 )
 
 if not matches_scope(domain, allowed):
-    log_line(session_dir, f"OUT-OF-SCOPE (http_scan): {domain} (url: {url[:200]})")
+    log_line(session_dir, f"OUT-OF-SCOPE (http_scan): {domain} (url: {redact_url(url)[:200]})")
 
 raise SystemExit(0)
 PY

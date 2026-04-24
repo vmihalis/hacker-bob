@@ -89,6 +89,9 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | Tool | What it does |
 |---|---|
 | `bounty_http_scan` | HTTP request + auto-analysis (tech fingerprinting, secret detection, endpoint extraction) |
+| `bounty_import_http_traffic` | Import Burp/HAR-style first-party request history into session-owned `traffic.jsonl` |
+| `bounty_read_http_audit` | Read a capped summary of Bob-generated request audit entries from `http-audit.jsonl` |
+| `bounty_public_intel` | Fetch optional public bounty intel: policy summary, program stats, scopes, and disclosed report hints |
 | `bounty_record_finding` | Append an authoritative finding record to `findings.jsonl` and best-effort mirror it to `findings.md` |
 | `bounty_read_findings` | Read the authoritative structured findings document for a target |
 | `bounty_list_findings` | List recorded findings for a target for hunter dedupe |
@@ -102,11 +105,21 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
 | `bounty_read_handoff` | Read previous handoff to resume |
 | `bounty_auth_manual` | Store auth tokens as reusable profiles |
+| `bounty_log_coverage` | Append per-session endpoint/bug-class/auth-profile coverage records to `coverage.jsonl` |
+| `bounty_auto_signup` | Optional browser-assisted signup that stores attacker/victim auth profiles when Patchright is installed |
 | `bounty_wave_status` | Read-only summary of findings for wave-to-wave decisions |
+| `bounty_read_state_summary` | Compact phase/wave/finding/coverage state for orchestration decisions |
+| `bounty_read_hunter_brief` | Per-hunter startup brief with assigned surface, exclusions, coverage, traffic, audit/circuit-breaker, ranking, intel, bypass table, and bounded curated technique guidance |
 
 Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
 
 Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never intended to be parsed by code or prompts.
+
+Coverage, traffic, request audit, and public intel are session-scoped and MCP-owned. Hunters append concise coverage entries through `bounty_log_coverage`; `bounty_http_scan` appends Bob-generated request results to `http-audit.jsonl`; `bounty_import_http_traffic` imports optional Burp/HAR request history to `traffic.jsonl`; and `bounty_public_intel` stores optional public program/report hints in `public-intel.json`. `bounty_read_hunter_brief` returns only the assigned surface's capped latest-per-endpoint/class/auth coverage, relevant observed traffic, audit/circuit-breaker feedback, ranking reasons, and intel hints. Wave merge uses unfinished coverage statuses to requeue surfaces without introducing cross-target memory.
+
+The `.claude/knowledge/` layer is curated read-only reference input distilled from `claude-bug-bounty` methodology, web2 bug-class notes, payload hints, and selected wordlist patterns. It is not an imported execution system: no external scanners, extra slash commands, web3 automation, or memory stores are used by this phase. Burp/HAR traffic and public intel are optional MCP-owned inputs only; Bob still works without them. `bounty_read_hunter_brief` selects a few bounded snippets by surface tech, endpoint patterns, params, nuclei hits, JS hints, optional recon metadata, observed traffic, and public intel.
+
+Recon may enrich `attack_surface.json` surfaces with optional `surface_type`, `bug_class_hints`, `high_value_flows`, `evidence`, and `ranking` fields. The original required fields remain compatible: `id`, `hosts`, `tech_stack`, `endpoints`, `interesting_params`, `nuclei_hits`, and `priority`. MCP ranking can raise priority and add reasons using API-ness, auth/admin/billing/data flows, GraphQL/WebSocket, object IDs, nuclei hits, JS secrets, imported traffic, and disclosed-report hints. This improves hunter prioritization only; it does not add scanners, web3 automation, or cross-target memory.
 
 `bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
 
@@ -128,29 +141,35 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 
 All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
 - `state.json` — FSM phase, wave count, pending wave, findings, explored surface IDs, exclusions, and lead routing hints; pending waves reconcile on explicit `resume`
-- `attack_surface.json` — recon output grouped by priority
+- `attack_surface.json` — recon output grouped by priority, optionally enriched with surface type, likely bug classes, high-value flows, short evidence strings, and additive ranking reasons
 - `wave-N-assignments.json` — persisted per-wave `agent -> surface_id` assignments
 - `handoff-wN-aN.md` — freeform hunter handoff markdown for humans and chain-building
 - `handoff-wN-aN.json` — structured hunter handoff fields used for deterministic merge/requeue
 - `SESSION_HANDOFF.md` — session-only resume handoff written by `bounty_write_handoff`
 - `findings.jsonl` — append-only authoritative finding storage across waves
 - `findings.md` — human/debug mirror of recorded findings
+- `coverage.jsonl` — MCP-owned hunter coverage ledger
+- `http-audit.jsonl` — MCP-owned Bob-generated request audit ledger
+- `traffic.jsonl` — MCP-owned imported Burp/HAR-style traffic ledger
+- `public-intel.json` — MCP-owned optional public program/report intel cache
 - `chains.md` — exploit chain analysis
 - `brutalist.json` / `brutalist.md` — round 1 control-plane JSON plus human/debug markdown
-- `brutalist-final.json` / `brutalist-final.md` — round 2 control-plane JSON plus human/debug markdown
+- `balanced.json` / `balanced.md` — round 2 control-plane JSON plus human/debug markdown
 - `verified-final.json` / `verified-final.md` — round 3 control-plane JSON plus human/debug markdown
 - `grade.json` / `grade.md` — grading control-plane JSON plus human/debug markdown
 - `report.md` — submission-ready report
 
 ## What works out of the box
 
-The full core pipeline: agents, orchestrator, MCP server, hooks, and status line. Hunters get `bounty_http_scan` with auto-analysis out of the box.
+The full core pipeline: agents, orchestrator, MCP server, hooks, and status line. Hunters get `bounty_http_scan` with auto-analysis and request auditing out of the box.
 
 ## Optional extras (degrade gracefully)
 
 | Feature | What it needs | Without it |
 |---|---|---|
 | **Authenticated testing** | User-provided cookies/localStorage auth data | Falls back to unauthenticated testing |
+| **Burp/HAR traffic import** | User-supplied request history passed to `bounty_import_http_traffic` | Hunters use recon-only endpoints and Bob-generated audit |
+| **Public intel** | Network access to public program/report pages, or a provided program handle | Brief returns empty intel hints and ranking uses local signals only |
 | **Recon tools** | `subfinder`, `httpx`, `nuclei` | Steps that need missing tools are skipped, recon continues with what's available |
 
 The orchestrator handles all fallbacks automatically.

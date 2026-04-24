@@ -1,7 +1,7 @@
 ---
 name: final-verifier
 description: Round 3 verification — re-runs only REPORTABLE findings with fresh requests as final confirmation
-tools: Bash, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
+tools: Bash, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
 model: sonnet
 color: green
 requiredMcpServers:
@@ -9,6 +9,7 @@ requiredMcpServers:
 ---
 
 You are the final verifier. Re-run only the `reportable: true` findings from `bounty_read_verification_round(round="balanced")` with fresh requests.
+Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
 Auth for PoC re-runs:
 - Read ~/bounty-agent-sessions/[domain]/auth.json before re-running any PoC.
@@ -40,24 +41,24 @@ Your FINAL action before stopping MUST be exactly one `bounty_write_verification
 bounty_write_verification_round({
   target_domain: "example.com",
   round: "final",
-  notes: "Fresh PoC confirms w1-a1-001. w1-a2-001 no longer reproduces — endpoint patched.",
+  notes: "Fresh PoC confirms F-1. F-2 no longer reproduces — endpoint patched.",
   results: [
     {
-      finding_id: "w1-a1-001",
+      finding_id: "F-1",
       disposition: "confirmed",
       severity: "high",
       reportable: true,
       reasoning: "Fresh request confirms — still returns victim data with attacker token"
     },
     {
-      finding_id: "w1-a2-001",
+      finding_id: "F-2",
       disposition: "denied",
       severity: null,
       reportable: false,
       reasoning: "Endpoint now returns 403 — appears patched since balanced round"
     },
     {
-      finding_id: "w1-a3-001",
+      finding_id: "F-3",
       disposition: "downgraded",
       severity: "low",
       reportable: false,

@@ -3,32 +3,61 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const serverModule = require("../mcp/server.js");
+const {
+  COVERAGE_LOG_MAX_RECORDS,
+  HTTP_AUDIT_LOG_MAX_RECORDS,
+  TRAFFIC_IMPORT_MAX_ENTRIES,
+  TRAFFIC_LOG_MAX_RECORDS,
+} = require("../mcp/lib/constants.js");
+const {
+  appendHttpAuditRecord,
+} = require("../mcp/lib/http-records.js");
+const {
+  trimJsonlFile,
+} = require("../mcp/lib/storage.js");
 
 const {
+  TOOLS,
   SESSION_LOCK_STALE_MS,
   assertSafeDomain,
   validateScanUrl,
+  appendJsonlLine,
   applyWaveMerge,
   attackSurfacePath,
   autoSignup,
   authStore,
   buildHeaderProfile,
+  buildCircuitBreakerSummary,
+  buildCoverageSummaryForSurface,
+  coverageJsonlPath,
   executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
   initSession,
+  importHttpTraffic,
+  logCoverage,
   migrateAuthJson,
+  bountyPublicIntel,
   readScopeExclusions,
   readSessionState,
   readStateSummary,
+  readCoverageRecordsFromJsonl,
+  readHttpAudit,
+  readHttpAuditRecordsFromJsonl,
+  readTrafficRecordsFromJsonl,
   compactSessionState,
   listFindings,
   mergeWaveHandoffs,
+  httpAuditJsonlPath,
+  publicIntelPath,
+  rankAttackSurfaces,
   readFindings,
   readGradeVerdict,
   readVerificationRound,
   recordFinding,
+  redactUrlSensitiveValues,
   resolveAuthJsonPath,
   sessionDir,
   sessionLockPath,
@@ -36,6 +65,7 @@ const {
   statePath,
   tempEmail,
   transitionPhase,
+  trafficJsonlPath,
   verificationRoundPaths,
   waveHandoffStatus,
   waveStatus,
@@ -46,22 +76,32 @@ const {
   writeWaveHandoff,
   filterExclusionsByHosts,
   readHunterBrief,
-} = require("../mcp/server.js");
+} = serverModule;
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
   process.env.HOME = tempHome;
 
-  try {
-    fn(tempHome);
-  } finally {
+  const cleanup = () => {
     if (previousHome === undefined) {
       delete process.env.HOME;
     } else {
       process.env.HOME = previousHome;
     }
     fs.rmSync(tempHome, { recursive: true, force: true });
+  };
+
+  try {
+    const result = fn(tempHome);
+    if (result && typeof result.then === "function") {
+      return result.finally(cleanup);
+    }
+    cleanup();
+    return result;
+  } catch (error) {
+    cleanup();
+    throw error;
   }
 }
 
@@ -102,6 +142,10 @@ function seedAttackSurface(domain, surfaceIds = ["surface-a", "surface-b", "surf
     id: surfaceId,
     hosts: [`https://${domain}`],
   }));
+  writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`);
+}
+
+function seedAttackSurfaces(domain, surfaces) {
   writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`);
 }
 
@@ -158,6 +202,102 @@ function seedFinding(domain, overrides = {}) {
     ...overrides,
   }));
 }
+
+test("mcp server public exports remain stable", () => {
+  assert.deepEqual(Object.keys(serverModule).sort(), [
+    "SESSION_LOCK_STALE_MS",
+    "TOOLS",
+    "appendJsonlLine",
+    "applyWaveMerge",
+    "assertSafeDomain",
+    "attackSurfacePath",
+    "authStore",
+    "autoSignup",
+    "bountyPublicIntel",
+    "buildCircuitBreakerSummary",
+    "buildCoverageSummaryForSurface",
+    "buildHeaderProfile",
+    "compactSessionState",
+    "computeCoverageRequeueSurfaceIds",
+    "coverageJsonlPath",
+    "executeTool",
+    "filterExclusionsByHosts",
+    "findingsJsonlPath",
+    "findingsMarkdownPath",
+    "gradeArtifactPaths",
+    "httpAuditJsonlPath",
+    "importHttpTraffic",
+    "initSession",
+    "listFindings",
+    "logCoverage",
+    "mergeWaveHandoffs",
+    "migrateAuthJson",
+    "normalizeCoverageRecord",
+    "normalizeFindingRecord",
+    "normalizeGradeVerdictDocument",
+    "normalizeHttpAuditRecord",
+    "normalizeSessionStateDocument",
+    "normalizeStringArray",
+    "normalizeTrafficRecord",
+    "publicIntelPath",
+    "rankAttackSurfaces",
+    "readAuthJson",
+    "readCoverageRecordsFromJsonl",
+    "readFindings",
+    "readFindingsFromJsonl",
+    "readGradeVerdict",
+    "readHttpAudit",
+    "readHttpAuditRecordsFromJsonl",
+    "readHunterBrief",
+    "readScopeExclusions",
+    "readSessionState",
+    "readStateSummary",
+    "readTrafficRecordsFromJsonl",
+    "readVerificationRound",
+    "recordFinding",
+    "redactUrlSensitiveValues",
+    "renderFindingMarkdownEntry",
+    "renderGradeVerdictMarkdown",
+    "renderVerificationRoundMarkdown",
+    "resolveAuthJsonPath",
+    "resolveHunterKnowledge",
+    "sessionDir",
+    "sessionLockPath",
+    "signupDetect",
+    "startServer",
+    "startWave",
+    "statePath",
+    "summarizeFindings",
+    "tempEmail",
+    "trafficJsonlPath",
+    "transitionPhase",
+    "validateScanUrl",
+    "verificationRoundPaths",
+    "waveHandoffStatus",
+    "waveStatus",
+    "writeFileAtomic",
+    "writeGradeVerdict",
+    "writeHandoff",
+    "writeVerificationRound",
+    "writeWaveHandoff",
+  ]);
+});
+
+test("MCP tool registry and dispatch cases stay in sync", async () => {
+  const toolNames = TOOLS.map((tool) => tool.name);
+  assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
+  assert.ok(toolNames.every((name) => name.startsWith("bounty_")));
+
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "mcp", "server.js"), "utf8");
+  const executeToolBody = serverSource.match(/async function executeTool\(name, args\) \{([\s\S]*?)\n\}/);
+  assert.ok(executeToolBody, "executeTool body should be discoverable");
+  const dispatchNames = Array.from(executeToolBody[1].matchAll(/case "([^"]+)":/g), (match) => match[1]);
+
+  assert.deepEqual([...dispatchNames].sort(), [...toolNames].sort());
+  assert.deepEqual(JSON.parse(await executeTool("__unknown_tool__", {})), {
+    error: "Unknown tool: __unknown_tool__",
+  });
+});
 
 test("bounty_init_session creates the initial state and bounty_read_session_state returns public fields only", () => {
   withTempHome(() => {
@@ -656,6 +796,130 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
   });
 });
 
+test("bounty_apply_wave_merge requeues unfinished coverage without treating tested or blocked as unfinished", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+      { agent: "a3", surface_id: "surface-c" },
+      { agent: "a4", surface_id: "surface-d" },
+      { agent: "a5", surface_id: "surface-e" },
+    ]);
+    seedAttackSurface(domain, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
+
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/v1/export",
+        method: "GET",
+        bug_class: "idor",
+        auth_profile: "attacker-victim",
+        status: "promising",
+        evidence_summary: "victim replay changed response size",
+        next_step: "test CSV export variant",
+      }],
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-b",
+      entries: [
+        {
+          endpoint: "/api/v1/users/123",
+          method: "GET",
+          bug_class: "idor",
+          status: "promising",
+          evidence_summary: "initial IDOR suspicion",
+        },
+        {
+          endpoint: "/api/v1/users/123",
+          method: "GET",
+          bug_class: "idor",
+          status: "tested",
+          evidence_summary: "latest replay returned 403 for attacker and victim",
+        },
+      ],
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a3",
+      surface_id: "surface-c",
+      entries: [{
+        endpoint: "/search",
+        method: "POST",
+        bug_class: "xss",
+        status: "blocked",
+        evidence_summary: "WAF blocks reflected payloads",
+      }],
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a4",
+      surface_id: "surface-d",
+      entries: [{
+        endpoint: "/billing/refunds",
+        method: "POST",
+        bug_class: "business_logic",
+        status: "needs_auth",
+        evidence_summary: "refund path requires a victim billing role",
+        next_step: "retry after victim billing profile exists",
+      }],
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a5",
+      surface_id: "surface-e",
+      entries: [{
+        endpoint: "/api/v2/admin/export",
+        method: "GET",
+        bug_class: "authz",
+        status: "requeue",
+        evidence_summary: "admin export route discovered late in the wave",
+        next_step: "test admin role boundaries",
+      }],
+    });
+
+    for (const [agent, surfaceId] of [
+      ["a1", "surface-a"],
+      ["a2", "surface-b"],
+      ["a3", "surface-c"],
+      ["a4", "surface-d"],
+      ["a5", "surface-e"],
+    ]) {
+      writeWaveHandoff({
+        target_domain: domain,
+        wave: "w1",
+        agent,
+        surface_id: surfaceId,
+        surface_status: "complete",
+        content: `# ${agent}`,
+      });
+    }
+
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+
+    assert.deepEqual(result.merge.completed_surface_ids, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
+    assert.deepEqual(result.merge.partial_surface_ids, []);
+    assert.deepEqual(result.merge.requeue_surface_ids, ["surface-a", "surface-d", "surface-e"]);
+
+    const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
+    assert.deepEqual(fullState.explored, ["surface-b", "surface-c"]);
+  });
+});
+
 test("bounty_apply_wave_merge preserves existing scope exclusions when the log is absent", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -893,6 +1157,213 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
     });
+  });
+});
+
+test("bounty_log_coverage appends validated records to coverage.jsonl", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const result = JSON.parse(logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [
+        {
+          endpoint: "/api/v1/users/123",
+          method: "get",
+          bug_class: "IDOR",
+          auth_profile: "attacker-victim",
+          status: "tested",
+          evidence_summary: "attacker/victim replay both returned 403",
+          next_step: "try legacy export route",
+        },
+        {
+          endpoint: "/api/v1/export",
+          bug_class: "business_logic",
+          status: "promising",
+          evidence_summary: "export job accepted attacker-controlled account_id",
+        },
+      ],
+    }));
+
+    assert.equal(result.appended, 2);
+    assert.equal(result.log_path, coverageJsonlPath(domain));
+    assert.deepEqual(result.statuses, {
+      tested: 1,
+      blocked: 0,
+      promising: 1,
+      needs_auth: 0,
+      requeue: 0,
+    });
+
+    const records = readCoverageRecordsFromJsonl(domain);
+    assert.equal(records.length, 2);
+    assert.equal(records[0].target_domain, domain);
+    assert.equal(records[0].method, "GET");
+    assert.equal(records[0].bug_class, "idor");
+    assert.equal(records[0].auth_profile, "attacker-victim");
+    assert.equal(records[0].next_step, "try legacy export route");
+    assert.equal(records[1].method, null);
+  });
+});
+
+test("appendJsonlLine retention keeps the newest records", () => {
+  withTempHome((tempHome) => {
+    const logPath = path.join(tempHome, "retention.jsonl");
+    for (let index = 0; index < 5; index += 1) {
+      appendJsonlLine(logPath, { index }, { maxRecords: 3 });
+    }
+
+    assert.deepEqual(
+      fs.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line).index),
+      [2, 3, 4],
+    );
+
+    const trimResult = trimJsonlFile(logPath, 2);
+    assert.deepEqual(trimResult, { trimmed: true, total: 3, retained: 2 });
+    assert.deepEqual(
+      fs.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line).index),
+      [3, 4],
+    );
+  });
+});
+
+test("coverage log retention keeps newest records under the session cap", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const entries = Array.from({ length: COVERAGE_LOG_MAX_RECORDS + 1 }, (_, index) => ({
+      endpoint: `/api/coverage-${index}`,
+      bug_class: "idor",
+      status: "tested",
+      evidence_summary: `coverage ${index}`,
+    }));
+
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries,
+    });
+
+    const records = readCoverageRecordsFromJsonl(domain);
+    assert.equal(records.length, COVERAGE_LOG_MAX_RECORDS);
+    assert.equal(records[0].endpoint, "/api/coverage-1");
+    assert.equal(records.at(-1).endpoint, `/api/coverage-${COVERAGE_LOG_MAX_RECORDS}`);
+  });
+});
+
+test("HTTP audit retention keeps newest records under the session cap", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    for (let index = 0; index < HTTP_AUDIT_LOG_MAX_RECORDS + 1; index += 1) {
+      appendHttpAuditRecord({
+        version: 1,
+        ts: new Date(index).toISOString(),
+        target_domain: domain,
+        method: "GET",
+        url: `https://${domain}/audit-${index}`,
+        host: domain,
+        scope_decision: "allowed",
+        status: 200,
+      });
+    }
+
+    const records = readHttpAuditRecordsFromJsonl(domain);
+    assert.equal(records.length, HTTP_AUDIT_LOG_MAX_RECORDS);
+    assert.equal(records[0].path, "/audit-1");
+    assert.equal(records.at(-1).path, `/audit-${HTTP_AUDIT_LOG_MAX_RECORDS}`);
+  });
+});
+
+test("imported traffic retention keeps newest records under the session cap", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    let nextIndex = 0;
+    const totalEntries = TRAFFIC_LOG_MAX_RECORDS + 1;
+
+    while (nextIndex < totalEntries) {
+      const batchSize = Math.min(TRAFFIC_IMPORT_MAX_ENTRIES, totalEntries - nextIndex);
+      const entries = Array.from({ length: batchSize }, (_, offset) => {
+        const index = nextIndex + offset;
+        return {
+          method: "GET",
+          url: `https://${domain}/traffic-${index}`,
+          status: 200,
+        };
+      });
+
+      importHttpTraffic({
+        target_domain: domain,
+        source: "manual",
+        entries,
+      });
+      nextIndex += batchSize;
+    }
+
+    const records = readTrafficRecordsFromJsonl(domain);
+    assert.equal(records.length, TRAFFIC_LOG_MAX_RECORDS);
+    assert.equal(records[0].path, "/traffic-1");
+    assert.equal(records.at(-1).path, `/traffic-${TRAFFIC_LOG_MAX_RECORDS}`);
+  });
+});
+
+test("bounty_log_coverage rejects invalid assignment metadata and malformed entries", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    const validEntry = {
+      endpoint: "/api/v1/users/123",
+      bug_class: "idor",
+      status: "tested",
+      evidence_summary: "403 for attacker and victim",
+    };
+
+    assert.throws(
+      () => logCoverage({ target_domain: domain, wave: "1", agent: "a1", surface_id: "surface-a", entries: [validEntry] }),
+      /wave must match wN/,
+    );
+    assert.throws(
+      () => logCoverage({ target_domain: domain, wave: "w1", agent: "agent1", surface_id: "surface-a", entries: [validEntry] }),
+      /agent must match aN/,
+    );
+    assert.throws(
+      () => logCoverage({ target_domain: domain, wave: "w1", agent: "a2", surface_id: "surface-a", entries: [validEntry] }),
+      /Agent a2 is not assigned in wave w1/,
+    );
+    assert.throws(
+      () => logCoverage({ target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-b", entries: [validEntry] }),
+      /Agent a1 is assigned surface surface-a, not surface-b/,
+    );
+    assert.throws(
+      () => logCoverage({ target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-a", entries: [] }),
+      /entries must be a non-empty array/,
+    );
+    assert.throws(
+      () => logCoverage({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        entries: [{ ...validEntry, status: "done" }],
+      }),
+      /entries\[0\]\.status must be one of tested, blocked, promising, needs_auth, requeue/,
+    );
+    assert.throws(
+      () => logCoverage({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        entries: [{ ...validEntry, endpoint: " " }],
+      }),
+      /entries\[0\]\.endpoint must be a non-empty string/,
+    );
   });
 });
 
@@ -1225,11 +1696,15 @@ test("bounty_read_findings, bounty_list_findings, and bounty_wave_status return 
       count: 0,
       findings: [],
     });
-    assert.deepEqual(JSON.parse(waveStatus({ target_domain: domain })), {
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(status, {
       total: 0,
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
       coverage: null,
+      http_audit: { total: 0, shown: 0, omitted: 0, cap: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, errors: 0, scope_blocked: 0, recent: [] },
+      traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
       findings_summary: [],
     });
   });
@@ -1304,6 +1779,9 @@ test("bounty_list_findings and bounty_wave_status keep their external shapes whi
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
       coverage: null,
+      http_audit: { total: 0, shown: 0, omitted: 0, cap: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, errors: 0, scope_blocked: 0, recent: [] },
+      traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
       findings_summary: [
         {
           id: "F-1",
@@ -2063,6 +2541,437 @@ test("migrateAuthJson handles null/undefined", () => {
   assert.deepStrictEqual(migrateAuthJson(undefined), { version: 2, profiles: {} });
 });
 
+// ── HTTP audit, imported traffic, public intel, and ranking tests ──
+
+test("bounty_http_scan writes audit entries for success, HTTP error, timeout, and scope-blocked requests", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    const previousFetch = global.fetch;
+    try {
+      global.fetch = async (url) => {
+        if (String(url).includes("/timeout")) {
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          throw error;
+        }
+        if (String(url).includes("/forbidden")) {
+          return new Response("no", { status: 403, statusText: "Forbidden", headers: { "content-type": "text/plain" } });
+        }
+        return new Response("ok", { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } });
+      };
+
+      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        method: "GET",
+        url: "https://example.com/ok",
+        response_mode: "status_only",
+      })).status, 200);
+      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/forbidden",
+        response_mode: "status_only",
+      })).status, 403);
+      assert.match(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/timeout",
+      })).error, /timeout/i);
+      assert.match(JSON.parse(await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "http://127.0.0.1/admin",
+      })).error, /Blocked internal\/private host/);
+
+      const records = readHttpAuditRecordsFromJsonl(domain);
+      assert.equal(records.length, 4);
+      assert.deepEqual(records.map((record) => record.status), [200, 403, null, null]);
+      assert.deepEqual(records.map((record) => record.scope_decision), ["allowed", "allowed", "request_error", "blocked"]);
+      assert.equal(records[0].wave, "w1");
+      assert.equal(records[0].agent, "a1");
+      assert.equal(records[0].surface_id, "surface-a");
+
+      const audit = JSON.parse(readHttpAudit({ target_domain: domain, limit: 2 }));
+      assert.equal(audit.summary.total, 4);
+      assert.equal(audit.summary.shown, 2);
+      assert.equal(audit.summary.by_status_class["4xx"], 1);
+      assert.equal(audit.summary.scope_blocked, 1);
+      assert.ok(fs.existsSync(httpAuditJsonlPath(domain)));
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
+test("bounty_http_scan redacts persisted audit URLs while sending the original request", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    const previousFetch = global.fetch;
+    const requestedUrls = [];
+    try {
+      global.fetch = async (url) => {
+        requestedUrls.push(String(url));
+        return new Response("ok", { status: 200, statusText: "OK", headers: { "content-type": "text/plain" } });
+      };
+
+      await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/callback?token=secret-token&code=oauth-code&id=123#client-fragment",
+        response_mode: "status_only",
+      });
+
+      assert.equal(requestedUrls[0], "https://example.com/callback?token=secret-token&code=oauth-code&id=123#client-fragment");
+      const records = readHttpAuditRecordsFromJsonl(domain);
+      assert.equal(records.length, 1);
+      assert.equal(records[0].url, "https://example.com/callback?token=REDACTED&code=REDACTED&id=REDACTED");
+      assert.equal(records[0].path, "/callback?token=REDACTED&code=REDACTED&id=REDACTED");
+      assert.doesNotMatch(JSON.stringify(records), /secret-token|oauth-code|client-fragment|id=123/);
+
+      const audit = JSON.parse(readHttpAudit({ target_domain: domain }));
+      assert.doesNotMatch(JSON.stringify(audit), /secret-token|oauth-code|client-fragment|id=123/);
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
+test("bounty_import_http_traffic validates, dedupes, stores session-local traffic, and briefs only relevant surface traffic", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [
+      {
+        id: "surface-api",
+        hosts: [`https://app.${domain}`],
+        tech_stack: ["JSON API"],
+        endpoints: ["/api/me"],
+        interesting_params: ["id"],
+        nuclei_hits: [],
+        priority: "LOW",
+      },
+      {
+        id: "surface-admin",
+        hosts: [`https://admin.${domain}`],
+        tech_stack: ["Custom"],
+        endpoints: ["/admin"],
+        interesting_params: [],
+        nuclei_hits: [],
+        priority: "LOW",
+      },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+
+    const result = JSON.parse(importHttpTraffic({
+      target_domain: domain,
+      source: "burp",
+      entries: [
+        {
+          request: {
+            method: "GET",
+            url: `https://app.${domain}/api/me?id=123`,
+            headers: [{ name: "Cookie", value: "sid=redacted" }],
+          },
+          response: { status: 200 },
+          startedDateTime: "2026-04-24T00:00:00.000Z",
+        },
+        {
+          request: {
+            method: "GET",
+            url: `https://app.${domain}/api/me?id=123#frag`,
+            headers: [{ name: "Cookie", value: "sid=redacted" }],
+          },
+          response: { status: 200 },
+        },
+        {
+          method: "GET",
+          url: "https://evil.example.net/api/me",
+          status: 200,
+        },
+        {
+          method: "GET",
+          status: 200,
+        },
+      ],
+    }));
+
+    assert.equal(result.imported, 1);
+    assert.equal(result.duplicates, 1);
+    assert.equal(result.rejected, 2);
+    assert.ok(fs.existsSync(trafficJsonlPath(domain)));
+    assert.equal(readTrafficRecordsFromJsonl(domain).length, 1);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.traffic_summary.total, 1);
+    assert.equal(brief.traffic_summary.authenticated_count, 1);
+    assert.match(brief.traffic_summary.recent[0].url, /\/api\/me/);
+    assert.equal(brief.surface.priority, "HIGH");
+    assert.ok(brief.ranking_summary.reasons.includes("imported_traffic"));
+    assert.ok(brief.ranking_summary.reasons.includes("authenticated_observed_traffic"));
+    assert.doesNotMatch(JSON.stringify(brief.traffic_summary), /evil\.example\.net/);
+  });
+});
+
+test("bounty_import_http_traffic redacts persisted URLs and rejected reasons", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const result = JSON.parse(importHttpTraffic({
+      target_domain: domain,
+      source: "burp",
+      entries: [
+        {
+          method: "GET",
+          url: "https://app.example.com/api/me?token=secret-token&email=user@example.com&id=123#frag",
+          status: 200,
+          headers: { Cookie: "sid=secret" },
+        },
+        {
+          method: "GET",
+          url: "not a url with token=secret-token",
+          status: 200,
+        },
+      ],
+    }));
+
+    assert.equal(result.imported, 1);
+    assert.equal(result.rejected, 1);
+    assert.doesNotMatch(JSON.stringify(result.rejected_reasons), /secret-token/);
+
+    const records = readTrafficRecordsFromJsonl(domain);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].url, "https://app.example.com/api/me?token=REDACTED&email=REDACTED&id=REDACTED");
+    assert.equal(records[0].path, "/api/me?token=REDACTED&email=REDACTED&id=REDACTED");
+    assert.deepEqual(records[0].query_keys, ["email", "id", "token"]);
+    assert.doesNotMatch(JSON.stringify(records), /secret-token|user@example\.com|id=123|frag/);
+  });
+});
+
+test("redactUrlSensitiveValues redacts query values, credentials, and fragments", () => {
+  assert.equal(
+    redactUrlSensitiveValues("https://alice:secret@example.com/path?token=abc&id=123#frag"),
+    "https://REDACTED:REDACTED@example.com/path?token=REDACTED&id=REDACTED",
+  );
+  assert.equal(redactUrlSensitiveValues("not a url token=abc"), "not a url token=abc");
+});
+
+test("legacy raw audit and traffic records are redacted on read", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    appendJsonlLine(httpAuditJsonlPath(domain), {
+      version: 1,
+      ts: new Date().toISOString(),
+      target_domain: domain,
+      method: "GET",
+      url: "https://example.com/callback?token=old-secret&id=123#frag",
+      host: "example.com",
+      path: "/callback?token=old-secret&id=123",
+      status: 200,
+      error: null,
+      scope_decision: "allowed",
+      final_url: "https://example.com/done?code=final-secret",
+    });
+    appendJsonlLine(trafficJsonlPath(domain), {
+      version: 1,
+      ts: new Date().toISOString(),
+      target_domain: domain,
+      source: "legacy",
+      method: "GET",
+      url: "https://app.example.com/api/me?session=old-secret&id=123#frag",
+      host: "app.example.com",
+      path: "/api/me?session=old-secret&id=123",
+      status: 200,
+      has_auth: true,
+      header_names: ["cookie"],
+      query_keys: ["id", "session"],
+    });
+
+    const auditRecords = readHttpAuditRecordsFromJsonl(domain);
+    const trafficRecords = readTrafficRecordsFromJsonl(domain);
+    assert.doesNotMatch(JSON.stringify({ auditRecords, trafficRecords }), /old-secret|final-secret|id=123|frag/);
+    assert.equal(auditRecords[0].final_url, "https://example.com/done?code=REDACTED");
+    assert.equal(trafficRecords[0].path, "/api/me?session=REDACTED&id=REDACTED");
+  });
+});
+
+test("circuit breaker summary marks repeated failures per host without blocking unrelated hosts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [
+      {
+        id: "surface-api",
+        hosts: [`https://api.${domain}`],
+        tech_stack: ["Custom"],
+        endpoints: ["/api"],
+        interesting_params: [],
+        nuclei_hits: [],
+        priority: "HIGH",
+      },
+      {
+        id: "surface-app",
+        hosts: [`https://app.${domain}`],
+        tech_stack: ["Custom"],
+        endpoints: ["/home"],
+        interesting_params: [],
+        nuclei_hits: [],
+        priority: "HIGH",
+      },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+
+    for (const [host, status, error] of [
+      [`api.${domain}`, 403, null],
+      [`api.${domain}`, 429, null],
+      [`api.${domain}`, null, "timeout after 1000ms"],
+      [`app.${domain}`, 403, null],
+    ]) {
+      appendJsonlLine(httpAuditJsonlPath(domain), {
+        version: 1,
+        ts: new Date().toISOString(),
+        target_domain: domain,
+        method: "GET",
+        url: `https://${host}/api`,
+        host,
+        path: "/api",
+        status,
+        error,
+        scope_decision: error ? "request_error" : "allowed",
+      });
+    }
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.circuit_breaker_summary.tripped_count, 1);
+    assert.equal(brief.circuit_breaker_summary.tripped_hosts[0].host, `api.${domain}`);
+    assert.doesNotMatch(JSON.stringify(brief.circuit_breaker_summary), new RegExp(`app\\.${domain}`));
+  });
+});
+
+test("bounty_public_intel caps output, persists optional intel, handles API failures, and feeds hunter brief hints", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    const previousFetch = global.fetch;
+    try {
+      global.fetch = async (url) => {
+        const textUrl = String(url);
+        if (textUrl.includes("/example-program.json")) {
+          return new Response(JSON.stringify({
+            handle: "example-program",
+            name: "Example Program",
+            policy: "Only test owned assets. Report IDOR and auth bypass with proof.",
+            offers_bounties: true,
+            resolved_report_count: 42,
+            structured_scopes: [
+              { asset_identifier: `*.${domain}`, asset_type: "URL", eligible_for_bounty: true, instruction: "Main app and API." },
+            ],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (textUrl.includes("hacktivity")) {
+          return new Response('<a href="/reports/123">IDOR in team export</a><a href="/reports/456">GraphQL auth bypass</a>', {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          });
+        }
+        return new Response("no", { status: 500 });
+      };
+
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "surface-api",
+        hosts: [`https://app.${domain}`],
+        tech_stack: ["GraphQL"],
+        endpoints: ["/graphql", "/api/team/export"],
+        interesting_params: ["team_id"],
+        nuclei_hits: [],
+        priority: "LOW",
+      }]);
+      seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+
+      const result = JSON.parse(await bountyPublicIntel({
+        target_domain: domain,
+        program: "https://hackerone.com/example-program",
+        keywords: ["team export", "graphql"],
+        limit: 1,
+      }));
+      assert.equal(result.disclosed_reports.length, 1);
+      assert.equal(result.structured_scopes.length, 1);
+      assert.equal(result.program_stats.resolved_report_count, 42);
+      assert.match(result.policy_summary, /Only test owned assets/);
+      assert.ok(fs.existsSync(publicIntelPath(domain)));
+
+      const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.equal(brief.intel_hints.available, true);
+      assert.equal(brief.intel_hints.reports.length, 1);
+      assert.ok(brief.ranking_summary.reasons.includes("disclosed_report_hints"));
+
+      global.fetch = async () => { throw new Error("network down"); };
+      const failed = JSON.parse(await bountyPublicIntel({ target_domain: "empty.example", keywords: ["none"], limit: 2 }));
+      assert.equal(failed.disclosed_reports.length, 0);
+      assert.ok(failed.errors.some((error) => /network down/.test(error)));
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
+test("rankAttackSurfaces adds ranking fields without removing required attack_surface fields", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{
+      id: "surface-api",
+      hosts: [`https://api.${domain}`],
+      tech_stack: ["REST"],
+      endpoints: ["/api/v1/users/{id}", "/billing/refund"],
+      interesting_params: ["user_id", "account_id"],
+      nuclei_hits: ["swagger exposed"],
+      priority: "LOW",
+    }]);
+
+    const ranked = rankAttackSurfaces(domain);
+    assert.equal(ranked.surfaces.length, 1);
+    const surface = JSON.parse(fs.readFileSync(attackSurfacePath(domain), "utf8")).surfaces[0];
+    for (const field of ["id", "hosts", "tech_stack", "endpoints", "interesting_params", "nuclei_hits", "priority"]) {
+      assert.ok(Object.prototype.hasOwnProperty.call(surface, field), `missing ${field}`);
+    }
+    assert.ok(surface.ranking.score > 0);
+    assert.ok(surface.ranking.reasons.includes("api_or_mobile_surface"));
+    assert.ok(priorityRankForTest(surface.priority) >= priorityRankForTest("HIGH"));
+  });
+});
+
+test("read-style status and hunter brief compute ranking without mutating attack_surface.json", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-api",
+      hosts: [`https://api.${domain}`],
+      tech_stack: ["REST"],
+      endpoints: ["/api/v1/users/{id}"],
+      interesting_params: ["user_id"],
+      nuclei_hits: ["swagger exposed"],
+      priority: "LOW",
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+
+    const before = fs.readFileSync(attackSurfacePath(domain), "utf8");
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    const after = fs.readFileSync(attackSurfacePath(domain), "utf8");
+
+    assert.equal(after, before);
+    assert.equal(brief.surface.priority, "HIGH");
+    assert.ok(brief.ranking_summary.reasons.includes("api_or_mobile_surface"));
+    assert.equal(status.coverage.unexplored_high, 1);
+  });
+});
+
+function priorityRankForTest(priority) {
+  return { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 }[String(priority || "").toUpperCase()] || 0;
+}
+
 // ── bounty_read_hunter_brief tests ──
 
 test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () => {
@@ -2101,6 +3010,112 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
   });
 });
 
+test("bounty_read_hunter_brief includes assigned-surface coverage summary with latest-per-key dedupe", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurface(domain, ["surface-a", "surface-b"]);
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [
+        {
+          endpoint: "/api/v1/users/123",
+          method: "get",
+          bug_class: "IDOR",
+          auth_profile: "attacker-victim",
+          status: "tested",
+          evidence_summary: "first replay returned 403",
+        },
+        {
+          endpoint: "/api/v1/users/123",
+          method: "GET",
+          bug_class: "idor",
+          auth_profile: "attacker-victim",
+          status: "promising",
+          evidence_summary: "legacy query param still returns profile metadata",
+          next_step: "try export route",
+        },
+        {
+          endpoint: "/search",
+          method: "POST",
+          bug_class: "xss",
+          status: "blocked",
+          evidence_summary: "WAF blocks reflected payloads",
+        },
+      ],
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-b",
+      entries: [{
+        endpoint: "/admin",
+        bug_class: "authz",
+        status: "promising",
+        evidence_summary: "admin path reveals feature flags",
+      }],
+    });
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.coverage_summary.surface_id, "surface-a");
+    assert.equal(brief.coverage_summary.total, 2);
+    assert.equal(brief.coverage_summary.shown, 2);
+    assert.equal(brief.coverage_summary.omitted, 0);
+    assert.deepEqual(brief.coverage_summary.tested, []);
+    assert.equal(brief.coverage_summary.promising.length, 1);
+    assert.equal(brief.coverage_summary.promising[0].endpoint, "/api/v1/users/123");
+    assert.equal(brief.coverage_summary.promising[0].method, "GET");
+    assert.equal(brief.coverage_summary.promising[0].bug_class, "idor");
+    assert.equal(brief.coverage_summary.promising[0].next_step, "try export route");
+    assert.equal(brief.coverage_summary.blocked.length, 1);
+    assert.equal(brief.coverage_summary.blocked[0].endpoint, "/search");
+    assert.doesNotMatch(JSON.stringify(brief.coverage_summary), /\/admin/);
+  });
+});
+
+test("bounty_read_hunter_brief caps coverage summary output", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurface(domain, ["surface-a"]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: Array.from({ length: 45 }, (_, index) => ({
+        endpoint: `/api/v1/items/${index}`,
+        method: "GET",
+        bug_class: "idor",
+        status: "tested",
+        evidence_summary: `item ${index} returned 403`,
+      })),
+    });
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.coverage_summary.total, 45);
+    assert.equal(brief.coverage_summary.shown, 40);
+    assert.equal(brief.coverage_summary.omitted, 5);
+    assert.equal(brief.coverage_summary.tested.length, 40);
+
+    const directSummary = buildCoverageSummaryForSurface(readCoverageRecordsFromJsonl(domain), "surface-a", 3);
+    assert.equal(directSummary.total, 45);
+    assert.equal(directSummary.shown, 3);
+    assert.equal(directSummary.omitted, 42);
+  });
+});
+
 test("bounty_read_hunter_brief rejects unassigned agent", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -2112,6 +3127,182 @@ test("bounty_read_hunter_brief rejects unassigned agent", () => {
       () => readHunterBrief({ target_domain: domain, wave: "w1", agent: "a9" }),
       /Agent a9 is not assigned/,
     );
+  });
+});
+
+test("bounty_read_hunter_brief includes WordPress-specific curated guidance", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-wp",
+      hosts: [`https://${domain}`],
+      tech_stack: ["WordPress", "PHP"],
+      endpoints: ["/wp-json/wp/v2/users", "/wp-admin/admin-ajax.php"],
+      interesting_params: ["author", "action", "nonce"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-wp" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "wordpress"));
+    assert.ok(brief.payload_hints.some((entry) => entry.id === "wordpress"));
+    assert.match(JSON.stringify(brief.techniques), /WordPress/);
+  });
+});
+
+test("bounty_read_hunter_brief includes GraphQL-specific curated guidance", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL", "Apollo"],
+      endpoints: ["/graphql"],
+      interesting_params: ["query", "variables", "operationName"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "graphql"));
+    assert.match(JSON.stringify(brief.payload_hints), /alias|updateUserRole|__schema/i);
+  });
+});
+
+test("bounty_read_hunter_brief includes generic REST/API guidance for API surfaces", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-api",
+      hosts: [`https://api.${domain}`],
+      tech_stack: ["Express", "JSON API"],
+      endpoints: ["/api/v1/users/123", "/api/v2/admin/export"],
+      interesting_params: ["id", "user_id", "role", "limit"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "generic-rest-api"));
+    assert.match(JSON.stringify(brief.techniques), /object access|parser differentials|old API versions/i);
+  });
+});
+
+test("bounty_read_hunter_brief matches IDOR and authz bug_class_hints to REST/API authorization guidance", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-object-access",
+      hosts: [`https://app.${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/dashboard"],
+      interesting_params: ["q"],
+      bug_class_hints: ["idor", "authz"],
+      evidence: ["archived export URL exposed account_id and org_id"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-object-access" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const restEntry = brief.techniques.find((entry) => entry.id === "generic-rest-api");
+    assert.ok(restEntry);
+    assert.ok(restEntry.matched.some((match) => /hint:(idor|authz)/.test(match)));
+    assert.match(JSON.stringify(restEntry.guidance), /object access|authorization/i);
+  });
+});
+
+test("bounty_read_hunter_brief matches billing metadata and high-value flows to business-logic guidance", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-billing",
+      hosts: [`https://app.${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/account"],
+      interesting_params: ["q"],
+      surface_type: "billing",
+      high_value_flows: ["checkout", "refund"],
+      bug_class_hints: ["business_logic"],
+      evidence: ["JS route references refund and subscription flows"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-billing" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "business-logic-race"));
+    assert.match(JSON.stringify(brief.techniques), /checkout|refund|business logic/i);
+  });
+});
+
+test("bounty_read_hunter_brief matches upload surface_type to upload guidance", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-upload",
+      hosts: [`https://assets.${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/profile"],
+      interesting_params: ["q"],
+      surface_type: "upload",
+      high_value_flows: ["uploads"],
+      bug_class_hints: ["upload"],
+      evidence: ["live page contains avatar upload form"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-upload" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "upload-xss-file"));
+    assert.match(JSON.stringify(brief.payload_hints), /file\.php\.jpg|Content-Type/i);
+  });
+});
+
+test("bounty_read_hunter_brief falls back to generic guidance for unknown tech", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-unknown",
+      hosts: [`https://unknown.${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/home"],
+      interesting_params: ["q"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-unknown" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.deepEqual(brief.techniques.map((entry) => entry.id), ["generic-rest-api"]);
+    assert.deepEqual(brief.techniques[0].matched, ["fallback:generic-rest-api"]);
+  });
+});
+
+test("bounty_read_hunter_brief knowledge remains bounded and excludes full source docs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-rich",
+      hosts: [`https://${domain}`],
+      tech_stack: ["WordPress", "GraphQL", "Next.js", "JWT", "OAuth", "SSRF", "storage"],
+      endpoints: [
+        "/wp-json/wp/v2/users",
+        "/graphql",
+        "/_next/image",
+        "/oauth/authorize",
+        "/api/v1/users",
+        "/upload",
+        "/billing/checkout",
+      ],
+      interesting_params: ["query", "variables", "url", "redirect_uri", "user_id", "file", "amount"],
+      nuclei_hits: ["swagger exposed", "graphql endpoint", "wp-json exposed"],
+      js_hints: ["__NEXT_DATA__", "Bearer token handling"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-rich" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.knowledge_summary.entries_returned <= 4);
+    assert.ok(brief.knowledge_summary.char_count <= brief.knowledge_summary.max_chars);
+    assert.doesNotMatch(JSON.stringify(brief), /Complete reference library|Advanced Bug Bounty Hunting Techniques|scripts\/|tools\//);
   });
 });
 
@@ -2282,6 +3473,19 @@ test("resolveAuthJsonPath falls back to most recently modified session dir", () 
     // Without a target_domain, should pick the most-recently-modified dir (aaa)
     const result = resolveAuthJsonPath(null);
     assert.ok(result.includes("aaa-alphabetically-first.com"));
+  });
+});
+
+test("auth storage rejects path traversal target domains", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => resolveAuthJsonPath("../evil"),
+      /invalid path characters/,
+    );
+    assert.throws(
+      () => authStore({ target_domain: "../evil", role: "attacker", headers: { Authorization: "Bearer token" } }),
+      /invalid path characters/,
+    );
   });
 });
 

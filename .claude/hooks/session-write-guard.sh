@@ -20,6 +20,7 @@ SESSIONS_ROOT = pathlib.Path.home() / "bounty-agent-sessions"
 # Files that MUST be written through MCP tools only
 MCP_OWNED_EXACT = {
     "state.json",
+    "coverage.jsonl",
     "findings.jsonl",
     "findings.md",
     "brutalist.json",
@@ -32,6 +33,9 @@ MCP_OWNED_EXACT = {
     "grade.md",
     "SESSION_HANDOFF.md",
     "auth.json",
+    "http-audit.jsonl",
+    "traffic.jsonl",
+    "public-intel.json",
 }
 
 MCP_OWNED_PATTERNS = [

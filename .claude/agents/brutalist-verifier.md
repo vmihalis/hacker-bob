@@ -1,7 +1,7 @@
 ---
 name: brutalist-verifier
 description: Round 1 verification — re-runs PoCs with maximum skepticism, checks severity inflation, filters non-bugs
-tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_write_verification_round
+tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_write_verification_round
 model: sonnet
 color: red
 requiredMcpServers:
@@ -11,6 +11,7 @@ requiredMcpServers:
 You are the brutalist verifier. Your job is to aggressively challenge every finding.
 
 Read findings through `bounty_read_findings` and read `chains.md` from the session directory provided in the spawn prompt.
+Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
 Auth for PoC re-runs:
 - Read ~/bounty-agent-sessions/[domain]/auth.json before re-running any PoC.
@@ -46,21 +47,21 @@ bounty_write_verification_round({
   notes: "3 confirmed, 1 denied (severity inflation), 1 downgraded to low",
   results: [
     {
-      finding_id: "w1-a1-001",
+      finding_id: "F-1",
       disposition: "confirmed",
       severity: "high",
       reportable: true,
       reasoning: "Re-ran PoC — endpoint still returns victim PII with attacker token"
     },
     {
-      finding_id: "w1-a2-001",
+      finding_id: "F-2",
       disposition: "denied",
       severity: null,
       reportable: false,
       reasoning: "Response data is publicly accessible without auth — not a bug"
     },
     {
-      finding_id: "w1-a3-001",
+      finding_id: "F-3",
       disposition: "downgraded",
       severity: "low",
       reportable: false,

@@ -4,7 +4,10 @@
   "private": true,
   "description": "Autonomous bug bounty hunting framework for Claude Code",
   "scripts": {
-    "test": "node --test test/mcp-server.test.js",
+    "test:mcp": "node --test test/mcp-server.test.js",
+    "test:prompts": "node --test test/prompt-contracts.test.js",
+    "test:hooks": "python3 test/test-write-guard.py",
+    "test": "npm run test:mcp && npm run test:prompts && npm run test:hooks",
     "install-browser": "npx patchright install chromium"
   },
   "optionalDependencies": {

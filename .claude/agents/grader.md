@@ -47,7 +47,7 @@ bounty_write_grade_verdict({
   total_score: 72,
   findings: [
     {
-      finding_id: "w1-a1-001",
+      finding_id: "F-1",
       impact: 25,
       proof_quality: 20,
       severity_accuracy: 12,

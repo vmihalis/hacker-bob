@@ -83,7 +83,9 @@ PY
 ```
 
 Last step: build `[SESSION]/attack_surface.json` from `live_hosts.txt`, `family_live.txt`, `all_urls.txt`, `nuclei_results.txt`, `js_endpoints.txt`, and `js_secrets.txt`.
-Use this schema:
+Do not make any additional Bash calls while building the final JSON. Use the collected files to classify each surface and write only `[SESSION]/attack_surface.json`.
+
+Use this backward-compatible schema:
 ```json
 {
   "domain": "[domain]",
@@ -95,14 +97,39 @@ Use this schema:
       "endpoints": ["/api/...", "/wp-json/...", "..."],
       "interesting_params": ["id", "token", "redirect"],
       "nuclei_hits": ["..."],
-      "priority": "CRITICAL|HIGH|MEDIUM|LOW"
+      "priority": "CRITICAL|HIGH|MEDIUM|LOW",
+      "surface_type": "api|auth|cms|upload|billing|graphql|admin|mobile_api|js_endpoint|secrets|ci_cd|static|unknown",
+      "bug_class_hints": ["idor", "authz", "ssrf", "xss", "upload", "business_logic", "jwt_oauth", "graphql"],
+      "high_value_flows": ["billing", "exports", "invites", "password reset", "admin", "uploads"],
+      "evidence": ["live host shows 200 title Dashboard", "archived /api/v1/users?account_id=", "JS references Bearer token"],
+      "ranking": {
+        "version": 1,
+        "score": 72,
+        "priority": "HIGH",
+        "reasons": ["api_or_mobile_surface", "object_identifier_params"]
+      }
     }
   ]
 }
 ```
 Rules for `attack_surface.json`:
+- Required per-surface fields remain: `id`, `hosts`, `tech_stack`, `endpoints`, `interesting_params`, `nuclei_hits`, and `priority`.
+- Optional enrichment fields are additive: `surface_type`, `bug_class_hints`, `high_value_flows`, `evidence`, and `ranking`. Omit an optional field only when there is no support for it.
 - Group by application/property, not only subdomain.
 - Include first-party sibling or parent properties when the target links or redirects to them and they look org-owned; skip obvious third-party SaaS.
 - Pull endpoints from archived URLs and JS extraction so hunters do not rediscover them.
-- Prioritize auth flows, object IDs, admin/debug paths, uploads, GraphQL, payments, mobile/API backends, and JS-disclosed secrets/endpoints.
+- Classify surfaces by dominant attackable role:
+  - API/mobile backend: `/api`, `/v1`, `/v2`, JSON endpoints, OpenAPI/Swagger, app/mobile hostnames.
+  - Auth/JWT/OAuth/SSO: login, signup, reset, invite, callback, token, `.well-known`, JWKS.
+  - Upload/file handling: upload, avatar, attachment, import, media, document, signed URLs, storage/CDN writes.
+  - Admin/debug/config/CI: admin panels, debug paths, staging/dev, `.env`, config, build, CI/CD, source maps.
+  - GraphQL: `/graphql`, GraphiQL, Apollo, Hasura, `query`, `operationName`, `variables`.
+  - Payment/billing/business logic: checkout, billing, subscription, invoice, refund, coupon, wallet, credits.
+  - WordPress/CMS: `wp-json`, `wp-admin`, `wp-content`, `xmlrpc.php`, plugin/theme paths, CMS admin.
+  - JS-disclosed endpoint or secret/token surface: API roots, internal paths, Bearer/API key/client secret hints found in JS.
+  - Static/dead/CDN/WAF-only: static assets, parked pages, CDN-only hosts, WAF block pages, no dynamic endpoints.
+- Populate `bug_class_hints` from evidence, not guesses. Examples: object IDs and account params -> `idor`/`authz`; URL fetch/import/image params -> `ssrf`; upload/file paths -> `upload`; checkout/refund/coupon/plan flows -> `business_logic`; token/OAuth/JWKS/callback paths -> `jwt_oauth`; GraphQL endpoints -> `graphql`; reflected or stored content paths -> `xss`.
+- Populate `high_value_flows` with short hunter-first workflow names: billing, exports, invites, password reset, admin, uploads, refunds, checkout, team management, API keys, webhooks, imports, reports.
+- Populate `evidence` with short strings that explain priority and source. Prefer concrete clues from live hosts, archived URLs, nuclei hits, JS endpoints, and JS secret hints. Keep each item short; do not paste huge responses.
+- Prioritize auth flows, object IDs, admin/debug paths, uploads, GraphQL, payments, mobile/API backends, and JS-disclosed secrets/endpoints. Bob MCP may later add or refresh `ranking` with request traffic and public intel; keep your recon evidence fields concrete so ranking has useful signals.
 - Mark static/CDN-only/parked/WAF-only surfaces `LOW`.

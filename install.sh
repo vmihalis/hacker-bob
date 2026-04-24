@@ -13,7 +13,7 @@ echo "Installing Bounty Agent into $TARGET/.claude/"
 echo ""
 
 # Create directories
-mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/hooks"
+mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/knowledge"
 
 # Copy agents
 cp "$SCRIPT_DIR/.claude/agents/"*.md "$CLAUDE_DIR/agents/"
@@ -37,12 +37,17 @@ mkdir -p "$CLAUDE_DIR/bypass-tables"
 cp "$SCRIPT_DIR/.claude/bypass-tables/"*.txt "$CLAUDE_DIR/bypass-tables/"
 echo "  bypass tables"
 
+# Copy curated read-only hunter knowledge
+cp "$SCRIPT_DIR/.claude/knowledge/"*.json "$CLAUDE_DIR/knowledge/"
+echo "  hunter knowledge"
+
 # Copy hooks
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/"
+cp "$SCRIPT_DIR/.claude/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/bounty-statusline.js" "$CLAUDE_DIR/hooks/"
-chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh"
-echo "  scope guard hooks (Bash + MCP) + status line"
+chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/session-write-guard.sh"
+echo "  scope/session guard hooks (Bash + MCP) + status line"
 
 # Copy MCP server + auto-signup script
 mkdir -p "$TARGET_ABS/mcp"
@@ -88,8 +93,8 @@ if [ -f "$CLAUDE_DIR/settings.json" ]; then
   echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
   echo "  Merge these settings manually:"
   echo ""
-  echo '  permissions.allow: bountyagent MCP tools (including findings/verification/grade control-plane tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
-  echo '  hooks.PreToolUse: scope-guard.sh (Bash) + scope-guard-mcp.sh (bounty_http_scan)'
+  echo '  permissions.allow: bountyagent MCP tools (including traffic/audit/intel and findings/verification/grade control-plane tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
+  echo '  hooks.PreToolUse: scope-guard.sh + session-write-guard.sh (Bash), session-write-guard.sh (Write), scope-guard-mcp.sh (bounty_http_scan/signup_detect)'
   echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
   echo ""
 else
@@ -98,6 +103,9 @@ else
   "permissions": {
     "allow": [
       "mcp__bountyagent__bounty_http_scan",
+      "mcp__bountyagent__bounty_import_http_traffic",
+      "mcp__bountyagent__bounty_read_http_audit",
+      "mcp__bountyagent__bounty_public_intel",
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
@@ -107,6 +115,7 @@ else
       "mcp__bountyagent__bounty_read_grade_verdict",
       "mcp__bountyagent__bounty_init_session",
       "mcp__bountyagent__bounty_read_session_state",
+      "mcp__bountyagent__bounty_read_state_summary",
       "mcp__bountyagent__bounty_transition_phase",
       "mcp__bountyagent__bounty_start_wave",
       "mcp__bountyagent__bounty_apply_wave_merge",
@@ -117,6 +126,7 @@ else
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_log_dead_ends",
+      "mcp__bountyagent__bounty_log_coverage",
       "mcp__bountyagent__bounty_wave_status",
       "mcp__bountyagent__bounty_temp_email",
       "mcp__bountyagent__bounty_signup_detect",
@@ -147,6 +157,21 @@ else
           {
             "type": "command",
             "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
             "timeout": 5
           }
         ]

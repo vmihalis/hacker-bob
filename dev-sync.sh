@@ -61,7 +61,10 @@ backup_file "$CLAUDE_DIR/settings.json"
 
 "$SCRIPT_DIR/install.sh" "$TARGET_ABS"
 
-mkdir -p "$CLAUDE_DIR"
+mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/knowledge"
+cp "$SCRIPT_DIR/.claude/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/"
+chmod +x "$CLAUDE_DIR/hooks/session-write-guard.sh"
+cp "$SCRIPT_DIR/.claude/knowledge/"*.json "$CLAUDE_DIR/knowledge/"
 
 cat > "$TARGET_ABS/.mcp.json" <<EOF
 {
@@ -79,6 +82,9 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
   "permissions": {
     "allow": [
       "mcp__bountyagent__bounty_http_scan",
+      "mcp__bountyagent__bounty_import_http_traffic",
+      "mcp__bountyagent__bounty_read_http_audit",
+      "mcp__bountyagent__bounty_public_intel",
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
@@ -88,6 +94,7 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       "mcp__bountyagent__bounty_read_grade_verdict",
       "mcp__bountyagent__bounty_init_session",
       "mcp__bountyagent__bounty_read_session_state",
+      "mcp__bountyagent__bounty_read_state_summary",
       "mcp__bountyagent__bounty_transition_phase",
       "mcp__bountyagent__bounty_start_wave",
       "mcp__bountyagent__bounty_apply_wave_merge",
@@ -98,6 +105,7 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
       "mcp__bountyagent__bounty_read_handoff",
       "mcp__bountyagent__bounty_auth_manual",
       "mcp__bountyagent__bounty_log_dead_ends",
+      "mcp__bountyagent__bounty_log_coverage",
       "mcp__bountyagent__bounty_wave_status",
       "mcp__bountyagent__bounty_temp_email",
       "mcp__bountyagent__bounty_signup_detect",
@@ -129,11 +137,36 @@ cat > "$CLAUDE_DIR/settings.json" <<'EOF'
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
           }
         ]
       },
       {
         "matcher": "mcp__bountyagent__bounty_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__bountyagent__bounty_signup_detect",
         "hooks": [
           {
             "type": "command",
