@@ -14,7 +14,7 @@ import pathlib
 import re
 import shlex
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 def utc_now():
@@ -121,6 +121,29 @@ def matches_scope(domain, allowed_domains):
     return False
 
 
+PUBLIC_INTEL_ALLOWED_HOSTS = {
+    "web.archive.org",
+    "otx.alienvault.com",
+    "crt.sh",
+    "api.github.com",
+    "raw.githubusercontent.com",
+}
+
+
+def target_appears_in_public_intel_url(url_value, target_domain):
+    try:
+        parsed = urlsplit(url_value.strip())
+    except Exception:
+        return False
+    raw = f"{parsed.path}?{parsed.query}".lower()
+    target = target_domain.strip().strip(".").lower()
+    try:
+        decoded = unquote(raw)
+    except Exception:
+        decoded = raw
+    return target in raw or target in decoded
+
+
 def log_line(session_dir, message):
     log_path = session_dir / "scope-warnings.log"
     with open(log_path, "a", encoding="utf-8") as handle:
@@ -224,7 +247,7 @@ def unwrap_command(tokens):
     return None, []
 
 
-def extract_from_chunk(command_text, base_domains, file_refs):
+def extract_from_chunk(command_text, base_domains, file_refs, url_refs):
     try:
         tokens = shlex.split(command_text, posix=True)
     except ValueError:
@@ -235,7 +258,7 @@ def extract_from_chunk(command_text, base_domains, file_refs):
         return
 
     if tool == "shell" and args:
-        extract_from_command(args[0], base_domains, file_refs)
+        extract_from_command(args[0], base_domains, file_refs, url_refs)
         return
 
     host_value_flags = {"-d", "--domain", "-u", "--url", "--target", "-connect", "-servername"}
@@ -376,18 +399,19 @@ def extract_from_chunk(command_text, base_domains, file_refs):
         index += 1
 
 
-def extract_from_command(command_text, base_domains, file_refs):
+def extract_from_command(command_text, base_domains, file_refs, url_refs):
     for url in re.findall(r"https?://[^\s\"'<>|;]+", command_text, flags=re.IGNORECASE):
         normalized = normalize_host(url)
         if normalized:
             base_domains.add(normalized)
+            url_refs.append(url)
 
     redirection_re = re.compile(r"<\s*(\"[^\"]+\"|'[^']+'|[^\s|;>&]+)")
     for match in redirection_re.finditer(command_text):
         file_refs.append(match.group(1))
 
     for chunk in split_chunks(command_text):
-        extract_from_chunk(chunk, base_domains, file_refs)
+        extract_from_chunk(chunk, base_domains, file_refs, url_refs)
 
 
 def domains_from_file(path):
@@ -446,7 +470,8 @@ scope_cache = {}
 
 base_domains = set()
 file_refs = []
-extract_from_command(command, base_domains, file_refs)
+url_refs = []
+extract_from_command(command, base_domains, file_refs, url_refs)
 
 session_dirs = []
 if sessions_root.is_dir():
@@ -525,20 +550,19 @@ if deny_list_path.is_file():
                 block(f"BLOCKED: {domain} is on the deny list")
 
 allowed = set(session_scopes(session_dir))
-allowed.update(
-    {
-        "web.archive.org",
-        "otx.alienvault.com",
-        "crt.sh",
-        "api.github.com",
-        "raw.githubusercontent.com",
-    }
-)
 
 command_snippet = sanitize_command_snippet(command)
 out_of_scope_domains = []
 for domain in sorted(domains):
-    if not matches_scope(domain, allowed):
+    public_intel_allowed = (
+        matches_scope(domain, PUBLIC_INTEL_ALLOWED_HOSTS)
+        and any(
+            normalize_host(url) == domain
+            and target_appears_in_public_intel_url(url, session_dir.name)
+            for url in url_refs
+        )
+    )
+    if not matches_scope(domain, allowed) and not public_intel_allowed:
         out_of_scope_domains.append(domain)
         log_line(session_dir, f"OUT-OF-SCOPE: {domain} (command: {command_snippet})")
 

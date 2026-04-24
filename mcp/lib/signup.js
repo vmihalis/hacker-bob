@@ -198,7 +198,7 @@ async function autoSignup(args) {
   const signupUrl = assertNonEmptyString(args.signup_url, "signup_url");
   const email = assertNonEmptyString(args.email, "email");
   const password = assertNonEmptyString(args.password, "password");
-  const role = args.role || "attacker";
+  const profileName = args.profile_name || "attacker";
   const name = args.name || "Hunter Test";
 
   try {
@@ -281,14 +281,14 @@ async function autoSignup(args) {
           try {
             await authStore({
               target_domain: domain,
-              role,
+              profile_name: profileName,
               cookies: result.cookies || {},
               headers: result.headers || {},
               local_storage: result.local_storage || {},
               credentials: { email, password },
             });
             result.auth_stored = true;
-            result.auth_role = role;
+            result.auth_profile = profileName;
           } catch (storeErr) {
             result.auth_stored = false;
             result.auth_store_error = storeErr.message;

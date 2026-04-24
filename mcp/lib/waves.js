@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const {
   assertBoolean,
   assertNonEmptyString,
@@ -51,6 +52,10 @@ const {
   summarizeHttpAuditRecords,
   summarizeTrafficRecords,
 } = require("./http-records.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
 function listWaveHandoffFiles(dir, wave) {
   const handoffPrefix = `handoff-${wave}-`;
@@ -119,13 +124,73 @@ function buildWaveReadiness(artifacts) {
   };
 }
 
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
+}
+
+function generateHandoffToken() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function assignmentRequiresToken(assignment) {
+  return !!(assignment && assignment.handoff_token_sha256);
+}
+
+function validateHandoffToken(assignment, token) {
+  if (!assignmentRequiresToken(assignment)) {
+    return "legacy_unverified";
+  }
+  if (typeof token !== "string" || !token.trim()) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff_token is required for this wave assignment");
+  }
+  if (sha256Hex(token.trim()) !== assignment.handoff_token_sha256) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff_token does not match this wave assignment");
+  }
+  return "verified";
+}
+
+function validateHandoffProvenance(payload, assignment) {
+  if (!assignmentRequiresToken(assignment)) {
+    return "legacy_unverified";
+  }
+  if (payload.provenance !== "verified") {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff provenance is not verified for this tokenized assignment");
+  }
+  normalizeHandoffSummary(payload, { requireStructuredSummary: true });
+  return "verified";
+}
+
+function normalizeHandoffSummary(payload, { requireStructuredSummary = false } = {}) {
+  if (payload.summary == null && !requireStructuredSummary) {
+    return null;
+  }
+  const summary = assertNonEmptyString(payload.summary, "summary");
+  if (summary.length > 2000) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "summary must be at most 2000 characters");
+  }
+  return summary;
+}
+
+function normalizeChainNotes(value) {
+  const notes = normalizeStringArray(value, "chain_notes");
+  if (notes.length > 20) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "chain_notes must contain at most 20 entries");
+  }
+  for (const note of notes) {
+    if (note.length > 300) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "chain_notes entries must be at most 300 characters");
+    }
+  }
+  return notes;
+}
+
 function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfaceId }) {
   if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("handoff payload must be an object");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff payload must be an object");
   }
 
   if (payload.target_domain != null && assertNonEmptyString(payload.target_domain, "target_domain") !== targetDomain) {
-    throw new Error("handoff target_domain does not match merge target");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff target_domain does not match merge target");
   }
 
   const payloadWave = parseWaveId(payload.wave);
@@ -133,11 +198,13 @@ function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfac
   const payloadSurfaceId = assertNonEmptyString(payload.surface_id, "surface_id");
   const surfaceStatus = parseSurfaceStatus(payload.surface_status);
 
-  if (payloadWave !== wave) throw new Error("handoff wave does not match assignment wave");
-  if (payloadAgent !== agent) throw new Error("handoff agent does not match assignment");
-  if (payloadSurfaceId !== surfaceId) throw new Error("handoff surface_id does not match assignment");
+  if (payloadWave !== wave) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff wave does not match assignment wave");
+  if (payloadAgent !== agent) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff agent does not match assignment");
+  if (payloadSurfaceId !== surfaceId) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff surface_id does not match assignment");
 
   return {
+    summary: normalizeHandoffSummary(payload),
+    chain_notes: normalizeChainNotes(payload.chain_notes),
     dead_ends: normalizeStringArray(payload.dead_ends, "dead_ends"),
     waf_blocked_endpoints: normalizeStringArray(payload.waf_blocked_endpoints, "waf_blocked_endpoints"),
     lead_surface_ids: normalizeStringArray(payload.lead_surface_ids, "lead_surface_ids"),
@@ -157,6 +224,10 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const deadEnds = [];
   const wafBlockedEndpoints = [];
   const leadSurfaceIds = [];
+  const provenance = {
+    verified_agents: [],
+    legacy_unverified_agents: [],
+  };
 
   const deadEndSet = new Set();
   const wafSet = new Set();
@@ -176,8 +247,14 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
         agent: assignment.agent,
         surfaceId: assignment.surface_id,
       });
+      const provenanceStatus = validateHandoffProvenance(readJsonFile(filePath), assignment);
 
       receivedAgents.push(assignment.agent);
+      if (provenanceStatus === "verified") {
+        provenance.verified_agents.push(assignment.agent);
+      } else {
+        provenance.legacy_unverified_agents.push(assignment.agent);
+      }
       if (payload.surface_status === "complete") {
         completedSurfaceIds.push(assignment.surface_id);
       } else {
@@ -227,6 +304,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       dead_ends: deadEnds,
       waf_blocked_endpoints: wafBlockedEndpoints,
       lead_surface_ids: leadSurfaceIds,
+      provenance,
     },
   };
 }
@@ -314,30 +392,40 @@ function startWave(args) {
   return withSessionLock(domain, () => {
     const { raw, state } = readSessionStateStrict(domain);
     if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
-      throw new Error(`Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
     }
     if (state.pending_wave != null) {
-      throw new Error(`Wave start requires pending_wave null, found ${state.pending_wave}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires pending_wave null, found ${state.pending_wave}`);
     }
     if (waveNumber !== state.hunt_wave + 1) {
-      throw new Error(`wave_number must equal hunt_wave + 1 (${state.hunt_wave + 1})`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `wave_number must equal hunt_wave + 1 (${state.hunt_wave + 1})`);
     }
 
     const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
     if (fs.existsSync(assignmentsPath)) {
-      throw new Error(`Assignment file already exists: ${assignmentsPath}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Assignment file already exists: ${assignmentsPath}`);
     }
 
     const attackSurface = readAttackSurfaceStrict(domain);
     for (const assignment of assignments) {
       if (!attackSurface.surface_id_set.has(assignment.surface_id)) {
-        throw new Error(`Unknown surface_id in assignments: ${assignment.surface_id}`);
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Unknown surface_id in assignments: ${assignment.surface_id}`);
       }
     }
 
+    const persistedAssignments = assignments.map((assignment) => {
+      const token = generateHandoffToken();
+      return {
+        ...assignment,
+        handoff_token_sha256: sha256Hex(token),
+        handoff_token: token,
+      };
+    });
+    const assignmentsForDisk = persistedAssignments.map(({ handoff_token, ...assignment }) => assignment);
+
     writeFileAtomic(assignmentsPath, `${JSON.stringify({
       wave_number: waveNumber,
-      assignments,
+      assignments: assignmentsForDisk,
     }, null, 2)}\n`);
 
     const nextState = {
@@ -355,7 +443,8 @@ function startWave(args) {
       } catch {}
 
       const rollbackStatus = rollbackSucceeded ? "rollback succeeded" : "rollback failed";
-      throw new Error(
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
         `State write failed after writing assignments; ${rollbackStatus}: ${assignmentsPath} (${error.message || String(error)})`,
       );
     }
@@ -364,7 +453,11 @@ function startWave(args) {
       version: 1,
       started: true,
       wave_number: waveNumber,
-      assignments,
+      assignments: persistedAssignments.map((assignment) => ({
+        agent: assignment.agent,
+        surface_id: assignment.surface_id,
+        handoff_token: assignment.handoff_token,
+      })),
       assignments_path: assignmentsPath,
       state: compactSessionState(nextState),
     });
@@ -379,13 +472,13 @@ function applyWaveMerge(args) {
   return withSessionLock(domain, () => {
     const { raw, state } = readSessionStateStrict(domain);
     if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
-      throw new Error(`Wave merge requires phase HUNT or EXPLORE, found ${state.phase}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave merge requires phase HUNT or EXPLORE, found ${state.phase}`);
     }
     if (state.pending_wave == null) {
-      throw new Error("Wave merge requires pending_wave to be set");
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, "Wave merge requires pending_wave to be set");
     }
     if (state.pending_wave !== waveNumber) {
-      throw new Error(`Wave merge requires pending_wave ${waveNumber}, found ${state.pending_wave}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave merge requires pending_wave ${waveNumber}, found ${state.pending_wave}`);
     }
 
     const readiness = buildWaveReadiness(loadWaveArtifacts(domain, waveNumber));
@@ -457,6 +550,7 @@ function applyWaveMerge(args) {
         new_dead_ends_count: merge.dead_ends.length,
         new_waf_blocked_count: merge.waf_blocked_endpoints.length,
         lead_surface_ids: merge.lead_surface_ids,
+        provenance: merge.provenance,
       },
       findings,
       state: compactSessionState(nextState),
@@ -531,10 +625,15 @@ function writeWaveHandoff(args) {
   const agent = parseAgentId(args.agent);
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const surfaceStatus = parseSurfaceStatus(args.surface_status);
+  const summary = normalizeHandoffSummary(args, { requireStructuredSummary: true });
+  const chainNotes = normalizeChainNotes(args.chain_notes);
 
   if (typeof args.content !== "string") {
-    throw new Error("content must be a string");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a string");
   }
+
+  const assignment = validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
+  const provenance = validateHandoffToken(assignment, args.handoff_token);
 
   const handoff = {
     target_domain: domain,
@@ -542,6 +641,9 @@ function writeWaveHandoff(args) {
     agent,
     surface_id: surfaceId,
     surface_status: surfaceStatus,
+    provenance,
+    summary,
+    chain_notes: chainNotes,
     dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
     waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
     lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
@@ -551,13 +653,13 @@ function writeWaveHandoff(args) {
   const markdownPath = path.join(dir, `handoff-${wave}-${agent}.md`);
   const jsonPath = path.join(dir, `handoff-${wave}-${agent}.json`);
 
-  validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
   writeFileAtomic(markdownPath, args.content);
   writeFileAtomic(jsonPath, JSON.stringify(handoff, null, 2) + "\n");
 
   return JSON.stringify({
     written_md: markdownPath,
     written_json: jsonPath,
+    provenance,
   });
 }
 
@@ -584,6 +686,7 @@ function mergeWaveHandoffs(args) {
     dead_ends: merge.dead_ends,
     waf_blocked_endpoints: merge.waf_blocked_endpoints,
     lead_surface_ids: merge.lead_surface_ids,
+    provenance: merge.provenance,
   });
 }
 
@@ -634,11 +737,15 @@ function readWaveHandoffs(args) {
           agent: assignment.agent,
           surfaceId: assignment.surface_id,
         });
+        const provenance = validateHandoffProvenance(readJsonFile(filePath), assignment);
         handoffs.push({
           wave: artifacts.wave,
           agent: assignment.agent,
           surface_id: assignment.surface_id,
           surface_status: payload.surface_status,
+          provenance,
+          summary: payload.summary,
+          chain_notes: payload.chain_notes,
           dead_ends: payload.dead_ends,
           waf_blocked_endpoints: payload.waf_blocked_endpoints,
           lead_surface_ids: payload.lead_surface_ids,
@@ -665,22 +772,10 @@ function readWaveHandoffs(args) {
   });
 }
 
-function readHandoff(args) {
-  const dir = sessionDir(args.target_domain);
-  const handoffPath = path.join(dir, "SESSION_HANDOFF.md");
-  try {
-    const content = fs.readFileSync(handoffPath, "utf8");
-    return JSON.stringify({ handoff: content });
-  } catch {
-    return JSON.stringify({ handoff: null, message: "No handoff found" });
-  }
-}
-
 module.exports = {
   applyWaveMerge,
   logDeadEnds,
   mergeWaveHandoffs,
-  readHandoff,
   readWaveHandoffs,
   startWave,
   waveHandoffStatus,

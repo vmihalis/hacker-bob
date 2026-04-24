@@ -12,6 +12,10 @@ const {
 const {
   readJsonFile,
 } = require("./storage.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
 function loadWaveAssignments(domain, waveNumber) {
   const dir = sessionDir(domain);
@@ -40,10 +44,15 @@ function loadWaveAssignments(domain, waveNumber) {
     }
     const agent = parseAgentId(assignment.agent);
     const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+    const handoffTokenSha256 = typeof assignment.handoff_token_sha256 === "string" && assignment.handoff_token_sha256.trim()
+      ? assignment.handoff_token_sha256.trim()
+      : null;
     if (assignmentByAgent.has(agent)) {
       throw new Error(`Duplicate assignment for ${agent} in ${assignmentsPath}`);
     }
-    const normalizedAssignment = { agent, surface_id: surfaceId };
+    const normalizedAssignment = handoffTokenSha256
+      ? { agent, surface_id: surfaceId, handoff_token_sha256: handoffTokenSha256 }
+      : { agent, surface_id: surfaceId };
     assignments.push(normalizedAssignment);
     assignmentByAgent.set(agent, normalizedAssignment);
   }
@@ -88,10 +97,10 @@ function validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId) {
   const { assignmentByAgent } = loadWaveAssignments(domain, waveNumber);
   const assignment = assignmentByAgent.get(agent);
   if (!assignment) {
-    throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
+    throw new ToolError(ERROR_CODES.NOT_FOUND, `Agent ${agent} is not assigned in wave ${wave}`);
   }
   if (assignment.surface_id !== surfaceId) {
-    throw new Error(`Agent ${agent} is assigned surface ${assignment.surface_id}, not ${surfaceId}`);
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Agent ${agent} is assigned surface ${assignment.surface_id}, not ${surfaceId}`);
   }
   return assignment;
 }

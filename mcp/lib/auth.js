@@ -11,6 +11,13 @@ const {
   sessionDir,
 } = require("./paths.js");
 const {
+  withSessionLock,
+} = require("./storage.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
+const {
   isFirstPartyHost,
   safeUrlObject,
 } = require("./url-surface.js");
@@ -102,10 +109,40 @@ function writeAuthFile(authPath, content) {
   }
 }
 
+function persistAuthProfiles(domain, profilesByName) {
+  const authPath = resolveAuthJsonPath(domain);
+  const result = withSessionLock(domain, () => {
+    const existing = readAuthJson(authPath);
+    const doc = migrateAuthJson(existing);
+    for (const [profileName, profile] of Object.entries(profilesByName)) {
+      doc.profiles[profileName] = { ...profile };
+    }
+    writeAuthFile(authPath, JSON.stringify(doc, null, 2) + "\n");
+
+    const saved = readAuthJson(authPath);
+    if (!saved || saved.version !== 2 || !saved.profiles) {
+      throw new Error("persisted auth profile verification failed");
+    }
+
+    return {
+      authPath,
+      saved,
+      hasAttacker: !!saved.profiles.attacker,
+      hasVictim: !!saved.profiles.victim,
+    };
+  });
+
+  for (const [profileName, profile] of Object.entries(profilesByName)) {
+    authProfiles.set(authCacheKey(domain, profileName), profile);
+  }
+
+  return result;
+}
+
 function authStore(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   assertSafeDomain(domain);
-  const role = args.role;
+  const profileName = assertNonEmptyString(args.profile_name, "profile_name");
   const headers = args.headers || {};
   const cookies = args.cookies || {};
   const storage = args.local_storage || {};
@@ -114,79 +151,28 @@ function authStore(args) {
   const profile = buildHeaderProfile(headers, cookies, storage);
   if (credentials) profile.credentials = credentials;
 
-  const cacheKey = authCacheKey(domain, role);
-
   const authPath = resolveAuthJsonPath(domain);
-  let persistenceError = null;
+  let persisted = null;
   if (authPath) {
     try {
-      const existing = readAuthJson(authPath);
-      const doc = migrateAuthJson(existing);
-      const profileForDisk = Object.assign({}, profile);
-      doc.profiles[role] = profileForDisk;
-      writeAuthFile(authPath, JSON.stringify(doc, null, 2) + "\n");
+      persisted = persistAuthProfiles(domain, { [profileName]: profile });
     } catch (error) {
-      persistenceError = error;
-    }
-  }
-
-  let hasAttacker = false;
-  let hasVictim = false;
-  if (persistenceError) {
-    return JSON.stringify({
-      success: false,
-      role,
-      error: `failed to persist auth profile: ${persistenceError.message || String(persistenceError)}`,
-      auth_path: authPath,
-    });
-  }
-
-  if (authPath) {
-    try {
-      const saved = readAuthJson(authPath);
-      if (saved && saved.version === 2 && saved.profiles) {
-        hasAttacker = !!saved.profiles.attacker;
-        hasVictim = !!saved.profiles.victim;
-      }
-    } catch (error) {
-      return JSON.stringify({
+      throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `failed to persist auth profile: ${error.message || String(error)}`, {
         success: false,
-        role,
-        error: `failed to verify persisted auth profile: ${error.message || String(error)}`,
+        profile_name: profileName,
         auth_path: authPath,
       });
     }
   }
 
-  authProfiles.set(cacheKey, profile);
-
   return JSON.stringify({
     success: true,
-    role,
+    profile_name: profileName,
     keys: Object.keys(profile).filter((k) => k !== "credentials"),
     persisted: !!authPath,
-    has_attacker: hasAttacker,
-    has_victim: hasVictim,
+    has_attacker: !!persisted?.hasAttacker,
+    has_victim: !!persisted?.hasVictim,
   });
-}
-
-function authManual(args) {
-  const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const result = authStore({
-    target_domain: domain,
-    role: "attacker",
-    cookies: args.cookies,
-    headers: args.headers,
-    local_storage: args.local_storage,
-  });
-  if (args.profile_name) {
-    const headers = args.headers || {};
-    const cookies = args.cookies || {};
-    const storage = args.local_storage || {};
-    const profile = buildHeaderProfile(headers, cookies, storage);
-    authProfiles.set(authCacheKey(domain, args.profile_name), profile);
-  }
-  return result;
 }
 
 function candidateAuthDomains(targetDomain, urlValue) {
@@ -294,7 +280,6 @@ function summarizeAuthProfile(name, profile, fileStats) {
 
   return {
     profile_name: name,
-    role: name,
     header_keys: headerKeys,
     cookie_names: parseCookieNames(normalizedProfile.Cookie),
     local_storage_keys: normalizedProfile.local_storage && typeof normalizedProfile.local_storage === "object"
@@ -340,7 +325,6 @@ function listAuthProfiles(args) {
 }
 
 module.exports = {
-  authManual,
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,

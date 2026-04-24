@@ -41,7 +41,7 @@ const {
   filterExclusionsByHosts,
 } = require("./scope.js");
 
-// Bypass table tech-to-file map (matches .claude/commands/bountyagent.md BYPASS TABLES section)
+// Bypass table tech-to-file map used by hunter brief generation.
 const BYPASS_TABLE_MAP = {
   wordpress: "wordpress.txt",
   graphql: "graphql.txt",
@@ -58,6 +58,16 @@ const HUNTER_KNOWLEDGE_FILE = path.join(".claude", "knowledge", "hunter-techniqu
 const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
 const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
 const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
+const HUNTER_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
+  hosts: 20,
+  tech_stack: 20,
+  endpoints: 80,
+  interesting_params: 40,
+  nuclei_hits: 30,
+  bug_class_hints: 20,
+  high_value_flows: 20,
+  evidence: 25,
+});
 
 function resolveBypassTable(techStack) {
   if (!Array.isArray(techStack)) return BYPASS_TABLE_DEFAULT;
@@ -298,6 +308,57 @@ function resolveHunterKnowledge(surface) {
   };
 }
 
+function isBriefScalar(value) {
+  return value == null || ["string", "number", "boolean"].includes(typeof value);
+}
+
+function cappedSurfaceArray(value, limit) {
+  const values = Array.isArray(value)
+    ? value
+    : value == null
+      ? []
+      : [value];
+  const shownValues = values.slice(0, limit);
+  return {
+    values: shownValues,
+    limits: {
+      shown: shownValues.length,
+      total: values.length,
+      omitted: Math.max(0, values.length - shownValues.length),
+    },
+  };
+}
+
+function slimSurfaceForBrief(surface) {
+  const source = surface && typeof surface === "object" && !Array.isArray(surface) ? surface : {};
+  const slimSurface = {};
+  const surfaceLimits = {};
+
+  for (const [field, value] of Object.entries(source)) {
+    if (Object.prototype.hasOwnProperty.call(HUNTER_BRIEF_SURFACE_ARRAY_LIMITS, field)) {
+      continue;
+    }
+    if (field === "ranking" && value && typeof value === "object" && !Array.isArray(value)) {
+      slimSurface.ranking = value;
+      continue;
+    }
+    if (isBriefScalar(value)) {
+      slimSurface[field] = value;
+    }
+  }
+
+  for (const [field, limit] of Object.entries(HUNTER_BRIEF_SURFACE_ARRAY_LIMITS)) {
+    const capped = cappedSurfaceArray(source[field], limit);
+    slimSurface[field] = capped.values;
+    surfaceLimits[field] = capped.limits;
+  }
+
+  return {
+    surface: slimSurface,
+    surface_limits: surfaceLimits,
+  };
+}
+
 function readHunterBrief(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -364,12 +425,14 @@ function readHunterBrief(args) {
   const circuitBreakerSummary = buildCircuitBreakerSummary(auditRecords, { surface: surfaceObj });
   const intelHints = summarizePublicIntelForSurface(domain, surfaceObj);
   const staticScanHints = summarizeStaticScanHints(domain, { surface: surfaceObj });
+  const slimSurface = slimSurfaceForBrief(surfaceObj);
 
   return JSON.stringify({
     target_url: state.target_url,
     wave,
     agent,
-    surface: surfaceObj,
+    surface: slimSurface.surface,
+    surface_limits: slimSurface.surface_limits,
     valid_surface_ids: attackSurface.surface_ids,
     dead_ends: deadEndResult.filtered,
     waf_blocked_endpoints: wafResult.filtered,
@@ -392,7 +455,7 @@ function readHunterBrief(args) {
     ranking_summary: surfaceObj.ranking || null,
     intel_hints: intelHints,
     static_scan_hints: staticScanHints,
-    auth_hint: "Read ~/bounty-agent-sessions/" + domain + "/auth.json if it exists.",
+    auth_profiles_hint: "Call `bounty_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bounty_http_scan`.",
   }, null, 2);
 }
 
@@ -400,4 +463,5 @@ module.exports = {
   readHunterBrief,
   resolveBypassTable,
   resolveHunterKnowledge,
+  slimSurfaceForBrief,
 };

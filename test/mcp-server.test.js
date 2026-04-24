@@ -319,6 +319,22 @@ function runScopeGuard(command, { home, env = {} }) {
   });
 }
 
+function runMcpScopeGuard(toolInput, { home, env = {} }) {
+  return spawnSync("bash", [path.join(__dirname, "..", ".claude", "hooks", "scope-guard-mcp.sh")], {
+    input: JSON.stringify({ tool_input: toolInput }),
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, ...env },
+  });
+}
+
+function runHunterSubagentStop(payload, { home, env = {} }) {
+  return spawnSync(process.execPath, [path.join(__dirname, "..", ".claude", "hooks", "hunter-subagent-stop.js")], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: path.join(__dirname, ".."), ...env },
+  });
+}
+
 test("mcp server public exports remain stable", () => {
   assert.deepEqual(Object.keys(serverModule).sort(), [
     "SESSION_LOCK_STALE_MS",
@@ -423,6 +439,8 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
   ]) {
     assert.ok(toolNames.includes(representativeTool), `${representativeTool} missing from exported registry`);
   }
+  assert.ok(!toolNames.includes("bounty_auth_manual"));
+  assert.ok(!toolNames.includes("bounty_read_handoff"));
   assert.equal(
     TOOLS.find((tool) => tool.name === "bounty_static_scan").inputSchema.properties.artifact_id.pattern,
     "^SA-[1-9][0-9]*$",
@@ -460,7 +478,7 @@ test("executeTool rejects unknown top-level arguments while allowing nested map-
       target_domain: "example.com",
       surprise: true,
     }));
-    assert.match(unknown.error, /Unknown argument.*surprise/);
+    assert.match(unknown.error, /surprise is not allowed/);
 
     const traffic = JSON.parse(await executeTool("bounty_import_http_traffic", {
       target_domain: "example.com",
@@ -478,12 +496,73 @@ test("executeTool rejects unknown top-level arguments while allowing nested map-
 
     const auth = JSON.parse(await executeTool("bounty_auth_store", {
       target_domain: "example.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "X-Custom": "ok" },
       cookies: { session: "abc" },
       local_storage: { access_token: "eyJabc" },
     }));
     assert.equal(auth.success, true);
+  });
+});
+
+test("executeTool returns standard envelopes and recursively validates schema arguments", async () => {
+  await withTempHome(async () => {
+    const unknown = await executeTool("__unknown_tool__", {});
+    assert.deepEqual(unknown, {
+      ok: false,
+      error: { code: "UNKNOWN_TOOL", message: "Unknown tool: __unknown_tool__" },
+      meta: { tool: "__unknown_tool__", version: 1 },
+    });
+
+    const nested = await executeTool("bounty_auth_store", {
+      target_domain: "example.com",
+      profile_name: "attacker",
+      credentials: {
+        email: "a@example.com",
+        password: "secret",
+        unexpected: true,
+      },
+    });
+    assert.equal(nested.ok, false);
+    assert.equal(nested.error.code, "INVALID_ARGUMENTS");
+    assert.match(nested.error.message, /credentials\.unexpected is not allowed/);
+
+    const badWave = await executeTool("bounty_log_coverage", {
+      target_domain: "example.com",
+      wave: "1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [],
+    });
+    assert.equal(badWave.ok, false);
+    assert.equal(badWave.error.code, "INVALID_ARGUMENTS");
+    assert.match(badWave.error.message, /wave must match pattern \^w\[0-9\]\+\$/);
+
+    const badEntries = await executeTool("bounty_log_coverage", {
+      target_domain: "example.com",
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: "not-array",
+    });
+    assert.equal(badEntries.ok, false);
+    assert.equal(badEntries.error.code, "INVALID_ARGUMENTS");
+    assert.match(badEntries.error.message, /entries must be array/);
+
+    const traffic = await executeTool("bounty_import_http_traffic", {
+      target_domain: "example.com",
+      source: "har",
+      entries: [{
+        request: {
+          method: "GET",
+          url: "https://example.com/api",
+          headers: [{ name: "X-Test", value: "1", arbitrary_har_field: "kept" }],
+        },
+        response: { status: 200, nested_har_field: true },
+      }],
+    });
+    assert.equal(traffic.ok, true);
+    assert.equal(traffic.data.imported, 1);
   });
 });
 
@@ -526,7 +605,11 @@ test("MCP message handler lists tools, routes calls, and wraps thrown errors", a
     { name: "bounty_throw", args: {} },
   ]);
   assert.deepEqual(JSON.parse(sent[1].result.content[0].text), { ok: true, args: { x: 1 } });
-  assert.deepEqual(JSON.parse(sent[2].result.content[0].text), { error: "boom" });
+  assert.deepEqual(JSON.parse(sent[2].result.content[0].text), {
+    ok: false,
+    error: { code: "INTERNAL_ERROR", message: "boom" },
+    meta: { tool: "bounty_throw", version: 1 },
+  });
 });
 
 test("stdio transport accepts framed and raw JSON-RPC messages", () => {
@@ -824,7 +907,13 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
       ],
     }));
 
-    assert.deepEqual(result, {
+    assert.deepEqual({
+      ...result,
+      assignments: result.assignments.map(({ handoff_token, ...assignment }) => {
+        assert.match(handoff_token, /^[A-Za-z0-9_-]{32}$/);
+        return assignment;
+      }),
+    }, {
       version: 1,
       started: true,
       wave_number: 2,
@@ -835,6 +924,9 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
       assignments_path: path.join(sessionDir(domain), "wave-2-assignments.json"),
       state: expectedState,
     });
+    const assignmentDoc = JSON.parse(fs.readFileSync(path.join(sessionDir(domain), "wave-2-assignments.json"), "utf8"));
+    assert.ok(assignmentDoc.assignments.every((assignment) => /^[a-f0-9]{64}$/.test(assignment.handoff_token_sha256)));
+    assert.doesNotMatch(JSON.stringify(assignmentDoc), new RegExp(result.assignments[0].handoff_token));
   });
 });
 
@@ -937,6 +1029,7 @@ test("bounty_apply_wave_merge returns pending without mutating state when handof
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
     });
 
@@ -988,6 +1081,7 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
       dead_ends: ["/new-dead-end"],
       lead_surface_ids: ["surface-a", "surface-c"],
@@ -998,6 +1092,7 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
       agent: "a2",
       surface_id: "surface-b",
       surface_status: "partial",
+      summary: "A2 partial.",
       content: "# A2",
       waf_blocked_endpoints: ["/new-waf"],
       lead_surface_ids: ["surface-d", "surface-x"],
@@ -1046,6 +1141,10 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
       new_dead_ends_count: 1,
       new_waf_blocked_count: 1,
       lead_surface_ids: ["surface-a", "surface-c", "surface-d", "surface-x"],
+      provenance: {
+        verified_agents: [],
+        legacy_unverified_agents: ["a1", "a2"],
+      },
     });
     assert.deepEqual(result.findings, {
       total: 2,
@@ -1175,6 +1274,7 @@ test("bounty_apply_wave_merge requeues unfinished coverage without treating test
         agent,
         surface_id: surfaceId,
         surface_status: "complete",
+        summary: `${agent} complete.`,
         content: `# ${agent}`,
       });
     }
@@ -1210,6 +1310,7 @@ test("bounty_apply_wave_merge preserves existing scope exclusions when the log i
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
     });
 
@@ -1243,6 +1344,7 @@ test("bounty_apply_wave_merge force-merges missing and invalid handoffs and comp
       agent: "a3",
       surface_id: "surface-c",
       surface_status: "partial",
+      summary: "A3 partial.",
       content: "# A3",
     });
 
@@ -1280,6 +1382,7 @@ test("bounty_apply_wave_merge rejects invalid state invariants and hard-fails on
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
     });
 
@@ -1308,6 +1411,7 @@ test("bounty_write_wave_handoff rejects unassigned or mismatched handoffs", () =
         agent: "a2",
         surface_id: "surface-b",
         surface_status: "complete",
+        summary: "Invalid agent handoff.",
         content: "# nope",
       }),
       /Agent a2 is not assigned in wave w1/,
@@ -1320,6 +1424,7 @@ test("bounty_write_wave_handoff rejects unassigned or mismatched handoffs", () =
         agent: "a1",
         surface_id: "surface-b",
         surface_status: "complete",
+        summary: "Mismatched surface handoff.",
         content: "# nope",
       }),
       /Agent a1 is assigned surface surface-a, not surface-b/,
@@ -1430,6 +1535,7 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "Freeform handoff summary.",
       content,
     }));
 
@@ -1444,10 +1550,242 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      provenance: "legacy_unverified",
+      summary: "Freeform handoff summary.",
+      chain_notes: [],
       dead_ends: [],
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
     });
+  });
+});
+
+test("tokenized wave handoffs require the correct token and report verified provenance", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a"]);
+
+    const started = await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    });
+    assert.equal(started.ok, true);
+    const token = started.data.assignments[0].handoff_token;
+    const assignmentText = fs.readFileSync(path.join(sessionDir(domain), "wave-1-assignments.json"), "utf8");
+    assert.doesNotMatch(assignmentText, new RegExp(token));
+    assert.match(assignmentText, /handoff_token_sha256/);
+
+    const missing = await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Tested the assigned surface.",
+      content: "# handoff",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "INVALID_ARGUMENTS");
+    assert.match(missing.error.message, /handoff_token is required/);
+
+    const wrong = await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: "wrong-token-value",
+      summary: "Tested the assigned surface.",
+      content: "# handoff",
+    });
+    assert.equal(wrong.ok, false);
+    assert.equal(wrong.error.code, "INVALID_ARGUMENTS");
+    assert.match(wrong.error.message, /handoff_token does not match/);
+
+    const written = await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: token,
+      summary: "Tested the assigned surface.",
+      chain_notes: ["No chainable primitive found."],
+      content: "# handoff",
+    });
+    assert.equal(written.ok, true);
+    assert.equal(written.data.provenance, "verified");
+
+    const handoffs = await executeTool("bounty_read_wave_handoffs", {
+      target_domain: domain,
+      wave_number: 1,
+    });
+    assert.equal(handoffs.ok, true);
+    assert.equal(handoffs.data.handoffs[0].provenance, "verified");
+    assert.equal(handoffs.data.handoffs[0].summary, "Tested the assigned surface.");
+    assert.deepEqual(handoffs.data.handoffs[0].chain_notes, ["No chainable primitive found."]);
+
+    const merged = await executeTool("bounty_apply_wave_merge", {
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    });
+    assert.equal(merged.ok, true);
+    assert.equal(merged.data.status, "merged");
+    assert.deepEqual(merged.data.merge.provenance, {
+      verified_agents: ["a1"],
+      legacy_unverified_agents: [],
+    });
+  });
+});
+
+test("executeTool smoke path uses envelopes for init, wave, handoff, and merge", async () => {
+  await withTempHome(async () => {
+    const domain = "smoke.example";
+    const init = await executeTool("bounty_init_session", {
+      target_domain: domain,
+      target_url: `https://${domain}`,
+    });
+    assert.equal(init.ok, true);
+
+    seedAttackSurface(domain, ["surface-a"]);
+    assert.equal((await executeTool("bounty_transition_phase", { target_domain: domain, to_phase: "AUTH" })).ok, true);
+    assert.equal((await executeTool("bounty_transition_phase", {
+      target_domain: domain,
+      to_phase: "HUNT",
+      auth_status: "unauthenticated",
+    })).ok, true);
+
+    const started = await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    });
+    assert.equal(started.ok, true);
+
+    const handoff = await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: started.data.assignments[0].handoff_token,
+      summary: "Smoke handoff summary.",
+      chain_notes: ["Smoke chain note."],
+      content: "# Smoke",
+    });
+    assert.equal(handoff.ok, true);
+
+    const merged = await executeTool("bounty_apply_wave_merge", {
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    });
+    assert.equal(merged.ok, true);
+    assert.equal(merged.data.status, "merged");
+    assert.equal(merged.data.state.hunt_wave, 1);
+  });
+});
+
+test("hunter SubagentStop hook blocks missing final marker", () => {
+  withTempHome((tempHome) => {
+    const result = runHunterSubagentStop({
+      last_assistant_message: "I wrote notes but no marker.",
+    }, { home: tempHome });
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /BOB_HUNTER_DONE/);
+    assert.match(result.stderr, /bounty_write_wave_handoff/);
+  });
+});
+
+test("hunter SubagentStop hook blocks missing structured handoff", async () => {
+  await withTempHome(async (tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a"]);
+    await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    });
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /must call bounty_write_wave_handoff/);
+  });
+});
+
+test("hunter SubagentStop hook allows incomplete waves without merging", async () => {
+  await withTempHome(async (tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a", "surface-b"]);
+    const started = await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+      ],
+    });
+    const token = started.data.assignments.find((assignment) => assignment.agent === "a1").handoff_token;
+    await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: token,
+      summary: "a1 complete",
+      content: "# a1",
+    });
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 0);
+    const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
+    assert.equal(state.pending_wave, 1);
+    assert.equal(state.hunt_wave, 0);
+  });
+});
+
+test("hunter SubagentStop hook merges when the last valid handoff completes the wave", async () => {
+  await withTempHome(async (tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0 });
+    seedAttackSurface(domain, ["surface-a"]);
+    const started = await executeTool("bounty_start_wave", {
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    });
+    await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: started.data.assignments[0].handoff_token,
+      summary: "a1 complete",
+      content: "# a1",
+    });
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 0);
+    const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
+    assert.equal(state.pending_wave, null);
+    assert.equal(state.hunt_wave, 1);
   });
 });
 
@@ -1672,6 +2010,7 @@ test("bounty_wave_handoff_status reports complete when all assigned handoffs exi
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
     });
 
@@ -1681,6 +2020,7 @@ test("bounty_wave_handoff_status reports complete when all assigned handoffs exi
       agent: "a2",
       surface_id: "surface-b",
       surface_status: "partial",
+      summary: "A2 partial.",
       content: "# A2",
     });
 
@@ -1733,6 +2073,7 @@ test("markdown-only handoffs do not satisfy readiness or advance merges", () => 
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "Structured handoff summary.",
       content: "# structured handoff",
     });
 
@@ -1804,6 +2145,7 @@ test("bounty_merge_wave_handoffs merges valid handoffs and dedupes optional arra
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete.",
       content: "# A1",
       dead_ends: [" /users/1 ", "/users/1", ""],
       waf_blocked_endpoints: ["/admin"],
@@ -1816,6 +2158,7 @@ test("bounty_merge_wave_handoffs merges valid handoffs and dedupes optional arra
       agent: "a2",
       surface_id: "surface-b",
       surface_status: "partial",
+      summary: "A2 partial.",
       content: "# A2",
       dead_ends: ["/billing"],
       waf_blocked_endpoints: ["/admin", " /reports "],
@@ -1836,6 +2179,10 @@ test("bounty_merge_wave_handoffs merges valid handoffs and dedupes optional arra
       dead_ends: ["/users/1", "/billing"],
       waf_blocked_endpoints: ["/admin", "/reports"],
       lead_surface_ids: ["surface-b", "surface-c", "surface-d"],
+      provenance: {
+        verified_agents: [],
+        legacy_unverified_agents: ["a1", "a2"],
+      },
     });
   });
 });
@@ -1868,6 +2215,10 @@ test("bounty_merge_wave_handoffs requeues missing and invalid assigned handoffs 
       dead_ends: [],
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
+      provenance: {
+        verified_agents: [],
+        legacy_unverified_agents: [],
+      },
     });
   });
 });
@@ -1887,6 +2238,8 @@ test("bounty_read_wave_handoffs returns validated structured summaries and ignor
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      summary: "A1 complete with an old dead end.",
+      chain_notes: ["Old endpoint may chain into surface-b."],
       content: "# ignored markdown details",
       dead_ends: ["/old"],
       lead_surface_ids: ["surface-b"],
@@ -1900,6 +2253,9 @@ test("bounty_read_wave_handoffs returns validated structured summaries and ignor
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
+      provenance: "legacy_unverified",
+      summary: "A1 complete with an old dead end.",
+      chain_notes: ["Old endpoint may chain into surface-b."],
       dead_ends: ["/old"],
       waf_blocked_endpoints: [],
       lead_surface_ids: ["surface-b"],
@@ -2616,80 +2972,6 @@ test("bounty_read_grade_verdict rejects JSON that references non-existent findin
   });
 });
 
-test("bounty_auth_manual writes auth.json to the correct session dir when target_domain is provided", async () => {
-  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
-  const previousHome = process.env.HOME;
-  process.env.HOME = tempHome;
-  try {
-    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
-    fs.mkdirSync(path.join(sessionsDir, "alpha.com"), { recursive: true });
-    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
-
-    const result = JSON.parse(await executeTool("bounty_auth_manual", {
-      profile_name: "test",
-      target_domain: "alpha.com",
-      headers: { "Authorization": "Bearer tok123" },
-    }));
-
-    assert.equal(result.success, true);
-    assert.ok(fs.existsSync(path.join(sessionsDir, "alpha.com", "auth.json")));
-    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
-
-    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "alpha.com", "auth.json"), "utf8"));
-    assert.equal(saved.version, 2);
-    assert.equal(saved.profiles.attacker.Authorization, "Bearer tok123");
-  } finally {
-    process.env.HOME = previousHome;
-    fs.rmSync(tempHome, { recursive: true, force: true });
-  }
-});
-
-test("bounty_auth_manual rejects missing target_domain instead of falling back to another session", async () => {
-  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
-  const previousHome = process.env.HOME;
-  process.env.HOME = tempHome;
-  try {
-    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
-    fs.mkdirSync(path.join(sessionsDir, "alpha.com"), { recursive: true });
-    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
-
-    const result = JSON.parse(await executeTool("bounty_auth_manual", {
-      profile_name: "test",
-      headers: { "Authorization": "Bearer fallback" },
-    }));
-
-    assert.match(result.error, /Missing required argument.*target_domain/);
-    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
-    assert.ok(!fs.existsSync(path.join(sessionsDir, "alpha.com", "auth.json")));
-  } finally {
-    process.env.HOME = previousHome;
-    fs.rmSync(tempHome, { recursive: true, force: true });
-  }
-});
-
-test("bounty_auth_manual creates the target session auth path when target_domain session dir does not exist", async () => {
-  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
-  const previousHome = process.env.HOME;
-  process.env.HOME = tempHome;
-  try {
-    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
-    fs.mkdirSync(path.join(sessionsDir, "zebra.com"), { recursive: true });
-
-    const result = JSON.parse(await executeTool("bounty_auth_manual", {
-      profile_name: "test",
-      target_domain: "nonexistent.com",
-      headers: { "Authorization": "Bearer fb" },
-    }));
-
-    assert.equal(result.success, true);
-    assert.ok(fs.existsSync(path.join(sessionsDir, "nonexistent.com", "auth.json")));
-    assert.ok(!fs.existsSync(path.join(sessionsDir, "zebra.com", "auth.json")));
-  } finally {
-    process.env.HOME = previousHome;
-    fs.rmSync(tempHome, { recursive: true, force: true });
-  }
-});
-
 // ── bounty_auth_store tests ──
 
 test("bounty_auth_store writes v2 auth.json with attacker profile", async () => {
@@ -2702,13 +2984,13 @@ test("bounty_auth_store writes v2 auth.json with attacker profile", async () => 
 
     const result = JSON.parse(await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "Authorization": "Bearer atok" },
       cookies: { "session": "abc123" },
     }));
 
     assert.equal(result.success, true);
-    assert.equal(result.role, "attacker");
+    assert.equal(result.profile_name, "attacker");
     assert.equal(result.has_attacker, true);
     assert.equal(result.has_victim, false);
 
@@ -2735,14 +3017,14 @@ test("bounty_auth_store adds victim profile to existing v2 auth.json", async () 
     // Write attacker first
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "Authorization": "Bearer atok" },
     });
 
     // Now add victim
     const result = JSON.parse(await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "victim",
+      profile_name: "victim",
       headers: { "Authorization": "Bearer vtok" },
     }));
 
@@ -2758,6 +3040,26 @@ test("bounty_auth_store adds victim profile to existing v2 auth.json", async () 
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
+});
+
+test("bounty_auth_store accepts arbitrary profile names without clobbering existing profiles", async () => {
+  await withTempHome(async () => {
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer attacker" },
+    });
+    await executeTool("bounty_auth_store", {
+      target_domain: "target.com",
+      profile_name: "tenant_b",
+      headers: { Authorization: "Bearer tenant-b" },
+    });
+
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionDir("target.com"), "auth.json"), "utf8"));
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer attacker");
+    assert.equal(saved.profiles.tenant_b.Authorization, "Bearer tenant-b");
+    assert.deepEqual(Object.keys(saved.profiles).sort(), ["attacker", "tenant_b"]);
+  });
 });
 
 test("bounty_auth_store migrates legacy auth.json", async () => {
@@ -2778,7 +3080,7 @@ test("bounty_auth_store migrates legacy auth.json", async () => {
     // Add victim — should migrate legacy to attacker and add victim
     const result = JSON.parse(await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "victim",
+      profile_name: "victim",
       headers: { "Authorization": "Bearer vtok" },
     }));
 
@@ -2806,7 +3108,7 @@ test("bounty_auth_store stores credentials alongside headers", async () => {
 
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "Authorization": "Bearer t" },
       credentials: { email: "test@mail.tm", password: "secret123" },
     });
@@ -2831,7 +3133,7 @@ test("bounty_auth_store writes and migrates auth.json with 0600 permissions", as
 
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       cookies: { sessionid: "abc" },
     });
     assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
@@ -2839,7 +3141,7 @@ test("bounty_auth_store writes and migrates auth.json with 0600 permissions", as
     fs.writeFileSync(authPath, JSON.stringify({ Authorization: "Bearer legacy" }), { mode: 0o644 });
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "victim",
+      profile_name: "victim",
       headers: { Authorization: "Bearer victim" },
     });
     assert.equal(fs.statSync(authPath).mode & 0o777, 0o600);
@@ -2857,12 +3159,16 @@ test("bounty_auth_store reports persistence failures instead of claiming success
     const authPath = path.join(tempHome, "bounty-agent-sessions", "target.com", "auth.json");
     fs.mkdirSync(authPath, { recursive: true });
 
-    const result = JSON.parse(await executeTool("bounty_auth_store", {
+    const envelope = await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "Authorization": "Bearer atok" },
-    }));
+    });
 
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.error.code, "INTERNAL_ERROR");
+    assert.equal(envelope.error.details.auth_path, authPath);
+    const result = JSON.parse(envelope);
     assert.equal(result.success, false);
     assert.match(result.error, /failed to persist auth profile/i);
     assert.equal(result.auth_path, authPath);
@@ -2872,29 +3178,25 @@ test("bounty_auth_store reports persistence failures instead of claiming success
   }
 });
 
-test("bounty_auth_manual backward compat writes v2 as attacker", async () => {
-  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-test-"));
-  const previousHome = process.env.HOME;
-  process.env.HOME = tempHome;
-  try {
-    const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
-    fs.mkdirSync(path.join(sessionsDir, "target.com"), { recursive: true });
+test("bounty_auth_store preserves concurrent attacker and victim profile writes", async () => {
+  await withTempHome(async () => {
+    await Promise.all([
+      executeTool("bounty_auth_store", {
+        target_domain: "target.com",
+        profile_name: "attacker",
+        headers: { Authorization: "Bearer attacker" },
+      }),
+      executeTool("bounty_auth_store", {
+        target_domain: "target.com",
+        profile_name: "victim",
+        headers: { Authorization: "Bearer victim" },
+      }),
+    ]);
 
-    const result = JSON.parse(await executeTool("bounty_auth_manual", {
-      profile_name: "default",
-      target_domain: "target.com",
-      headers: { "Authorization": "Bearer compat" },
-    }));
-
-    assert.equal(result.success, true);
-
-    const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
-    assert.equal(saved.version, 2);
-    assert.equal(saved.profiles.attacker.Authorization, "Bearer compat");
-  } finally {
-    process.env.HOME = previousHome;
-    fs.rmSync(tempHome, { recursive: true, force: true });
-  }
+    const saved = JSON.parse(fs.readFileSync(path.join(sessionDir("target.com"), "auth.json"), "utf8"));
+    assert.equal(saved.profiles.attacker.Authorization, "Bearer attacker");
+    assert.equal(saved.profiles.victim.Authorization, "Bearer victim");
+  });
 });
 
 test("bounty_list_auth_profiles redacts secrets while reporting profile status", async () => {
@@ -2904,7 +3206,7 @@ test("bounty_list_auth_profiles redacts secrets while reporting profile status",
   try {
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { "Authorization": "Bearer secret-token" },
       cookies: { sessionid: "cookie-secret" },
       credentials: { email: "attacker@example.com", password: "password-secret" },
@@ -2928,12 +3230,12 @@ test("bounty_http_scan resolves auth by explicit target_domain and first-party s
   await withTempHome(async () => {
     await executeTool("bounty_auth_store", {
       target_domain: "target.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { Authorization: "Bearer target-token" },
     });
     await executeTool("bounty_auth_store", {
       target_domain: "other.com",
-      role: "attacker",
+      profile_name: "attacker",
       headers: { Authorization: "Bearer other-token" },
     });
     const listed = JSON.parse(listAuthProfiles({ target_domain: "api.target.com" }));
@@ -3980,6 +4282,47 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
     assert.ok(brief.exclusions_summary);
     assert.equal(brief.exclusions_summary.dead_ends_total, 1);
     assert.equal(brief.exclusions_summary.waf_blocked_total, 1);
+    assert.equal(brief.auth_hint, undefined);
+    assert.match(brief.auth_profiles_hint, /bounty_list_auth_profiles/);
+    assert.doesNotMatch(JSON.stringify(brief), /auth\.json/i);
+  });
+});
+
+test("bounty_read_hunter_brief caps assigned surface arrays and reports surface_limits", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-rich",
+      priority: "HIGH",
+      hosts: Array.from({ length: 25 }, (_, index) => `https://h${index}.${domain}`),
+      tech_stack: Array.from({ length: 25 }, (_, index) => `tech-${index}`),
+      endpoints: Array.from({ length: 90 }, (_, index) => `/api/${index}`),
+      interesting_params: Array.from({ length: 45 }, (_, index) => `param_${index}`),
+      nuclei_hits: Array.from({ length: 35 }, (_, index) => `hit-${index}`),
+      bug_class_hints: Array.from({ length: 25 }, (_, index) => `bug-${index}`),
+      high_value_flows: Array.from({ length: 25 }, (_, index) => `flow-${index}`),
+      evidence: Array.from({ length: 30 }, (_, index) => `evidence-${index}`),
+      js_hints: Array.from({ length: 200 }, (_, index) => `js-${index}`),
+      ranking: { version: 1, score: 77, priority: "HIGH", reasons: ["api_or_mobile_surface"] },
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-rich" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.equal(brief.surface.id, "surface-rich");
+    assert.equal(brief.surface.priority, "HIGH");
+    assert.equal(brief.surface.ranking.version, 1);
+    assert.ok(Array.isArray(brief.surface.ranking.reasons));
+    assert.equal(brief.surface.hosts.length, 20);
+    assert.equal(brief.surface.endpoints.length, 80);
+    assert.equal(brief.surface.interesting_params.length, 40);
+    assert.equal(brief.surface.nuclei_hits.length, 30);
+    assert.equal(brief.surface.bug_class_hints.length, 20);
+    assert.equal(brief.surface.high_value_flows.length, 20);
+    assert.equal(brief.surface.evidence.length, 25);
+    assert.equal(brief.surface.js_hints, undefined);
+    assert.deepEqual(brief.surface_limits.hosts, { shown: 20, total: 25, omitted: 5 });
+    assert.deepEqual(brief.surface_limits.endpoints, { shown: 80, total: 90, omitted: 10 });
   });
 });
 
@@ -4456,7 +4799,7 @@ test("auth storage rejects path traversal target domains", () => {
       /invalid path characters/,
     );
     assert.throws(
-      () => authStore({ target_domain: "../evil", role: "attacker", headers: { Authorization: "Bearer token" } }),
+      () => authStore({ target_domain: "../evil", profile_name: "attacker", headers: { Authorization: "Bearer token" } }),
       /invalid path characters/,
     );
   });
@@ -4552,6 +4895,44 @@ test("scope guard deny-list blocks even when out-of-scope log-only mode is set",
       home: tempHome,
       env: { BOUNTY_SCOPE_LOG_ONLY: "1" },
     });
+    assert.equal(denied.status, 2);
+    assert.match(denied.stderr, /deny list/);
+  });
+});
+
+test("scope guards allow public-intel hosts only when URL references the active target", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedSessionState(domain);
+
+    const bashUnrelated = runScopeGuard('curl "https://crt.sh/?q=other.com"', { home: tempHome });
+    assert.equal(bashUnrelated.status, 2);
+    assert.match(bashUnrelated.stderr, /crt\.sh/);
+
+    const bashTarget = runScopeGuard('curl "https://crt.sh/?q=example.com"', { home: tempHome });
+    assert.equal(bashTarget.status, 0);
+
+    const mcpUnrelated = runMcpScopeGuard({
+      target_domain: domain,
+      method: "GET",
+      url: "https://crt.sh/?q=other.com",
+    }, { home: tempHome });
+    assert.equal(mcpUnrelated.status, 0);
+    assert.match(fs.readFileSync(path.join(sessionDir(domain), "scope-warnings.log"), "utf8"), /OUT-OF-SCOPE \(http_scan\): crt\.sh/);
+
+    const mcpTarget = runMcpScopeGuard({
+      target_domain: domain,
+      method: "GET",
+      url: "https://crt.sh/?q=example.com",
+    }, { home: tempHome });
+    assert.equal(mcpTarget.status, 0);
+
+    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "crt.sh\n");
+    const denied = runMcpScopeGuard({
+      target_domain: domain,
+      method: "GET",
+      url: "https://crt.sh/?q=example.com",
+    }, { home: tempHome });
     assert.equal(denied.status, 2);
     assert.match(denied.stderr, /deny list/);
   });

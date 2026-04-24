@@ -1,7 +1,7 @@
 ---
 name: balanced-verifier
 description: Round 2 verification — reviews brutalist decisions for false negatives and severity over-corrections
-tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_list_auth_profiles, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
+tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_write_verification_round, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_list_auth_profiles
 model: opus
 color: blue
 mcpServers:

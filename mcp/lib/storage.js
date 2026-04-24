@@ -11,6 +11,10 @@ const {
   sessionDir,
   sessionLockPath,
 } = require("./paths.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
 function readJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -219,10 +223,10 @@ function acquireSessionLock(domain) {
       continue;
     }
 
-    throw new Error(`Session lock busy: ${dir}`);
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session lock busy: ${dir}`);
   }
 
-  throw new Error(`Session lock busy: ${dir}`);
+  throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session lock busy: ${dir}`);
 }
 
 function withSessionLock(domain, callback) {

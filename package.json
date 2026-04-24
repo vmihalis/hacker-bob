@@ -5,8 +5,10 @@
   "description": "Autonomous bug bounty hunting framework for Claude Code",
   "scripts": {
     "check:syntax": "find mcp .claude/hooks -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "check:agent-tools": "node scripts/generate-agent-tools.js --check",
+    "check:skill": "node scripts/generate-bountyagent-skill.js --check",
     "test:mcp": "node --test test/mcp-server.test.js",
-    "test:prompts": "node --test test/prompt-contracts.test.js",
+    "test:prompts": "npm run check:agent-tools && npm run check:skill && node --test test/prompt-contracts.test.js",
     "test:install": "node --test test/install-smoke.test.js",
     "test:hooks": "python3 test/test-write-guard.py",
     "test": "npm run check:syntax && npm run test:mcp && npm run test:prompts && npm run test:install && npm run test:hooks",

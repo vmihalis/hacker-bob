@@ -11,7 +11,7 @@ chmod +x install.sh
 ./install.sh /path/to/your/project
 ```
 
-The installer copies everything into your project's `.claude/` directory, sets up the MCP server in `.mcp.json`, and configures hooks + status line. If you already have a `.claude/settings.json` or `.mcp.json`, it prints exactly what to merge.
+The installer copies agents, the `/bountyagent` skill, rules, hooks, and knowledge into your project's `.claude/` directory, sets up the MCP server in `.mcp.json`, and merges hooks + status line into `.claude/settings.json`. Existing MCP servers, permissions, hooks, and unrelated user settings are preserved; running the installer repeatedly is idempotent.
 
 ## For Coding Agents
 
@@ -78,7 +78,7 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 | brutalist-verifier | Round 1: maximum skepticism | Bash, Read, MCP |
 | balanced-verifier | Round 2: catch false negatives | Bash, Read, MCP |
 | final-verifier | Round 3: fresh PoC confirmation | Bash, MCP |
-| chain-builder | A→B exploit chain analysis | Read, Write, Bash, MCP |
+| chain-builder | A→B exploit chain analysis | Read, Write, MCP |
 | grader | 5-axis scoring + verdict | MCP |
 | report-writer | Submission-ready report | Write, MCP |
 
@@ -101,12 +101,12 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 | `bounty_read_verification_round` | Read one verification round JSON document |
 | `bounty_write_grade_verdict` | Write the grade verdict JSON plus a best-effort markdown mirror |
 | `bounty_read_grade_verdict` | Read the grade verdict JSON document |
-| `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for cross-session resume only |
+| `bounty_write_handoff` | Write `SESSION_HANDOFF.md` for human/debug resume notes only |
 | `bounty_write_wave_handoff` | Hunter-final writer for one wave handoff as `handoff-wN-aN.md` plus authoritative `handoff-wN-aN.json` |
 | `bounty_wave_handoff_status` | Readiness/count check for one wave based on assignment and handoff file presence |
 | `bounty_merge_wave_handoffs` | Merge one wave's structured handoffs against `wave-N-assignments.json` |
-| `bounty_read_handoff` | Read previous handoff to resume |
-| `bounty_auth_manual` | Store auth tokens as reusable profiles |
+| `bounty_auth_store` | Store auth tokens as reusable `profile_name` profiles |
+| `bounty_list_auth_profiles` | List redacted auth profile names and freshness hints |
 | `bounty_log_coverage` | Append per-session endpoint/bug-class/auth-profile coverage records to `coverage.jsonl` |
 | `bounty_auto_signup` | Optional browser-assisted signup that stores attacker/victim auth profiles when Patchright is installed |
 | `bounty_wave_status` | Read-only summary of findings for wave-to-wave decisions |
@@ -115,7 +115,9 @@ The installer configures a local MCP server (`mcp/server.js`) that gives hunter 
 
 Runs as a stdio MCP server — zero dependencies, just Node.js. Configured automatically by `install.sh`.
 
-Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never intended to be parsed by code or prompts.
+Every MCP tool response is wrapped in a standard envelope: success responses use `{ "ok": true, "data": ..., "meta": { "tool": "...", "version": 1 } }`; failures use `{ "ok": false, "error": { "code": "...", "message": "..." }, "meta": ... }`. Prompts and integrations should read successful payloads from `.data`.
+
+Structured artifacts are the only control-plane source of truth for the FSM and downstream agents. Markdown outputs remain for humans/debugging only and are never parsed by code or prompts. `SESSION_HANDOFF.md` is human/debug only. Chain-building uses structured `summary` and `chain_notes` from `bounty_read_wave_handoffs`, not markdown handoffs.
 
 Coverage, traffic, request audit, public intel, and static scans are session-scoped and MCP-owned. Hunters append concise coverage entries through `bounty_log_coverage`; `bounty_http_scan` appends Bob-generated request results to `http-audit.jsonl`; `bounty_import_http_traffic` imports optional Burp/HAR request history to `traffic.jsonl`; `bounty_public_intel` stores optional public program/report hints in `public-intel.json`; and `bounty_import_static_artifact` plus `bounty_static_scan` store redacted token-contract scan artifacts/results without ever reading arbitrary filesystem paths. `bounty_read_hunter_brief` returns only the assigned surface's capped latest-per-endpoint/class/auth coverage, relevant observed traffic, audit/circuit-breaker feedback, ranking reasons, intel hints, and bounded static scan hints. Wave merge uses unfinished coverage statuses to requeue surfaces without introducing cross-target memory.
 
@@ -127,7 +129,7 @@ Recon may enrich `attack_surface.json` surfaces with optional `surface_type`, `b
 
 `bounty_wave_handoff_status` is a readiness tool, not a merge tool. It reports whether all assigned `handoff-wN-aN.json` files exist yet, but it does not validate handoff payloads. Malformed handoffs are left for `bounty_merge_wave_handoffs` to classify during actual reconciliation.
 
-`bounty_apply_wave_merge` and `bounty_merge_wave_handoffs` never synthesize missing structured handoffs from markdown or `SESSION_HANDOFF.md`. Prompt/tool hardening reduces accidental drift, but true write-path enforcement would require MCP-side provenance checks and is out of scope for this patch.
+`bounty_apply_wave_merge` and `bounty_merge_wave_handoffs` never synthesize missing structured handoffs from markdown or `SESSION_HANDOFF.md`. New waves include per-agent handoff tokens; only token hashes are stored in `wave-N-assignments.json`, and merge/read responses report whether handoffs are `verified` or `legacy_unverified`.
 
 If the MCP server isn't available, hunters can still use `curl` plus local file tools for ad hoc work, but durable findings, structured verification/grade artifacts, and structured wave handoffs are unavailable. Normal orchestration expects the MCP server to be installed.
 
@@ -135,6 +137,7 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 
 - **scope-guard.sh** — PreToolUse hook on Bash. Logs out-of-scope HTTP requests. Hard-blocks domains in `deny-list.txt`.
 - **scope-guard-mcp.sh** — PreToolUse hook on MCP scans. Preflights/logs scope drift while `bounty_http_scan` itself enforces out-of-scope blocking and auditing.
+- **hunter-subagent-stop.js** — SubagentStop hook for hunter agents. Requires the final marker plus a valid structured handoff and merges a wave once all handoffs are present.
 - **bounty-statusline.js** — Shows phase, wave, finding count, target, and context usage in the terminal footer.
 
 ## Rules (always active)
@@ -147,10 +150,10 @@ If the MCP server isn't available, hunters can still use `curl` plus local file 
 All hunt state lives in `~/bounty-agent-sessions/[domain]/`:
 - `state.json` — FSM phase, wave count, pending wave, findings, explored surface IDs, exclusions, and lead routing hints; pending waves reconcile on explicit `resume`
 - `attack_surface.json` — recon output grouped by priority, optionally enriched with surface type, likely bug classes, high-value flows, short evidence strings, and additive ranking reasons
-- `wave-N-assignments.json` — persisted per-wave `agent -> surface_id` assignments
-- `handoff-wN-aN.md` — freeform hunter handoff markdown for humans and chain-building
-- `handoff-wN-aN.json` — structured hunter handoff fields used for deterministic merge/requeue
-- `SESSION_HANDOFF.md` — session-only resume handoff written by `bounty_write_handoff`
+- `wave-N-assignments.json` — persisted per-wave `agent -> surface_id` assignments with hashed handoff-token provenance for new waves
+- `handoff-wN-aN.md` — freeform hunter handoff markdown for humans/debugging only
+- `handoff-wN-aN.json` — structured hunter handoff fields, including `summary` and `chain_notes`, used for deterministic merge/requeue and chain context
+- `SESSION_HANDOFF.md` — human/debug resume notes written by `bounty_write_handoff`; never parsed as control-plane input
 - `findings.jsonl` — append-only authoritative finding storage across waves
 - `findings.md` — human/debug mirror of recorded findings
 - `coverage.jsonl` — MCP-owned hunter coverage ledger
@@ -182,6 +185,10 @@ The full core pipeline: agents, orchestrator, MCP server, hooks, and status line
 | **Recon tools** | `subfinder`, `httpx`, `nuclei` | Steps that need missing tools are skipped, recon continues with what's available |
 
 The orchestrator handles all fallbacks automatically.
+
+## Tool Development Contract
+
+Adding a Bob MCP tool should be boring: add one registry-backed tool definition with schema, handler, role bundles, side-effect metadata, scope-hook requirement, and sensitivity flags; add or update the handler; then add focused tests. `TOOLS`, dispatcher lookup, role-bundle permissions, and Claude settings are generated from the registry/config helpers, so do not hand-maintain duplicate permission lists in installer scripts.
 
 ## Requirements
 

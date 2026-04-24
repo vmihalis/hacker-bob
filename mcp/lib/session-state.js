@@ -21,6 +21,10 @@ const {
   withSessionLock,
   writeFileAtomic,
 } = require("./storage.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
 function buildInitialSessionState(domain, targetUrl) {
   return {
@@ -149,10 +153,10 @@ function initSession(args) {
     const filePath = statePath(domain);
 
     if (fs.existsSync(filePath)) {
-      throw new Error(`Session already initialized: ${filePath}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session already initialized: ${filePath}`);
     }
     if (!isSessionDirEffectivelyEmpty(dir)) {
-      throw new Error(`Session directory is not empty: ${dir}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session directory is not empty: ${dir}`);
     }
 
     const state = buildInitialSessionState(domain, targetUrl);
@@ -204,13 +208,13 @@ function transitionPhase(args) {
     };
 
     if (!(allowedTransitions[fromPhase] || []).includes(toPhase)) {
-      throw new Error(`Invalid phase transition: ${fromPhase} -> ${toPhase}`);
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Invalid phase transition: ${fromPhase} -> ${toPhase}`);
     }
 
     let nextAuthStatus = state.auth_status;
     if (fromPhase === "AUTH" && toPhase === "HUNT") {
       if (args.auth_status == null) {
-        throw new Error("auth_status is required for AUTH -> HUNT");
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "auth_status is required for AUTH -> HUNT");
       }
       nextAuthStatus = assertEnumValue(
         args.auth_status,
@@ -218,7 +222,7 @@ function transitionPhase(args) {
         "auth_status",
       );
     } else if (args.auth_status != null) {
-      throw new Error("auth_status is only allowed for AUTH -> HUNT");
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "auth_status is only allowed for AUTH -> HUNT");
     }
 
     const nextState = {

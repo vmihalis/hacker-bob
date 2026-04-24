@@ -9,8 +9,8 @@
 //           bounty_start_wave, bounty_apply_wave_merge,
 //           bounty_write_handoff, bounty_write_wave_handoff,
 //           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
-//           bounty_read_handoff, bounty_log_dead_ends, bounty_log_coverage,
-//           bounty_auth_manual, bounty_wave_status,
+//           bounty_log_dead_ends, bounty_log_coverage,
+//           bounty_wave_status,
 //           bounty_temp_email, bounty_signup_detect, bounty_auth_store,
 //           bounty_auto_signup, bounty_import_http_traffic,
 //           bounty_read_http_audit, bounty_public_intel,
@@ -18,7 +18,6 @@
 //           bounty_list_auth_profiles, bounty_read_wave_handoffs
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
-const { TOOL_MANIFEST } = require("./lib/tool-manifest.js");
 const {
   bountyPublicIntel,
   executeTool,
@@ -27,6 +26,10 @@ const {
   readHttpAudit,
   staticScan,
 } = require("./lib/dispatch.js");
+const {
+  TOOL_MANIFEST,
+  TOOLS,
+} = require("./lib/tool-registry.js");
 const { startStdioServer } = require("./lib/transport.js");
 const {
   SESSION_LOCK_STALE_MS,
@@ -112,7 +115,6 @@ const {
   resolveHunterKnowledge,
 } = require("./lib/hunter-brief.js");
 const {
-  authManual,
   authStore,
   buildHeaderProfile,
   listAuthProfiles,
@@ -130,15 +132,12 @@ const {
   logDeadEnds,
   mergeWaveHandoffs,
   readWaveHandoffs,
-  readHandoff,
   startWave,
   waveHandoffStatus,
   waveStatus,
   writeHandoff,
   writeWaveHandoff,
 } = require("./lib/waves.js");
-
-const { TOOLS } = require("./lib/tool-definitions.js");
 
 function startServer() {
   startStdioServer({ tools: TOOLS, executeTool });

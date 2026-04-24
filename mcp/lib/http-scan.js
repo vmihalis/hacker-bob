@@ -94,7 +94,7 @@ async function httpScan(args) {
         scope_decision: "auth_missing",
       });
       return JSON.stringify({
-        error: `auth_profile "${authProfile}" requested but not found — request was NOT sent. Store auth first via bounty_auth_store or bounty_auth_manual.`,
+        error: `auth_profile "${authProfile}" requested but not found — request was NOT sent. Store auth first via bounty_auth_store.`,
       });
     }
   }

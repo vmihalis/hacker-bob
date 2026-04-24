@@ -2,9 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__bountyagent__bounty_http_scan",
-      "mcp__bountyagent__bounty_import_http_traffic",
       "mcp__bountyagent__bounty_read_http_audit",
-      "mcp__bountyagent__bounty_public_intel",
       "mcp__bountyagent__bounty_import_static_artifact",
       "mcp__bountyagent__bounty_static_scan",
       "mcp__bountyagent__bounty_record_finding",
@@ -14,27 +12,20 @@
       "mcp__bountyagent__bounty_read_verification_round",
       "mcp__bountyagent__bounty_write_grade_verdict",
       "mcp__bountyagent__bounty_read_grade_verdict",
-      "mcp__bountyagent__bounty_init_session",
       "mcp__bountyagent__bounty_read_session_state",
-      "mcp__bountyagent__bounty_read_state_summary",
-      "mcp__bountyagent__bounty_transition_phase",
-      "mcp__bountyagent__bounty_start_wave",
-      "mcp__bountyagent__bounty_apply_wave_merge",
-      "mcp__bountyagent__bounty_write_handoff",
       "mcp__bountyagent__bounty_write_wave_handoff",
       "mcp__bountyagent__bounty_wave_handoff_status",
       "mcp__bountyagent__bounty_merge_wave_handoffs",
       "mcp__bountyagent__bounty_read_wave_handoffs",
-      "mcp__bountyagent__bounty_read_handoff",
-      "mcp__bountyagent__bounty_auth_manual",
-      "mcp__bountyagent__bounty_list_auth_profiles",
       "mcp__bountyagent__bounty_log_dead_ends",
       "mcp__bountyagent__bounty_log_coverage",
       "mcp__bountyagent__bounty_wave_status",
       "mcp__bountyagent__bounty_temp_email",
       "mcp__bountyagent__bounty_signup_detect",
       "mcp__bountyagent__bounty_auth_store",
+      "mcp__bountyagent__bounty_list_auth_profiles",
       "mcp__bountyagent__bounty_auto_signup",
+      "mcp__bountyagent__bounty_read_state_summary",
       "mcp__bountyagent__bounty_read_hunter_brief",
       "Bash(mkdir *)",
       "Bash(test *)",
@@ -106,6 +97,18 @@
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "hunter-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
           }
         ]
       }

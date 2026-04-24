@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Bounty Agent — Claude Code installer
-# Copies agent definitions, commands, rules, hooks, MCP server, and settings into your project
+# Copies agent definitions, command shim, skills, rules, hooks, MCP server, and settings into your project
 
 TARGET="${1:-.}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,7 +13,7 @@ echo "Installing Bounty Agent into $TARGET/.claude/"
 echo ""
 
 # Create directories
-mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/knowledge"
+mkdir -p "$CLAUDE_DIR/agents" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/rules" "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/knowledge" "$CLAUDE_DIR/skills"
 
 # Copy agents
 cp "$SCRIPT_DIR/.claude/agents/"*.md "$CLAUDE_DIR/agents/"
@@ -22,7 +22,12 @@ echo "  $AGENT_COUNT agent definitions"
 
 # Copy orchestrator command
 cp "$SCRIPT_DIR/.claude/commands/bountyagent.md" "$CLAUDE_DIR/commands/"
-echo "  orchestrator command (/bountyagent)"
+echo "  legacy command shim (/bountyagent)"
+
+# Copy skills
+mkdir -p "$CLAUDE_DIR/skills/bountyagent"
+cp "$SCRIPT_DIR/.claude/skills/bountyagent/SKILL.md" "$CLAUDE_DIR/skills/bountyagent/"
+echo "  bountyagent skill"
 
 # Copy rules
 cp "$SCRIPT_DIR/.claude/rules/"*.md "$CLAUDE_DIR/rules/"
@@ -46,7 +51,8 @@ cp "$SCRIPT_DIR/.claude/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/"
 cp "$SCRIPT_DIR/.claude/hooks/bounty-statusline.js" "$CLAUDE_DIR/hooks/"
-chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/session-write-guard.sh"
+cp "$SCRIPT_DIR/.claude/hooks/hunter-subagent-stop.js" "$CLAUDE_DIR/hooks/"
+chmod +x "$CLAUDE_DIR/hooks/scope-guard.sh" "$CLAUDE_DIR/hooks/scope-guard-mcp.sh" "$CLAUDE_DIR/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/hunter-subagent-stop.js"
 echo "  scope/session guard hooks (Bash + MCP) + status line"
 
 # Copy complete MCP runtime
@@ -58,170 +64,10 @@ cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
 chmod +x "$TARGET_ABS/mcp/server.js"
 echo "  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js)"
 
-# Configure .mcp.json
-MCP_JSON="$TARGET_ABS/.mcp.json"
-if [ -f "$MCP_JSON" ]; then
-  # Check if bountyagent already configured
-  if grep -q "bountyagent" "$MCP_JSON" 2>/dev/null; then
-    echo "  .mcp.json already has bountyagent — skipping"
-  else
-    echo ""
-    echo "  WARNING: $MCP_JSON already exists."
-    echo "  Add this to your mcpServers:"
-    echo ""
-    echo '    "bountyagent": {'
-    echo "      \"command\": \"node\","
-    echo "      \"args\": [\"$TARGET_ABS/mcp/server.js\"]"
-    echo '    }'
-    echo ""
-  fi
-else
-  cat > "$MCP_JSON" <<EOF
-{
-  "mcpServers": {
-    "bountyagent": {
-      "command": "node",
-      "args": ["$TARGET_ABS/mcp/server.js"]
-    }
-  }
-}
-EOF
-  echo "  .mcp.json configured"
-fi
-
-# Configure settings.json
-if [ -f "$CLAUDE_DIR/settings.json" ]; then
-  echo ""
-  echo "  WARNING: $CLAUDE_DIR/settings.json already exists."
-  echo "  Merge these settings manually:"
-  echo ""
-  echo '  permissions.allow: bountyagent MCP tools (including traffic/audit/intel/static-scan and findings/verification/grade control-plane tools), Bash(mkdir/test/cat/ls), Read, Glob, Grep'
-  echo '  hooks.PreToolUse: scope-guard.sh + session-write-guard.sh (Bash), session-write-guard.sh (Write), scope-guard-mcp.sh (bounty_http_scan/signup_detect/auto_signup)'
-  echo '  statusLine: node "$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js"'
-  echo ""
-else
-  cat > "$CLAUDE_DIR/settings.json" <<EOF
-{
-  "permissions": {
-    "allow": [
-      "mcp__bountyagent__bounty_http_scan",
-      "mcp__bountyagent__bounty_import_http_traffic",
-      "mcp__bountyagent__bounty_read_http_audit",
-      "mcp__bountyagent__bounty_public_intel",
-      "mcp__bountyagent__bounty_import_static_artifact",
-      "mcp__bountyagent__bounty_static_scan",
-      "mcp__bountyagent__bounty_record_finding",
-      "mcp__bountyagent__bounty_read_findings",
-      "mcp__bountyagent__bounty_list_findings",
-      "mcp__bountyagent__bounty_write_verification_round",
-      "mcp__bountyagent__bounty_read_verification_round",
-      "mcp__bountyagent__bounty_write_grade_verdict",
-      "mcp__bountyagent__bounty_read_grade_verdict",
-      "mcp__bountyagent__bounty_init_session",
-      "mcp__bountyagent__bounty_read_session_state",
-      "mcp__bountyagent__bounty_read_state_summary",
-      "mcp__bountyagent__bounty_transition_phase",
-      "mcp__bountyagent__bounty_start_wave",
-      "mcp__bountyagent__bounty_apply_wave_merge",
-      "mcp__bountyagent__bounty_write_handoff",
-      "mcp__bountyagent__bounty_write_wave_handoff",
-      "mcp__bountyagent__bounty_wave_handoff_status",
-      "mcp__bountyagent__bounty_merge_wave_handoffs",
-      "mcp__bountyagent__bounty_read_wave_handoffs",
-      "mcp__bountyagent__bounty_read_handoff",
-      "mcp__bountyagent__bounty_auth_manual",
-      "mcp__bountyagent__bounty_list_auth_profiles",
-      "mcp__bountyagent__bounty_log_dead_ends",
-      "mcp__bountyagent__bounty_log_coverage",
-      "mcp__bountyagent__bounty_wave_status",
-      "mcp__bountyagent__bounty_temp_email",
-      "mcp__bountyagent__bounty_signup_detect",
-      "mcp__bountyagent__bounty_auth_store",
-      "mcp__bountyagent__bounty_auto_signup",
-      "mcp__bountyagent__bounty_read_hunter_brief",
-      "Bash(mkdir *)",
-      "Bash(test *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
-      "Bash(sort *)",
-      "Bash(wc *)",
-      "Bash(head *)",
-      "Bash(tail *)",
-      "Bash(jq *)",
-      "Bash(printf *)",
-      "Bash(echo *)",
-      "Read",
-      "Glob",
-      "Grep"
-    ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard.sh\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/session-write-guard.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__bountyagent__bounty_http_scan",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__bountyagent__bounty_signup_detect",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__bountyagent__bounty_auto_signup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/scope-guard-mcp.sh\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "node \"\$CLAUDE_PROJECT_DIR/.claude/hooks/bounty-statusline.js\""
-  }
-}
-EOF
-  echo "  settings.json (permissions + hooks + statusLine)"
-fi
+# Configure .mcp.json and .claude/settings.json without clobbering unrelated user config
+node "$SCRIPT_DIR/scripts/merge-claude-config.js" "$TARGET_ABS" >/dev/null
+echo "  .mcp.json merged"
+echo "  settings.json merged (permissions + hooks + statusLine)"
 
 # Create session directory
 mkdir -p ~/bounty-agent-sessions
@@ -251,7 +97,7 @@ else
   echo "  MISSING: patchright (optional — enables Tier 2 auto-signup)"
   echo "    Install: cd $TARGET_ABS && npm init -y && npm install patchright && npx patchright install chromium"
 fi
-if [ -n "$CAPSOLVER_API_KEY" ]; then
+if [ -n "${CAPSOLVER_API_KEY:-}" ]; then
   echo "  OK: CAPSOLVER_API_KEY is set"
 else
   echo "  NOT SET: CAPSOLVER_API_KEY (optional — enables CAPTCHA solving)"

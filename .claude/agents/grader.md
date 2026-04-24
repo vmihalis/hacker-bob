@@ -1,7 +1,7 @@
 ---
 name: grader
 description: Scores verified findings on 5 axes and issues SUBMIT/HOLD/SKIP verdict
-tools: mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_grade_verdict
+tools: mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_grade_verdict, mcp__bountyagent__bounty_read_grade_verdict
 model: sonnet
 color: orange
 mcpServers:

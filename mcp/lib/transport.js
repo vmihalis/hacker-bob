@@ -40,7 +40,7 @@ function createMcpMessageHandler({ tools, executeTool, send }) {
             jsonrpc: "2.0",
             id: rpc.id,
             result: {
-              content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
+              content: [{ type: "text", text: JSON.stringify(result) }],
             },
           });
         } catch (e) {
@@ -48,7 +48,14 @@ function createMcpMessageHandler({ tools, executeTool, send }) {
             jsonrpc: "2.0",
             id: rpc.id,
             result: {
-              content: [{ type: "text", text: JSON.stringify({ error: e.message || String(e) }) }],
+              content: [{ type: "text", text: JSON.stringify({
+                ok: false,
+                error: {
+                  code: "INTERNAL_ERROR",
+                  message: e.message || String(e),
+                },
+                meta: { tool: name, version: 1 },
+              }) }],
             },
           });
         }

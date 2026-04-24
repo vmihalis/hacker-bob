@@ -48,8 +48,8 @@ const TOOLS = [
         source: { type: "string", description: "Traffic source label such as burp, har, browser, proxy, or manual." },
         entries: {
           oneOf: [
-            { type: "array", items: { type: "object" } },
-            { type: "object" },
+            { type: "array", items: { type: "object", additionalProperties: true } },
+            { type: "object", additionalProperties: true },
             { type: "string" },
           ],
           description: "Array of HAR log.entries items, a HAR object with log.entries, a JSON string containing either shape, or simplified {method,url,status,headers,ts} records.",
@@ -359,12 +359,15 @@ const TOOLS = [
         agent: { type: "string", pattern: "^a[0-9]+$" },
         surface_id: { type: "string" },
         surface_status: { type: "string", enum: ["complete", "partial"] },
+        handoff_token: { type: "string", minLength: 16 },
+        summary: { type: "string", minLength: 1, maxLength: 2000 },
+        chain_notes: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 300 } },
         content: { type: "string" },
         dead_ends: { type: "array", items: { type: "string" } },
         waf_blocked_endpoints: { type: "array", items: { type: "string" } },
         lead_surface_ids: { type: "array", items: { type: "string" } },
       },
-      required: ["target_domain", "wave", "agent", "surface_id", "surface_status", "content"],
+      required: ["target_domain", "wave", "agent", "surface_id", "surface_status", "summary", "content"],
     },
   },
   {
@@ -402,30 +405,6 @@ const TOOLS = [
         wave_number: { type: "number", description: "Optional wave number. When omitted, all assignment files are scanned." },
       },
       required: ["target_domain"],
-    },
-  },
-  {
-    name: "bounty_read_handoff",
-    description: "Read previous session handoff to resume hunting.",
-    inputSchema: {
-      type: "object",
-      properties: { target_domain: { type: "string" } },
-      required: ["target_domain"],
-    },
-  },
-  {
-    name: "bounty_auth_manual",
-    description: "Store auth tokens as a profile for use with bounty_http_scan.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        target_domain: { type: "string" },
-        profile_name: { type: "string" },
-        cookies: { type: "object", additionalProperties: { type: "string" } },
-        headers: { type: "object", additionalProperties: { type: "string" } },
-        local_storage: { type: "object", additionalProperties: { type: "string" } },
-      },
-      required: ["target_domain", "profile_name"],
     },
   },
   {
@@ -517,12 +496,12 @@ const TOOLS = [
   {
     name: "bounty_auth_store",
     description:
-      "Store authentication profile for a specific role (attacker/victim). Supports multi-profile auth.json v2 format. Use instead of bounty_auth_manual for new sessions.",
+      "Store an authentication profile by profile_name. Names such as attacker, victim, admin, and tenant_b are caller-defined auth profiles.",
     inputSchema: {
       type: "object",
       properties: {
         target_domain: { type: "string" },
-        role: { type: "string", enum: ["attacker", "victim"] },
+        profile_name: { type: "string" },
         cookies: { type: "object", additionalProperties: { type: "string" } },
         headers: { type: "object", additionalProperties: { type: "string" } },
         local_storage: { type: "object", additionalProperties: { type: "string" } },
@@ -534,13 +513,13 @@ const TOOLS = [
           },
         },
       },
-      required: ["target_domain", "role"],
+      required: ["target_domain", "profile_name"],
     },
   },
   {
     name: "bounty_list_auth_profiles",
     description:
-      "Return redacted auth profile status for a target. Shows profile names, roles, header/cookie key names, credential presence, and expiry/staleness hints without token, cookie, localStorage, or password values.",
+      "Return redacted auth profile status for a target. Shows profile names, header/cookie key names, credential presence, and expiry/staleness hints without token, cookie, localStorage, or password values.",
     inputSchema: {
       type: "object",
       properties: {
@@ -561,7 +540,7 @@ const TOOLS = [
         email: { type: "string" },
         password: { type: "string" },
         name: { type: "string" },
-        role: { type: "string", enum: ["attacker", "victim"], default: "attacker" },
+        profile_name: { type: "string", default: "attacker" },
         proxy: { type: "string" },
         headless: { type: "boolean" },
         timeout_ms: { type: "number" },

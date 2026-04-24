@@ -13,7 +13,7 @@ import json
 import os
 import pathlib
 import sys
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 
 def utc_now():
@@ -77,6 +77,31 @@ def matches_scope(domain, allowed_domains):
         if domain == allowed or domain.endswith("." + allowed):
             return True
     return False
+
+
+PUBLIC_INTEL_ALLOWED_HOSTS = {
+    "web.archive.org",
+    "otx.alienvault.com",
+    "crt.sh",
+    "api.github.com",
+    "raw.githubusercontent.com",
+}
+
+
+def target_appears_in_public_intel_url(url_value, target_domain):
+    if not target_domain:
+        return False
+    try:
+        parsed = urlsplit(url_value.strip())
+    except Exception:
+        return False
+    target = target_domain.strip().strip(".").lower()
+    raw = f"{parsed.path}?{parsed.query}".lower()
+    try:
+        decoded = unquote(raw)
+    except Exception:
+        decoded = raw
+    return target in raw or target in decoded
 
 
 def log_line(session_dir, message):
@@ -143,17 +168,13 @@ if deny_list.is_file():
                 block(f"BLOCKED: {domain} is on the deny list")
 
 allowed = set(load_scope(session_dir))
-allowed.update(
-    {
-        "web.archive.org",
-        "otx.alienvault.com",
-        "crt.sh",
-        "api.github.com",
-        "raw.githubusercontent.com",
-    }
+
+public_intel_allowed = (
+    matches_scope(domain, PUBLIC_INTEL_ALLOWED_HOSTS)
+    and target_appears_in_public_intel_url(url, session_dir.name)
 )
 
-if not matches_scope(domain, allowed):
+if not matches_scope(domain, allowed) and not public_intel_allowed:
     log_line(session_dir, f"OUT-OF-SCOPE (http_scan): {domain} (url: {redact_url(url)[:200]})")
 
 raise SystemExit(0)
