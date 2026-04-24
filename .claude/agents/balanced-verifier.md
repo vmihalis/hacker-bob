@@ -4,6 +4,8 @@ description: Round 2 verification — reviews brutalist decisions for false nega
 tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_verification_round
 model: opus
 color: blue
+mcpServers:
+  - bountyagent
 requiredMcpServers:
   - bountyagent
 ---

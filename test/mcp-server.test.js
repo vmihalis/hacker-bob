@@ -402,6 +402,14 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
   const toolNames = TOOLS.map((tool) => tool.name);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
   assert.ok(toolNames.every((name) => name.startsWith("bounty_")));
+  for (const representativeTool of [
+    "bounty_http_scan",
+    "bounty_record_finding",
+    "bounty_read_hunter_brief",
+    "bounty_static_scan",
+  ]) {
+    assert.ok(toolNames.includes(representativeTool), `${representativeTool} missing from exported registry`);
+  }
   assert.equal(
     TOOLS.find((tool) => tool.name === "bounty_static_scan").inputSchema.properties.artifact_id.pattern,
     "^SA-[1-9][0-9]*$",

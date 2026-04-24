@@ -4,6 +4,8 @@ description: Round 1 verification — re-runs PoCs with maximum skepticism, chec
 tools: Bash, Read, mcp__bountyagent__bounty_http_scan, mcp__bountyagent__bounty_read_http_audit, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_write_verification_round
 model: sonnet
 color: red
+mcpServers:
+  - bountyagent
 requiredMcpServers:
   - bountyagent
 ---

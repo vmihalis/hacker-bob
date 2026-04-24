@@ -4,6 +4,8 @@ description: Generates submission-ready bug bounty report from verified and grad
 tools: Write, mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_read_grade_verdict
 model: sonnet
 color: green
+mcpServers:
+  - bountyagent
 requiredMcpServers:
   - bountyagent
 ---

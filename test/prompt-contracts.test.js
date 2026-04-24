@@ -9,6 +9,10 @@ function readFile(relativePath) {
   return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
 }
 
+function lineCount(relativePath) {
+  return readFile(relativePath).trimEnd().split(/\r?\n/).length;
+}
+
 function sourceAllowedMcpTools() {
   const settings = JSON.parse(readFile(".claude/settings.json"));
   return new Set(
@@ -62,33 +66,51 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(tools.includes("mcp__bountyagent__bounty_static_scan"));
 });
 
-test("chain-builder and report-writer declare requiredMcpServers bountyagent", () => {
-  for (const agent of ["chain-builder", "report-writer"]) {
-    const document = readFile(`.claude/agents/${agent}.md`);
-    assert.match(
-      document,
-      /requiredMcpServers:\s*\n\s*-\s*bountyagent/,
-      `${agent}.md missing requiredMcpServers: bountyagent`
-    );
-  }
-});
-
-test("all MCP-writing agents declare requiredMcpServers bountyagent", () => {
+test("MCP-dependent agents declare official mcpServers bountyagent metadata", () => {
   const agents = [
     "hunter-agent",
     "brutalist-verifier",
     "balanced-verifier",
     "final-verifier",
     "grader",
+    "chain-builder",
+    "report-writer",
   ];
   for (const agent of agents) {
     const document = readFile(`.claude/agents/${agent}.md`);
     assert.match(
       document,
-      /requiredMcpServers:\s*\n\s*-\s*bountyagent/,
-      `${agent}.md missing requiredMcpServers: bountyagent`
+      /mcpServers:\s*\n\s*-\s*bountyagent/,
+      `${agent}.md missing mcpServers: bountyagent`
     );
   }
+});
+
+test("recon-agent remains MCP-free", () => {
+  const document = readFile(".claude/agents/recon-agent.md");
+  assert.doesNotMatch(document, /mcpServers:/);
+  assert.doesNotMatch(document, /requiredMcpServers:/);
+  assert.doesNotMatch(document, /mcp__/i);
+});
+
+test("global rules stay small and keep scope plus MCP-owned artifact guardrails", () => {
+  for (const ruleFile of [".claude/rules/hunting.md", ".claude/rules/reporting.md"]) {
+    const document = readFile(ruleFile);
+    assert.ok(lineCount(ruleFile) <= 60, `${ruleFile} is too large for always-active context`);
+    assert.match(document, /scope/i, `${ruleFile} must mention scope`);
+    assert.match(document, /MCP-owned artifacts/i, `${ruleFile} must mention MCP-owned artifacts`);
+  }
+});
+
+test("bountyagent command stays orchestration-sized and preserves FSM shape", () => {
+  const orchestrator = readFile(".claude/commands/bountyagent.md");
+  assert.ok(lineCount(".claude/commands/bountyagent.md") <= 220, "bountyagent command is too large");
+  assert.match(orchestrator, /RECON\s*→\s*AUTH\s*→\s*HUNT\s*→\s*CHAIN\s*→\s*VERIFY\s*→\s*GRADE\s*→\s*REPORT/);
+  for (const phase of ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"]) {
+    assert.match(orchestrator, new RegExp(`PHASE [0-9]+: ${phase}|${phase}`), `missing ${phase}`);
+  }
+  assert.match(orchestrator, /must never call `bounty_write_wave_handoff`/);
+  assert.match(orchestrator, /must never write handoff JSON directly/);
 });
 
 test("orchestrator validates brutalist and balanced rounds before proceeding", () => {

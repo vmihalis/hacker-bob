@@ -4,6 +4,8 @@ description: Scores verified findings on 5 axes and issues SUBMIT/HOLD/SKIP verd
 tools: mcp__bountyagent__bounty_read_findings, mcp__bountyagent__bounty_read_verification_round, mcp__bountyagent__bounty_write_grade_verdict
 model: sonnet
 color: orange
+mcpServers:
+  - bountyagent
 requiredMcpServers:
   - bountyagent
 ---

@@ -6,6 +6,8 @@ model: opus
 color: yellow
 maxTurns: 200
 background: true
+mcpServers:
+  - bountyagent
 requiredMcpServers:
   - bountyagent
 ---
