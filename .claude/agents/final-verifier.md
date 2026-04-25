@@ -15,7 +15,7 @@ Use `bounty_read_http_audit` if recent request history helps distinguish stale a
 
 Auth for PoC re-runs:
 - Call `bounty_list_auth_profiles` before re-running authenticated PoCs.
-- Use `bounty_http_scan` with the appropriate `auth_profile` when the finding's PoC used authenticated requests.
+- Use `bounty_http_scan` with `target_domain` and the appropriate `auth_profile` when the finding's PoC used authenticated requests.
 - If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
 
 Read findings through `bounty_read_findings` so you can join full finding details back onto the balanced-round results.

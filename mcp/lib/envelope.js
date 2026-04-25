@@ -24,12 +24,11 @@ function metaForTool(toolName) {
 }
 
 function okEnvelope(toolName, data) {
-  const envelope = {
+  return {
     ok: true,
     data: data == null ? {} : data,
     meta: metaForTool(toolName),
   };
-  return withLegacyStringifier(envelope);
 }
 
 function errorEnvelope(toolName, code, message, details = undefined) {
@@ -40,39 +39,11 @@ function errorEnvelope(toolName, code, message, details = undefined) {
   if (details !== undefined) {
     error.details = details;
   }
-  const envelope = {
+  return {
     ok: false,
     error,
     meta: metaForTool(toolName),
   };
-  return withLegacyStringifier(envelope);
-}
-
-function legacyPayload(envelope) {
-  if (envelope.ok) {
-    return envelope.data;
-  }
-  if (envelope.error && envelope.error.details && typeof envelope.error.details === "object" && !Array.isArray(envelope.error.details)) {
-    return {
-      ...envelope.error.details,
-      error: envelope.error.message,
-    };
-  }
-  return {
-    error: envelope.error.message,
-  };
-}
-
-function withLegacyStringifier(envelope) {
-  Object.defineProperty(envelope, "toString", {
-    value: () => JSON.stringify(legacyPayload(envelope)),
-    enumerable: false,
-  });
-  Object.defineProperty(envelope, Symbol.toPrimitive, {
-    value: () => JSON.stringify(legacyPayload(envelope)),
-    enumerable: false,
-  });
-  return envelope;
 }
 
 function parseHandlerResult(rawResult) {

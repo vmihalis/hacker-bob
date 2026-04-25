@@ -496,8 +496,10 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
     assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
     assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
   }
-  assert.deepEqual(JSON.parse(await executeTool("__unknown_tool__", {})), {
-    error: "Unknown tool: __unknown_tool__",
+  assert.deepEqual(await executeTool("__unknown_tool__", {}), {
+    ok: false,
+    error: { code: "UNKNOWN_TOOL", message: "Unknown tool: __unknown_tool__" },
+    meta: { tool: "__unknown_tool__", version: 1 },
   });
 });
 
@@ -522,6 +524,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(byName.get("bounty_read_http_audit").inputSchema.required[0], "target_domain");
   assert.equal(byName.get("bounty_start_wave").inputSchema.properties.assignments.type, "array");
   assert.equal(byName.get("bounty_http_scan").inputSchema.properties.url.type, "string");
+  assert.deepEqual(byName.get("bounty_http_scan").inputSchema.required, ["method", "url", "target_domain"]);
   assert.equal(TOOL_MANIFEST.bounty_read_http_audit.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
@@ -620,15 +623,17 @@ test("MCP runtime no longer imports legacy split tool definition files", () => {
 
 test("executeTool rejects unknown top-level arguments while allowing nested map-like fields", async () => {
   await withTempHome(async () => {
-    const unknown = JSON.parse(await executeTool("bounty_http_scan", {
+    const unknown = await executeTool("bounty_http_scan", {
       method: "GET",
       url: "https://example.com/",
       target_domain: "example.com",
       surprise: true,
-    }));
-    assert.match(unknown.error, /surprise is not allowed/);
+    });
+    assert.equal(unknown.ok, false);
+    assert.equal(unknown.error.code, "INVALID_ARGUMENTS");
+    assert.match(unknown.error.message, /surprise is not allowed/);
 
-    const traffic = JSON.parse(await executeTool("bounty_import_http_traffic", {
+    const traffic = await executeTool("bounty_import_http_traffic", {
       target_domain: "example.com",
       source: "har",
       entries: [{
@@ -639,17 +644,19 @@ test("executeTool rejects unknown top-level arguments while allowing nested map-
         },
         response: { status: 200, nested_har_field: true },
       }],
-    }));
-    assert.equal(traffic.imported, 1);
+    });
+    assert.equal(traffic.ok, true);
+    assert.equal(traffic.data.imported, 1);
 
-    const auth = JSON.parse(await executeTool("bounty_auth_store", {
+    const auth = await executeTool("bounty_auth_store", {
       target_domain: "example.com",
       profile_name: "attacker",
       headers: { "X-Custom": "ok" },
       cookies: { session: "abc" },
       local_storage: { access_token: "eyJabc" },
-    }));
-    assert.equal(auth.success, true);
+    });
+    assert.equal(auth.ok, true);
+    assert.equal(auth.data.success, true);
   });
 });
 
@@ -661,6 +668,14 @@ test("executeTool returns standard envelopes and recursively validates schema ar
       error: { code: "UNKNOWN_TOOL", message: "Unknown tool: __unknown_tool__" },
       meta: { tool: "__unknown_tool__", version: 1 },
     });
+
+    const missingTargetDomain = await executeTool("bounty_http_scan", {
+      method: "GET",
+      url: "https://example.com/",
+    });
+    assert.equal(missingTargetDomain.ok, false);
+    assert.equal(missingTargetDomain.error.code, "INVALID_ARGUMENTS");
+    assert.match(missingTargetDomain.error.message, /target_domain is required/);
 
     const nested = await executeTool("bounty_auth_store", {
       target_domain: "example.com",
@@ -714,9 +729,14 @@ test("executeTool returns standard envelopes and recursively validates schema ar
   });
 });
 
-test("MCP message handler lists tools, routes calls, and wraps thrown errors", async () => {
+test("MCP message handler lists tools, routes calls, serializes envelopes, and wraps thrown errors", async () => {
   const sent = [];
   const calls = [];
+  const successEnvelope = {
+    ok: true,
+    data: { args: { x: 1 } },
+    meta: { tool: "bounty_fake", version: 1 },
+  };
   const handleMessage = createMcpMessageHandler({
     tools: [{ name: "bounty_fake", inputSchema: { type: "object" } }],
     executeTool: async (name, args) => {
@@ -724,7 +744,7 @@ test("MCP message handler lists tools, routes calls, and wraps thrown errors", a
       if (name === "bounty_throw") {
         throw new Error("boom");
       }
-      return { ok: true, args };
+      return successEnvelope;
     },
     send: (message) => sent.push(message),
   });
@@ -752,7 +772,9 @@ test("MCP message handler lists tools, routes calls, and wraps thrown errors", a
     { name: "bounty_fake", args: { x: 1 } },
     { name: "bounty_throw", args: {} },
   ]);
-  assert.deepEqual(JSON.parse(sent[1].result.content[0].text), { ok: true, args: { x: 1 } });
+  assert.equal(sent[1].result.content[0].type, "text");
+  assert.equal(sent[1].result.content[0].text, JSON.stringify(successEnvelope));
+  assert.deepEqual(JSON.parse(sent[1].result.content[0].text), successEnvelope);
   assert.deepEqual(JSON.parse(sent[2].result.content[0].text), {
     ok: false,
     error: { code: "INTERNAL_ERROR", message: "boom" },
@@ -3186,17 +3208,18 @@ test("bounty_auth_store writes v2 auth.json with attacker profile", async () => 
     const sessionsDir = path.join(tempHome, "bounty-agent-sessions");
     fs.mkdirSync(path.join(sessionsDir, "target.com"), { recursive: true });
 
-    const result = JSON.parse(await executeTool("bounty_auth_store", {
+    const result = await executeTool("bounty_auth_store", {
       target_domain: "target.com",
       profile_name: "attacker",
       headers: { "Authorization": "Bearer atok" },
       cookies: { "session": "abc123" },
-    }));
+    });
 
-    assert.equal(result.success, true);
-    assert.equal(result.profile_name, "attacker");
-    assert.equal(result.has_attacker, true);
-    assert.equal(result.has_victim, false);
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, true);
+    assert.equal(result.data.profile_name, "attacker");
+    assert.equal(result.data.has_attacker, true);
+    assert.equal(result.data.has_victim, false);
 
     const saved = JSON.parse(fs.readFileSync(path.join(sessionsDir, "target.com", "auth.json"), "utf8"));
     assert.equal(saved.version, 2);
@@ -3226,15 +3249,16 @@ test("bounty_auth_store adds victim profile to existing v2 auth.json", async () 
     });
 
     // Now add victim
-    const result = JSON.parse(await executeTool("bounty_auth_store", {
+    const result = await executeTool("bounty_auth_store", {
       target_domain: "target.com",
       profile_name: "victim",
       headers: { "Authorization": "Bearer vtok" },
-    }));
+    });
 
-    assert.equal(result.success, true);
-    assert.equal(result.has_attacker, true);
-    assert.equal(result.has_victim, true);
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, true);
+    assert.equal(result.data.has_attacker, true);
+    assert.equal(result.data.has_victim, true);
 
     const saved = JSON.parse(fs.readFileSync(path.join(targetDir, "auth.json"), "utf8"));
     assert.equal(saved.version, 2);
@@ -3282,15 +3306,16 @@ test("bounty_auth_store migrates legacy auth.json", async () => {
     }));
 
     // Add victim — should migrate legacy to attacker and add victim
-    const result = JSON.parse(await executeTool("bounty_auth_store", {
+    const result = await executeTool("bounty_auth_store", {
       target_domain: "target.com",
       profile_name: "victim",
       headers: { "Authorization": "Bearer vtok" },
-    }));
+    });
 
-    assert.equal(result.success, true);
-    assert.equal(result.has_attacker, true);
-    assert.equal(result.has_victim, true);
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, true);
+    assert.equal(result.data.has_attacker, true);
+    assert.equal(result.data.has_victim, true);
 
     const saved = JSON.parse(fs.readFileSync(path.join(targetDir, "auth.json"), "utf8"));
     assert.equal(saved.version, 2);
@@ -3372,10 +3397,9 @@ test("bounty_auth_store reports persistence failures instead of claiming success
     assert.equal(envelope.ok, false);
     assert.equal(envelope.error.code, "INTERNAL_ERROR");
     assert.equal(envelope.error.details.auth_path, authPath);
-    const result = JSON.parse(envelope);
-    assert.equal(result.success, false);
-    assert.match(result.error, /failed to persist auth profile/i);
-    assert.equal(result.auth_path, authPath);
+    assert.equal(envelope.error.details.success, false);
+    assert.match(envelope.error.message, /failed to persist auth profile/i);
+    assert.equal(envelope.error.details.auth_path, authPath);
   } finally {
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -3449,23 +3473,26 @@ test("bounty_http_scan resolves auth by explicit target_domain and first-party s
       status: requestOptions.headers.Authorization === "Bearer target-token" ? 200 : 401,
       body: "ok",
     }), async (requestedUrls) => {
-      const allowed = JSON.parse(await executeTool("bounty_http_scan", {
+      const allowed = await executeTool("bounty_http_scan", {
         target_domain: "target.com",
         method: "GET",
         url: "https://api.target.com/private",
         auth_profile: "attacker",
         response_mode: "status_only",
-      }));
-      assert.equal(allowed.status, 200);
+      });
+      assert.equal(allowed.ok, true);
+      assert.equal(allowed.data.status, 200);
 
-      const blocked = JSON.parse(await executeTool("bounty_http_scan", {
+      const blocked = await executeTool("bounty_http_scan", {
         target_domain: "missing.com",
         method: "GET",
         url: "https://api.missing.com/private",
         auth_profile: "attacker",
         response_mode: "status_only",
-      }));
-      assert.match(blocked.error, /auth_profile "attacker" requested but not found/);
+      });
+      assert.equal(blocked.ok, false);
+      assert.equal(blocked.error.code, "AUTH_MISSING");
+      assert.match(blocked.error.message, /auth_profile "attacker" requested but not found/);
       assert.deepEqual(requestedUrls, ["https://api.target.com/private"]);
     });
   });
@@ -3489,11 +3516,12 @@ test("bounty_temp_email create returns email with mocked mail.tm", async () => {
       return { ok: false, status: 500 };
     };
 
-    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
-    assert.equal(result.success, true);
-    assert.ok(result.email_address.endsWith("@test.tm"));
-    assert.equal(result.provider, "mail.tm");
-    assert.ok(result.password.length > 0);
+    const result = await executeTool("bounty_temp_email", { operation: "create" });
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, true);
+    assert.ok(result.data.email_address.endsWith("@test.tm"));
+    assert.equal(result.data.provider, "mail.tm");
+    assert.ok(result.data.password.length > 0);
   } finally {
     global.fetch = originalFetch;
   }
@@ -3512,10 +3540,11 @@ test("bounty_temp_email create falls back to guerrillamail on mail.tm failure", 
       return { ok: false, status: 500, text: async () => "" };
     };
 
-    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
-    assert.equal(result.success, true);
-    assert.equal(result.email_address, "test_user@guerrillamail.com");
-    assert.equal(result.provider, "guerrillamail");
+    const result = await executeTool("bounty_temp_email", { operation: "create" });
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, true);
+    assert.equal(result.data.email_address, "test_user@guerrillamail.com");
+    assert.equal(result.data.provider, "guerrillamail");
   } finally {
     global.fetch = originalFetch;
   }
@@ -3526,9 +3555,11 @@ test("bounty_temp_email create returns error when all providers fail", async () 
   try {
     global.fetch = async () => ({ ok: false, status: 500, text: async () => "Internal Server Error" });
 
-    const result = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
-    assert.equal(result.success, false);
-    assert.ok(result.providers_tried.length > 0);
+    const result = await executeTool("bounty_temp_email", { operation: "create" });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "INTERNAL_ERROR");
+    assert.equal(result.error.details.success, false);
+    assert.ok(result.error.details.providers_tried.length > 0);
   } finally {
     global.fetch = originalFetch;
   }
@@ -3561,15 +3592,17 @@ test("bounty_temp_email poll returns messages with mocked mail.tm", async () => 
       return { ok: false, status: 500 };
     };
 
-    const createResult = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
-    const pollResult = JSON.parse(await executeTool("bounty_temp_email", {
+    const createResult = await executeTool("bounty_temp_email", { operation: "create" });
+    assert.equal(createResult.ok, true);
+    const pollResult = await executeTool("bounty_temp_email", {
       operation: "poll",
-      email_address: createResult.email_address,
-    }));
+      email_address: createResult.data.email_address,
+    });
 
-    assert.equal(pollResult.success, true);
-    assert.equal(pollResult.messages.length, 1);
-    assert.equal(pollResult.messages[0].from, "noreply@target.com");
+    assert.equal(pollResult.ok, true);
+    assert.equal(pollResult.data.success, true);
+    assert.equal(pollResult.data.messages.length, 1);
+    assert.equal(pollResult.data.messages[0].from, "noreply@target.com");
   } finally {
     global.fetch = originalFetch;
   }
@@ -3600,28 +3633,31 @@ test("bounty_temp_email extract finds codes and links", async () => {
       return { ok: false, status: 500 };
     };
 
-    const createResult = JSON.parse(await executeTool("bounty_temp_email", { operation: "create" }));
-    const extractResult = JSON.parse(await executeTool("bounty_temp_email", {
+    const createResult = await executeTool("bounty_temp_email", { operation: "create" });
+    assert.equal(createResult.ok, true);
+    const extractResult = await executeTool("bounty_temp_email", {
       operation: "extract",
-      email_address: createResult.email_address,
+      email_address: createResult.data.email_address,
       message_id: "msg1",
-    }));
+    });
 
-    assert.equal(extractResult.success, true);
-    assert.ok(extractResult.verification_codes.includes("847291"));
-    assert.ok(extractResult.verification_links.some((l) => l.includes("target.com/verify")));
+    assert.equal(extractResult.ok, true);
+    assert.equal(extractResult.data.success, true);
+    assert.ok(extractResult.data.verification_codes.includes("847291"));
+    assert.ok(extractResult.data.verification_links.some((l) => l.includes("target.com/verify")));
   } finally {
     global.fetch = originalFetch;
   }
 });
 
 test("bounty_temp_email poll for unknown email returns error", async () => {
-  const result = JSON.parse(await executeTool("bounty_temp_email", {
+  const result = await executeTool("bounty_temp_email", {
     operation: "poll",
     email_address: "nonexistent@nowhere.com",
-  }));
-  assert.ok(result.error);
-  assert.ok(result.error.includes("Unknown email"));
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "INTERNAL_ERROR");
+  assert.ok(result.error.message.includes("Unknown email"));
 });
 
 test("auto-signup result normalization fails ambiguous states and preserves diagnostics", () => {
@@ -3715,7 +3751,7 @@ test("bounty_http_scan writes audit entries for success, HTTP error, timeout, an
       "https://example.com/forbidden": { status: 403, statusText: "Forbidden", body: "no" },
       "https://example.com/timeout": { error: timeoutError },
     }, async () => {
-      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+      const okResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         wave: "w1",
         agent: "a1",
@@ -3723,23 +3759,36 @@ test("bounty_http_scan writes audit entries for success, HTTP error, timeout, an
         method: "GET",
         url: "https://example.com/ok",
         response_mode: "status_only",
-      })).status, 200);
-      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+      });
+      assert.equal(okResult.ok, true);
+      assert.equal(okResult.data.status, 200);
+
+      const forbiddenResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://example.com/forbidden",
         response_mode: "status_only",
-      })).status, 403);
-      assert.match(JSON.parse(await executeTool("bounty_http_scan", {
+      });
+      assert.equal(forbiddenResult.ok, true);
+      assert.equal(forbiddenResult.data.status, 403);
+
+      const timeoutResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://example.com/timeout",
-      })).error, /timeout/i);
-      assert.match(JSON.parse(await executeTool("bounty_http_scan", {
+      });
+      assert.equal(timeoutResult.ok, false);
+      assert.equal(timeoutResult.error.code, "INTERNAL_ERROR");
+      assert.match(timeoutResult.error.message, /timeout/i);
+
+      const privateHostResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "http://127.0.0.1/admin",
-      })).error, /Blocked internal\/private host/);
+      });
+      assert.equal(privateHostResult.ok, false);
+      assert.equal(privateHostResult.error.code, "SCOPE_BLOCKED");
+      assert.match(privateHostResult.error.message, /Blocked internal\/private host/);
 
       const records = readHttpAuditRecordsFromJsonl(domain);
       assert.equal(records.length, 4);
@@ -3802,48 +3851,62 @@ test("bounty_http_scan blocks out-of-scope and deny-listed hosts while allowing 
       "https://api.partner-service.com/v1/users": { status: 200, statusText: "OK", body: "ok" },
       "https://crt.sh/?q=example.com": { status: 200, statusText: "OK", body: "ok" },
     }, async (requestedUrls) => {
-      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+      const appResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://app.example.com/ok",
         response_mode: "status_only",
-      })).status, 200);
-      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+      });
+      assert.equal(appResult.ok, true);
+      assert.equal(appResult.data.status, 200);
+
+      const attackSurfaceResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://api.partner-service.com/v1/users",
         response_mode: "status_only",
-      })).status, 200);
-      assert.equal(JSON.parse(await executeTool("bounty_http_scan", {
+      });
+      assert.equal(attackSurfaceResult.ok, true);
+      assert.equal(attackSurfaceResult.data.status, 200);
+
+      const intelResult = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://crt.sh/?q=example.com",
         response_mode: "status_only",
-      })).status, 200);
+      });
+      assert.equal(intelResult.ok, true);
+      assert.equal(intelResult.data.status, 200);
 
-      const thirdParty = JSON.parse(await executeTool("bounty_http_scan", {
+      const thirdParty = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://third-party.example.net/api",
-      }));
-      assert.match(thirdParty.error, /out-of-scope host/);
-      assert.equal(thirdParty.scope_decision, "blocked");
+      });
+      assert.equal(thirdParty.ok, false);
+      assert.equal(thirdParty.error.code, "SCOPE_BLOCKED");
+      assert.match(thirdParty.error.message, /out-of-scope host/);
+      assert.equal(thirdParty.error.details.scope_decision, "blocked");
 
-      const unrelatedIntel = JSON.parse(await executeTool("bounty_http_scan", {
+      const unrelatedIntel = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://crt.sh/?q=other.com",
-      }));
-      assert.match(unrelatedIntel.error, /out-of-scope host/);
-      assert.equal(unrelatedIntel.scope_decision, "blocked");
+      });
+      assert.equal(unrelatedIntel.ok, false);
+      assert.equal(unrelatedIntel.error.code, "SCOPE_BLOCKED");
+      assert.match(unrelatedIntel.error.message, /out-of-scope host/);
+      assert.equal(unrelatedIntel.error.details.scope_decision, "blocked");
 
-      const denied = JSON.parse(await executeTool("bounty_http_scan", {
+      const denied = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://blocked.example.com/admin",
-      }));
-      assert.match(denied.error, /deny-listed host/);
-      assert.equal(denied.scope_decision, "blocked");
+      });
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error.code, "SCOPE_BLOCKED");
+      assert.match(denied.error.message, /deny-listed host/);
+      assert.equal(denied.error.details.scope_decision, "blocked");
 
       assert.deepEqual(requestedUrls, [
         "https://app.example.com/ok",
@@ -3870,13 +3933,14 @@ test("bounty_http_scan requires target_domain instead of inferring scope from ot
     const domain = "example.com";
     seedSessionState(domain);
 
-    const blocked = JSON.parse(await executeTool("bounty_http_scan", {
+    const blocked = await executeTool("bounty_http_scan", {
       method: "GET",
       url: "https://app.example.com/ok",
       response_mode: "status_only",
-    }));
-    assert.match(blocked.error, /target_domain is required/);
-    assert.equal(blocked.scope_decision, "blocked");
+    });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.error.code, "INVALID_ARGUMENTS");
+    assert.match(blocked.error.message, /target_domain is required/);
   });
 });
 
@@ -3890,15 +3954,17 @@ test("bounty_http_scan blocks unsafe redirect targets before fetching them", asy
         headers: { location: "http://127.0.0.1/admin" },
       },
     }, async (requestedUrls) => {
-      const result = JSON.parse(await executeTool("bounty_http_scan", {
+      const result = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://example.com/redirect",
         follow_redirects: true,
-      }));
+      });
 
-      assert.match(result.error, /Blocked internal\/private host/);
-      assert.equal(result.scope_decision, "blocked");
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "SCOPE_BLOCKED");
+      assert.match(result.error.message, /Blocked internal\/private host/);
+      assert.equal(result.error.details.scope_decision, "blocked");
       assert.deepEqual(requestedUrls, ["https://example.com/redirect"]);
 
       const records = readHttpAuditRecordsFromJsonl(domain);
@@ -3915,13 +3981,15 @@ test("bounty_http_scan blocks public hostnames that resolve to private IPs befor
     await withMockSafeFetch({
       "https://example.com/private-dns": { status: 200, body: "should not connect" },
     }, async (requestedUrls) => {
-      const result = JSON.parse(await executeTool("bounty_http_scan", {
+      const result = await executeTool("bounty_http_scan", {
         target_domain: domain,
         method: "GET",
         url: "https://example.com/private-dns",
-      }));
-      assert.match(result.error, /Blocked internal\/private DNS address/);
-      assert.equal(result.scope_decision, "blocked");
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "SCOPE_BLOCKED");
+      assert.match(result.error.message, /Blocked internal\/private DNS address/);
+      assert.equal(result.error.details.scope_decision, "blocked");
       assert.deepEqual(requestedUrls, []);
     }, { dnsRecords: { "example.com": [{ address: "10.0.0.5", family: 4 }] } });
   });
@@ -5379,14 +5447,15 @@ test("httpScan returns error when auth_profile is requested but not found", asyn
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-authtest-"));
   process.env.HOME = tempHome;
   try {
-    const result = JSON.parse(await executeTool("bounty_http_scan", {
+    const result = await executeTool("bounty_http_scan", {
       target_domain: "example.com",
       method: "GET",
       url: "https://example.com/",
       auth_profile: "nonexistent_test_profile_xyz",
-    }));
-    assert.ok(result.error, `Should return an error, got keys: ${JSON.stringify(Object.keys(result))}`);
-    assert.ok(result.error.includes("not found"), `Error should mention profile not found: ${result.error}`);
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "AUTH_MISSING");
+    assert.ok(result.error.message.includes("not found"), `Error should mention profile not found: ${result.error.message}`);
   } finally {
     process.env.HOME = previousHome;
     fs.rmSync(tempHome, { recursive: true, force: true });

@@ -136,7 +136,7 @@ if sessions_root.is_dir():
 
 scope_cache = {}
 
-# If target_domain is provided, resolve session directly from it
+# Resolve directly from required target_domain first; fallback only supports legacy hook payloads before MCP validation returns a structured error.
 target_domain = (ti.get("target_domain") or "").strip().lower()
 session_dir = None
 if target_domain:

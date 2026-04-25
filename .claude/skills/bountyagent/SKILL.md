@@ -100,7 +100,7 @@ If `--no-auth` is set: skip all signup logic, call `bounty_transition_phase({ ta
 
 Otherwise use the existing four-tier signup flow, in order:
 1. Mandatory first calls in parallel: `bounty_signup_detect({ target_domain, target_url })` and `bounty_temp_email({ operation: "create" })`.
-2. Tier 1 API signup: use `bounty_http_scan` POST against the detected signup endpoint with temp email and generated password.
+2. Tier 1 API signup: use `bounty_http_scan({ target_domain, method: "POST", url: signup_url, ... })` against the detected signup endpoint with temp email and generated password.
 3. Tier 2 browser signup: call `bounty_auto_signup({ target_domain, signup_url, email, password, profile_name: "attacker" })`; if auth is stored, continue to verification, otherwise use returned errors/fallback to decide Tier 3.
 4. Tier 3 assisted manual: ask the user to register with the temp email/password, then poll/extract verification mail and store auth with `bounty_auth_store({ target_domain, profile_name: "attacker", ... })`.
 5. Tier 4 manual token capture: if the user skips or automation fails, ask the user to log in, open DevTools Console, paste this snippet, then send the copied JSON. Store it with `bounty_auth_store({ target_domain, profile_name, ... })`.
@@ -117,7 +117,7 @@ Otherwise use the existing four-tier signup flow, in order:
 })();
 ```
 
-After any successful signup, poll email up to 12 times, extract a code/link, complete verification through `bounty_http_scan`, then repeat the flow for a `victim` profile with a new temp email. Verify auth with `bounty_http_scan` against a protected endpoint and call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`.
+After any successful signup, poll email up to 12 times, extract a code/link, complete verification through `bounty_http_scan` with `target_domain`, then repeat the flow for a `victim` profile with a new temp email. Verify auth with `bounty_http_scan` with `target_domain` against a protected endpoint and call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`.
 
 ## PHASE 3: HUNT
 Read `attack_surface.json` and `bounty_read_state_summary.data` before every wave. Treat MCP ranking fields as additive. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` route later waves.
@@ -142,7 +142,7 @@ Agent: a[agent]
 Handoff token: [only this agent's handoff_token from bounty_start_wave.data.assignments]
 First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]' }) and use .data.
 Use surface_type, bug_class_hints, high_value_flows, evidence, surface_limits, coverage_summary, traffic_summary, audit_summary, circuit_breaker_summary, ranking_summary, intel_hints, and static_scan_hints as prioritization inputs for this one assigned surface.
-Prefer traffic_summary endpoints, replay through bounty_http_scan, log bounty_log_coverage after meaningful tests, and log before switching away from promising traffic-derived endpoints.
+Prefer traffic_summary endpoints, replay through bounty_http_scan with target_domain, log bounty_log_coverage after meaningful tests, and log before switching away from promising traffic-derived endpoints.
 New token-contract scans must use bounty_import_static_artifact then bounty_static_scan; never scan arbitrary paths.
 Checkpoint mode: [normal|paranoid|yolo].
 Auth: call bounty_list_auth_profiles, use attacker profile for primary testing, victim profile for IDOR/access-control confirmation, legacy auth as a single profile, or unauthenticated testing if auth is absent.

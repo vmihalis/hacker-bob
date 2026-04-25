@@ -423,6 +423,31 @@ test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel/
   assert.match(orchestrator, /bounty_static_scan[\s\S]*static-scan-results\.jsonl/);
 });
 
+test("bounty_http_scan prompt contracts require target_domain on every call", () => {
+  const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
+  const orchestratorPrompt = readFile(".claude/skills/bountyagent/SKILL.md");
+  const verifierPrompts = [
+    readFile(".claude/agents/brutalist-verifier.md"),
+    readFile(".claude/agents/balanced-verifier.md"),
+    readFile(".claude/agents/final-verifier.md"),
+  ];
+
+  assert.match(hunterPrompt, /Every `bounty_http_scan` call must include `target_domain`/);
+  assert.match(hunterPrompt, /`bounty_http_scan` with `target_domain`/);
+  assert.doesNotMatch(hunterPrompt, /different domain than the target[\s\S]{0,160}target_domain/i);
+  assert.doesNotMatch(hunterPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
+
+  assert.match(orchestratorPrompt, /bounty_http_scan\(\{ target_domain/);
+  assert.match(orchestratorPrompt, /`bounty_http_scan` with `target_domain`/);
+  assert.match(orchestratorPrompt, /bounty_http_scan with target_domain/);
+  assert.doesNotMatch(orchestratorPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
+
+  for (const verifierPrompt of verifierPrompts) {
+    assert.match(verifierPrompt, /`bounty_http_scan` with `target_domain` and the appropriate `auth_profile`/);
+    assert.doesNotMatch(verifierPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
+  }
+});
+
 test("hunter and orchestrator prompts keep the structured handoff contract explicit", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
   const orchestratorPrompt = readFile(".claude/skills/bountyagent/SKILL.md");
