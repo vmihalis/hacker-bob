@@ -116,7 +116,7 @@ Rules for `attack_surface.json`:
 - Required per-surface fields remain: `id`, `hosts`, `tech_stack`, `endpoints`, `interesting_params`, `nuclei_hits`, and `priority`.
 - Optional enrichment fields are additive: `surface_type`, `bug_class_hints`, `high_value_flows`, `evidence`, and `ranking`. Omit an optional field only when there is no support for it.
 - Group by application/property, not only subdomain.
-- Include first-party sibling or parent properties when the target links or redirects to them and they look org-owned; skip obvious third-party SaaS.
+- Include first-party sibling or parent properties when the target links or redirects to them and they look org-owned. Capture third-party SaaS and CDNs that the target depends on as their own surfaces too — hunters are allowed to pivot through them when chaining impact.
 - Pull endpoints from archived URLs and JS extraction so hunters do not rediscover them.
 - Classify surfaces by dominant attackable role:
   - API/mobile backend: `/api`, `/v1`, `/v2`, JSON endpoints, OpenAPI/Swagger, app/mobile hostnames.

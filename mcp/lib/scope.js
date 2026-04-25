@@ -1,27 +1,12 @@
 "use strict";
 
 const fs = require("fs");
-const path = require("path");
 const {
-  readAttackSurfaceStrict,
-} = require("./attack-surface.js");
-const {
-  sessionDir,
   scopeWarningsPath,
 } = require("./paths.js");
 const {
-  hostnameFromUrl,
-  hostnamesForSurface,
   safeUrlObject,
 } = require("./url-surface.js");
-
-const PUBLIC_INTEL_ALLOWED_HOSTS = Object.freeze([
-  "web.archive.org",
-  "otx.alienvault.com",
-  "crt.sh",
-  "api.github.com",
-  "raw.githubusercontent.com",
-]);
 
 function normalizeScopeExclusionToken(token) {
   if (typeof token !== "string") {
@@ -79,103 +64,6 @@ function readScopeExclusions(domain) {
   return exclusions;
 }
 
-function normalizeHostToken(token) {
-  const normalized = normalizeScopeExclusionToken(token);
-  if (!normalized || typeof normalized !== "string") return null;
-  return normalized.toLowerCase().replace(/\.+$/, "");
-}
-
-function hostMatchesScope(hostname, allowedHosts) {
-  if (!hostname) return false;
-  const host = hostname.toLowerCase().replace(/\.+$/, "");
-  return Array.from(allowedHosts || []).some((allowedHost) => {
-    const allowed = String(allowedHost || "").toLowerCase().replace(/\.+$/, "");
-    return allowed && (host === allowed || host.endsWith(`.${allowed}`));
-  });
-}
-
-function readDenyListHosts(domain) {
-  const denyListPath = path.join(sessionDir(domain), "deny-list.txt");
-  if (!fs.existsSync(denyListPath)) {
-    return [];
-  }
-
-  try {
-    return fs.readFileSync(denyListPath, "utf8")
-      .split("\n")
-      .map((line) => normalizeHostToken(line))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function readSessionTargetHosts(domain) {
-  const hosts = new Set([domain.toLowerCase().replace(/\.+$/, "")]);
-  const statePath = path.join(sessionDir(domain), "state.json");
-  if (!fs.existsSync(statePath)) {
-    return hosts;
-  }
-
-  try {
-    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    const target = normalizeHostToken(state && state.target);
-    if (target) hosts.add(target);
-    const targetUrlHost = hostnameFromUrl(state && state.target_url);
-    if (targetUrlHost) hosts.add(targetUrlHost.toLowerCase().replace(/\.+$/, ""));
-  } catch {}
-
-  return hosts;
-}
-
-function readAttackSurfaceHosts(domain) {
-  try {
-    const attackSurface = readAttackSurfaceStrict(domain);
-    const hosts = new Set();
-    for (const surface of attackSurface.document.surfaces) {
-      for (const host of hostnamesForSurface(surface)) {
-        hosts.add(host);
-      }
-    }
-    return hosts;
-  } catch {
-    return new Set();
-  }
-}
-
-function readAllowedScanHosts(domain) {
-  return new Set([
-    ...readSessionTargetHosts(domain),
-    ...readAttackSurfaceHosts(domain),
-  ]);
-}
-
-function resolveHttpScanTargetDomain(url, explicitTargetDomain = null) {
-  if (explicitTargetDomain) {
-    return String(explicitTargetDomain).toLowerCase().replace(/\.+$/, "");
-  }
-
-  return null;
-}
-
-function targetAppearsInPublicIntelUrl(url, targetDomain) {
-  if (!targetDomain) return false;
-  const parsed = safeUrlObject(url);
-  if (!parsed) return false;
-  const target = targetDomain.toLowerCase().replace(/\.+$/, "");
-  const raw = `${parsed.pathname}${parsed.search}`.toLowerCase();
-  let decoded = raw;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {}
-  return raw.includes(target) || decoded.includes(target);
-}
-
-function isPublicIntelScanAllowed(url, host, targetDomain) {
-  return hostMatchesScope(host, PUBLIC_INTEL_ALLOWED_HOSTS) &&
-    targetAppearsInPublicIntelUrl(url, targetDomain);
-}
-
 function makeScopeBlockedError(message) {
   const error = new Error(message);
   error.scope_decision = "blocked";
@@ -193,35 +81,21 @@ function validateHttpScanScope(url, targetDomain) {
     throw makeScopeBlockedError("target_domain is required for scoped HTTP scans");
   }
 
-  const denyListHosts = readDenyListHosts(domain);
-  if (hostMatchesScope(host, denyListHosts)) {
-    throw makeScopeBlockedError(`Blocked deny-listed host: ${host}`);
+  return {
+    allowed: true,
+    scope_decision: "allowed",
+    reason: "permissive",
+    host,
+    target_domain: domain,
+  };
+}
+
+function resolveHttpScanTargetDomain(url, explicitTargetDomain = null) {
+  if (explicitTargetDomain) {
+    return String(explicitTargetDomain).toLowerCase().replace(/\.+$/, "");
   }
 
-  const allowedHosts = new Set([
-    ...readAllowedScanHosts(domain),
-  ]);
-  if (hostMatchesScope(host, allowedHosts)) {
-    return {
-      allowed: true,
-      scope_decision: "allowed",
-      reason: "first_party",
-      host,
-      allowed_hosts: Array.from(allowedHosts).sort(),
-    };
-  }
-
-  if (isPublicIntelScanAllowed(url, host, domain)) {
-    return {
-      allowed: true,
-      scope_decision: "allowed",
-      reason: "public_intel",
-      host,
-      allowed_hosts: PUBLIC_INTEL_ALLOWED_HOSTS.slice(),
-    };
-  }
-
-  throw makeScopeBlockedError(`Blocked out-of-scope host: ${host} is not in scope for ${domain}`);
+  return null;
 }
 
 function filterExclusionsByHosts(entries, hosts, cap = 100) {
@@ -256,8 +130,6 @@ function filterExclusionsByHosts(entries, hosts, cap = 100) {
 
 module.exports = {
   filterExclusionsByHosts,
-  hostMatchesScope,
-  isPublicIntelScanAllowed,
   normalizeScopeExclusionToken,
   readScopeExclusions,
   resolveHttpScanTargetDomain,

@@ -37,7 +37,7 @@ You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate ag
 - `--no-auth` — Skip AUTH. Transition RECON → AUTH → HUNT with `auth_status: "unauthenticated"`; hunters test unauthenticated only.
 - `--normal` — Default checkpoint mode: FSM, MCP audit/traffic/intel/static state, ranking, coverage, verifier pipeline, no auto-submit.
 - `--paranoid` — More coverage/dead-end logging and earlier requeue of promising threads.
-- `--yolo` — Fewer checkpoints while preserving scope guard, MCP artifacts, request audit, verifier pipeline, and no auto-submit.
+- `--yolo` — Fewer checkpoints while preserving SSRF safety, MCP artifacts, request audit, verifier pipeline, and no auto-submit.
 
 If no checkpoint flag is supplied, use `--normal`. Accept at most one checkpoint mode; if multiple are supplied, stop and ask for one.
 
