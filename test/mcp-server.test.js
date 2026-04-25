@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("child_process");
 const { EventEmitter } = require("events");
+const Module = require("module");
 const { Readable } = require("stream");
 const dns = require("dns");
 const fs = require("fs");
@@ -341,6 +342,12 @@ function seedFinding(domain, overrides = {}) {
     surface_id: surfaceId,
     ...overrides,
   }));
+}
+
+function seedVerificationPipeline(domain, results) {
+  for (const round of ["brutalist", "balanced", "final"]) {
+    writeVerificationRound({ target_domain: domain, round, notes: null, results });
+  }
 }
 
 async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
@@ -756,7 +763,27 @@ test("executeTool returns standard envelopes and recursively validates schema ar
     });
     assert.equal(badWave.ok, false);
     assert.equal(badWave.error.code, "INVALID_ARGUMENTS");
-    assert.match(badWave.error.message, /wave must match pattern \^w\[0-9\]\+\$/);
+    assert.match(badWave.error.message, /wave must match pattern \^w\[1-9\]\[0-9\]\*\$/);
+
+    const zeroWave = await executeTool("bounty_log_coverage", {
+      target_domain: "example.com",
+      wave: "w0",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [],
+    });
+    assert.equal(zeroWave.ok, false);
+    assert.equal(zeroWave.error.code, "INVALID_ARGUMENTS");
+    assert.match(zeroWave.error.message, /wave must match pattern \^w\[1-9\]\[0-9\]\*\$/);
+
+    const zeroAgent = await executeTool("bounty_start_wave", {
+      target_domain: "example.com",
+      wave_number: 1,
+      assignments: [{ agent: "a0", surface_id: "surface-a" }],
+    });
+    assert.equal(zeroAgent.ok, false);
+    assert.equal(zeroAgent.error.code, "INVALID_ARGUMENTS");
+    assert.match(zeroAgent.error.message, /assignments\[0\]\.agent must match pattern \^a\[1-9\]\[0-9\]\*\$/);
 
     const badEntries = await executeTool("bounty_log_coverage", {
       target_domain: "example.com",
@@ -3582,6 +3609,13 @@ test("bounty_write_grade_verdict writes grade.json and grade.md and accepts empt
   withTempHome(() => {
     const domain = "example.com";
     seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "denied",
+      severity: null,
+      reportable: false,
+      reasoning: "Not reproducible.",
+    }]);
 
     const result = JSON.parse(writeGradeVerdict({
       target_domain: domain,
@@ -3617,6 +3651,40 @@ test("bounty_write_grade_verdict writes grade.json and grade.md and accepts empt
   });
 });
 
+test("bounty_write_grade_verdict requires valid final verification before grading", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedFinding(domain);
+
+    const result = await executeTool("bounty_write_grade_verdict", {
+      target_domain: domain,
+      verdict: "SKIP",
+      total_score: 0,
+      findings: [],
+      feedback: "No graded findings.",
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "STATE_CONFLICT");
+    assert.match(result.error.message, /Final verification must exist and be valid before grading/);
+    assert.match(result.error.message, /Missing final verification round JSON/);
+
+    const finalPaths = verificationRoundPaths(domain, "final");
+    fs.mkdirSync(path.dirname(finalPaths.json), { recursive: true });
+    fs.writeFileSync(finalPaths.json, "{bad json");
+    const malformed = await executeTool("bounty_write_grade_verdict", {
+      target_domain: domain,
+      verdict: "SKIP",
+      total_score: 0,
+      findings: [],
+      feedback: "No graded findings.",
+    });
+    assert.equal(malformed.ok, false);
+    assert.equal(malformed.error.code, "STATE_CONFLICT");
+    assert.match(malformed.error.message, /Malformed final verification round JSON/);
+  });
+});
+
 test("bounty_write_grade_verdict enforces score totals, thresholds, and final reportability", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -3628,9 +3696,7 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
       reportable: true,
       reasoning: "Confirmed.",
     }];
-    for (const round of ["brutalist", "balanced", "final"]) {
-      writeVerificationRound({ target_domain: domain, round, notes: null, results: verified });
-    }
+    seedVerificationPipeline(domain, verified);
 
     const gradeFinding = {
       finding_id: "F-1",
@@ -3670,7 +3736,7 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
   });
 });
 
-test("bounty_write_grade_verdict rejects submit when final verification has no medium-or-higher reportable finding", () => {
+test("bounty_write_grade_verdict permits only SKIP when final verification has no medium-or-higher reportable finding", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedFinding(domain, { severity: "high" });
@@ -3681,24 +3747,41 @@ test("bounty_write_grade_verdict rejects submit when final verification has no m
       reportable: false,
       reasoning: "Not reproducible.",
     }];
-    for (const round of ["brutalist", "balanced", "final"]) {
-      writeVerificationRound({ target_domain: domain, round, notes: null, results: unreportable });
-    }
+    seedVerificationPipeline(domain, unreportable);
+
+    const gradeFinding = {
+      finding_id: "F-1",
+      impact: 20,
+      proof_quality: 10,
+      severity_accuracy: 5,
+      chain_potential: 5,
+      report_quality: 5,
+      total_score: 45,
+      feedback: null,
+    };
+
+    const skipped = JSON.parse(writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SKIP",
+      total_score: 45,
+      findings: [gradeFinding],
+      feedback: "No reportable medium-or-higher finding survived final verification.",
+    }));
+    assert.equal(skipped.verdict, "SKIP");
 
     assert.throws(() => writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",
       total_score: 45,
-      findings: [{
-        finding_id: "F-1",
-        impact: 20,
-        proof_quality: 10,
-        severity_accuracy: 5,
-        chain_potential: 5,
-        report_quality: 5,
-        total_score: 45,
-        feedback: null,
-      }],
+      findings: [gradeFinding],
+      feedback: null,
+    }), /expected SKIP/);
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "HOLD",
+      total_score: 45,
+      findings: [gradeFinding],
       feedback: null,
     }), /expected SKIP/);
   });
@@ -3776,6 +3859,28 @@ test("bounty_read_grade_verdict hard-fails on missing or malformed JSON", () => 
       () => readGradeVerdict({ target_domain: domain }),
       /Malformed grade verdict JSON/,
     );
+  });
+});
+
+test("bounty_read_grade_verdict rejects grade artifacts when final verification is missing", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedFinding(domain);
+    const paths = gradeArtifactPaths(domain);
+    fs.mkdirSync(path.dirname(paths.json), { recursive: true });
+    fs.writeFileSync(paths.json, `${JSON.stringify({
+      version: 1,
+      target_domain: domain,
+      verdict: "SKIP",
+      total_score: 0,
+      findings: [],
+      feedback: null,
+    }, null, 2)}\n`);
+
+    const result = await executeTool("bounty_read_grade_verdict", { target_domain: domain });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "STATE_CONFLICT");
+    assert.match(result.error.message, /Final verification must exist and be valid before grading/);
   });
 });
 
@@ -4309,6 +4414,35 @@ test("auto-signup result normalization fails ambiguous states and preserves diag
   assert.deepEqual(successful.auth_evidence.cookie_keys, ["sessionid"]);
 });
 
+test("bounty_auto_signup returns ok true manual fallback when browser automation is unavailable", async () => {
+  await withTempHome(async () => {
+    const originalResolve = Module._resolveFilename;
+    Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
+      if (request === "patchright") {
+        throw new Error("Cannot find module 'patchright'");
+      }
+      return originalResolve.call(this, request, parent, isMain, options);
+    };
+    try {
+      const result = await executeTool("bounty_auto_signup", {
+        target_domain: "example.com",
+        signup_url: "https://example.com/signup",
+        email: "a@example.test",
+        password: "Password123!",
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.data.success, false);
+      assert.equal(result.data.fallback, "manual");
+      assert.equal(result.data.reason, "patchright_unavailable");
+      assert.match(result.data.message, /Patchright is not installed/);
+      assert.equal(Object.prototype.hasOwnProperty.call(result.data, "error"), false);
+    } finally {
+      Module._resolveFilename = originalResolve;
+    }
+  });
+});
+
 test("bounty_auto_signup blocks unsafe and out-of-scope signup URLs before browser launch", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
@@ -4320,15 +4454,17 @@ test("bounty_auto_signup blocks unsafe and out-of-scope signup URLs before brows
       "https://third-party.example.net/signup",
       "https://blocked.example.com/signup",
     ]) {
-      const result = JSON.parse(await autoSignup({
+      const result = await executeTool("bounty_auto_signup", {
         target_domain: domain,
         signup_url: signupUrl,
         email: "a@example.test",
         password: "Password123!",
-      }));
-      assert.equal(result.success, false);
-      assert.equal(result.scope_decision, "blocked");
-      assert.equal(result.fallback, "manual");
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "SCOPE_BLOCKED");
+      assert.equal(result.error.details.success, false);
+      assert.equal(result.error.details.scope_decision, "blocked");
+      assert.equal(result.error.details.fallback, "manual");
     }
   });
 });
@@ -4652,6 +4788,7 @@ test("bounty_import_http_traffic validates, dedupes, stores session-local traffi
       },
     ]);
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+    const attackSurfaceBeforeImport = fs.readFileSync(attackSurfacePath(domain), "utf8");
 
     const result = JSON.parse(importHttpTraffic({
       target_domain: domain,
@@ -4691,6 +4828,7 @@ test("bounty_import_http_traffic validates, dedupes, stores session-local traffi
     assert.equal(result.rejected, 2);
     assert.ok(fs.existsSync(trafficJsonlPath(domain)));
     assert.equal(readTrafficRecordsFromJsonl(domain).length, 1);
+    assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeImport);
 
     const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
     assert.equal(brief.traffic_summary.total, 1);
@@ -4700,6 +4838,7 @@ test("bounty_import_http_traffic validates, dedupes, stores session-local traffi
     assert.ok(brief.ranking_summary.reasons.includes("imported_traffic"));
     assert.ok(brief.ranking_summary.reasons.includes("authenticated_observed_traffic"));
     assert.doesNotMatch(JSON.stringify(brief.traffic_summary), /evil\.example\.net/);
+    assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeImport);
   });
 });
 
@@ -5050,6 +5189,7 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
         priority: "LOW",
       }]);
       seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-api" }]);
+      const attackSurfaceBeforeIntel = fs.readFileSync(attackSurfacePath(domain), "utf8");
 
       const result = JSON.parse(await bountyPublicIntel({
         target_domain: domain,
@@ -5062,11 +5202,13 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
       assert.equal(result.program_stats.resolved_report_count, 42);
       assert.match(result.policy_summary, /Only test owned assets/);
       assert.ok(fs.existsSync(publicIntelPath(domain)));
+      assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
 
       const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
       assert.equal(brief.intel_hints.available, true);
       assert.equal(brief.intel_hints.reports.length, 1);
       assert.ok(brief.ranking_summary.reasons.includes("disclosed_report_hints"));
+      assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
 
       global.fetch = async () => { throw new Error("network down"); };
       const failed = JSON.parse(await bountyPublicIntel({ target_domain: "empty.example", keywords: ["none"], limit: 2 }));
@@ -5117,8 +5259,14 @@ test("rankAttackSurfaces adds ranking fields without removing required attack_su
       priority: "LOW",
     }]);
 
+    const before = fs.readFileSync(attackSurfacePath(domain), "utf8");
     const ranked = rankAttackSurfaces(domain);
     assert.equal(ranked.surfaces.length, 1);
+    assert.ok(ranked.surfaces[0].ranking.score > 0);
+    assert.ok(ranked.surfaces[0].ranking.reasons.includes("api_or_mobile_surface"));
+    assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), before);
+
+    rankAttackSurfaces(domain, { write: true });
     const surface = JSON.parse(fs.readFileSync(attackSurfacePath(domain), "utf8")).surfaces[0];
     for (const field of ["id", "hosts", "tech_stack", "endpoints", "interesting_params", "nuclei_hits", "priority"]) {
       assert.ok(Object.prototype.hasOwnProperty.call(surface, field), `missing ${field}`);

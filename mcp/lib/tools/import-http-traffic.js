@@ -3,10 +3,9 @@
 const {
   importHttpTraffic: importHttpTrafficRecords,
 } = require("../http-records.js");
-const { rankAttackSurfaces } = require("../ranking.js");
 
 function importHttpTraffic(args) {
-  return importHttpTrafficRecords(args, { rankAttackSurfaces });
+  return importHttpTrafficRecords(args);
 }
 
 module.exports = Object.freeze({

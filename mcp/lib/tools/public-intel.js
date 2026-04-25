@@ -1,10 +1,9 @@
 "use strict";
 
 const { bountyPublicIntel: bountyPublicIntelTool } = require("../public-intel.js");
-const { rankAttackSurfaces } = require("../ranking.js");
 
 async function bountyPublicIntel(args) {
-  return bountyPublicIntelTool(args, { rankAttackSurfaces });
+  return bountyPublicIntelTool(args);
 }
 
 module.exports = Object.freeze({

@@ -36,6 +36,10 @@ const {
   writeMarkdownMirror,
 } = require("./storage.js");
 const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
+const {
   validateAssignedWaveAgentSurface,
 } = require("./assignments.js");
 
@@ -532,7 +536,7 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
   }
 
   enforceGradeVerdictConsistency(normalized, {
-    finalReportableSeveritySet: expectedDomain == null ? null : finalReportableSeveritySet(expectedDomain, findingIdSet),
+    finalReportableSeveritySet: expectedDomain == null ? null : requireFinalReportableSeveritySet(expectedDomain, findingIdSet),
   });
 
   return normalized;
@@ -542,17 +546,22 @@ function isMediumOrHigher(severity) {
   return ["medium", "high", "critical"].includes(severity);
 }
 
-function finalReportableSeveritySet(domain, findingIdSet) {
+function requireFinalReportableSeveritySet(domain, findingIdSet) {
   const paths = verificationRoundPaths(domain, "final");
-  if (!fs.existsSync(paths.json)) {
-    return null;
+  let normalized;
+  try {
+    const document = loadJsonDocumentStrict(paths.json, "final verification round JSON");
+    normalized = normalizeVerificationRoundDocument(document, {
+      expectedDomain: domain,
+      expectedRound: "final",
+      findingIdSet,
+    });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Final verification must exist and be valid before grading: ${error.message || String(error)}`,
+    );
   }
-  const document = loadJsonDocumentStrict(paths.json, "final verification round JSON");
-  const normalized = normalizeVerificationRoundDocument(document, {
-    expectedDomain: domain,
-    expectedRound: "final",
-    findingIdSet,
-  });
   return new Set(
     normalized.results
       .filter((result) => result.reportable && isMediumOrHigher(result.severity))
@@ -649,7 +658,7 @@ function writeGradeVerdict(args) {
     feedback,
   };
   enforceGradeVerdictConsistency(document, {
-    finalReportableSeveritySet: finalReportableSeveritySet(domain, findingIdSet),
+    finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
   });
 
   const paths = gradeArtifactPaths(domain);

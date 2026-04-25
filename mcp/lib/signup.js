@@ -31,6 +31,26 @@ const FORM_FIELD_PATTERNS = [
 
 const AUTH_EVIDENCE_KEY_RE = /(sid|session|auth|token|jwt|access|refresh)/i;
 
+function manualSignupFallback(reason, message, extra = {}) {
+  return {
+    success: false,
+    fallback: "manual",
+    reason,
+    message,
+    ...extra,
+  };
+}
+
+function fallbackReasonFromMessage(message) {
+  const text = String(message || "");
+  if (/patchright not installed/i.test(text)) return "patchright_unavailable";
+  if (/browser launch failed/i.test(text)) return "browser_runtime_unavailable";
+  if (/timed out|timeout/i.test(text)) return "browser_timeout";
+  if (/invalid json|returned invalid json/i.test(text)) return "invalid_browser_output";
+  if (/not found/i.test(text)) return "browser_script_missing";
+  return "automation_unavailable";
+}
+
 function authEvidenceFromResult(result) {
   const headers = result && result.headers && typeof result.headers === "object" ? result.headers : {};
   const cookies = result && result.cookies && typeof result.cookies === "object" ? result.cookies : {};
@@ -86,6 +106,14 @@ function normalizeAutoSignupResult(result, signupUrl) {
   if (normalized.success === true || normalized.success == null) {
     normalized.success = false;
     normalized.fallback = "manual";
+  }
+
+  if (normalized.success === false && normalized.fallback === "manual") {
+    const message = normalized.message || normalized.error || "Automated signup did not produce usable authenticated session evidence.";
+    normalized.reason = normalized.reason || fallbackReasonFromMessage(message);
+    normalized.message = message;
+    delete normalized.error;
+    delete normalized.stack;
   }
 
   normalized.diagnostics = {
@@ -221,15 +249,19 @@ async function autoSignup(args) {
 
   if (!patchrightAvailable) {
     return JSON.stringify({
-      success: false,
-      error: "patchright not installed. Run: npm install && npx patchright install chromium",
-      fallback: "manual",
+      ...manualSignupFallback(
+        "patchright_unavailable",
+        "Patchright is not installed. Use manual signup or install optional browser automation with npm install and npx patchright install chromium.",
+      ),
     });
   }
 
   const scriptPath = path.join(__dirname, "..", "auto-signup.js");
   if (!fs.existsSync(scriptPath)) {
-    return JSON.stringify({ success: false, error: "auto-signup.js not found", fallback: "manual" });
+    return JSON.stringify(manualSignupFallback(
+      "browser_script_missing",
+      "The auto-signup browser script was not found; use manual signup.",
+    ));
   }
 
   const config = {
@@ -252,12 +284,12 @@ async function autoSignup(args) {
       { timeout, maxBuffer: 5 * 1024 * 1024, env: { ...process.env } },
       async (err, stdout, stderr) => {
         if (err && !stdout) {
-          resolve(JSON.stringify({
-            success: false,
-            error: err.message || String(err),
-            stderr: (stderr || "").slice(0, 500),
-            fallback: "manual",
-          }));
+          const message = err.message || String(err);
+          resolve(JSON.stringify(manualSignupFallback(
+            fallbackReasonFromMessage(message),
+            message,
+            { stderr: (stderr || "").slice(0, 500) },
+          )));
           return;
         }
 
@@ -265,12 +297,11 @@ async function autoSignup(args) {
         try {
           result = JSON.parse(stdout);
         } catch {
-          resolve(JSON.stringify({
-            success: false,
-            error: "auto-signup returned invalid JSON",
-            raw_output: (stdout || "").slice(0, 500),
-            fallback: "manual",
-          }));
+          resolve(JSON.stringify(manualSignupFallback(
+            "invalid_browser_output",
+            "Auto-signup returned invalid JSON; use manual signup.",
+            { raw_output: (stdout || "").slice(0, 500) },
+          )));
           return;
         }
 
@@ -305,6 +336,7 @@ module.exports = {
   authEvidenceFromResult,
   autoSignup,
   hasAuthEvidence,
+  manualSignupFallback,
   normalizeAutoSignupResult,
   signupDetect,
 };

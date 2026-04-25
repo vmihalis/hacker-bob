@@ -17,8 +17,8 @@ module.exports = Object.freeze({
       timeout_ms: { type: "number" },
       auth_profile: { type: "string" },
       target_domain: { type: "string", description: "Required session domain for scope ownership, audit ownership, and allowed-host resolution." },
-      wave: { type: "string", pattern: "^w[0-9]+$", description: "Optional wave ID for request audit correlation." },
-      agent: { type: "string", pattern: "^a[0-9]+$", description: "Optional agent ID for request audit correlation." },
+      wave: { type: "string", pattern: "^w[1-9][0-9]*$", description: "Optional wave ID for request audit correlation." },
+      agent: { type: "string", pattern: "^a[1-9][0-9]*$", description: "Optional agent ID for request audit correlation." },
       surface_id: { type: "string", description: "Optional assigned surface ID for request audit correlation." },
       response_mode: {
         type: "string",

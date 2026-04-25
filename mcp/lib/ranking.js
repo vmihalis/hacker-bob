@@ -103,7 +103,7 @@ function scoreSurfaceRanking(surface, { trafficSummary = null, intelSummary = nu
   };
 }
 
-function rankAttackSurfaces(domain, { write = true } = {}) {
+function rankAttackSurfaces(domain, { write = false } = {}) {
   const filePath = attackSurfacePath(domain);
   if (!fs.existsSync(filePath)) return null;
   const attackSurface = readAttackSurfaceStrict(domain);

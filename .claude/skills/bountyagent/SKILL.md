@@ -22,6 +22,7 @@ allowed-tools:
   - mcp__bountyagent__bounty_wave_status
   - mcp__bountyagent__bounty_list_auth_profiles
   - mcp__bountyagent__bounty_read_state_summary
+  - mcp__bountyagent__bounty_read_tool_telemetry
   - mcp__bountyagent__bounty_http_scan
   - mcp__bountyagent__bounty_temp_email
   - mcp__bountyagent__bounty_signup_detect
@@ -72,7 +73,7 @@ MCP-owned session artifacts:
 - `bounty_public_intel` writes optional public bounty intel to `public-intel.json`.
 - `bounty_import_static_artifact` writes redacted token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
-- `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, ranking, intel, static scan, assignment, coverage, and scope summaries.
+- `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, runtime ranking, intel, static scan, assignment, coverage, and scope summaries.
 
 Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_session_state.data` only when full arrays are needed.
 
@@ -101,7 +102,7 @@ If `--no-auth` is set: skip all signup logic, call `bounty_transition_phase({ ta
 Otherwise use the existing four-tier signup flow, in order:
 1. Mandatory first calls in parallel: `bounty_signup_detect({ target_domain, target_url })` and `bounty_temp_email({ operation: "create" })`.
 2. Tier 1 API signup: use `bounty_http_scan({ target_domain, method: "POST", url: signup_url, ... })` against the detected signup endpoint with temp email and generated password.
-3. Tier 2 browser signup: call `bounty_auto_signup({ target_domain, signup_url, email, password, profile_name: "attacker" })`; if auth is stored, continue to verification, otherwise use returned errors/fallback to decide Tier 3.
+3. Tier 2 browser signup: call `bounty_auto_signup({ target_domain, signup_url, email, password, profile_name: "attacker" })`; if `result.data.auth_stored` is true, continue to verification, and if `result.data.fallback === "manual"` use `result.data.reason` and `result.data.message` to escalate to Tier 3.
 4. Tier 3 assisted manual: ask the user to register with the temp email/password, then poll/extract verification mail and store auth with `bounty_auth_store({ target_domain, profile_name: "attacker", ... })`.
 5. Tier 4 manual token capture: if the user skips or automation fails, ask the user to log in, open DevTools Console, paste this snippet, then send the copied JSON. Store it with `bounty_auth_store({ target_domain, profile_name, ... })`.
 ```javascript
@@ -120,7 +121,7 @@ Otherwise use the existing four-tier signup flow, in order:
 After any successful signup, poll email up to 12 times, extract a code/link, complete verification through `bounty_http_scan` with `target_domain`, then repeat the flow for a `victim` profile with a new temp email. Verify auth with `bounty_http_scan` with `target_domain` against a protected endpoint and call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`.
 
 ## PHASE 3: HUNT
-Read `attack_surface.json` and `bounty_read_state_summary.data` before every wave. Treat MCP ranking fields as additive. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` route later waves.
+Read `attack_surface.json` and `bounty_read_state_summary.data` before every wave. Treat MCP ranking from `bounty_wave_status.data` and `bounty_read_hunter_brief.data.ranking_summary` as runtime prioritization, not as a durable `attack_surface.json` rewrite. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` route later waves.
 
 Wave policy:
 - Wave 1: all `HIGH` and `CRITICAL` surfaces in parallel.

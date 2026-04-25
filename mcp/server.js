@@ -15,7 +15,8 @@
 //           bounty_auto_signup, bounty_import_http_traffic,
 //           bounty_read_http_audit, bounty_public_intel,
 //           bounty_import_static_artifact, bounty_static_scan,
-//           bounty_list_auth_profiles, bounty_read_wave_handoffs
+//           bounty_list_auth_profiles, bounty_read_wave_handoffs,
+//           bounty_read_tool_telemetry
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
 const {

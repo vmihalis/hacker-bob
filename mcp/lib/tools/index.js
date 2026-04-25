@@ -34,6 +34,7 @@ const TOOL_MODULES = Object.freeze([
   require("./auto-signup.js"),
   require("./read-state-summary.js"),
   require("./read-hunter-brief.js"),
+  require("./read-tool-telemetry.js"),
 ]);
 
 module.exports = {

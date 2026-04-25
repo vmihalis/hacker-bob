@@ -142,8 +142,13 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   }
   assert.equal(TOOL_MANIFEST.bounty_merge_wave_handoffs.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_merge_wave_handoffs.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_tool_telemetry.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.global_preapproval, false);
+  assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.mutating, false);
   assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
+  assert.ok(!sourceAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(!generatedAllowed.has("bounty_merge_wave_handoffs"));
+  assert.ok(!generatedAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(sourceAllowed.has("bounty_wave_handoff_status"));
 
   const hookMatchers = settingsHookMatchers();
@@ -283,6 +288,7 @@ test("bountyagent skill allowed-tools match orchestrator and auth bundles", () =
   assert.ok(allowedTools.includes("Task"));
   assert.ok(allowedTools.includes("Read"));
   assert.ok(allowedTools.includes("mcp__bountyagent__bounty_merge_wave_handoffs"));
+  assert.ok(allowedTools.includes("mcp__bountyagent__bounty_read_tool_telemetry"));
   assert.ok(!allowedTools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
 });
 
@@ -421,6 +427,33 @@ test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel/
   assert.match(orchestrator, /bounty_public_intel[\s\S]*public-intel\.json/);
   assert.match(orchestrator, /bounty_import_static_artifact[\s\S]*static-imports/);
   assert.match(orchestrator, /bounty_static_scan[\s\S]*static-scan-results\.jsonl/);
+});
+
+test("orchestrator handles auto-signup manual fallback through data fallback fields", () => {
+  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+
+  assert.match(orchestrator, /bounty_auto_signup/);
+  assert.match(orchestrator, /result\.data\.fallback === "manual"/);
+  assert.match(orchestrator, /result\.data\.reason[\s\S]*result\.data\.message/);
+});
+
+test("README describes MCP ranking as runtime prioritization, not persistent rewrites", () => {
+  const readme = readFile("README.md");
+
+  assert.match(readme, /MCP ranking computes runtime priority/);
+  assert.match(readme, /Imports and public-intel fetches do not rewrite `attack_surface\.json`/);
+  assert.doesNotMatch(readme, /MCP ranking can raise priority and add reasons/);
+});
+
+test("production CI runs npm test on supported Node versions without browser installs", () => {
+  const workflow = readFile(".github/workflows/ci.yml");
+
+  assert.match(workflow, /pull_request:/);
+  assert.match(workflow, /push:/);
+  assert.match(workflow, /node-version: \[20, 22\]/);
+  assert.match(workflow, /npm ci/);
+  assert.match(workflow, /npm test/);
+  assert.doesNotMatch(workflow, /patchright install|install-browser/);
 });
 
 test("bounty_http_scan prompt contracts require target_domain on every call", () => {

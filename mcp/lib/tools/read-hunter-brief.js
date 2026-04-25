@@ -14,11 +14,11 @@ module.exports = Object.freeze({
       },
       "wave": {
         "type": "string",
-        "pattern": "^w[0-9]+$"
+        "pattern": "^w[1-9][0-9]*$"
       },
       "agent": {
         "type": "string",
-        "pattern": "^a[0-9]+$"
+        "pattern": "^a[1-9][0-9]*$"
       }
     },
     "required": [

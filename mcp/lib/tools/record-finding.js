@@ -53,10 +53,12 @@ module.exports = Object.freeze({
         "type": "boolean"
       },
       "wave": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^w[1-9][0-9]*$"
       },
       "agent": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^a[1-9][0-9]*$"
       },
       "force_record": {
         "type": "boolean",

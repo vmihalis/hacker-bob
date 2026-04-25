@@ -15,7 +15,7 @@ module.exports = Object.freeze({
         items: {
           type: "object",
           properties: {
-            agent: { type: "string", pattern: "^a[0-9]+$" },
+            agent: { type: "string", pattern: "^a[1-9][0-9]*$" },
             surface_id: { type: "string" },
           },
           required: ["agent", "surface_id"],

@@ -59,7 +59,7 @@ function parseHandlerResult(rawResult) {
 }
 
 function classifyDataError(data) {
-  if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.error !== "string") {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
     return null;
   }
   if (data.scope_decision === "blocked") {
@@ -68,8 +68,14 @@ function classifyDataError(data) {
   if (data.scope_decision === "auth_missing") {
     return ERROR_CODES.AUTH_MISSING;
   }
+  if (typeof data.error !== "string") {
+    return null;
+  }
   if (/auth_profile .*not found|auth.*missing|missing auth/i.test(data.error)) {
     return ERROR_CODES.AUTH_MISSING;
+  }
+  if (data.success === false && data.fallback === "manual") {
+    return null;
   }
   return ERROR_CODES.INTERNAL_ERROR;
 }
