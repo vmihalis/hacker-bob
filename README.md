@@ -22,7 +22,7 @@ The installer drops agents, the `/bountyagent` skill, rules, hooks, and the MCP 
 
 ```bash
 cd /path/to/your/project
-claude
+claude --dangerously-skip-permissions --effort max
 ```
 
 Then in Claude Code:
