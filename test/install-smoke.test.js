@@ -30,9 +30,16 @@ test("installer copies a require-able complete MCP runtime", () => {
 
     execFileSync(process.execPath, [
       "-e",
-      "const server = require(process.argv[1]); if (!Array.isArray(server.TOOLS)) process.exit(2);",
+      [
+        "const server = require(process.argv[1]);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 33) process.exit(2);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bounty_list_auth_profiles')) process.exit(3);",
+        "Promise.resolve(server.executeTool('bounty_list_auth_profiles', { target_domain: 'example.com' }))",
+        "  .then((result) => { if (!result.ok || result.data.target_domain !== 'example.com') process.exit(4); })",
+        "  .catch(() => process.exit(5));",
+      ].join(" "),
       installedServer,
-    ], { stdio: "pipe" });
+    ], { env: { ...process.env, HOME: tempHome }, stdio: "pipe" });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

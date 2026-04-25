@@ -19,13 +19,23 @@
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
 const {
-  bountyPublicIntel,
   executeTool,
-  importStaticArtifact,
-  importHttpTraffic,
-  readHttpAudit,
-  staticScan,
 } = require("./lib/dispatch.js");
+const {
+  importHttpTraffic,
+} = require("./lib/tools/import-http-traffic.js");
+const {
+  bountyPublicIntel,
+} = require("./lib/tools/public-intel.js");
+const {
+  importStaticArtifact,
+} = require("./lib/tools/import-static-artifact.js");
+const {
+  readHttpAudit,
+} = require("./lib/tools/read-http-audit.js");
+const {
+  staticScan,
+} = require("./lib/tools/static-scan.js");
 const {
   TOOL_MANIFEST,
   TOOLS,

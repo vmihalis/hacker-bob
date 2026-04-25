@@ -3,6 +3,7 @@
 const fs = require("fs");
 const {
   PUBLIC_INTEL_MAX_ITEMS,
+  PUBLIC_INTEL_MAX_RESPONSE_BYTES,
 } = require("./constants.js");
 const {
   assertInteger,
@@ -94,11 +95,75 @@ function normalizeProgramHandle(program) {
   return value.replace(/^@+/, "").replace(/^\/+|\/+$/g, "").split("/", 1)[0] || null;
 }
 
-async function fetchTextWithTimeout(url, { timeoutMs = 8000, headers = {} } = {}) {
+function assertAllowedPublicIntelUrl(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || !["hackerone.com", "www.hackerone.com"].includes(parsed.hostname)) {
+    throw new Error(`public intel URL is not allowlisted: ${parsed.hostname}`);
+  }
+  return parsed.toString();
+}
+
+function capUtf8Text(text, maxBytes) {
+  const buffer = Buffer.from(String(text), "utf8");
+  if (buffer.length <= maxBytes) {
+    return { text: String(text), truncated: false };
+  }
+  return {
+    text: buffer.subarray(0, maxBytes).toString("utf8"),
+    truncated: true,
+  };
+}
+
+async function readResponseTextCapped(resp, maxBytes) {
+  if (!resp.body || typeof resp.body.getReader !== "function") {
+    return capUtf8Text(await resp.text(), maxBytes);
+  }
+
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  let truncated = false;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const buffer = Buffer.from(value);
+      const remaining = maxBytes - receivedBytes;
+      if (remaining > 0) {
+        chunks.push(buffer.length > remaining ? buffer.subarray(0, remaining) : buffer);
+      }
+      receivedBytes += buffer.length;
+      if (receivedBytes > maxBytes) {
+        truncated = true;
+        if (typeof reader.cancel === "function") {
+          await reader.cancel();
+        }
+        break;
+      }
+    }
+  } finally {
+    if (typeof reader.releaseLock === "function") {
+      reader.releaseLock();
+    }
+  }
+
+  return {
+    text: Buffer.concat(chunks).toString("utf8"),
+    truncated,
+  };
+}
+
+async function fetchTextWithTimeout(url, {
+  timeoutMs = 8000,
+  headers = {},
+  maxBytes = PUBLIC_INTEL_MAX_RESPONSE_BYTES,
+} = {}) {
+  const safeUrl = assertAllowedPublicIntelUrl(url);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(safeUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; bountyagent-public-intel)",
         Accept: "application/json,text/html;q=0.9,*/*;q=0.8",
@@ -106,8 +171,14 @@ async function fetchTextWithTimeout(url, { timeoutMs = 8000, headers = {} } = {}
       },
       signal: controller.signal,
     });
-    const text = await resp.text();
-    return { ok: resp.ok, status: resp.status, text, content_type: resp.headers.get("content-type") || "" };
+    const { text, truncated } = await readResponseTextCapped(resp, maxBytes);
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      text,
+      content_type: resp.headers.get("content-type") || "",
+      truncated,
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -297,11 +368,13 @@ module.exports = {
   bountyPublicIntel,
   compactPolicyText,
   extractStructuredScopes,
+  assertAllowedPublicIntelUrl,
   fetchTextWithTimeout,
   normalizeProgramHandle,
   parseHacktivityReportsFromHtml,
   parseHacktivityReportsFromJson,
   pickProgramStats,
   readPublicIntelDocument,
+  readResponseTextCapped,
   summarizePublicIntelForSurface,
 };

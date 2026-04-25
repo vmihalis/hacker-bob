@@ -90,7 +90,7 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 
 The installer configures a local stdio MCP server (`mcp/server.js`). Its tool surface covers HTTP scanning and audit reads, optional Burp/HAR traffic import, optional public intel, safe static-artifact import and token-contract scans, auth profile storage/listing, session FSM operations, wave assignment/merge operations, hunter handoff and coverage logging, finding/verification/grade storage, and bounded hunter briefs.
 
-The source of truth for the exported MCP surface is the registry in `mcp/lib/tool-registry.js`. A pilot set of tools already uses per-tool modules under `mcp/lib/tools/`, where the schema, role metadata, side-effect metadata, sensitivity/scope flags, and handler binding live together. Legacy tools continue to flow through `tool-definitions.js`, `tool-manifest.js`, and `tool-handlers.js` during the transition. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill frontmatter, generated agent tool frontmatter, and Claude settings all derive from the registry.
+The source of truth for the exported MCP surface is the explicit per-tool module list under `mcp/lib/tools/`. Each tool module owns its schema, role metadata, side-effect metadata, sensitivity/scope flags, and handler binding. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill frontmatter, generated agent tool frontmatter, and Claude settings all derive from the registry.
 
 Every MCP tool response is wrapped in a standard envelope: success responses use `{ "ok": true, "data": ..., "meta": { "tool": "...", "version": 1 } }`; failures use `{ "ok": false, "error": { "code": "...", "message": "..." }, "meta": ... }`. Prompts and integrations should read successful payloads from `.data`.
 
@@ -165,7 +165,7 @@ The orchestrator handles all fallbacks automatically.
 
 ## Tool Development Contract
 
-Adding a Bob MCP tool should be boring: prefer a per-tool module in `mcp/lib/tools/` that owns the schema, handler binding, role bundles, side-effect metadata, scope-hook requirement, and sensitivity flags. Legacy registry entries still exist for unmigrated tools, but new tool work should avoid manually editing separate definition, manifest, and handler-map files when a per-tool module is sufficient. Add focused tests for validation, envelope behavior, metadata, and role permissions. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill/agent tool frontmatter, and Claude settings are generated from the registry/config helpers, so do not hand-maintain duplicate permission lists in installer scripts.
+Adding a Bob MCP tool should be boring: add a per-tool module in `mcp/lib/tools/` that owns the schema, handler binding, role bundles, side-effect metadata, scope-hook requirement, and sensitivity flags, then add it to the explicit module list in registry order. Add focused tests for validation, envelope behavior, metadata, and role permissions. `role_bundles` drive generated Claude permissions and generated prompt/tool frontmatter; they are not MCP-side caller authentication. `TOOLS`, dispatcher lookup, role-bundle permissions, generated skill/agent tool frontmatter, and Claude settings are generated from the registry/config helpers, so do not hand-maintain duplicate permission lists in installer scripts.
 
 ## Requirements
 

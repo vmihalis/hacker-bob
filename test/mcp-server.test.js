@@ -15,7 +15,12 @@ const {
 } = require("../mcp/lib/dispatch.js");
 const {
   buildToolRegistry,
+  defineTool,
+  TOOL_REGISTRY,
 } = require("../mcp/lib/tool-registry.js");
+const {
+  TOOL_MODULES,
+} = require("../mcp/lib/tools/index.js");
 const {
   createMcpMessageHandler,
   createStdioServer,
@@ -39,6 +44,9 @@ const {
 const {
   safeFetch,
 } = require("../mcp/lib/safe-fetch.js");
+const {
+  fetchTextWithTimeout,
+} = require("../mcp/lib/public-intel.js");
 const {
   normalizeAutoSignupResult,
 } = require("../mcp/lib/signup.js");
@@ -114,6 +122,42 @@ const {
   readStaticArtifactRecordsFromJsonl,
   readStaticScanResultsFromJsonl,
 } = serverModule;
+
+const EXPECTED_TOOL_NAMES = [
+  "bounty_http_scan",
+  "bounty_read_http_audit",
+  "bounty_start_wave",
+  "bounty_import_http_traffic",
+  "bounty_public_intel",
+  "bounty_import_static_artifact",
+  "bounty_static_scan",
+  "bounty_record_finding",
+  "bounty_read_findings",
+  "bounty_list_findings",
+  "bounty_write_verification_round",
+  "bounty_read_verification_round",
+  "bounty_write_grade_verdict",
+  "bounty_read_grade_verdict",
+  "bounty_init_session",
+  "bounty_read_session_state",
+  "bounty_transition_phase",
+  "bounty_apply_wave_merge",
+  "bounty_write_handoff",
+  "bounty_write_wave_handoff",
+  "bounty_wave_handoff_status",
+  "bounty_merge_wave_handoffs",
+  "bounty_read_wave_handoffs",
+  "bounty_log_dead_ends",
+  "bounty_log_coverage",
+  "bounty_wave_status",
+  "bounty_temp_email",
+  "bounty_signup_detect",
+  "bounty_auth_store",
+  "bounty_list_auth_profiles",
+  "bounty_auto_signup",
+  "bounty_read_state_summary",
+  "bounty_read_hunter_brief",
+];
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -432,16 +476,11 @@ test("mcp server public exports remain stable", () => {
 
 test("MCP tool registry and dispatch cases stay in sync", async () => {
   const toolNames = TOOLS.map((tool) => tool.name);
+  assert.deepEqual(toolNames, EXPECTED_TOOL_NAMES);
+  assert.deepEqual(TOOL_REGISTRY.map((tool) => tool.name), EXPECTED_TOOL_NAMES);
+  assert.deepEqual(TOOL_MODULES.map((tool) => defineTool(tool).name), EXPECTED_TOOL_NAMES);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
   assert.ok(toolNames.every((name) => name.startsWith("bounty_")));
-  for (const representativeTool of [
-    "bounty_http_scan",
-    "bounty_record_finding",
-    "bounty_read_hunter_brief",
-    "bounty_static_scan",
-  ]) {
-    assert.ok(toolNames.includes(representativeTool), `${representativeTool} missing from exported registry`);
-  }
   assert.ok(!toolNames.includes("bounty_auth_manual"));
   assert.ok(!toolNames.includes("bounty_read_handoff"));
   assert.equal(
@@ -451,8 +490,12 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
 
   const dispatchNames = Object.keys(TOOL_HANDLERS);
 
-  assert.deepEqual([...dispatchNames].sort(), [...toolNames].sort());
-  assert.deepEqual(Object.keys(TOOL_MANIFEST).sort(), [...toolNames].sort());
+  assert.deepEqual(dispatchNames, toolNames);
+  assert.deepEqual(Object.keys(TOOL_MANIFEST), toolNames);
+  for (const tool of TOOL_REGISTRY) {
+    assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
+    assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
+  }
   assert.deepEqual(JSON.parse(await executeTool("__unknown_tool__", {})), {
     error: "Unknown tool: __unknown_tool__",
   });
@@ -474,7 +517,7 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
   }
 });
 
-test("MCP per-tool module pilot preserves representative tool behavior", () => {
+test("MCP per-tool modules preserve representative tool behavior", () => {
   const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
   assert.equal(byName.get("bounty_read_http_audit").inputSchema.required[0], "target_domain");
   assert.equal(byName.get("bounty_start_wave").inputSchema.properties.assignments.type, "array");
@@ -508,9 +551,6 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
   assert.throws(
     () => buildToolRegistry({
       toolModules: [completeModule, { ...completeModule }],
-      toolDefinitions: [],
-      toolMetadata: {},
-      toolHandlers: {},
     }),
     /Duplicate tool name/,
   );
@@ -518,9 +558,6 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
   assert.throws(
     () => buildToolRegistry({
       toolModules: [{ ...completeModule, handler: undefined }],
-      toolDefinitions: [],
-      toolMetadata: {},
-      toolHandlers: {},
     }),
     /has no handler/,
   );
@@ -530,9 +567,6 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
   assert.throws(
     () => buildToolRegistry({
       toolModules: [missingGlobalPreapproval],
-      toolDefinitions: [],
-      toolMetadata: {},
-      toolHandlers: {},
     }),
     /missing global_preapproval/,
   );
@@ -540,9 +574,6 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
   assert.throws(
     () => buildToolRegistry({
       toolModules: [{ ...completeModule, global_preapproval: "yes" }],
-      toolDefinitions: [],
-      toolMetadata: {},
-      toolHandlers: {},
     }),
     /invalid global_preapproval/,
   );
@@ -550,52 +581,41 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
   assert.throws(
     () => buildToolRegistry({
       toolModules: [{ ...completeModule, role_bundles: ["mystery"] }],
-      toolDefinitions: [],
-      toolMetadata: {},
-      toolHandlers: {},
     }),
     /unknown role bundle mystery/,
   );
+});
 
-  assert.throws(
-    () => buildToolRegistry({
-      toolModules: [],
-      toolDefinitions: [{
-        name: "bounty_legacy_tool",
-        description: "Legacy test tool.",
-        inputSchema: { type: "object", properties: {} },
-      }],
-      toolMetadata: {},
-      toolHandlers: { bounty_legacy_tool: () => ({}) },
-    }),
-    /Missing tool manifest metadata/,
-  );
+test("MCP runtime no longer imports legacy split tool definition files", () => {
+  const mcpRoot = path.join(__dirname, "..", "mcp");
+  const forbiddenFiles = [
+    path.join(mcpRoot, "lib", "tool-definitions.js"),
+    path.join(mcpRoot, "lib", "tool-manifest.js"),
+    path.join(mcpRoot, "lib", "tool-handlers.js"),
+  ];
+  for (const filePath of forbiddenFiles) {
+    assert.equal(fs.existsSync(filePath), false, `${path.basename(filePath)} should be removed`);
+  }
 
-  assert.throws(
-    () => buildToolRegistry({
-      toolModules: [],
-      toolDefinitions: [{
-        name: "bounty_legacy_tool",
-        description: "Legacy test tool.",
-        inputSchema: { type: "object", properties: {} },
-      }],
-      toolMetadata: {
-        bounty_legacy_tool: {
-          role_bundles: ["hunter"],
-          mutating: false,
-          global_preapproval: true,
-          network_access: false,
-          browser_access: false,
-          scope_required: false,
-          sensitive_output: false,
-          session_artifacts_written: [],
-          hook_required: false,
-        },
-      },
-      toolHandlers: {},
-    }),
-    /has no handler/,
-  );
+  const jsFiles = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        jsFiles.push(entryPath);
+      }
+    }
+  };
+  walk(mcpRoot);
+
+  for (const filePath of jsFiles) {
+    const content = fs.readFileSync(filePath, "utf8");
+    assert.equal(content.includes("tool-definitions.js"), false, `${filePath} imports legacy definitions`);
+    assert.equal(content.includes("tool-manifest.js"), false, `${filePath} imports legacy manifest`);
+    assert.equal(content.includes("tool-handlers.js"), false, `${filePath} imports legacy handlers`);
+  }
 });
 
 test("executeTool rejects unknown top-level arguments while allowing nested map-like fields", async () => {
@@ -4373,6 +4393,32 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
       global.fetch = previousFetch;
     }
   });
+});
+
+test("public intel fetch helper enforces HackerOne allowlist and response cap", async () => {
+  const previousFetch = global.fetch;
+  let called = false;
+  try {
+    global.fetch = async () => {
+      called = true;
+      return new Response("abcdef", { status: 200, headers: { "content-type": "text/html" } });
+    };
+
+    await assert.rejects(
+      () => fetchTextWithTimeout("https://example.com/hacktivity"),
+      /not allowlisted/,
+    );
+    assert.equal(called, false);
+
+    const fetched = await fetchTextWithTimeout("https://hackerone.com/hacktivity?querystring=example", {
+      maxBytes: 4,
+    });
+    assert.equal(fetched.ok, true);
+    assert.equal(fetched.text, "abcd");
+    assert.equal(fetched.truncated, true);
+  } finally {
+    global.fetch = previousFetch;
+  }
 });
 
 test("rankAttackSurfaces adds ranking fields without removing required attack_surface fields", () => {

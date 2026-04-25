@@ -13,13 +13,6 @@ const {
 const {
   validateToolArguments,
 } = require("./tool-validation.js");
-const {
-  bountyPublicIntel,
-  importHttpTraffic,
-  importStaticArtifact,
-  readHttpAudit,
-  staticScan,
-} = require("./tool-handlers.js");
 
 async function executeTool(name, args) {
   const tool = getRegisteredTool(name);
@@ -47,10 +40,5 @@ async function executeTool(name, args) {
 
 module.exports = {
   TOOL_HANDLERS,
-  bountyPublicIntel,
   executeTool,
-  importStaticArtifact,
-  importHttpTraffic,
-  readHttpAudit,
-  staticScan,
 };

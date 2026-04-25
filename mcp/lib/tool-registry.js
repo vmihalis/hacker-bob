@@ -1,8 +1,5 @@
 "use strict";
 
-const { TOOLS: TOOL_DEFINITIONS } = require("./tool-definitions.js");
-const { TOOL_MANIFEST: TOOL_METADATA } = require("./tool-manifest.js");
-const { RAW_TOOL_HANDLERS } = require("./tool-handlers.js");
 const { TOOL_MODULES } = require("./tools/index.js");
 
 const VALID_ROLE_BUNDLES = Object.freeze([
@@ -84,33 +81,11 @@ function defineTool(entry) {
   return Object.freeze({ ...entry });
 }
 
-function legacyToolEntries(toolDefinitions, toolMetadata, toolHandlers) {
-  return toolDefinitions.map((tool) => {
-    const metadata = toolMetadata[tool.name];
-    const handler = toolHandlers[tool.name];
-    if (!metadata) {
-      throw new Error(`Missing tool manifest metadata for ${tool.name}`);
-    }
-    return {
-      ...tool,
-      ...metadata,
-      handler,
-    };
-  });
-}
-
 function buildToolRegistry({
   toolModules = TOOL_MODULES,
-  toolDefinitions = TOOL_DEFINITIONS,
-  toolMetadata = TOOL_METADATA,
-  toolHandlers = RAW_TOOL_HANDLERS,
 } = {}) {
-  const rawEntries = [
-    ...toolModules,
-    ...legacyToolEntries(toolDefinitions, toolMetadata, toolHandlers),
-  ];
   const seenNames = new Set();
-  return Object.freeze(rawEntries.map((entry) => {
+  return Object.freeze(toolModules.map((entry) => {
     const tool = defineTool(entry);
     if (seenNames.has(tool.name)) {
       throw new Error(`Duplicate tool name in registry: ${tool.name}`);
