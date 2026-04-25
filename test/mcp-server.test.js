@@ -50,6 +50,15 @@ const {
 const {
   normalizeAutoSignupResult,
 } = require("../mcp/lib/signup.js");
+const {
+  agentRunSidecarPath,
+  agentRunTelemetryPath,
+  appendAgentRunTelemetryEvent,
+  appendToolTelemetryEvent,
+  buildAgentRunTelemetryEvent,
+  readToolTelemetry,
+  toolTelemetryPath,
+} = require("../mcp/lib/tool-telemetry.js");
 
 const {
   TOOLS,
@@ -157,6 +166,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_auto_signup",
   "bounty_read_state_summary",
   "bounty_read_hunter_brief",
+  "bounty_read_tool_telemetry",
 ];
 
 function withTempHome(fn) {
@@ -184,6 +194,48 @@ function withTempHome(fn) {
     cleanup();
     throw error;
   }
+}
+
+function withEnv(overrides, fn) {
+  const previous = {};
+  for (const key of Object.keys(overrides)) {
+    previous[key] = process.env[key];
+    if (overrides[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = overrides[key];
+    }
+  }
+
+  const cleanup = () => {
+    for (const key of Object.keys(overrides)) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  };
+
+  try {
+    const result = fn();
+    if (result && typeof result.then === "function") {
+      return result.finally(cleanup);
+    }
+    cleanup();
+    return result;
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+function readJsonl(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
 }
 
 function seedSessionState(domain, overrides = {}) {
@@ -496,10 +548,12 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
     assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
     assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
   }
-  assert.deepEqual(await executeTool("__unknown_tool__", {}), {
-    ok: false,
-    error: { code: "UNKNOWN_TOOL", message: "Unknown tool: __unknown_tool__" },
-    meta: { tool: "__unknown_tool__", version: 1 },
+  await withTempHome(async () => {
+    assert.deepEqual(await executeTool("__unknown_tool__", {}), {
+      ok: false,
+      error: { code: "UNKNOWN_TOOL", message: "Unknown tool: __unknown_tool__" },
+      meta: { tool: "__unknown_tool__", version: 1 },
+    });
   });
 });
 
@@ -532,6 +586,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_http_scan.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bounty_http_scan.scope_required, true);
   assert.equal(TOOL_MANIFEST.bounty_http_scan.hook_required, true);
+  assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.global_preapproval, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_tool_telemetry.role_bundles, ["orchestrator"]);
 });
 
 test("MCP tool registry validation rejects incomplete or inconsistent entries", () => {
@@ -727,6 +784,327 @@ test("executeTool returns standard envelopes and recursively validates schema ar
     assert.equal(traffic.ok, true);
     assert.equal(traffic.data.imported, 1);
   });
+});
+
+test("executeTool writes telemetry rows for success and dispatcher failure modes", async () => {
+  await withTempHome(async () => {
+    await withEnv({ BOUNTY_TELEMETRY: undefined, BOUNTY_TELEMETRY_DIR: undefined }, async () => {
+      const success = await executeTool("bounty_list_auth_profiles", { target_domain: "example.com" });
+      assert.equal(success.ok, true);
+
+      const unknown = await executeTool("__unknown_tool__", {});
+      assert.equal(unknown.error.code, "UNKNOWN_TOOL");
+
+      const invalid = await executeTool("bounty_log_coverage", {
+        target_domain: "example.com",
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        entries: "not-array",
+      });
+      assert.equal(invalid.error.code, "INVALID_ARGUMENTS");
+
+      const thrown = await executeTool("bounty_read_session_state", { target_domain: "missing.example" });
+      assert.equal(thrown.error.code, "NOT_FOUND");
+
+      const blocked = await executeTool("bounty_http_scan", {
+        method: "GET",
+        url: "http://127.0.0.1/",
+        target_domain: "example.com",
+      });
+      assert.equal(blocked.error.code, "SCOPE_BLOCKED");
+
+      const rows = readJsonl(toolTelemetryPath());
+      assert.equal(rows.length, 5);
+
+      assert.equal(rows[0].tool, "bounty_list_auth_profiles");
+      assert.equal(rows[0].ok, true);
+      assert.equal(rows[0].error_code, null);
+      assert.equal(rows[0].target_domain, "example.com");
+      assert.equal(rows[0].registry.global_preapproval, true);
+      assert.equal(rows[0].registry.mutating, false);
+      assert.equal(typeof rows[0].elapsed_ms, "number");
+
+      assert.equal(rows[1].tool, "__unknown_tool__");
+      assert.equal(rows[1].ok, false);
+      assert.equal(rows[1].error_code, "UNKNOWN_TOOL");
+      assert.equal(rows[1].registry, null);
+      assert.equal(rows[1].error_message, "Unknown tool");
+
+      assert.equal(rows[2].tool, "bounty_log_coverage");
+      assert.equal(rows[2].error_code, "INVALID_ARGUMENTS");
+      assert.equal(rows[2].wave, "w1");
+      assert.equal(rows[2].agent, "a1");
+      assert.equal(rows[2].surface_id, "surface-a");
+      assert.match(rows[2].error_message, /entries must be array/);
+
+      assert.equal(rows[3].tool, "bounty_read_session_state");
+      assert.equal(rows[3].error_code, "NOT_FOUND");
+      assert.match(rows[3].error_message, /Missing session state/);
+
+      assert.equal(rows[4].tool, "bounty_http_scan");
+      assert.equal(rows[4].error_code, "SCOPE_BLOCKED");
+      assert.equal(rows[4].target_domain, "example.com");
+      assert.equal(rows[4].registry.sensitive_output, true);
+      assert.equal(Object.prototype.hasOwnProperty.call(rows[4], "error_message"), false);
+    });
+  });
+});
+
+test("tool telemetry can be disabled and writer failures never change envelopes", async () => {
+  await withTempHome(async () => {
+    await withEnv({ BOUNTY_TELEMETRY: "0", BOUNTY_TELEMETRY_DIR: undefined }, async () => {
+      const result = await executeTool("bounty_list_auth_profiles", { target_domain: "example.com" });
+      assert.equal(result.ok, true);
+      assert.equal(fs.existsSync(toolTelemetryPath()), false);
+    });
+  });
+
+  await withTempHome(async () => {
+    const blockingPath = path.join(os.tmpdir(), `bountyagent-telemetry-block-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(blockingPath, "not a directory\n");
+    try {
+      await withEnv({ BOUNTY_TELEMETRY: undefined, BOUNTY_TELEMETRY_DIR: blockingPath }, async () => {
+        const result = await executeTool("bounty_list_auth_profiles", { target_domain: "example.com" });
+        assert.equal(result.ok, true);
+        assert.equal(result.data.version, 1);
+        assert.equal(result.data.target_domain, "example.com");
+        assert.deepEqual(result.data.profiles, []);
+        assert.deepEqual(result.meta, { tool: "bounty_list_auth_profiles", version: 1 });
+      });
+    } finally {
+      fs.rmSync(blockingPath, { force: true });
+    }
+  });
+});
+
+test("tool telemetry rows do not store raw secret-bearing payloads", async () => {
+  await withTempHome(async () => {
+    await withEnv({ BOUNTY_TELEMETRY: undefined, BOUNTY_TELEMETRY_DIR: undefined }, async () => {
+      seedSessionState("example.com");
+
+      const authFailure = await executeTool("bounty_auth_store", {
+        target_domain: "example.com",
+        profile_name: "attacker",
+        credentials: {
+          email: "a@example.com",
+          password: "super-secret-password",
+          unexpected: true,
+        },
+      });
+      assert.equal(authFailure.error.code, "INVALID_ARGUMENTS");
+
+      const authSuccess = await executeTool("bounty_auth_store", {
+        target_domain: "example.com",
+        profile_name: "attacker",
+        headers: { Authorization: "Bearer raw-auth-token" },
+        cookies: { session: "raw-cookie-value" },
+        local_storage: { access_token: "raw-local-storage-token" },
+        credentials: {
+          email: "a@example.com",
+          password: "stored-secret-password",
+        },
+      });
+      assert.equal(authSuccess.ok, true);
+
+      const httpBlocked = await executeTool("bounty_http_scan", {
+        method: "POST",
+        url: "http://127.0.0.1/?token=raw-query-token",
+        target_domain: "example.com",
+        headers: { Authorization: "Bearer request-header-token" },
+        body: "request-body-secret",
+      });
+      assert.equal(httpBlocked.error.code, "SCOPE_BLOCKED");
+
+      const artifact = await executeTool("bounty_import_static_artifact", {
+        target_domain: "example.com",
+        artifact_type: "evm_token_contract",
+        content: "contract Secret { string constant password = 'static-artifact-secret'; }",
+        label: "token",
+      });
+      assert.equal(artifact.ok, true);
+
+      const telemetry = JSON.stringify(readJsonl(toolTelemetryPath()));
+      for (const forbidden of [
+        "super-secret-password",
+        "raw-auth-token",
+        "raw-cookie-value",
+        "raw-local-storage-token",
+        "stored-secret-password",
+        "raw-query-token",
+        "request-header-token",
+        "request-body-secret",
+        "static-artifact-secret",
+      ]) {
+        assert.equal(telemetry.includes(forbidden), false, `${forbidden} leaked into telemetry`);
+      }
+
+      const authRows = readJsonl(toolTelemetryPath())
+        .filter((row) => row.tool === "bounty_auth_store" && row.ok === false);
+      assert.equal(authRows.length, 1);
+      assert.equal(Object.prototype.hasOwnProperty.call(authRows[0], "error_message"), false);
+    });
+  });
+});
+
+test("tool telemetry reader summarizes at read time and skips malformed lines", () => {
+  const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-telemetry-"));
+  const env = { ...process.env, BOUNTY_TELEMETRY: "1", BOUNTY_TELEMETRY_DIR: telemetryRoot };
+  try {
+    const base = {
+      version: 1,
+      ts: "2026-04-24T00:00:00.000Z",
+      ok: true,
+      error_code: null,
+      target_domain: "example.com",
+      wave: null,
+      agent: null,
+      surface_id: null,
+      registry: null,
+    };
+    appendToolTelemetryEvent({ ...base, tool: "bounty_http_scan", elapsed_ms: 10 }, { env });
+    appendToolTelemetryEvent({
+      ...base,
+      tool: "bounty_http_scan",
+      ok: false,
+      elapsed_ms: 20,
+      error_code: "SCOPE_BLOCKED",
+      error_message: "blocked",
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    }, { env });
+    appendToolTelemetryEvent({ ...base, tool: "bounty_http_scan", elapsed_ms: 30 }, { env });
+    appendToolTelemetryEvent({
+      ...base,
+      tool: "bounty_read_session_state",
+      ok: false,
+      elapsed_ms: 40,
+      error_code: "NOT_FOUND",
+      error_message: "Missing session state",
+    }, { env });
+    appendToolTelemetryEvent({
+      ...base,
+      tool: "bounty_http_scan",
+      target_domain: "other.example",
+      elapsed_ms: 50,
+    }, { env });
+    fs.appendFileSync(toolTelemetryPath(env), "{not-json\n", "utf8");
+
+    const summary = readToolTelemetry({ target_domain: "example.com", limit: 2 }, { env });
+    assert.equal(summary.enabled, true);
+    assert.equal(summary.total_events, 4);
+    assert.equal(summary.malformed_lines, 1);
+    assert.equal(summary.totals.calls, 4);
+    assert.equal(summary.totals.successes, 2);
+    assert.equal(summary.totals.failures, 2);
+    assert.equal(summary.totals.success_rate, 0.5);
+    assert.deepEqual(summary.totals.error_codes, {
+      SCOPE_BLOCKED: 1,
+      NOT_FOUND: 1,
+    });
+
+    const httpSummary = summary.tools.find((toolSummary) => toolSummary.tool === "bounty_http_scan");
+    assert.ok(httpSummary);
+    assert.equal(httpSummary.calls, 3);
+    assert.equal(httpSummary.successes, 2);
+    assert.equal(httpSummary.failures, 1);
+    assert.equal(httpSummary.success_rate, 0.6667);
+    assert.deepEqual(httpSummary.latency_ms, { p50: 20, p95: 30 });
+    assert.deepEqual(httpSummary.error_codes, { SCOPE_BLOCKED: 1 });
+    assert.equal(httpSummary.last_call.elapsed_ms, 30);
+    assert.equal(httpSummary.recent_failures.length, 1);
+    assert.equal(httpSummary.recent_failures[0].error_message, "blocked");
+
+    const filtered = readToolTelemetry({ tool: "bounty_http_scan" }, { env });
+    assert.equal(filtered.total_events, 4);
+    assert.equal(filtered.tools.length, 1);
+    assert.equal(filtered.tools[0].tool, "bounty_http_scan");
+    assert.equal(filtered.tools[0].calls, 4);
+  } finally {
+    fs.rmSync(telemetryRoot, { recursive: true, force: true });
+  }
+});
+
+test("tool telemetry reader can include filtered hunter run telemetry summaries", () => {
+  const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-telemetry-"));
+  const env = { ...process.env, BOUNTY_TELEMETRY: "1", BOUNTY_TELEMETRY_DIR: telemetryRoot };
+  try {
+    const allowed = buildAgentRunTelemetryEvent({
+      run_type: "hunter",
+      status: "allowed",
+      target_domain: "example.com",
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      transcript_path: "/tmp/transcript-a.jsonl",
+      handoff: {
+        present: true,
+        valid: true,
+        provenance: "verified",
+        surface_status: "complete",
+        summary_present: true,
+        chain_notes_count: 1,
+      },
+      coverage: { total: 2, by_status: { tested: 1, promising: 1 } },
+      findings: { count: 1 },
+      now: new Date("2026-04-24T00:00:00.000Z"),
+    });
+    const missing = buildAgentRunTelemetryEvent({
+      run_type: "hunter",
+      status: "blocked",
+      block_code: "missing_handoff",
+      target_domain: "example.com",
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-b",
+      transcript_path: "/tmp/transcript-b.jsonl",
+      handoff: { present: false, valid: false },
+      now: new Date("2026-04-24T00:01:00.000Z"),
+    });
+    const other = buildAgentRunTelemetryEvent({
+      run_type: "hunter",
+      status: "blocked",
+      block_code: "malformed_marker",
+      target_domain: "other.example",
+      wave: "w2",
+      agent: "a1",
+      surface_id: "surface-x",
+      now: new Date("2026-04-24T00:02:00.000Z"),
+    });
+    appendAgentRunTelemetryEvent(allowed, { env });
+    appendAgentRunTelemetryEvent(missing, { env });
+    appendAgentRunTelemetryEvent(other, { env });
+    fs.appendFileSync(agentRunTelemetryPath(env), "{not-json\n", "utf8");
+
+    const withoutRuns = readToolTelemetry({ target_domain: "example.com" }, { env });
+    assert.equal(Object.prototype.hasOwnProperty.call(withoutRuns, "agent_runs"), false);
+
+    const summary = readToolTelemetry({ include_agent_runs: true, target_domain: "example.com", limit: 2 }, { env });
+    assert.equal(summary.total_events, 0);
+    assert.equal(summary.agent_runs.total_runs, 2);
+    assert.equal(summary.agent_runs.malformed_lines, 1);
+    assert.deepEqual(summary.agent_runs.totals.by_status, { allowed: 1, blocked: 1 });
+    assert.deepEqual(summary.agent_runs.totals.by_block_code, { missing_handoff: 1 });
+    assert.equal(summary.agent_runs.latest_run.run_id, missing.run_id);
+    assert.equal(summary.agent_runs.recent_blocked_runs.length, 1);
+    assert.equal(summary.agent_runs.recent_blocked_runs[0].block_code, "missing_handoff");
+
+    const filtered = readToolTelemetry({
+      include_agent_runs: true,
+      target_domain: "example.com",
+      agent_run_type: "hunter",
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    }, { env });
+    assert.equal(filtered.agent_runs.total_runs, 1);
+    assert.equal(filtered.agent_runs.latest_run.run_id, allowed.run_id);
+    assert.deepEqual(filtered.agent_runs.latest_run.coverage.by_status, { tested: 1, promising: 1 });
+    assert.equal(filtered.agent_runs.latest_run.findings.count, 1);
+  } finally {
+    fs.rmSync(telemetryRoot, { recursive: true, force: true });
+  }
 });
 
 test("MCP message handler lists tools, routes calls, serializes envelopes, and wraps thrown errors", async () => {
@@ -1868,6 +2246,46 @@ test("hunter SubagentStop hook blocks missing final marker", () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /BOB_HUNTER_DONE/);
     assert.match(result.stderr, /bounty_write_wave_handoff/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].run_type, "hunter");
+    assert.equal(rows[0].status, "blocked");
+    assert.equal(rows[0].block_code, "missing_marker");
+    assert.equal(rows[0].target_domain, null);
+    assert.equal(rows[0].telemetry_source, "hunter-subagent-stop");
+  });
+});
+
+test("hunter SubagentStop hook rejects malformed, zero wave, and zero agent markers", () => {
+  withTempHome((tempHome) => {
+    const malformed = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":}',
+    }, { home: tempHome });
+    assert.equal(malformed.status, 2);
+    assert.match(malformed.stderr, /BOB_HUNTER_DONE/);
+
+    const zeroWave = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w0","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome });
+    assert.equal(zeroWave.status, 2);
+    assert.match(zeroWave.stderr, /positive wN/);
+
+    const zeroAgent = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a0","surface_id":"surface-a"}',
+    }, { home: tempHome });
+    assert.equal(zeroAgent.status, 2);
+    assert.match(zeroAgent.stderr, /positive aN/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((row) => row.block_code), [
+      "malformed_marker",
+      "malformed_marker",
+      "malformed_marker",
+    ]);
+    assert.equal(rows[1].wave, "w0");
+    assert.equal(rows[2].agent, "a0");
   });
 });
 
@@ -1888,6 +2306,23 @@ test("hunter SubagentStop hook blocks missing structured handoff", async () => {
 
     assert.equal(result.status, 2);
     assert.match(result.stderr, /must call bounty_write_wave_handoff/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "blocked");
+    assert.equal(rows[0].block_code, "missing_handoff");
+    assert.equal(rows[0].target_domain, domain);
+    assert.equal(rows[0].wave, "w1");
+    assert.equal(rows[0].agent, "a1");
+    assert.equal(rows[0].surface_id, "surface-a");
+    assert.deepEqual(rows[0].handoff, {
+      present: false,
+      valid: false,
+      provenance: null,
+      surface_status: null,
+      summary_present: false,
+      chain_notes_count: 0,
+    });
   });
 });
 
@@ -1903,6 +2338,48 @@ test("hunter SubagentStop hook blocks invalid structured handoff", () => {
 
     assert.equal(result.status, 2);
     assert.match(result.stderr, /wrote an invalid handoff/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "blocked");
+    assert.equal(rows[0].block_code, "invalid_handoff");
+    assert.equal(rows[0].handoff.present, true);
+    assert.equal(rows[0].handoff.valid, false);
+  });
+});
+
+test("hunter SubagentStop hook blocks marker and handoff mismatch", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "a1 complete",
+      chain_notes: ["no chain"],
+      content: "# a1",
+    });
+
+    const result = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-b"}',
+    }, { home: tempHome });
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /does not match structured handoff/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "blocked");
+    assert.equal(rows[0].block_code, "handoff_mismatch");
+    assert.equal(rows[0].surface_id, "surface-b");
+    assert.equal(rows[0].handoff.present, true);
+    assert.equal(rows[0].handoff.valid, true);
+    assert.equal(rows[0].handoff.surface_status, "complete");
+    assert.equal(rows[0].handoff.summary_present, true);
+    assert.equal(rows[0].handoff.chain_notes_count, 1);
   });
 });
 
@@ -1972,6 +2449,144 @@ test("hunter SubagentStop hook allows a complete wave without merging", async ()
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
     assert.equal(state.pending_wave, 1);
     assert.equal(state.hunt_wave, 0);
+  });
+});
+
+test("hunter SubagentStop hook writes metadata-only allowed run telemetry", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    const transcriptPath = path.join(tempHome, "transcript.jsonl");
+    const rawTranscriptSecret = "raw-transcript-secret";
+    const rawHandoffSecret = "raw-handoff-markdown-secret";
+    const rawFindingSecret = "raw-finding-poc-secret";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "a1 complete",
+      chain_notes: ["no chain"],
+      content: `# a1\n\n${rawHandoffSecret}`,
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [
+        {
+          endpoint: "/tested",
+          method: "GET",
+          bug_class: "idor",
+          status: "tested",
+          evidence_summary: "tested",
+        },
+        {
+          endpoint: "/promising",
+          method: "POST",
+          bug_class: "xss",
+          status: "promising",
+          evidence_summary: "promising",
+        },
+      ],
+    });
+    recordFinding({
+      target_domain: domain,
+      title: "IDOR",
+      severity: "high",
+      endpoint: "/tested",
+      description: "Cross-account access.",
+      proof_of_concept: rawFindingSecret,
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    fs.writeFileSync(transcriptPath, `${JSON.stringify({
+      message: {
+        role: "assistant",
+        content: [{ text: `${rawTranscriptSecret}\nBOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}` }],
+      },
+    })}\n`);
+
+    const result = runHunterSubagentStop({ transcript_path: transcriptPath }, { home: tempHome });
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /handoff valid/);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    const event = rows[0];
+    assert.equal(event.version, 1);
+    assert.match(event.run_id, /^[a-f0-9]{16}$/);
+    assert.equal(event.run_type, "hunter");
+    assert.equal(event.status, "allowed");
+    assert.equal(event.block_code, null);
+    assert.equal(event.target_domain, domain);
+    assert.equal(event.wave, "w1");
+    assert.equal(event.agent, "a1");
+    assert.equal(event.surface_id, "surface-a");
+    assert.equal(event.transcript_path, transcriptPath);
+    assert.deepEqual(event.handoff, {
+      present: true,
+      valid: true,
+      provenance: "legacy_unverified",
+      surface_status: "complete",
+      summary_present: true,
+      chain_notes_count: 1,
+    });
+    assert.deepEqual(event.coverage, {
+      total: 2,
+      by_status: { tested: 1, promising: 1 },
+    });
+    assert.deepEqual(event.findings, { count: 1 });
+    assert.equal(event.telemetry_source, "hunter-subagent-stop");
+
+    const sidecar = JSON.parse(fs.readFileSync(agentRunSidecarPath(event.run_id), "utf8"));
+    assert.deepEqual(sidecar, event);
+
+    const telemetryText = JSON.stringify(event);
+    assert.equal(telemetryText.includes(rawTranscriptSecret), false);
+    assert.equal(telemetryText.includes(rawHandoffSecret), false);
+    assert.equal(telemetryText.includes(rawFindingSecret), false);
+  });
+});
+
+test("hunter SubagentStop telemetry can be disabled and write failures do not alter hook results", () => {
+  withTempHome((tempHome) => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "a1 complete",
+      content: "# a1",
+    });
+
+    const disabled = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome, env: { BOUNTY_TELEMETRY: "0" } });
+    assert.equal(disabled.status, 0);
+    assert.equal(fs.existsSync(agentRunTelemetryPath()), false);
+
+    const blockingPath = path.join(tempHome, "telemetry-root-file");
+    fs.writeFileSync(blockingPath, "not a directory\n");
+    const allowed = runHunterSubagentStop({
+      last_assistant_message: 'BOB_HUNTER_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
+    }, { home: tempHome, env: { BOUNTY_TELEMETRY_DIR: blockingPath } });
+    assert.equal(allowed.status, 0);
+    assert.match(allowed.stdout, /handoff valid/);
+
+    const blocked = runHunterSubagentStop({
+      last_assistant_message: "No marker.",
+    }, { home: tempHome, env: { BOUNTY_TELEMETRY_DIR: blockingPath } });
+    assert.equal(blocked.status, 2);
+    assert.match(blocked.stderr, /BOB_HUNTER_DONE/);
   });
 });
 
