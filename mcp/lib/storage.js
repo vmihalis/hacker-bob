@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const {
@@ -162,9 +163,12 @@ function readSessionLockSnapshot(lockPathValue) {
   }
 
   let timestampMs = Number.NaN;
+  let contentHash = null;
   if (stats.isFile()) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(lockPathValue, "utf8"));
+      const content = fs.readFileSync(lockPathValue, "utf8");
+      contentHash = crypto.createHash("sha256").update(content).digest("hex");
+      const parsed = JSON.parse(content);
       timestampMs = Date.parse(parsed.timestamp);
     } catch {}
   }
@@ -173,7 +177,10 @@ function readSessionLockSnapshot(lockPathValue) {
   return {
     dev: stats.dev,
     ino: stats.ino,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
     isDirectory: stats.isDirectory(),
+    contentHash,
     isStale: Date.now() - staleReferenceMs > SESSION_LOCK_STALE_MS,
   };
 }
@@ -191,6 +198,26 @@ function removeStaleSessionLock(lockPathValue, snapshot) {
   }
   if (currentStats.dev !== snapshot.dev || currentStats.ino !== snapshot.ino) {
     return false;
+  }
+  if (currentStats.isDirectory() !== snapshot.isDirectory) {
+    return false;
+  }
+  if (currentStats.size !== snapshot.size || currentStats.mtimeMs !== snapshot.mtimeMs) {
+    return false;
+  }
+  if (!snapshot.isDirectory) {
+    let currentContentHash = null;
+    try {
+      currentContentHash = crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(lockPathValue, "utf8"))
+        .digest("hex");
+    } catch {
+      return false;
+    }
+    if (currentContentHash !== snapshot.contentHash) {
+      return false;
+    }
   }
 
   fs.rmSync(lockPathValue, { recursive: snapshot.isDirectory, force: true });
