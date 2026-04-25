@@ -55,6 +55,7 @@ MCP ranking computes runtime priority for status views and hunter briefs. Import
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with Claude Opus (Bob has expensive taste)
+- Node.js 20 or newer
 - `curl` and `python3` (already on your machine, probably)
 - Optional sidekicks for deeper recon:
 
@@ -81,6 +82,10 @@ It backs up the target's `.mcp.json` and `.claude/settings.json`, runs the insta
 Bob will scan whatever you tell him to scan. **You are responsible for making sure the target is in scope and that you have permission.** Bob is enthusiastic, not licensed.
 
 Hunt responsibly. Read the program's policy. Read [`DISCLAIMER.md`](DISCLAIMER.md) before you point him at anything.
+
+## Contributing
+
+Community pull requests are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening an issue or PR, and report vulnerabilities in Hacker Bob itself through [`SECURITY.md`](SECURITY.md).
 
 ## License
 

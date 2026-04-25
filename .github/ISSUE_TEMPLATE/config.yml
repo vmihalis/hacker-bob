@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/vmihalis/hacker-bob/security/advisories/new
+    about: Report vulnerabilities in Hacker Bob privately.
+  - name: Read the security policy
+    url: https://github.com/vmihalis/hacker-bob/security/policy
+    about: Check what belongs in this project's security reporting flow.

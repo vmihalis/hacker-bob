@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest an improvement to Hacker Bob.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and scope considerations
+      description: Note any impact on authorization boundaries, SSRF handling, credential storage, file writes, or generated prompts.
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I did not include private target data, credentials, or unpublished third-party findings.
+          required: true

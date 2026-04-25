@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible problem in Hacker Bob.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, cookies, tokens, private target data, or unpublished third-party findings. If this is a vulnerability in Hacker Bob itself, use private vulnerability reporting instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest set of steps that reproduces the issue.
+      placeholder: |
+        1. Install with ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+      placeholder: git commit SHA, tag, or branch
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node.js version, Claude Code version, and relevant optional tools.
+      placeholder: |
+        OS:
+        Node.js:
+        Claude Code:
+        Optional tools:
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or output
+      description: Paste only logs with secrets and target-private details removed.
+      render: shell
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed secrets, credentials, cookies, private target data, and unpublished third-party findings.
+          required: true
+        - label: This is not a vulnerability report for Hacker Bob itself.
+          required: true
