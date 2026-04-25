@@ -151,8 +151,13 @@ async function requestOnce(url, options) {
       path: `${parsed.pathname}${parsed.search}`,
       method: options.method || "GET",
       headers: options.headers || {},
-      lookup: (_hostname, _lookupOptions, callback) => {
-        callback(null, selectedAddress.address, selectedAddress.family);
+      lookup: (_hostname, lookupOptions, callback) => {
+        const cb = typeof lookupOptions === "function" ? lookupOptions : callback;
+        if (lookupOptions && lookupOptions.all) {
+          cb(null, [{ address: selectedAddress.address, family: selectedAddress.family }]);
+          return;
+        }
+        cb(null, selectedAddress.address, selectedAddress.family);
       },
     }, (res) => {
       const chunks = [];

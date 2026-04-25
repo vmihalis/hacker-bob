@@ -381,8 +381,25 @@ async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
       if (error) process.nextTick(() => req.emit("error", error));
     };
     req.end = () => {
-      const route = typeof routes === "function" ? routes(url, requestOptions) : routes[url];
       process.nextTick(() => {
+        if (typeof requestOptions.lookup === "function") {
+          let lookupFailed = null;
+          requestOptions.lookup(host, { all: true }, (error, addresses) => {
+            if (error) {
+              lookupFailed = error;
+              return;
+            }
+            if (!Array.isArray(addresses) || !addresses[0] || !addresses[0].address) {
+              lookupFailed = new Error("mock lookup all mode did not return address records");
+            }
+          });
+          if (lookupFailed) {
+            req.emit("error", lookupFailed);
+            return;
+          }
+        }
+
+        const route = typeof routes === "function" ? routes(url, requestOptions) : routes[url];
         if (!route) {
           req.emit("error", new Error(`No mock route for ${url}`));
           return;
