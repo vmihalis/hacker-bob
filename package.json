@@ -15,6 +15,6 @@
     "install-browser": "npx patchright install chromium"
   },
   "optionalDependencies": {
-    "patchright": "^1.0.0"
+    "patchright": "^1.59.4"
   }
 }
