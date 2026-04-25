@@ -4,9 +4,11 @@
 
 <h1 align="center">Meet Hacker Bob</h1>
 
-<p align="center"><i>Autonomous bug bounty hunting framework for Claude Code.</i></p>
+<p align="center"><i>Autonomous bug bounty agent for Claude Code.</i></p>
 
-Bob spawns specialized agents for recon, hunting, verification, grading, and reporting — all driven by a single `/bountyagent` command.
+Bob is an autonomous bug bounty hunting framework for Claude Code. You point him at a domain. He spawns a small army of agents — recon goblins, hunter gremlins, verifiers with trust issues — and they argue with each other until a report falls out.
+
+You go to bed. Bob does not.
 
 ## Install
 
@@ -16,7 +18,7 @@ cd hacker-bob
 ./install.sh /path/to/your/project
 ```
 
-The installer drops agents, the `/bountyagent` skill, rules, hooks, and the MCP server into your project's `.claude/` directory. Re-running it is idempotent and preserves your existing config.
+The installer drops Bob's brain (agents, the `/bountyagent` skill, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
 
 ## Usage
 
@@ -25,32 +27,34 @@ cd /path/to/your/project
 claude --dangerously-skip-permissions --effort max
 ```
 
-Then in Claude Code:
+Then in Claude Code, summon Bob:
 
 ```
 /bountyagent target.com         # full autonomous run
 /bountyagent resume target.com  # pick up where you left off
 ```
 
-## Pipeline
+That's it. Now go make coffee.
+
+## How Bob hunts
 
 ```
 RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 ```
 
-1. **RECON** — subdomains, live hosts, archived URLs, nuclei, JS secrets
-2. **AUTH** — detects signup, stores attacker/victim profiles, or runs unauthenticated
-3. **HUNT** — parallel hunter agents per attack surface
-4. **CHAIN** — A→B exploit chain analysis
-5. **VERIFY** — 3 rounds: skeptical, balanced, fresh PoC
-6. **GRADE** — 5-axis scoring with SUBMIT/HOLD/SKIP verdict
-7. **REPORT** — submission-ready report with PoCs and evidence
+1. **RECON** — Bob sniffs around. Subdomains, live hosts, archived URLs, nuclei, JS secrets people forgot about.
+2. **AUTH** — Bob tries to sign up. If he can, he keeps a victim and an attacker account in his pocket. If he can't, he shrugs and hunts unauthenticated.
+3. **HUNT** — Parallel hunter agents fan out, one per attack surface. They are not gentle.
+4. **CHAIN** — Bob squints at the findings and asks "wait, can I combine these into something worse?"
+5. **VERIFY** — Three rounds of arguing with himself: skeptical Bob, balanced Bob, and final-PoC Bob. Most "bugs" do not survive.
+6. **GRADE** — 5-axis scoring. Bob decides: SUBMIT, HOLD, or "this is not a bug, please stop."
+7. **REPORT** — A clean, submission-ready writeup with PoCs and evidence. No "could potentially". No "an attacker may". Just receipts.
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with Claude Opus
-- `curl` and `python3`
-- Optional: `subfinder`, `httpx`, `nuclei` for deeper recon
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with Claude Opus (Bob has expensive taste)
+- `curl` and `python3` (already on your machine, probably)
+- Optional sidekicks for deeper recon:
 
 ```bash
 go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
@@ -58,14 +62,24 @@ go install github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 ```
 
+If those aren't installed, Bob just works with what he's got and doesn't complain.
+
 ## Development
 
-To sync the current repo into a local test workspace:
+If you're hacking on Bob himself and want to push the current repo into a test workspace:
 
 ```bash
 ./dev-sync.sh /absolute/path/to/test-workspace
 ```
 
-This backs up the target's `.mcp.json` and `.claude/settings.json`, runs the installer, recopies the MCP runtime, and smoke-checks with `claude mcp list`.
+It backs up the target's `.mcp.json` and `.claude/settings.json`, runs the installer, recopies the MCP runtime, and smoke-checks with `claude mcp list`. You can find the maintainer workflow in [`CLAUDE.md`](CLAUDE.md).
 
-See [`CLAUDE.md`](CLAUDE.md) for the maintainer workflow.
+## A note on scope
+
+Bob will scan whatever you tell him to scan. **You are responsible for making sure the target is in scope and that you have permission.** Bob is enthusiastic, not licensed.
+
+Hunt responsibly. Read the program's policy. Read [`DISCLAIMER.md`](DISCLAIMER.md) before you point him at anything.
+
+## License
+
+Apache License 2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
