@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bountyagent": {
+      "command": "node",
+      "args": [
+        "../../../mcp/server.js"
+      ]
+    }
+  }
+}
