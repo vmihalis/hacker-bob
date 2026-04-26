@@ -31,12 +31,10 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Verify canonical package contents
-        run: npm pack --dry-run --json
-
-      - name: Verify alias package contents
-        working-directory: packages/hacker-bob
-        run: npm pack --dry-run --json
+      - name: Release check
+        run: npm run release:check -- --registry --allow-published
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish canonical package
         run: |

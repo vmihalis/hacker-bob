@@ -6,6 +6,13 @@
 
 <p align="center"><i>Autonomous bug bounty agent for Claude Code.</i></p>
 
+<p align="center">
+  <a href="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vmihalis/hacker-bob/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://www.npmjs.com/package/hacker-bob-cc"><img alt="hacker-bob-cc on npm" src="https://img.shields.io/npm/v/hacker-bob-cc?label=hacker-bob-cc" /></a>
+  <a href="https://www.npmjs.com/package/hacker-bob"><img alt="hacker-bob on npm" src="https://img.shields.io/npm/v/hacker-bob?label=hacker-bob" /></a>
+  <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/github/license/vmihalis/hacker-bob" /></a>
+</p>
+
 Bob is an autonomous bug bounty hunting framework for Claude Code. You point him at a domain. He spawns a small army of agents — recon goblins, hunter gremlins, verifiers with trust issues — and they argue with each other until a report falls out.
 
 You go to bed. Bob does not.
@@ -90,6 +97,7 @@ hacker-bob doctor /path/to/your/project
 ```
 
 For common setup issues, see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+For a copy-paste first-run flow, see [`docs/FIRST_RUN.md`](docs/FIRST_RUN.md).
 
 ## Updates
 
@@ -131,6 +139,18 @@ go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 ```
 
 If those aren't installed, Bob just works with what he's got and doesn't complain.
+
+## Security Model
+
+Bob installs into a local Claude Code project directory. The installer writes Bob-managed files under `.claude/`, copies the MCP runtime into `mcp/`, merges a local `.mcp.json`, and merges Claude settings/hooks into `.claude/settings.json`. These files are project-local and should be reviewed like any other automation that can run commands from Claude Code.
+
+Bob stores local run state and evidence under `~/bounty-agent-sessions`. Treat that directory as sensitive: it can contain target names, request metadata, notes, and report evidence from authorized testing.
+
+During a hunt, Bob may make outbound HTTP requests, run local recon tools you have installed, import local HTTP/static artifacts, and ask Claude Code agents to reason over the results. Optional third-party services, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external recon tools, are only used when you configure the relevant dependencies or credentials.
+
+The npm packages are published through the GitHub release workflow with npm provenance. `hacker-bob-cc` is the canonical package; `hacker-bob` is a small alias package that depends on the matching canonical version.
+
+Bob will scan the targets you provide. You are responsible for running it only against domains, applications, accounts, and infrastructure that you own or are explicitly authorized to test, and for following each program's scope and rules of engagement.
 
 ## Development
 

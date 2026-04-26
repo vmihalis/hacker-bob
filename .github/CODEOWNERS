@@ -1,0 +1,10 @@
+* @vmihalis
+
+.github/ @vmihalis
+package.json @vmihalis
+package-lock.json @vmihalis
+packages/hacker-bob/ @vmihalis
+bin/ @vmihalis
+scripts/ @vmihalis
+mcp/ @vmihalis
+.claude/ @vmihalis

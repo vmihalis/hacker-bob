@@ -46,6 +46,8 @@
     "test:package": "node --test test/package.test.js",
     "test:hooks": "python3 test/test-write-guard.py",
     "test": "npm run check:syntax && npm run test:mcp && npm run test:prompts && npm run test:install && npm run test:update && npm run test:cli && npm run test:package && npm run test:hooks",
+    "release:check": "node scripts/release-check.js",
+    "release:check:registry": "node scripts/release-check.js --registry",
     "install-browser": "npx patchright install chromium"
   },
   "optionalDependencies": {
