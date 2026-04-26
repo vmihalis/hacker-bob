@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const update = require('./bob-update-lib.js');
 
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
@@ -65,6 +66,15 @@ process.stdin.on('end', () => {
     if (worst >= 80) rate = ` \x1b[5;31m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
     else if (worst >= 60) rate = ` \x1b[33m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
 
-    process.stdout.write(`\x1b[2m${model}\x1b[0m │ \x1b[2m${dir}\x1b[0m${bounty}${ctx}${rate}`);
+    let updateHint = '';
+    try {
+      const projectDir = data.workspace?.current_dir || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      const cache = update.readUpdateCache(projectDir);
+      if (cache && cache.update_available && !cache.error && cache.latest_version) {
+        updateHint = ` │ \x1b[33mBob ${cache.latest_version}: /bob:update\x1b[0m`;
+      }
+    } catch {}
+
+    process.stdout.write(`\x1b[2m${model}\x1b[0m │ \x1b[2m${dir}\x1b[0m${bounty}${ctx}${rate}${updateHint}`);
   } catch {}
 });

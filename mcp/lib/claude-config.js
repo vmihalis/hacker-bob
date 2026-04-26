@@ -119,6 +119,21 @@ function defaultSubagentStopHooks() {
   ];
 }
 
+function defaultSessionStartHooks() {
+  return [
+    {
+      matcher: "startup",
+      hooks: [
+        {
+          type: "command",
+          command: "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/bob-check-update.js\" \"$CLAUDE_PROJECT_DIR\"",
+          timeout: 2,
+        },
+      ],
+    },
+  ];
+}
+
 function bountyagentSkillAllowedTools() {
   return uniqueStrings([
     "Task",
@@ -137,6 +152,7 @@ function defaultClaudeSettings() {
     },
     hooks: {
       PreToolUse: defaultPreToolUseHooks(),
+      SessionStart: defaultSessionStartHooks(),
       SubagentStop: defaultSubagentStopHooks(),
     },
     statusLine: {
@@ -152,6 +168,7 @@ module.exports = {
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,
   defaultPreToolUseHooks,
+  defaultSessionStartHooks,
   defaultSubagentStopHooks,
   isOrchestratorOnlyMutator,
   mcpPermissionForTool,

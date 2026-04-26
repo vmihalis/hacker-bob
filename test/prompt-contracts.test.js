@@ -258,6 +258,7 @@ test("prompts do not tell agents to read auth.json directly", () => {
     ".claude/commands/bob/hunt.md",
     ".claude/commands/bob/status.md",
     ".claude/commands/bob/debug.md",
+    ".claude/commands/bob/update.md",
     ".claude/skills/bountyagent/SKILL.md",
     ...allMarkdown(".claude/agents"),
   ]) {
@@ -304,6 +305,7 @@ test("bob namespaced commands delegate to local skills", () => {
   const huntCommand = readFile(".claude/commands/bob/hunt.md");
   const statusCommand = readFile(".claude/commands/bob/status.md");
   const debugCommand = readFile(".claude/commands/bob/debug.md");
+  const updateCommand = readFile(".claude/commands/bob/update.md");
 
   assert.match(huntCommand, /\.claude\/skills\/bountyagent\/SKILL\.md/);
   assert.match(huntCommand, /\/bob:hunt/);
@@ -314,6 +316,13 @@ test("bob namespaced commands delegate to local skills", () => {
   assert.match(debugCommand, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
   assert.match(debugCommand, /\/bob:debug/);
   assert.match(debugCommand, /Pass `\$ARGUMENTS`/);
+  assert.match(updateCommand, /hacker-bob-cc@latest install/);
+  assert.match(updateCommand, /Update now\?/);
+  assert.match(updateCommand, /fully restart Claude Code/);
+  assert.deepEqual(
+    parseYamlListFrontmatter(updateCommand, "allowed-tools", "bob/update.md").sort(),
+    ["AskUserQuestion", "Bash"].sort(),
+  );
 });
 
 test("bountyagentstatus skill is compact, read-only, and points to next commands", () => {
@@ -431,17 +440,21 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
 
 test("installer and dev-sync copy bob namespaced commands and debug skill", () => {
   const install = readFile("install.sh");
+  const installer = readFile("scripts/install.js");
   const devSync = readFile("dev-sync.sh");
 
-  assert.match(install, /\.claude\/commands\/bob\/hunt\.md/);
-  assert.match(install, /\.claude\/commands\/bob\/status\.md/);
-  assert.match(install, /\.claude\/commands\/bob\/debug\.md/);
+  assert.match(install, /bin\/hacker-bob\.js/);
+  assert.match(installer, /hunt\.md/);
+  assert.match(installer, /status\.md/);
+  assert.match(installer, /debug\.md/);
+  assert.match(installer, /update\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/status\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/debug\.md/);
-  assert.match(install, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/update\.md/);
+  assert.match(installer, /bountyagentstatus/);
   assert.match(devSync, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
-  assert.match(install, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
+  assert.match(installer, /bountyagentdebug/);
   assert.match(devSync, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
 });
 
@@ -511,18 +524,18 @@ test("recon prompt remains enrichment-only without new commands or imported tool
 });
 
 test("installer and dev-sync copy and configure session-write-guard", () => {
-  const install = readFile("install.sh");
+  const install = readFile("scripts/install.js");
   const devSync = readFile("dev-sync.sh");
 
-  assert.match(install, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/session-write-guard\.sh"/);
+  assert.match(install, /session-write-guard\.sh/);
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/session-write-guard\.sh"/);
-  assert.match(install, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
+  assert.match(install, /hunter-subagent-stop\.js/);
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
-  assert.match(install, /\.claude\/skills\/bountyagent\/SKILL\.md/);
+  assert.match(install, /bountyagent/);
   assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
-  assert.match(install, /\.claude\/commands\/bob\/hunt\.md/);
+  assert.match(install, /hunt\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
-  assert.match(install, /mcp\/lib\/tools/);
+  assert.match(install, /"mcp", "lib", "tools"/);
   assert.match(devSync, /mcp\/lib\/tools/);
   assert.match(install, /merge-claude-config\.js/);
   assert.match(devSync, /merge-claude-config\.js/);
@@ -531,6 +544,7 @@ test("installer and dev-sync copy and configure session-write-guard", () => {
   assert.match(hookText, /"matcher":"Bash"[\s\S]*session-write-guard\.sh/);
   assert.match(hookText, /"matcher":"Write"[\s\S]*session-write-guard\.sh/);
   assert.match(JSON.stringify(defaultClaudeSettings().hooks.SubagentStop), /hunter-subagent-stop\.js/);
+  assert.match(JSON.stringify(defaultClaudeSettings().hooks.SessionStart), /bob-check-update\.js/);
 });
 
 test("verifier and grader examples use F-N finding IDs", () => {

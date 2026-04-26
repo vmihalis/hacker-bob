@@ -28,12 +28,21 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagent.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagentdebug.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
+    assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), "1.0.0");
+    const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".claude", "bob", "install.json"), "utf8"));
+    assert.equal(installMeta.schema_version, 1);
+    assert.equal(installMeta.bob_version, "1.0.0");
+    assert.equal(installMeta.package_name, "hacker-bob-cc");
+    assert.equal(installMeta.install_target, workspace);
 
     execFileSync(process.execPath, [
       "-e",
@@ -77,6 +86,10 @@ test("installer merges existing MCP/settings config idempotently", () => {
         ],
       },
       hooks: {
+        SessionStart: [{
+          matcher: "startup",
+          hooks: [{ type: "command", command: "echo existing session", timeout: 1 }],
+        }],
         PreToolUse: [{
           matcher: "Bash",
           hooks: [{ type: "command", command: "echo existing", timeout: 1 }],
@@ -126,6 +139,13 @@ test("installer merges existing MCP/settings config idempotently", () => {
     assert.ok(stopEntry.hooks.some((hook) => hook.command === "echo existing stop"));
     assert.equal(
       stopEntry.hooks.filter((hook) => /hunter-subagent-stop\.js/.test(hook.command)).length,
+      1,
+    );
+    const sessionEntry = settings.hooks.SessionStart.find((entry) => entry.matcher === "startup");
+    assert.ok(sessionEntry);
+    assert.ok(sessionEntry.hooks.some((hook) => hook.command === "echo existing session"));
+    assert.equal(
+      sessionEntry.hooks.filter((hook) => /bob-check-update\.js/.test(hook.command)).length,
       1,
     );
   } finally {

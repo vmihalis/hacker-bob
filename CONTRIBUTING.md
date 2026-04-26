@@ -81,3 +81,14 @@ For local end-to-end testing, use a dedicated throwaway Claude Code workspace:
 
 Restart Claude Code in that workspace after syncing. Do not use a workspace that
 contains real credentials or target data unless you intend to test with them.
+
+## Release checklist
+
+- Update `CHANGELOG.md` with a semver section for the release.
+- Confirm `package.json` has the intended version and package metadata.
+- Run `npm test`.
+- Run `npm pack --dry-run --json` and verify the package includes `.claude/`,
+  `mcp/`, `bin/`, `scripts/`, `README.md`, `LICENSE`, and `NOTICE` without
+  test or cache artifacts.
+- Push a signed `v*` tag after npm publishing credentials are configured for
+  the release workflow.

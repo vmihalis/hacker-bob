@@ -7,6 +7,7 @@ allowed-tools:
   - Glob
   - Bash(find *)
   - Bash(ls *)
+  - Bash(node *)
   - Bash(stat *)
   - Bash(test *)
   - mcp__bountyagent__bounty_read_pipeline_analytics
@@ -35,6 +36,12 @@ You are Bob's read-only session status command. Give the operator a compact answ
 Latest-session detection must pick the newest target directory by `pipeline-events.jsonl` mtime. If no pipeline event file exists, fall back in order to `state.json`, `grade.json`, `report.md`, then directory mtime.
 
 ## Read Order
+First, read the passive update cache if the helper is installed:
+```
+node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json
+```
+This command must only read the local update cache. Do not run network update checks from `/bob:status`.
+
 After resolving `target_domain`, call:
 ```
 bounty_read_pipeline_analytics({ target_domain, include_events: false, limit: 20 })
@@ -55,6 +62,7 @@ Always include:
 - Target and phase.
 - Wave state: current wave, pending wave, readiness if known.
 - Findings, verification, grade, and report presence.
+- If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run /bob:update.`
 - Any blocking issue visible from status reads.
 - Next command: usually `/bob:hunt resume <target_domain>`, `/bob:debug <target_domain>`, `/bob:debug --deep <target_domain>`, or no action needed.
 
