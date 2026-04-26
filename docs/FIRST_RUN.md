@@ -64,6 +64,8 @@ cd /path/to/your/project
 claude --dangerously-skip-permissions --effort max
 ```
 
+Warning: `--dangerously-skip-permissions` disables Claude Code permission prompts. Use it only in a dedicated workspace for authorized security testing.
+
 The restart is required because Claude Code reads slash commands, MCP config, settings, hooks, and statusline setup at startup.
 
 ## Smoke Check
@@ -76,9 +78,9 @@ In Claude Code, run:
 
 For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files.
 
-## Safe Target Guidance
+## Pre-Run Checklist
 
-Only run `/bob:hunt` against domains, applications, and accounts that you own or are explicitly authorized to test. Read the program policy first, stay inside the listed scope, and avoid third-party infrastructure that is not covered by your authorization.
+Before running `/bob:hunt`, confirm that you have written authorization for the target and accounts, and that the authorization explicitly covers the testing methods Bob may use. Check that automated scanning, authenticated testing, signup or account creation, third-party pivots, internal or private-network targets, rate limits, and data handling rules are all allowed for this engagement.
 
 For a first smoke test, use a private lab target or an intentionally vulnerable training app you control:
 

@@ -26,4 +26,6 @@ cd /tmp/hacker-bob-media-workspace
 claude --dangerously-skip-permissions --effort max
 ```
 
+Warning: `--dangerously-skip-permissions` disables Claude Code permission prompts. Use it only in a disposable workspace for authorized media capture against a controlled lab target.
+
 Then capture `/bob:status` and `/bob:hunt lab.example.test` from Claude Code. Use only a lab target that is owned by the maintainer or explicitly authorized for testing.

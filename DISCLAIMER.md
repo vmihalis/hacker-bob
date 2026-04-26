@@ -4,19 +4,23 @@ Hacker Bob is an autonomous security testing tool. Read this before using it.
 
 ## Authorization is your responsibility
 
-Bob will scan, probe, and attempt exploitation of any target you point him at. He does not verify that you have permission. **You are solely responsible for ensuring that:**
+Bob will scan, probe, and attempt exploitation of any target you point him at. He may send real requests to third-party services, internal or private-network hosts, authentication providers, SaaS integrations, webhooks, CDNs, or cloud metadata-style hosts when instructed or when a chain depends on them. He does not verify that you have permission. **You are solely responsible for ensuring that:**
 
 1. The target is in scope of an active bug bounty program, a written penetration testing agreement, or a system you own.
-2. The bug bounty program's policy permits the kind of testing Bob performs (automated scanning, authenticated testing, chaining, PoC execution).
-3. Any third-party assets Bob may touch while chaining or proving an exploit are also covered or are out-of-scope only as observers.
+2. The authorization permits the testing methods Bob may perform, including automated scanning, authenticated testing, account creation, signup flows, CAPTCHA-solving services, chaining, and PoC execution.
+3. Any accounts, credentials, personas, or test data used by Bob are permitted for the target and testing method.
+4. Any third-party, internal, private-network, customer, vendor, identity-provider, or downstream systems Bob may touch are explicitly authorized for the planned testing, or the policy clearly allows that interaction.
+5. You understand and follow all rate limits, data handling rules, disclosure rules, and rules of engagement that apply to the test.
 
 If you do not have explicit written authorization, do not run Bob.
 
 ## Bob does not enforce scope for you
 
-Bob has internal scope guards (`scope-guard.sh`, `scope-guard-mcp.sh`, audit logging via `bounty_http_scan`), but these are operational safety nets, not legal authorization. They reduce accidental drift; they do not grant permission. The bug bounty program's policy is the only source of truth.
+Bob has internal guard hooks (`scope-guard.sh`, `scope-guard-mcp.sh`) and audit logging via `bounty_http_scan`, but these are operational aids only. They are not legal, authorization, or scope enforcement controls. They do not verify permission, enforce bug bounty scope, or guarantee containment. The bug bounty program's policy or written testing agreement is the only source of truth.
 
 ## Legal context
+
+This documentation is not legal advice. Consult qualified counsel if you are unsure whether your authorization covers a target, account, method, automation, or third-party system.
 
 Unauthorized access to computer systems is a criminal offense in most jurisdictions, including but not limited to:
 

@@ -20,6 +20,12 @@ You go to bed. Bob does not.
 
 ## Quickstart
 
+### Before You Run
+
+Bob is autonomous and can send real requests, use local tools, attempt signup and authentication flows, and interact with third-party, internal, or private hosts when instructed by Bob's agents. Only run Bob when you have explicit authorization for the target, accounts, testing methods, automation, and any third-party systems involved.
+
+The `claude --dangerously-skip-permissions` examples below disable Claude Code permission prompts. Use that mode only in a dedicated workspace for authorized security testing.
+
 Create or choose one Claude Code project directory, then install Bob into that directory:
 
 ```bash
@@ -149,11 +155,13 @@ Bob stores local run state and evidence under `~/bounty-agent-sessions`. Treat t
 
 During a hunt, Bob may make outbound HTTP requests, run local recon tools you have installed, import local HTTP/static artifacts, and ask Claude Code agents to reason over the results. Optional third-party services, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external recon tools, are only used when you configure the relevant dependencies or credentials.
 
-By default, Bob does not block localhost, private networks, internal hostnames, or cloud metadata-style hostnames. This keeps exploration flexible for local labs, VPN/internal scopes, SSRF chains, and user-authorized pivots. If you want Bob's MCP HTTP tools to reject those destinations, pass `block_internal_hosts: true` to the relevant call.
+Bob logs and audits some activity, including local session artifacts and MCP HTTP scan records, but those records are for operator review. Bob does not verify authorization, enforce bug bounty scope, or guarantee containment.
+
+By default, Bob does not block localhost, private networks, internal hostnames, or cloud metadata-style hostnames. This keeps exploration flexible for local labs, VPN/internal scopes, SSRF chains, and user-authorized pivots. Supported MCP HTTP calls can reject those destinations when you pass `block_internal_hosts: true`.
 
 The npm packages are published through the GitHub release workflow with npm provenance. `hacker-bob-cc` is the canonical package; `hacker-bob` is a small alias package that depends on the matching canonical version.
 
-Bob will scan the targets you provide. You are responsible for running it only against domains, applications, accounts, and infrastructure that you own or are explicitly authorized to test, and for following each program's scope and rules of engagement.
+Bob will scan the targets you provide and may touch other hosts during authorized chaining or proof-of-concept work. You are responsible for running it only against domains, applications, accounts, and infrastructure that you own or are explicitly authorized to test, and for following each program's scope and rules of engagement.
 
 ## Development
 
