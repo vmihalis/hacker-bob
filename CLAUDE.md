@@ -1,13 +1,13 @@
 # Hacker Bob Repo Instructions
 
-This repository is the install source for the Hacker Bob `/bountyagent` Claude Code framework.
+This repository is the install source for the Hacker Bob `/bob:hunt` Claude Code framework.
 
 If a user asks you to install this framework into a project:
 
 1. Clone this repo locally.
 2. Run `./install.sh /absolute/path/to/target/project` from the cloned repo.
 3. The installer copies the skill, command shim, agents, rules, hooks, knowledge, bypass tables, MCP runtime, and generated settings. It merges `.mcp.json` and `.claude/settings.json` instead of overwriting unrelated config.
-4. After install, run Claude Code from the target project and use `/bountyagent <target>`.
+4. After install, run Claude Code from the target project and use `/bob:hunt <target>`.
 
 Do not assume this cloned repo is the user's active workspace unless they explicitly want that.
 

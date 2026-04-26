@@ -22,7 +22,7 @@ function renderFrontmatter() {
     .join("\n");
   return [
     "---",
-    "name: bountyagent",
+    "name: bob-hunt",
     "disable-model-invocation: true",
     'argument-hint: "[target-url | resume <domain> [force-merge]]"',
     "allowed-tools:",
