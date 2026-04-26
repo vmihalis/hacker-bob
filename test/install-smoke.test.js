@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
+const PACKAGE_VERSION = require("../package.json").version;
 
 test("installer copies a require-able complete MCP runtime", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-"));
@@ -37,10 +38,10 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
-    assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), "1.0.0");
+    assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), PACKAGE_VERSION);
     const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".claude", "bob", "install.json"), "utf8"));
     assert.equal(installMeta.schema_version, 1);
-    assert.equal(installMeta.bob_version, "1.0.0");
+    assert.equal(installMeta.bob_version, PACKAGE_VERSION);
     assert.equal(installMeta.package_name, "hacker-bob-cc");
     assert.equal(installMeta.install_target, workspace);
 

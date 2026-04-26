@@ -9,11 +9,18 @@ const {
 } = require("../scripts/install.js");
 const update = require("../.claude/hooks/bob-update-lib.js");
 
-function usage() {
-  console.error(`Usage:
+function usageText() {
+  return `Usage:
   hacker-bob install <project-dir>
   hacker-bob update <project-dir>
-  hacker-bob check-update <project-dir> [--json]`);
+  hacker-bob check-update <project-dir> [--json]
+
+Installs target exactly one Claude Code project directory per command.
+Global npm install only adds this CLI to PATH; it does not install Bob into every project.`;
+}
+
+function usage(stream = process.stderr) {
+  stream.write(`${usageText()}\n`);
 }
 
 function firstNonFlag(args) {
@@ -23,7 +30,7 @@ function firstNonFlag(args) {
 async function main(argv) {
   const [command, ...args] = argv;
   if (!command || command === "-h" || command === "--help") {
-    usage();
+    usage(command ? process.stdout : process.stderr);
     process.exit(command ? 0 : 1);
   }
 

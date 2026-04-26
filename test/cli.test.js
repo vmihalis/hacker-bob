@@ -8,6 +8,17 @@ const { pathToFileURL } = require("node:url");
 
 const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
+const PACKAGE_VERSION = require("../package.json").version;
+
+test("CLI help explains per-project installs and global CLI behavior", () => {
+  const output = execFileSync(process.execPath, [CLI, "--help"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.match(output, /one Claude Code project directory per command/);
+  assert.match(output, /Global npm install only adds this CLI to PATH/);
+});
 
 test("CLI installs into a workspace", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-install-"));
@@ -22,7 +33,7 @@ test("CLI installs into a workspace", () => {
       stdio: "pipe",
     });
 
-    assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), "1.0.0");
+    assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), PACKAGE_VERSION);
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
   } finally {

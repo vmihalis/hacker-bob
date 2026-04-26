@@ -12,11 +12,24 @@ You go to bed. Bob does not.
 
 ## Install
 
+Bob installs into **one Claude Code project directory per command**. The install target is the project you will later run `claude` from; the installer writes that project's `.claude/`, `mcp/`, `.mcp.json`, and related config.
+
+Recommended one-off install:
+
 ```bash
 npx -y hacker-bob-cc@latest install /path/to/your/project
 ```
 
 The installer drops Bob's brain (agents, `/bob:*` commands, skills, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
+
+If you prefer a global command, install the CLI once:
+
+```bash
+npm install -g hacker-bob-cc
+hacker-bob install /path/to/your/project
+```
+
+Global npm install only puts the `hacker-bob` command on your `PATH`; it does **not** install Bob into every directory. To use Bob in another Claude Code project, run `hacker-bob install /path/to/that/project` for that project too.
 
 Source installs still work for contributors:
 
