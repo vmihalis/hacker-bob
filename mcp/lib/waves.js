@@ -742,12 +742,7 @@ function listWaveAssignmentNumbers(domain) {
     .sort((a, b) => a - b);
 }
 
-function readWaveHandoffs(args) {
-  const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const waveNumbers = args.wave_number == null
-    ? listWaveAssignmentNumbers(domain)
-    : [parseWaveNumber(args.wave_number)];
-
+function buildWaveHandoffsDocument(domain, waveNumbers) {
   const handoffs = [];
   const missingHandoffs = [];
   const invalidHandoffs = [];
@@ -801,7 +796,7 @@ function readWaveHandoffs(args) {
     }
   }
 
-  return JSON.stringify({
+  return {
     version: 1,
     target_domain: domain,
     wave_numbers: waveNumbers,
@@ -809,11 +804,21 @@ function readWaveHandoffs(args) {
     missing_handoffs: missingHandoffs,
     invalid_handoffs: invalidHandoffs,
     unexpected_handoffs: unexpectedHandoffs,
-  });
+  };
+}
+
+function readWaveHandoffs(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumbers = args.wave_number == null
+    ? listWaveAssignmentNumbers(domain)
+    : [parseWaveNumber(args.wave_number)];
+
+  return JSON.stringify(buildWaveHandoffsDocument(domain, waveNumbers));
 }
 
 module.exports = {
   applyWaveMerge,
+  buildWaveHandoffsDocument,
   logDeadEnds,
   mergeWaveHandoffs,
   readWaveHandoffs,

@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const update = require("../.claude/hooks/bob-update-lib.js");
+const update = require("../mcp/lib/update-check.js");
 
 function tempWorkspace() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-update-test-"));
@@ -77,6 +77,18 @@ test("missing installed version is treated as a legacy install", async () => {
     assert.equal(result.latest_version, "1.2.0");
     assert.equal(result.update_available, true);
     assert.match(result.changelog, /latest/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("neutral install version takes precedence over legacy Claude fallback", () => {
+  const { tempRoot, workspace } = tempWorkspace();
+  try {
+    fs.mkdirSync(path.join(workspace, ".hacker-bob"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ".hacker-bob", "VERSION"), "2.0.0\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "1.0.0\n");
+    assert.equal(update.readInstalledVersion(workspace), "2.0.0");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -160,6 +172,30 @@ test("changelog fetch failures keep version update results", async () => {
     assert.equal(result.update_available, true);
     assert.equal(result.latest_version, "1.1.0");
     assert.match(result.changelog_error, /changelog offline/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("neutral update rendering uses project path unless an adapter overrides the command", () => {
+  const { tempRoot, workspace } = tempWorkspace();
+  try {
+    const result = {
+      schema_version: 1,
+      package_name: "hacker-bob",
+      install_target: workspace,
+      installed_version: "1.0.0",
+      latest_version: "1.2.0",
+      update_available: true,
+      legacy_install: false,
+      error: null,
+    };
+    const neutral = update.renderUpdatePlan(result);
+    assert.match(neutral, new RegExp(`npx -y hacker-bob@latest install ${JSON.stringify(workspace).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.doesNotMatch(neutral, /CLAUDE_PROJECT_DIR/);
+
+    const adapter = update.renderUpdatePlan(result, { installCommand: 'npx -y hacker-bob@latest install "$CLAUDE_PROJECT_DIR"' });
+    assert.match(adapter, /CLAUDE_PROJECT_DIR/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

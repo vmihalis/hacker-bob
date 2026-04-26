@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const {
   assertNonEmptyString,
@@ -40,6 +39,10 @@ const {
 const {
   filterExclusionsByHosts,
 } = require("./scope.js");
+const {
+  readResourceText,
+  resourceCandidatePaths,
+} = require("./runtime-resources.js");
 
 // Bypass table tech-to-file map used by hunter brief generation.
 const BYPASS_TABLE_MAP = {
@@ -54,7 +57,7 @@ const BYPASS_TABLE_MAP = {
   oidc: "oauth-oidc.txt",
 };
 const BYPASS_TABLE_DEFAULT = "rest-api.txt";
-const HUNTER_KNOWLEDGE_FILE = path.join(".claude", "knowledge", "hunter-techniques.json");
+const HUNTER_KNOWLEDGE_FILE = Object.freeze(["knowledge", "hunter-techniques.json"]);
 const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
 const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
 const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
@@ -93,13 +96,7 @@ function resolveBypassTable(techStack) {
 }
 
 function hunterKnowledgeCandidatePaths() {
-  const candidates = [];
-  if (process.env.CLAUDE_PROJECT_DIR) {
-    candidates.push(path.join(process.env.CLAUDE_PROJECT_DIR, HUNTER_KNOWLEDGE_FILE));
-  }
-  candidates.push(path.join(__dirname, "..", "..", HUNTER_KNOWLEDGE_FILE));
-  candidates.push(path.join(os.homedir(), HUNTER_KNOWLEDGE_FILE));
-  return candidates;
+  return resourceCandidatePaths(...HUNTER_KNOWLEDGE_FILE);
 }
 
 function loadHunterKnowledge() {
@@ -451,18 +448,8 @@ function readHunterBrief(args) {
   const bypassFile = resolveBypassTable(surfaceObj.tech_stack);
   let bypassTable = "";
   try {
-    // Look for bypass tables relative to project dir, install location, or global install
-    const candidates = [
-      path.join(process.env.CLAUDE_PROJECT_DIR || "", ".claude", "bypass-tables", bypassFile),
-      path.join(__dirname, "..", "..", ".claude", "bypass-tables", bypassFile),
-      path.join(os.homedir(), ".claude", "bypass-tables", bypassFile),
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        bypassTable = fs.readFileSync(candidate, "utf8").trim();
-        break;
-      }
-    }
+    const content = readResourceText("bypass-tables", bypassFile);
+    if (content != null) bypassTable = content.trim();
   } catch {}
 
   const deadEndResult = filterExclusionsByHosts(state.dead_ends, surfaceObj.hosts);
@@ -517,6 +504,7 @@ function readHunterBrief(args) {
 
 module.exports = {
   readHunterBrief,
+  hunterKnowledgeCandidatePaths,
   resolveBypassTable,
   resolveHunterKnowledge,
   slimSurfaceForBrief,

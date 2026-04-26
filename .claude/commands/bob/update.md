@@ -10,7 +10,7 @@ Run the installed Hacker Bob update workflow for this project.
 2. If the helper says Hacker Bob is already up to date or cannot reach npm, report that result and stop.
 3. If an update is available or the install is legacy, ask the operator exactly: `Update now?`
 4. Only when the operator confirms, run:
-   `npx -y hacker-bob-cc@latest install "$CLAUDE_PROJECT_DIR"`
+   `npx -y hacker-bob@latest install "$CLAUDE_PROJECT_DIR"`
 5. Then run:
    `node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" clear-cache "$CLAUDE_PROJECT_DIR"`
 6. Tell the operator to fully restart Claude Code in this project before continuing.

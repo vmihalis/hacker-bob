@@ -3,7 +3,7 @@
 .github/ @vmihalis
 package.json @vmihalis
 package-lock.json @vmihalis
-packages/hacker-bob/ @vmihalis
+packages/hacker-bob-cc/ @vmihalis
 bin/ @vmihalis
 scripts/ @vmihalis
 mcp/ @vmihalis

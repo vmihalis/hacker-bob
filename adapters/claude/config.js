@@ -4,7 +4,10 @@ const {
   TOOL_MANIFEST,
   TOOLS,
   toolNamesForRoleBundle,
-} = require("./tool-registry.js");
+} = require("../../mcp/lib/tool-registry.js");
+const {
+  mcpToolNamesForRole,
+} = require("../../mcp/lib/role-model.js");
 
 const BASE_PERMISSIONS = Object.freeze([
   "Bash(mkdir *)",
@@ -37,6 +40,10 @@ function permissionsForRoleBundle(roleBundle) {
 
 function permissionsForRoleBundles(roleBundles) {
   return uniqueStrings(roleBundles.flatMap((roleBundle) => permissionsForRoleBundle(roleBundle)));
+}
+
+function permissionsForRole(roleId) {
+  return mcpToolNamesForRole(roleId).map(mcpPermissionForTool);
 }
 
 function uniqueStrings(values) {
@@ -138,7 +145,7 @@ function bountyagentSkillAllowedTools() {
   return uniqueStrings([
     "Task",
     "Read",
-    ...permissionsForRoleBundles(["orchestrator", "auth"]),
+    ...permissionsForRole("orchestrator"),
   ]);
 }
 
@@ -173,6 +180,7 @@ module.exports = {
   isOrchestratorOnlyMutator,
   mcpPermissionForTool,
   permissionsForAllTools,
+  permissionsForRole,
   permissionsForRoleBundle,
   permissionsForRoleBundles,
 };

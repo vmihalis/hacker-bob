@@ -21,6 +21,7 @@ const TOOL_MODULES = Object.freeze([
   require("./apply-wave-merge.js"),
   require("./write-handoff.js"),
   require("./write-wave-handoff.js"),
+  require("./finalize-hunter-run.js"),
   require("./wave-handoff-status.js"),
   require("./merge-wave-handoffs.js"),
   require("./read-wave-handoffs.js"),

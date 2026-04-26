@@ -15,7 +15,7 @@ public issue or discussion for a suspected vulnerability.
 Include as much of the following as you can:
 
 - The affected commit, version, or install path.
-- Your operating system, Node.js version, and Claude Code setup.
+- Your operating system, Node.js version, selected host adapter, and host CLI setup.
 - Reproduction steps or a minimal proof of concept.
 - Expected impact and any data, files, hosts, or credentials involved.
 - Suggested fixes or mitigations, if you have them.
@@ -27,7 +27,7 @@ confirming impact or preparing a fix.
 
 In scope:
 
-- Vulnerabilities in the MCP server, tools, hooks, prompts, or installer.
+- Vulnerabilities in the MCP server, tools, adapter surfaces, hooks, prompts, or installer.
 - Secret leakage, unsafe credential handling, or auth-profile exposure.
 - Path traversal, arbitrary file write, or unsafe session storage behavior.
 - SSRF, unsafe redirect handling, or unintended local/internal network access

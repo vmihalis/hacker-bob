@@ -4,7 +4,8 @@
 
 - Added `hacker-bob doctor <project-dir> [--json]` for read-only install diagnostics.
 - Added `hacker-bob uninstall <project-dir> [--dry-run] [--yes] [--json]` for conservative removal of Bob-managed files and config entries.
-- Added the `hacker-bob` npm alias package while keeping `hacker-bob-cc` canonical.
+- Added host adapter selection with `--adapter claude|codex|generic-mcp|all`.
+- Made `hacker-bob` the canonical npm package and kept `hacker-bob-cc` as a compatibility wrapper.
 - Updated release publishing to publish both npm packages with provenance.
 - Added Quickstart, troubleshooting docs, release notes, and bug report diagnostics guidance.
 - Optimized the README image to reduce npm package size.

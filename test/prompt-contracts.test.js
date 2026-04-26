@@ -4,12 +4,28 @@ const fs = require("fs");
 const path = require("path");
 const { TOOLS, TOOL_MANIFEST } = require("../mcp/server.js");
 const {
+  ADAPTERS,
+  getAdapter,
+} = require("../adapters/index.js");
+const {
   bountyagentSkillAllowedTools,
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,
   isOrchestratorOnlyMutator,
   permissionsForRoleBundles,
-} = require("../mcp/lib/claude-config.js");
+} = require("../adapters/claude/config.js");
+const {
+  allRoleDefinitions,
+  mcpToolNamesForRole,
+} = require("../mcp/lib/role-model.js");
+const {
+  CLAUDE_ROLE_SPECS,
+  renderClaudeRole,
+} = require("../scripts/lib/claude-role-renderer.js");
+const {
+  CODEX_SKILL_SPECS,
+  renderCodexSkill,
+} = require("../scripts/lib/codex-role-renderer.js");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -58,6 +74,23 @@ function allMarkdown(relativeDir) {
     .map((name) => path.join(relativeDir, name));
 }
 
+function allJsFiles(relativeDir) {
+  const rootDir = path.join(ROOT, relativeDir);
+  const files = [];
+  const visit = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        files.push(path.relative(ROOT, full));
+      }
+    }
+  };
+  visit(rootDir);
+  return files.sort();
+}
+
 function settingsHookMatchers() {
   const settings = JSON.parse(readFile(".claude/settings.json"));
   return new Set((settings.hooks.PreToolUse || []).map((entry) => entry.matcher));
@@ -91,6 +124,146 @@ function parseYamlListFrontmatter(document, key, fileLabel) {
   return values;
 }
 
+function roleMcpToolsFromClaudeOutput(roleId) {
+  const spec = CLAUDE_ROLE_SPECS[roleId];
+  assert.ok(spec, `${roleId} missing Claude role spec`);
+  const document = readFile(spec.output_path);
+  const tools = spec.kind === "skill"
+    ? parseYamlListFrontmatter(document, "allowed-tools", spec.output_path)
+    : parseFrontmatter(document, spec.output_path).tools.split(/\s*,\s*/).filter(Boolean);
+  return tools
+    .filter((tool) => tool.startsWith("mcp__bountyagent__"))
+    .map((tool) => tool.replace(/^mcp__bountyagent__/, ""))
+    .sort();
+}
+
+test("Claude roles render exactly from the shared role model", () => {
+  for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
+    assert.equal(
+      readFile(spec.output_path),
+      renderClaudeRole(roleId),
+      `${spec.output_path} is not generated from ${roleId}`,
+    );
+  }
+});
+
+test("Claude slash commands render from adapter-owned command specs", () => {
+  const claudeAdapter = getAdapter("claude");
+  for (const [commandId, spec] of Object.entries(claudeAdapter.COMMAND_SPECS)) {
+    assert.equal(
+      readFile(path.join(".claude", "commands", "bob", spec.file)),
+      claudeAdapter.renderCommand(commandId),
+      `${spec.file} is not generated from ${commandId}`,
+    );
+  }
+});
+
+test("Codex skills render exactly from the shared role model", () => {
+  for (const [skillId, spec] of Object.entries(CODEX_SKILL_SPECS)) {
+    assert.equal(
+      readFile(spec.output_path),
+      renderCodexSkill(skillId),
+      `${spec.output_path} is not generated from ${skillId}`,
+    );
+  }
+});
+
+test("adapter registry exposes the shared lifecycle surface", () => {
+  assert.deepEqual(Object.keys(ADAPTERS).sort(), ["claude", "codex", "generic-mcp"].sort());
+  for (const id of Object.keys(ADAPTERS)) {
+    const adapter = getAdapter(id);
+    assert.equal(adapter.id, id);
+    for (const method of ["install", "doctor", "uninstall", "render", "managedFiles", "mergeConfig"]) {
+      assert.equal(typeof adapter[method], "function", `${id}.${method} must be a function`);
+    }
+  }
+});
+
+test("Codex plugin manifest and skills expose portable Bob contracts", () => {
+  const codex = getAdapter("codex");
+  const manifest = JSON.parse(readFile("adapters/codex/hacker-bob/.codex-plugin/plugin.json"));
+  assert.equal(manifest.name, "hacker-bob");
+  assert.equal(manifest.skills, "./skills/");
+  assert.equal(manifest.mcpServers, "./.mcp.json");
+  assert.doesNotMatch(JSON.stringify(manifest), /TODO/);
+
+  const mcp = JSON.parse(readFile("adapters/codex/hacker-bob/.mcp.json"));
+  assert.equal(mcp.mcpServers.bountyagent.command, "node");
+  assert.match(mcp.mcpServers.bountyagent.args[0], /mcp\/server\.js$/);
+
+  const hunt = readFile("adapters/codex/hacker-bob/skills/hunt/SKILL.md");
+  const status = readFile("adapters/codex/hacker-bob/skills/status/SKILL.md");
+  const debug = readFile("adapters/codex/hacker-bob/skills/debug/SKILL.md");
+  assert.match(hunt, /bounty_finalize_hunter_run/);
+  assert.doesNotMatch(hunt + status + debug, /CLAUDE_PROJECT_DIR|mcp__bountyagent__|\/bob:/);
+  assert.match(status, /mcp\/lib\/update-check\.js/);
+
+  for (const commandId of codex.commandIds()) {
+    const command = codex.renderCommand(commandId);
+    assert.match(command, new RegExp(`\\$hacker-bob:${commandId}`));
+    assert.match(command, /\$ARGUMENTS/);
+    assert.doesNotMatch(command, /CLAUDE_PROJECT_DIR|mcp__bountyagent__/);
+  }
+});
+
+test("Generic MCP prompt docs describe manual host mode without host-native files", () => {
+  const doc = readFile("adapters/generic-mcp/prompts/hacker-bob.md");
+  assert.match(doc, /bounty_finalize_hunter_run/);
+  assert.match(doc, /Generic MCP mode does not provide host-native background agents/);
+  assert.doesNotMatch(doc, /CLAUDE_PROJECT_DIR|mcp__bountyagent__|\.claude|\.codex/);
+});
+
+test("Claude lifecycle routes host-specific doctor and uninstall through the adapter", () => {
+  const adapter = readFile("adapters/claude/index.js");
+  const lifecycle = readFile("scripts/lifecycle.js");
+  assert.match(lifecycle, /adapter\.doctor\(\{/);
+  assert.match(lifecycle, /adapter\.uninstall\(\{/);
+  assert.match(lifecycle, /adapterId === "claude"/);
+  assert.doesNotMatch(adapter, /not implemented|orchestrated by scripts\/lifecycle/);
+  assert.doesNotMatch(lifecycle, /BOB_COMMAND_FILES|HOOK_FILES|settingsHasHookEntries|settingsMissingPermissions/);
+});
+
+test("Claude config lives under the Claude adapter outside the MCP runtime", () => {
+  assert.equal(fs.existsSync(path.join(ROOT, "mcp", "lib", "claude-config.js")), false);
+  for (const relativePath of allJsFiles("mcp")) {
+    const document = readFile(relativePath);
+    assert.doesNotMatch(document, /claude-config|adapters\/claude/, `${relativePath} imports Claude adapter config`);
+  }
+});
+
+test("Claude project env syntax stays adapter-scoped or compatibility-scoped", () => {
+  const expected = new Set([
+    path.join("mcp", "lib", "runtime-resources.js"),
+    path.join("scripts", "lib", "claude-role-renderer.js"),
+  ]);
+  for (const root of ["mcp", "scripts", "bin"]) {
+    for (const relativePath of allJsFiles(root)) {
+      const document = readFile(relativePath);
+      if (expected.has(relativePath)) continue;
+      assert.doesNotMatch(document, /CLAUDE_PROJECT_DIR/, `${relativePath} contains Claude project env syntax`);
+    }
+  }
+});
+
+test("Claude role MCP tool contracts match neutral roles", () => {
+  for (const roleId of Object.keys(CLAUDE_ROLE_SPECS)) {
+    assert.deepEqual(
+      roleMcpToolsFromClaudeOutput(roleId),
+      mcpToolNamesForRole(roleId).slice().sort(),
+      `${roleId} Claude MCP tools drifted from neutral role model`,
+    );
+  }
+});
+
+test("neutral role prompt bodies do not contain host-specific MCP permission syntax", () => {
+  for (const role of allRoleDefinitions()) {
+    const body = readFile(role.prompt_body);
+    assert.doesNotMatch(body, /mcp__bountyagent__/, `${role.prompt_body} contains Claude MCP permission syntax`);
+    assert.doesNotMatch(body, /CLAUDE_PROJECT_DIR/, `${role.prompt_body} contains Claude project env syntax`);
+    assert.doesNotMatch(body, /^allowed-tools:|^tools:/m, `${role.prompt_body} contains adapter frontmatter`);
+  }
+});
+
 test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools", () => {
   const document = readFile(".claude/agents/hunter-agent.md");
   const frontmatter = parseFrontmatter(document, "hunter-agent.md");
@@ -99,6 +272,7 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(!tools.includes("Write"));
   assert.ok(tools.includes("Bash"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_finalize_hunter_run"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_record_finding"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_list_auth_profiles"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_log_coverage"));
@@ -316,7 +490,7 @@ test("bob namespaced commands delegate to local skills", () => {
   assert.match(debugCommand, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
   assert.match(debugCommand, /\/bob:debug/);
   assert.match(debugCommand, /Pass `\$ARGUMENTS`/);
-  assert.match(updateCommand, /hacker-bob-cc@latest install/);
+  assert.match(updateCommand, /hacker-bob@latest install/);
   assert.match(updateCommand, /Update now\?/);
   assert.match(updateCommand, /fully restart Claude Code/);
   assert.deepEqual(
@@ -339,6 +513,7 @@ test("bountyagentstatus skill is compact, read-only, and points to next commands
     "mcp__bountyagent__bounty_auth_store",
     "mcp__bountyagent__bounty_write_handoff",
     "mcp__bountyagent__bounty_write_wave_handoff",
+    "mcp__bountyagent__bounty_finalize_hunter_run",
     "mcp__bountyagent__bounty_write_verification_round",
     "mcp__bountyagent__bounty_write_grade_verdict",
     "mcp__bountyagent__bounty_record_finding",
@@ -407,6 +582,7 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
     "mcp__bountyagent__bounty_auth_store",
     "mcp__bountyagent__bounty_write_handoff",
     "mcp__bountyagent__bounty_write_wave_handoff",
+    "mcp__bountyagent__bounty_finalize_hunter_run",
     "mcp__bountyagent__bounty_write_verification_round",
     "mcp__bountyagent__bounty_write_grade_verdict",
     "mcp__bountyagent__bounty_record_finding",
@@ -441,21 +617,37 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
 test("installer and dev-sync copy bob namespaced commands and debug skill", () => {
   const install = readFile("install.sh");
   const installer = readFile("scripts/install.js");
+  const claudeAdapter = readFile("adapters/claude/index.js");
   const devSync = readFile("dev-sync.sh");
 
   assert.match(install, /bin\/hacker-bob\.js/);
-  assert.match(installer, /hunt\.md/);
-  assert.match(installer, /status\.md/);
-  assert.match(installer, /debug\.md/);
-  assert.match(installer, /update\.md/);
+  assert.match(claudeAdapter, /hunt\.md/);
+  assert.match(claudeAdapter, /status\.md/);
+  assert.match(claudeAdapter, /debug\.md/);
+  assert.match(claudeAdapter, /update\.md/);
+  assert.match(installer, /\.hacker-bob/);
+  assert.match(devSync, /\.hacker-bob\/knowledge/);
+  assert.match(devSync, /\.hacker-bob\/bypass-tables/);
   assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/status\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/debug\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/update\.md/);
-  assert.match(installer, /bountyagentstatus/);
+  assert.match(claudeAdapter, /bountyagentstatus/);
   assert.match(devSync, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
-  assert.match(installer, /bountyagentdebug/);
+  assert.match(claudeAdapter, /bountyagentdebug/);
   assert.match(devSync, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
+});
+
+test("dev-sync accepts adapters and gates Claude-specific sync paths", () => {
+  const devSync = readFile("dev-sync.sh");
+
+  assert.match(devSync, /--adapter claude\|codex\|generic-mcp\|all/);
+  assert.match(devSync, /ADAPTER="claude"/);
+  assert.match(devSync, /"\$SCRIPT_DIR\/install\.sh" "\$TARGET_ABS" --adapter "\$ADAPTER"/);
+  assert.match(devSync, /function sync_claude_adapter\(\)|sync_claude_adapter\(\) \{/);
+  assert.match(devSync, /if adapter_includes "claude"; then\s+sync_claude_adapter/s);
+  assert.match(devSync, /\$hacker-bob:status skill/);
+  assert.match(devSync, /generic-mcp\/hacker-bob\.md/);
 });
 
 test("root-orchestrator MCP calls are covered by skill allowed-tools", () => {
@@ -525,19 +717,20 @@ test("recon prompt remains enrichment-only without new commands or imported tool
 
 test("installer and dev-sync copy and configure session-write-guard", () => {
   const install = readFile("scripts/install.js");
+  const claudeAdapter = readFile("adapters/claude/index.js");
   const devSync = readFile("dev-sync.sh");
 
-  assert.match(install, /session-write-guard\.sh/);
+  assert.match(claudeAdapter, /session-write-guard\.sh/);
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/session-write-guard\.sh"/);
-  assert.match(install, /hunter-subagent-stop\.js/);
+  assert.match(claudeAdapter, /hunter-subagent-stop\.js/);
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
-  assert.match(install, /bountyagent/);
+  assert.match(claudeAdapter, /bountyagent/);
   assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
-  assert.match(install, /hunt\.md/);
+  assert.match(claudeAdapter, /hunt\.md/);
   assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
   assert.match(install, /"mcp", "lib", "tools"/);
   assert.match(devSync, /mcp\/lib\/tools/);
-  assert.match(install, /merge-claude-config\.js/);
+  assert.match(claudeAdapter, /merge-claude-config\.js/);
   assert.match(devSync, /merge-claude-config\.js/);
 
   const hookText = JSON.stringify(defaultClaudeSettings().hooks.PreToolUse);
@@ -663,7 +856,10 @@ test("hunter and orchestrator prompts keep the structured handoff contract expli
   assert.match(hunterPrompt, /bounty_import_static_artifact[\s\S]*bounty_static_scan/);
   assert.match(hunterPrompt, /never pass or scan arbitrary filesystem paths/i);
   assert.match(hunterPrompt, /Do not manually create orchestrator-consumed handoff files\./);
+  assert.match(hunterPrompt, /bounty_finalize_hunter_run/);
   assert.match(hunterPrompt, /BOB_HUNTER_DONE/);
+  assert.match(orchestratorPrompt, /bounty_finalize_hunter_run/);
+  assert.match(orchestratorPrompt, /Claude `SubagentStop` is only an adapter guardrail/);
   assert.match(orchestratorPrompt, /BOB_HUNTER_DONE/);
   assert.match(hunterPrompt, /Durable hunt state must flow only through MCP tools\./);
   assert.match(hunterPrompt, /bounty_log_coverage/);

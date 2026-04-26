@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 "use strict";
 
-const update = require("./bob-update-lib.js");
+const path = require("path");
+const update = require(path.join(__dirname, "..", "..", "mcp", "lib", "update-check.js"));
+
+function claudeInstallCommand(result) {
+  const packageName = (result && result.package_name) || update.PACKAGE_NAME;
+  return `npx -y ${packageName}@latest install "$CLAUDE_PROJECT_DIR"`;
+}
+
+function renderOptions(result) {
+  return { installCommand: claudeInstallCommand(result) };
+}
 
 function usage() {
   console.error(`Usage:
@@ -17,14 +27,14 @@ function firstNonFlag(args) {
 
 async function main(argv) {
   const [command = "plan", ...args] = argv;
-  const projectDir = firstNonFlag(args) || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const projectDir = firstNonFlag(args) || process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
   if (command === "plan") {
     const result = await update.checkForUpdate(projectDir, { includeChangelog: true });
     if (args.includes("--json")) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
-      process.stdout.write(update.renderUpdatePlan(result));
+      process.stdout.write(update.renderUpdatePlan(result, renderOptions(result)));
     }
     return;
   }
@@ -34,7 +44,7 @@ async function main(argv) {
     if (args.includes("--json")) {
       process.stdout.write(`${JSON.stringify(cache || null, null, 2)}\n`);
     } else {
-      process.stdout.write(update.renderUpdateSummary(cache));
+      process.stdout.write(update.renderUpdateSummary(cache, renderOptions(cache)));
     }
     return;
   }
@@ -44,7 +54,7 @@ async function main(argv) {
     if (args.includes("--json")) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
-      process.stdout.write(update.renderUpdateSummary(result));
+      process.stdout.write(update.renderUpdateSummary(result, renderOptions(result)));
     }
     return;
   }

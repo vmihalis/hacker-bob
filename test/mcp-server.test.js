@@ -60,6 +60,11 @@ const {
   readToolTelemetry,
   toolTelemetryPath,
 } = require("../mcp/lib/tool-telemetry.js");
+const {
+  readResourceText,
+  resolveResourcePath,
+  runtimeClient,
+} = require("../mcp/lib/runtime-resources.js");
 
 const {
   TOOLS,
@@ -77,6 +82,7 @@ const {
   buildCoverageSummaryForSurface,
   coverageJsonlPath,
   executeTool,
+  finalizeHunterRun,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
@@ -160,6 +166,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_apply_wave_merge",
   "bounty_write_handoff",
   "bounty_write_wave_handoff",
+  "bounty_finalize_hunter_run",
   "bounty_wave_handoff_status",
   "bounty_merge_wave_handoffs",
   "bounty_read_wave_handoffs",
@@ -485,6 +492,7 @@ test("mcp server public exports remain stable", () => {
     "coverageJsonlPath",
     "executeTool",
     "filterExclusionsByHosts",
+    "finalizeHunterRun",
     "findingsJsonlPath",
     "findingsMarkdownPath",
     "gradeArtifactPaths",
@@ -629,6 +637,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_pipeline_analytics.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_finalize_hunter_run.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_finalize_hunter_run.global_preapproval, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_finalize_hunter_run.role_bundles, ["hunter"]);
 });
 
 test("MCP tool registry validation rejects incomplete or inconsistent entries", () => {
@@ -2469,6 +2480,142 @@ test("tokenized wave handoffs require the correct token and report verified prov
   });
 });
 
+test("bounty_finalize_hunter_run blocks missing invalid and mismatched handoffs", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const missing = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "STATE_CONFLICT");
+    assert.equal(missing.error.details.block_code, "missing_handoff");
+    assert.equal(missing.error.details.handoff.present, false);
+
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w1-a1.json"), "{bad json");
+    const invalid = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.details.block_code, "invalid_handoff");
+    assert.equal(invalid.error.details.handoff.present, true);
+    assert.equal(invalid.error.details.handoff.valid, false);
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      chain_notes: ["No chain."],
+      content: "# a1",
+    });
+    const mismatch = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-b",
+    });
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.error.details.block_code, "handoff_mismatch");
+    assert.equal(mismatch.error.details.handoff.valid, true);
+    assert.equal(mismatch.error.details.handoff.surface_status, "complete");
+    assert.equal(mismatch.error.details.handoff.chain_notes_count, 1);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked", "blocked"]);
+    assert.deepEqual(rows.map((row) => row.block_code), [
+      "missing_handoff",
+      "invalid_handoff",
+      "handoff_mismatch",
+    ]);
+    assert.ok(rows.every((row) => row.telemetry_source === "bounty_finalize_hunter_run"));
+
+    const pipelineRows = readJsonl(pipelineEventsJsonlPath(domain));
+    assert.deepEqual(
+      pipelineRows.filter((row) => row.type === "hunter_stopped").map((row) => row.source),
+      ["bounty_finalize_hunter_run", "bounty_finalize_hunter_run", "bounty_finalize_hunter_run"],
+    );
+  });
+});
+
+test("bounty_finalize_hunter_run allows valid handoff and records metadata-only telemetry", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      chain_notes: ["No chain."],
+      content: "# a1\n\nraw handoff body is not telemetry",
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/tested",
+        method: "GET",
+        bug_class: "idor",
+        status: "tested",
+        evidence_summary: "tested",
+      }],
+    });
+    recordFinding({
+      target_domain: domain,
+      title: "IDOR",
+      severity: "high",
+      endpoint: "/tested",
+      description: "Cross-account access.",
+      proof_of_concept: "raw finding proof should not enter telemetry",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+
+    const direct = JSON.parse(finalizeHunterRun({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    }));
+    assert.equal(direct.status, "allowed");
+    assert.equal(direct.message, "handoff valid");
+    assert.deepEqual(direct.handoff, {
+      present: true,
+      valid: true,
+      provenance: "legacy_unverified",
+      surface_status: "complete",
+      summary_present: true,
+      chain_notes_count: 1,
+    });
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "allowed");
+    assert.equal(rows[0].block_code, null);
+    assert.equal(rows[0].telemetry_source, "bounty_finalize_hunter_run");
+    assert.deepEqual(rows[0].coverage, { total: 1, by_status: { tested: 1 } });
+    assert.deepEqual(rows[0].findings, { count: 1 });
+    assert.equal(JSON.stringify(rows[0]).includes("raw handoff body"), false);
+    assert.equal(JSON.stringify(rows[0]).includes("raw finding proof"), false);
+  });
+});
+
 test("executeTool smoke path uses envelopes for init, wave, handoff, and merge", async () => {
   await withTempHome(async () => {
     const domain = "smoke.example";
@@ -2505,6 +2652,15 @@ test("executeTool smoke path uses envelopes for init, wave, handoff, and merge",
       content: "# Smoke",
     });
     assert.equal(handoff.ok, true);
+
+    const finalized = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(finalized.ok, true);
+    assert.equal(finalized.data.status, "allowed");
 
     const merged = await executeTool("bounty_apply_wave_merge", {
       target_domain: domain,
@@ -5905,6 +6061,85 @@ test("bounty_read_hunter_brief rejects unassigned agent", () => {
       /Agent a9 is not assigned/,
     );
   });
+});
+
+test("runtime resource resolution prefers neutral env paths and preserves Claude fallback", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-resources-"));
+  try {
+    const neutralResources = path.join(root, "neutral-resources");
+    const claudeProject = path.join(root, "claude-project");
+    fs.mkdirSync(path.join(neutralResources, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(claudeProject, ".claude", "knowledge"), { recursive: true });
+    fs.writeFileSync(path.join(neutralResources, "knowledge", "source.txt"), "neutral\n", "utf8");
+    fs.writeFileSync(path.join(claudeProject, ".claude", "knowledge", "source.txt"), "claude\n", "utf8");
+
+    withEnv({
+      BOB_CLIENT: "codex",
+      BOB_PROJECT_DIR: path.join(root, "bob-project"),
+      BOB_RESOURCE_DIR: neutralResources,
+      CLAUDE_PROJECT_DIR: claudeProject,
+    }, () => {
+      assert.equal(runtimeClient(), "codex");
+      assert.equal(readResourceText("knowledge", "source.txt"), "neutral\n");
+      assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(neutralResources, "knowledge", "source.txt"));
+    });
+
+    withEnv({
+      BOB_CLIENT: undefined,
+      BOB_PROJECT_DIR: undefined,
+      BOB_RESOURCE_DIR: undefined,
+      CLAUDE_PROJECT_DIR: claudeProject,
+    }, () => {
+      assert.equal(runtimeClient(), "claude");
+      assert.equal(readResourceText("knowledge", "source.txt"), "claude\n");
+      assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(claudeProject, ".claude", "knowledge", "source.txt"));
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bounty_read_hunter_brief loads knowledge and bypass tables from BOB_RESOURCE_DIR", () => {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-resource-dir-"));
+  try {
+    fs.mkdirSync(path.join(resources, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(resources, "bypass-tables"), { recursive: true });
+    fs.writeFileSync(path.join(resources, "bypass-tables", "rest-api.txt"), "CUSTOM REST BYPASS TABLE\n", "utf8");
+    fs.writeFileSync(path.join(resources, "knowledge", "hunter-techniques.json"), `${JSON.stringify({
+      version: 1,
+      entries: [{
+        id: "acmecms",
+        title: "AcmeCMS custom guidance",
+        match: { tech: ["acmecms"] },
+        techniques: ["Use the adapter-provided knowledge directory for AcmeCMS checks."],
+        payload_hints: ["/acme/admin/export"],
+      }],
+    }, null, 2)}\n`, "utf8");
+
+    withTempHome(() => withEnv({
+      BOB_RESOURCE_DIR: resources,
+      BOB_PROJECT_DIR: undefined,
+      CLAUDE_PROJECT_DIR: undefined,
+    }, () => {
+      const domain = "example.com";
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "surface-custom",
+        hosts: [`https://${domain}`],
+        tech_stack: ["AcmeCMS"],
+        endpoints: ["/acme"],
+        interesting_params: ["id"],
+      }]);
+      seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-custom" }]);
+
+      const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.equal(brief.bypass_table, "CUSTOM REST BYPASS TABLE");
+      assert.deepEqual(brief.techniques.map((entry) => entry.id), ["acmecms"]);
+      assert.match(JSON.stringify(brief.payload_hints), /\/acme\/admin\/export/);
+    }));
+  } finally {
+    fs.rmSync(resources, { recursive: true, force: true });
+  }
 });
 
 test("bounty_read_hunter_brief includes WordPress-specific curated guidance", () => {

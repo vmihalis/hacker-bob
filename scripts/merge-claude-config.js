@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   defaultClaudeSettings,
-} = require("../mcp/lib/claude-config.js");
+} = require("../adapters/claude/config.js");
 
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;

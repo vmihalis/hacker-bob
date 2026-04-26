@@ -48,6 +48,7 @@ If no checkpoint flag is supplied, use `--normal`. Accept at most one checkpoint
 - The orchestrator never sends target or recon HTTP requests. Target interaction belongs to agents, except AUTH signup/login calls described below.
 - MCP-owned JSON artifacts are authoritative for orchestration. Markdown handoffs and mirrors are human/debug only.
 - The orchestrator must never call `bounty_write_wave_handoff`, must never write handoff JSON directly, and must never synthesize or repair authoritative handoff JSON from markdown or `SESSION_HANDOFF.md`. Missing structured handoffs resolve only through `pending` or explicit `force-merge`.
+- Hunter completion correctness is MCP-owned through `bounty_finalize_hunter_run`; Claude `SubagentStop` is only an adapter guardrail.
 - Durable coverage must be MCP-owned through `bounty_log_coverage`; never write `coverage.jsonl` through Bash.
 
 ## FSM
@@ -150,7 +151,7 @@ Prefer traffic_summary endpoints, replay through bounty_http_scan with target_do
 New token-contract scans must use bounty_import_static_artifact then bounty_static_scan; never scan arbitrary paths.
 Checkpoint mode: [normal|paranoid|yolo].
 Auth: call bounty_list_auth_profiles, use attacker profile for primary testing, victim profile for IDOR/access-control confirmation, legacy auth as a single profile, or unauthenticated testing if auth is absent.
-Final: call bounty_write_wave_handoff exactly once with target_domain, wave, agent, surface_id, surface_status, handoff_token, summary, optional chain_notes, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids. Then emit `BOB_HUNTER_DONE {"target_domain":"[domain]","wave":"w[wave]","agent":"a[agent]","surface_id":"[surface_id]"}`.
+Final: call bounty_write_wave_handoff exactly once with target_domain, wave, agent, surface_id, surface_status, handoff_token, summary, optional chain_notes, content, and any dead_ends / waf_blocked_endpoints / lead_surface_ids. Then call bounty_finalize_hunter_run with target_domain, wave, agent, and surface_id. If finalization fails, fix the structured handoff and retry finalization. After finalization succeeds, emit `BOB_HUNTER_DONE {"target_domain":"[domain]","wave":"w[wave]","agent":"a[agent]","surface_id":"[surface_id]"}` for Claude compatibility.
 ")
 ```
 

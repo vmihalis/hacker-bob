@@ -4,3 +4,6 @@ node_modules/
 .env
 .env.local
 .mcp.json
+.codex/
+.hacker-bob/VERSION
+.hacker-bob/install.json

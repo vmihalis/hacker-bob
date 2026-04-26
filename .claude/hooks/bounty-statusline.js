@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const update = require('./bob-update-lib.js');
+const update = require(path.join(__dirname, '..', '..', 'mcp', 'lib', 'update-check.js'));
 
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
@@ -68,7 +68,7 @@ process.stdin.on('end', () => {
 
     let updateHint = '';
     try {
-      const projectDir = data.workspace?.current_dir || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      const projectDir = data.workspace?.current_dir || process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const cache = update.readUpdateCache(projectDir);
       if (cache && cache.update_available && !cache.error && cache.latest_version) {
         updateHint = ` │ \x1b[33mBob ${cache.latest_version}: /bob:update\x1b[0m`;

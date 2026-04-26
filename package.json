@@ -1,7 +1,7 @@
 {
-  "name": "hacker-bob-cc",
+  "name": "hacker-bob",
   "version": "1.1.0",
-  "description": "Autonomous bug bounty hunting framework for Claude Code",
+  "description": "Portable autonomous bug bounty hunting MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -18,11 +18,14 @@
     "node": ">=20"
   },
   "files": [
+    ".hacker-bob/**/*",
     ".claude/**/*",
+    "adapters/**/*",
     "bin/**/*",
     "docs/**/*.md",
     "docs/hacker-bob.png",
     "mcp/**/*",
+    "prompts/**/*",
     "scripts/**/*",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
@@ -35,11 +38,13 @@
     "install.sh"
   ],
   "scripts": {
-    "check:syntax": "find mcp .claude/hooks -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "check:syntax": "find bin adapters scripts mcp .claude/hooks -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "check:roles": "node scripts/generate-claude-roles.js --check",
+    "check:codex-skills": "node scripts/generate-codex-skills.js --check",
     "check:agent-tools": "node scripts/generate-agent-tools.js --check",
     "check:skill": "node scripts/generate-bountyagent-skill.js --check",
     "test:mcp": "node --test test/mcp-server.test.js",
-    "test:prompts": "npm run check:agent-tools && npm run check:skill && node --test test/prompt-contracts.test.js",
+    "test:prompts": "npm run check:roles && npm run check:codex-skills && npm run check:agent-tools && npm run check:skill && node --test test/prompt-contracts.test.js",
     "test:install": "node --test test/install-smoke.test.js",
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",

@@ -1,0 +1,42 @@
+{
+  "name": "hacker-bob",
+  "version": "1.1.0",
+  "description": "Codex skills and MCP wiring for the Hacker Bob bug bounty hunting runtime.",
+  "author": {
+    "name": "Hacker Bob contributors",
+    "email": "maintainers@example.invalid",
+    "url": "https://github.com/vmihalis/hacker-bob"
+  },
+  "homepage": "https://github.com/vmihalis/hacker-bob#readme",
+  "repository": "https://github.com/vmihalis/hacker-bob",
+  "license": "Apache-2.0",
+  "keywords": [
+    "bug-bounty",
+    "mcp",
+    "security",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Hacker Bob",
+    "shortDescription": "Autonomous bug bounty hunting through a portable MCP runtime.",
+    "longDescription": "Run Hacker Bob hunts, status checks, debug reviews, and package updates from Codex while durable state remains in the shared MCP runtime.",
+    "developerName": "Hacker Bob contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "MCP",
+      "Security"
+    ],
+    "websiteURL": "https://github.com/vmihalis/hacker-bob",
+    "privacyPolicyURL": "https://github.com/vmihalis/hacker-bob/blob/main/SECURITY.md",
+    "termsOfServiceURL": "https://github.com/vmihalis/hacker-bob/blob/main/DISCLAIMER.md",
+    "defaultPrompt": [
+      "Start a Hacker Bob hunt for example.com",
+      "Show Hacker Bob status for the latest run",
+      "Debug the latest Hacker Bob run"
+    ],
+    "brandColor": "#111827"
+  }
+}

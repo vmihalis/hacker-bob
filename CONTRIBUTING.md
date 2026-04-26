@@ -37,9 +37,14 @@ npm run test:hooks
 
 ## Project layout
 
+- `adapters/` contains host-specific install, doctor, uninstall, render, and
+  config ownership for Claude, Codex, and generic MCP hosts.
 - `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and
-  `.claude/hooks/` define the Claude Code-facing experience.
+  `.claude/hooks/` are the generated Claude adapter surface.
+- `prompts/roles/` and `mcp/lib/role-model.js` define shared role contracts
+  that adapters render into host-specific files.
 - `mcp/` contains the MCP server and runtime tool implementation.
+- `.hacker-bob/` contains neutral runtime resources copied into installs.
 - `scripts/` contains generation and config merge helpers.
 - `test/` contains the contract, MCP, installer, and hook tests.
 
@@ -52,6 +57,8 @@ generator and commit the resulting changes:
 ```bash
 node scripts/generate-agent-tools.js
 node scripts/generate-bountyagent-skill.js
+node scripts/generate-claude-roles.js
+node scripts/generate-codex-skills.js
 ```
 
 Then run:
@@ -73,22 +80,26 @@ npm run test:prompts
 
 ## Testing installed changes
 
-For local end-to-end testing, use a dedicated throwaway Claude Code workspace:
+For local end-to-end testing, use a dedicated throwaway workspace:
 
 ```bash
 ./dev-sync.sh /absolute/path/to/test-workspace
+./dev-sync.sh /absolute/path/to/test-workspace --adapter codex
+./dev-sync.sh /absolute/path/to/test-workspace --adapter generic-mcp
 ```
 
-Restart Claude Code in that workspace after syncing. Do not use a workspace that
-contains real credentials or target data unless you intend to test with them.
+Restart the selected host in that workspace after syncing. Do not use a
+workspace that contains real credentials or target data unless you intend to
+test with them.
 
 ## Release checklist
 
 - Update `CHANGELOG.md` with a semver section for the release.
-- Confirm `package.json` has the intended version and package metadata.
+- Confirm `package.json` has the intended canonical package metadata and
+  `packages/hacker-bob-cc/package.json` pins the same version.
 - Run `npm test`.
-- Run `npm pack --dry-run --json` and verify the package includes `.claude/`,
-  `mcp/`, `bin/`, `scripts/`, `README.md`, `LICENSE`, and `NOTICE` without
-  test or cache artifacts.
+- Run `npm run release:check` and verify the canonical package includes
+  adapter surfaces, neutral resources, `mcp/`, `bin/`, `scripts/`, docs, and
+  release metadata without test or cache artifacts.
 - Push a signed `v*` tag after npm publishing credentials are configured for
   the release workflow.

@@ -8,8 +8,8 @@
 //           bounty_transition_phase,
 //           bounty_start_wave, bounty_apply_wave_merge,
 //           bounty_write_handoff, bounty_write_wave_handoff,
-//           bounty_wave_handoff_status, bounty_merge_wave_handoffs,
-//           bounty_log_dead_ends, bounty_log_coverage,
+//           bounty_finalize_hunter_run, bounty_wave_handoff_status,
+//           bounty_merge_wave_handoffs, bounty_log_dead_ends, bounty_log_coverage,
 //           bounty_wave_status,
 //           bounty_temp_email, bounty_signup_detect, bounty_auth_store,
 //           bounty_auto_signup, bounty_import_http_traffic,
@@ -142,6 +142,9 @@ const {
   signupDetect,
 } = require("./lib/signup.js");
 const {
+  finalizeHunterRun,
+} = require("./lib/hunter-completion.js");
+const {
   applyWaveMerge,
   logDeadEnds,
   mergeWaveHandoffs,
@@ -255,6 +258,7 @@ module.exports = {
   normalizeStringArray,
   writeFileAtomic,
   executeTool,
+  finalizeHunterRun,
   startServer,
 };
 

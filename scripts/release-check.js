@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
-const ALIAS_ROOT = path.join(ROOT, "packages", "hacker-bob");
+const COMPAT_ROOT = path.join(ROOT, "packages", "hacker-bob-cc");
 const NPM_CACHE = process.env.HACKER_BOB_RELEASE_NPM_CACHE || path.join(os.tmpdir(), "hacker-bob-release-check-npm-cache");
 const args = new Set(process.argv.slice(2));
 const registryMode = args.has("--registry");
@@ -44,6 +44,47 @@ function readJson(filePath) {
 
 function exists(filePath) {
   return fs.existsSync(filePath);
+}
+
+function sourceTreeFiles(relativeDir) {
+  const root = path.join(ROOT, relativeDir);
+  if (!exists(root)) return [];
+  const files = [];
+  const visit = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+      } else if (entry.isFile()) {
+        files.push(path.relative(ROOT, full).split(path.sep).join("/"));
+      }
+    }
+  };
+  visit(root);
+  return files.sort();
+}
+
+function expectedCanonicalFiles() {
+  return Array.from(new Set([
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "DISCLAIMER.md",
+    "SECURITY.md",
+    "install.sh",
+    ...sourceTreeFiles(".hacker-bob"),
+    ...sourceTreeFiles(".claude"),
+    ...sourceTreeFiles("adapters"),
+    ...sourceTreeFiles("bin"),
+    ...sourceTreeFiles("docs"),
+    ...sourceTreeFiles("mcp"),
+    ...sourceTreeFiles("prompts"),
+    ...sourceTreeFiles("scripts"),
+  ])).sort();
 }
 
 function run(command, commandArgs, options = {}) {
@@ -111,15 +152,15 @@ function assertFile(filePath, message) {
 
 function checkManifest() {
   const rootPackage = readJson(path.join(ROOT, "package.json"));
-  const aliasPackage = readJson(path.join(ALIAS_ROOT, "package.json"));
+  const compatPackage = readJson(path.join(COMPAT_ROOT, "package.json"));
 
-  assertEqual(rootPackage.name, "hacker-bob-cc", "canonical package name is hacker-bob-cc");
-  assertEqual(aliasPackage.name, "hacker-bob", "alias package name is hacker-bob");
-  assertEqual(aliasPackage.version, rootPackage.version, "alias version matches canonical version");
+  assertEqual(rootPackage.name, "hacker-bob", "canonical package name is hacker-bob");
+  assertEqual(compatPackage.name, "hacker-bob-cc", "compatibility package name is hacker-bob-cc");
+  assertEqual(compatPackage.version, rootPackage.version, "compatibility version matches canonical version");
   assertEqual(
-    aliasPackage.dependencies && aliasPackage.dependencies["hacker-bob-cc"],
+    compatPackage.dependencies && compatPackage.dependencies["hacker-bob"],
     rootPackage.version,
-    "alias dependency pins the canonical package version",
+    "compatibility dependency pins the canonical package version",
   );
 
   assertFile(path.join(ROOT, "CHANGELOG.md"), "CHANGELOG.md exists");
@@ -135,7 +176,7 @@ function checkManifest() {
     `release notes exist for v${rootPackage.version}`,
   );
 
-  return { rootPackage, aliasPackage };
+  return { rootPackage, compatPackage };
 }
 
 function checkCanonicalPack(rootPackage) {
@@ -143,30 +184,10 @@ function checkCanonicalPack(rootPackage) {
   if (!canonical) return;
   const files = fileSet(canonical);
 
-  assertEqual(canonical.name, "hacker-bob-cc", "canonical pack name is hacker-bob-cc");
+  assertEqual(canonical.name, "hacker-bob", "canonical pack name is hacker-bob");
   assertEqual(canonical.version, rootPackage.version, "canonical pack version matches package.json");
 
-  for (const expected of [
-    "package.json",
-    "README.md",
-    "LICENSE",
-    "NOTICE",
-    "CHANGELOG.md",
-    "install.sh",
-    "bin/hacker-bob.js",
-    "docs/FIRST_RUN.md",
-    "docs/ROADMAP.md",
-    "docs/TROUBLESHOOTING.md",
-    `docs/releases/v${rootPackage.version}.md`,
-    ".claude/commands/bob/hunt.md",
-    ".claude/commands/bob/status.md",
-    ".claude/commands/bob/update.md",
-    "mcp/server.js",
-    "mcp/lib/tools/index.js",
-    "scripts/install.js",
-    "scripts/lifecycle.js",
-    "scripts/merge-claude-config.js",
-  ]) {
+  for (const expected of expectedCanonicalFiles()) {
     if (files.has(expected)) {
       pass(`canonical pack includes ${expected}`);
     } else {
@@ -198,6 +219,10 @@ function checkCanonicalPack(rootPackage) {
       foundDisallowed = true;
       fail(`canonical pack includes cache artifact ${file}`);
     }
+    if (file === ".claude/hooks/bob-update-lib.js") {
+      foundDisallowed = true;
+      fail("canonical pack includes deprecated hook-local update library");
+    }
     if (file.includes("bounty-agent-sessions")) {
       foundDisallowed = true;
       fail(`canonical pack includes session artifact ${file}`);
@@ -208,25 +233,25 @@ function checkCanonicalPack(rootPackage) {
   }
 }
 
-function checkAliasPack(rootPackage) {
-  const alias = pack(ALIAS_ROOT, "alias package");
-  if (!alias) return;
-  const files = Array.from(fileSet(alias)).sort();
+function checkCompatibilityPack(rootPackage) {
+  const compat = pack(COMPAT_ROOT, "compatibility package");
+  if (!compat) return;
+  const files = Array.from(fileSet(compat)).sort();
 
-  assertEqual(alias.name, "hacker-bob", "alias pack name is hacker-bob");
-  assertEqual(alias.version, rootPackage.version, "alias pack version matches canonical version");
+  assertEqual(compat.name, "hacker-bob-cc", "compatibility pack name is hacker-bob-cc");
+  assertEqual(compat.version, rootPackage.version, "compatibility pack version matches canonical version");
 
   const expected = ["bin/hacker-bob.js", "package.json"];
   if (JSON.stringify(files) === JSON.stringify(expected)) {
-    pass("alias pack contains only wrapper and manifest");
+    pass("compatibility pack contains only wrapper and manifest");
   } else {
-    fail(`alias pack contents mismatch: ${files.join(", ")}`);
+    fail(`compatibility pack contents mismatch: ${files.join(", ")}`);
   }
 
-  if (alias.size < 3000) {
-    pass(`alias pack size ${alias.size} bytes is under 3 KB`);
+  if (compat.size < 3000) {
+    pass(`compatibility pack size ${compat.size} bytes is under 3 KB`);
   } else {
-    fail(`alias pack size ${alias.size} bytes exceeds 3 KB`);
+    fail(`compatibility pack size ${compat.size} bytes exceeds 3 KB`);
   }
 }
 
@@ -284,7 +309,7 @@ function hasReadWrite(value) {
   return text.includes("read-write") || (text.includes("read") && text.includes("write"));
 }
 
-function checkRegistry(rootPackage, aliasPackage) {
+function checkRegistry(rootPackage, compatPackage) {
   const whoami = npm(["whoami"]);
   if (whoami.status === 0 && String(whoami.stdout).trim()) {
     pass(`npm whoami succeeds as ${String(whoami.stdout).trim()}`);
@@ -293,12 +318,12 @@ function checkRegistry(rootPackage, aliasPackage) {
   }
 
   checkPackageRegistry(rootPackage.name, rootPackage.version);
-  checkPackageRegistry(aliasPackage.name, aliasPackage.version);
+  checkPackageRegistry(compatPackage.name, compatPackage.version);
 
   const access = npm(["access", "ls-packages", "--json"]);
   if (access.status !== 0) {
     warn(
-      "Could not verify npm read-write package access. Ensure the token can read and write hacker-bob-cc and hacker-bob.",
+      "Could not verify npm read-write package access. Ensure the token can read and write hacker-bob and hacker-bob-cc.",
     );
     if (access.stderr) info(`npm access stderr: ${String(access.stderr).trim().slice(0, 500)}`);
     return;
@@ -306,7 +331,7 @@ function checkRegistry(rootPackage, aliasPackage) {
 
   const accessMap = parseJsonOutput(access, "npm access ls-packages");
   if (!accessMap) return;
-  for (const name of [rootPackage.name, aliasPackage.name]) {
+  for (const name of [rootPackage.name, compatPackage.name]) {
     if (hasReadWrite(accessMap[name])) {
       pass(`npm access lists ${name} as read-write`);
     } else {
@@ -319,11 +344,11 @@ function main() {
   console.log("Hacker Bob release check");
   if (registryMode) info("registry checks enabled");
 
-  const { rootPackage, aliasPackage } = checkManifest();
+  const { rootPackage, compatPackage } = checkManifest();
   checkCanonicalPack(rootPackage);
-  checkAliasPack(rootPackage);
+  checkCompatibilityPack(rootPackage);
 
-  if (registryMode) checkRegistry(rootPackage, aliasPackage);
+  if (registryMode) checkRegistry(rootPackage, compatPackage);
 
   if (failures > 0) {
     console.error(`Release check failed with ${failures} failure(s) and ${warnings} warning(s).`);

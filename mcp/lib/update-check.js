@@ -6,7 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const PACKAGE_NAME = "hacker-bob-cc";
+const PACKAGE_NAME = "hacker-bob";
 const PACKAGE_URL = `https://www.npmjs.com/package/${PACKAGE_NAME}`;
 const DEFAULT_CHANGELOG_URL = "https://raw.githubusercontent.com/vmihalis/hacker-bob/main/CHANGELOG.md";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -70,14 +70,27 @@ function isCacheStale(projectDir, options = {}) {
   return !isCacheFresh(readUpdateCache(projectDir, options), options);
 }
 
-function readInstalledVersion(projectDir) {
-  const versionPath = path.join(projectDir, ".claude", "bob", "VERSION");
-  try {
-    const version = fs.readFileSync(versionPath, "utf8").trim();
-    return version || null;
-  } catch {
-    return null;
+function installedVersionPaths(projectDir, options = {}) {
+  if (options.installedVersionPath) return [options.installedVersionPath];
+  if (Array.isArray(options.installedVersionPaths) && options.installedVersionPaths.length > 0) {
+    return options.installedVersionPaths;
   }
+  return [
+    path.join(projectDir, ".hacker-bob", "VERSION"),
+    path.join(projectDir, ".claude", "bob", "VERSION"),
+  ];
+}
+
+function readInstalledVersion(projectDir, options = {}) {
+  for (const versionPath of installedVersionPaths(projectDir, options)) {
+    try {
+      const version = fs.readFileSync(versionPath, "utf8").trim();
+      if (version) return version;
+    } catch {
+      // Try the next configured version path.
+    }
+  }
+  return null;
 }
 
 function parseSemver(version) {
@@ -200,7 +213,7 @@ function extractChangelogEntries(markdown, installedVersion, latestVersion) {
 async function checkForUpdate(projectDir, options = {}) {
   const checkedAtMs = nowMs(options);
   const checkedAt = new Date(checkedAtMs).toISOString();
-  const installedVersion = readInstalledVersion(projectDir);
+  const installedVersion = readInstalledVersion(projectDir, options);
   const name = options.packageName || packageName();
   const base = {
     schema_version: 1,
@@ -259,13 +272,28 @@ async function refreshUpdateCache(projectDir, options = {}) {
   return { cache: result, refreshed: true, path: filePath };
 }
 
-function renderUpdateSummary(result) {
+function defaultInstallCommand(result) {
+  const name = (result && result.package_name) || PACKAGE_NAME;
+  const target = result && result.install_target ? JSON.stringify(result.install_target) : ".";
+  return `npx -y ${name}@latest install ${target}`;
+}
+
+function installCommandForResult(result, options = {}) {
+  if (options.installCommand) return options.installCommand;
+  if (typeof options.installCommandForResult === "function") {
+    const command = options.installCommandForResult(result);
+    if (command) return command;
+  }
+  return defaultInstallCommand(result);
+}
+
+function renderUpdateSummary(result, options = {}) {
   if (!result) return "No Hacker Bob update cache is available yet.\n";
   if (result.error) {
     return [
       "Hacker Bob update check could not reach npm.",
       `Installed: ${result.installed_version || "legacy/unknown"}`,
-      `Manual update command: npx -y ${result.package_name || PACKAGE_NAME}@latest install "$CLAUDE_PROJECT_DIR"`,
+      `Manual update command: ${installCommandForResult(result, options)}`,
       `Reason: ${result.error.message}`,
       "",
     ].join("\n");
@@ -277,13 +305,13 @@ function renderUpdateSummary(result) {
   return `Hacker Bob ${result.latest_version} is available (installed: ${installed}). Run /bob:update.\n`;
 }
 
-function renderUpdatePlan(result) {
+function renderUpdatePlan(result, options = {}) {
   const lines = [];
   if (result.error) {
     lines.push("Hacker Bob update check could not reach npm.");
     lines.push("");
     lines.push(`Installed: ${result.installed_version || "legacy/unknown"}`);
-    lines.push(`Manual update command: \`npx -y ${result.package_name}@latest install "$CLAUDE_PROJECT_DIR"\``);
+    lines.push(`Manual update command: \`${installCommandForResult(result, options)}\``);
     lines.push(`Reason: ${result.error.message}`);
     lines.push("");
     lines.push("Try again when online, or run the manual command from the project root.");
@@ -292,7 +320,7 @@ function renderUpdatePlan(result) {
 
   lines.push("# Hacker Bob Update");
   lines.push("");
-  lines.push(`Installed: ${result.installed_version || "legacy install (missing .claude/bob/VERSION)"}`);
+  lines.push(`Installed: ${result.installed_version || "legacy install (missing install version metadata)"}`);
   lines.push(`Latest: ${result.latest_version}`);
   lines.push("");
 
@@ -319,7 +347,7 @@ function renderUpdatePlan(result) {
     lines.push("");
   }
 
-  lines.push(`Install command: \`npx -y ${result.package_name}@latest install "$CLAUDE_PROJECT_DIR"\``);
+  lines.push(`Install command: \`${installCommandForResult(result, options)}\``);
   lines.push("Ask the operator: Update now?");
   return `${lines.join("\n")}\n`;
 }
@@ -333,6 +361,8 @@ module.exports = {
   compareSemver,
   extractChangelogEntries,
   fetchLatestVersion,
+  installCommandForResult,
+  installedVersionPaths,
   isCacheFresh,
   isCacheStale,
   readInstalledVersion,

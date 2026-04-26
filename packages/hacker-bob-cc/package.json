@@ -1,7 +1,7 @@
 {
-  "name": "hacker-bob",
+  "name": "hacker-bob-cc",
   "version": "1.1.0",
-  "description": "Convenience alias CLI for the canonical hacker-bob-cc package",
+  "description": "Compatibility CLI wrapper for the canonical hacker-bob package",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -21,6 +21,6 @@
     "bin/hacker-bob.js"
   ],
   "dependencies": {
-    "hacker-bob-cc": "1.1.0"
+    "hacker-bob": "1.1.0"
   }
 }

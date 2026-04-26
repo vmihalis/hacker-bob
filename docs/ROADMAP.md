@@ -4,7 +4,7 @@ This roadmap is intentionally short and public. It describes the next areas wher
 
 ## Install Reliability
 
-Improve installer diagnostics, update recovery, uninstall confidence, and platform-specific guidance for macOS, Linux, Windows, and common Claude Code project layouts.
+Improve installer diagnostics, update recovery, uninstall confidence, and platform-specific guidance for macOS, Linux, Windows, and common host-adapter project layouts.
 
 ## Docs And Media
 

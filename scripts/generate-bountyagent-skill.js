@@ -5,7 +5,11 @@ const fs = require("fs");
 const path = require("path");
 const {
   bountyagentSkillAllowedTools,
-} = require("../mcp/lib/claude-config.js");
+} = require("../adapters/claude/config.js");
+const {
+  renderClaudeRole,
+  updateClaudeRoleFile,
+} = require("./lib/claude-role-renderer.js");
 
 const ROOT = path.join(__dirname, "..");
 const SKILL_PATH = path.join(ROOT, ".claude", "skills", "bountyagent", "SKILL.md");
@@ -33,19 +37,13 @@ function renderFrontmatter() {
 }
 
 function renderSkill(document) {
+  if (document === undefined) return renderClaudeRole("orchestrator");
   const { body } = splitFrontmatter(document);
   return `${renderFrontmatter()}${body.replace(/^\n+/, "")}`;
 }
 
 function updateSkill({ check = false } = {}) {
-  const document = fs.readFileSync(SKILL_PATH, "utf8");
-  const nextDocument = renderSkill(document);
-  if (nextDocument === document) return false;
-  if (check) {
-    throw new Error(`${path.relative(ROOT, SKILL_PATH)} frontmatter is stale`);
-  }
-  fs.writeFileSync(SKILL_PATH, nextDocument, "utf8");
-  return true;
+  return updateClaudeRoleFile("orchestrator", { check, root: ROOT });
 }
 
 function main() {
