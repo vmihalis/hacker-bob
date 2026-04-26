@@ -22,6 +22,10 @@ module.exports = Object.freeze({
         "type": "string",
         "description": "Traffic source label such as burp, har, browser, proxy, or manual."
       },
+      "block_internal_hosts": {
+        "type": "boolean",
+        "description": "When true, reject imported localhost, private/link-local IP ranges, .internal/.local names, and cloud metadata hosts. Defaults to false."
+      },
       "entries": {
         "oneOf": [
           {

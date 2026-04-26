@@ -337,7 +337,7 @@ function normalizeTrafficImportEntries(args) {
   throw new Error("entries must be an array or a HAR object with log.entries");
 }
 
-function normalizeImportedTrafficEntry(entry, index, { targetDomain, source, importedAt }) {
+function normalizeImportedTrafficEntry(entry, index, { targetDomain, source, importedAt, blockInternalHosts = false }) {
   if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
     return { rejected: true, reason: `entries[${index}] must be an object` };
   }
@@ -357,7 +357,7 @@ function normalizeImportedTrafficEntry(entry, index, { targetDomain, source, imp
   url = stripUrlFragment(url.trim());
 
   try {
-    validateScanUrl(url);
+    validateScanUrl(url, { blockInternalHosts });
   } catch (error) {
     return { rejected: true, reason: `entries[${index}] ${error.message || String(error)}` };
   }
@@ -461,6 +461,7 @@ function summarizeTrafficRecords(records, { surface = null, limit = TRAFFIC_SUMM
 function importHttpTraffic(args, { rankAttackSurfaces = null } = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const source = assertRequiredText(args.source, "source");
+  const blockInternalHosts = args.block_internal_hosts === true;
   const inputEntries = normalizeTrafficImportEntries(args);
   const entries = inputEntries.slice(0, TRAFFIC_IMPORT_MAX_ENTRIES);
   const importedAt = new Date().toISOString();
@@ -472,6 +473,7 @@ function importHttpTraffic(args, { rankAttackSurfaces = null } = {}) {
       targetDomain: domain,
       source,
       importedAt,
+      blockInternalHosts,
     });
     if (normalized.rejected) {
       rejected.push(normalized.reason);

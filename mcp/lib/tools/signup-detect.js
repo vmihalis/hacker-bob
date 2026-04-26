@@ -14,6 +14,10 @@ module.exports = Object.freeze({
       },
       "target_url": {
         "type": "string"
+      },
+      "block_internal_hosts": {
+        "type": "boolean",
+        "description": "When true, block localhost, private/link-local IP ranges, .internal/.local names, cloud metadata hosts, and public hostnames that resolve to those addresses. Defaults to false."
       }
     },
     "required": [

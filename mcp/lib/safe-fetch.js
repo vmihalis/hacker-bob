@@ -6,6 +6,7 @@ const https = require("https");
 const net = require("net");
 const {
   isBlockedInternalHost,
+  shouldBlockInternalHosts,
   validateScanUrl,
 } = require("./url-surface.js");
 const {
@@ -34,9 +35,9 @@ function makeScopeBlockedError(message) {
   return error;
 }
 
-function assertSafeRequestUrl(url, targetDomain) {
+function assertSafeRequestUrl(url, targetDomain, options = {}) {
   try {
-    validateScanUrl(url);
+    validateScanUrl(url, options);
     if (targetDomain) {
       validateHttpScanScope(url, targetDomain);
     }
@@ -92,27 +93,49 @@ function lookupAll(hostname) {
   });
 }
 
-async function resolveSafeAddress(hostname) {
-  const literalVersion = net.isIP(hostname);
+function normalizeResolverHostname(hostname) {
+  const value = String(hostname || "");
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+async function resolveSafeAddress(hostname, options = {}) {
+  const blockInternalHosts = shouldBlockInternalHosts(options);
+  const lookupHostname = normalizeResolverHostname(hostname);
+  const literalVersion = net.isIP(lookupHostname);
   if (literalVersion) {
-    if (isBlockedInternalHost(hostname)) {
-      throw makeScopeBlockedError(`Blocked internal/private DNS address for ${hostname}: ${hostname}`);
+    if (blockInternalHosts && isBlockedInternalHost(lookupHostname)) {
+      throw makeScopeBlockedError(`Blocked internal/private DNS address for ${hostname}: ${lookupHostname}`);
     }
-    return { address: hostname, family: literalVersion };
+    return { address: lookupHostname, family: literalVersion };
   }
 
-  const addresses = await lookupAll(hostname);
+  const addresses = await lookupAll(lookupHostname);
   if (!addresses.length) {
     throw new Error(`DNS lookup returned no addresses for ${hostname}`);
   }
 
-  for (const item of addresses) {
-    if (isBlockedInternalHost(item.address)) {
-      throw makeScopeBlockedError(`Blocked internal/private DNS address for ${hostname}: ${item.address}`);
+  if (blockInternalHosts) {
+    for (const item of addresses) {
+      if (isBlockedInternalHost(item.address)) {
+        throw makeScopeBlockedError(`Blocked internal/private DNS address for ${hostname}: ${item.address}`);
+      }
     }
   }
 
   return addresses[0];
+}
+
+async function assertSafeResolvedRequestUrl(url, targetDomain, options = {}) {
+  assertSafeRequestUrl(url, targetDomain, options);
+  if (!shouldBlockInternalHosts(options)) {
+    return;
+  }
+
+  const parsed = new URL(url);
+  await resolveSafeAddress(parsed.hostname, options);
 }
 
 function makeTimeoutError(timeoutMs) {
@@ -132,7 +155,7 @@ async function requestOnce(url, options) {
   const parsed = new URL(url);
   const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  const selectedAddress = await resolveSafeAddress(parsed.hostname);
+  const selectedAddress = await resolveSafeAddress(parsed.hostname, options);
   const requestModule = parsed.protocol === "https:" ? https : http;
   const bodyBuffer = bodyToBuffer(options.body);
 
@@ -247,15 +270,17 @@ async function safeFetch(url, options = {}) {
   const followRedirects = options.followRedirects ?? false;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const targetDomain = options.targetDomain || null;
+  const blockInternalHosts = shouldBlockInternalHosts(options);
   let currentUrl = String(url);
   let currentMethod = String(options.method || "GET").toUpperCase();
   let currentBody = options.body;
   let redirects = 0;
 
   while (true) {
-    assertSafeRequestUrl(currentUrl, targetDomain);
+    assertSafeRequestUrl(currentUrl, targetDomain, { blockInternalHosts });
     const response = await requestOnce(currentUrl, {
       ...options,
+      blockInternalHosts,
       method: currentMethod,
       body: currentBody,
       redirected: redirects > 0,
@@ -275,7 +300,7 @@ async function safeFetch(url, options = {}) {
     }
 
     const nextUrl = new URL(location, currentUrl).toString();
-    assertSafeRequestUrl(nextUrl, targetDomain);
+    assertSafeRequestUrl(nextUrl, targetDomain, { blockInternalHosts });
     redirects += 1;
     const normalized = normalizeRedirectMethod(response.status, currentMethod, currentBody);
     currentMethod = normalized.method;
@@ -289,6 +314,7 @@ module.exports = {
   DEFAULT_MAX_RESPONSE_BYTES,
   DEFAULT_TIMEOUT_MS,
   SafeFetchHeaders,
+  assertSafeResolvedRequestUrl,
   assertSafeRequestUrl,
   isRedirectStatus,
   normalizeRedirectMethod,

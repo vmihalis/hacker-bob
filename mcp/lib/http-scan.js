@@ -34,6 +34,7 @@ async function httpScan(args) {
       scope_decision: "blocked",
     });
   }
+  const blockInternalHosts = args.block_internal_hosts === true;
   const parsedUrl = safeUrlObject(url);
   const auditUrl = redactUrlSensitiveValues(url);
   const auditParsedUrl = safeUrlObject(auditUrl) || parsedUrl;
@@ -61,7 +62,7 @@ async function httpScan(args) {
   };
 
   try {
-    assertSafeRequestUrl(url, targetDomain);
+    assertSafeRequestUrl(url, targetDomain, { blockInternalHosts });
   } catch (error) {
     audit({
       status: null,
@@ -118,6 +119,7 @@ async function httpScan(args) {
       followRedirects,
       timeoutMs,
       targetDomain,
+      blockInternalHosts,
     });
 
     const respHeaders = {};

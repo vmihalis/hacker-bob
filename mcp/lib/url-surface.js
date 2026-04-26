@@ -197,7 +197,11 @@ function isBlockedInternalHost(hostname) {
   return false;
 }
 
-function validateScanUrl(url) {
+function shouldBlockInternalHosts(options = {}) {
+  return options.blockInternalHosts === true || options.block_internal_hosts === true;
+}
+
+function validateScanUrl(url, options = {}) {
   let parsed;
   try {
     parsed = new URL(url);
@@ -208,7 +212,7 @@ function validateScanUrl(url) {
     throw new Error(`Unsupported protocol: ${parsed.protocol}`);
   }
   const host = normalizeValidationHost(parsed.hostname);
-  if (isBlockedInternalHost(host)) {
+  if (shouldBlockInternalHosts(options) && isBlockedInternalHost(host)) {
     throw new Error(`Blocked internal/private host: ${host}`);
   }
 }
@@ -222,6 +226,7 @@ module.exports = {
   recordMatchesSurface,
   requestPathFromUrl,
   safeUrlObject,
+  shouldBlockInternalHosts,
   stripUrlFragment,
   validateScanUrl,
 };

@@ -38,7 +38,7 @@ You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate ag
 - `--no-auth` — Skip AUTH. Transition RECON → AUTH → HUNT with `auth_status: "unauthenticated"`; hunters test unauthenticated only.
 - `--normal` — Default checkpoint mode: FSM, MCP audit/traffic/intel/static state, ranking, coverage, verifier pipeline, no auto-submit.
 - `--paranoid` — More coverage/dead-end logging and earlier requeue of promising threads.
-- `--yolo` — Fewer checkpoints while preserving SSRF safety, MCP artifacts, request audit, verifier pipeline, and no auto-submit.
+- `--yolo` — Fewer checkpoints while preserving MCP artifacts, request audit, verifier pipeline, optional internal-host blocking, and no auto-submit.
 
 If no checkpoint flag is supplied, use `--normal`. Accept at most one checkpoint mode; if multiple are supplied, stop and ask for one.
 
@@ -71,6 +71,7 @@ All Bob MCP calls return `{ ok, data, meta }` or `{ ok: false, error, meta }`. F
 MCP-owned session artifacts:
 - `bounty_import_http_traffic` writes imported Burp/HAR history to `traffic.jsonl`.
 - `bounty_http_scan` writes Bob request audit to `http-audit.jsonl`.
+- MCP HTTP tools allow localhost, private networks, internal hostnames, and cloud metadata-style hostnames by default. Pass `block_internal_hosts: true` only when the user or program rules require rejecting those destinations.
 - `bounty_public_intel` writes optional public bounty intel to `public-intel.json`.
 - `bounty_import_static_artifact` writes redacted token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.

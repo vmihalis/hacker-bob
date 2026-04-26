@@ -14,6 +14,10 @@ module.exports = Object.freeze({
       headers: { type: "object", additionalProperties: { type: "string" } },
       body: { type: "string" },
       follow_redirects: { type: "boolean" },
+      block_internal_hosts: {
+        type: "boolean",
+        description: "When true, block localhost, private/link-local IP ranges, .internal/.local names, cloud metadata hosts, and public hostnames that resolve to those addresses. Defaults to false so Bob can follow any user-authorized chain.",
+      },
       timeout_ms: { type: "number" },
       auth_profile: { type: "string" },
       target_domain: { type: "string", description: "Required session domain for scope ownership, audit ownership, and allowed-host resolution." },

@@ -556,6 +556,7 @@ async function main() {
     proxy,
     timeout_ms = 45000,
     headless = false,
+    block_internal_hosts = false,
   } = config;
 
   if (!signup_url) output({ error: "signup_url is required" });
@@ -564,13 +565,20 @@ async function main() {
   if (!password) output({ error: "password is required" });
 
   try {
-    const { assertSafeRequestUrl } = require("./lib/safe-fetch.js");
-    assertSafeRequestUrl(signup_url, target_domain);
+    const { assertSafeResolvedRequestUrl } = require("./lib/safe-fetch.js");
+    await assertSafeResolvedRequestUrl(signup_url, target_domain, { blockInternalHosts: block_internal_hosts === true });
   } catch (err) {
+    if (err && err.scope_decision === "blocked") {
+      output({
+        success: false,
+        fallback: "manual",
+        scope_decision: "blocked",
+        error: err.message || String(err),
+      });
+    }
     output({
       success: false,
       fallback: "manual",
-      scope_decision: "blocked",
       error: err.message || String(err),
     });
   }

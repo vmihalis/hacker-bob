@@ -871,6 +871,7 @@ test("executeTool writes telemetry rows for success and dispatcher failure modes
         method: "GET",
         url: "http://127.0.0.1/",
         target_domain: "example.com",
+        block_internal_hosts: true,
       });
       assert.equal(blocked.error.code, "SCOPE_BLOCKED");
 
@@ -973,6 +974,7 @@ test("tool telemetry rows do not store raw secret-bearing payloads", async () =>
         target_domain: "example.com",
         headers: { Authorization: "Bearer request-header-token" },
         body: "request-body-secret",
+        block_internal_hosts: true,
       });
       assert.equal(httpBlocked.error.code, "SCOPE_BLOCKED");
 
@@ -4703,23 +4705,24 @@ test("bounty_auto_signup returns ok true manual fallback when browser automation
   });
 });
 
-test("bounty_auto_signup blocks SSRF signup URLs before browser launch and lets third-party signup URLs through", async () => {
+test("bounty_auto_signup optionally blocks internal signup URLs before browser launch and lets third-party signup URLs through", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
     fs.mkdirSync(sessionDir(domain), { recursive: true });
 
-    const ssrf = await executeTool("bounty_auto_signup", {
+    const internalBlocked = await executeTool("bounty_auto_signup", {
       target_domain: domain,
       signup_url: "http://127.0.0.1/signup",
       email: "a@example.test",
       password: "Password123!",
+      block_internal_hosts: true,
     });
-    assert.equal(ssrf.ok, false);
-    assert.equal(ssrf.error.code, "SCOPE_BLOCKED");
-    assert.equal(ssrf.error.details.success, false);
-    assert.equal(ssrf.error.details.scope_decision, "blocked");
-    assert.equal(ssrf.error.details.fallback, "manual");
-    assert.match(ssrf.error.message, /Blocked internal\/private host/);
+    assert.equal(internalBlocked.ok, false);
+    assert.equal(internalBlocked.error.code, "SCOPE_BLOCKED");
+    assert.equal(internalBlocked.error.details.success, false);
+    assert.equal(internalBlocked.error.details.scope_decision, "blocked");
+    assert.equal(internalBlocked.error.details.fallback, "manual");
+    assert.match(internalBlocked.error.message, /Blocked internal\/private host/);
 
     const thirdParty = await executeTool("bounty_auto_signup", {
       target_domain: domain,
@@ -4731,6 +4734,64 @@ test("bounty_auto_signup blocks SSRF signup URLs before browser launch and lets 
     assert.equal(thirdParty.data.success, false);
     assert.equal(thirdParty.data.fallback, "manual");
     assert.notEqual(thirdParty.data.scope_decision, "blocked");
+  });
+});
+
+test("bounty_auto_signup blocks DNS-private signup hosts before browser availability checks", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+
+    const originalResolve = Module._resolveFilename;
+    let patchrightResolveCalls = 0;
+    Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
+      if (request === "patchright") {
+        patchrightResolveCalls += 1;
+        throw new Error("Patchright resolution should not run after a DNS scope block");
+      }
+      return originalResolve.call(this, request, parent, isMain, options);
+    };
+
+    try {
+      await withMockSafeFetch({}, async (requestedUrls) => {
+        const result = await executeTool("bounty_auto_signup", {
+          target_domain: domain,
+          signup_url: "https://signup.public.test/register",
+          email: "a@example.test",
+          password: "Password123!",
+          block_internal_hosts: true,
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, "SCOPE_BLOCKED");
+        assert.match(result.error.message, /Blocked internal\/private DNS address/);
+        assert.equal(result.error.details.scope_decision, "blocked");
+        assert.equal(result.error.details.fallback, "manual");
+        assert.deepEqual(requestedUrls, []);
+        assert.equal(patchrightResolveCalls, 0);
+      }, { dnsRecords: { "signup.public.test": [{ address: "10.0.0.5", family: 4 }] } });
+    } finally {
+      Module._resolveFilename = originalResolve;
+    }
+  });
+});
+
+test("bounty_auto_signup treats non-policy DNS preflight failures as manual fallback", async () => {
+  await withTempHome(async () => {
+    const result = await withMockSafeFetch({}, async () => executeTool("bounty_auto_signup", {
+      target_domain: "example.com",
+      signup_url: "https://signup.public.test/register",
+      email: "a@example.test",
+      password: "Password123!",
+      block_internal_hosts: true,
+    }), { dnsRecords: { "signup.public.test": [] } });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.data.success, false);
+    assert.equal(result.data.fallback, "manual");
+    assert.equal(result.data.reason, "automation_unavailable");
+    assert.match(result.data.message, /DNS lookup returned no addresses/);
+    assert.notEqual(result.data.scope_decision, "blocked");
   });
 });
 
@@ -4801,6 +4862,7 @@ test("bounty_http_scan writes audit entries for success, HTTP error, timeout, an
         target_domain: domain,
         method: "GET",
         url: "http://127.0.0.1/admin",
+        block_internal_hosts: true,
       });
       assert.equal(privateHostResult.ok, false);
       assert.equal(privateHostResult.error.code, "SCOPE_BLOCKED");
@@ -4870,6 +4932,9 @@ test("bounty_http_scan permits target, attack-surface, third-party, and previous
       "https://crt.sh/?q=other.com": { status: 200, statusText: "OK", body: "ok" },
       "https://third-party.example.net/api": { status: 200, statusText: "OK", body: "ok" },
       "https://blocked.example.com/admin": { status: 200, statusText: "OK", body: "ok" },
+      "http://127.0.0.1/admin": { status: 200, statusText: "OK", body: "ok" },
+      "http://metadata/latest/meta-data/": { status: 200, statusText: "OK", body: "ok" },
+      "http://service.internal/debug": { status: 200, statusText: "OK", body: "ok" },
     }, async (requestedUrls) => {
       const targets = [
         "https://app.example.com/ok",
@@ -4878,6 +4943,9 @@ test("bounty_http_scan permits target, attack-surface, third-party, and previous
         "https://crt.sh/?q=other.com",
         "https://third-party.example.net/api",
         "https://blocked.example.com/admin",
+        "http://127.0.0.1/admin",
+        "http://metadata/latest/meta-data/",
+        "http://service.internal/debug",
       ];
       for (const url of targets) {
         const result = await executeTool("bounty_http_scan", {
@@ -4917,7 +4985,7 @@ test("bounty_http_scan requires target_domain instead of inferring scope from ot
   });
 });
 
-test("bounty_http_scan blocks unsafe redirect targets before fetching them", async () => {
+test("bounty_http_scan optionally blocks internal redirect targets before fetching them", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
     await withMockSafeFetch({
@@ -4932,6 +5000,7 @@ test("bounty_http_scan blocks unsafe redirect targets before fetching them", asy
         method: "GET",
         url: "https://example.com/redirect",
         follow_redirects: true,
+        block_internal_hosts: true,
       });
 
       assert.equal(result.ok, false);
@@ -4948,7 +5017,34 @@ test("bounty_http_scan blocks unsafe redirect targets before fetching them", asy
   });
 });
 
-test("bounty_http_scan blocks public hostnames that resolve to private IPs before connecting", async () => {
+test("bounty_http_scan follows internal redirects by default", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    await withMockSafeFetch({
+      "https://example.com/redirect": {
+        status: 302,
+        statusText: "Found",
+        headers: { location: "http://127.0.0.1/admin" },
+      },
+      "http://127.0.0.1/admin": { status: 200, statusText: "OK", body: "local ok" },
+    }, async (requestedUrls) => {
+      const result = await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/redirect",
+        follow_redirects: true,
+        response_mode: "status_only",
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(result.data.status, 200);
+      assert.equal(result.data.final_url, "http://127.0.0.1/admin");
+      assert.deepEqual(requestedUrls, ["https://example.com/redirect", "http://127.0.0.1/admin"]);
+    });
+  });
+});
+
+test("bounty_http_scan optionally blocks public hostnames that resolve to private IPs before connecting", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
     await withMockSafeFetch({
@@ -4958,6 +5054,7 @@ test("bounty_http_scan blocks public hostnames that resolve to private IPs befor
         target_domain: domain,
         method: "GET",
         url: "https://example.com/private-dns",
+        block_internal_hosts: true,
       });
       assert.equal(result.ok, false);
       assert.equal(result.error.code, "SCOPE_BLOCKED");
@@ -4966,6 +5063,48 @@ test("bounty_http_scan blocks public hostnames that resolve to private IPs befor
       assert.deepEqual(requestedUrls, []);
     }, { dnsRecords: { "example.com": [{ address: "10.0.0.5", family: 4 }] } });
   });
+});
+
+test("bounty_http_scan allows public hostnames that resolve to private IPs by default", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    await withMockSafeFetch({
+      "https://example.com/private-dns": { status: 200, statusText: "OK", body: "connected" },
+    }, async (requestedUrls) => {
+      const result = await executeTool("bounty_http_scan", {
+        target_domain: domain,
+        method: "GET",
+        url: "https://example.com/private-dns",
+        response_mode: "status_only",
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.data.status, 200);
+      assert.deepEqual(requestedUrls, ["https://example.com/private-dns"]);
+    }, { dnsRecords: { "example.com": [{ address: "10.0.0.5", family: 4 }] } });
+  });
+});
+
+test("safeFetch supports IPv6 literals by default and still blocks them when requested", async () => {
+  await withTempHome(async () => {
+    await withMockSafeFetch({
+      "http://[::1]/admin": { status: 200, statusText: "OK", body: "ipv6 ok" },
+    }, async (requestedUrls) => {
+      const response = await safeFetch("http://[::1]/admin");
+
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), "ipv6 ok");
+      assert.deepEqual(requestedUrls, ["http://[::1]/admin"]);
+    });
+  });
+
+  await assert.rejects(
+    () => safeFetch("http://[::1]/admin", { blockInternalHosts: true }),
+    (error) => {
+      assert.equal(error.scope_decision, "blocked");
+      assert.match(error.message, /Blocked internal\/private host/);
+      return true;
+    },
+  );
 });
 
 test("safeFetch enforces response byte caps without buffering the full body", async () => {
@@ -6129,46 +6268,47 @@ test("auth storage rejects path traversal target domains", () => {
 
 // ── Bug 4: httpScan URL validation ──
 
-test("validateScanUrl rejects localhost", () => {
-  assert.throws(() => validateScanUrl("http://localhost/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://%6c%6f%63%61%6c%68%6f%73%74/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://127.0.0.1/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://127.1/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://0177.0.0.1/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://2130706433/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://0x7f000001/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://0.0.0.0/"), /Blocked internal/);
+const INTERNAL_SCAN_URLS = [
+  "http://localhost/admin",
+  "http://%6c%6f%63%61%6c%68%6f%73%74/admin",
+  "http://127.0.0.1/admin",
+  "http://127.1/admin",
+  "http://0177.0.0.1/admin",
+  "http://2130706433/admin",
+  "http://0x7f000001/admin",
+  "http://0.0.0.0/",
+  "http://10.0.0.1/secret",
+  "http://192.168.1.1/admin",
+  "http://172.16.0.1/internal",
+  "http://[::1]/admin",
+  "http://[fc00::1]/admin",
+  "http://[fd12:3456::1]/admin",
+  "http://[fe80::1]/admin",
+  "http://[::ffff:127.0.0.1]/admin",
+  "http://[::ffff:7f00:1]/admin",
+  "http://169.254.169.254/latest/meta-data/",
+  "http://metadata.google.internal/computeMetadata/v1/",
+  "http://metadata/latest/meta-data/",
+  "http://service.internal/api",
+  "http://printer.local/status",
+];
+
+test("validateScanUrl permits localhost, private, metadata, and internal hosts by default", () => {
+  for (const url of INTERNAL_SCAN_URLS) {
+    assert.doesNotThrow(() => validateScanUrl(url), url);
+  }
 });
 
-test("validateScanUrl rejects private IP ranges", () => {
-  assert.throws(() => validateScanUrl("http://10.0.0.1/secret"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://192.168.1.1/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://172.16.0.1/internal"), /Blocked internal/);
-});
-
-test("validateScanUrl rejects private, link-local, and IPv4-mapped IPv6 addresses", () => {
-  assert.throws(() => validateScanUrl("http://[::1]/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://[fc00::1]/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://[fd12:3456::1]/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://[fe80::1]/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://[::ffff:127.0.0.1]/admin"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://[::ffff:7f00:1]/admin"), /Blocked internal/);
-});
-
-test("validateScanUrl rejects cloud metadata endpoint", () => {
-  assert.throws(() => validateScanUrl("http://169.254.169.254/latest/meta-data/"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://metadata.google.internal/computeMetadata/v1/"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://metadata/latest/meta-data/"), /Blocked internal/);
+test("validateScanUrl rejects localhost, private, metadata, and internal hosts when requested", () => {
+  for (const url of INTERNAL_SCAN_URLS) {
+    assert.throws(() => validateScanUrl(url, { blockInternalHosts: true }), /Blocked internal/, url);
+  }
+  assert.throws(() => validateScanUrl("http://127.0.0.1/admin", { block_internal_hosts: true }), /Blocked internal/);
 });
 
 test("validateScanUrl rejects unsupported protocols", () => {
   assert.throws(() => validateScanUrl("ftp://example.com/file"), /Unsupported protocol/);
   assert.throws(() => validateScanUrl("file:///etc/passwd"), /Unsupported protocol/);
-});
-
-test("validateScanUrl rejects internal/local domains", () => {
-  assert.throws(() => validateScanUrl("http://service.internal/api"), /Blocked internal/);
-  assert.throws(() => validateScanUrl("http://printer.local/status"), /Blocked internal/);
 });
 
 test("validateScanUrl accepts valid external URLs", () => {

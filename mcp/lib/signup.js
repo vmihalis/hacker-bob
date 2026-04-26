@@ -6,7 +6,7 @@ const { execFile } = require("child_process");
 const { assertNonEmptyString } = require("./validation.js");
 const { authStore } = require("./auth.js");
 const {
-  assertSafeRequestUrl,
+  assertSafeResolvedRequestUrl,
   safeFetch,
 } = require("./safe-fetch.js");
 
@@ -129,6 +129,7 @@ function normalizeAutoSignupResult(result, signupUrl) {
 async function signupDetect(args) {
   const targetDomain = assertNonEmptyString(args.target_domain, "target_domain");
   const targetUrl = assertNonEmptyString(args.target_url, "target_url").replace(/\/+$/, "");
+  const blockInternalHosts = args.block_internal_hosts === true;
 
   const endpointsFound = [];
   const blockedRequests = [];
@@ -147,6 +148,7 @@ async function signupDetect(args) {
         followRedirects: true,
         timeoutMs: 5000,
         targetDomain,
+        blockInternalHosts,
         maxResponseBytes: 20000,
       });
 
@@ -228,15 +230,24 @@ async function autoSignup(args) {
   const password = assertNonEmptyString(args.password, "password");
   const profileName = args.profile_name || "attacker";
   const name = args.name || "Hunter Test";
+  const blockInternalHosts = args.block_internal_hosts === true;
 
   try {
-    assertSafeRequestUrl(signupUrl, domain);
+    await assertSafeResolvedRequestUrl(signupUrl, domain, { blockInternalHosts });
   } catch (error) {
+    if (error && error.scope_decision === "blocked") {
+      return JSON.stringify({
+        success: false,
+        error: error.message || String(error),
+        scope_decision: "blocked",
+        fallback: "manual",
+      });
+    }
     return JSON.stringify({
-      success: false,
-      error: error.message || String(error),
-      scope_decision: "blocked",
-      fallback: "manual",
+      ...manualSignupFallback(
+        fallbackReasonFromMessage(error && error.message ? error.message : String(error)),
+        error && error.message ? error.message : String(error),
+      ),
     });
   }
 
@@ -274,6 +285,7 @@ async function autoSignup(args) {
     proxy: args.proxy || process.env.BOUNTY_PROXY || null,
     timeout_ms: args.timeout_ms || 45000,
     headless: args.headless !== undefined ? args.headless : false,
+    block_internal_hosts: blockInternalHosts,
   };
 
   return new Promise((resolve) => {

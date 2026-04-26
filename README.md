@@ -149,6 +149,8 @@ Bob stores local run state and evidence under `~/bounty-agent-sessions`. Treat t
 
 During a hunt, Bob may make outbound HTTP requests, run local recon tools you have installed, import local HTTP/static artifacts, and ask Claude Code agents to reason over the results. Optional third-party services, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external recon tools, are only used when you configure the relevant dependencies or credentials.
 
+By default, Bob does not block localhost, private networks, internal hostnames, or cloud metadata-style hostnames. This keeps exploration flexible for local labs, VPN/internal scopes, SSRF chains, and user-authorized pivots. If you want Bob's MCP HTTP tools to reject those destinations, pass `block_internal_hosts: true` to the relevant call.
+
 The npm packages are published through the GitHub release workflow with npm provenance. `hacker-bob-cc` is the canonical package; `hacker-bob` is a small alias package that depends on the matching canonical version.
 
 Bob will scan the targets you provide. You are responsible for running it only against domains, applications, accounts, and infrastructure that you own or are explicitly authorized to test, and for following each program's scope and rules of engagement.
