@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -38,12 +39,24 @@ jobs:
         run: npm pack --dry-run --json
 
       - name: Publish canonical package
-        run: npm publish --provenance --access public
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "hacker-bob-cc@$VERSION" version >/dev/null 2>&1; then
+            echo "hacker-bob-cc@$VERSION is already published; skipping."
+          else
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish alias package
         working-directory: packages/hacker-bob
-        run: npm publish --provenance --access public
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "hacker-bob@$VERSION" version >/dev/null 2>&1; then
+            echo "hacker-bob@$VERSION is already published; skipping."
+          else
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
