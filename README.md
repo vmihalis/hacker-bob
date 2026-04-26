@@ -18,7 +18,7 @@ cd hacker-bob
 ./install.sh /path/to/your/project
 ```
 
-The installer drops Bob's brain (agents, the `/bountyagent` skill, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
+The installer drops Bob's brain (agents, `/bob:*` commands, skills, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
 
 ## Usage
 
@@ -30,8 +30,10 @@ claude --dangerously-skip-permissions --effort max
 Then in Claude Code, summon Bob:
 
 ```
-/bountyagent target.com         # full autonomous run
-/bountyagent resume target.com  # pick up where you left off
+/bob:hunt target.com         # full autonomous run
+/bob:hunt resume target.com  # pick up where you left off
+/bob:status                 # quick latest-session status
+/bob:debug                   # review the latest local session
 ```
 
 That's it. Now go make coffee.

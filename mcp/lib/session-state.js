@@ -25,6 +25,9 @@ const {
   ERROR_CODES,
   ToolError,
 } = require("./envelope.js");
+const {
+  safeAppendPipelineEventDirect,
+} = require("./pipeline-analytics.js");
 
 function buildInitialSessionState(domain, targetUrl) {
   return {
@@ -161,6 +164,10 @@ function initSession(args) {
 
     const state = buildInitialSessionState(domain, targetUrl);
     writeFileAtomic(filePath, `${JSON.stringify(state, null, 2)}\n`);
+    safeAppendPipelineEventDirect(domain, "session_started", {
+      phase: state.phase,
+      source: "bounty_init_session",
+    });
 
     return JSON.stringify({
       version: 1,
@@ -235,6 +242,16 @@ function transitionPhase(args) {
     };
 
     writeSessionStateDocument(domain, raw, nextState);
+    safeAppendPipelineEventDirect(domain, "phase_transitioned", {
+      from_phase: fromPhase,
+      to_phase: toPhase,
+      phase: toPhase,
+      status: "transitioned",
+      source: "bounty_transition_phase",
+      counts: {
+        hold_count: nextState.hold_count,
+      },
+    });
     return JSON.stringify({
       version: 1,
       transitioned: true,

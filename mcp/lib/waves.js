@@ -56,6 +56,9 @@ const {
   ERROR_CODES,
   ToolError,
 } = require("./envelope.js");
+const {
+  safeAppendPipelineEventDirect,
+} = require("./pipeline-analytics.js");
 
 function listWaveHandoffFiles(dir, wave) {
   const handoffPrefix = `handoff-${wave}-`;
@@ -448,6 +451,15 @@ function startWave(args) {
         `State write failed after writing assignments; ${rollbackStatus}: ${assignmentsPath} (${error.message || String(error)})`,
       );
     }
+    safeAppendPipelineEventDirect(domain, "wave_started", {
+      phase: state.phase,
+      wave_number: waveNumber,
+      status: "started",
+      source: "bounty_start_wave",
+      counts: {
+        assignments: assignments.length,
+      },
+    });
 
     return JSON.stringify({
       version: 1,
@@ -483,6 +495,18 @@ function applyWaveMerge(args) {
 
     const readiness = buildWaveReadiness(loadWaveArtifacts(domain, waveNumber));
     if (!readiness.is_complete && !forceMerge) {
+      safeAppendPipelineEventDirect(domain, "wave_merge_pending", {
+        phase: state.phase,
+        wave_number: waveNumber,
+        status: "pending",
+        source: "bounty_apply_wave_merge",
+        counts: {
+          assignments: readiness.assignments_total,
+          handoffs: readiness.handoffs_total,
+          missing_handoffs: readiness.missing_agents.length,
+          unexpected_handoffs: readiness.unexpected_agents.length,
+        },
+      });
       return JSON.stringify({
         version: 1,
         status: "pending",
@@ -533,6 +557,22 @@ function applyWaveMerge(args) {
     };
 
     writeSessionStateDocument(domain, raw, nextState);
+    safeAppendPipelineEventDirect(domain, "wave_merged", {
+      phase: state.phase,
+      wave_number: waveNumber,
+      status: "merged",
+      source: "bounty_apply_wave_merge",
+      counts: {
+        assignments: readiness.assignments_total,
+        handoffs: readiness.handoffs_total,
+        received_handoffs: merge.received_agents.length,
+        invalid_handoffs: merge.invalid_agents.length,
+        unexpected_handoffs: merge.unexpected_agents.length,
+        missing_surfaces: merge.missing_surface_ids.length,
+        requeue_surfaces: requeueSurfaceIds.length,
+        findings: findings.total,
+      },
+    });
     return JSON.stringify({
       version: 1,
       status: "merged",

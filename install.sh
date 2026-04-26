@@ -20,14 +20,22 @@ cp "$SCRIPT_DIR/.claude/agents/"*.md "$CLAUDE_DIR/agents/"
 AGENT_COUNT=$(ls "$SCRIPT_DIR/.claude/agents/"*.md 2>/dev/null | wc -l | tr -d ' ')
 echo "  $AGENT_COUNT agent definitions"
 
-# Copy orchestrator command
-cp "$SCRIPT_DIR/.claude/commands/bountyagent.md" "$CLAUDE_DIR/commands/"
-echo "  legacy command shim (/bountyagent)"
+# Copy commands
+mkdir -p "$CLAUDE_DIR/commands/bob"
+rm -f "$CLAUDE_DIR/commands/bountyagent.md" "$CLAUDE_DIR/commands/bountyagentdebug.md"
+cp "$SCRIPT_DIR/.claude/commands/bob/hunt.md" "$CLAUDE_DIR/commands/bob/"
+cp "$SCRIPT_DIR/.claude/commands/bob/status.md" "$CLAUDE_DIR/commands/bob/"
+cp "$SCRIPT_DIR/.claude/commands/bob/debug.md" "$CLAUDE_DIR/commands/bob/"
+echo "  command shims (/bob:hunt, /bob:status, /bob:debug)"
 
 # Copy skills
 mkdir -p "$CLAUDE_DIR/skills/bountyagent"
 cp "$SCRIPT_DIR/.claude/skills/bountyagent/SKILL.md" "$CLAUDE_DIR/skills/bountyagent/"
-echo "  bountyagent skill"
+mkdir -p "$CLAUDE_DIR/skills/bountyagentdebug"
+cp "$SCRIPT_DIR/.claude/skills/bountyagentdebug/SKILL.md" "$CLAUDE_DIR/skills/bountyagentdebug/"
+mkdir -p "$CLAUDE_DIR/skills/bountyagentstatus"
+cp "$SCRIPT_DIR/.claude/skills/bountyagentstatus/SKILL.md" "$CLAUDE_DIR/skills/bountyagentstatus/"
+echo "  bountyagent + bountyagentstatus + bountyagentdebug skills"
 
 # Copy rules
 cp "$SCRIPT_DIR/.claude/rules/"*.md "$CLAUDE_DIR/rules/"
@@ -129,4 +137,4 @@ echo "  go install github.com/projectdiscovery/httpx/cmd/httpx@latest"
 echo "  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
 
 echo ""
-echo "Done. Start Claude Code in $TARGET, then run: /bountyagent target.com"
+echo "Done. Start Claude Code in $TARGET, then run: /bob:hunt target.com"

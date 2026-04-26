@@ -145,10 +145,15 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.deepEqual(TOOL_MANIFEST.bounty_read_tool_telemetry.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_pipeline_analytics.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.global_preapproval, false);
+  assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.mutating, false);
   assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
   assert.ok(!sourceAllowed.has("bounty_read_tool_telemetry"));
+  assert.ok(!sourceAllowed.has("bounty_read_pipeline_analytics"));
   assert.ok(!generatedAllowed.has("bounty_merge_wave_handoffs"));
   assert.ok(!generatedAllowed.has("bounty_read_tool_telemetry"));
+  assert.ok(!generatedAllowed.has("bounty_read_pipeline_analytics"));
   assert.ok(sourceAllowed.has("bounty_wave_handoff_status"));
 
   const hookMatchers = settingsHookMatchers();
@@ -250,7 +255,9 @@ test("settings.json registers session-write-guard for Bash and Write", () => {
 
 test("prompts do not tell agents to read auth.json directly", () => {
   for (const relativePath of [
-    ".claude/commands/bountyagent.md",
+    ".claude/commands/bob/hunt.md",
+    ".claude/commands/bob/status.md",
+    ".claude/commands/bob/debug.md",
     ".claude/skills/bountyagent/SKILL.md",
     ...allMarkdown(".claude/agents"),
   ]) {
@@ -289,7 +296,153 @@ test("bountyagent skill allowed-tools match orchestrator and auth bundles", () =
   assert.ok(allowedTools.includes("Read"));
   assert.ok(allowedTools.includes("mcp__bountyagent__bounty_merge_wave_handoffs"));
   assert.ok(allowedTools.includes("mcp__bountyagent__bounty_read_tool_telemetry"));
+  assert.ok(allowedTools.includes("mcp__bountyagent__bounty_read_pipeline_analytics"));
   assert.ok(!allowedTools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
+});
+
+test("bob namespaced commands delegate to local skills", () => {
+  const huntCommand = readFile(".claude/commands/bob/hunt.md");
+  const statusCommand = readFile(".claude/commands/bob/status.md");
+  const debugCommand = readFile(".claude/commands/bob/debug.md");
+
+  assert.match(huntCommand, /\.claude\/skills\/bountyagent\/SKILL\.md/);
+  assert.match(huntCommand, /\/bob:hunt/);
+  assert.match(huntCommand, /Pass `\$ARGUMENTS`/);
+  assert.match(statusCommand, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
+  assert.match(statusCommand, /\/bob:status/);
+  assert.match(statusCommand, /Pass `\$ARGUMENTS`/);
+  assert.match(debugCommand, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
+  assert.match(debugCommand, /\/bob:debug/);
+  assert.match(debugCommand, /Pass `\$ARGUMENTS`/);
+});
+
+test("bountyagentstatus skill is compact, read-only, and points to next commands", () => {
+  const skill = readFile(".claude/skills/bountyagentstatus/SKILL.md");
+  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bountyagentstatus/SKILL.md");
+  const forbiddenTools = [
+    "Task",
+    "Write",
+    "Grep",
+    "mcp__bountyagent__bounty_start_wave",
+    "mcp__bountyagent__bounty_apply_wave_merge",
+    "mcp__bountyagent__bounty_merge_wave_handoffs",
+    "mcp__bountyagent__bounty_transition_phase",
+    "mcp__bountyagent__bounty_auth_store",
+    "mcp__bountyagent__bounty_write_handoff",
+    "mcp__bountyagent__bounty_write_wave_handoff",
+    "mcp__bountyagent__bounty_write_verification_round",
+    "mcp__bountyagent__bounty_write_grade_verdict",
+    "mcp__bountyagent__bounty_record_finding",
+    "mcp__bountyagent__bounty_http_scan",
+    "mcp__bountyagent__bounty_import_http_traffic",
+    "mcp__bountyagent__bounty_public_intel",
+    "mcp__bountyagent__bounty_import_static_artifact",
+    "mcp__bountyagent__bounty_static_scan",
+    "mcp__bountyagent__bounty_auto_signup",
+    "mcp__bountyagent__bounty_temp_email",
+    "mcp__bountyagent__bounty_signup_detect",
+    "mcp__bountyagent__bounty_log_coverage",
+    "mcp__bountyagent__bounty_log_dead_ends",
+    "mcp__bountyagent__bounty_read_tool_telemetry",
+  ];
+
+  assert.match(skill, /not a debug review/i);
+  assert.match(skill, /No args or `--last`/);
+  assert.match(skill, /bounty_read_pipeline_analytics\(\{ target_domain, include_events: false, limit: 20 \}\)/);
+  assert.match(skill, /bounty_read_state_summary\(\{ target_domain \}\)/);
+  assert.match(skill, /bounty_wave_status\(\{ target_domain \}\)/);
+  assert.match(skill, /\/bob:hunt resume <target_domain>/);
+  assert.match(skill, /\/bob:debug --deep <target_domain>/);
+  for (const tool of forbiddenTools) {
+    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bountyagentstatus`);
+  }
+  for (const tool of allowedTools.filter((entry) => entry.startsWith("mcp__bountyagent__"))) {
+    const toolName = tool.replace(/^mcp__bountyagent__/, "");
+    assert.equal(TOOL_MANIFEST[toolName].mutating, false, `${toolName} must be read-only`);
+    assert.equal(TOOL_MANIFEST[toolName].network_access, false, `${toolName} must not touch the network`);
+  }
+});
+
+test("bountyagentdebug skill is telemetry-first and supports latest, explicit, and deep modes", () => {
+  const skill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
+
+  assert.match(skill, /bounty_read_pipeline_analytics\(\{ target_domain, include_events: true, limit: 100 \}\)/);
+  assert.match(skill, /bounty_read_tool_telemetry\(\{ target_domain, include_agent_runs: true, limit: 100 \}\)/);
+  assert.match(skill, /No args or `--last`/);
+  assert.match(skill, /`<target_domain>`/);
+  assert.match(skill, /`--deep`/);
+  assert.match(skill, /pipeline-events\.jsonl[\s\S]*state\.json[\s\S]*grade\.json[\s\S]*report\.md[\s\S]*directory mtime/);
+  assert.match(skill, /Artifact fallback mode: telemetry MCP unavailable or incomplete\./);
+});
+
+test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", () => {
+  const skill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
+  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bountyagentdebug/SKILL.md");
+  const expectedReadOnlyMcpTools = [
+    "mcp__bountyagent__bounty_read_pipeline_analytics",
+    "mcp__bountyagent__bounty_read_tool_telemetry",
+    "mcp__bountyagent__bounty_read_state_summary",
+    "mcp__bountyagent__bounty_wave_status",
+    "mcp__bountyagent__bounty_read_wave_handoffs",
+    "mcp__bountyagent__bounty_read_findings",
+    "mcp__bountyagent__bounty_read_verification_round",
+    "mcp__bountyagent__bounty_read_grade_verdict",
+  ];
+  const forbiddenTools = [
+    "Task",
+    "Write",
+    "mcp__bountyagent__bounty_start_wave",
+    "mcp__bountyagent__bounty_apply_wave_merge",
+    "mcp__bountyagent__bounty_merge_wave_handoffs",
+    "mcp__bountyagent__bounty_transition_phase",
+    "mcp__bountyagent__bounty_auth_store",
+    "mcp__bountyagent__bounty_write_handoff",
+    "mcp__bountyagent__bounty_write_wave_handoff",
+    "mcp__bountyagent__bounty_write_verification_round",
+    "mcp__bountyagent__bounty_write_grade_verdict",
+    "mcp__bountyagent__bounty_record_finding",
+    "mcp__bountyagent__bounty_http_scan",
+    "mcp__bountyagent__bounty_import_http_traffic",
+    "mcp__bountyagent__bounty_public_intel",
+    "mcp__bountyagent__bounty_import_static_artifact",
+    "mcp__bountyagent__bounty_static_scan",
+    "mcp__bountyagent__bounty_auto_signup",
+    "mcp__bountyagent__bounty_temp_email",
+    "mcp__bountyagent__bounty_signup_detect",
+    "mcp__bountyagent__bounty_log_coverage",
+    "mcp__bountyagent__bounty_log_dead_ends",
+  ];
+
+  assert.ok(allowedTools.includes("Read"));
+  assert.ok(allowedTools.includes("Glob"));
+  assert.ok(allowedTools.includes("Grep"));
+  for (const tool of expectedReadOnlyMcpTools) {
+    assert.ok(allowedTools.includes(tool), `${tool} missing from bountyagentdebug allowed-tools`);
+  }
+  for (const tool of forbiddenTools) {
+    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bountyagentdebug`);
+  }
+  for (const tool of allowedTools.filter((entry) => entry.startsWith("mcp__bountyagent__"))) {
+    const toolName = tool.replace(/^mcp__bountyagent__/, "");
+    assert.equal(TOOL_MANIFEST[toolName].mutating, false, `${toolName} must be read-only`);
+    assert.equal(TOOL_MANIFEST[toolName].network_access, false, `${toolName} must not touch the network`);
+  }
+});
+
+test("installer and dev-sync copy bob namespaced commands and debug skill", () => {
+  const install = readFile("install.sh");
+  const devSync = readFile("dev-sync.sh");
+
+  assert.match(install, /\.claude\/commands\/bob\/hunt\.md/);
+  assert.match(install, /\.claude\/commands\/bob\/status\.md/);
+  assert.match(install, /\.claude\/commands\/bob\/debug\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/status\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/debug\.md/);
+  assert.match(install, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
+  assert.match(devSync, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
+  assert.match(install, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
+  assert.match(devSync, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
 });
 
 test("root-orchestrator MCP calls are covered by skill allowed-tools", () => {
@@ -350,7 +503,7 @@ test("recon attack_surface schema keeps required fields and adds optional enrich
 test("recon prompt remains enrichment-only without new commands or imported toolsets", () => {
   const reconPrompt = readFile(".claude/agents/recon-agent.md");
 
-  assert.doesNotMatch(reconPrompt, /\/bountyagent/);
+  assert.doesNotMatch(reconPrompt, /\/bob:hunt/);
   assert.doesNotMatch(reconPrompt, /slash commands?/i);
   assert.doesNotMatch(reconPrompt, /claude-bug-bounty/i);
   assert.doesNotMatch(reconPrompt, /scripts\/|tools\//i);
@@ -367,6 +520,8 @@ test("installer and dev-sync copy and configure session-write-guard", () => {
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
   assert.match(install, /\.claude\/skills\/bountyagent\/SKILL\.md/);
   assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
+  assert.match(install, /\.claude\/commands\/bob\/hunt\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
   assert.match(install, /mcp\/lib\/tools/);
   assert.match(devSync, /mcp\/lib\/tools/);
   assert.match(install, /merge-claude-config\.js/);

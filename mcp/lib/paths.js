@@ -23,7 +23,11 @@ function assertSafeDomain(domain) {
 
 function sessionDir(domain) {
   const safe = assertSafeDomain(domain);
-  return path.join(os.homedir(), "bounty-agent-sessions", safe);
+  return path.join(sessionsRoot(), safe);
+}
+
+function sessionsRoot() {
+  return path.join(os.homedir(), "bounty-agent-sessions");
 }
 
 function statePath(domain) {
@@ -56,6 +60,10 @@ function findingsMarkdownPath(domain) {
 
 function coverageJsonlPath(domain) {
   return path.join(sessionDir(domain), "coverage.jsonl");
+}
+
+function pipelineEventsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "pipeline-events.jsonl");
 }
 
 function httpAuditJsonlPath(domain) {
@@ -113,6 +121,10 @@ function gradeArtifactPaths(domain) {
   };
 }
 
+function reportMarkdownPath(domain) {
+  return path.join(sessionDir(domain), "report.md");
+}
+
 module.exports = {
   assertSafeDomain,
   assertStaticArtifactId,
@@ -122,10 +134,13 @@ module.exports = {
   findingsMarkdownPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
+  pipelineEventsJsonlPath,
   publicIntelPath,
+  reportMarkdownPath,
   scopeWarningsPath,
   sessionDir,
   sessionLockPath,
+  sessionsRoot,
   statePath,
   staticArtifactImportDir,
   staticArtifactPath,

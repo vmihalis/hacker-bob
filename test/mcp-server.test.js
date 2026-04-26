@@ -91,6 +91,9 @@ const {
   readCoverageRecordsFromJsonl,
   readHttpAudit,
   readHttpAuditRecordsFromJsonl,
+  readPipelineAnalytics,
+  readPipelineEvents,
+  readSessionArtifactSummary,
   readTrafficRecordsFromJsonl,
   compactSessionState,
   listFindings,
@@ -98,6 +101,7 @@ const {
   mergeWaveHandoffs,
   httpAuditJsonlPath,
   importStaticArtifact,
+  pipelineEventsJsonlPath,
   publicIntelPath,
   rankAttackSurfaces,
   readFindings,
@@ -106,9 +110,11 @@ const {
   readWaveHandoffs,
   recordFinding,
   redactUrlSensitiveValues,
+  reportMarkdownPath,
   resolveAuthJsonPath,
   sessionDir,
   sessionLockPath,
+  sessionsRoot,
   startWave,
   statePath,
   staticArtifactImportDir,
@@ -168,6 +174,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_read_state_summary",
   "bounty_read_hunter_brief",
   "bounty_read_tool_telemetry",
+  "bounty_read_pipeline_analytics",
 ];
 
 function withTempHome(fn) {
@@ -497,6 +504,7 @@ test("mcp server public exports remain stable", () => {
     "normalizeSessionStateDocument",
     "normalizeStringArray",
     "normalizeTrafficRecord",
+    "pipelineEventsJsonlPath",
     "publicIntelPath",
     "rankAttackSurfaces",
     "readAuthJson",
@@ -507,7 +515,10 @@ test("mcp server public exports remain stable", () => {
     "readHttpAudit",
     "readHttpAuditRecordsFromJsonl",
     "readHunterBrief",
+    "readPipelineAnalytics",
+    "readPipelineEvents",
     "readScopeExclusions",
+    "readSessionArtifactSummary",
     "readSessionState",
     "readStateSummary",
     "readStaticArtifactRecordsFromJsonl",
@@ -520,10 +531,12 @@ test("mcp server public exports remain stable", () => {
     "renderFindingMarkdownEntry",
     "renderGradeVerdictMarkdown",
     "renderVerificationRoundMarkdown",
+    "reportMarkdownPath",
     "resolveAuthJsonPath",
     "resolveHunterKnowledge",
     "sessionDir",
     "sessionLockPath",
+    "sessionsRoot",
     "signupDetect",
     "startServer",
     "startWave",
@@ -613,6 +626,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_read_tool_telemetry.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_tool_telemetry.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.global_preapproval, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_pipeline_analytics.role_bundles, ["orchestrator"]);
 });
 
 test("MCP tool registry validation rejects incomplete or inconsistent entries", () => {
@@ -1149,6 +1165,224 @@ test("tool telemetry reader can include filtered hunter run telemetry summaries"
   } finally {
     fs.rmSync(telemetryRoot, { recursive: true, force: true });
   }
+});
+
+test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const rawPocSecret = "pipeline-raw-poc-secret";
+    const rawHandoffSecret = "pipeline-raw-handoff-secret";
+    const rawCoverageSecret = "pipeline-raw-coverage-secret";
+
+    JSON.parse(initSession({ target_domain: domain, target_url: "https://example.com" }));
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "HUNT", auth_status: "authenticated" }));
+    const started = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    }));
+
+    JSON.parse(logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/export",
+        method: "GET",
+        bug_class: "idor",
+        status: "tested",
+        evidence_summary: rawCoverageSecret,
+      }],
+    }));
+    JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "IDOR on export",
+      severity: "high",
+      endpoint: "/api/export",
+      description: "Cross-account export is possible.",
+      proof_of_concept: rawPocSecret,
+      response_evidence: "metadata-only analytics must not copy this evidence",
+      impact: "PII disclosure.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    }));
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: started.assignments[0].handoff_token,
+      summary: "surface complete",
+      chain_notes: ["chain context"],
+      content: `# Handoff\n\n${rawHandoffSecret}`,
+    }));
+    JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "CHAIN" }));
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
+
+    const verified = [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }];
+    for (const round of ["brutalist", "balanced", "final"]) {
+      JSON.parse(writeVerificationRound({ target_domain: domain, round, notes: null, results: verified }));
+    }
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
+    JSON.parse(writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [{
+        finding_id: "F-1",
+        impact: 20,
+        proof_quality: 10,
+        severity_accuracy: 5,
+        chain_potential: 5,
+        report_quality: 5,
+        total_score: 45,
+        feedback: null,
+      }],
+      feedback: null,
+    }));
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "REPORT" }));
+    writeFileAtomic(reportMarkdownPath(domain), "# Report\n");
+
+    const rows = readJsonl(pipelineEventsJsonlPath(domain));
+    assert.ok(rows.length >= 10);
+    assert.deepEqual(new Set(rows.map((row) => row.type)), new Set([
+      "session_started",
+      "phase_transitioned",
+      "wave_started",
+      "coverage_logged",
+      "finding_recorded",
+      "wave_merged",
+      "verification_written",
+      "grade_written",
+    ]));
+    assert.equal(rows.every((row) => row.target_domain === domain), true);
+    assert.equal(rows.some((row) => row.type === "finding_recorded" && row.counts.findings === 1), true);
+
+    const analyticsText = readPipelineAnalytics({ target_domain: domain, include_events: true, limit: 100 });
+    const analytics = JSON.parse(analyticsText);
+    assert.equal(analytics.mode, "session");
+    assert.equal(analytics.event_log.exists, true);
+    assert.equal(analytics.event_log.backfilled, false);
+    assert.equal(analytics.sessions[0].health.status, "healthy");
+    assert.equal(analytics.sessions[0].phase, "REPORT");
+    assert.equal(analytics.sessions[0].findings.total, 1);
+    assert.equal(analytics.sessions[0].final_verification_count, 1);
+    assert.equal(analytics.sessions[0].grade_verdict, "SUBMIT");
+    assert.equal(analytics.sessions[0].report_present, true);
+    assert.equal(analytics.funnel.reached.REPORT, 1);
+    assert.equal(analytics.bottlenecks.length, 0);
+
+    for (const forbidden of [rawPocSecret, rawHandoffSecret, rawCoverageSecret, "metadata-only analytics must not copy this evidence"]) {
+      assert.equal(analyticsText.includes(forbidden), false, `${forbidden} leaked into pipeline analytics`);
+      assert.equal(JSON.stringify(rows).includes(forbidden), false, `${forbidden} leaked into pipeline events`);
+    }
+  });
+});
+
+test("pipeline analytics backfills legacy sessions from artifacts without an event log", () => {
+  withTempHome(() => {
+    const domain = "legacy.example";
+    seedSessionState(domain, {
+      phase: "REPORT",
+      hunt_wave: 1,
+      pending_wave: null,
+      total_findings: 1,
+      explored: ["surface-a"],
+      auth_status: "authenticated",
+    });
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w1-a1.json"), `${JSON.stringify({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: [],
+    }, null, 2)}\n`);
+    writeFileAtomic(findingsJsonlPath(domain), `${JSON.stringify({ target_domain: domain, severity: "high" })}\n`);
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeFileAtomic(verificationRoundPaths(domain, round).json, `${JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        round,
+        results: [{ finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true }],
+      }, null, 2)}\n`);
+    }
+    writeFileAtomic(gradeArtifactPaths(domain).json, `${JSON.stringify({
+      version: 1,
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [{ finding_id: "F-1", total_score: 45 }],
+    }, null, 2)}\n`);
+    writeFileAtomic(reportMarkdownPath(domain), "# Legacy report\n");
+
+    assert.equal(fs.existsSync(pipelineEventsJsonlPath(domain)), false);
+    assert.equal(sessionsRoot(), path.join(process.env.HOME, "bounty-agent-sessions"));
+
+    const eventRead = readPipelineEvents(domain);
+    assert.equal(eventRead.backfilled, true);
+    assert.equal(eventRead.events.some((event) => event.source === "artifact_backfill"), true);
+
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
+    assert.equal(analytics.event_log.backfilled, true);
+    assert.equal(analytics.sessions[0].health.status, "healthy");
+    assert.equal(analytics.sessions[0].report_present, true);
+    assert.equal(analytics.events.some((event) => event.source === "artifact_backfill"), true);
+
+    const crossSession = JSON.parse(readPipelineAnalytics({ window_days: 1 }));
+    assert.equal(crossSession.mode, "cross_session");
+    assert.ok(crossSession.sessions.some((session) => session.target_domain === domain));
+    assert.equal(crossSession.funnel.sessions_total, 1);
+  });
+});
+
+test("pipeline analytics flags blocked pending waves and malformed event lines", () => {
+  withTempHome(() => {
+    const domain = "blocked.example";
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1, hunt_wave: 0 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(pipelineEventsJsonlPath(domain), "{not-json\n", "utf8");
+    fs.appendFileSync(pipelineEventsJsonlPath(domain), `${JSON.stringify({
+      version: 1,
+      ts: "2026-04-24T00:00:00.000Z",
+      target_domain: domain,
+      type: "wave_started",
+      wave_number: 1,
+      status: "started",
+      source: "test",
+      counts: { assignments: 1 },
+    })}\n`, "utf8");
+
+    const summary = readSessionArtifactSummary(domain);
+    assert.equal(summary.state.pending_wave, 1);
+    assert.equal(summary.waves[0].missing_agents.length, 1);
+
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
+    assert.equal(analytics.event_log.malformed_lines, 1);
+    assert.equal(analytics.event_log.backfilled, false);
+    assert.equal(analytics.sessions[0].health.status, "blocked");
+    assert.ok(analytics.sessions[0].health.reasons.includes("hunter_handoff_failures"));
+    assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "hunter_handoff_failures"));
+    assert.ok(analytics.next_actions.some((action) => /handoffs/.test(action.action)));
+  });
 });
 
 test("MCP message handler lists tools, routes calls, serializes envelopes, and wraps thrown errors", async () => {
@@ -2367,6 +2601,15 @@ test("hunter SubagentStop hook blocks missing structured handoff", async () => {
       summary_present: false,
       chain_notes_count: 0,
     });
+
+    const pipelineRows = readJsonl(pipelineEventsJsonlPath(domain));
+    const stopped = pipelineRows.find((row) => row.type === "hunter_stopped");
+    assert.ok(stopped);
+    assert.equal(stopped.status, "blocked");
+    assert.equal(stopped.block_code, "missing_handoff");
+    assert.equal(stopped.wave_number, 1);
+    assert.equal(stopped.agent, "a1");
+    assert.equal(stopped.surface_id, "surface-a");
   });
 });
 

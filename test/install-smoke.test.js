@@ -25,16 +25,24 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagent.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagentdebug.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
 
     execFileSync(process.execPath, [
       "-e",
       [
         "const server = require(process.argv[1]);",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 34) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 35) process.exit(2);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bounty_list_auth_profiles')) process.exit(3);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bounty_read_tool_telemetry')) process.exit(6);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bounty_read_pipeline_analytics')) process.exit(7);",
         "Promise.resolve(server.executeTool('bounty_list_auth_profiles', { target_domain: 'example.com' }))",
         "  .then((result) => { if (!result.ok || result.data.target_domain !== 'example.com') process.exit(4); })",
         "  .catch(() => process.exit(5));",

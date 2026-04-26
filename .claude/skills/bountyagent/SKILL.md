@@ -23,6 +23,7 @@ allowed-tools:
   - mcp__bountyagent__bounty_list_auth_profiles
   - mcp__bountyagent__bounty_read_state_summary
   - mcp__bountyagent__bounty_read_tool_telemetry
+  - mcp__bountyagent__bounty_read_pipeline_analytics
   - mcp__bountyagent__bounty_http_scan
   - mcp__bountyagent__bounty_temp_email
   - mcp__bountyagent__bounty_signup_detect
@@ -74,6 +75,7 @@ MCP-owned session artifacts:
 - `bounty_import_static_artifact` writes redacted token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
 - `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, runtime ranking, intel, static scan, assignment, coverage, and scope summaries.
+- `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 
 Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_session_state.data` only when full arrays are needed.
 
@@ -82,7 +84,7 @@ Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_ses
 - First call `bounty_read_state_summary({ target_domain })` and use `result.data.state` for the resume decision.
 - If `state.pending_wave` is null, continue from `state.phase`.
 - If `state.pending_wave` is non-null, call `bounty_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge })` and use `result.data`.
-- If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bountyagent resume [domain] force-merge to reconcile now.` Then stop.
+- If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bob:hunt resume [domain] force-merge to reconcile now.` Then stop.
 - If status is `"merged"`, continue with returned `state`, `readiness`, `merge`, and `findings`.
 - Pending-wave reconciliation happens only on explicit re-entry or after all background hunters complete, never in the same turn that launched hunters.
 
@@ -129,7 +131,7 @@ Wave policy:
 - Minimum 2 waves, target 4, maximum 6.
 
 Before spawning a wave:
-1. If `state.pending_wave` is non-null, stop and require `/bountyagent resume [domain]`.
+1. If `state.pending_wave` is non-null, stop and require `/bob:hunt resume [domain]`.
 2. Compute assignments from requeue plus wave policy.
 3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`.
 4. Spawn hunters only after `bounty_start_wave` succeeds. Use each returned `result.data.assignments[].handoff_token` only in that hunter's spawn prompt.
@@ -155,7 +157,7 @@ Launch-turn barrier:
 1. After spawning hunters, report wave number, agent count, and assignments.
 2. Never call `bounty_apply_wave_merge`, `bounty_wave_status`, `bounty_wave_handoff_status`, or `bounty_merge_wave_handoffs` in the same turn that spawned hunters.
 3. Wait for background completion notifications. When all hunters complete, reconcile.
-4. If context is lost, the user can run `/bountyagent resume [domain]`.
+4. If context is lost, the user can run `/bob:hunt resume [domain]`.
 
 Wave reconciliation:
 1. First call `bounty_read_state_summary({ target_domain })` and use `result.data.state`.

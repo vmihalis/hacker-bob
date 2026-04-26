@@ -26,6 +26,9 @@ const {
 const {
   validateAssignedWaveAgentSurface,
 } = require("./assignments.js");
+const {
+  safeAppendPipelineEventDirect,
+} = require("./pipeline-analytics.js");
 
 function normalizeCoverageRecord(record, { expectedDomain = null, lineNumber = null } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
@@ -256,14 +259,26 @@ function logCoverage(args) {
 
   return withSessionLock(domain, () => {
     appendJsonlLines(logPath, records, { maxRecords: COVERAGE_LOG_MAX_RECORDS });
+    const statuses = COVERAGE_STATUS_VALUES.reduce((result, status) => {
+      result[status] = records.filter((record) => record.status === status).length;
+      return result;
+    }, {});
+    safeAppendPipelineEventDirect(domain, "coverage_logged", {
+      wave,
+      agent,
+      surface_id: surfaceId,
+      status: "logged",
+      source: "bounty_log_coverage",
+      counts: {
+        records: records.length,
+        ...statuses,
+      },
+    });
 
     return JSON.stringify({
       appended: records.length,
       log_path: logPath,
-      statuses: COVERAGE_STATUS_VALUES.reduce((result, status) => {
-        result[status] = records.filter((record) => record.status === status).length;
-        return result;
-      }, {}),
+      statuses,
     });
   });
 }

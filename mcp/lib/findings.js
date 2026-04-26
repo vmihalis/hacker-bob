@@ -42,6 +42,9 @@ const {
 const {
   validateAssignedWaveAgentSurface,
 } = require("./assignments.js");
+const {
+  safeAppendPipelineEventDirect,
+} = require("./pipeline-analytics.js");
 
 function normalizeEndpointForDedupe(endpoint) {
   const raw = String(endpoint || "").trim();
@@ -276,6 +279,17 @@ function recordFinding(args) {
     }
 
     appendMarkdownMirror(findingsMarkdownPath(domain), renderFindingMarkdownEntry(finding), response);
+    safeAppendPipelineEventDirect(domain, "finding_recorded", {
+      wave,
+      agent,
+      surface_id: surfaceId,
+      status: finding.severity,
+      source: "bounty_record_finding",
+      counts: {
+        findings: counter,
+        validated: finding.validated ? 1 : 0,
+      },
+    });
     return JSON.stringify(response);
   });
 }
@@ -452,6 +466,16 @@ function writeVerificationRound(args) {
     written_json: paths.json,
   };
   writeMarkdownMirror(paths.markdown, renderVerificationRoundMarkdown(document), response);
+  safeAppendPipelineEventDirect(domain, "verification_written", {
+    phase: "VERIFY",
+    status: round,
+    source: "bounty_write_verification_round",
+    counts: {
+      results: results.length,
+      reportable: results.filter((result) => result.reportable).length,
+      confirmed: results.filter((result) => result.disposition === "confirmed").length,
+    },
+  });
   return JSON.stringify(response);
 }
 
@@ -670,6 +694,15 @@ function writeGradeVerdict(args) {
     written_json: paths.json,
   };
   writeMarkdownMirror(paths.markdown, renderGradeVerdictMarkdown(document), response);
+  safeAppendPipelineEventDirect(domain, "grade_written", {
+    phase: "GRADE",
+    status: verdict,
+    source: "bounty_write_grade_verdict",
+    counts: {
+      findings: findings.length,
+      total_score: totalScore,
+    },
+  });
   return JSON.stringify(response);
 }
 

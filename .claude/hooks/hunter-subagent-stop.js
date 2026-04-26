@@ -92,12 +92,22 @@ function loadTelemetry() {
   return require(path.join(projectRoot(), "mcp", "lib", "tool-telemetry.js"));
 }
 
+function loadPipelineAnalytics() {
+  return require(path.join(projectRoot(), "mcp", "lib", "pipeline-analytics.js"));
+}
+
 function recordHunterTelemetry(input) {
   if (!input) return;
   try {
     const telemetry = loadTelemetry();
     if (telemetry && typeof telemetry.safeRecordAgentRunTelemetry === "function") {
       telemetry.safeRecordAgentRunTelemetry(input);
+    }
+  } catch {}
+  try {
+    const analytics = loadPipelineAnalytics();
+    if (analytics && typeof analytics.safeRecordHunterStoppedPipelineEvent === "function") {
+      analytics.safeRecordHunterStoppedPipelineEvent(input);
     }
   } catch {}
 }

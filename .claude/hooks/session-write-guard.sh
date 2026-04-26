@@ -38,6 +38,7 @@ MCP_OWNED_EXACT = {
     "public-intel.json",
     "static-artifacts.jsonl",
     "static-scan-results.jsonl",
+    "pipeline-events.jsonl",
 }
 
 MCP_OWNED_DIRS = {

@@ -16,7 +16,7 @@
 //           bounty_read_http_audit, bounty_public_intel,
 //           bounty_import_static_artifact, bounty_static_scan,
 //           bounty_list_auth_profiles, bounty_read_wave_handoffs,
-//           bounty_read_tool_telemetry
+//           bounty_read_tool_telemetry, bounty_read_pipeline_analytics
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
 const {
@@ -54,9 +54,12 @@ const {
   findingsMarkdownPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
+  pipelineEventsJsonlPath,
   publicIntelPath,
+  reportMarkdownPath,
   sessionDir,
   sessionLockPath,
+  sessionsRoot,
   statePath,
   staticArtifactImportDir,
   staticArtifactPath,
@@ -149,6 +152,11 @@ const {
   writeHandoff,
   writeWaveHandoff,
 } = require("./lib/waves.js");
+const {
+  readPipelineAnalytics,
+  readPipelineEvents,
+  readSessionArtifactSummary,
+} = require("./lib/pipeline-analytics.js");
 
 function startServer() {
   startStdioServer({ tools: TOOLS, executeTool });
@@ -186,12 +194,15 @@ module.exports = {
   normalizeHttpAuditRecord,
   normalizeSessionStateDocument,
   normalizeTrafficRecord,
+  pipelineEventsJsonlPath,
   publicIntelPath,
   bountyPublicIntel,
   readAuthJson,
   resolveAuthJsonPath,
+  reportMarkdownPath,
   sessionDir,
   sessionLockPath,
+  sessionsRoot,
   statePath,
   staticArtifactImportDir,
   staticArtifactPath,
@@ -213,11 +224,14 @@ module.exports = {
   redactUrlSensitiveValues,
   filterExclusionsByHosts,
   readHunterBrief,
+  readPipelineAnalytics,
+  readPipelineEvents,
   readWaveHandoffs,
   rankAttackSurfaces,
   resolveHunterKnowledge,
   readGradeVerdict,
   readScopeExclusions,
+  readSessionArtifactSummary,
   readSessionState,
   readStateSummary,
   compactSessionState,
