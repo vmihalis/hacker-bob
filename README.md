@@ -37,7 +37,7 @@ claude --dangerously-skip-permissions --effort max
 Then run:
 
 ```
-/bob:hunt target.com
+/bob-hunt target.com
 ```
 
 ## Install
@@ -99,11 +99,11 @@ claude --dangerously-skip-permissions --effort max
 Then in Claude Code, use the Claude slash commands:
 
 ```
-/bob:hunt target.com         # full autonomous run
-/bob:hunt resume target.com  # pick up where you left off
-/bob:status                 # quick latest-session status
-/bob:debug                   # review the latest local session
-/bob:update                  # preview and install the latest Bob release
+/bob-hunt target.com         # full autonomous run
+/bob-hunt resume target.com  # pick up where you left off
+/bob-status                 # quick latest-session status
+/bob-debug                   # review the latest local session
+/bob-update                  # preview and install the latest Bob release
 ```
 
 That's it. Now go make coffee.
@@ -122,13 +122,13 @@ For a copy-paste first-run flow, see [`docs/FIRST_RUN.md`](docs/FIRST_RUN.md).
 
 ## Updates
 
-Run `/bob:update` inside Claude Code from the project where Bob is installed. The command checks the installed version, previews relevant `CHANGELOG.md` entries, asks before changing files, installs with:
+Run `/bob-update` inside Claude Code from the project where Bob is installed. The command checks the installed version, previews relevant `CHANGELOG.md` entries, asks before changing files, installs with:
 
 ```bash
 npx -y hacker-bob@latest install "$CLAUDE_PROJECT_DIR"
 ```
 
-After an update, fully restart Claude Code in that project. Bob also checks for available updates once per day on `SessionStart` and stores the result in `~/.cache/hacker-bob/update-checks/`; the statusline and `/bob:status` only read that local cache.
+After an update, fully restart Claude Code in that project. Bob also checks for available updates once per day on `SessionStart` and stores the result in `~/.cache/hacker-bob/update-checks/`; the statusline and `/bob-status` only read that local cache.
 
 In Codex, use `$hacker-bob:update`. In generic MCP hosts, run `hacker-bob update /path/to/your/project --adapter generic-mcp` from a shell and reload the host's MCP config.
 

@@ -41,6 +41,10 @@ const EXECUTABLE_HOOKS = Object.freeze([
 ]);
 
 const BOB_COMMAND_FILES = Object.freeze([
+  "bob-update.md",
+]);
+
+const LEGACY_BOB_COMMAND_FILES = Object.freeze([
   "hunt.md",
   "status.md",
   "debug.md",
@@ -48,28 +52,19 @@ const BOB_COMMAND_FILES = Object.freeze([
 ]);
 
 const COMMAND_SPECS = Object.freeze({
-  hunt: Object.freeze({
-    file: "hunt.md",
-    slash: "/bob:hunt",
-    skill: "bountyagent",
-  }),
-  status: Object.freeze({
-    file: "status.md",
-    slash: "/bob:status",
-    skill: "bountyagentstatus",
-  }),
-  debug: Object.freeze({
-    file: "debug.md",
-    slash: "/bob:debug",
-    skill: "bountyagentdebug",
-  }),
   update: Object.freeze({
-    file: "update.md",
-    slash: "/bob:update",
+    file: "bob-update.md",
+    slash: "/bob-update",
   }),
 });
 
 const BOB_SKILLS = Object.freeze([
+  "bob-hunt",
+  "bob-status",
+  "bob-debug",
+]);
+
+const LEGACY_BOB_SKILLS = Object.freeze([
   "bountyagent",
   "bountyagentdebug",
   "bountyagentstatus",
@@ -92,8 +87,10 @@ function sourceDirFiles(sourceRoot, relativeDir, predicate) {
 function managedFiles(sourceRoot) {
   return [
     ...sourceDirFiles(sourceRoot, path.join(".claude", "agents"), (name) => name.endsWith(".md")),
-    ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
+    ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", name)),
+    ...LEGACY_BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
     ...BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
+    ...LEGACY_BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "rules"), (name) => name.endsWith(".md")),
     ...HOOK_FILES.map((name) => path.join(".claude", "hooks", name)),
     ...STALE_HOOK_FILES.map((name) => path.join(".claude", "hooks", name)),
@@ -106,6 +103,9 @@ function managedDirs() {
   return [
     path.join(".claude", "commands", "bob"),
     path.join(".claude", "commands"),
+    path.join(".claude", "skills", "bob-hunt"),
+    path.join(".claude", "skills", "bob-status"),
+    path.join(".claude", "skills", "bob-debug"),
     path.join(".claude", "skills", "bountyagent"),
     path.join(".claude", "skills", "bountyagentdebug"),
     path.join(".claude", "skills", "bountyagentstatus"),
@@ -136,16 +136,6 @@ function commandIds() {
   return Object.keys(COMMAND_SPECS);
 }
 
-function renderSkillCommand(commandId) {
-  const spec = commandSpec(commandId);
-  return [
-    `Use the authoritative local skill at \`.claude/skills/${spec.skill}/SKILL.md\` for \`${spec.slash}\`.`,
-    "",
-    "Pass `$ARGUMENTS` to that workflow exactly as provided.",
-    "",
-  ].join("\n");
-}
-
 function renderUpdateCommand() {
   return [
     "---",
@@ -170,11 +160,11 @@ function renderUpdateCommand() {
 
 function renderCommand(commandId) {
   if (commandId === "update") return renderUpdateCommand();
-  return renderSkillCommand(commandId);
+  throw new Error(`Unknown Claude command: ${commandId}`);
 }
 
 function commandOutputPath(commandId, { root = DEFAULT_ROOT } = {}) {
-  return path.join(root, ".claude", "commands", "bob", commandSpec(commandId).file);
+  return path.join(root, ".claude", "commands", commandSpec(commandId).file);
 }
 
 function writeTextFile(filePath, content) {
@@ -334,7 +324,7 @@ function install({
 }) {
   const claudeDir = path.join(targetAbs, ".claude");
   fsSafeMkdir(claudeDir);
-  for (const dirname of ["agents", "commands/bob", "rules", "hooks", "skills", "bob"]) {
+  for (const dirname of ["agents", "commands", "rules", "hooks", "skills", "bob"]) {
     fsSafeMkdir(path.join(claudeDir, dirname));
   }
   for (const hook of STALE_HOOK_FILES) {
@@ -349,9 +339,16 @@ function install({
 
   removeIfExists(path.join(claudeDir, "commands", "bountyagent.md"));
   removeIfExists(path.join(claudeDir, "commands", "bountyagentdebug.md"));
+  for (const legacyCommand of LEGACY_BOB_COMMAND_FILES) {
+    removeIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
+  }
+  removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
+  for (const legacySkill of LEGACY_BOB_SKILLS) {
+    fs.rmSync(path.join(claudeDir, "skills", legacySkill), { force: true, recursive: true });
+  }
   for (const commandId of commandIds()) {
     writeTextFile(
-      path.join(claudeDir, "commands", "bob", commandSpec(commandId).file),
+      path.join(claudeDir, "commands", commandSpec(commandId).file),
       renderCommand(commandId),
     );
   }
@@ -454,7 +451,7 @@ function doctor({
   }
 
   const missingCommands = BOB_COMMAND_FILES
-    .map((name) => path.join(".claude", "commands", "bob", name))
+    .map((name) => path.join(".claude", "commands", name))
     .filter((relative) => !fileExists(path.join(targetAbs, relative)));
   if (missingCommands.length === 0) {
     addCheck(checks, "ok", checkId("commands"), "Bob slash commands are installed");
@@ -645,6 +642,8 @@ module.exports = {
   COMMAND_SPECS,
   EXECUTABLE_HOOKS,
   HOOK_FILES,
+  LEGACY_BOB_COMMAND_FILES,
+  LEGACY_BOB_SKILLS,
   config,
   commandIds,
   commandOutputPath,
@@ -662,4 +661,9 @@ module.exports = {
 
 function fsSafeMkdir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function removeEmptyDirIfExists(dirPath) {
+  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return;
+  if (fs.readdirSync(dirPath).length === 0) fs.rmdirSync(dirPath);
 }

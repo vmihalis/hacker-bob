@@ -30,15 +30,19 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagent.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagentdebug.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-status", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-debug", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
@@ -143,6 +147,10 @@ test("installer merges existing MCP/settings config idempotently", () => {
   fs.mkdirSync(path.join(workspace, ".claude", "knowledge"), { recursive: true });
   fs.mkdirSync(path.join(workspace, ".claude", "bypass-tables"), { recursive: true });
   fs.mkdirSync(path.join(workspace, ".claude", "hooks"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, ".claude", "commands", "bob"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, ".claude", "skills", "bountyagent"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, ".claude", "skills", "bountyagentstatus"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, ".claude", "skills", "bountyagentdebug"), { recursive: true });
 
   try {
     fs.writeFileSync(path.join(workspace, ".claude", "knowledge", "hunter-techniques.json"), "{}\n");
@@ -150,6 +158,13 @@ test("installer merges existing MCP/settings config idempotently", () => {
     fs.writeFileSync(path.join(workspace, ".claude", "bypass-tables", "rest-api.txt"), "old\n");
     fs.writeFileSync(path.join(workspace, ".claude", "bypass-tables", "custom.txt"), "custom\n");
     fs.writeFileSync(path.join(workspace, ".claude", "hooks", "bob-update-lib.js"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "commands", "bob", "status.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "commands", "bob", "debug.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "commands", "bob", "update.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md"), "old\n");
+    fs.writeFileSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md"), "old\n");
     fs.writeFileSync(path.join(workspace, ".mcp.json"), `${JSON.stringify({
       mcpServers: {
         existing: { command: "node", args: ["existing.js"] },
@@ -232,6 +247,17 @@ test("installer merges existing MCP/settings config idempotently", () => {
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "knowledge", "hunter-techniques.json")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "bypass-tables", "rest-api.txt")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update-lib.js")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-status", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-debug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "knowledge", "custom.json")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "bypass-tables", "custom.txt")));
   } finally {
@@ -262,14 +288,15 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
       env: { ...process.env, HOME: tempHome },
       stdio: "pipe",
     });
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
 
     execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
       cwd: ROOT,
       env: { ...process.env, HOME: tempHome },
       stdio: "pipe",
     });
-    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
 
     execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
       cwd: ROOT,

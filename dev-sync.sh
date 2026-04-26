@@ -101,7 +101,7 @@ sync_shared_runtime() {
 }
 
 sync_claude_adapter() {
-  mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/commands/bob" "$CLAUDE_DIR/skills/bountyagent" "$CLAUDE_DIR/skills/bountyagentstatus" "$CLAUDE_DIR/skills/bountyagentdebug"
+  mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/commands" "$CLAUDE_DIR/skills/bob-hunt" "$CLAUDE_DIR/skills/bob-status" "$CLAUDE_DIR/skills/bob-debug"
   rm -f "$CLAUDE_DIR/hooks/bob-update-lib.js"
   cp "$SCRIPT_DIR/.claude/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/"
   cp "$SCRIPT_DIR/.claude/hooks/hunter-subagent-stop.js" "$CLAUDE_DIR/hooks/"
@@ -110,13 +110,13 @@ sync_claude_adapter() {
   cp "$SCRIPT_DIR/.claude/hooks/bob-check-update-worker.js" "$CLAUDE_DIR/hooks/"
   chmod +x "$CLAUDE_DIR/hooks/session-write-guard.sh" "$CLAUDE_DIR/hooks/hunter-subagent-stop.js" "$CLAUDE_DIR/hooks/bob-update.js" "$CLAUDE_DIR/hooks/bob-check-update.js" "$CLAUDE_DIR/hooks/bob-check-update-worker.js"
   rm -f "$CLAUDE_DIR/commands/bountyagent.md" "$CLAUDE_DIR/commands/bountyagentdebug.md"
-  cp "$SCRIPT_DIR/.claude/commands/bob/hunt.md" "$CLAUDE_DIR/commands/bob/"
-  cp "$SCRIPT_DIR/.claude/commands/bob/status.md" "$CLAUDE_DIR/commands/bob/"
-  cp "$SCRIPT_DIR/.claude/commands/bob/debug.md" "$CLAUDE_DIR/commands/bob/"
-  cp "$SCRIPT_DIR/.claude/commands/bob/update.md" "$CLAUDE_DIR/commands/bob/"
-  cp "$SCRIPT_DIR/.claude/skills/bountyagent/SKILL.md" "$CLAUDE_DIR/skills/bountyagent/"
-  cp "$SCRIPT_DIR/.claude/skills/bountyagentstatus/SKILL.md" "$CLAUDE_DIR/skills/bountyagentstatus/"
-  cp "$SCRIPT_DIR/.claude/skills/bountyagentdebug/SKILL.md" "$CLAUDE_DIR/skills/bountyagentdebug/"
+  rm -f "$CLAUDE_DIR/commands/bob/hunt.md" "$CLAUDE_DIR/commands/bob/status.md" "$CLAUDE_DIR/commands/bob/debug.md" "$CLAUDE_DIR/commands/bob/update.md"
+  rmdir "$CLAUDE_DIR/commands/bob" 2>/dev/null || true
+  rm -rf "$CLAUDE_DIR/skills/bountyagent" "$CLAUDE_DIR/skills/bountyagentstatus" "$CLAUDE_DIR/skills/bountyagentdebug"
+  cp "$SCRIPT_DIR/.claude/commands/bob-update.md" "$CLAUDE_DIR/commands/"
+  cp "$SCRIPT_DIR/.claude/skills/bob-hunt/SKILL.md" "$CLAUDE_DIR/skills/bob-hunt/"
+  cp "$SCRIPT_DIR/.claude/skills/bob-status/SKILL.md" "$CLAUDE_DIR/skills/bob-status/"
+  cp "$SCRIPT_DIR/.claude/skills/bob-debug/SKILL.md" "$CLAUDE_DIR/skills/bob-debug/"
 
   node "$SCRIPT_DIR/scripts/merge-claude-config.js" "$TARGET_ABS" >/dev/null
 }

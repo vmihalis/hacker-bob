@@ -12,7 +12,7 @@ const {
 } = require("./lib/claude-role-renderer.js");
 
 const ROOT = path.join(__dirname, "..");
-const SKILL_PATH = path.join(ROOT, ".claude", "skills", "bountyagent", "SKILL.md");
+const SKILL_PATH = path.join(ROOT, ".claude", "skills", "bob-hunt", "SKILL.md");
 
 function splitFrontmatter(document) {
   const match = document.match(/^---\n[\s\S]*?\n---\n/);
@@ -49,7 +49,7 @@ function updateSkill({ check = false } = {}) {
 function main() {
   const check = process.argv.includes("--check");
   const changed = updateSkill({ check });
-  if (changed && !check) console.log("updated bountyagent skill frontmatter");
+  if (changed && !check) console.log("updated bob-hunt skill frontmatter");
 }
 
 if (require.main === module) {

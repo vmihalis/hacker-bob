@@ -16,7 +16,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
   orchestrator: Object.freeze({
     role_id: "orchestrator",
     kind: "skill",
-    output_path: path.join(".claude", "skills", "bountyagent", "SKILL.md"),
+    output_path: path.join(".claude", "skills", "bob-hunt", "SKILL.md"),
     name: "bob-hunt",
     disable_model_invocation: true,
     argument_hint: "[target-url | resume <domain> [force-merge]]",
@@ -25,7 +25,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
   status: Object.freeze({
     role_id: "status",
     kind: "skill",
-    output_path: path.join(".claude", "skills", "bountyagentstatus", "SKILL.md"),
+    output_path: path.join(".claude", "skills", "bob-status", "SKILL.md"),
     name: "bob-status",
     disable_model_invocation: true,
     argument_hint: "[--last | <target_domain>]",
@@ -42,7 +42,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
   debug: Object.freeze({
     role_id: "debug",
     kind: "skill",
-    output_path: path.join(".claude", "skills", "bountyagentdebug", "SKILL.md"),
+    output_path: path.join(".claude", "skills", "bob-debug", "SKILL.md"),
     name: "bob-debug",
     disable_model_invocation: true,
     argument_hint: "[--last | <target_domain>] [--deep]",
@@ -207,11 +207,18 @@ function roleBody(roleId, { root = DEFAULT_ROOT } = {}) {
 }
 
 function renderClaudePromptBody(roleId, body) {
-  if (roleId !== "status") return body;
-  return body.replace(
-    "{{STATUS_UPDATE_CACHE_COMMAND}}",
-    'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json',
-  );
+  let document = body;
+  if (roleId === "status") {
+    document = document.replace(
+      "{{STATUS_UPDATE_CACHE_COMMAND}}",
+      'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json',
+    );
+  }
+  return document
+    .replace(/\/bob:hunt/g, "/bob-hunt")
+    .replace(/\/bob:status/g, "/bob-status")
+    .replace(/\/bob:debug/g, "/bob-debug")
+    .replace(/\/bob:update/g, "/bob-update");
 }
 
 function renderClaudeRole(roleId, options = {}) {

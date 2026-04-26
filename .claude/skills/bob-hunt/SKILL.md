@@ -86,7 +86,7 @@ Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_ses
 - First call `bounty_read_state_summary({ target_domain })` and use `result.data.state` for the resume decision.
 - If `state.pending_wave` is null, continue from `state.phase`.
 - If `state.pending_wave` is non-null, call `bounty_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge })` and use `result.data`.
-- If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bob:hunt resume [domain] force-merge to reconcile now.` Then stop.
+- If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bob-hunt resume [domain] force-merge to reconcile now.` Then stop.
 - If status is `"merged"`, continue with returned `state`, `readiness`, `merge`, and `findings`.
 - Pending-wave reconciliation happens only on explicit re-entry or after all background hunters complete, never in the same turn that launched hunters.
 
@@ -133,7 +133,7 @@ Wave policy:
 - Minimum 2 waves, target 4, maximum 6.
 
 Before spawning a wave:
-1. If `state.pending_wave` is non-null, stop and require `/bob:hunt resume [domain]`.
+1. If `state.pending_wave` is non-null, stop and require `/bob-hunt resume [domain]`.
 2. Compute assignments from requeue plus wave policy.
 3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`.
 4. Spawn hunters only after `bounty_start_wave` succeeds. Use each returned `result.data.assignments[].handoff_token` only in that hunter's spawn prompt.
@@ -159,7 +159,7 @@ Launch-turn barrier:
 1. After spawning hunters, report wave number, agent count, and assignments.
 2. Never call `bounty_apply_wave_merge`, `bounty_wave_status`, `bounty_wave_handoff_status`, or `bounty_merge_wave_handoffs` in the same turn that spawned hunters.
 3. Wait for background completion notifications. When all hunters complete, reconcile.
-4. If context is lost, the user can run `/bob:hunt resume [domain]`.
+4. If context is lost, the user can run `/bob-hunt resume [domain]`.
 
 Wave reconciliation:
 1. First call `bounty_read_state_summary({ target_domain })` and use `result.data.state`.

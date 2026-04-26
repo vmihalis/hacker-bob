@@ -63,7 +63,9 @@ function detectInstalledAdapterIds(targetAbs) {
   const ids = [];
   if (
     fs.existsSync(path.join(targetAbs, ".claude", "bob", "VERSION")) ||
-    fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob", "hunt.md"))
+    fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob-update.md")) ||
+    fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob", "hunt.md")) ||
+    fs.existsSync(path.join(targetAbs, ".claude", "skills", "bob-hunt", "SKILL.md"))
   ) {
     ids.push("claude");
   }
@@ -348,8 +350,8 @@ function printInstallSummary(summary) {
   console.log(`  host adapters: ${summary.adapters.join(", ")}`);
   if (summary.adapterResults.claude) {
     console.log(`  ${summary.agents} Claude agent definitions`);
-    console.log("  Claude command shims (/bob:hunt, /bob:status, /bob:debug, /bob:update)");
-    console.log("  Claude bountyagent + bountyagentstatus + bountyagentdebug skills");
+    console.log("  Claude command shim (/bob-update)");
+    console.log("  Claude bob-hunt + bob-status + bob-debug skills");
     console.log(`  ${summary.rules} Claude rules`);
     console.log("  Claude scope/session/update guard hooks + status line");
     console.log("  Claude .mcp.json and settings.json merged");
@@ -409,7 +411,7 @@ function printInstallSummary(summary) {
   console.log("  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest");
   console.log("");
   if (summary.adapters.length === 1 && summary.adapters[0] === "claude") {
-    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob:hunt target.com`);
+    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-hunt target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "codex") {
     console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $hacker-bob:hunt target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "generic-mcp") {

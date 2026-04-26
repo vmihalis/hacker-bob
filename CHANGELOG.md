@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.2] - 2026-04-26
+
+- Renamed the Claude adapter skill directories to hyphen form (`bob-hunt`, `bob-status`, `bob-debug`) so Claude Code registers the same names shown in `name:` frontmatter.
+- Renamed the Claude update command from `/bob:update` to `/bob-update` and moved the source file to `.claude/commands/bob-update.md`.
+- Added installer, dev-sync, and uninstall cleanup for legacy Claude `commands/bob/*` shims and `bountyagent*` skill directories.
+- Updated Claude docs and generated prompts to use `/bob-hunt`, `/bob-status`, `/bob-debug`, and `/bob-update`. Codex remains `$hacker-bob:hunt`, `$hacker-bob:status`, `$hacker-bob:debug`, and `$hacker-bob:update`.
+
+## [1.1.1] - 2026-04-25
+
+- Removed the redundant Claude hunt/status/debug command-shim approach from the release line after duplicate slash menu entries were reported.
+- Added upgrade cleanup for the old Claude command shim files so stale slash entries do not survive installs.
+- Superseded by `1.1.2` because Claude Code rejects colon-form skill `name:` values.
+
 ## [1.1.0] - 2026-04-26
 
 - Added `hacker-bob doctor <project-dir> [--json]` for read-only install diagnostics.

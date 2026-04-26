@@ -71,7 +71,7 @@ process.stdin.on('end', () => {
       const projectDir = data.workspace?.current_dir || process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const cache = update.readUpdateCache(projectDir);
       if (cache && cache.update_available && !cache.error && cache.latest_version) {
-        updateHint = ` │ \x1b[33mBob ${cache.latest_version}: /bob:update\x1b[0m`;
+        updateHint = ` │ \x1b[33mBob ${cache.latest_version}: /bob-update\x1b[0m`;
       }
     } catch {}
 

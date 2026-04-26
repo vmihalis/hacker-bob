@@ -49,9 +49,9 @@ hacker-bob doctor /path/to/your/project --adapter codex --json
 
 ## Claude Restart Required
 
-Claude Code reads project MCP and settings during startup. After installing or updating Bob, fully restart Claude Code in that project before running `/bob:hunt`.
+Claude Code reads project MCP and settings during startup. After installing or updating Bob, fully restart Claude Code in that project before running `/bob-hunt`.
 
-## `/bob:update` Is Missing
+## `/bob-update` Is Missing
 
 Legacy Claude installs may not have the update command. Update from outside Claude Code:
 

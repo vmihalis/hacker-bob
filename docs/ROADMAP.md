@@ -8,11 +8,11 @@ Improve installer diagnostics, update recovery, uninstall confidence, and platfo
 
 ## Docs And Media
 
-Add real sanitized screenshots and short demos for first install, `hacker-bob doctor`, `/bob:status`, and a safe `/bob:hunt` start against a controlled target.
+Add real sanitized screenshots and short demos for first install, `hacker-bob doctor`, `/bob-status`, and a safe `/bob-hunt` start against a controlled target.
 
 ## MCP Diagnostics
 
-Make MCP startup, tool registration, Claude config wiring, and statusline failures easier to diagnose from `hacker-bob doctor` and `/bob:debug`.
+Make MCP startup, tool registration, Claude config wiring, and statusline failures easier to diagnose from `hacker-bob doctor` and `/bob-debug`.
 
 ## Hunter Quality
 

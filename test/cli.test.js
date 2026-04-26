@@ -42,7 +42,9 @@ test("CLI installs into a workspace", () => {
     assert.equal(fs.readFileSync(path.join(workspace, ".hacker-bob", "VERSION"), "utf8").trim(), PACKAGE_VERSION);
     const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".hacker-bob", "install.json"), "utf8"));
     assert.deepEqual(installMeta.installed_adapters, ["claude"]);
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -184,7 +186,8 @@ test("CLI uninstall of one adapter preserves remaining adapters and shared runti
     assert.ok(!fs.existsSync(path.join(workspace, ".agents", "plugins", "marketplace.json")));
     assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "plugins", "cache", "hacker-bob-local", "hacker-bob")));
     assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "config.toml")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".hacker-bob", "generic-mcp", "hacker-bob.md")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "server.js")));
 
@@ -200,7 +203,8 @@ test("CLI uninstall of one adapter preserves remaining adapters and shared runti
     const claudeResult = JSON.parse(claudeOutput);
     assert.deepEqual(claudeResult.remaining_adapters, ["generic-mcp"]);
     assert.equal(claudeResult.remove_shared, false);
-    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".hacker-bob", "generic-mcp", "hacker-bob.md")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "server.js")));
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, ".mcp.json"), "utf8"));
@@ -432,7 +436,7 @@ test("CLI uninstall --yes removes Bob-managed files and preserves unrelated conf
     const result = JSON.parse(output);
     assert.equal(result.dry_run, false);
     assert.ok(result.actions.some((action) => action.path === path.join(".claude", "bob", "VERSION")));
-    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
     assert.ok(!fs.existsSync(path.join(workspace, ".hacker-bob", "knowledge", "hunter-techniques.json")));
     assert.ok(!fs.existsSync(path.join(workspace, ".hacker-bob", "bypass-tables", "rest-api.txt")));
