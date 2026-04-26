@@ -167,7 +167,7 @@ if adapter_includes "claude"; then
 elif adapter_includes "codex"; then
   echo "  1. Restart Codex in $TARGET_ABS"
   echo "  2. Confirm the hacker-bob plugin is available"
-  echo "  3. Smoke test with the \$hacker-bob:status skill"
+  echo "  3. Smoke test with the \$bob-status skill"
 else
   echo "  1. Configure your MCP host to use $TARGET_ABS/mcp/server.js"
   echo "  2. Read $BOB_DIR/generic-mcp/hacker-bob.md"

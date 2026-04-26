@@ -1,5 +1,5 @@
 ---
-name: update
+name: bob-update
 description: Check for Hacker Bob package updates and guide project-local update installation from Codex.
 ---
 

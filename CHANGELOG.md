@@ -5,7 +5,9 @@
 - Renamed the Claude adapter skill directories to hyphen form (`bob-hunt`, `bob-status`, `bob-debug`) so Claude Code registers the same names shown in `name:` frontmatter.
 - Renamed the Claude update command from `/bob:update` to `/bob-update` and moved the source file to `.claude/commands/bob-update.md`.
 - Added installer, dev-sync, and uninstall cleanup for legacy Claude `commands/bob/*` shims and `bountyagent*` skill directories.
-- Updated Claude docs and generated prompts to use `/bob-hunt`, `/bob-status`, `/bob-debug`, and `/bob-update`. Codex remains `$hacker-bob:hunt`, `$hacker-bob:status`, `$hacker-bob:debug`, and `$hacker-bob:update`.
+- Updated Claude docs and generated prompts to use `/bob-hunt`, `/bob-status`, `/bob-debug`, and `/bob-update`.
+- Switched Codex to direct `$bob-hunt`, `$bob-status`, `$bob-debug`, and `$bob-update` skills in `~/.codex/skills`; the Codex plugin now handles MCP wiring only and installer cleanup removes deprecated plugin-scoped skill copies.
+- Normalized the canonical package, compatibility package, Codex plugin manifest, and installed metadata to `1.1.2` version semantics.
 
 ## [1.1.1] - 2026-04-25
 

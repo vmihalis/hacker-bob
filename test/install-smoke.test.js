@@ -320,11 +320,13 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
   }
 });
 
-test("codex adapter installs plugin skills and doctor checks MCP wiring", () => {
+test("codex adapter installs direct skills and doctor checks MCP wiring", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-codex-adapter-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
   const workspace = path.join(tempRoot, "workspace");
+  const originalCodexHome = process.env.CODEX_HOME;
   fs.mkdirSync(workspace, { recursive: true });
+  process.env.CODEX_HOME = path.join(tempHome, ".codex");
 
   try {
     execFileSync(process.execPath, [CLI, "install", workspace], {
@@ -341,9 +343,17 @@ test("codex adapter installs plugin skills and doctor checks MCP wiring", () => 
     assert.equal(install.skills, 4);
     assert.equal(install.commands, 4);
     assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".codex-plugin", "plugin.json")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hunt", "SKILL.md")));
+    const manifest = JSON.parse(fs.readFileSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".codex-plugin", "plugin.json"), "utf8"));
+    assert.equal(Object.prototype.hasOwnProperty.call(manifest, "skills"), false);
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-status", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-debug", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-update", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hunt", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hacker-bob-hunt", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "skills", "hacker-bob-hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-hunt.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".agents", "plugins", "marketplace.json")));
 
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json"), "utf8"));
@@ -355,22 +365,32 @@ test("codex adapter installs plugin skills and doctor checks MCP wiring", () => 
     const doctor = CODEX_ADAPTER.doctor({ targetAbs: workspace });
     assert.equal(doctor.ok, true);
     assert.ok(doctor.checks.some((check) => check.id === "codex_plugin_manifest" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "codex_global_skills" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "codex_plugin_skills_clean" && check.status === "ok"));
     assert.ok(doctor.checks.some((check) => check.id === "codex_plugin_mcp" && check.status === "ok"));
     assert.ok(doctor.checks.some((check) => check.id === "codex_plugin_commands" && check.status === "ok"));
     assert.ok(doctor.checks.some((check) => check.id === "codex_plugin_marketplace" && check.status === "ok"));
 
     const dryRun = CODEX_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: workspace, dryRun: true });
     assert.equal(dryRun.dry_run, true);
+    assert.ok(dryRun.actions.some((action) => action.path === path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(dryRun.actions.some((action) => action.path === path.join(".codex", "plugins", "hacker-bob", ".mcp.json")));
     assert.ok(dryRun.actions.some((action) => action.path === path.join(".agents", "plugins", "marketplace.json")));
     assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
 
     const removed = CODEX_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: workspace, dryRun: false });
     assert.equal(removed.dry_run, false);
+    assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json")));
-    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-hunt.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".agents", "plugins", "marketplace.json")));
   } finally {
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
+    }
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
   }

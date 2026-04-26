@@ -180,28 +180,31 @@ test("adapter registry exposes the shared lifecycle surface", () => {
   }
 });
 
-test("Codex plugin manifest and skills expose portable Bob contracts", () => {
+test("Codex plugin manifest and direct skills expose portable Bob contracts", () => {
   const codex = getAdapter("codex");
   const manifest = JSON.parse(readFile("adapters/codex/hacker-bob/.codex-plugin/plugin.json"));
   assert.equal(manifest.name, "hacker-bob");
-  assert.equal(manifest.skills, "./skills/");
   assert.equal(manifest.mcpServers, "./.mcp.json");
+  assert.equal(Object.prototype.hasOwnProperty.call(manifest, "skills"), false);
   assert.doesNotMatch(JSON.stringify(manifest), /TODO/);
 
   const mcp = JSON.parse(readFile("adapters/codex/hacker-bob/.mcp.json"));
   assert.equal(mcp.mcpServers.bountyagent.command, "node");
   assert.match(mcp.mcpServers.bountyagent.args[0], /mcp\/server\.js$/);
 
-  const hunt = readFile("adapters/codex/hacker-bob/skills/hunt/SKILL.md");
-  const status = readFile("adapters/codex/hacker-bob/skills/status/SKILL.md");
-  const debug = readFile("adapters/codex/hacker-bob/skills/debug/SKILL.md");
+  const hunt = readFile("adapters/codex/skills/bob-hunt/SKILL.md");
+  const status = readFile("adapters/codex/skills/bob-status/SKILL.md");
+  const debug = readFile("adapters/codex/skills/bob-debug/SKILL.md");
+  assert.equal(parseFrontmatter(hunt, "adapters/codex/skills/bob-hunt/SKILL.md").name, "bob-hunt");
+  assert.equal(parseFrontmatter(status, "adapters/codex/skills/bob-status/SKILL.md").name, "bob-status");
+  assert.equal(parseFrontmatter(debug, "adapters/codex/skills/bob-debug/SKILL.md").name, "bob-debug");
   assert.match(hunt, /bounty_finalize_hunter_run/);
   assert.doesNotMatch(hunt + status + debug, /CLAUDE_PROJECT_DIR|mcp__bountyagent__|\/bob:/);
   assert.match(status, /mcp\/lib\/update-check\.js/);
 
   for (const commandId of codex.commandIds()) {
     const command = codex.renderCommand(commandId);
-    assert.match(command, new RegExp(`\\$hacker-bob:${commandId}`));
+    assert.match(command, new RegExp(`\\$bob-${commandId}`));
     assert.match(command, /\$ARGUMENTS/);
     assert.doesNotMatch(command, /CLAUDE_PROJECT_DIR|mcp__bountyagent__/);
   }
@@ -645,7 +648,7 @@ test("dev-sync accepts adapters and gates Claude-specific sync paths", () => {
   assert.match(devSync, /"\$SCRIPT_DIR\/install\.sh" "\$TARGET_ABS" --adapter "\$ADAPTER"/);
   assert.match(devSync, /function sync_claude_adapter\(\)|sync_claude_adapter\(\) \{/);
   assert.match(devSync, /if adapter_includes "claude"; then\s+sync_claude_adapter/s);
-  assert.match(devSync, /\$hacker-bob:status skill/);
+  assert.match(devSync, /\$bob-status skill/);
   assert.match(devSync, /generic-mcp\/hacker-bob\.md/);
 });
 

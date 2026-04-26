@@ -26,9 +26,9 @@ Adapters own host-specific packaging and ergonomics:
 
 - Claude adapter: `.claude/commands`, `.claude/skills`, `.claude/agents`,
   `.claude/settings.json`, `.mcp.json`, status line, and Claude hooks.
-- Codex adapter: Codex plugin metadata, `$hacker-bob:*` skills, plugin
-  command wrappers, `.codex` configuration, repo-local plugin marketplace
-  metadata, Codex cache/config activation, and MCP config.
+- Codex adapter: direct `$bob-*` skills in `~/.codex/skills`, Codex plugin
+  metadata, plugin command wrappers, `.codex` configuration, repo-local plugin
+  marketplace metadata, Codex cache/config activation, and MCP config.
 - Generic MCP adapter: MCP server configuration and prompt documentation only.
 
 Adapters may generate files from a shared role and policy model, but generated

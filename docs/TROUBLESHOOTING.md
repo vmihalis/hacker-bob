@@ -29,11 +29,11 @@ claude mcp list
 
 If `hacker-bob doctor` reports a missing or mismatched `.mcp.json` entry, rerun the install command for that project directory.
 
-For Codex installs, check that `.codex/plugins/hacker-bob/.codex-plugin/plugin.json`, `.codex/plugins/hacker-bob/.mcp.json`, `.codex/plugins/hacker-bob/skills/{hunt,status,debug,update}/SKILL.md`, `.agents/plugins/marketplace.json`, and the doctor `codex_plugin_activation` check are present. For generic MCP installs, check `.hacker-bob/generic-mcp/hacker-bob.md` and the root `.mcp.json`.
+For Codex installs, check that `.codex/plugins/hacker-bob/.codex-plugin/plugin.json`, `.codex/plugins/hacker-bob/.mcp.json`, `~/.codex/skills/bob-{hunt,status,debug,update}/SKILL.md`, `.agents/plugins/marketplace.json`, and the doctor `codex_plugin_activation` and `codex_global_skills` checks are present. For generic MCP installs, check `.hacker-bob/generic-mcp/hacker-bob.md` and the root `.mcp.json`.
 
 ## Codex Skills Are Missing
 
-Codex reads plugin skills from enabled plugins in its plugin cache. Rerun the Codex adapter install in the exact project directory you start Codex from:
+Codex reads Bob as direct skills from `~/.codex/skills` and reads MCP wiring from the enabled local plugin cache. Rerun the Codex adapter install in the exact project directory you start Codex from:
 
 ```bash
 npx -y hacker-bob@latest install /path/to/your/project --adapter codex
@@ -41,7 +41,7 @@ cd /path/to/your/project
 codex
 ```
 
-The install should print `Codex plugin cache/config activated for skill discovery`. Then look for `$hacker-bob:hunt`, `$hacker-bob:status`, `$hacker-bob:debug`, and `$hacker-bob:update`. If they still do not appear, run:
+The install should print `Codex plugin cache/config activated for MCP discovery`. Then look for `$bob-hunt`, `$bob-status`, `$bob-debug`, and `$bob-update`. If they still do not appear, run:
 
 ```bash
 hacker-bob doctor /path/to/your/project --adapter codex --json
@@ -61,7 +61,7 @@ npx -y hacker-bob@latest install /path/to/your/project
 
 Then restart Claude Code in that project.
 
-For Codex installs, use `$hacker-bob:update`. For generic MCP installs, run `hacker-bob update /path/to/your/project --adapter generic-mcp` from a shell and reload the host config.
+For Codex installs, use `$bob-update`. For generic MCP installs, run `hacker-bob update /path/to/your/project --adapter generic-mcp` from a shell and reload the host config.
 
 ## Legacy Metadata Warning
 

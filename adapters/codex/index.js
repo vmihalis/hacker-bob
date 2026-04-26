@@ -11,38 +11,56 @@ const {
 const id = "codex";
 const PLUGIN_NAME = "hacker-bob";
 const PLUGIN_SOURCE_DIR = path.join("adapters", "codex", PLUGIN_NAME);
+const DIRECT_SKILL_SOURCE_DIR = path.join("adapters", "codex", "skills");
 const PLUGIN_TARGET_DIR = path.join(".codex", "plugins", PLUGIN_NAME);
 const MARKETPLACE_PATH = path.join(".agents", "plugins", "marketplace.json");
 const MARKETPLACE_NAME = "hacker-bob-local";
 const PLUGIN_CONFIG_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
+const DIRECT_SKILL_NAMES = Object.freeze(
+  Object.values(CODEX_SKILL_SPECS).map((spec) => spec.name),
+);
 const LEGACY_SKILL_DIRS = Object.freeze([
   "hacker-bob-hunt",
   "hacker-bob-status",
   "hacker-bob-debug",
   "hacker-bob-update",
 ]);
+const STALE_PLUGIN_SKILL_DIRS = Object.freeze([
+  "hunt",
+  "status",
+  "debug",
+  "update",
+  ...LEGACY_SKILL_DIRS,
+  ...DIRECT_SKILL_NAMES,
+]);
+const STALE_COMMAND_FILES = Object.freeze([
+  "hunt.md",
+  "status.md",
+  "debug.md",
+  "update.md",
+]);
 const COMMAND_SPECS = Object.freeze({
   hunt: Object.freeze({
-    file: "hunt.md",
-    skill: "hunt",
+    file: "bob-hunt.md",
+    skill: "bob-hunt",
     description: "Run or resume a Hacker Bob bug bounty hunt.",
     argumentHint: "<target|resume target [force-merge]> [--no-auth|--normal|--paranoid|--yolo]",
   }),
   status: Object.freeze({
-    file: "status.md",
-    skill: "status",
+    file: "bob-status.md",
+    skill: "bob-status",
     description: "Show the latest Hacker Bob session status.",
     argumentHint: "[target]",
   }),
   debug: Object.freeze({
-    file: "debug.md",
-    skill: "debug",
+    file: "bob-debug.md",
+    skill: "bob-debug",
     description: "Debug the latest or selected Hacker Bob run.",
     argumentHint: "[target] [--deep]",
   }),
   update: Object.freeze({
-    file: "update.md",
-    skill: "update",
+    file: "bob-update.md",
+    skill: "bob-update",
     description: "Check or apply Hacker Bob project-local updates.",
     argumentHint: "[check|apply]",
   }),
@@ -50,6 +68,10 @@ const COMMAND_SPECS = Object.freeze({
 
 function pluginSourceRoot(sourceRoot) {
   return path.join(sourceRoot, PLUGIN_SOURCE_DIR);
+}
+
+function directSkillSourceRoot(sourceRoot) {
+  return path.join(sourceRoot, DIRECT_SKILL_SOURCE_DIR);
 }
 
 function pluginTargetRoot(targetAbs) {
@@ -138,16 +160,14 @@ function managedFiles(sourceRoot) {
     ...sourceTreeFiles(sourceRoot, PLUGIN_SOURCE_DIR)
       .map((relative) => path.join(PLUGIN_TARGET_DIR, path.relative(PLUGIN_SOURCE_DIR, relative))),
     ...commandIds().map((commandId) => path.join(PLUGIN_TARGET_DIR, "commands", commandSpec(commandId).file)),
-    ...LEGACY_SKILL_DIRS.map((dir) => path.join(PLUGIN_TARGET_DIR, "skills", dir, "SKILL.md")),
-  ];
+    ...STALE_COMMAND_FILES.map((file) => path.join(PLUGIN_TARGET_DIR, "commands", file)),
+    ...STALE_PLUGIN_SKILL_DIRS.map((dir) => path.join(PLUGIN_TARGET_DIR, "skills", dir, "SKILL.md")),
+  ].filter((relative, index, all) => all.indexOf(relative) === index);
 }
 
 function managedDirs() {
   return [
-    ...Object.values(CODEX_SKILL_SPECS).map((spec) => (
-      path.join(PLUGIN_TARGET_DIR, "skills", path.basename(path.dirname(spec.output_path)))
-    )),
-    ...LEGACY_SKILL_DIRS.map((dir) => path.join(PLUGIN_TARGET_DIR, "skills", dir)),
+    ...STALE_PLUGIN_SKILL_DIRS.map((dir) => path.join(PLUGIN_TARGET_DIR, "skills", dir)),
     path.join(PLUGIN_TARGET_DIR, "commands"),
     path.join(PLUGIN_TARGET_DIR, "skills"),
     path.join(PLUGIN_TARGET_DIR, ".codex-plugin"),
@@ -186,15 +206,16 @@ function commandIds() {
 
 function renderCommand(commandId) {
   const spec = commandSpec(commandId);
+  const commandName = spec.skill.replace(/^bob-/, "");
   return [
     "---",
     `description: ${spec.description}`,
     `argument-hint: ${spec.argumentHint}`,
     "---",
     "",
-    `# Hacker Bob ${commandId}`,
+    `# Hacker Bob ${commandName}`,
     "",
-    `Use the installed \`$hacker-bob:${spec.skill}\` skill for this command.`,
+    `Use the installed \`$${spec.skill}\` skill for this command.`,
     "",
     "The operator invoked this command with:",
     "",
@@ -202,7 +223,7 @@ function renderCommand(commandId) {
     "$ARGUMENTS",
     "```",
     "",
-    `Read \`skills/${spec.skill}/SKILL.md\`, treat \`$ARGUMENTS\` as that workflow's exact input, and follow the skill's guardrails.`,
+    `Treat \`$ARGUMENTS\` as the \`$${spec.skill}\` workflow's exact input and follow that skill's guardrails.`,
     "",
   ].join("\n");
 }
@@ -268,6 +289,44 @@ function installMarketplace(targetAbs) {
 
 function codexHome() {
   return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+}
+
+function directSkillTargetRoot(home = codexHome()) {
+  return path.join(home, "skills");
+}
+
+function directSkillTargetDir(spec, home = codexHome()) {
+  return path.join(directSkillTargetRoot(home), spec.name);
+}
+
+function directSkillTargetPath(spec, home = codexHome()) {
+  return path.join(directSkillTargetDir(spec, home), "SKILL.md");
+}
+
+function removeStalePluginSurfaces(pluginDir) {
+  fs.rmSync(path.join(pluginDir, "skills"), { recursive: true, force: true });
+  for (const file of STALE_COMMAND_FILES) {
+    fs.rmSync(path.join(pluginDir, "commands", file), { force: true });
+  }
+}
+
+function removeLegacyDirectSkillDirs(home = codexHome()) {
+  for (const dir of LEGACY_SKILL_DIRS) {
+    fs.rmSync(path.join(directSkillTargetRoot(home), dir), { recursive: true, force: true });
+  }
+}
+
+function installDirectSkills(sourceRoot, home = codexHome()) {
+  const copied = [];
+  removeLegacyDirectSkillDirs(home);
+  for (const spec of Object.values(CODEX_SKILL_SPECS)) {
+    const source = path.join(sourceRoot, spec.output_path);
+    const destination = directSkillTargetPath(spec, home);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(source, destination);
+    copied.push(destination);
+  }
+  return copied.sort();
 }
 
 function tomlString(value) {
@@ -400,20 +459,20 @@ function codexActivationStatus(targetAbs) {
 function install({ sourceRoot, targetAbs, serverPath, activate = false }) {
   const source = pluginSourceRoot(sourceRoot);
   const destination = pluginTargetRoot(targetAbs);
-  for (const dir of LEGACY_SKILL_DIRS) {
-    fs.rmSync(path.join(destination, "skills", dir), { recursive: true, force: true });
-  }
+  removeStalePluginSurfaces(destination);
   const copied = copyTree(source, destination);
   writeCommandFiles(destination);
   writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }));
   installMarketplace(targetAbs);
+  const directSkills = installDirectSkills(sourceRoot);
   const activation = maybeActivateCodexPlugin({ activate, targetAbs, pluginDir: destination });
   return {
     activation,
     commands: commandIds().length,
+    codexSkillDir: directSkillTargetRoot(),
     pluginDir: destination,
     files: copied.length,
-    skills: Object.keys(CODEX_SKILL_SPECS).length,
+    skills: directSkills.length,
   };
 }
 
@@ -440,7 +499,11 @@ function doctor({ targetAbs }) {
   } else {
     try {
       manifest = readJson(manifestPath);
-      if (manifest.name === PLUGIN_NAME && manifest.skills === "./skills/" && manifest.mcpServers === "./.mcp.json") {
+      if (
+        manifest.name === PLUGIN_NAME &&
+        !Object.prototype.hasOwnProperty.call(manifest, "skills") &&
+        manifest.mcpServers === "./.mcp.json"
+      ) {
         addCheck(checks, "ok", "codex_plugin_manifest", "Codex plugin manifest is valid");
       } else {
         addCheck(checks, "error", "codex_plugin_manifest", "Codex plugin manifest is incomplete or mismatched");
@@ -453,12 +516,25 @@ function doctor({ targetAbs }) {
   }
 
   const missingSkills = Object.values(CODEX_SKILL_SPECS)
-    .map((spec) => path.join("skills", path.basename(path.dirname(spec.output_path)), "SKILL.md"))
-    .filter((relative) => !fileExists(path.join(pluginDir, relative)));
+    .map((spec) => directSkillTargetPath(spec))
+    .filter((skillPath) => !fileExists(skillPath));
   if (missingSkills.length === 0) {
-    addCheck(checks, "ok", "codex_plugin_skills", "Codex Bob skills are installed");
+    addCheck(checks, "ok", "codex_global_skills", "Codex Bob skills are installed", {
+      skillRoot: directSkillTargetRoot(),
+    });
   } else {
-    addCheck(checks, "error", "codex_plugin_skills", "Codex Bob skills are missing", { missing: missingSkills });
+    addCheck(checks, "error", "codex_global_skills", "Codex Bob skills are missing", { missing: missingSkills });
+  }
+
+  const stalePluginSkills = STALE_PLUGIN_SKILL_DIRS
+    .map((dir) => path.join("skills", dir))
+    .filter((relative) => dirExists(path.join(pluginDir, relative)));
+  if (stalePluginSkills.length === 0) {
+    addCheck(checks, "ok", "codex_plugin_skills_clean", "Deprecated plugin-scoped Codex Bob skills are absent");
+  } else {
+    addCheck(checks, "error", "codex_plugin_skills_clean", "Deprecated plugin-scoped Codex Bob skills remain", {
+      stale: stalePluginSkills,
+    });
   }
 
   const missingCommands = commandIds()
@@ -502,7 +578,7 @@ function doctor({ targetAbs }) {
   if (activation.hasCache && activation.hasPluginConfig && activation.hasMarketplaceConfig) {
     addCheck(checks, "ok", "codex_plugin_activation", "Codex plugin is activated in Codex cache");
   } else {
-    addCheck(checks, "warn", "codex_plugin_activation", "Codex plugin files are present, but Codex may not show slash commands until activation completes", {
+    addCheck(checks, "warn", "codex_plugin_activation", "Codex plugin files are present, but Codex may not connect MCP wiring until activation completes", {
       configPath: activation.configPath,
       cacheDir: activation.cacheDir,
       hasCache: activation.hasCache,
@@ -564,12 +640,46 @@ function maybeRemoveFile(targetAbs, relativePath, result) {
   if (!result.dry_run) fs.rmSync(filePath, { force: true });
 }
 
+function maybeRemoveAbsoluteFile(filePath, result) {
+  if (!fs.existsSync(filePath)) return;
+  const stat = fs.lstatSync(filePath);
+  if (stat.isDirectory()) {
+    result.skipped.push({ type: "file", path: filePath, reason: "expected file but found directory" });
+    return;
+  }
+  result.actions.push({ type: "remove_file", path: filePath });
+  if (!result.dry_run) fs.rmSync(filePath, { force: true });
+}
+
 function maybeRemoveEmptyDir(targetAbs, relativePath, result) {
   const dirPath = path.join(targetAbs, relativePath);
   if (!dirExists(dirPath)) return;
   if (fs.readdirSync(dirPath).length !== 0) return;
   result.actions.push({ type: "remove_empty_dir", path: relativePath });
   if (!result.dry_run) fs.rmdirSync(dirPath);
+}
+
+function maybeRemoveAbsoluteEmptyDir(dirPath, result) {
+  if (!dirExists(dirPath)) return;
+  if (fs.readdirSync(dirPath).length !== 0) return;
+  result.actions.push({ type: "remove_empty_dir", path: dirPath });
+  if (!result.dry_run) fs.rmdirSync(dirPath);
+}
+
+function removeDirectSkills(result) {
+  const home = codexHome();
+  const skillRoot = directSkillTargetRoot(home);
+  for (const spec of Object.values(CODEX_SKILL_SPECS)) {
+    const dir = directSkillTargetDir(spec, home);
+    maybeRemoveAbsoluteFile(path.join(dir, "SKILL.md"), result);
+    maybeRemoveAbsoluteEmptyDir(dir, result);
+  }
+  for (const dirName of LEGACY_SKILL_DIRS) {
+    const dir = path.join(skillRoot, dirName);
+    maybeRemoveAbsoluteFile(path.join(dir, "SKILL.md"), result);
+    maybeRemoveAbsoluteEmptyDir(dir, result);
+  }
+  maybeRemoveAbsoluteEmptyDir(skillRoot, result);
 }
 
 function removeMarketplaceEntry(targetAbs, result) {
@@ -639,7 +749,20 @@ function uninstall({ sourceRoot, targetAbs, dryRun = true }) {
     actions: [],
     skipped: [],
   };
+  const activationBefore = codexActivationStatus(targetAbs);
   removeCodexActivation(targetAbs, result);
+  if (
+    activationBefore.hasMarketplaceConfig ||
+    (!activationBefore.hasCache && !activationBefore.hasPluginConfig && !activationBefore.hasMarketplaceConfig)
+  ) {
+    removeDirectSkills(result);
+  } else {
+    result.skipped.push({
+      type: "codex_global_skills",
+      path: directSkillTargetRoot(),
+      reason: "Codex activation does not point at this install target",
+    });
+  }
   removeMarketplaceEntry(targetAbs, result);
   for (const relativePath of managedFiles(sourceRoot)) {
     maybeRemoveFile(targetAbs, relativePath, result);
@@ -653,6 +776,8 @@ function uninstall({ sourceRoot, targetAbs, dryRun = true }) {
 module.exports = {
   CODEX_SKILL_SPECS,
   COMMAND_SPECS,
+  DIRECT_SKILL_NAMES,
+  DIRECT_SKILL_SOURCE_DIR,
   LEGACY_SKILL_DIRS,
   MARKETPLACE_PATH,
   PLUGIN_CONFIG_ID,
@@ -666,6 +791,9 @@ module.exports = {
   codexHome,
   commandIds,
   commandSpec,
+  directSkillSourceRoot,
+  directSkillTargetPath,
+  directSkillTargetRoot,
   doctor,
   id,
   install,

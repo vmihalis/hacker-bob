@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "Portable autonomous bug bounty hunting MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {

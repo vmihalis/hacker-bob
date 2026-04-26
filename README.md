@@ -61,7 +61,7 @@ npx -y hacker-bob@latest install /path/to/your/project --adapter generic-mcp
 npx -y hacker-bob@latest install /path/to/your/project --adapter all
 ```
 
-The Claude adapter writes `.claude/` commands, skills, agents, hooks, statusline, and settings. The Codex adapter writes a local `.codex/plugins/hacker-bob` plugin with `$hacker-bob:*` skills, plugin command wrappers, plugin MCP config, a repo-local `.agents/plugins/marketplace.json` entry, and activates the plugin in Codex's cache/config for skill discovery. The generic MCP adapter writes root `.mcp.json` plus prompt docs under `.hacker-bob/generic-mcp/`.
+The Claude adapter writes `.claude/` commands, skills, agents, hooks, statusline, and settings. The Codex adapter installs direct `$bob-*` skills into `~/.codex/skills`, writes a local `.codex/plugins/hacker-bob` plugin for MCP wiring and command wrappers, writes a repo-local `.agents/plugins/marketplace.json` entry, and activates the plugin in Codex's cache/config for MCP discovery. The generic MCP adapter writes root `.mcp.json` plus prompt docs under `.hacker-bob/generic-mcp/`.
 
 Run installs as many times as you like. They are idempotent and preserve unrelated host config.
 
@@ -108,7 +108,7 @@ Then in Claude Code, use the Claude slash commands:
 
 That's it. Now go make coffee.
 
-In Codex, restart in the target project and use `$hacker-bob:hunt`, `$hacker-bob:status`, `$hacker-bob:debug`, and `$hacker-bob:update`. In generic MCP hosts, connect to `mcp/server.js` through the generated `.mcp.json` entry and follow `.hacker-bob/generic-mcp/hacker-bob.md`.
+In Codex, restart in the target project and use `$bob-hunt`, `$bob-status`, `$bob-debug`, and `$bob-update`. In generic MCP hosts, connect to `mcp/server.js` through the generated `.mcp.json` entry and follow `.hacker-bob/generic-mcp/hacker-bob.md`.
 
 For install diagnostics, run:
 
@@ -130,7 +130,7 @@ npx -y hacker-bob@latest install "$CLAUDE_PROJECT_DIR"
 
 After an update, fully restart Claude Code in that project. Bob also checks for available updates once per day on `SessionStart` and stores the result in `~/.cache/hacker-bob/update-checks/`; the statusline and `/bob-status` only read that local cache.
 
-In Codex, use `$hacker-bob:update`. In generic MCP hosts, run `hacker-bob update /path/to/your/project --adapter generic-mcp` from a shell and reload the host's MCP config.
+In Codex, use `$bob-update`. In generic MCP hosts, run `hacker-bob update /path/to/your/project --adapter generic-mcp` from a shell and reload the host's MCP config.
 
 ## How Bob hunts
 

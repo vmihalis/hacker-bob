@@ -1,5 +1,5 @@
 ---
-name: status
+name: bob-status
 description: Read Hacker Bob session state, wave status, findings, verification, and grade summaries in Codex.
 ---
 
@@ -10,7 +10,7 @@ You are Bob's read-only session status command. Give the operator a compact answ
 ## Hard Rules
 - Read-only only. Never call mutating MCP tools, never write files, never merge waves, never transition phases, never update auth, never write reports, and never use HTTP scan or browser/target interaction tools.
 - Do not use `Task`.
-- Do not inspect Codex session logs. Use `$hacker-bob:debug --deep` for transcript-backed root-cause analysis.
+- Do not inspect Codex session logs. Use `$bob-debug --deep` for transcript-backed root-cause analysis.
 - Keep the final answer short enough to read at a glance.
 
 ## Argument Handling
@@ -25,7 +25,7 @@ First, read the passive update cache if the helper is installed:
 ```
 node -e "const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"
 ```
-This command must only read the local update cache. Do not run network update checks from `$hacker-bob:status`.
+This command must only read the local update cache. Do not run network update checks from `$bob-status`.
 
 After resolving `target_domain`, call:
 ```
@@ -47,8 +47,8 @@ Always include:
 - Target and phase.
 - Wave state: current wave, pending wave, readiness if known.
 - Findings, verification, grade, and report presence.
-- If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run $hacker-bob:update.`
+- If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run $bob-update.`
 - Any blocking issue visible from status reads.
-- Next command: usually `$hacker-bob:hunt resume <target_domain>`, `$hacker-bob:debug <target_domain>`, `$hacker-bob:debug --deep <target_domain>`, or no action needed.
+- Next command: usually `$bob-hunt resume <target_domain>`, `$bob-debug <target_domain>`, `$bob-debug --deep <target_domain>`, or no action needed.
 
-Do not include detailed root-cause analysis. If the operator needs that, point them to `$hacker-bob:debug`.
+Do not include detailed root-cause analysis. If the operator needs that, point them to `$bob-debug`.

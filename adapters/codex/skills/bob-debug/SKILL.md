@@ -1,5 +1,5 @@
 ---
-name: debug
+name: bob-debug
 description: Debug Hacker Bob sessions in Codex using MCP telemetry and local session artifacts.
 ---
 

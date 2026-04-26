@@ -358,11 +358,11 @@ function printInstallSummary(summary) {
     console.log("  .claude/bob/VERSION and install.json compatibility metadata");
   }
   if (summary.adapterResults.codex) {
-    console.log(`  Codex plugin (.codex/plugins/hacker-bob) with ${summary.codexSkills} skills`);
-    console.log(`  Codex skills ($hacker-bob:hunt, $hacker-bob:status, $hacker-bob:debug, $hacker-bob:update)`);
+    console.log("  Codex plugin (.codex/plugins/hacker-bob) for MCP wiring");
+    console.log(`  Codex skills ($bob-hunt, $bob-status, $bob-debug, $bob-update) in ~/.codex/skills`);
     console.log(`  Codex plugin command wrappers (${summary.codexCommands}) and .agents/plugins/marketplace.json`);
     if (summary.codexActivation && summary.codexActivation.ok) {
-      console.log("  Codex plugin cache/config activated for skill discovery");
+      console.log("  Codex plugin cache/config activated for MCP discovery");
     } else if (summary.codexActivation && summary.codexActivation.skipped) {
       console.log(`  Codex plugin activation skipped (${summary.codexActivation.reason})`);
     } else if (summary.codexActivation) {
@@ -413,7 +413,7 @@ function printInstallSummary(summary) {
   if (summary.adapters.length === 1 && summary.adapters[0] === "claude") {
     console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-hunt target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "codex") {
-    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $hacker-bob:hunt target.com`);
+    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $bob-hunt target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "generic-mcp") {
     console.log(`Done. Connect your MCP host to ${path.join(summary.targetAbs, "mcp", "server.js")} and read .hacker-bob/generic-mcp/hacker-bob.md.`);
   } else {

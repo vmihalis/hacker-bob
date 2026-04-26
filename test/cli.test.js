@@ -66,12 +66,17 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     });
 
     assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".codex-plugin", "plugin.json")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-status", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-debug", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-update", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hunt", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "skills", "hacker-bob-hunt", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "hunt.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "status.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "debug.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-hunt.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-status.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-debug.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-update.md")));
     const marketplace = JSON.parse(fs.readFileSync(path.join(workspace, ".agents", "plugins", "marketplace.json"), "utf8"));
     const marketplaceEntry = marketplace.plugins.find((plugin) => plugin.name === "hacker-bob");
     assert.equal(marketplaceEntry.source.path, "./.codex/plugins/hacker-bob");
@@ -85,7 +90,17 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
       "hacker-bob",
       PACKAGE_VERSION,
       "commands",
-      "hunt.md",
+      "bob-hunt.md",
+    )));
+    assert.ok(!fs.existsSync(path.join(
+      tempHome,
+      ".codex",
+      "plugins",
+      "cache",
+      "hacker-bob-local",
+      "hacker-bob",
+      PACKAGE_VERSION,
+      "skills",
     )));
     const codexConfig = fs.readFileSync(path.join(tempHome, ".codex", "config.toml"), "utf8");
     assert.match(codexConfig, /\[plugins\."hacker-bob@hacker-bob-local"\]/);
@@ -105,6 +120,8 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     assert.equal(result.ok, true);
     assert.deepEqual(result.adapters, ["codex"]);
     assert.ok(result.checks.some((check) => check.id === "codex_plugin_manifest" && check.status === "ok"));
+    assert.ok(result.checks.some((check) => check.id === "codex_global_skills" && check.status === "ok"));
+    assert.ok(result.checks.some((check) => check.id === "codex_plugin_skills_clean" && check.status === "ok"));
     assert.ok(result.checks.some((check) => check.id === "codex_plugin_commands" && check.status === "ok"));
     assert.ok(result.checks.some((check) => check.id === "codex_plugin_marketplace" && check.status === "ok"));
     assert.ok(!result.checks.some((check) => check.id.startsWith("claude_")));
@@ -182,7 +199,8 @@ test("CLI uninstall of one adapter preserves remaining adapters and shared runti
     assert.deepEqual(result.remaining_adapters, ["claude", "generic-mcp"]);
     assert.equal(result.remove_shared, false);
     assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json")));
-    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex", "plugins", "hacker-bob", "commands", "bob-hunt.md")));
+    assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".agents", "plugins", "marketplace.json")));
     assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "plugins", "cache", "hacker-bob-local", "hacker-bob")));
     assert.ok(!fs.existsSync(path.join(tempHome, ".codex", "config.toml")));

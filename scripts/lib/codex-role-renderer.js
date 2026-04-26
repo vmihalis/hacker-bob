@@ -11,25 +11,25 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 const CODEX_SKILL_SPECS = Object.freeze({
   hunt: Object.freeze({
     role_id: "orchestrator",
-    output_path: path.join("adapters", "codex", "hacker-bob", "skills", "hunt", "SKILL.md"),
-    name: "hunt",
+    output_path: path.join("adapters", "codex", "skills", "bob-hunt", "SKILL.md"),
+    name: "bob-hunt",
     description: "Run or resume a Hacker Bob bug bounty hunt in Codex using the shared MCP runtime.",
   }),
   status: Object.freeze({
     role_id: "status",
-    output_path: path.join("adapters", "codex", "hacker-bob", "skills", "status", "SKILL.md"),
-    name: "status",
+    output_path: path.join("adapters", "codex", "skills", "bob-status", "SKILL.md"),
+    name: "bob-status",
     description: "Read Hacker Bob session state, wave status, findings, verification, and grade summaries in Codex.",
   }),
   debug: Object.freeze({
     role_id: "debug",
-    output_path: path.join("adapters", "codex", "hacker-bob", "skills", "debug", "SKILL.md"),
-    name: "debug",
+    output_path: path.join("adapters", "codex", "skills", "bob-debug", "SKILL.md"),
+    name: "bob-debug",
     description: "Debug Hacker Bob sessions in Codex using MCP telemetry and local session artifacts.",
   }),
   update: Object.freeze({
-    output_path: path.join("adapters", "codex", "hacker-bob", "skills", "update", "SKILL.md"),
-    name: "update",
+    output_path: path.join("adapters", "codex", "skills", "bob-update", "SKILL.md"),
+    name: "bob-update",
     description: "Check for Hacker Bob package updates and guide project-local update installation from Codex.",
   }),
 });
@@ -63,14 +63,14 @@ function renderCodexPromptBody(roleId, body) {
     .replace(/Claude transcript JSONL files/g, "Codex session log files")
     .replace(/Claude project JSONL files/g, "Codex session log files")
     .replace(/Claude Code/g, "Codex")
-    .replace(/\/bob-hunt/g, "$hacker-bob:hunt")
-    .replace(/\/bob-status/g, "$hacker-bob:status")
-    .replace(/\/bob-debug/g, "$hacker-bob:debug")
-    .replace(/\/bob-update/g, "$hacker-bob:update")
-    .replace(/\/bob:hunt/g, "$hacker-bob:hunt")
-    .replace(/\/bob:status/g, "$hacker-bob:status")
-    .replace(/\/bob:debug/g, "$hacker-bob:debug")
-    .replace(/\/bob:update/g, "$hacker-bob:update");
+    .replace(/\/bob-hunt/g, "$bob-hunt")
+    .replace(/\/bob-status/g, "$bob-status")
+    .replace(/\/bob-debug/g, "$bob-debug")
+    .replace(/\/bob-update/g, "$bob-update")
+    .replace(/\/bob:hunt/g, "$bob-hunt")
+    .replace(/\/bob:status/g, "$bob-status")
+    .replace(/\/bob:debug/g, "$bob-debug")
+    .replace(/\/bob:update/g, "$bob-update");
 }
 
 function renderUpdateSkill() {
