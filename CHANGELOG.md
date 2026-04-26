@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0] - 2026-04-26
+
+- Added `hacker-bob doctor <project-dir> [--json]` for read-only install diagnostics.
+- Added `hacker-bob uninstall <project-dir> [--dry-run] [--yes] [--json]` for conservative removal of Bob-managed files and config entries.
+- Added the `hacker-bob` npm alias package while keeping `hacker-bob-cc` canonical.
+- Updated release publishing to publish both npm packages with provenance.
+- Added Quickstart, troubleshooting docs, release notes, and bug report diagnostics guidance.
+- Optimized the README image to reduce npm package size.
+
 ## [1.0.1] - 2026-04-26
 
 - Clarified install docs and CLI help: Bob installs into one project directory per command, while global npm install only installs the `hacker-bob` CLI.

@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
+const CLI = path.join(ROOT, "bin", "hacker-bob.js");
 const PACKAGE_VERSION = require("../package.json").version;
 
 test("installer copies a require-able complete MCP runtime", () => {
@@ -149,6 +150,59 @@ test("installer merges existing MCP/settings config idempotently", () => {
       sessionEntry.hooks.filter((hook) => /bob-check-update\.js/.test(hook.command)).length,
       1,
     );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("install doctor uninstall dry-run uninstall and reinstall workflow works", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-lifecycle-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    execFileSync(process.execPath, [CLI, "doctor", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    execFileSync(process.execPath, [CLI, "uninstall", workspace, "--dry-run"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+
+    execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+
+    execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+
+    execFileSync(process.execPath, [CLI, "install", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    execFileSync(process.execPath, [CLI, "doctor", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

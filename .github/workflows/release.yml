@@ -30,10 +30,20 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Verify package contents
+      - name: Verify canonical package contents
         run: npm pack --dry-run --json
 
-      - name: Publish
+      - name: Verify alias package contents
+        working-directory: packages/hacker-bob
+        run: npm pack --dry-run --json
+
+      - name: Publish canonical package
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish alias package
+        working-directory: packages/hacker-bob
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -10,6 +10,22 @@ Bob is an autonomous bug bounty hunting framework for Claude Code. You point him
 
 You go to bed. Bob does not.
 
+## Quickstart
+
+Create or choose one Claude Code project directory, then install Bob into that directory:
+
+```bash
+npx -y hacker-bob-cc@latest install /path/to/your/project
+cd /path/to/your/project
+claude --dangerously-skip-permissions --effort max
+```
+
+Then run:
+
+```
+/bob:hunt target.com
+```
+
 ## Install
 
 Bob installs into **one Claude Code project directory per command**. The install target is the project you will later run `claude` from; the installer writes that project's `.claude/`, `mcp/`, `.mcp.json`, and related config.
@@ -19,6 +35,8 @@ Recommended one-off install:
 ```bash
 npx -y hacker-bob-cc@latest install /path/to/your/project
 ```
+
+`hacker-bob-cc` is the canonical npm package. The `hacker-bob` package is a small convenience alias that delegates to `hacker-bob-cc`; keep using `hacker-bob-cc` for pinned installs and release provenance.
 
 The installer drops Bob's brain (agents, `/bob:*` commands, skills, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
 
@@ -30,6 +48,13 @@ hacker-bob install /path/to/your/project
 ```
 
 Global npm install only puts the `hacker-bob` command on your `PATH`; it does **not** install Bob into every directory. To use Bob in another Claude Code project, run `hacker-bob install /path/to/that/project` for that project too.
+
+The alias package also provides the same command:
+
+```bash
+npm install -g hacker-bob
+hacker-bob install /path/to/your/project
+```
 
 Source installs still work for contributors:
 
@@ -57,6 +82,14 @@ Then in Claude Code, summon Bob:
 ```
 
 That's it. Now go make coffee.
+
+For install diagnostics, run:
+
+```bash
+hacker-bob doctor /path/to/your/project
+```
+
+For common setup issues, see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Updates
 

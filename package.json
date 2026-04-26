@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob-cc",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Autonomous bug bounty hunting framework for Claude Code",
   "license": "Apache-2.0",
   "repository": {
@@ -20,6 +20,7 @@
   "files": [
     ".claude/**/*",
     "bin/**/*",
+    "docs/**/*.md",
     "docs/hacker-bob.png",
     "mcp/**/*",
     "scripts/**/*",

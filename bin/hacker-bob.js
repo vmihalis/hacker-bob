@@ -7,6 +7,12 @@ const {
   installProject,
   printInstallSummary,
 } = require("../scripts/install.js");
+const {
+  doctorProject,
+  printDoctorReport,
+  printUninstallReport,
+  uninstallProject,
+} = require("../scripts/lifecycle.js");
 const update = require("../.claude/hooks/bob-update-lib.js");
 
 function usageText() {
@@ -14,9 +20,12 @@ function usageText() {
   hacker-bob install <project-dir>
   hacker-bob update <project-dir>
   hacker-bob check-update <project-dir> [--json]
+  hacker-bob doctor <project-dir> [--json]
+  hacker-bob uninstall <project-dir> [--dry-run] [--yes] [--json]
 
 Installs target exactly one Claude Code project directory per command.
-Global npm install only adds this CLI to PATH; it does not install Bob into every project.`;
+Global npm install only adds this CLI to PATH; it does not install Bob into every project.
+Uninstall defaults to dry-run; pass --yes to remove Bob-managed files and config entries.`;
 }
 
 function usage(stream = process.stderr) {
@@ -64,6 +73,38 @@ async function main(argv) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
       process.stdout.write(update.renderUpdateSummary(result));
+    }
+    return;
+  }
+
+  if (command === "doctor") {
+    const projectDir = firstNonFlag(args);
+    if (!projectDir) {
+      usage();
+      process.exit(1);
+    }
+    const result = doctorProject(path.resolve(projectDir));
+    if (args.includes("--json")) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      printDoctorReport(result);
+    }
+    if (!result.ok) process.exit(1);
+    return;
+  }
+
+  if (command === "uninstall") {
+    const projectDir = firstNonFlag(args);
+    if (!projectDir) {
+      usage();
+      process.exit(1);
+    }
+    const dryRun = args.includes("--dry-run") || !args.includes("--yes");
+    const result = uninstallProject(path.resolve(projectDir), { dryRun });
+    if (args.includes("--json")) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      printUninstallReport(result);
     }
     return;
   }

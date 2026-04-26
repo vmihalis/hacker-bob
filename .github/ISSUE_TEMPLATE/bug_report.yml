@@ -54,6 +54,12 @@ body:
         Claude Code:
         Optional tools:
   - type: textarea
+    id: doctor
+    attributes:
+      label: Sanitized doctor output
+      description: Run `hacker-bob doctor <project-dir> --json` and paste sanitized output with private paths, target names, and secrets removed.
+      render: json
+  - type: textarea
     id: logs
     attributes:
       label: Sanitized logs or output

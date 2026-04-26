@@ -276,7 +276,10 @@ function printInstallSummary(summary) {
 }
 
 module.exports = {
+  EXECUTABLE_HOOKS,
   HOOK_FILES,
+  commandExists,
   installProject,
+  patchrightAvailable,
   printInstallSummary,
 };
