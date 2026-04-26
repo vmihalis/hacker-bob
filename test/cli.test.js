@@ -38,7 +38,7 @@ test("CLI installs into a workspace", () => {
     });
 
     assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), PACKAGE_VERSION);
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob-update.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });

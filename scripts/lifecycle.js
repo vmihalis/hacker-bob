@@ -19,16 +19,23 @@ const {
 } = require("../mcp/lib/claude-config.js");
 
 const BOB_COMMAND_FILES = Object.freeze([
-  "update.md",
+  "bob-update.md",
 ]);
 
 const LEGACY_BOB_COMMAND_FILES = Object.freeze([
   "hunt.md",
   "status.md",
   "debug.md",
+  "update.md",
 ]);
 
 const BOB_SKILLS = Object.freeze([
+  "bob-debug",
+  "bob-hunt",
+  "bob-status",
+]);
+
+const LEGACY_BOB_SKILLS = Object.freeze([
   "bountyagent",
   "bountyagentdebug",
   "bountyagentstatus",
@@ -248,7 +255,7 @@ function doctorProject(projectDir, options = {}) {
   }
 
   const missingCommands = BOB_COMMAND_FILES
-    .map((name) => path.join(".claude", "commands", "bob", name))
+    .map((name) => path.join(".claude", "commands", name))
     .filter((relative) => !fileExists(path.join(targetAbs, relative)));
   if (missingCommands.length === 0) {
     addCheck(checks, "ok", "commands", "Bob slash commands are installed");
@@ -416,9 +423,10 @@ function sourceTreeFiles(sourceRoot, relativeDir) {
 function managedClaudeFiles(sourceRoot) {
   return [
     ...sourceDirFiles(sourceRoot, path.join(".claude", "agents"), (name) => name.endsWith(".md")),
-    ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
+    ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", name)),
     ...LEGACY_BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
     ...BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
+    ...LEGACY_BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "rules"), (name) => name.endsWith(".md")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "bypass-tables"), (name) => name.endsWith(".txt")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "knowledge"), (name) => name.endsWith(".json")),
@@ -667,6 +675,7 @@ module.exports = {
   BOB_COMMAND_FILES,
   LEGACY_BOB_COMMAND_FILES,
   BOB_SKILLS,
+  LEGACY_BOB_SKILLS,
   doctorProject,
   expectedMcpServer,
   managedClaudeFiles,

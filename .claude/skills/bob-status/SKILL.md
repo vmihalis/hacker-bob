@@ -1,5 +1,5 @@
 ---
-name: bob:status
+name: bob-status
 disable-model-invocation: true
 argument-hint: "[--last | <target_domain>]"
 allowed-tools:
@@ -25,7 +25,7 @@ You are Bob's read-only session status command. Give the operator a compact answ
 ## Hard Rules
 - Read-only only. Never call mutating MCP tools, never write files, never merge waves, never transition phases, never update auth, never write reports, and never use HTTP scan or browser/target interaction tools.
 - Do not use `Task`.
-- Do not inspect Claude transcripts. Use `/bob:debug --deep` for transcript-backed root-cause analysis.
+- Do not inspect Claude transcripts. Use `/bob-debug --deep` for transcript-backed root-cause analysis.
 - Keep the final answer short enough to read at a glance.
 
 ## Argument Handling
@@ -40,7 +40,7 @@ First, read the passive update cache if the helper is installed:
 ```
 node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json
 ```
-This command must only read the local update cache. Do not run network update checks from `/bob:status`.
+This command must only read the local update cache. Do not run network update checks from `/bob-status`.
 
 After resolving `target_domain`, call:
 ```
@@ -62,8 +62,8 @@ Always include:
 - Target and phase.
 - Wave state: current wave, pending wave, readiness if known.
 - Findings, verification, grade, and report presence.
-- If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run /bob:update.`
+- If the update cache says a Bob update is available, include `Update: Hacker Bob <version> available. Run /bob-update.`
 - Any blocking issue visible from status reads.
-- Next command: usually `/bob:hunt resume <target_domain>`, `/bob:debug <target_domain>`, `/bob:debug --deep <target_domain>`, or no action needed.
+- Next command: usually `/bob-hunt resume <target_domain>`, `/bob-debug <target_domain>`, `/bob-debug --deep <target_domain>`, or no action needed.
 
-Do not include detailed root-cause analysis. If the operator needs that, point them to `/bob:debug`.
+Do not include detailed root-cause analysis. If the operator needs that, point them to `/bob-debug`.

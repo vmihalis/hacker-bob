@@ -25,9 +25,9 @@ If `hacker-bob doctor` reports a missing or mismatched `.mcp.json` entry, rerun 
 
 ## Claude Restart Required
 
-Claude Code reads project MCP and settings during startup. After installing or updating Bob, fully restart Claude Code in that project before running `/bob:hunt`.
+Claude Code reads project MCP and settings during startup. After installing or updating Bob, fully restart Claude Code in that project before running `/bob-hunt`.
 
-## `/bob:update` Is Missing
+## `/bob-update` Is Missing
 
 Legacy installs may not have the update command. Update from outside Claude Code:
 

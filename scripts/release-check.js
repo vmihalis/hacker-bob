@@ -158,7 +158,7 @@ function checkCanonicalPack(rootPackage) {
     "docs/ROADMAP.md",
     "docs/TROUBLESHOOTING.md",
     `docs/releases/v${rootPackage.version}.md`,
-    ".claude/commands/bob/update.md",
+    ".claude/commands/bob-update.md",
     "mcp/server.js",
     "mcp/lib/tools/index.js",
     "scripts/install.js",

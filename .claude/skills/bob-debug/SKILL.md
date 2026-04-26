@@ -1,5 +1,5 @@
 ---
-name: bob:debug
+name: bob-debug
 disable-model-invocation: true
 argument-hint: "[--last | <target_domain>] [--deep]"
 allowed-tools:

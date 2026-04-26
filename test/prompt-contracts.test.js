@@ -47,7 +47,7 @@ function generatedAllowedMcpTools() {
 
 function orchestratorReferencedMcpTools() {
   return new Set(
-    Array.from(readFile(".claude/skills/bountyagent/SKILL.md").matchAll(/\b(bounty_[A-Za-z0-9_]+)\b/g))
+    Array.from(readFile(".claude/skills/bob-hunt/SKILL.md").matchAll(/\b(bounty_[A-Za-z0-9_]+)\b/g))
       .map((match) => match[1]),
   );
 }
@@ -199,9 +199,9 @@ test("global rules stay small and keep scope plus MCP-owned artifact guardrails"
   }
 });
 
-test("bountyagent skill stays orchestration-sized and preserves FSM shape", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
-  assert.ok(lineCount(".claude/skills/bountyagent/SKILL.md") <= 240, "bountyagent skill is too large");
+test("bob-hunt skill stays orchestration-sized and preserves FSM shape", () => {
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
+  assert.ok(lineCount(".claude/skills/bob-hunt/SKILL.md") <= 240, "bob-hunt skill is too large");
   assert.match(orchestrator, /RECON\s*→\s*AUTH\s*→\s*HUNT\s*→\s*CHAIN\s*→\s*VERIFY\s*→\s*GRADE\s*→\s*REPORT/);
   for (const phase of ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"]) {
     assert.match(orchestrator, new RegExp(`PHASE [0-9]+: ${phase}|${phase}`), `missing ${phase}`);
@@ -211,7 +211,7 @@ test("bountyagent skill stays orchestration-sized and preserves FSM shape", () =
 });
 
 test("orchestrator validates brutalist and balanced rounds before proceeding", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
   assert.match(
     orchestrator,
     /After the brutalist agent completes, validate/,
@@ -255,10 +255,10 @@ test("settings.json registers session-write-guard for Bash and Write", () => {
 
 test("prompts do not tell agents to read auth.json directly", () => {
   for (const relativePath of [
-    ".claude/commands/bob/update.md",
-    ".claude/skills/bountyagent/SKILL.md",
-    ".claude/skills/bountyagentstatus/SKILL.md",
-    ".claude/skills/bountyagentdebug/SKILL.md",
+    ".claude/commands/bob-update.md",
+    ".claude/skills/bob-hunt/SKILL.md",
+    ".claude/skills/bob-status/SKILL.md",
+    ".claude/skills/bob-debug/SKILL.md",
     ...allMarkdown(".claude/agents"),
   ]) {
     const document = readFile(relativePath);
@@ -278,14 +278,14 @@ test("chain-builder uses structured handoffs without Bash or markdown dependency
 });
 
 test("orchestrator has no blanket bypassPermissions rule", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
   assert.doesNotMatch(orchestrator, /Every Agent tool call MUST use `mode: "bypassPermissions"`/);
   assert.doesNotMatch(orchestrator, /mode:\s*"bypassPermissions"/);
 });
 
-test("bountyagent skill allowed-tools match orchestrator and auth bundles", () => {
-  const skill = readFile(".claude/skills/bountyagent/SKILL.md");
-  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bountyagent/SKILL.md");
+test("bob-hunt skill allowed-tools match orchestrator and auth bundles", () => {
+  const skill = readFile(".claude/skills/bob-hunt/SKILL.md");
+  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bob-hunt/SKILL.md");
   const expectedTools = bountyagentSkillAllowedTools();
   assert.deepEqual(allowedTools.sort(), expectedTools.slice().sort());
   assert.deepEqual(
@@ -300,31 +300,31 @@ test("bountyagent skill allowed-tools match orchestrator and auth bundles", () =
   assert.ok(!allowedTools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
 });
 
-test("bob skills declare colon-form names so they back the /bob: slash commands directly", () => {
-  const huntSkill = readFile(".claude/skills/bountyagent/SKILL.md");
-  const statusSkill = readFile(".claude/skills/bountyagentstatus/SKILL.md");
-  const debugSkill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
+test("bob skills declare hyphen-form names so each skill backs a single /bob-* slash command", () => {
+  const huntSkill = readFile(".claude/skills/bob-hunt/SKILL.md");
+  const statusSkill = readFile(".claude/skills/bob-status/SKILL.md");
+  const debugSkill = readFile(".claude/skills/bob-debug/SKILL.md");
 
-  assert.match(huntSkill, /^name: bob:hunt$/m);
-  assert.match(statusSkill, /^name: bob:status$/m);
-  assert.match(debugSkill, /^name: bob:debug$/m);
+  assert.match(huntSkill, /^name: bob-hunt$/m);
+  assert.match(statusSkill, /^name: bob-status$/m);
+  assert.match(debugSkill, /^name: bob-debug$/m);
 });
 
-test("bob update command shim delegates to the installer and is the only commands/bob shim", () => {
-  const updateCommand = readFile(".claude/commands/bob/update.md");
+test("bob-update command delegates to the installer and lives at .claude/commands/bob-update.md", () => {
+  const updateCommand = readFile(".claude/commands/bob-update.md");
 
   assert.match(updateCommand, /hacker-bob-cc@latest install/);
   assert.match(updateCommand, /Update now\?/);
   assert.match(updateCommand, /fully restart Claude Code/);
   assert.deepEqual(
-    parseYamlListFrontmatter(updateCommand, "allowed-tools", "bob/update.md").sort(),
+    parseYamlListFrontmatter(updateCommand, "allowed-tools", "bob-update.md").sort(),
     ["AskUserQuestion", "Bash"].sort(),
   );
 });
 
-test("bountyagentstatus skill is compact, read-only, and points to next commands", () => {
-  const skill = readFile(".claude/skills/bountyagentstatus/SKILL.md");
-  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bountyagentstatus/SKILL.md");
+test("bob-status skill is compact, read-only, and points to next commands", () => {
+  const skill = readFile(".claude/skills/bob-status/SKILL.md");
+  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bob-status/SKILL.md");
   const forbiddenTools = [
     "Task",
     "Write",
@@ -357,10 +357,10 @@ test("bountyagentstatus skill is compact, read-only, and points to next commands
   assert.match(skill, /bounty_read_pipeline_analytics\(\{ target_domain, include_events: false, limit: 20 \}\)/);
   assert.match(skill, /bounty_read_state_summary\(\{ target_domain \}\)/);
   assert.match(skill, /bounty_wave_status\(\{ target_domain \}\)/);
-  assert.match(skill, /\/bob:hunt resume <target_domain>/);
-  assert.match(skill, /\/bob:debug --deep <target_domain>/);
+  assert.match(skill, /\/bob-hunt resume <target_domain>/);
+  assert.match(skill, /\/bob-debug --deep <target_domain>/);
   for (const tool of forbiddenTools) {
-    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bountyagentstatus`);
+    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bob-status`);
   }
   for (const tool of allowedTools.filter((entry) => entry.startsWith("mcp__bountyagent__"))) {
     const toolName = tool.replace(/^mcp__bountyagent__/, "");
@@ -369,8 +369,8 @@ test("bountyagentstatus skill is compact, read-only, and points to next commands
   }
 });
 
-test("bountyagentdebug skill is telemetry-first and supports latest, explicit, and deep modes", () => {
-  const skill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
+test("bob-debug skill is telemetry-first and supports latest, explicit, and deep modes", () => {
+  const skill = readFile(".claude/skills/bob-debug/SKILL.md");
 
   assert.match(skill, /bounty_read_pipeline_analytics\(\{ target_domain, include_events: true, limit: 100 \}\)/);
   assert.match(skill, /bounty_read_tool_telemetry\(\{ target_domain, include_agent_runs: true, limit: 100 \}\)/);
@@ -381,9 +381,9 @@ test("bountyagentdebug skill is telemetry-first and supports latest, explicit, a
   assert.match(skill, /Artifact fallback mode: telemetry MCP unavailable or incomplete\./);
 });
 
-test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", () => {
-  const skill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
-  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bountyagentdebug/SKILL.md");
+test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
+  const skill = readFile(".claude/skills/bob-debug/SKILL.md");
+  const allowedTools = parseYamlListFrontmatter(skill, "allowed-tools", "bob-debug/SKILL.md");
   const expectedReadOnlyMcpTools = [
     "mcp__bountyagent__bounty_read_pipeline_analytics",
     "mcp__bountyagent__bounty_read_tool_telemetry",
@@ -423,10 +423,10 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
   assert.ok(allowedTools.includes("Glob"));
   assert.ok(allowedTools.includes("Grep"));
   for (const tool of expectedReadOnlyMcpTools) {
-    assert.ok(allowedTools.includes(tool), `${tool} missing from bountyagentdebug allowed-tools`);
+    assert.ok(allowedTools.includes(tool), `${tool} missing from bob-debug allowed-tools`);
   }
   for (const tool of forbiddenTools) {
-    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bountyagentdebug`);
+    assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bob-debug`);
   }
   for (const tool of allowedTools.filter((entry) => entry.startsWith("mcp__bountyagent__"))) {
     const toolName = tool.replace(/^mcp__bountyagent__/, "");
@@ -435,36 +435,41 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
   }
 });
 
-test("installer and dev-sync ship the update shim, the three skills, and prune deprecated shims", () => {
+test("installer and dev-sync ship the bob-update command, the three skills, and prune deprecated paths", () => {
   const install = readFile("install.sh");
   const installer = readFile("scripts/install.js");
   const devSync = readFile("dev-sync.sh");
 
   assert.match(install, /bin\/hacker-bob\.js/);
 
-  // Installer copies update.md and proactively removes the legacy hunt/status/debug shims so upgrades from <=1.1.0 don't leave duplicate slash entries.
-  assert.match(installer, /"update\.md"/);
+  // Installer copies bob-update.md and proactively removes the legacy hunt/status/debug/update.md shims and the legacy bountyagent* skill directories so upgrades from <=1.1.1 don't leave orphan slash entries.
+  assert.match(installer, /"bob-update\.md"/);
   assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "hunt\.md"\)\)/);
   assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "status\.md"\)\)/);
   assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "debug\.md"\)\)/);
-  assert.doesNotMatch(installer, /"hunt\.md", "status\.md", "debug\.md"/);
+  assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "update\.md"\)\)/);
+  assert.match(installer, /removeRecursiveIfExists\(path\.join\(claudeDir, "skills", "bountyagent"\)\)/);
+  assert.match(installer, /removeRecursiveIfExists\(path\.join\(claudeDir, "skills", "bountyagentstatus"\)\)/);
+  assert.match(installer, /removeRecursiveIfExists\(path\.join\(claudeDir, "skills", "bountyagentdebug"\)\)/);
 
-  // dev-sync.sh mirrors the installer: copy update.md, rm hunt/status/debug.
-  assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/commands\/bob\/update\.md"/);
-  assert.match(devSync, /rm -f "\$CLAUDE_DIR\/commands\/bob\/hunt\.md" "\$CLAUDE_DIR\/commands\/bob\/status\.md" "\$CLAUDE_DIR\/commands\/bob\/debug\.md"/);
-  assert.doesNotMatch(devSync, /cp "\$SCRIPT_DIR\/\.claude\/commands\/bob\/hunt\.md"/);
+  // dev-sync.sh mirrors the installer: copy bob-update.md to commands/, rm legacy paths.
+  assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/commands\/bob-update\.md"/);
+  assert.match(devSync, /rm -f "\$CLAUDE_DIR\/commands\/bob\/hunt\.md" "\$CLAUDE_DIR\/commands\/bob\/status\.md" "\$CLAUDE_DIR\/commands\/bob\/debug\.md" "\$CLAUDE_DIR\/commands\/bob\/update\.md"/);
+  assert.match(devSync, /rm -rf "\$CLAUDE_DIR\/skills\/bountyagent" "\$CLAUDE_DIR\/skills\/bountyagentstatus" "\$CLAUDE_DIR\/skills\/bountyagentdebug"/);
 
-  assert.match(installer, /bountyagentstatus/);
-  assert.match(devSync, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
-  assert.match(installer, /bountyagentdebug/);
-  assert.match(devSync, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
+  assert.match(installer, /"bob-status"/);
+  assert.match(devSync, /\.claude\/skills\/bob-status\/SKILL\.md/);
+  assert.match(installer, /"bob-debug"/);
+  assert.match(devSync, /\.claude\/skills\/bob-debug\/SKILL\.md/);
+  assert.match(installer, /"bob-hunt"/);
+  assert.match(devSync, /\.claude\/skills\/bob-hunt\/SKILL\.md/);
 });
 
 test("root-orchestrator MCP calls are covered by skill allowed-tools", () => {
   const allowedTools = new Set(parseYamlListFrontmatter(
-    readFile(".claude/skills/bountyagent/SKILL.md"),
+    readFile(".claude/skills/bob-hunt/SKILL.md"),
     "allowed-tools",
-    "bountyagent/SKILL.md",
+    "bob-hunt/SKILL.md",
   ).filter((tool) => tool.startsWith("mcp__bountyagent__"))
     .map((tool) => tool.replace(/^mcp__bountyagent__/, "")));
 
@@ -473,7 +478,7 @@ test("root-orchestrator MCP calls are covered by skill allowed-tools", () => {
     if (!metadata || (!metadata.role_bundles.includes("orchestrator") && !metadata.role_bundles.includes("auth"))) {
       continue;
     }
-    assert.ok(allowedTools.has(tool), `${tool} missing from bountyagent skill allowed-tools`);
+    assert.ok(allowedTools.has(tool), `${tool} missing from bob-hunt skill allowed-tools`);
   }
 });
 
@@ -518,7 +523,7 @@ test("recon attack_surface schema keeps required fields and adds optional enrich
 test("recon prompt remains enrichment-only without new commands or imported toolsets", () => {
   const reconPrompt = readFile(".claude/agents/recon-agent.md");
 
-  assert.doesNotMatch(reconPrompt, /\/bob:hunt/);
+  assert.doesNotMatch(reconPrompt, /\/bob-hunt/);
   assert.doesNotMatch(reconPrompt, /slash commands?/i);
   assert.doesNotMatch(reconPrompt, /claude-bug-bounty/i);
   assert.doesNotMatch(reconPrompt, /scripts\/|tools\//i);
@@ -533,10 +538,10 @@ test("installer and dev-sync copy and configure session-write-guard", () => {
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/session-write-guard\.sh"/);
   assert.match(install, /hunter-subagent-stop\.js/);
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
-  assert.match(install, /bountyagent/);
-  assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
-  assert.match(install, /update\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/update\.md/);
+  assert.match(install, /bob-hunt/);
+  assert.match(devSync, /\.claude\/skills\/bob-hunt\/SKILL\.md/);
+  assert.match(install, /bob-update\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob-update\.md/);
   assert.match(install, /"mcp", "lib", "tools"/);
   assert.match(devSync, /mcp\/lib\/tools/);
   assert.match(install, /merge-claude-config\.js/);
@@ -568,7 +573,7 @@ test("verifiers can read request audit summaries without direct file access", ()
 });
 
 test("orchestrator documents --no-auth flag and skips AUTH when set", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
   assert.match(
     orchestrator,
     /--no-auth/,
@@ -587,7 +592,7 @@ test("orchestrator documents --no-auth flag and skips AUTH when set", () => {
 });
 
 test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel/static state", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
 
   assert.match(orchestrator, /--paranoid/);
   assert.match(orchestrator, /--normal/);
@@ -601,7 +606,7 @@ test("orchestrator documents checkpoint modes and MCP-owned traffic/audit/intel/
 });
 
 test("orchestrator handles auto-signup manual fallback through data fallback fields", () => {
-  const orchestrator = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
 
   assert.match(orchestrator, /bounty_auto_signup/);
   assert.match(orchestrator, /result\.data\.fallback === "manual"/);
@@ -629,7 +634,7 @@ test("production CI runs npm test on supported Node versions without browser ins
 
 test("bounty_http_scan prompt contracts require target_domain on every call", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
-  const orchestratorPrompt = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestratorPrompt = readFile(".claude/skills/bob-hunt/SKILL.md");
   const verifierPrompts = [
     readFile(".claude/agents/brutalist-verifier.md"),
     readFile(".claude/agents/balanced-verifier.md"),
@@ -654,7 +659,7 @@ test("bounty_http_scan prompt contracts require target_domain on every call", ()
 
 test("hunter and orchestrator prompts keep the structured handoff contract explicit", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
-  const orchestratorPrompt = readFile(".claude/skills/bountyagent/SKILL.md");
+  const orchestratorPrompt = readFile(".claude/skills/bob-hunt/SKILL.md");
 
   assert.match(hunterPrompt, /surface_type[\s\S]*bug_class_hints[\s\S]*high_value_flows/);
   assert.match(orchestratorPrompt, /surface_type[\s\S]*bug_class_hints[\s\S]*high_value_flows/);

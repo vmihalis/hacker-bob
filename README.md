@@ -37,7 +37,7 @@ claude --dangerously-skip-permissions --effort max
 Then run:
 
 ```
-/bob:hunt target.com
+/bob-hunt target.com
 ```
 
 ## Install
@@ -52,7 +52,7 @@ npx -y hacker-bob-cc@latest install /path/to/your/project
 
 `hacker-bob-cc` is the canonical npm package. The `hacker-bob` package is a small convenience alias that delegates to `hacker-bob-cc`; keep using `hacker-bob-cc` for pinned installs and release provenance.
 
-The installer drops Bob's brain (agents, `/bob:*` commands, skills, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
+The installer drops Bob's brain (agents, `/bob-*` commands, skills, rules, hooks, MCP server) into your project's `.claude/` directory. Run it as many times as you like — it's idempotent and keeps your existing config intact. Bob is polite about other people's settings.
 
 If you prefer a global command, install the CLI once:
 
@@ -88,11 +88,11 @@ claude --dangerously-skip-permissions --effort max
 Then in Claude Code, summon Bob:
 
 ```
-/bob:hunt target.com         # full autonomous run
-/bob:hunt resume target.com  # pick up where you left off
-/bob:status                 # quick latest-session status
-/bob:debug                   # review the latest local session
-/bob:update                  # preview and install the latest Bob release
+/bob-hunt target.com         # full autonomous run
+/bob-hunt resume target.com  # pick up where you left off
+/bob-status                 # quick latest-session status
+/bob-debug                   # review the latest local session
+/bob-update                  # preview and install the latest Bob release
 ```
 
 That's it. Now go make coffee.
@@ -108,13 +108,13 @@ For a copy-paste first-run flow, see [`docs/FIRST_RUN.md`](docs/FIRST_RUN.md).
 
 ## Updates
 
-Run `/bob:update` inside Claude Code from the project where Bob is installed. The command checks the installed version, previews relevant `CHANGELOG.md` entries, asks before changing files, installs with:
+Run `/bob-update` inside Claude Code from the project where Bob is installed. The command checks the installed version, previews relevant `CHANGELOG.md` entries, asks before changing files, installs with:
 
 ```bash
 npx -y hacker-bob-cc@latest install "$CLAUDE_PROJECT_DIR"
 ```
 
-After an update, fully restart Claude Code in that project. Bob also checks for available updates once per day on `SessionStart` and stores the result in `~/.cache/hacker-bob/update-checks/`; the statusline and `/bob:status` only read that local cache.
+After an update, fully restart Claude Code in that project. Bob also checks for available updates once per day on `SessionStart` and stores the result in `~/.cache/hacker-bob/update-checks/`; the statusline and `/bob-status` only read that local cache.
 
 ## How Bob hunts
 

@@ -73,19 +73,19 @@ The restart is required because Claude Code reads slash commands, MCP config, se
 In Claude Code, run:
 
 ```text
-/bob:status
+/bob-status
 ```
 
 For a fresh install, it is normal for Bob to report that there is no completed session yet. The command should load without a missing-command error and should be able to read the local MCP/status files.
 
 ## Pre-Run Checklist
 
-Before running `/bob:hunt`, confirm that you have written authorization for the target and accounts, and that the authorization explicitly covers the testing methods Bob may use. Check that automated scanning, authenticated testing, signup or account creation, third-party pivots, internal or private-network targets, rate limits, and data handling rules are all allowed for this engagement.
+Before running `/bob-hunt`, confirm that you have written authorization for the target and accounts, and that the authorization explicitly covers the testing methods Bob may use. Check that automated scanning, authenticated testing, signup or account creation, third-party pivots, internal or private-network targets, rate limits, and data handling rules are all allowed for this engagement.
 
 For a first smoke test, use a private lab target or an intentionally vulnerable training app you control:
 
 ```text
-/bob:hunt lab.example.test
+/bob-hunt lab.example.test
 ```
 
 Do not use a real company, public service, customer environment, or bug bounty target until you have confirmed that the target is in scope and you understand the allowed testing methods.

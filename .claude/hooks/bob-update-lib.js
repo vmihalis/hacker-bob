@@ -274,7 +274,7 @@ function renderUpdateSummary(result) {
     return `Hacker Bob is up to date (${result.installed_version || result.latest_version}).\n`;
   }
   const installed = result.installed_version || "legacy/unknown";
-  return `Hacker Bob ${result.latest_version} is available (installed: ${installed}). Run /bob:update.\n`;
+  return `Hacker Bob ${result.latest_version} is available (installed: ${installed}). Run /bob-update.\n`;
 }
 
 function renderUpdatePlan(result) {

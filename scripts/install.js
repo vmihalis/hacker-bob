@@ -69,6 +69,10 @@ function removeIfExists(filePath) {
   fs.rmSync(filePath, { force: true });
 }
 
+function removeRecursiveIfExists(targetPath) {
+  fs.rmSync(targetPath, { force: true, recursive: true });
+}
+
 function packageManifest(sourceRoot) {
   return readJsonIfExists(path.join(sourceRoot, "package.json"), {
     name: "hacker-bob-cc",
@@ -117,7 +121,7 @@ function installProject(projectDir, options = {}) {
   }
 
   fs.mkdirSync(claudeDir, { recursive: true });
-  for (const dirname of ["agents", "commands/bob", "rules", "hooks", "knowledge", "skills", "bob"]) {
+  for (const dirname of ["agents", "commands", "rules", "hooks", "knowledge", "skills", "bob"]) {
     fs.mkdirSync(path.join(claudeDir, dirname), { recursive: true });
   }
 
@@ -132,14 +136,19 @@ function installProject(projectDir, options = {}) {
   removeIfExists(path.join(claudeDir, "commands", "bob", "hunt.md"));
   removeIfExists(path.join(claudeDir, "commands", "bob", "status.md"));
   removeIfExists(path.join(claudeDir, "commands", "bob", "debug.md"));
-  for (const command of ["update.md"]) {
+  removeIfExists(path.join(claudeDir, "commands", "bob", "update.md"));
+  removeRecursiveIfExists(path.join(claudeDir, "commands", "bob"));
+  removeRecursiveIfExists(path.join(claudeDir, "skills", "bountyagent"));
+  removeRecursiveIfExists(path.join(claudeDir, "skills", "bountyagentstatus"));
+  removeRecursiveIfExists(path.join(claudeDir, "skills", "bountyagentdebug"));
+  for (const command of ["bob-update.md"]) {
     copyFile(
-      path.join(sourceRoot, ".claude", "commands", "bob", command),
-      path.join(claudeDir, "commands", "bob", command),
+      path.join(sourceRoot, ".claude", "commands", command),
+      path.join(claudeDir, "commands", command),
     );
   }
 
-  for (const skill of ["bountyagent", "bountyagentdebug", "bountyagentstatus"]) {
+  for (const skill of ["bob-hunt", "bob-debug", "bob-status"]) {
     copyFile(
       path.join(sourceRoot, ".claude", "skills", skill, "SKILL.md"),
       path.join(claudeDir, "skills", skill, "SKILL.md"),
@@ -232,8 +241,8 @@ function printInstallSummary(summary) {
   console.log(`Installing Hacker Bob ${summary.version} into ${summary.claudeDir}/`);
   console.log("");
   console.log(`  ${summary.agents} agent definitions`);
-  console.log("  command shim (/bob:update)");
-  console.log("  bountyagent + bountyagentstatus + bountyagentdebug skills");
+  console.log("  command shim (/bob-update)");
+  console.log("  bob-hunt + bob-status + bob-debug skills");
   console.log(`  ${summary.rules} rules`);
   console.log(`  ${summary.bypassTables} bypass tables`);
   console.log(`  ${summary.knowledge} hunter knowledge files`);
@@ -275,7 +284,7 @@ function printInstallSummary(summary) {
   console.log("  go install github.com/projectdiscovery/httpx/cmd/httpx@latest");
   console.log("  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest");
   console.log("");
-  console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob:hunt target.com`);
+  console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-hunt target.com`);
 }
 
 module.exports = {
