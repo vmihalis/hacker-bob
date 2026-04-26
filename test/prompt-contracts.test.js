@@ -255,11 +255,10 @@ test("settings.json registers session-write-guard for Bash and Write", () => {
 
 test("prompts do not tell agents to read auth.json directly", () => {
   for (const relativePath of [
-    ".claude/commands/bob/hunt.md",
-    ".claude/commands/bob/status.md",
-    ".claude/commands/bob/debug.md",
     ".claude/commands/bob/update.md",
     ".claude/skills/bountyagent/SKILL.md",
+    ".claude/skills/bountyagentstatus/SKILL.md",
+    ".claude/skills/bountyagentdebug/SKILL.md",
     ...allMarkdown(".claude/agents"),
   ]) {
     const document = readFile(relativePath);
@@ -301,21 +300,19 @@ test("bountyagent skill allowed-tools match orchestrator and auth bundles", () =
   assert.ok(!allowedTools.includes("mcp__bountyagent__bounty_write_wave_handoff"));
 });
 
-test("bob namespaced commands delegate to local skills", () => {
-  const huntCommand = readFile(".claude/commands/bob/hunt.md");
-  const statusCommand = readFile(".claude/commands/bob/status.md");
-  const debugCommand = readFile(".claude/commands/bob/debug.md");
+test("bob skills declare colon-form names so they back the /bob: slash commands directly", () => {
+  const huntSkill = readFile(".claude/skills/bountyagent/SKILL.md");
+  const statusSkill = readFile(".claude/skills/bountyagentstatus/SKILL.md");
+  const debugSkill = readFile(".claude/skills/bountyagentdebug/SKILL.md");
+
+  assert.match(huntSkill, /^name: bob:hunt$/m);
+  assert.match(statusSkill, /^name: bob:status$/m);
+  assert.match(debugSkill, /^name: bob:debug$/m);
+});
+
+test("bob update command shim delegates to the installer and is the only commands/bob shim", () => {
   const updateCommand = readFile(".claude/commands/bob/update.md");
 
-  assert.match(huntCommand, /\.claude\/skills\/bountyagent\/SKILL\.md/);
-  assert.match(huntCommand, /\/bob:hunt/);
-  assert.match(huntCommand, /Pass `\$ARGUMENTS`/);
-  assert.match(statusCommand, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
-  assert.match(statusCommand, /\/bob:status/);
-  assert.match(statusCommand, /Pass `\$ARGUMENTS`/);
-  assert.match(debugCommand, /\.claude\/skills\/bountyagentdebug\/SKILL\.md/);
-  assert.match(debugCommand, /\/bob:debug/);
-  assert.match(debugCommand, /Pass `\$ARGUMENTS`/);
   assert.match(updateCommand, /hacker-bob-cc@latest install/);
   assert.match(updateCommand, /Update now\?/);
   assert.match(updateCommand, /fully restart Claude Code/);
@@ -438,20 +435,25 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
   }
 });
 
-test("installer and dev-sync copy bob namespaced commands and debug skill", () => {
+test("installer and dev-sync ship the update shim, the three skills, and prune deprecated shims", () => {
   const install = readFile("install.sh");
   const installer = readFile("scripts/install.js");
   const devSync = readFile("dev-sync.sh");
 
   assert.match(install, /bin\/hacker-bob\.js/);
-  assert.match(installer, /hunt\.md/);
-  assert.match(installer, /status\.md/);
-  assert.match(installer, /debug\.md/);
-  assert.match(installer, /update\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/status\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/debug\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/update\.md/);
+
+  // Installer copies update.md and proactively removes the legacy hunt/status/debug shims so upgrades from <=1.1.0 don't leave duplicate slash entries.
+  assert.match(installer, /"update\.md"/);
+  assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "hunt\.md"\)\)/);
+  assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "status\.md"\)\)/);
+  assert.match(installer, /removeIfExists\(path\.join\(claudeDir, "commands", "bob", "debug\.md"\)\)/);
+  assert.doesNotMatch(installer, /"hunt\.md", "status\.md", "debug\.md"/);
+
+  // dev-sync.sh mirrors the installer: copy update.md, rm hunt/status/debug.
+  assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/commands\/bob\/update\.md"/);
+  assert.match(devSync, /rm -f "\$CLAUDE_DIR\/commands\/bob\/hunt\.md" "\$CLAUDE_DIR\/commands\/bob\/status\.md" "\$CLAUDE_DIR\/commands\/bob\/debug\.md"/);
+  assert.doesNotMatch(devSync, /cp "\$SCRIPT_DIR\/\.claude\/commands\/bob\/hunt\.md"/);
+
   assert.match(installer, /bountyagentstatus/);
   assert.match(devSync, /\.claude\/skills\/bountyagentstatus\/SKILL\.md/);
   assert.match(installer, /bountyagentdebug/);
@@ -533,8 +535,8 @@ test("installer and dev-sync copy and configure session-write-guard", () => {
   assert.match(devSync, /cp "\$SCRIPT_DIR\/\.claude\/hooks\/hunter-subagent-stop\.js"/);
   assert.match(install, /bountyagent/);
   assert.match(devSync, /\.claude\/skills\/bountyagent\/SKILL\.md/);
-  assert.match(install, /hunt\.md/);
-  assert.match(devSync, /\.claude\/commands\/bob\/hunt\.md/);
+  assert.match(install, /update\.md/);
+  assert.match(devSync, /\.claude\/commands\/bob\/update\.md/);
   assert.match(install, /"mcp", "lib", "tools"/);
   assert.match(devSync, /mcp\/lib\/tools/);
   assert.match(install, /merge-claude-config\.js/);

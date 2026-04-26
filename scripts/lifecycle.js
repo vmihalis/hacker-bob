@@ -19,10 +19,13 @@ const {
 } = require("../mcp/lib/claude-config.js");
 
 const BOB_COMMAND_FILES = Object.freeze([
+  "update.md",
+]);
+
+const LEGACY_BOB_COMMAND_FILES = Object.freeze([
   "hunt.md",
   "status.md",
   "debug.md",
-  "update.md",
 ]);
 
 const BOB_SKILLS = Object.freeze([
@@ -414,6 +417,7 @@ function managedClaudeFiles(sourceRoot) {
   return [
     ...sourceDirFiles(sourceRoot, path.join(".claude", "agents"), (name) => name.endsWith(".md")),
     ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
+    ...LEGACY_BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
     ...BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "rules"), (name) => name.endsWith(".md")),
     ...sourceDirFiles(sourceRoot, path.join(".claude", "bypass-tables"), (name) => name.endsWith(".txt")),
@@ -661,6 +665,7 @@ function printUninstallReport(result, stream = process.stdout) {
 
 module.exports = {
   BOB_COMMAND_FILES,
+  LEGACY_BOB_COMMAND_FILES,
   BOB_SKILLS,
   doctorProject,
   expectedMcpServer,

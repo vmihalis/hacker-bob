@@ -1,5 +1,5 @@
 ---
-name: bob-status
+name: bob:status
 disable-model-invocation: true
 argument-hint: "[--last | <target_domain>]"
 allowed-tools:

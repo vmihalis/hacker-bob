@@ -27,10 +27,10 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "status.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "debug.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagent.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bountyagentdebug.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagent", "SKILL.md")));
@@ -178,14 +178,14 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
       env: { ...process.env, HOME: tempHome },
       stdio: "pipe",
     });
-    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
 
     execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
       cwd: ROOT,
       env: { ...process.env, HOME: tempHome },
       stdio: "pipe",
     });
-    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "hunt.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "commands", "bob", "update.md")));
 
     execFileSync(process.execPath, [CLI, "uninstall", workspace, "--yes"], {
       cwd: ROOT,

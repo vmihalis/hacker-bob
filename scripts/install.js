@@ -129,7 +129,10 @@ function installProject(projectDir, options = {}) {
 
   removeIfExists(path.join(claudeDir, "commands", "bountyagent.md"));
   removeIfExists(path.join(claudeDir, "commands", "bountyagentdebug.md"));
-  for (const command of ["hunt.md", "status.md", "debug.md", "update.md"]) {
+  removeIfExists(path.join(claudeDir, "commands", "bob", "hunt.md"));
+  removeIfExists(path.join(claudeDir, "commands", "bob", "status.md"));
+  removeIfExists(path.join(claudeDir, "commands", "bob", "debug.md"));
+  for (const command of ["update.md"]) {
     copyFile(
       path.join(sourceRoot, ".claude", "commands", "bob", command),
       path.join(claudeDir, "commands", "bob", command),
@@ -229,7 +232,7 @@ function printInstallSummary(summary) {
   console.log(`Installing Hacker Bob ${summary.version} into ${summary.claudeDir}/`);
   console.log("");
   console.log(`  ${summary.agents} agent definitions`);
-  console.log("  command shims (/bob:hunt, /bob:status, /bob:debug, /bob:update)");
+  console.log("  command shim (/bob:update)");
   console.log("  bountyagent + bountyagentstatus + bountyagentdebug skills");
   console.log(`  ${summary.rules} rules`);
   console.log(`  ${summary.bypassTables} bypass tables`);
