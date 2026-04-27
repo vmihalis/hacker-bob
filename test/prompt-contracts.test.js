@@ -328,6 +328,16 @@ test("bob-update command delegates to the installer and lives at .claude/command
     parseYamlListFrontmatter(updateCommand, "allowed-tools", "bob-update.md").sort(),
     ["AskUserQuestion", "Bash"].sort(),
   );
+  // Bash tool subprocesses do not always inherit CLAUDE_PROJECT_DIR; the
+  // command body must use the ${CLAUDE_PROJECT_DIR:-$PWD} fallback so it
+  // resolves to the project dir even when the harness does not export the
+  // variable into the assistant's Bash tool environment.
+  assert.doesNotMatch(
+    updateCommand,
+    /\$CLAUDE_PROJECT_DIR(?!:-)/,
+    "bob-update.md must use ${CLAUDE_PROJECT_DIR:-$PWD}, not bare $CLAUDE_PROJECT_DIR",
+  );
+  assert.match(updateCommand, /\$\{CLAUDE_PROJECT_DIR:-\$PWD\}/);
 });
 
 test("bob-status skill is compact, read-only, and points to next commands", () => {
@@ -367,6 +377,15 @@ test("bob-status skill is compact, read-only, and points to next commands", () =
   assert.match(skill, /bounty_wave_status\(\{ target_domain \}\)/);
   assert.match(skill, /\/bob-hunt resume <target_domain>/);
   assert.match(skill, /\/bob-debug --deep <target_domain>/);
+  // Bash tool subprocesses do not always inherit CLAUDE_PROJECT_DIR; the
+  // bob-update.js invocation must use the ${CLAUDE_PROJECT_DIR:-$PWD}
+  // fallback so it resolves even when the harness does not export the
+  // variable into the assistant's Bash tool environment.
+  assert.doesNotMatch(
+    skill,
+    /\$CLAUDE_PROJECT_DIR(?!:-)/,
+    "bob-status SKILL.md must use ${CLAUDE_PROJECT_DIR:-$PWD}, not bare $CLAUDE_PROJECT_DIR",
+  );
   for (const tool of forbiddenTools) {
     assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bob-status`);
   }

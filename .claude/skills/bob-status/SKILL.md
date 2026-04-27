@@ -38,7 +38,7 @@ Latest-session detection must pick the newest target directory by `pipeline-even
 ## Read Order
 First, read the passive update cache if the helper is installed:
 ```
-node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json
+node "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-update.js" status "${CLAUDE_PROJECT_DIR:-$PWD}" --json
 ```
 This command must only read the local update cache. Do not run network update checks from `/bob-status`.
 
