@@ -174,6 +174,10 @@ function normalizePipelineEvent(targetDomain, type, fields = {}) {
   if (blockCode) event.block_code = blockCode;
   if (counts) event.counts = counts;
   if (source) event.source = source;
+  if (typeof fields.force_merge === "boolean") event.force_merge = fields.force_merge;
+  if (typeof fields.override === "boolean") event.override = fields.override;
+  const overrideReason = capString(fields.override_reason, 1000);
+  if (overrideReason) event.override_reason = overrideReason;
 
   return event;
 }
@@ -293,6 +297,10 @@ function normalizePipelineEventForRead(record, expectedDomain) {
   if (waveNumber != null) event.wave_number = waveNumber;
   const counts = normalizeCounts(record.counts);
   if (counts) event.counts = counts;
+  if (typeof record.force_merge === "boolean") event.force_merge = record.force_merge;
+  if (typeof record.override === "boolean") event.override = record.override;
+  const overrideReason = capString(record.override_reason, 1000);
+  if (overrideReason) event.override_reason = overrideReason;
   return event;
 }
 
@@ -740,7 +748,7 @@ function compactEvent(event) {
     target_domain: event.target_domain,
     type: event.type,
   };
-  for (const field of ["phase", "from_phase", "to_phase", "wave_number", "agent", "surface_id", "status", "block_code", "counts", "source"]) {
+  for (const field of ["phase", "from_phase", "to_phase", "wave_number", "agent", "surface_id", "status", "block_code", "counts", "source", "force_merge", "override", "override_reason"]) {
     if (event[field] != null) compact[field] = event[field];
   }
   return compact;

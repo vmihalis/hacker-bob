@@ -44,7 +44,6 @@ const {
   summarizeFindings,
 } = require("./findings.js");
 const { readScopeExclusions } = require("./scope.js");
-const { rankAttackSurfaces } = require("./ranking.js");
 const {
   buildCircuitBreakerSummary,
   readHttpAuditRecordsFromJsonl,
@@ -59,6 +58,9 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-analytics.js");
+const {
+  computeHuntToChainGate,
+} = require("./phase-gates.js");
 
 function listWaveHandoffFiles(dir, wave) {
   const handoffPrefix = `handoff-${wave}-`;
@@ -331,33 +333,24 @@ function computeRequeueSurfaceIds(artifacts, merge, coverageRecords = []) {
 
 function waveStatus(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  let rankedAttackSurface = null;
-  try { rankedAttackSurface = rankAttackSurfaces(domain, { write: false }); } catch {}
   const findings = readFindingsFromJsonl(domain);
   const summary = summarizeFindings(findings);
 
-  // Compute surface coverage for deterministic wave decisions
+  // Compute transition-gate inputs for deterministic wave decisions.
   let coverage = null;
+  let transitionBlockers = [];
   try {
     const { state } = readSessionStateStrict(domain);
-    const attackSurface = readAttackSurfaceStrict(domain);
-    const surfaces = rankedAttackSurface?.surfaces || attackSurface.document.surfaces;
-    const exploredSet = new Set(state.explored);
-    const nonLowSurfaces = surfaces.filter(
-      (s) => s.priority && s.priority.toUpperCase() !== "LOW",
-    );
-    const totalNonLow = nonLowSurfaces.length;
-    const exploredNonLow = nonLowSurfaces.filter((s) => exploredSet.has(s.id)).length;
-    coverage = {
-      total_surfaces: surfaces.length,
-      non_low_total: totalNonLow,
-      non_low_explored: exploredNonLow,
-      coverage_pct: totalNonLow > 0 ? Math.round((exploredNonLow / totalNonLow) * 100) : 100,
-      unexplored_high: surfaces.filter(
-        (s) => ["CRITICAL", "HIGH"].includes((s.priority || "").toUpperCase()) && !exploredSet.has(s.id),
-      ).length,
-    };
-  } catch {}
+    const gate = computeHuntToChainGate(domain, state);
+    coverage = gate.coverage;
+    transitionBlockers = gate.transition_blockers;
+  } catch (error) {
+    transitionBlockers = [{
+      code: "state_unavailable",
+      message: "session state could not be read for HUNT -> CHAIN gating",
+      error: error && error.message ? error.message : String(error),
+    }];
+  }
 
   let auditSummary = null;
   let trafficSummary = null;
@@ -374,6 +367,7 @@ function waveStatus(args) {
   return JSON.stringify({
     ...summary,
     coverage,
+    transition_blockers: transitionBlockers,
     http_audit: auditSummary,
     traffic: trafficSummary,
     circuit_breaker: circuitBreakerSummary,
@@ -560,6 +554,7 @@ function applyWaveMerge(args) {
     safeAppendPipelineEventDirect(domain, "wave_merged", {
       phase: state.phase,
       wave_number: waveNumber,
+      force_merge: forceMerge,
       status: "merged",
       source: "bounty_apply_wave_merge",
       counts: {

@@ -1630,10 +1630,17 @@ test("bounty_transition_phase allows the configured edges and increments hold_co
     ];
 
     for (const scenario of cases) {
-      seedSessionState(domain, {
+      const stateOverrides = {
         phase: scenario.from,
         hold_count: scenario.hold_count ?? 0,
-      });
+      };
+      if (scenario.from === "HUNT" && scenario.to === "CHAIN") {
+        stateOverrides.explored = ["surface-a"];
+        seedAttackSurfaces(domain, [
+          { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+        ]);
+      }
+      seedSessionState(domain, stateOverrides);
 
       const result = JSON.parse(transitionPhase({
         target_domain: domain,
@@ -1653,6 +1660,193 @@ test("bounty_transition_phase allows the configured edges and increments hold_co
         assert.equal(result.state.hold_count, 2);
       }
     }
+  });
+});
+
+test("bounty_transition_phase blocks HUNT -> CHAIN while a wave is pending", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "CHAIN" }),
+      /HUNT -> CHAIN blocked: .*pending_wave is still set to 1/,
+    );
+  });
+});
+
+test("bounty_transition_phase blocks HUNT -> CHAIN with unexplored HIGH or CRITICAL surfaces", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: null,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "CRITICAL" },
+      { id: "surface-b", hosts: [`https://api.${domain}`], priority: "HIGH" },
+    ]);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "CHAIN" }),
+      /HUNT -> CHAIN blocked: .*surface-b/,
+    );
+  });
+});
+
+test("bounty_transition_phase blocks HUNT -> CHAIN with unfinished latest coverage", () => {
+  withTempHome(() => {
+    for (const status of ["promising", "needs_auth", "requeue"]) {
+      const domain = `${status.replace("_", "-")}.example.com`;
+      seedSessionState(domain, {
+        phase: "HUNT",
+        pending_wave: null,
+        explored: ["surface-a"],
+      });
+      seedAttackSurfaces(domain, [
+        { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+      ]);
+      seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+      logCoverage({
+        target_domain: domain,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-a",
+        entries: [{
+          endpoint: "/api/export",
+          method: "GET",
+          bug_class: "idor",
+          status,
+          evidence_summary: `${status} evidence`,
+        }],
+      });
+
+      assert.throws(
+        () => transitionPhase({ target_domain: domain, to_phase: "CHAIN" }),
+        /HUNT -> CHAIN blocked: .*surface-a/,
+      );
+    }
+  });
+});
+
+test("bounty_transition_phase treats missing attack surface or malformed coverage as HUNT -> CHAIN blockers", () => {
+  withTempHome(() => {
+    const missingSurfaceDomain = "missing-surface.example.com";
+    seedSessionState(missingSurfaceDomain, {
+      phase: "HUNT",
+      pending_wave: null,
+    });
+    assert.throws(
+      () => transitionPhase({ target_domain: missingSurfaceDomain, to_phase: "CHAIN" }),
+      /HUNT -> CHAIN blocked: .*attack surface could not be read/,
+    );
+
+    const malformedCoverageDomain = "malformed-coverage.example.com";
+    seedSessionState(malformedCoverageDomain, {
+      phase: "HUNT",
+      pending_wave: null,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(malformedCoverageDomain, [
+      { id: "surface-a", hosts: [`https://${malformedCoverageDomain}`], priority: "HIGH" },
+    ]);
+    writeFileAtomic(coverageJsonlPath(malformedCoverageDomain), "{bad json\n");
+
+    assert.throws(
+      () => transitionPhase({ target_domain: malformedCoverageDomain, to_phase: "CHAIN" }),
+      /HUNT -> CHAIN blocked: .*coverage could not be read/,
+    );
+  });
+});
+
+test("bounty_transition_phase override_reason allows HUNT -> CHAIN and is persisted in pipeline events", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const overrideReason = "Operator accepts pending wave risk for urgent chain validation.";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+
+    const result = JSON.parse(transitionPhase({
+      target_domain: domain,
+      to_phase: "CHAIN",
+      override_reason: overrideReason,
+    }));
+    assert.equal(result.transitioned, true);
+    assert.equal(result.to_phase, "CHAIN");
+
+    const rows = readJsonl(pipelineEventsJsonlPath(domain));
+    const event = rows.find((row) => row.type === "phase_transitioned" && row.to_phase === "CHAIN");
+    assert.equal(event.override, true);
+    assert.equal(event.override_reason, overrideReason);
+    assert.equal(event.counts.transition_blockers, 1);
+
+    const normalizedEvent = readPipelineEvents(domain).events
+      .find((row) => row.type === "phase_transitioned" && row.to_phase === "CHAIN");
+    assert.equal(normalizedEvent.override, true);
+    assert.equal(normalizedEvent.override_reason, overrideReason);
+  });
+});
+
+test("bounty_transition_phase rejects override_reason outside HUNT -> CHAIN", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const overrideReason = "This override reason is long enough to pass length validation.";
+    const cases = [
+      { from: "RECON", to: "AUTH" },
+      { from: "AUTH", to: "HUNT", auth_status: "authenticated" },
+      { from: "CHAIN", to: "VERIFY" },
+      { from: "VERIFY", to: "GRADE" },
+      { from: "GRADE", to: "REPORT" },
+      { from: "GRADE", to: "HUNT" },
+      { from: "REPORT", to: "EXPLORE" },
+      { from: "EXPLORE", to: "CHAIN" },
+    ];
+
+    for (const scenario of cases) {
+      seedSessionState(domain, { phase: scenario.from });
+      assert.throws(
+        () => transitionPhase({
+          target_domain: domain,
+          to_phase: scenario.to,
+          auth_status: scenario.auth_status,
+          override_reason: overrideReason,
+        }),
+        /override_reason is only allowed for HUNT -> CHAIN/,
+      );
+    }
+  });
+});
+
+test("bounty_transition_phase rejects short HUNT -> CHAIN override_reason", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "CHAIN", override_reason: "too short" }),
+      /override_reason must be at least 20 characters/,
+    );
   });
 });
 
@@ -2190,6 +2384,14 @@ test("bounty_apply_wave_merge force-merges missing and invalid handoffs and comp
     assert.deepEqual(result.merge.requeue_surface_ids, ["surface-c", "surface-b", "surface-a"]);
     assert.equal(result.state.pending_wave, null);
     assert.equal(result.state.hunt_wave, 2);
+
+    const rows = readJsonl(pipelineEventsJsonlPath(domain));
+    const mergeEvent = rows.find((row) => row.type === "wave_merged" && row.wave_number === 2);
+    assert.equal(mergeEvent.force_merge, true);
+
+    const normalizedEvent = readPipelineEvents(domain).events
+      .find((row) => row.type === "wave_merged" && row.wave_number === 2);
+    assert.equal(normalizedEvent.force_merge, true);
   });
 });
 
@@ -3551,6 +3753,11 @@ test("bounty_read_findings, bounty_list_findings, and bounty_wave_status return 
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
       coverage: null,
+      transition_blockers: [{
+        code: "state_unavailable",
+        message: "session state could not be read for HUNT -> CHAIN gating",
+        error: `Missing session state: ${statePath(domain)}`,
+      }],
       http_audit: { total: 0, shown: 0, omitted: 0, cap: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, errors: 0, scope_blocked: 0, recent: [] },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
       circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
@@ -3628,6 +3835,11 @@ test("bounty_list_findings and bounty_wave_status keep their external shapes whi
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
       coverage: null,
+      transition_blockers: [{
+        code: "state_unavailable",
+        message: "session state could not be read for HUNT -> CHAIN gating",
+        error: `Missing session state: ${statePath(domain)}`,
+      }],
       http_audit: { total: 0, shown: 0, omitted: 0, cap: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, errors: 0, scope_blocked: 0, recent: [] },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
       circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
@@ -6497,6 +6709,9 @@ test("bounty_wave_status returns coverage_pct when attack surface and state exis
     assert.equal(result.coverage.non_low_explored, 1);   // only surface-a explored
     assert.equal(result.coverage.coverage_pct, 50);       // 1/2 = 50%
     assert.equal(result.coverage.unexplored_high, 1);     // surface-b is HIGH and unexplored
+    assert.deepEqual(result.coverage.unexplored_high_surface_ids, ["surface-b"]);
+    assert.deepEqual(result.coverage.open_requeue_surface_ids, []);
+    assert.equal(result.transition_blockers.some((item) => item.code === "unexplored_high_surfaces"), true);
   });
 });
 
@@ -6514,6 +6729,40 @@ test("bounty_wave_status coverage_pct is 100 when all surfaces are LOW", () => {
     const result = JSON.parse(waveStatus({ target_domain: domain }));
     assert.equal(result.coverage.non_low_total, 0);
     assert.equal(result.coverage.coverage_pct, 100);  // 0/0 → 100% (no non-LOW to explore)
+  });
+});
+
+test("bounty_wave_status returns open requeue coverage surface ids and transition blockers", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: null,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/export",
+        method: "GET",
+        bug_class: "idor",
+        status: "requeue",
+        evidence_summary: "late discovered export route",
+      }],
+    });
+
+    const result = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(result.coverage.open_requeue_surface_ids, ["surface-a"]);
+    assert.deepEqual(result.coverage.unexplored_high_surface_ids, []);
+    assert.equal(result.transition_blockers.some((item) => item.code === "open_requeue_coverage"), true);
   });
 });
 
