@@ -8,6 +8,8 @@
       "mcp__bountyagent__bounty_record_finding",
       "mcp__bountyagent__bounty_read_findings",
       "mcp__bountyagent__bounty_list_findings",
+      "mcp__bountyagent__bounty_write_chain_attempt",
+      "mcp__bountyagent__bounty_read_chain_attempts",
       "mcp__bountyagent__bounty_write_verification_round",
       "mcp__bountyagent__bounty_read_verification_round",
       "mcp__bountyagent__bounty_write_grade_verdict",

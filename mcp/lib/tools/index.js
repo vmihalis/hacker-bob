@@ -11,6 +11,8 @@ const TOOL_MODULES = Object.freeze([
   require("./record-finding.js"),
   require("./read-findings.js"),
   require("./list-findings.js"),
+  require("./write-chain-attempt.js"),
+  require("./read-chain-attempts.js"),
   require("./write-verification-round.js"),
   require("./read-verification-round.js"),
   require("./write-grade-verdict.js"),

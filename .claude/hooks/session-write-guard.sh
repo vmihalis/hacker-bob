@@ -21,6 +21,7 @@ SESSIONS_ROOT = pathlib.Path.home() / "bounty-agent-sessions"
 MCP_OWNED_EXACT = {
     "state.json",
     "coverage.jsonl",
+    "chain-attempts.jsonl",
     "findings.jsonl",
     "findings.md",
     "brutalist.json",

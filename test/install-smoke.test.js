@@ -54,7 +54,7 @@ test("installer copies a require-able complete MCP runtime", () => {
       "-e",
       [
         "const server = require(process.argv[1]);",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 35) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 37) process.exit(2);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bounty_list_auth_profiles')) process.exit(3);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bounty_read_tool_telemetry')) process.exit(6);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bounty_read_pipeline_analytics')) process.exit(7);",

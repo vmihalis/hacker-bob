@@ -75,6 +75,7 @@ const {
   buildHeaderProfile,
   buildCircuitBreakerSummary,
   buildCoverageSummaryForSurface,
+  chainAttemptsJsonlPath,
   coverageJsonlPath,
   executeTool,
   findingsJsonlPath,
@@ -85,6 +86,8 @@ const {
   logCoverage,
   migrateAuthJson,
   bountyPublicIntel,
+  readChainAttempts,
+  readChainAttemptsFromJsonl,
   readScopeExclusions,
   readSessionState,
   readStateSummary,
@@ -128,6 +131,7 @@ const {
   verificationRoundPaths,
   waveHandoffStatus,
   waveStatus,
+  writeChainAttempt,
   writeFileAtomic,
   writeGradeVerdict,
   writeHandoff,
@@ -150,6 +154,8 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_record_finding",
   "bounty_read_findings",
   "bounty_list_findings",
+  "bounty_write_chain_attempt",
+  "bounty_read_chain_attempts",
   "bounty_write_verification_round",
   "bounty_read_verification_round",
   "bounty_write_grade_verdict",
@@ -480,6 +486,7 @@ test("mcp server public exports remain stable", () => {
     "buildCircuitBreakerSummary",
     "buildCoverageSummaryForSurface",
     "buildHeaderProfile",
+    "chainAttemptsJsonlPath",
     "compactSessionState",
     "computeCoverageRequeueSurfaceIds",
     "coverageJsonlPath",
@@ -508,6 +515,8 @@ test("mcp server public exports remain stable", () => {
     "publicIntelPath",
     "rankAttackSurfaces",
     "readAuthJson",
+    "readChainAttempts",
+    "readChainAttemptsFromJsonl",
     "readCoverageRecordsFromJsonl",
     "readFindings",
     "readFindingsFromJsonl",
@@ -555,6 +564,7 @@ test("mcp server public exports remain stable", () => {
     "verificationRoundPaths",
     "waveHandoffStatus",
     "waveStatus",
+    "writeChainAttempt",
     "writeFileAtomic",
     "writeGradeVerdict",
     "writeHandoff",
@@ -617,6 +627,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(byName.get("bounty_http_scan").inputSchema.properties.url.type, "string");
   assert.deepEqual(byName.get("bounty_http_scan").inputSchema.required, ["method", "url", "target_domain"]);
   assert.equal(TOOL_MANIFEST.bounty_read_http_audit.mutating, false);
+  assert.equal(byName.get("bounty_write_chain_attempt").inputSchema.properties.outcome.enum.includes("inconclusive"), true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_write_chain_attempt.role_bundles, ["chain"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_chain_attempts.role_bundles, ["chain", "verifier", "grader", "reporter", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_http_scan.network_access, true);
@@ -1226,6 +1239,15 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     }));
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "CHAIN" }));
+    JSON.parse(writeChainAttempt({
+      target_domain: domain,
+      finding_ids: ["F-1"],
+      surface_ids: ["surface-a"],
+      hypothesis: "Single finding plus chain note does not produce an exploitable chain.",
+      steps: ["Reviewed chain note and replay context."],
+      outcome: "not_applicable",
+      evidence_summary: "No second issue or request sequence amplifies F-1.",
+    }));
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
 
     const verified = [{
@@ -1281,6 +1303,9 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     assert.equal(analytics.sessions[0].health.status, "healthy");
     assert.equal(analytics.sessions[0].phase, "REPORT");
     assert.equal(analytics.sessions[0].findings.total, 1);
+    assert.equal(analytics.sessions[0].chain_attempts_count, 1);
+    assert.equal(analytics.sessions[0].chain_attempts_by_outcome.not_applicable, 1);
+    assert.equal(typeof analytics.sessions[0].chain_phase_duration_ms, "number");
     assert.equal(analytics.sessions[0].final_verification_count, 1);
     assert.equal(analytics.sessions[0].grade_verdict, "SUBMIT");
     assert.equal(analytics.sessions[0].report_present, true);
@@ -1384,6 +1409,55 @@ test("pipeline analytics flags blocked pending waves and malformed event lines",
     assert.ok(analytics.sessions[0].health.reasons.includes("hunter_handoff_failures"));
     assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "hunter_handoff_failures"));
     assert.ok(analytics.next_actions.some((action) => /handoffs/.test(action.action)));
+  });
+});
+
+test("pipeline analytics reports chain attempts, chain duration, and no-attempt bottleneck", () => {
+  withTempHome(() => {
+    const domain = "chain-analytics.example.com";
+    seedSessionState(domain, { phase: "VERIFY" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+    seedFinding(domain, { title: "Open redirect", endpoint: "/oauth/callback" });
+    JSON.parse(writeChainAttempt({
+      target_domain: domain,
+      finding_ids: ["F-1", "F-2"],
+      surface_ids: ["surface-a"],
+      hypothesis: "Open redirect may amplify export access.",
+      steps: ["Started replay but could not complete before auth expired."],
+      outcome: "inconclusive",
+      evidence_summary: "Auth expired before a terminal result.",
+    }));
+    writeFileAtomic(pipelineEventsJsonlPath(domain), [
+      {
+        version: 1,
+        ts: "2026-04-24T00:00:00.000Z",
+        target_domain: domain,
+        type: "phase_transitioned",
+        from_phase: "HUNT",
+        to_phase: "CHAIN",
+        phase: "CHAIN",
+      },
+      {
+        version: 1,
+        ts: "2026-04-24T00:01:00.000Z",
+        target_domain: domain,
+        type: "phase_transitioned",
+        from_phase: "CHAIN",
+        to_phase: "VERIFY",
+        phase: "VERIFY",
+      },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
+    assert.equal(analytics.sessions[0].chain_attempts_count, 1);
+    assert.equal(analytics.sessions[0].chain_attempts_by_outcome.inconclusive, 1);
+    assert.equal(analytics.sessions[0].chain_phase_duration_ms, 60_000);
+    assert.equal(analytics.sessions[0].health.status, "blocked");
+    assert.ok(analytics.sessions[0].health.reasons.includes("chain_phase_no_attempts"));
+    assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "chain_phase_no_attempts"));
   });
 });
 
@@ -1616,6 +1690,115 @@ test("malformed legacy state hard-fails session reads", () => {
   });
 });
 
+test("bounty_write_chain_attempt records normalized attempts and bounty_read_chain_attempts summarizes outcomes", async () => {
+  await withTempHome(async () => {
+    const domain = "chain-attempt.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+    seedFinding(domain, { title: "OAuth redirect", endpoint: "/oauth/callback" });
+
+    const written = JSON.parse(writeChainAttempt({
+      target_domain: domain,
+      finding_ids: ["F-1", "F-2"],
+      surface_ids: ["surface-a"],
+      hypothesis: "F-2 open redirect can capture a token that amplifies F-1 export.",
+      steps: [
+        "Reviewed finding PoCs and handoff notes.",
+        "Replayed redirect with attacker profile and checked whether token material was exposed.",
+      ],
+      outcome: "denied",
+      evidence_summary: "Redirect does not receive token material, so the chain is denied.",
+      request_refs: ["http-audit:C-1"],
+      auth_profiles: ["attacker"],
+    }));
+
+    assert.equal(written.written, true);
+    assert.equal(written.attempt_id, "C-1");
+    assert.equal(written.summary.total, 1);
+    assert.equal(written.summary.by_outcome.denied, 1);
+    assert.ok(fs.existsSync(chainAttemptsJsonlPath(domain)));
+
+    const directRead = JSON.parse(readChainAttempts({ target_domain: domain }));
+    assert.equal(directRead.attempts.length, 1);
+    assert.equal(directRead.summary.terminal_count, 1);
+    assert.equal(directRead.summary.has_terminal_attempt, true);
+    assert.deepEqual(readChainAttemptsFromJsonl(domain).map((attempt) => attempt.attempt_id), ["C-1"]);
+
+    const envelope = await executeTool("bounty_read_chain_attempts", { target_domain: domain });
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.data.summary.by_outcome.denied, 1);
+  });
+});
+
+test("bounty_write_chain_attempt rejects malformed references and invalid outcomes", async () => {
+  await withTempHome(async () => {
+    const domain = "chain-validation.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+
+    const base = {
+      target_domain: domain,
+      finding_ids: ["F-1"],
+      surface_ids: ["surface-a"],
+      hypothesis: "F-1 may combine with another weakness.",
+      steps: ["Reviewed evidence and attempted a replay."],
+      outcome: "blocked",
+      evidence_summary: "Replay was blocked by expired auth.",
+    };
+
+    assert.throws(
+      () => writeChainAttempt({ ...base, finding_ids: ["finding-1"] }),
+      /finding_ids must match F-N/,
+    );
+    assert.throws(
+      () => writeChainAttempt({ ...base, finding_ids: ["F-999"] }),
+      /unknown finding_id: F-999/,
+    );
+    assert.throws(
+      () => writeChainAttempt({ ...base, hypothesis: " " }),
+      /hypothesis must be a non-empty string/,
+    );
+    assert.throws(
+      () => writeChainAttempt({ ...base, surface_ids: ["surface-missing"] }),
+      /unknown surface_id: surface-missing/,
+    );
+
+    const invalidOutcome = await executeTool("bounty_write_chain_attempt", {
+      ...base,
+      outcome: "maybe",
+    });
+    assert.equal(invalidOutcome.ok, false);
+    assert.equal(invalidOutcome.error.code, "INVALID_ARGUMENTS");
+    assert.match(invalidOutcome.error.message, /outcome must be one of/);
+
+    const wrongDomain = "chain-wrong-domain.example.com";
+    appendJsonlLine(chainAttemptsJsonlPath(wrongDomain), {
+      version: 1,
+      ts: new Date().toISOString(),
+      attempt_id: "C-1",
+      target_domain: "other.example.com",
+      finding_ids: [],
+      surface_ids: [],
+      hypothesis: "No chain applies.",
+      steps: ["Checked candidates."],
+      outcome: "not_applicable",
+      evidence_summary: "Wrong-domain fixture.",
+      request_refs: [],
+      auth_profiles: [],
+    });
+    assert.throws(
+      () => readChainAttemptsFromJsonl(wrongDomain),
+      /target_domain mismatch/,
+    );
+  });
+});
+
 test("bounty_transition_phase allows the configured edges and increments hold_count on GRADE -> HUNT", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -1801,14 +1984,13 @@ test("bounty_transition_phase override_reason allows HUNT -> CHAIN and is persis
   });
 });
 
-test("bounty_transition_phase rejects override_reason outside HUNT -> CHAIN", () => {
+test("bounty_transition_phase rejects override_reason outside gated transitions", () => {
   withTempHome(() => {
     const domain = "example.com";
     const overrideReason = "This override reason is long enough to pass length validation.";
     const cases = [
       { from: "RECON", to: "AUTH" },
       { from: "AUTH", to: "HUNT", auth_status: "authenticated" },
-      { from: "CHAIN", to: "VERIFY" },
       { from: "VERIFY", to: "GRADE" },
       { from: "GRADE", to: "REPORT" },
       { from: "GRADE", to: "HUNT" },
@@ -1825,7 +2007,7 @@ test("bounty_transition_phase rejects override_reason outside HUNT -> CHAIN", ()
           auth_status: scenario.auth_status,
           override_reason: overrideReason,
         }),
-        /override_reason is only allowed for HUNT -> CHAIN/,
+        /override_reason is only allowed for HUNT -> CHAIN or CHAIN -> VERIFY/,
       );
     }
   });
@@ -1847,6 +2029,126 @@ test("bounty_transition_phase rejects short HUNT -> CHAIN override_reason", () =
       () => transitionPhase({ target_domain: domain, to_phase: "CHAIN", override_reason: "too short" }),
       /override_reason must be at least 20 characters/,
     );
+  });
+});
+
+test("bounty_transition_phase blocks CHAIN -> VERIFY when required chain work has no terminal attempts", () => {
+  withTempHome(() => {
+    const domain = "chain-gate.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+    seedFinding(domain, { title: "Open redirect", endpoint: "/oauth/callback" });
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "VERIFY" }),
+      /CHAIN -> VERIFY blocked: .*terminal chain attempt/,
+    );
+
+    JSON.parse(writeChainAttempt({
+      target_domain: domain,
+      finding_ids: ["F-1", "F-2"],
+      surface_ids: ["surface-a"],
+      hypothesis: "Open redirect may amplify export access.",
+      steps: ["Checked redirect behavior but auth expired before replay."],
+      outcome: "inconclusive",
+      evidence_summary: "Auth expired before a fair test.",
+      auth_profiles: ["attacker"],
+    }));
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "VERIFY" }),
+      /CHAIN -> VERIFY blocked: .*inconclusive/,
+    );
+  });
+});
+
+test("bounty_transition_phase allows CHAIN -> VERIFY when a terminal attempt exists", () => {
+  withTempHome(() => {
+    const domain = "chain-terminal.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+    seedFinding(domain, { title: "Open redirect", endpoint: "/oauth/callback" });
+    JSON.parse(writeChainAttempt({
+      target_domain: domain,
+      finding_ids: ["F-1", "F-2"],
+      surface_ids: ["surface-a"],
+      hypothesis: "Open redirect may amplify export access.",
+      steps: ["Replayed redirect and export sequence."],
+      outcome: "denied",
+      evidence_summary: "Redirect never exposes a token or reusable credential.",
+      request_refs: ["http-audit:C-1"],
+    }));
+
+    const result = JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
+    assert.equal(result.transitioned, true);
+    assert.equal(result.from_phase, "CHAIN");
+    assert.equal(result.to_phase, "VERIFY");
+  });
+});
+
+test("bounty_transition_phase CHAIN -> VERIFY gate treats handoff chain_notes as required chain work", () => {
+  withTempHome(() => {
+    const domain = "twilio-shape.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    for (let index = 0; index < 5; index += 1) {
+      seedFinding(domain, {
+        title: `Finding ${index + 1}`,
+        endpoint: `/api/finding-${index + 1}`,
+      });
+    }
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w1-a1.json"), `${JSON.stringify({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      chain_notes: ["F-1 may combine with F-2 for account takeover."],
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: [],
+    }, null, 2)}\n`);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "VERIFY" }),
+      /CHAIN -> VERIFY blocked: .*terminal chain attempt/,
+    );
+  });
+});
+
+test("bounty_transition_phase override_reason allows CHAIN -> VERIFY and is persisted in pipeline events", () => {
+  withTempHome(() => {
+    const domain = "chain-override.example.com";
+    const overrideReason = "Operator reviewed chain handoff notes and accepts proceeding without terminal chain attempts.";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+    ]);
+    seedFinding(domain, { title: "IDOR export", endpoint: "/api/export" });
+    seedFinding(domain, { title: "Open redirect", endpoint: "/oauth/callback" });
+
+    const result = JSON.parse(transitionPhase({
+      target_domain: domain,
+      to_phase: "VERIFY",
+      override_reason: overrideReason,
+    }));
+    assert.equal(result.transitioned, true);
+    assert.equal(result.to_phase, "VERIFY");
+
+    const event = readJsonl(pipelineEventsJsonlPath(domain))
+      .find((row) => row.type === "phase_transitioned" && row.to_phase === "VERIFY");
+    assert.equal(event.override, true);
+    assert.equal(event.override_reason, overrideReason);
+    assert.equal(event.counts.transition_blockers, 1);
   });
 });
 

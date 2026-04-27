@@ -34,7 +34,7 @@ const AGENT_TOOL_SPECS = Object.freeze({
   },
   "chain-builder.md": {
     roleBundles: ["chain"],
-    extras: ["Write"],
+    extras: [],
   },
   "report-writer.md": {
     roleBundles: ["reporter"],

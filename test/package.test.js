@@ -41,6 +41,9 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       "scripts/install.js",
       "scripts/lifecycle.js",
       "scripts/merge-claude-config.js",
+      "testing/policy-replay/replay.mjs",
+      "testing/policy-replay/tune.mjs",
+      "testing/policy-replay/cases/sample-hunter-refusal.json",
     ]) {
       assert.ok(files.has(expected), `${expected} missing from npm pack output`);
     }
@@ -49,6 +52,13 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
 
     for (const file of files) {
       assert.ok(!file.startsWith("test/"), `${file} should not be packed`);
+      if (file.startsWith("testing/")) {
+        assert.ok(
+          file.startsWith("testing/policy-replay/"),
+          `${file} should not be packed`,
+        );
+        assert.ok(!file.includes("node_modules"), `${file} should not include node_modules`);
+      }
       assert.ok(!file.startsWith(".github/"), `${file} should not be packed`);
       assert.ok(!file.startsWith("packages/"), `${file} should not be packed in canonical package`);
       assert.ok(!file.includes("bounty-agent-sessions"), `${file} should not be packed`);

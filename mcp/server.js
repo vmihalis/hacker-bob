@@ -16,6 +16,7 @@
 //           bounty_read_http_audit, bounty_public_intel,
 //           bounty_import_static_artifact, bounty_static_scan,
 //           bounty_list_auth_profiles, bounty_read_wave_handoffs,
+//           bounty_write_chain_attempt, bounty_read_chain_attempts,
 //           bounty_read_tool_telemetry, bounty_read_pipeline_analytics
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
@@ -49,6 +50,7 @@ const { normalizeStringArray } = require("./lib/validation.js");
 const {
   assertSafeDomain,
   attackSurfacePath,
+  chainAttemptsJsonlPath,
   coverageJsonlPath,
   findingsJsonlPath,
   findingsMarkdownPath,
@@ -118,6 +120,11 @@ const {
   writeVerificationRound,
 } = require("./lib/findings.js");
 const {
+  readChainAttempts,
+  readChainAttemptsFromJsonl,
+  writeChainAttempt,
+} = require("./lib/chain-attempts.js");
+const {
   rankAttackSurfaces,
 } = require("./lib/ranking.js");
 const {
@@ -177,6 +184,7 @@ module.exports = {
   buildCoverageSummaryForSurface,
   buildCircuitBreakerSummary,
   computeCoverageRequeueSurfaceIds,
+  chainAttemptsJsonlPath,
   coverageJsonlPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
@@ -198,6 +206,8 @@ module.exports = {
   publicIntelPath,
   bountyPublicIntel,
   readAuthJson,
+  readChainAttempts,
+  readChainAttemptsFromJsonl,
   resolveAuthJsonPath,
   reportMarkdownPath,
   sessionDir,
@@ -254,6 +264,7 @@ module.exports = {
   writeWaveHandoff,
   normalizeStringArray,
   writeFileAtomic,
+  writeChainAttempt,
   executeTool,
   startServer,
 };

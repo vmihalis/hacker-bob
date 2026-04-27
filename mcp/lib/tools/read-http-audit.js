@@ -23,7 +23,7 @@ module.exports = Object.freeze({
     required: ["target_domain"],
   },
   handler: readHttpAudit,
-  role_bundles: ["hunter", "verifier"],
+  role_bundles: ["hunter", "verifier", "chain"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

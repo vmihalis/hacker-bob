@@ -40,9 +40,9 @@ Maintainer workflow:
 - Lifecycle hooks enforce contracts only. Hunter `SubagentStop` validates the
   final marker and structured handoff but must not advance `pending_wave`,
   `hunt_wave`, `explored`, findings summaries, or phase state.
-- Markdown mirrors are human/debug artifacts. The named legacy prose exceptions
-  are `chains.md` for verifier narrative context and `report.md` for the final
-  human-facing report.
+- Markdown mirrors are human/debug artifacts. Chain evidence is MCP-owned in
+  `chain-attempts.jsonl`; `report.md` remains the final human-facing
+  agent-written report.
 - Hunter briefs must stay bounded: array counts are capped, scalar strings are
   capped or omitted, and agents should use auth through `bounty_list_auth_profiles`
   rather than reading secret files directly.

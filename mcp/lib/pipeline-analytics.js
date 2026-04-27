@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const {
+  CHAIN_ATTEMPT_OUTCOME_VALUES,
+  CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,
   COVERAGE_STATUS_VALUES,
   GRADE_VERDICT_VALUES,
   PHASE_VALUES,
@@ -11,11 +13,13 @@ const {
 } = require("./constants.js");
 const {
   assertNonEmptyString,
+  normalizeStringArray,
   parseAgentId,
   parseWaveId,
 } = require("./validation.js");
 const {
   attackSurfacePath,
+  chainAttemptsJsonlPath,
   coverageJsonlPath,
   findingsJsonlPath,
   gradeArtifactPaths,
@@ -445,6 +449,86 @@ function summarizeCoverageJsonl(targetDomain) {
   };
 }
 
+function summarizeChainAttemptsJsonl(targetDomain) {
+  const read = readJsonlSafe(chainAttemptsJsonlPath(targetDomain), "chain-attempts.jsonl");
+  const byOutcome = CHAIN_ATTEMPT_OUTCOME_VALUES.reduce((result, outcome) => {
+    result[outcome] = 0;
+    return result;
+  }, {});
+  let total = 0;
+  let terminalTotal = 0;
+  let invalidRecords = 0;
+
+  for (const record of read.records) {
+    const outcome = capString(record.outcome, 40);
+    if (record.target_domain !== targetDomain || !CHAIN_ATTEMPT_OUTCOME_VALUES.includes(outcome)) {
+      invalidRecords += 1;
+      continue;
+    }
+    total += 1;
+    byOutcome[outcome] += 1;
+    if (CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES.includes(outcome)) {
+      terminalTotal += 1;
+    }
+  }
+
+  return {
+    exists: read.exists,
+    total,
+    terminal_total: terminalTotal,
+    by_outcome: byOutcome,
+    malformed_lines: read.malformed_lines + invalidRecords,
+    error: read.error,
+    mtime: read.mtime,
+  };
+}
+
+function summarizeStructuredHandoffChainNotes(targetDomain) {
+  const dir = sessionDir(targetDomain);
+  const summary = {
+    chain_notes_count: 0,
+    handoff_count: 0,
+    handoff_refs: [],
+    malformed_files: 0,
+  };
+  if (!fs.existsSync(dir)) return summary;
+
+  for (const fileName of fs.readdirSync(dir).sort()) {
+    const match = fileName.match(/^handoff-(w[1-9][0-9]*)-(a[1-9][0-9]*)\.json$/);
+    if (!match) continue;
+    let document;
+    try {
+      document = readJsonFile(path.join(dir, fileName));
+    } catch {
+      summary.malformed_files += 1;
+      continue;
+    }
+    if (!isPlainObject(document)) {
+      summary.malformed_files += 1;
+      continue;
+    }
+    if (document.target_domain != null && document.target_domain !== targetDomain) continue;
+    let chainNotes;
+    try {
+      chainNotes = normalizeStringArray(document.chain_notes, "chain_notes");
+    } catch {
+      summary.malformed_files += 1;
+      continue;
+    }
+    if (chainNotes.length === 0) continue;
+    summary.handoff_count += 1;
+    summary.chain_notes_count += chainNotes.length;
+    summary.handoff_refs.push({
+      wave: match[1],
+      agent: match[2],
+      surface_id: capString(document.surface_id, 200),
+      chain_notes_count: chainNotes.length,
+    });
+  }
+
+  return summary;
+}
+
 function summarizeVerificationArtifacts(targetDomain) {
   const rounds = {};
   let latestMtime = null;
@@ -553,6 +637,8 @@ function readSessionArtifactSummary(targetDomain) {
   const waves = waveNumbers.map((waveNumber) => readWaveReadiness(targetDomain, waveNumber));
   const findings = summarizeFindingsJsonl(targetDomain);
   const coverage = summarizeCoverageJsonl(targetDomain);
+  const chainAttempts = summarizeChainAttemptsJsonl(targetDomain);
+  const chainHandoffs = summarizeStructuredHandoffChainNotes(targetDomain);
   const attackSurfaceCoverage = summarizeAttackSurfaceCoverage(targetDomain, state);
   const verification = summarizeVerificationArtifacts(targetDomain);
   const grade = summarizeGradeArtifact(targetDomain);
@@ -564,6 +650,7 @@ function readSessionArtifactSummary(targetDomain) {
     stateRead.mtime,
     findings.mtime,
     coverage.mtime,
+    chainAttempts.mtime,
     attackSurfaceCoverage.mtime,
     verification.latest_mtime,
     grade.mtime,
@@ -577,8 +664,11 @@ function readSessionArtifactSummary(targetDomain) {
   if (stateRead.error) artifactErrors.push(stateRead.error);
   if (findings.error) artifactErrors.push(findings.error);
   if (coverage.error) artifactErrors.push(coverage.error);
+  if (chainAttempts.error) artifactErrors.push(chainAttempts.error);
   if (findings.malformed_lines > 0) artifactErrors.push(`Malformed findings.jsonl lines: ${findings.malformed_lines}`);
   if (coverage.malformed_lines > 0) artifactErrors.push(`Malformed coverage.jsonl lines: ${coverage.malformed_lines}`);
+  if (chainAttempts.malformed_lines > 0) artifactErrors.push(`Malformed chain-attempts.jsonl lines: ${chainAttempts.malformed_lines}`);
+  if (chainHandoffs.malformed_files > 0) artifactErrors.push(`Malformed chain handoff files: ${chainHandoffs.malformed_files}`);
   for (const wave of waves) {
     if (wave.error) artifactErrors.push(`Wave ${wave.wave_number}: ${wave.error}`);
   }
@@ -602,6 +692,8 @@ function readSessionArtifactSummary(targetDomain) {
     waves,
     findings,
     coverage,
+    chain_attempts: chainAttempts,
+    chain_handoffs: chainHandoffs,
     attack_surface_coverage: attackSurfaceCoverage,
     verification,
     grade,
@@ -861,6 +953,22 @@ function phaseAtLeast(phase, requiredPhase) {
   return current >= 0 && required >= 0 && current >= required;
 }
 
+function computeChainPhaseDurationMs(events) {
+  let chainStartMs = null;
+  for (const event of events) {
+    if (event.type !== "phase_transitioned") continue;
+    if (event.to_phase === "CHAIN") {
+      chainStartMs = timestampMs(event.ts);
+      continue;
+    }
+    if (event.to_phase === "VERIFY" && chainStartMs != null) {
+      const verifyMs = timestampMs(event.ts);
+      return verifyMs >= chainStartMs ? verifyMs - chainStartMs : null;
+    }
+  }
+  return null;
+}
+
 function issue(code, severity, message, evidence = {}) {
   return { code, severity, message, evidence };
 }
@@ -953,6 +1061,20 @@ function analyzeSession(targetDomain, { cutoffMs = null, limit = DEFAULT_LIMIT, 
     }));
   }
 
+  const chainWorkRequired = artifacts.findings.total >= 2 || artifacts.chain_handoffs.chain_notes_count > 0;
+  if (
+    phaseAtLeast(artifacts.state.phase, "CHAIN") &&
+    chainWorkRequired &&
+    artifacts.chain_attempts.terminal_total === 0
+  ) {
+    issues.push(issue("chain_phase_no_attempts", "blocked", "CHAIN phase has required chain work but no terminal structured chain attempts.", {
+      findings: artifacts.findings.total,
+      handoff_chain_notes: artifacts.chain_handoffs.chain_notes_count,
+      attempts: artifacts.chain_attempts.total,
+      by_outcome: artifacts.chain_attempts.by_outcome,
+    }));
+  }
+
   if (
     artifacts.findings.total > 0 &&
     artifacts.verification.rounds.final.exists &&
@@ -1001,6 +1123,9 @@ function analyzeSession(targetDomain, { cutoffMs = null, limit = DEFAULT_LIMIT, 
       total: artifacts.findings.total,
       by_severity: artifacts.findings.by_severity,
     },
+    chain_attempts_count: artifacts.chain_attempts.total,
+    chain_attempts_by_outcome: artifacts.chain_attempts.by_outcome,
+    chain_phase_duration_ms: computeChainPhaseDurationMs(allEvents),
     final_verification_count: artifacts.verification.final_results_count,
     final_reportable_count: artifacts.verification.final_reportable_count,
     grade_verdict: artifacts.grade.verdict,
@@ -1113,6 +1238,7 @@ function actionForBottleneck(bottleneck) {
     mcp_tool_failures: "Inspect failing MCP tools and address the dominant error code before launching more agents.",
     auth_failures: "Refresh or recapture auth profiles before additional authenticated testing.",
     low_coverage: "Launch another wave for unexplored non-low surfaces before verification.",
+    chain_phase_no_attempts: "Run the chain-builder again so it records terminal chain attempts, or transition with an explicit override reason.",
     verification_dropoff: "Review final verification inputs because recorded findings are not surviving as reportable.",
     grade_hold_skip: "Use grader feedback to decide whether to return to HUNT or stop before report writing.",
     missing_verification: "Write a valid final verification round before grading or reporting.",

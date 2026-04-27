@@ -2,7 +2,10 @@
 
 const {
   COVERAGE_UNFINISHED_STATUS_VALUES,
+  CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,
 } = require("./constants.js");
+const fs = require("fs");
+const path = require("path");
 const {
   readAttackSurfaceStrict,
 } = require("./attack-surface.js");
@@ -13,6 +16,16 @@ const {
   latestCoverageRecordsByKey,
   readCoverageRecordsFromJsonl,
 } = require("./coverage.js");
+const {
+  readFindingsFromJsonl,
+} = require("./findings.js");
+const {
+  readChainAttemptsFromJsonl,
+  summarizeChainAttempts,
+} = require("./chain-attempts.js");
+const {
+  sessionDir,
+} = require("./paths.js");
 
 function compactErrorMessage(error) {
   return error && error.message ? error.message : String(error);
@@ -133,10 +146,120 @@ function computeHuntToChainGate(domain, state) {
   };
 }
 
+function readStructuredHandoffChainNotes(domain) {
+  const dir = sessionDir(domain);
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+
+  const refs = [];
+  for (const fileName of fs.readdirSync(dir).sort()) {
+    const match = fileName.match(/^handoff-(w[1-9][0-9]*)-(a[1-9][0-9]*)\.json$/);
+    if (!match) continue;
+    let document;
+    try {
+      document = JSON.parse(fs.readFileSync(path.join(dir, fileName), "utf8"));
+    } catch {
+      continue;
+    }
+    if (!document || typeof document !== "object" || Array.isArray(document)) continue;
+    if (document.target_domain != null && document.target_domain !== domain) continue;
+    const chainNotes = Array.isArray(document.chain_notes)
+      ? document.chain_notes.filter((note) => typeof note === "string" && note.trim())
+      : [];
+    if (chainNotes.length === 0) continue;
+    refs.push({
+      wave: match[1],
+      agent: match[2],
+      surface_id: typeof document.surface_id === "string" ? document.surface_id.trim() : null,
+      chain_notes_count: chainNotes.length,
+    });
+  }
+  return refs;
+}
+
+function computeChainRequirement(domain) {
+  const findings = readFindingsFromJsonl(domain);
+  const handoffChainNotes = readStructuredHandoffChainNotes(domain);
+  const reasons = [];
+  if (findings.length >= 2) reasons.push("multiple_findings");
+  if (handoffChainNotes.length > 0) reasons.push("handoff_chain_notes");
+
+  return {
+    required: reasons.length > 0,
+    reasons,
+    findings_count: findings.length,
+    finding_ids: findings.map((finding) => finding.id),
+    handoff_chain_notes_count: handoffChainNotes.reduce((total, handoff) => total + handoff.chain_notes_count, 0),
+    handoff_refs: handoffChainNotes,
+  };
+}
+
+function computeChainToVerifyGate(domain) {
+  const blockers = [];
+  let requirement = null;
+  let attempts = [];
+  let attemptsSummary = null;
+
+  try {
+    requirement = computeChainRequirement(domain);
+  } catch (error) {
+    blockers.push(blocker(
+      "chain_context_unavailable",
+      "chain context could not be read for CHAIN -> VERIFY gating",
+      { error: compactErrorMessage(error) },
+    ));
+  }
+
+  try {
+    attempts = readChainAttemptsFromJsonl(domain);
+    attemptsSummary = summarizeChainAttempts(attempts);
+  } catch (error) {
+    blockers.push(blocker(
+      "chain_attempts_unavailable",
+      "chain attempts could not be read for CHAIN -> VERIFY gating",
+      { error: compactErrorMessage(error) },
+    ));
+  }
+
+  const terminalAttempts = attempts.filter((attempt) => (
+    CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES.includes(attempt.outcome)
+  ));
+
+  if (requirement && requirement.required && attemptsSummary && terminalAttempts.length === 0) {
+    blockers.push(blocker(
+      "chain_attempts_missing",
+      "CHAIN phase requires at least one terminal chain attempt before VERIFY",
+      {
+        findings_count: requirement.findings_count,
+        handoff_chain_notes_count: requirement.handoff_chain_notes_count,
+        outcomes: attemptsSummary.by_outcome,
+      },
+    ));
+  }
+
+  return {
+    chain: {
+      requirement,
+      attempts: {
+        total: attempts.length,
+        terminal: terminalAttempts.length,
+        by_outcome: attemptsSummary
+          ? attemptsSummary.by_outcome
+          : null,
+      },
+    },
+    transition_blockers: blockers,
+  };
+}
+
 function formatTransitionBlockers(blockers) {
   return blockers.map((item) => {
     if (Array.isArray(item.surface_ids) && item.surface_ids.length > 0) {
       return `${item.message}: ${item.surface_ids.join(", ")}`;
+    }
+    if (item.outcomes) {
+      return `${item.message}: ${JSON.stringify(item.outcomes)}`;
     }
     if (item.pending_wave != null) {
       return item.message;
@@ -149,6 +272,9 @@ function formatTransitionBlockers(blockers) {
 }
 
 module.exports = {
+  computeChainRequirement,
+  computeChainToVerifyGate,
   computeHuntToChainGate,
   formatTransitionBlockers,
+  readStructuredHandoffChainNotes,
 };

@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob-cc",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Autonomous bug bounty hunting framework for Claude Code",
   "license": "Apache-2.0",
   "repository": {
@@ -24,6 +24,7 @@
     "docs/hacker-bob.png",
     "mcp/**/*",
     "scripts/**/*",
+    "testing/policy-replay/**/*",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
@@ -44,11 +45,16 @@
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",
     "test:package": "node --test test/package.test.js",
+    "test:policy-replay": "node --test test/policy-replay.test.js",
     "test:hooks": "python3 test/test-write-guard.py",
-    "test": "npm run check:syntax && npm run test:mcp && npm run test:prompts && npm run test:install && npm run test:update && npm run test:cli && npm run test:package && npm run test:hooks",
+    "test": "npm run check:syntax && npm run test:mcp && npm run test:prompts && npm run test:install && npm run test:update && npm run test:cli && npm run test:package && npm run test:policy-replay && npm run test:hooks",
     "release:check": "node scripts/release-check.js",
     "release:check:registry": "node scripts/release-check.js --registry",
+    "replay:policy": "node testing/policy-replay/replay.mjs",
     "install-browser": "npx patchright install chromium"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.119"
   },
   "optionalDependencies": {
     "patchright": "^1.59.4"

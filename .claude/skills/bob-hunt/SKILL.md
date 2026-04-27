@@ -9,6 +9,7 @@ allowed-tools:
   - mcp__bountyagent__bounty_import_http_traffic
   - mcp__bountyagent__bounty_public_intel
   - mcp__bountyagent__bounty_list_findings
+  - mcp__bountyagent__bounty_read_chain_attempts
   - mcp__bountyagent__bounty_read_verification_round
   - mcp__bountyagent__bounty_read_grade_verdict
   - mcp__bountyagent__bounty_init_session
@@ -75,6 +76,7 @@ MCP-owned session artifacts:
 - `bounty_public_intel` writes optional public bounty intel to `public-intel.json`.
 - `bounty_import_static_artifact` writes redacted token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
+- `bounty_write_chain_attempt` writes CHAIN-phase evidence to `chain-attempts.jsonl`; `bounty_read_chain_attempts` is the only machine-readable chain source.
 - `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, runtime ranking, intel, static scan, assignment, coverage, and scope summaries.
 - `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 
@@ -182,22 +184,22 @@ Call `bounty_transition_phase({ target_domain, to_phase: "CHAIN" })`.
 
 Spawn:
 ```
-Agent(subagent_type: "chain-builder", name: "chain", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Read findings through bounty_read_findings.data and structured summary/chain_notes through bounty_read_wave_handoffs.data. Do not read findings.md or markdown handoffs.")
+Agent(subagent_type: "chain-builder", name: "chain", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Read findings, wave handoffs, auth profiles, HTTP audit, and prior chain attempts through MCP. Test plausible chains with bounty_http_scan as needed and write every outcome through bounty_write_chain_attempt. Do not read findings.md, chains.md, or markdown handoffs.")
 ```
-After completion, call `bounty_transition_phase({ target_domain, to_phase: "VERIFY" })`.
+After completion, call `bounty_transition_phase({ target_domain, to_phase: "VERIFY" })`. If MCP blocks this transition for missing terminal chain attempts, retry the chain-builder once with the blocker text. Use `override_reason` only when the operator explicitly accepts proceeding without terminal chain evidence.
 
 ## PHASE 5: VERIFY
 Verification JSON is the only machine-readable source of truth. Markdown mirrors are human/debug only.
 
 Round 1:
 ```
-Agent(subagent_type: "brutalist-verifier", name: "brutalist", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_list_auth_profiles before authenticated replays, read chains.md, verify each finding, then write only through bounty_write_verification_round(round='brutalist').")
+Agent(subagent_type: "brutalist-verifier", name: "brutalist", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings and bounty_read_chain_attempts for [domain], call bounty_list_auth_profiles before authenticated replays, verify each finding, then write only through bounty_write_verification_round(round='brutalist').")
 ```
 After the brutalist agent completes, validate the artifact: call `bounty_read_verification_round({ target_domain: "[domain]", round: "brutalist" })` and inspect `.data`. If missing/empty, retry once, then report failure and stop.
 
 Round 2:
 ```
-Agent(subagent_type: "balanced-verifier", name: "balanced", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='brutalist'), call bounty_list_auth_profiles before authenticated replays, read chains.md, review brutalist decisions, then write only through bounty_write_verification_round(round='balanced').")
+Agent(subagent_type: "balanced-verifier", name: "balanced", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, and bounty_read_verification_round(round='brutalist'), call bounty_list_auth_profiles before authenticated replays, review brutalist decisions, then write only through bounty_write_verification_round(round='balanced').")
 ```
 After the balanced agent completes, validate the artifact: call `bounty_read_verification_round({ target_domain: "[domain]", round: "balanced" })` and inspect `.data`. If missing/empty, retry once, then report failure and stop.
 
@@ -210,14 +212,14 @@ Read `bounty_read_verification_round(round='final').data`. If no result has `rep
 ## PHASE 6: GRADE
 Spawn:
 ```
-Agent(subagent_type: "grader", name: "grader", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='final'), score survivors, then write only through bounty_write_grade_verdict.")
+Agent(subagent_type: "grader", name: "grader", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, and bounty_read_verification_round(round='final'), score survivors, then write only through bounty_write_grade_verdict.")
 ```
 Read `bounty_read_grade_verdict.data`. On `SUBMIT`, transition to REPORT. On `HOLD`, transition to HUNT, include feedback in a targeted wave, and re-run CHAIN before VERIFY; escalate if `hold_count >= 2`. On `SKIP`, report no reportable vulnerabilities and stop.
 
 ## PHASE 7: REPORT
 Spawn:
 ```
-Agent(subagent_type: "report-writer", name: "reporter", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='final'), call bounty_read_grade_verdict, then write prose report.md.")
+Agent(subagent_type: "report-writer", name: "reporter", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, bounty_read_verification_round(round='final'), and bounty_read_grade_verdict, then write prose report.md with only confirmed chain evidence.")
 ```
 Present the report. If the user wants more hunting, transition to EXPLORE; otherwise stop.
 

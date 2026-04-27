@@ -62,6 +62,10 @@ function coverageJsonlPath(domain) {
   return path.join(sessionDir(domain), "coverage.jsonl");
 }
 
+function chainAttemptsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "chain-attempts.jsonl");
+}
+
 function pipelineEventsJsonlPath(domain) {
   return path.join(sessionDir(domain), "pipeline-events.jsonl");
 }
@@ -129,6 +133,7 @@ module.exports = {
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
+  chainAttemptsJsonlPath,
   coverageJsonlPath,
   findingsJsonlPath,
   findingsMarkdownPath,

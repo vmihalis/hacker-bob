@@ -266,14 +266,22 @@ test("prompts do not tell agents to read auth.json directly", () => {
   }
 });
 
-test("chain-builder uses structured handoffs without Bash or markdown dependency", () => {
+test("chain-builder uses structured MCP chain attempts without Bash, Write, or markdown dependency", () => {
   const document = readFile(".claude/agents/chain-builder.md");
   const frontmatter = parseFrontmatter(document, "chain-builder.md");
   const tools = frontmatter.tools.split(/\s*,\s*/).filter(Boolean);
 
   assert.ok(!tools.includes("Bash"));
+  assert.ok(!tools.includes("Write"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_write_chain_attempt"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_read_chain_attempts"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_http_scan"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_read_http_audit"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_list_auth_profiles"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_read_findings"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_read_wave_handoffs"));
   assert.match(document, /bounty_read_wave_handoffs/);
+  assert.match(document, /bounty_write_chain_attempt/);
   assert.doesNotMatch(document, /handoff-w\*\.md/);
 });
 
@@ -377,8 +385,16 @@ test("bob-debug skill is telemetry-first and supports latest, explicit, and deep
   assert.match(skill, /No args or `--last`/);
   assert.match(skill, /`<target_domain>`/);
   assert.match(skill, /`--deep`/);
+  assert.match(skill, /telemetry explicitly identifies a policy\/refusal stuck signal/);
   assert.match(skill, /pipeline-events\.jsonl[\s\S]*state\.json[\s\S]*grade\.json[\s\S]*report\.md[\s\S]*directory mtime/);
   assert.match(skill, /Artifact fallback mode: telemetry MCP unavailable or incomplete\./);
+  assert.match(skill, /Policy replay candidates/);
+  assert.match(skill, /refusal or policy-stall turns/);
+  assert.match(skill, /Policy Replay Escalation/);
+  assert.match(skill, /testing\/policy-replay\/replay\.mjs --case/);
+  assert.match(skill, /testing\/policy-replay\/tune\.mjs --transcript/);
+  assert.match(skill, /recommended_prompt_change/);
+  assert.match(skill, /do not edit the prompt yourself from `\/bob-debug`/);
 });
 
 test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
@@ -422,6 +438,14 @@ test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
   assert.ok(allowedTools.includes("Read"));
   assert.ok(allowedTools.includes("Glob"));
   assert.ok(allowedTools.includes("Grep"));
+  assert.ok(
+    allowedTools.includes("Bash(node testing/policy-replay/replay.mjs *)"),
+    "bob-debug must be able to run bounded replay diagnostics",
+  );
+  assert.ok(
+    allowedTools.includes("Bash(node testing/policy-replay/tune.mjs *)"),
+    "bob-debug must be able to run bounded prompt tune diagnostics",
+  );
   for (const tool of expectedReadOnlyMcpTools) {
     assert.ok(allowedTools.includes(tool), `${tool} missing from bob-debug allowed-tools`);
   }
@@ -432,6 +456,23 @@ test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
     const toolName = tool.replace(/^mcp__bountyagent__/, "");
     assert.equal(TOOL_MANIFEST[toolName].mutating, false, `${toolName} must be read-only`);
     assert.equal(TOOL_MANIFEST[toolName].network_access, false, `${toolName} must not touch the network`);
+  }
+});
+
+test("normal Bob workflows do not invoke live policy replay automatically outside bob-debug", () => {
+  const workflowFiles = [
+    ".claude/skills/bob-hunt/SKILL.md",
+    ".claude/skills/bob-status/SKILL.md",
+    ...allMarkdown(".claude/agents"),
+  ];
+
+  for (const file of workflowFiles) {
+    const content = readFile(file);
+    assert.doesNotMatch(
+      content,
+      /testing\/policy-replay\/(?:replay|bench)\.mjs|replay:policy/,
+      `${file} must not invoke policy replay automatically`,
+    );
   }
 });
 
@@ -570,6 +611,23 @@ test("verifiers can read request audit summaries without direct file access", ()
     assert.match(document, /bounty_read_http_audit/);
     assert.doesNotMatch(document, /http-audit\.jsonl/);
   }
+});
+
+test("verifiers, grader, and reporter consume structured chain attempts instead of chains.md", () => {
+  for (const agent of ["brutalist-verifier", "balanced-verifier", "final-verifier", "grader", "report-writer"]) {
+    const document = readFile(`.claude/agents/${agent}.md`);
+    const frontmatter = parseFrontmatter(document, `${agent}.md`);
+    assert.match(frontmatter.tools, /mcp__bountyagent__bounty_read_chain_attempts/, `${agent} missing read-chain tool`);
+    assert.match(document, /bounty_read_chain_attempts/, `${agent} missing read-chain instruction`);
+    assert.doesNotMatch(document, /chains\.md/, `${agent} should not depend on chains.md`);
+  }
+
+  const grader = readFile(".claude/agents/grader.md");
+  assert.match(grader, /confirmed chain attempts/i);
+  assert.match(grader, /Denied attempts/i);
+
+  const reporter = readFile(".claude/agents/report-writer.md");
+  assert.match(reporter, /Include chain evidence only when the chain attempt outcome is `confirmed`/);
 });
 
 test("orchestrator documents --no-auth flag and skips AUTH when set", () => {

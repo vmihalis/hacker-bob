@@ -29,6 +29,7 @@ const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-analytics.js");
 const {
+  computeChainToVerifyGate,
   computeHuntToChainGate,
   formatTransitionBlockers,
 } = require("./phase-gates.js");
@@ -223,9 +224,13 @@ function transitionPhase(args) {
     }
 
     let overrideReason = null;
+    const overrideAllowed = (
+      (fromPhase === "HUNT" && toPhase === "CHAIN") ||
+      (fromPhase === "CHAIN" && toPhase === "VERIFY")
+    );
     if (args.override_reason != null) {
-      if (fromPhase !== "HUNT" || toPhase !== "CHAIN") {
-        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "override_reason is only allowed for HUNT -> CHAIN");
+      if (!overrideAllowed) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "override_reason is only allowed for HUNT -> CHAIN or CHAIN -> VERIFY");
       }
       if (typeof args.override_reason !== "string" || !args.override_reason.trim()) {
         throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "override_reason must be a non-empty string");
@@ -250,13 +255,19 @@ function transitionPhase(args) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "auth_status is only allowed for AUTH -> HUNT");
     }
 
-    const transitionGate = fromPhase === "HUNT" && toPhase === "CHAIN"
-      ? computeHuntToChainGate(domain, state)
-      : null;
+    let transitionGate = null;
+    let transitionGateLabel = null;
+    if (fromPhase === "HUNT" && toPhase === "CHAIN") {
+      transitionGate = computeHuntToChainGate(domain, state);
+      transitionGateLabel = "HUNT -> CHAIN";
+    } else if (fromPhase === "CHAIN" && toPhase === "VERIFY") {
+      transitionGate = computeChainToVerifyGate(domain, state);
+      transitionGateLabel = "CHAIN -> VERIFY";
+    }
     if (transitionGate && transitionGate.transition_blockers.length > 0 && overrideReason == null) {
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
-        `HUNT -> CHAIN blocked: ${formatTransitionBlockers(transitionGate.transition_blockers)}`,
+        `${transitionGateLabel} blocked: ${formatTransitionBlockers(transitionGate.transition_blockers)}`,
       );
     }
 

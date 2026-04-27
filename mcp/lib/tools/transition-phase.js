@@ -34,7 +34,7 @@ module.exports = Object.freeze({
       },
       "override_reason": {
         "type": "string",
-        "description": "Auditable HUNT -> CHAIN override reason. Only allowed for HUNT -> CHAIN and must be at least 20 characters."
+        "description": "Auditable gate override reason. Only allowed for HUNT -> CHAIN or CHAIN -> VERIFY and must be at least 20 characters."
       }
     },
     "required": [
