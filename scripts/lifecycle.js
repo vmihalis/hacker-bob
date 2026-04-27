@@ -35,6 +35,16 @@ const BOB_SKILLS = Object.freeze([
   "bob-status",
 ]);
 
+const BOB_POLICY_REPLAY_FILES = Object.freeze([
+  "replay.mjs",
+  "tune.mjs",
+  "bench.mjs",
+  "case-schema.mjs",
+  "synth-session.mjs",
+  "README.md",
+  path.join("cases", "sample-hunter-refusal.json"),
+]);
+
 const LEGACY_BOB_SKILLS = Object.freeze([
   "bountyagent",
   "bountyagentdebug",
@@ -273,6 +283,17 @@ function doctorProject(projectDir, options = {}) {
   } else {
     addCheck(checks, "error", "hook_files", "Bob hook files are missing", {
       missing: missingHooks,
+    });
+  }
+
+  const missingPolicyReplay = BOB_POLICY_REPLAY_FILES
+    .map((name) => path.join("testing", "policy-replay", name))
+    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
+  if (missingPolicyReplay.length === 0) {
+    addCheck(checks, "ok", "policy_replay", "Bob policy replay harness is installed");
+  } else {
+    addCheck(checks, "error", "policy_replay", "Bob policy replay harness is missing", {
+      missing: missingPolicyReplay,
     });
   }
 

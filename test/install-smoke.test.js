@@ -43,6 +43,10 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "hunter-subagent-stop.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
+    assert.ok(fs.existsSync(path.join(workspace, "testing", "policy-replay", "replay.mjs")));
+    assert.ok(fs.existsSync(path.join(workspace, "testing", "policy-replay", "tune.mjs")));
+    assert.ok(fs.existsSync(path.join(workspace, "testing", "policy-replay", "cases", "sample-hunter-refusal.json")));
+    assert.ok(!fs.existsSync(path.join(workspace, "testing", "policy-replay", "node_modules")));
     assert.equal(fs.readFileSync(path.join(workspace, ".claude", "bob", "VERSION"), "utf8").trim(), PACKAGE_VERSION);
     const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".claude", "bob", "install.json"), "utf8"));
     assert.equal(installMeta.schema_version, 1);

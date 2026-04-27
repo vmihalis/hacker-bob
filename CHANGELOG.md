@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.4] - 2026-04-27
+
+- Fixed the installer to copy the shipped `testing/policy-replay/` harness into target projects so `/bob-debug` replay escalation can run from installed workspaces.
+- Added doctor and install-smoke coverage for the policy replay harness files.
+
 ## [1.1.3] - 2026-04-27
 
 - Added a shipped `testing/policy-replay/` harness for diagnosing Bob policy/refusal regressions with the Claude Agent SDK and local Claude OAuth.

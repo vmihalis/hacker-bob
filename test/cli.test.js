@@ -137,6 +137,7 @@ test("CLI doctor --json returns stable machine-readable checks", () => {
       "install_metadata",
       "commands",
       "hook_files",
+      "policy_replay",
       "mcp_server_config",
       "settings_hooks",
       "settings_statusline",

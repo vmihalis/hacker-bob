@@ -65,6 +65,27 @@ function copyDirFiles(sourceDir, destinationDir, predicate) {
   return copied;
 }
 
+function copyDirRecursive(sourceDir, destinationDir, predicate) {
+  fs.mkdirSync(destinationDir, { recursive: true });
+  const copied = [];
+  for (const name of fs.readdirSync(sourceDir).sort()) {
+    const source = path.join(sourceDir, name);
+    const destination = path.join(destinationDir, name);
+    const stat = fs.statSync(source);
+    if (stat.isDirectory()) {
+      if (name === "node_modules") continue;
+      copied.push(...copyDirRecursive(source, destination, predicate));
+      continue;
+    }
+    if (!stat.isFile()) continue;
+    const relative = path.relative(sourceDir, source);
+    if (predicate && !predicate(relative, name)) continue;
+    copyFile(source, destination);
+    copied.push(path.relative(destinationDir, destination));
+  }
+  return copied;
+}
+
 function removeIfExists(filePath) {
   fs.rmSync(filePath, { force: true });
 }
@@ -203,6 +224,14 @@ function installProject(projectDir, options = {}) {
     (name) => name.endsWith(".js"),
   );
 
+  const policyReplay = copyDirRecursive(
+    path.join(sourceRoot, "testing", "policy-replay"),
+    path.join(targetAbs, "testing", "policy-replay"),
+    (relative) =>
+      /\.(?:mjs|md|json)$/.test(relative) &&
+      !relative.split(path.sep).includes("node_modules"),
+  );
+
   const mcpPath = path.join(targetAbs, ".mcp.json");
   const settingsPath = path.join(claudeDir, "settings.json");
   const serverPath = path.join(targetAbs, "mcp", "server.js");
@@ -233,6 +262,7 @@ function installProject(projectDir, options = {}) {
     rules: rules.length,
     bypassTables: bypassTables.length,
     knowledge: knowledge.length,
+    policyReplay: policyReplay.length,
     patchrightAvailable: patchrightAvailable(targetAbs, sourceRoot),
   };
 }
@@ -246,6 +276,7 @@ function printInstallSummary(summary) {
   console.log(`  ${summary.rules} rules`);
   console.log(`  ${summary.bypassTables} bypass tables`);
   console.log(`  ${summary.knowledge} hunter knowledge files`);
+  console.log(`  ${summary.policyReplay} policy replay harness files`);
   console.log("  scope/session/update guard hooks + status line");
   console.log("  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js)");
   console.log("  .mcp.json merged");
