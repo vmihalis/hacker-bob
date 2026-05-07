@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bounty Agent MCP Server facade — tool registry, public exports, and CLI startup
+// Hacker Bob MCP server facade - tool registry, public exports, and CLI startup
 // Provides: bounty_http_scan, bounty_record_finding, bounty_read_findings,
 //           bounty_list_findings, bounty_write_verification_round,
 //           bounty_read_verification_round, bounty_write_grade_verdict,

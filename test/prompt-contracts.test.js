@@ -151,6 +151,23 @@ function roleMcpToolsFromClaudeOutput(roleId) {
     .sort();
 }
 
+test("public copy uses Hacker Bob naming instead of retired product phrasing", () => {
+  const publicFiles = [
+    "mcp/server.js",
+    "site/index.html",
+    "site/src/App.tsx",
+  ];
+  const retiredNamePattern = new RegExp("\\bBounty " + "Agent\\b|\\bbounty " + "agent\\b", "i");
+
+  for (const file of publicFiles) {
+    assert.doesNotMatch(
+      readFile(file),
+      retiredNamePattern,
+      `${file} should use Hacker Bob or Bob naming`,
+    );
+  }
+});
+
 test("Claude roles render exactly from the shared role model", () => {
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     assert.equal(
