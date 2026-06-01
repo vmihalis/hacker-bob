@@ -57,7 +57,7 @@ test("dependency freshness check warns on stale but current PSL metadata", () =>
     "--metadata-file",
     fixturePath,
     "--now",
-    "2026-05-17T00:00:00.000Z",
+    "2026-06-10T00:00:00.000Z",
   ], {
     cwd: ROOT,
     encoding: "utf8",
@@ -66,11 +66,12 @@ test("dependency freshness check warns on stale but current PSL metadata", () =>
 
   assert.match(output, /OK PSL overlay escape hatch remains implemented without runtime network refresh/);
   assert.match(output, /OK psl lockfile version matches npm latest 1\.15\.0/);
-  assert.match(output, /WARN psl@1\.15\.0 latest publish age \d+\.\d days exceeds warning threshold 180 days/);
+  assert.match(output, /WARN psl@1\.15\.0 latest publish age \d+\.\d days exceeds warning threshold 180 days; lockfile is still npm latest/);
+  assert.match(output, /INFO psl freshness owner: Public Suffix List scope ownership/);
   assert.match(output, /Dependency freshness check passed with 1 warning\(s\)\./);
 });
 
-test("dependency freshness check fails when PSL is behind latest or too old", () => {
+test("dependency freshness check fails when PSL is behind latest", () => {
   assert.throws(() => withDependencyFreshnessFixture({
     version: "1.16.0",
     "dist-tags": { latest: "1.16.0" },
@@ -87,25 +88,6 @@ test("dependency freshness check fails when PSL is behind latest or too old", ()
     stdio: ["ignore", "pipe", "pipe"],
   })), (error) => {
     assert.match(String(error.stdout), /FAIL psl lockfile version 1\.15\.0 is behind npm latest 1\.16\.0/);
-    return true;
-  });
-
-  assert.throws(() => withDependencyFreshnessFixture({
-    version: "1.15.0",
-    "dist-tags": { latest: "1.15.0" },
-    time: { "1.15.0": "2024-12-02T10:16:04.251Z" },
-  }, (fixturePath) => execFileSync(process.execPath, [
-    "scripts/dependency-freshness.js",
-    "--metadata-file",
-    fixturePath,
-    "--now",
-    "2026-06-10T00:00:00.000Z",
-  ], {
-    cwd: ROOT,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  })), (error) => {
-    assert.match(String(error.stdout), /FAIL psl@1\.15\.0 latest publish age \d+\.\d days exceeds failure threshold 540 days/);
     return true;
   });
 });
