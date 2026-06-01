@@ -7,6 +7,7 @@ const {
   CODEX_SKILL_SPECS,
   updateCodexSkillFiles,
 } = require("../../scripts/lib/codex-role-renderer.js");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 
 const id = "codex";
 const PLUGIN_NAME = "hacker-bob";
@@ -106,11 +107,6 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function writeText(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, value, "utf8");
-}
-
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile();
@@ -143,35 +139,6 @@ function sourceTreeFiles(sourceRoot, relativeDir) {
   };
   visit(root);
   return files.sort();
-}
-
-function copyTree(sourceDir, destinationDir) {
-  const copied = [];
-  const visit = (current) => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const source = path.join(current, entry.name);
-      const relative = path.relative(sourceDir, source);
-      const destination = path.join(destinationDir, relative);
-      if (entry.isDirectory()) {
-        fs.mkdirSync(destination, { recursive: true });
-        visit(source);
-      } else if (entry.isFile()) {
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.copyFileSync(source, destination);
-        copied.push(relative);
-      }
-    }
-  };
-  fs.mkdirSync(destinationDir, { recursive: true });
-  visit(sourceDir);
-  return copied.sort();
-}
-
-function removeDirContents(dirPath) {
-  if (!dirExists(dirPath)) return;
-  for (const entry of fs.readdirSync(dirPath)) {
-    fs.rmSync(path.join(dirPath, entry), { recursive: true, force: true });
-  }
 }
 
 function managedFiles(sourceRoot) {
@@ -257,9 +224,13 @@ function renderCommand(commandId) {
   ].join("\n");
 }
 
-function writeCommandFiles(pluginDir) {
+function writeCommandFiles(pluginDir, installFs) {
   for (const commandId of commandIds()) {
-    writeText(path.join(pluginDir, "commands", commandSpec(commandId).file), renderCommand(commandId));
+    installFs.writeTextFile(
+      path.join(pluginDir, "commands", commandSpec(commandId).file),
+      renderCommand(commandId),
+      { kind: "generated file" },
+    );
   }
 }
 
@@ -310,10 +281,16 @@ function mergeMarketplace(existing) {
   };
 }
 
-function installMarketplace(targetAbs) {
+function installMarketplace(targetAbs, installFs) {
   const marketplacePath = path.join(targetAbs, MARKETPLACE_PATH);
-  const existing = fileExists(marketplacePath) ? readJson(marketplacePath) : null;
-  writeJson(marketplacePath, mergeMarketplace(existing));
+  const existing = installFs.readJsonIfExists(marketplacePath, null, {
+    kind: MARKETPLACE_PATH,
+    symlink: "reject",
+  });
+  installFs.writeJson(marketplacePath, mergeMarketplace(existing), {
+    kind: MARKETPLACE_PATH,
+    rejectExistingSymlink: true,
+  });
 }
 
 function codexHome() {
@@ -332,27 +309,26 @@ function directSkillTargetPath(spec, home = codexHome()) {
   return path.join(directSkillTargetDir(spec, home), "SKILL.md");
 }
 
-function removeStalePluginSurfaces(pluginDir) {
-  fs.rmSync(path.join(pluginDir, "skills"), { recursive: true, force: true });
+function removeStalePluginSurfaces(pluginDir, installFs) {
+  installFs.removePath(path.join(pluginDir, "skills"), { recursive: true });
   for (const file of STALE_COMMAND_FILES) {
-    fs.rmSync(path.join(pluginDir, "commands", file), { force: true });
+    installFs.removePath(path.join(pluginDir, "commands", file));
   }
 }
 
-function removeLegacyDirectSkillDirs(home = codexHome()) {
+function removeLegacyDirectSkillDirs(home = codexHome(), installFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true })) {
   for (const dir of LEGACY_SKILL_DIRS) {
-    fs.rmSync(path.join(directSkillTargetRoot(home), dir), { recursive: true, force: true });
+    installFs.removePath(path.join(directSkillTargetRoot(home), dir), { recursive: true });
   }
 }
 
-function installDirectSkills(sourceRoot, home = codexHome()) {
+function installDirectSkills(sourceRoot, home = codexHome(), installFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true })) {
   const copied = [];
-  removeLegacyDirectSkillDirs(home);
+  removeLegacyDirectSkillDirs(home, installFs);
   for (const spec of Object.values(CODEX_SKILL_SPECS)) {
     const source = path.join(sourceRoot, spec.output_path);
     const destination = directSkillTargetPath(spec, home);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(source, destination);
+    installFs.copyFile(source, destination);
     copied.push(destination);
   }
   return copied.sort();
@@ -457,17 +433,21 @@ function codexCacheRoot({ home = codexHome(), version }) {
   return path.join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, version);
 }
 
-function activateCodexPlugin({ targetAbs, pluginDir }) {
+function activateCodexPlugin({ targetAbs, pluginDir, homeFs }) {
   const home = codexHome();
   const configPath = codexConfigPath(home);
   const version = pluginVersion(pluginDir);
   const cacheBase = path.join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME);
   const cacheDir = codexCacheRoot({ home, version });
-  fs.mkdirSync(cacheBase, { recursive: true });
-  removeDirContents(cacheBase);
-  copyTree(pluginDir, cacheDir);
+  const safeHomeFs = homeFs || createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
+  safeHomeFs.mkdirp(cacheBase);
+  safeHomeFs.removeDirContents(cacheBase);
+  safeHomeFs.copyTree(pluginDir, cacheDir);
 
-  const existingConfig = fileExists(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  const existingConfig = safeHomeFs.readTextIfExists(configPath, "", {
+    kind: "Codex config",
+    symlink: "reject",
+  });
   const withPlugin = upsertTomlSection(existingConfig, `[plugins.${tomlString(PLUGIN_CONFIG_ID)}]`, [
     "enabled = true",
   ]);
@@ -476,8 +456,10 @@ function activateCodexPlugin({ targetAbs, pluginDir }) {
     "source_type = \"local\"",
     `source = ${tomlString(targetAbs)}`,
   ]);
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, withMarketplace, "utf8");
+  safeHomeFs.writeTextFile(configPath, withMarketplace, {
+    kind: "Codex config",
+    rejectExistingSymlink: true,
+  });
   return {
     ok: true,
     cacheDir,
@@ -486,12 +468,12 @@ function activateCodexPlugin({ targetAbs, pluginDir }) {
   };
 }
 
-function maybeActivateCodexPlugin({ activate, targetAbs, pluginDir }) {
+function maybeActivateCodexPlugin({ activate, targetAbs, pluginDir, homeFs }) {
   if (!activate) {
     return { ok: false, skipped: true, reason: "activation disabled" };
   }
   try {
-    return activateCodexPlugin({ targetAbs, pluginDir });
+    return activateCodexPlugin({ targetAbs, pluginDir, homeFs });
   } catch (error) {
     return {
       ok: false,
@@ -526,20 +508,25 @@ function codexActivationStatus(targetAbs) {
   };
 }
 
-function install({ sourceRoot, targetAbs, serverPath, activate = false }) {
+function install({ sourceRoot, targetAbs, serverPath, activate = false, installFs }) {
+  const projectFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const home = codexHome();
+  const homeFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
   const source = pluginSourceRoot(sourceRoot);
   const destination = pluginTargetRoot(targetAbs);
-  removeStalePluginSurfaces(destination);
-  const copied = copyTree(source, destination);
-  writeCommandFiles(destination);
-  writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }));
-  installMarketplace(targetAbs);
-  const directSkills = installDirectSkills(sourceRoot);
-  const activation = maybeActivateCodexPlugin({ activate, targetAbs, pluginDir: destination });
+  removeStalePluginSurfaces(destination, projectFs);
+  const copied = projectFs.copyTree(source, destination);
+  writeCommandFiles(destination, projectFs);
+  projectFs.writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }), {
+    kind: "generated file",
+  });
+  installMarketplace(targetAbs, projectFs);
+  const directSkills = installDirectSkills(sourceRoot, home, homeFs);
+  const activation = maybeActivateCodexPlugin({ activate, targetAbs, pluginDir: destination, homeFs });
   return {
     activation,
     commands: commandIds().length,
-    codexSkillDir: directSkillTargetRoot(),
+    codexSkillDir: directSkillTargetRoot(home),
     pluginDir: destination,
     files: copied.length,
     skills: directSkills.length,

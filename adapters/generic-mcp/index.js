@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 
 const id = "generic-mcp";
 const PROMPT_SOURCE_DIR = path.join("adapters", "generic-mcp", "prompts");
@@ -73,21 +74,25 @@ function managedDirs() {
   ];
 }
 
-function copyPromptDocs(sourceRoot, targetAbs) {
+function copyPromptDocs(sourceRoot, targetAbs, installFs) {
   let copied = 0;
   for (const name of PROMPT_FILES) {
     const source = path.join(sourceRoot, PROMPT_SOURCE_DIR, name);
     const destination = path.join(targetAbs, PROMPT_TARGET_DIR, name);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(source, destination);
+    installFs.copyFile(source, destination);
     copied += 1;
   }
   return copied;
 }
 
-function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists }) {
+function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists, installFs }) {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const safeReadJsonIfExists = readJsonIfExists || ((filePath, fallback) => safeFs.readJsonIfExists(filePath, fallback, {
+    kind: "config file",
+    symlink: "reject",
+  }));
   const mcpPath = path.join(targetAbs, ".mcp.json");
-  const existing = readJsonIfExists ? readJsonIfExists(mcpPath, {}) : fileExists(mcpPath) ? readJson(mcpPath) : {};
+  const existing = safeReadJsonIfExists(mcpPath, {});
   const next = {
     ...existing,
     mcpServers: {
@@ -95,9 +100,12 @@ function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists }) {
       ...mergeConfig({ serverPath }).mcpServers,
     },
   };
-  writeJson(mcpPath, next);
+  safeFs.writeJson(mcpPath, next, {
+    kind: ".mcp.json",
+    rejectExistingSymlink: true,
+  });
   return {
-    promptDocs: copyPromptDocs(sourceRoot, targetAbs),
+    promptDocs: copyPromptDocs(sourceRoot, targetAbs, safeFs),
     mcpPath,
   };
 }

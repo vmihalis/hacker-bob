@@ -12,6 +12,7 @@ const {
   getAdapter,
 } = require("../adapters/index.js");
 const { clearUpdateCache } = require("../mcp/lib/update-check.js");
+const { createSafeInstallFs } = require("./lib/install-fs.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
@@ -52,13 +53,12 @@ function readJsonIfExists(filePath, fallback) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function readNeutralInstallMetadata(targetAbs, fallback = null) {
-  return readJsonIfExists(neutralInstallMetadataPath(targetAbs), fallback);
+function readNeutralInstallMetadata(targetAbs, fallback = null, installFs = null) {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  return safeFs.readJsonIfExists(neutralInstallMetadataPath(targetAbs), fallback, {
+    kind: ".hacker-bob/install.json",
+    symlink: "missing",
+  });
 }
 
 function detectInstalledAdapterIds(targetAbs) {
@@ -86,10 +86,10 @@ function detectInstalledAdapterIds(targetAbs) {
   return normalizeAdapterIdList(ids);
 }
 
-function installedAdapterIds(targetAbs) {
+function installedAdapterIds(targetAbs, installFs = null) {
   let metadata = null;
   try {
-    metadata = readNeutralInstallMetadata(targetAbs, null);
+    metadata = readNeutralInstallMetadata(targetAbs, null, installFs);
   } catch {
     metadata = null;
   }
@@ -103,6 +103,7 @@ function installedAdapterIds(targetAbs) {
 }
 
 function writeNeutralInstallMetadata({
+  installFs,
   targetAbs,
   manifest,
   installedAt,
@@ -114,10 +115,15 @@ function writeNeutralInstallMetadata({
   const installManifest = manifest || {};
   const version = installManifest.version || "0.0.0";
   const metadataPath = neutralInstallMetadataPath(targetAbs);
-  const existing = readJsonIfExists(metadataPath, {});
-  fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
-  fs.writeFileSync(neutralVersionPath(targetAbs), `${version}\n`, "utf8");
-  writeJson(metadataPath, {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const existing = safeFs.readJsonIfExists(metadataPath, {}, {
+    kind: ".hacker-bob/install.json",
+    symlink: "missing",
+  });
+  safeFs.writeTextFile(neutralVersionPath(targetAbs), `${version}\n`, {
+    kind: ".hacker-bob/VERSION",
+  });
+  safeFs.writeJson(metadataPath, {
     schema_version: NEUTRAL_INSTALL_SCHEMA_VERSION,
     bob_version: version,
     installed_at: existing.installed_at || installedAt || new Date().toISOString(),
@@ -130,53 +136,25 @@ function writeNeutralInstallMetadata({
   });
 }
 
-function copyFile(source, destination, mode) {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
-  if (mode != null) fs.chmodSync(destination, mode);
+function copyFile(installFs, source, destination, mode) {
+  installFs.copyFile(source, destination, mode);
 }
 
-function copyDirRecursive(sourceDir, destinationDir, predicate) {
-  fs.mkdirSync(destinationDir, { recursive: true });
-  const copied = [];
-  for (const name of fs.readdirSync(sourceDir).sort()) {
-    const source = path.join(sourceDir, name);
-    const destination = path.join(destinationDir, name);
-    const stat = fs.statSync(source);
-    if (stat.isDirectory()) {
-      if (name === "node_modules") continue;
-      copied.push(...copyDirRecursive(source, destination, predicate));
-      continue;
-    }
-    if (!stat.isFile()) continue;
-    const relative = path.relative(sourceDir, source);
-    if (predicate && !predicate(relative, name)) continue;
-    copyFile(source, destination);
-    copied.push(path.relative(destinationDir, destination));
-  }
-  return copied;
+function copyDirRecursive(installFs, sourceDir, destinationDir, predicate) {
+  return installFs.copyDirRecursive(sourceDir, destinationDir, predicate);
 }
 
-function copyDirFiles(sourceDir, destinationDir, predicate) {
-  fs.mkdirSync(destinationDir, { recursive: true });
-  const copied = [];
-  for (const name of fs.readdirSync(sourceDir).sort()) {
-    const source = path.join(sourceDir, name);
-    if (!fs.statSync(source).isFile()) continue;
-    if (predicate && !predicate(name)) continue;
-    const destination = path.join(destinationDir, name);
-    copyFile(source, destination);
-    copied.push(name);
-  }
-  return copied;
+function copyDirFiles(installFs, sourceDir, destinationDir, predicate) {
+  return installFs.copyDirFiles(sourceDir, destinationDir, predicate);
 }
 
-function copyResourceSet(sourceRoot, targetAbs, resourceSet) {
+function copyResourceSet(installFs, sourceRoot, targetAbs, resourceSet) {
   const sourceDir = path.join(sourceRoot, resourceSet.source);
   if (!fs.existsSync(sourceDir)) {
     throw new Error(resourceSet.missingMessage);
   }
   const copied = copyDirFiles(
+    installFs,
     sourceDir,
     path.join(targetAbs, resourceSet.destination),
     resourceSet.predicate,
@@ -187,7 +165,7 @@ function copyResourceSet(sourceRoot, targetAbs, resourceSet) {
   return copied;
 }
 
-function copyRuntimeNodeDependencies(sourceRoot, mcpDir) {
+function copyRuntimeNodeDependencies(installFs, sourceRoot, mcpDir) {
   const manifest = packageManifest(sourceRoot);
   const copied = [];
   const queued = [];
@@ -217,8 +195,8 @@ function copyRuntimeNodeDependencies(sourceRoot, mcpDir) {
     }
     const destinationDir = path.join(targetNodeModules, packageName);
     if (path.resolve(sourceDir) === path.resolve(destinationDir)) continue;
-    fs.rmSync(destinationDir, { recursive: true, force: true });
-    copied.push(...copyDirRecursive(sourceDir, destinationDir).map((file) => path.join(packageName, file)));
+    installFs.removePath(destinationDir, { recursive: true });
+    copied.push(...copyDirRecursive(installFs, sourceDir, destinationDir).map((file) => path.join(packageName, file)));
   }
   return copied;
 }
@@ -234,29 +212,28 @@ function sourceResourceNames(sourceRoot, resourceSet) {
     });
 }
 
-function removeEmptyDirIfExists(dirPath) {
-  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return;
-  if (fs.readdirSync(dirPath).length === 0) fs.rmdirSync(dirPath);
+function removeEmptyDirIfExists(installFs, dirPath) {
+  installFs.removeEmptyDirIfExists(dirPath);
 }
 
-function removeLegacyResourceCopies(sourceRoot, targetAbs) {
+function removeLegacyResourceCopies(installFs, sourceRoot, targetAbs) {
   let removed = 0;
   for (const resourceSet of RESOURCE_SETS) {
     const legacyDir = path.join(targetAbs, ".claude", path.basename(resourceSet.destination));
     for (const name of sourceResourceNames(sourceRoot, resourceSet)) {
       const legacyPath = path.join(legacyDir, name);
-      if (fs.existsSync(legacyPath) && fs.statSync(legacyPath).isFile()) {
-        fs.rmSync(legacyPath, { force: true });
+      if (installFs.fileExists(legacyPath)) {
+        installFs.removePath(legacyPath);
         removed += 1;
       }
     }
-    removeEmptyDirIfExists(legacyDir);
+    removeEmptyDirIfExists(installFs, legacyDir);
   }
   return removed;
 }
 
-function removeIfExists(filePath) {
-  fs.rmSync(filePath, { force: true });
+function removeIfExists(installFs, filePath) {
+  installFs.removePath(filePath);
 }
 
 function packageManifest(sourceRoot) {
@@ -317,7 +294,7 @@ function resolveInstallAdapters(targetAbs, options = {}) {
 
   let existing = [];
   try {
-    existing = installedAdapterIds(targetAbs);
+    existing = installedAdapterIds(targetAbs, options.installFs || null);
   } catch {
     existing = [];
   }
@@ -348,35 +325,39 @@ function installProject(projectDir, options = {}) {
   if (!fs.existsSync(targetAbs) || !fs.statSync(targetAbs).isDirectory()) {
     throw new Error(`Install target does not exist or is not a directory: ${targetAbs}`);
   }
+  const installFs = createSafeInstallFs(targetAbs, { label: "install target" });
 
-  const adapterResolution = resolveInstallAdapters(targetAbs, options);
+  const adapterResolution = resolveInstallAdapters(targetAbs, {
+    ...options,
+    installFs,
+  });
   const adapterIds = adapterResolution.ids;
   const logResolution = options.onAdapterResolution || defaultLogResolution;
   logResolution(adapterResolution);
 
-  const existingAdapters = installedAdapterIds(targetAbs);
-  fs.mkdirSync(bobResourceDir, { recursive: true });
+  const existingAdapters = installedAdapterIds(targetAbs, installFs);
+  installFs.mkdirp(bobResourceDir);
 
   const copiedResources = {};
   for (const resourceSet of RESOURCE_SETS) {
-    copiedResources[resourceSet.name] = copyResourceSet(sourceRoot, targetAbs, resourceSet);
+    copiedResources[resourceSet.name] = copyResourceSet(installFs, sourceRoot, targetAbs, resourceSet);
   }
-  const legacyResourcesRemoved = removeLegacyResourceCopies(sourceRoot, targetAbs);
+  const legacyResourcesRemoved = removeLegacyResourceCopies(installFs, sourceRoot, targetAbs);
 
   const mcpDir = path.join(targetAbs, "mcp");
-  fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
+  installFs.mkdirp(path.join(mcpDir, "lib", "tools"));
   for (const file of ["server.js", "auto-signup.js", "redaction.js"]) {
-    copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
+    const mode = file === "server.js" ? 0o755 : undefined;
+    copyFile(installFs, path.join(sourceRoot, "mcp", file), path.join(mcpDir, file), mode);
   }
-  fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
-  copyDirFiles(path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
+  copyDirFiles(installFs, path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
   const sourceToolsDir = path.join(sourceRoot, "mcp", "lib", "tools");
   const targetToolsDir = path.join(mcpDir, "lib", "tools");
   if (path.resolve(sourceToolsDir) !== path.resolve(targetToolsDir)) {
-    fs.rmSync(targetToolsDir, { recursive: true, force: true });
-    copyDirFiles(sourceToolsDir, targetToolsDir, (name) => name.endsWith(".js"));
+    installFs.removePath(targetToolsDir, { recursive: true });
+    copyDirFiles(installFs, sourceToolsDir, targetToolsDir, (name) => name.endsWith(".js"));
   }
-  const copiedRuntimeDependencies = copyRuntimeNodeDependencies(sourceRoot, mcpDir);
+  const copiedRuntimeDependencies = copyRuntimeNodeDependencies(installFs, sourceRoot, mcpDir);
 
   // Policy-replay diagnostic harness. Adapter-agnostic tooling under
   // testing/policy-replay/ in the target. Skip node_modules to avoid bloat.
@@ -384,6 +365,7 @@ function installProject(projectDir, options = {}) {
   const targetPolicyReplayDir = path.join(targetAbs, "testing", "policy-replay");
   if (fs.existsSync(sourcePolicyReplayDir) && path.resolve(sourcePolicyReplayDir) !== path.resolve(targetPolicyReplayDir)) {
     copyDirRecursive(
+      installFs,
       sourcePolicyReplayDir,
       targetPolicyReplayDir,
       (relative) => /\.(?:mjs|md|json)$/.test(relative) && !relative.split(path.sep).includes("node_modules"),
@@ -401,34 +383,43 @@ function installProject(projectDir, options = {}) {
       adapterResults[adapterId] = adapter.install({
         sourceRoot,
         targetAbs,
-        copyDirFiles,
-        copyFile,
+        copyDirFiles: (...args) => copyDirFiles(installFs, ...args),
+        copyFile: (...args) => copyFile(installFs, ...args),
         commitSha,
         installedAt,
         installerSource,
+        installFs,
         manifest,
         packageName,
-        readJsonIfExists,
-        removeIfExists,
+        readJsonIfExists: (filePath, fallback) => installFs.readJsonIfExists(filePath, fallback, {
+          kind: "config file",
+          symlink: "reject",
+        }),
+        removeIfExists: (filePath) => removeIfExists(installFs, filePath),
         serverPath,
-        writeJson,
+        writeJson: (filePath, value, optionsForFile = {}) => installFs.writeJson(filePath, value, optionsForFile),
       });
     } else if (adapterId === "generic-mcp") {
       adapterResults[adapterId] = adapter.install({
+        installFs,
         sourceRoot,
         targetAbs,
-        readJsonIfExists,
+        readJsonIfExists: (filePath, fallback) => installFs.readJsonIfExists(filePath, fallback, {
+          kind: "config file",
+          symlink: "reject",
+        }),
         serverPath,
       });
     } else if (adapterId === "kimi") {
       adapterResults[adapterId] = adapter.install({
         sourceRoot,
         targetAbs,
-        copyDirFiles,
-        copyFile,
+        copyDirFiles: (...args) => copyDirFiles(installFs, ...args),
+        copyFile: (...args) => copyFile(installFs, ...args),
         commitSha,
         installedAt,
         installerSource,
+        installFs,
         manifest,
         packageName,
         serverPath,
@@ -436,6 +427,7 @@ function installProject(projectDir, options = {}) {
     } else {
       adapterResults[adapterId] = adapter.install({
         activate: options.activateCodex !== false && process.env.HACKER_BOB_CODEX_AUTO_INSTALL !== "0",
+        installFs,
         sourceRoot,
         targetAbs,
         serverPath,
@@ -448,6 +440,7 @@ function installProject(projectDir, options = {}) {
     ...adapterIds,
   ]);
   writeNeutralInstallMetadata({
+    installFs,
     targetAbs,
     manifest,
     installedAt,

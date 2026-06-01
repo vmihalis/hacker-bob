@@ -12,6 +12,7 @@ const {
 const {
   updateClaudeRoleFiles,
 } = require("../../scripts/lib/claude-role-renderer.js");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 
 const id = "claude";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
@@ -351,54 +352,65 @@ function install({
   removeIfExists,
   serverPath,
   writeJson,
+  installFs,
 }) {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const safeReadJsonIfExists = readJsonIfExists || ((filePath, fallback) => safeFs.readJsonIfExists(filePath, fallback, {
+    kind: "config file",
+    symlink: "reject",
+  }));
+  const safeWriteJson = writeJson || ((filePath, value, optionsForFile = {}) => safeFs.writeJson(filePath, value, optionsForFile));
+  const safeRemoveIfExists = removeIfExists || ((filePath) => safeFs.removePath(filePath));
+  const safeCopyDirFiles = copyDirFiles || ((sourceDir, destinationDir, predicate) => safeFs.copyDirFiles(sourceDir, destinationDir, predicate));
+  const safeCopyFile = copyFile || ((source, destination, mode) => safeFs.copyFile(source, destination, mode));
   const claudeDir = path.join(targetAbs, ".claude");
-  fsSafeMkdir(claudeDir);
+  safeFs.mkdirp(claudeDir);
   for (const dirname of ["agents", "commands", "rules", "hooks", "skills", "bob"]) {
-    fsSafeMkdir(path.join(claudeDir, dirname));
+    safeFs.mkdirp(path.join(claudeDir, dirname));
   }
   for (const hook of STALE_HOOK_FILES) {
-    removeIfExists(path.join(claudeDir, "hooks", hook));
+    safeRemoveIfExists(path.join(claudeDir, "hooks", hook));
   }
 
-  const agents = copyDirFiles(
+  const agents = safeCopyDirFiles(
     path.join(sourceRoot, ".claude", "agents"),
     path.join(claudeDir, "agents"),
     (name) => name.endsWith(".md"),
   );
 
-  removeIfExists(path.join(claudeDir, "commands", "bountyagent.md"));
-  removeIfExists(path.join(claudeDir, "commands", "bountyagentdebug.md"));
+  safeRemoveIfExists(path.join(claudeDir, "commands", "bountyagent.md"));
+  safeRemoveIfExists(path.join(claudeDir, "commands", "bountyagentdebug.md"));
   for (const legacyCommand of LEGACY_BOB_COMMAND_FILES) {
-    removeIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
+    safeRemoveIfExists(path.join(claudeDir, "commands", "bob", legacyCommand));
   }
-  removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
+  safeFs.removeEmptyDirIfExists(path.join(claudeDir, "commands", "bob"));
   for (const legacySkill of LEGACY_BOB_SKILLS) {
-    fs.rmSync(path.join(claudeDir, "skills", legacySkill), { force: true, recursive: true });
+    safeFs.removePath(path.join(claudeDir, "skills", legacySkill), { recursive: true });
   }
   for (const commandId of commandIds()) {
-    writeTextFile(
+    safeFs.writeTextFile(
       path.join(claudeDir, "commands", commandSpec(commandId).file),
       renderCommand(commandId),
+      { kind: "generated file" },
     );
   }
 
   // Copy static command files (not renderer-driven). bob-egress.md is hand-
   // authored and shipped verbatim; the renderer pattern is only used for
   // commands that have dynamic per-host content like bob-update.md.
-  copyFile(
+  safeCopyFile(
     path.join(sourceRoot, ".claude", "commands", "bob-egress.md"),
     path.join(claudeDir, "commands", "bob-egress.md"),
   );
 
   for (const skill of BOB_SKILLS) {
-    copyFile(
+    safeCopyFile(
       path.join(sourceRoot, ".claude", "skills", skill, "SKILL.md"),
       path.join(claudeDir, "skills", skill, "SKILL.md"),
     );
   }
 
-  const rules = copyDirFiles(
+  const rules = safeCopyDirFiles(
     path.join(sourceRoot, ".claude", "rules"),
     path.join(claudeDir, "rules"),
     (name) => name.endsWith(".md"),
@@ -406,7 +418,7 @@ function install({
 
   for (const hook of HOOK_FILES) {
     const mode = EXECUTABLE_HOOKS.includes(hook) ? 0o755 : undefined;
-    copyFile(
+    safeCopyFile(
       path.join(sourceRoot, ".claude", "hooks", hook),
       path.join(claudeDir, "hooks", hook),
       mode,
@@ -421,22 +433,30 @@ function install({
     ensureEgressProfilesConfig,
     ensureEgressProfilesExample,
   } = require("../../mcp/lib/egress-profiles.js");
-  ensureEgressProfilesExample(targetAbs);
-  ensureEgressProfilesConfig(targetAbs);
+  ensureEgressProfilesExample(targetAbs, { installFs: safeFs });
+  ensureEgressProfilesConfig(targetAbs, { installFs: safeFs });
 
   const mcpPath = path.join(targetAbs, ".mcp.json");
   const settingsPath = path.join(claudeDir, "settings.json");
   const mergedConfig = mergeConfig({
-    existingMcp: readJsonIfExists(mcpPath, {}),
-    existingSettings: readJsonIfExists(settingsPath, {}),
+    existingMcp: safeReadJsonIfExists(mcpPath, {}),
+    existingSettings: safeReadJsonIfExists(settingsPath, {}),
     serverPath,
   });
-  writeJson(mcpPath, mergedConfig.mcp);
-  writeJson(settingsPath, mergedConfig.settings);
+  safeWriteJson(mcpPath, mergedConfig.mcp, {
+    kind: ".mcp.json",
+    rejectExistingSymlink: true,
+  });
+  safeWriteJson(settingsPath, mergedConfig.settings, {
+    kind: ".claude/settings.json",
+    rejectExistingSymlink: true,
+  });
 
   const installManifest = manifest || {};
-  fs.writeFileSync(path.join(claudeDir, "bob", "VERSION"), `${installManifest.version || "0.0.0"}\n`, "utf8");
-  writeJson(path.join(claudeDir, "bob", "install.json"), {
+  safeFs.writeTextFile(path.join(claudeDir, "bob", "VERSION"), `${installManifest.version || "0.0.0"}\n`, {
+    kind: ".claude/bob/VERSION",
+  });
+  safeWriteJson(path.join(claudeDir, "bob", "install.json"), {
     schema_version: 1,
     bob_version: installManifest.version || "0.0.0",
     installed_at: installedAt || new Date().toISOString(),
@@ -814,12 +834,3 @@ module.exports = {
   uninstall,
   updateCommandFiles,
 };
-
-function fsSafeMkdir(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
-}
-
-function removeEmptyDirIfExists(dirPath) {
-  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return;
-  if (fs.readdirSync(dirPath).length === 0) fs.rmdirSync(dirPath);
-}

@@ -187,28 +187,53 @@ function readEgressProfilesDocument(projectRoot = projectRootFromMcp()) {
   return normalizeEgressProfilesDocument(parsed);
 }
 
-function writeEgressProfilesDocument(projectRoot, document) {
+function writeEgressProfilesDocument(projectRoot, document, options = {}) {
   const normalized = normalizeEgressProfilesDocument(document);
   const filePath = egressProfilesPath(projectRoot);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  if (options.installFs) {
+    options.installFs.writeJson(filePath, normalized, {
+      kind: EGRESS_PROFILES_FILE,
+      rejectExistingSymlink: true,
+    });
+  } else {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  }
   return normalized;
 }
 
-function ensureEgressProfilesConfig(projectRoot = projectRootFromMcp()) {
+function ensureEgressProfilesConfig(projectRoot = projectRootFromMcp(), options = {}) {
   const filePath = egressProfilesPath(projectRoot);
+  if (options.installFs) {
+    const existing = options.installFs.readJsonIfExists(filePath, null, {
+      kind: EGRESS_PROFILES_FILE,
+      symlink: "reject",
+    });
+    if (!existing) {
+      writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument(), options);
+      return { created: true, path: filePath };
+    }
+    normalizeEgressProfilesDocument(existing);
+    return { created: false, path: filePath };
+  }
   if (!fs.existsSync(filePath)) {
-    writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument());
+    writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument(), options);
     return { created: true, path: filePath };
   }
   normalizeEgressProfilesDocument(readJsonFile(filePath, { label: EGRESS_PROFILES_FILE }));
   return { created: false, path: filePath };
 }
 
-function ensureEgressProfilesExample(projectRoot = projectRootFromMcp()) {
+function ensureEgressProfilesExample(projectRoot = projectRootFromMcp(), options = {}) {
   const filePath = egressProfilesExamplePath(projectRoot);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(exampleEgressProfilesDocument(), null, 2)}\n`, "utf8");
+  if (options.installFs) {
+    options.installFs.writeJson(filePath, exampleEgressProfilesDocument(), {
+      kind: EGRESS_PROFILES_EXAMPLE_FILE,
+    });
+  } else {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(exampleEgressProfilesDocument(), null, 2)}\n`, "utf8");
+  }
   return filePath;
 }
 

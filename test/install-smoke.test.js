@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -13,6 +13,10 @@ const PACKAGE_VERSION = require("../package.json").version;
 const CODEX_ADAPTER = getAdapter("codex");
 const GENERIC_MCP_ADAPTER = getAdapter("generic-mcp");
 const KIMI_ADAPTER = getAdapter("kimi");
+
+function assertRegularFile(filePath) {
+  assert.equal(fs.lstatSync(filePath).isFile(), true);
+}
 
 test("installer copies a require-able complete MCP runtime", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-"));
@@ -207,6 +211,137 @@ test("installer copies a require-able complete MCP runtime", () => {
       ].join(" "),
       installedServer,
     ], { env: { ...process.env, HOME: tempHome }, stdio: "pipe" });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("installer replaces symlinked generated runtime leaves without following them", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-symlink-runtime-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const victim = path.join(tempRoot, "victim-server.js");
+  fs.mkdirSync(path.join(workspace, "mcp"), { recursive: true });
+  fs.writeFileSync(victim, "victim stays\n", "utf8");
+  fs.symlinkSync(victim, path.join(workspace, "mcp", "server.js"));
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", workspace, "--adapter", "claude"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+
+    assert.equal(fs.readFileSync(victim, "utf8"), "victim stays\n");
+    assertRegularFile(path.join(workspace, "mcp", "server.js"));
+    assert.match(fs.readFileSync(path.join(workspace, "mcp", "server.js"), "utf8"), /startStdioServer/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("installer replaces symlinked adapter-owned generated leaves without following them", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-symlink-adapter-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const victim = path.join(tempRoot, "victim-command.md");
+  const commandPath = path.join(workspace, ".claude", "commands", "bob-egress.md");
+  fs.mkdirSync(path.dirname(commandPath), { recursive: true });
+  fs.writeFileSync(victim, "victim stays\n", "utf8");
+  fs.symlinkSync(victim, commandPath);
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", workspace, "--adapter", "claude"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+
+    assert.equal(fs.readFileSync(victim, "utf8"), "victim stays\n");
+    assertRegularFile(commandPath);
+    assert.match(fs.readFileSync(commandPath, "utf8"), /bob-egress/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("installer rejects symlinked generated parent directories without writing through them", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-symlink-parent-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const outsideKnowledge = path.join(tempRoot, "outside-knowledge");
+  fs.mkdirSync(path.join(workspace, ".hacker-bob"), { recursive: true });
+  fs.mkdirSync(outsideKnowledge, { recursive: true });
+  fs.writeFileSync(path.join(outsideKnowledge, "hunter-techniques.json"), "victim stays\n", "utf8");
+  fs.symlinkSync(outsideKnowledge, path.join(workspace, ".hacker-bob", "knowledge"));
+
+  try {
+    const result = spawnSync(process.execPath, [CLI, "install", workspace, "--adapter", "claude"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      encoding: "utf8",
+    });
+
+    assert.notEqual(result.status, 0, `install unexpectedly succeeded: ${result.stdout}`);
+    assert.match(result.stderr, /symlinked parent directory|symlinked directory/);
+    assert.equal(fs.readFileSync(path.join(outsideKnowledge, "hunter-techniques.json"), "utf8"), "victim stays\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("installer rejects symlinked merged config without writing through it", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-symlink-config-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const victim = path.join(tempRoot, "victim-mcp.json");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(victim, `${JSON.stringify({ mcpServers: { outside: { command: "node" } } }, null, 2)}\n`, "utf8");
+  fs.symlinkSync(victim, path.join(workspace, ".mcp.json"));
+
+  try {
+    const result = spawnSync(process.execPath, [CLI, "install", workspace, "--adapter", "claude"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      encoding: "utf8",
+    });
+
+    assert.notEqual(result.status, 0, `install unexpectedly succeeded: ${result.stdout}`);
+    assert.match(result.stderr, /symlinked .*\.mcp\.json/);
+    const outside = JSON.parse(fs.readFileSync(victim, "utf8"));
+    assert.deepEqual(outside, { mcpServers: { outside: { command: "node" } } });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("codex installer replaces symlinked direct skill leaves under CODEX_HOME", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-symlink-codex-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const codexHome = path.join(tempHome, ".codex");
+  const victim = path.join(tempRoot, "victim-skill.md");
+  const skillPath = path.join(codexHome, "skills", "bob-hunt", "SKILL.md");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+  fs.writeFileSync(victim, "victim stays\n", "utf8");
+  fs.symlinkSync(victim, skillPath);
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", workspace, "--adapter", "codex"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome, CODEX_HOME: codexHome },
+      stdio: "pipe",
+    });
+
+    assert.equal(fs.readFileSync(victim, "utf8"), "victim stays\n");
+    assertRegularFile(skillPath);
+    assert.match(fs.readFileSync(skillPath, "utf8"), /bob-hunt/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

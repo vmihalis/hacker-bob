@@ -7,6 +7,7 @@ const config = require("./config.js");
 const {
   updateKimiSkillFiles,
 } = require("../../scripts/lib/kimi-role-renderer.js");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
 
 const id = "kimi";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
@@ -69,31 +70,6 @@ function render(options = {}) {
   return updateKimiSkillFiles(options);
 }
 
-function copyFile(source, destination, mode) {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
-  if (mode != null) fs.chmodSync(destination, mode);
-}
-
-function copyDirFiles(sourceDir, destinationDir, predicate) {
-  fs.mkdirSync(destinationDir, { recursive: true });
-  const copied = [];
-  for (const name of fs.readdirSync(sourceDir).sort()) {
-    const source = path.join(sourceDir, name);
-    if (!fs.statSync(source).isFile()) continue;
-    if (predicate && !predicate(name)) continue;
-    const destination = path.join(destinationDir, name);
-    copyFile(source, destination);
-    copied.push(name);
-  }
-  return copied;
-}
-
-function readJsonIfExists(filePath, fallback) {
-  if (!fs.existsSync(filePath)) return fallback;
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -117,25 +93,30 @@ function install({
   commitSha,
   installedAt,
   installerSource,
+  installFs,
   manifest,
   packageName,
 }) {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
   const kimiDir = path.join(targetAbs, ".kimi");
-  fs.mkdirSync(kimiDir, { recursive: true });
+  safeFs.mkdirp(kimiDir);
   for (const dirname of ["skills", "bob"]) {
-    fs.mkdirSync(path.join(kimiDir, dirname), { recursive: true });
+    safeFs.mkdirp(path.join(kimiDir, dirname));
   }
 
   for (const skill of BOB_SKILLS) {
     const sourceSkillDir = path.join(sourceRoot, "adapters", "kimi", "skills", skill);
     const targetSkillDir = path.join(kimiDir, "skills", skill);
     if (fs.existsSync(sourceSkillDir)) {
-      copyDirFiles(sourceSkillDir, targetSkillDir, () => true);
+      safeFs.copyDirFiles(sourceSkillDir, targetSkillDir, () => true);
     }
   }
 
   const mcpPath = path.join(targetAbs, ".kimi", "mcp.json");
-  const existingMcp = readJsonIfExists(mcpPath, {});
+  const existingMcp = safeFs.readJsonIfExists(mcpPath, {}, {
+    kind: ".kimi/mcp.json",
+    symlink: "reject",
+  });
   const nextMcp = {
     ...existingMcp,
     mcpServers: {
@@ -143,11 +124,16 @@ function install({
       ...mergeConfig({ serverPath }).mcpServers,
     },
   };
-  writeJson(mcpPath, nextMcp);
+  safeFs.writeJson(mcpPath, nextMcp, {
+    kind: ".kimi/mcp.json",
+    rejectExistingSymlink: true,
+  });
 
   const installManifest = manifest || {};
-  fs.writeFileSync(path.join(kimiDir, "bob", "VERSION"), `${installManifest.version || "0.0.0"}\n`, "utf8");
-  writeJson(path.join(kimiDir, "bob", "install.json"), {
+  safeFs.writeTextFile(path.join(kimiDir, "bob", "VERSION"), `${installManifest.version || "0.0.0"}\n`, {
+    kind: ".kimi/bob/VERSION",
+  });
+  safeFs.writeJson(path.join(kimiDir, "bob", "install.json"), {
     schema_version: 1,
     bob_version: installManifest.version || "0.0.0",
     installed_at: installedAt || new Date().toISOString(),
