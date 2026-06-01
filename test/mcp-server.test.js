@@ -12,6 +12,19 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 
+const PREVIOUS_BOB_PROJECT_DIR = process.env.BOB_PROJECT_DIR;
+const TEST_BOB_PROJECT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-mcp-project-"));
+process.env.BOB_PROJECT_DIR = TEST_BOB_PROJECT_DIR;
+
+test.after(() => {
+  if (PREVIOUS_BOB_PROJECT_DIR === undefined) {
+    delete process.env.BOB_PROJECT_DIR;
+  } else {
+    process.env.BOB_PROJECT_DIR = PREVIOUS_BOB_PROJECT_DIR;
+  }
+  fs.rmSync(TEST_BOB_PROJECT_DIR, { recursive: true, force: true });
+});
+
 const REMOVED_HOOK_AUTHORITY_FIELD = ["hook", "required"].join("_");
 
 const serverModule = require("../mcp/server.js");
@@ -775,8 +788,8 @@ function oversizedTechniqueKnowledge({
   };
 }
 
-function withRepoEgressConfig(document, fn) {
-  const filePath = egressProfiles.egressProfilesPath(ROOT);
+function withDefaultEgressConfig(document, fn) {
+  const filePath = egressProfiles.egressProfilesPath();
   const existed = fs.existsSync(filePath);
   const previous = existed ? fs.readFileSync(filePath, "utf8") : null;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -1364,7 +1377,13 @@ function runHunterSubagentStop(payload, { home, env = {} }) {
   return spawnSync(process.execPath, [path.join(__dirname, "..", ".claude", "hooks", "hunter-subagent-stop.js")], {
     input: JSON.stringify(payload),
     encoding: "utf8",
-    env: { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: path.join(__dirname, ".."), ...env },
+    env: {
+      ...process.env,
+      HOME: home,
+      BOB_PROJECT_DIR: path.join(__dirname, ".."),
+      CLAUDE_PROJECT_DIR: path.join(__dirname, ".."),
+      ...env,
+    },
   });
 }
 
@@ -4058,7 +4077,7 @@ test("bounty_init_session rejects proxy-backed sessions that would claim interna
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_OPERATOR_PROXY: "http://proxy.example:8080" }, async () => {
         const rejected = await executeTool("bounty_init_session", {
           target_domain: "proxy-paranoid.example.com",
@@ -15562,7 +15581,7 @@ test("bounty_auto_signup rejects raw proxy arguments and uses egress profiles on
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_BROWSER_PROXY: rawProxy }, async () => {
         const originalResolve = Module._resolveFilename;
         Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
@@ -15614,7 +15633,7 @@ test("bounty_signup_detect uses egress profiles and rejects proxy-backed strict 
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_DETECT_PROXY: ["http://", proxyAuthority, "@proxy.example:8080"].join("") }, async () => {
         let sawAgent = false;
         await withMockSafeFetch((url, requestOptions) => {
@@ -15909,7 +15928,7 @@ test("bounty_http_scan records selected egress profile and passes a proxy agent 
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_GR_RESIDENTIAL_PROXY: ["http://", proxyAuthority, "@127.0.0.1:8080"].join("") }, async () => {
         let sawAgent = false;
         await withMockSafeFetch((url, requestOptions) => {
@@ -15964,7 +15983,7 @@ test("bounty_init_session binds egress profile identity without storing proxy se
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_OPERATOR_PROXY: ["http://", proxyAuthority, "@proxy.example:8080"].join("") }, async () => {
         const result = await executeTool("bounty_init_session", {
           target_domain: domain,
@@ -16001,6 +16020,28 @@ test("default egress identity hash is stable unless identity version changes", (
       "791de81d33f4f1d790cd2d1f9f800ba238072914b6f37aaa4739c7b34a398acc",
     );
   });
+});
+
+test("default egress resolution ignores source-checkout config when BOB_PROJECT_DIR is set", () => {
+  const emptyProject = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-egress-project-"));
+  try {
+    withEnv({ BOB_PROJECT_DIR: emptyProject, CLAUDE_PROJECT_DIR: undefined }, () => {
+      assert.equal(
+        egressProfiles.egressProfilesPath(),
+        path.join(emptyProject, ".claude", "bob", "egress-profiles.json"),
+      );
+
+      const profile = egressProfiles.resolveEgressProfile("default");
+      assert.equal(profile.name, "default");
+      assert.equal(profile.region, null);
+      assert.equal(profile.description, egressProfiles.defaultEgressProfile().description);
+      assert.equal(profile.proxy_url, null);
+      assert.equal(profile.proxy_url_redacted, null);
+      assert.equal(profile.proxy_configured, false);
+    });
+  } finally {
+    fs.rmSync(emptyProject, { recursive: true, force: true });
+  }
 });
 
 test("egress-bound HTTP scans require initialized session state", async () => {
@@ -16076,7 +16117,7 @@ test("scope-blocked HTTP scans still reject initialized-session egress drift", a
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       const init = await executeTool("bounty_init_session", {
         target_domain: domain,
         target_url: `https://${domain}`,
@@ -16157,7 +16198,7 @@ test("session egress identity permits credential rotation but rejects route drif
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_OPERATOR_PROXY: `http://user:${firstSecret}@proxy.example:8080` }, async () => {
         const init = await executeTool("bounty_init_session", {
           target_domain: domain,
@@ -16306,7 +16347,7 @@ test("bounty_http_scan rejects env-resolved proxy query secrets", async () => {
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_QUERY_PROXY: `http://proxy.example:8080/?token=${rawProxySecret}` }, async () => {
         await withMockSafeFetch(() => {
           throw new Error("network should not be reached");
@@ -16344,7 +16385,7 @@ test("bounty_http_scan rejects invalid egress profiles before sending network re
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withMockSafeFetch(() => {
         throw new Error("network should not be reached");
       }, async (requestedUrls) => {
@@ -16391,7 +16432,7 @@ test("bounty_http_scan rejects inline proxy credentials in egress profile config
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withMockSafeFetch(() => {
         throw new Error("network should not be reached");
       }, async (requestedUrls) => {
@@ -16429,7 +16470,7 @@ test("bounty_http_scan rejects inline proxy query secrets in egress profile conf
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withMockSafeFetch(() => {
         throw new Error("network should not be reached");
       }, async (requestedUrls) => {
@@ -16469,7 +16510,7 @@ test("bounty_http_scan rejects proxy egress when strict internal-host blocking i
       ],
     };
 
-    await withRepoEgressConfig(document, async () => {
+    await withDefaultEgressConfig(document, async () => {
       await withEnv({ BOB_EGRESS_OPERATOR_EU_PROXY: ["http://", proxyAuthority, "@proxy.example:8080"].join("") }, async () => {
         await withMockSafeFetch(() => {
           throw new Error("network should not be reached");
@@ -17534,7 +17575,7 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
       ],
     };
 
-    withRepoEgressConfig(document, () => {
+    withDefaultEgressConfig(document, () => {
     const expectedEgress = egressProfiles.egressProfileIdentityFields(
       egressProfiles.resolveEgressProfile("operator-eu"),
     );
@@ -18069,7 +18110,7 @@ test("bounty_read_hunter_brief loads knowledge and bypass tables from BOB_RESOUR
 
     withTempHome(() => withEnv({
       BOB_RESOURCE_DIR: resources,
-      BOB_PROJECT_DIR: undefined,
+      BOB_PROJECT_DIR: TEST_BOB_PROJECT_DIR,
       CLAUDE_PROJECT_DIR: undefined,
     }, () => {
       const domain = "example.com";

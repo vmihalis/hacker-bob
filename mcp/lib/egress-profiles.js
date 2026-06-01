@@ -7,6 +7,9 @@ const { redactUrlSensitiveValues } = require("../redaction.js");
 const {
   readJsonFile,
 } = require("./storage.js");
+const {
+  projectRoot: runtimeProjectRoot,
+} = require("./runtime-resources.js");
 
 const EGRESS_PROFILES_VERSION = 1;
 const EGRESS_PROFILE_IDENTITY_VERSION = 1;
@@ -16,8 +19,8 @@ const SUPPORTED_PROXY_PROTOCOLS = Object.freeze(["http:", "https:", "socks5:", "
 const EGRESS_PROFILES_FILE = path.join(".claude", "bob", "egress-profiles.json");
 const EGRESS_PROFILES_EXAMPLE_FILE = path.join(".claude", "bob", "egress-profiles.example.json");
 
-function projectRootFromMcp() {
-  return path.resolve(__dirname, "..", "..");
+function projectRootFromMcp(env = process.env) {
+  return runtimeProjectRoot(env);
 }
 
 function egressProfilesPath(projectRoot = projectRootFromMcp()) {
