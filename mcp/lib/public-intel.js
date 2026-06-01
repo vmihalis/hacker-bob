@@ -501,10 +501,14 @@ async function bountyPublicIntel(args, { rankAttackSurfaces = null } = {}) {
   }
 
   if (args.cve_feed_json != null) {
-    result.cve_matches = buildCveScopeMatches(domain, args.cve_feed_json, {
-      limit: cveLimit,
-      source_uri: args.cve_source_uri,
-    });
+    try {
+      result.cve_matches = buildCveScopeMatches(domain, args.cve_feed_json, {
+        limit: cveLimit,
+        source_uri: args.cve_source_uri,
+      });
+    } catch (error) {
+      result.errors.push(`cve_feed_json: ${error.message || String(error)}`);
+    }
   }
 
   writeFileAtomic(publicIntelPath(domain), `${JSON.stringify(result, null, 2)}\n`);

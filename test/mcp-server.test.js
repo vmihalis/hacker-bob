@@ -17498,6 +17498,53 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
   });
 });
 
+test("bounty_public_intel degrades a malformed cve_feed_json into errors without discarding network intel", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    const previousFetch = global.fetch;
+    try {
+      global.fetch = async (url) => {
+        if (String(url).includes("/example-program.json")) {
+          return new Response(JSON.stringify({
+            handle: "example-program",
+            name: "Example Program",
+            policy: "Only test owned assets.",
+            offers_bounties: true,
+            resolved_report_count: 7,
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response("no", { status: 500 });
+      };
+
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "surface-api",
+        hosts: [`https://app.${domain}`],
+        tech_stack: ["GraphQL"],
+        endpoints: ["/graphql"],
+        nuclei_hits: [],
+        priority: "LOW",
+      }]);
+
+      // Single-record feed shaped like NVD but missing cve.id: parseCveFeed
+      // throws on this branch, which previously bubbled up and skipped the
+      // persist, discarding the program intel fetched above.
+      const result = JSON.parse(await bountyPublicIntel({
+        target_domain: domain,
+        program: "https://hackerone.com/example-program",
+        cve_feed_json: JSON.stringify({ cve: { descriptions: [{ lang: "en", value: "no id here" }] } }),
+      }));
+
+      assert.equal(result.program_stats.resolved_report_count, 7);
+      assert.equal(result.cve_matches, null);
+      assert.ok(result.errors.some((error) => /^cve_feed_json:/.test(error)));
+      assert.ok(fs.existsSync(publicIntelPath(domain)));
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
 test("public intel fetch helper enforces HackerOne allowlist and response cap", async () => {
   const previousFetch = global.fetch;
   let called = false;
