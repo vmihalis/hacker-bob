@@ -17545,6 +17545,108 @@ test("bounty_public_intel degrades a malformed cve_feed_json into errors without
   });
 });
 
+test("bounty_public_intel scopes per-surface CVE hints and dedupes matches by surface", async () => {
+  await withTempHome(async () => {
+    const domain = "scoped.example";
+    const previousFetch = global.fetch;
+    try {
+      global.fetch = async () => new Response("no", { status: 500 });
+
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      // Both surfaces run GraphQL; surface-a also exposes "graphql" as a host
+      // token, so one CVE matches surface-a twice (tech_stack + host) and
+      // surface-b once.
+      seedAttackSurfaces(domain, [
+        { id: "surface-a", hosts: ["https://graphql.scoped.example"], tech_stack: ["GraphQL"], endpoints: ["/graphql"], nuclei_hits: [], priority: "LOW" },
+        { id: "surface-b", hosts: ["https://app.scoped.example"], tech_stack: ["GraphQL"], endpoints: ["/graphql"], nuclei_hits: [], priority: "LOW" },
+      ]);
+      seedAssignments(domain, 1, [
+        { agent: "a1", surface_id: "surface-a" },
+        { agent: "a2", surface_id: "surface-b" },
+      ]);
+
+      const cveFeed = JSON.stringify({
+        vulnerabilities: [
+          {
+            cve: {
+              id: "CVE-2026-2000",
+              descriptions: [{ lang: "en", value: "Auth bypass in GraphQL." }],
+              metrics: { cvssMetricV31: [{ cvssData: { baseScore: 8.0 } }] },
+              configurations: [{ nodes: [{ cpeMatch: [{ vulnerable: true, criteria: "cpe:2.3:a:graphql:graphql:1.0:*:*:*:*:*:*:*" }] }] }],
+            },
+          },
+        ],
+      });
+
+      const result = JSON.parse(await bountyPublicIntel({ target_domain: domain, cve_feed_json: cveFeed }));
+      const record = result.cve_matches.records[0];
+      assert.equal(record.cve_id, "CVE-2026-2000");
+      // Two distinct surfaces matched; the duplicate surface-a row is collapsed.
+      assert.equal(record.matched_surface_count, 2);
+      const surfaceIds = record.matches.map((match) => match.surface_id).sort();
+      assert.deepEqual(surfaceIds, ["surface-a", "surface-b"]);
+
+      // Each hunter brief only sees its own surface's match rows.
+      const briefA = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.equal(briefA.intel_hints.cve_matches.length, 1);
+      assert.deepEqual(briefA.intel_hints.cve_matches[0].matches.map((match) => match.surface_id), ["surface-a"]);
+      assert.equal(briefA.intel_hints.cve_matches[0].match_count, 1);
+
+      const briefB = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a2" }));
+      assert.equal(briefB.intel_hints.cve_matches.length, 1);
+      assert.deepEqual(briefB.intel_hints.cve_matches[0].matches.map((match) => match.surface_id), ["surface-b"]);
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
+test("bounty_public_intel drops carried-forward CVE matches when the attack surface changes", async () => {
+  await withTempHome(async () => {
+    const domain = "stale.example";
+    const previousFetch = global.fetch;
+    try {
+      global.fetch = async () => new Response("no", { status: 500 });
+
+      seedAttackSurfaces(domain, [
+        { id: "surface-a", hosts: ["https://app.stale.example"], tech_stack: ["GraphQL"], nuclei_hits: [], priority: "LOW" },
+      ]);
+      const cveFeed = JSON.stringify({
+        vulnerabilities: [
+          {
+            cve: {
+              id: "CVE-2026-3000",
+              descriptions: [{ lang: "en", value: "GraphQL bug." }],
+              metrics: { cvssMetricV31: [{ cvssData: { baseScore: 7.5 } }] },
+              configurations: [{ nodes: [{ cpeMatch: [{ vulnerable: true, criteria: "cpe:2.3:a:graphql:graphql:1.0:*:*:*:*:*:*:*" }] }] }],
+            },
+          },
+        ],
+      });
+
+      // Seed matches from a feed; the record is stamped with a surface fingerprint.
+      const seeded = JSON.parse(await bountyPublicIntel({ target_domain: domain, cve_feed_json: cveFeed }));
+      assert.equal(seeded.cve_matches.records.length, 1);
+      assert.equal(typeof seeded.cve_matches.attack_surface_hash, "string");
+
+      // No feed, unchanged surface -> matches carried forward.
+      const preserved = JSON.parse(await bountyPublicIntel({ target_domain: domain }));
+      assert.equal(preserved.cve_matches.records.length, 1);
+      assert.ok(!preserved.errors.some((error) => /dropped stale prior matches/.test(error)));
+
+      // No feed after the surface changes -> stale matches dropped.
+      seedAttackSurfaces(domain, [
+        { id: "surface-z", hosts: ["https://other.stale.example"], tech_stack: ["Express"], nuclei_hits: [], priority: "LOW" },
+      ]);
+      const dropped = JSON.parse(await bountyPublicIntel({ target_domain: domain }));
+      assert.equal(dropped.cve_matches, null);
+      assert.ok(dropped.errors.some((error) => /dropped stale prior matches/.test(error)));
+    } finally {
+      global.fetch = previousFetch;
+    }
+  });
+});
+
 test("public intel fetch helper enforces HackerOne allowlist and response cap", async () => {
   const previousFetch = global.fetch;
   let called = false;

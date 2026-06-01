@@ -34,6 +34,9 @@ const {
 const {
   querySchemaContracts,
 } = require("./schema-contracts-store.js");
+const {
+  hashCanonicalJson,
+} = require("./verification-contracts.js");
 
 function stringArray(value) {
   if (value == null) return [];
@@ -92,12 +95,17 @@ function summarizePublicIntelForSurface(domain, surface, limit = PUBLIC_INTEL_MA
     ? intel.cve_matches.records
     : [])
     .filter((record) => record && typeof record === "object")
-    .filter((record) => {
-      if (!surfaceId) return true;
-      return Array.isArray(record.matches) && record.matches.some((match) => (
-        match && match.surface_id === surfaceId
-      ));
+    .map((record) => {
+      if (!surfaceId) return record;
+      // Scope matches to this assignment so one hunter's brief never exposes
+      // CVE hints, surface IDs, or tech tokens belonging to other surfaces.
+      const scoped = Array.isArray(record.matches)
+        ? record.matches.filter((match) => match && match.surface_id === surfaceId)
+        : [];
+      if (scoped.length === 0) return null;
+      return { ...record, matches: scoped, match_count: scoped.length };
     })
+    .filter(Boolean)
     .slice(0, limit);
 
   return {
@@ -320,6 +328,17 @@ function compactCveRecord(record, matchResult) {
         tags: Array.isArray(reference.tags) ? reference.tags.slice(0, 5) : [],
       }))
     : [];
+  // Keep the strongest match per distinct surface before truncating. matches
+  // are already confidence-sorted, so the first row for a surface is its best.
+  // Capping raw rows could drop whole surfaces (and their per-surface hint and
+  // ranking boost) when one CVE matches many surfaces via repeated tokens.
+  const matchedSurfaces = new Set();
+  const distinctSurfaceMatches = [];
+  for (const match of matchResult.matches) {
+    if (matchedSurfaces.has(match.surface_id)) continue;
+    matchedSurfaces.add(match.surface_id);
+    distinctSurfaceMatches.push(match);
+  }
   return {
     cve_id: record.cve_id,
     severity: record.severity || null,
@@ -329,8 +348,9 @@ function compactCveRecord(record, matchResult) {
     published_at: record.published_at || null,
     references,
     match_count: matchResult.match_count,
+    matched_surface_count: matchedSurfaces.size,
     match_hash: matchResult.match_hash,
-    matches: matchResult.matches.slice(0, PUBLIC_INTEL_MAX_ITEMS).map((match) => ({
+    matches: distinctSurfaceMatches.slice(0, PUBLIC_INTEL_MAX_ITEMS).map((match) => ({
       surface_id: match.surface_id,
       confidence: match.confidence,
       surface_field: match.surface_field,
@@ -343,6 +363,17 @@ function compactCveRecord(record, matchResult) {
       notes: match.notes || null,
     })),
   };
+}
+
+function attackSurfaceFingerprint(domain) {
+  // Stable hash of the surfaces that CVE matching reads from. Used as a
+  // freshness key so preserved matches are dropped once the surface changes.
+  try {
+    const attackSurface = readAttackSurfaceStrict(domain);
+    return hashCanonicalJson(attackSurface.document.surfaces);
+  } catch {
+    return null;
+  }
 }
 
 function buildCveScopeMatches(domain, rawFeed, options = {}) {
@@ -376,6 +407,7 @@ function buildCveScopeMatches(domain, rawFeed, options = {}) {
     result.errors.push(`attack_surface: ${error.message || String(error)}`);
     return result;
   }
+  result.attack_surface_hash = hashCanonicalJson(attackSurface.document.surfaces);
 
   let schemaContracts = [];
   try {
@@ -437,7 +469,7 @@ async function bountyPublicIntel(args, { rankAttackSurfaces = null } = {}) {
     policy_summary: null,
     structured_scopes: [],
     disclosed_reports: [],
-    cve_matches: existing && existing.cve_matches ? existing.cve_matches : null,
+    cve_matches: null,
     errors: [],
   };
 
@@ -508,6 +540,19 @@ async function bountyPublicIntel(args, { rankAttackSurfaces = null } = {}) {
       });
     } catch (error) {
       result.errors.push(`cve_feed_json: ${error.message || String(error)}`);
+    }
+  } else if (existing && existing.cve_matches) {
+    // Carry prior CVE matches forward only when the attack surface is unchanged
+    // since they were computed; otherwise drop them so hunters never inherit
+    // stale hints or ranking boosts after recon reroutes or reuses surface IDs.
+    const stampedHash = existing.cve_matches.attack_surface_hash || null;
+    const currentHash = attackSurfaceFingerprint(domain);
+    if (stampedHash && currentHash && stampedHash === currentHash) {
+      result.cve_matches = existing.cve_matches;
+    } else {
+      result.errors.push(
+        "cve_matches: dropped stale prior matches (no cve_feed_json supplied and the attack surface changed or could not be verified); re-supply the feed to recompute",
+      );
     }
   }
 
