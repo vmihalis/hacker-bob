@@ -334,7 +334,8 @@ function compactCveRecord(record, matchResult) {
   // ranking boost) when one CVE matches many surfaces via repeated tokens.
   const matchedSurfaces = new Set();
   const distinctSurfaceMatches = [];
-  for (const match of matchResult.matches) {
+  const sourceMatches = Array.isArray(matchResult.matches) ? matchResult.matches : [];
+  for (const match of sourceMatches) {
     if (matchedSurfaces.has(match.surface_id)) continue;
     matchedSurfaces.add(match.surface_id);
     distinctSurfaceMatches.push(match);
