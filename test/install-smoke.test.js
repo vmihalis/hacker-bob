@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { getAdapter } = require("../adapters/index.js");
 const update = require("../mcp/lib/update-check.js");
+const { createSafeInstallFs } = require("../scripts/lib/install-fs.js");
 
 const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
@@ -345,6 +346,25 @@ test("codex installer replaces symlinked direct skill leaves under CODEX_HOME", 
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("install filesystem recursive copies return nested relative paths", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-install-fs-copy-"));
+  const source = path.join(tempRoot, "source");
+  const destination = path.join(tempRoot, "destination");
+  fs.mkdirSync(path.join(source, "sub"), { recursive: true });
+  fs.writeFileSync(path.join(source, "top.txt"), "top\n", "utf8");
+  fs.writeFileSync(path.join(source, "sub", "nested.txt"), "nested\n", "utf8");
+
+  try {
+    const installFs = createSafeInstallFs(tempRoot, { label: "test install root" });
+    const copied = installFs.copyDirRecursive(source, destination);
+
+    assert.deepEqual(copied.sort(), ["sub/nested.txt", "top.txt"]);
+    assert.equal(fs.readFileSync(path.join(destination, "sub", "nested.txt"), "utf8"), "nested\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 

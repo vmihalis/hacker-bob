@@ -233,7 +233,9 @@ function createSafeInstallFs(rootPath, options = {}) {
       const stat = fs.statSync(source);
       if (stat.isDirectory()) {
         if (name === "node_modules") continue;
-        copied.push(...copyDirRecursive(source, destination, predicate));
+        for (const nested of copyDirRecursive(source, destination, predicate)) {
+          copied.push(path.join(name, nested));
+        }
         continue;
       }
       if (!stat.isFile()) continue;
