@@ -8,6 +8,7 @@ const {
 const {
   assertInteger,
   assertNonEmptyString,
+  assertRequiredText,
   normalizeOptionalText,
   normalizeStringArray,
 } = require("./validation.js");
@@ -21,6 +22,18 @@ const {
 const {
   hostnamesForSurface,
 } = require("./url-surface.js");
+const {
+  readAttackSurfaceStrict,
+} = require("./attack-surface.js");
+const {
+  parseCveFeed,
+} = require("./cve-feed-parser.js");
+const {
+  matchCveBatch,
+} = require("./cve-scope-matcher.js");
+const {
+  querySchemaContracts,
+} = require("./schema-contracts-store.js");
 
 function stringArray(value) {
   if (value == null) return [];
@@ -51,6 +64,7 @@ function summarizePublicIntelForSurface(domain, surface, limit = PUBLIC_INTEL_MA
     return {
       available: false,
       reports: [],
+      cve_matches: [],
       policy_summary: null,
       program_stats: null,
       errors: [],
@@ -73,10 +87,23 @@ function summarizePublicIntelForSurface(domain, surface, limit = PUBLIC_INTEL_MA
       return surfaceTextValue.split(/[^a-z0-9]+/).some((token) => token.length >= 4 && text.includes(token));
     })
     .slice(0, limit);
+  const surfaceId = surface && typeof surface.id === "string" ? surface.id : null;
+  const cveMatches = (Array.isArray(intel.cve_matches && intel.cve_matches.records)
+    ? intel.cve_matches.records
+    : [])
+    .filter((record) => record && typeof record === "object")
+    .filter((record) => {
+      if (!surfaceId) return true;
+      return Array.isArray(record.matches) && record.matches.some((match) => (
+        match && match.surface_id === surfaceId
+      ));
+    })
+    .slice(0, limit);
 
   return {
     available: true,
     reports,
+    cve_matches: cveMatches,
     policy_summary: intel.policy_summary || null,
     program_stats: intel.program_stats || null,
     structured_scopes: Array.isArray(intel.structured_scopes) ? intel.structured_scopes.slice(0, limit) : [],
@@ -269,12 +296,130 @@ function parseHacktivityReportsFromHtml(html, query, limit) {
   return reports;
 }
 
+function cveSeverityRank(severity) {
+  const value = String(severity || "").toLowerCase();
+  if (value === "critical") return 0;
+  if (value === "high") return 1;
+  if (value === "medium") return 2;
+  if (value === "low") return 3;
+  if (value === "informational") return 4;
+  return 5;
+}
+
+function compactText(value, maxChars) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (!compact) return null;
+  return compact.length > maxChars ? compact.slice(0, maxChars) : compact;
+}
+
+function compactCveRecord(record, matchResult) {
+  const references = Array.isArray(record.references)
+    ? record.references.slice(0, 3).map((reference) => ({
+        url: typeof reference.url === "string" ? reference.url : null,
+        tags: Array.isArray(reference.tags) ? reference.tags.slice(0, 5) : [],
+      }))
+    : [];
+  return {
+    cve_id: record.cve_id,
+    severity: record.severity || null,
+    cvss_score: typeof record.cvss_score === "number" ? record.cvss_score : null,
+    vulnerability_class: record.vulnerability_class || null,
+    description: compactText(record.description, 600),
+    published_at: record.published_at || null,
+    references,
+    match_count: matchResult.match_count,
+    match_hash: matchResult.match_hash,
+    matches: matchResult.matches.slice(0, PUBLIC_INTEL_MAX_ITEMS).map((match) => ({
+      surface_id: match.surface_id,
+      confidence: match.confidence,
+      surface_field: match.surface_field,
+      surface_raw_token: match.surface_raw_token,
+      token: match.token,
+      cve_vendor: match.cve_vendor,
+      cve_product: match.cve_product,
+      cve_version: match.cve_version,
+      cve_version_range: match.cve_version_range,
+      notes: match.notes || null,
+    })),
+  };
+}
+
+function buildCveScopeMatches(domain, rawFeed, options = {}) {
+  const feedText = assertRequiredText(rawFeed, "cve_feed_json");
+  if (Buffer.byteLength(feedText, "utf8") > PUBLIC_INTEL_MAX_RESPONSE_BYTES) {
+    throw new Error(`cve_feed_json exceeds read cap of ${PUBLIC_INTEL_MAX_RESPONSE_BYTES} bytes`);
+  }
+  const limit = options.limit == null
+    ? PUBLIC_INTEL_MAX_ITEMS
+    : assertInteger(options.limit, "cve_limit", { min: 1, max: PUBLIC_INTEL_MAX_ITEMS });
+  const sourceUri = normalizeOptionalText(options.source_uri, "cve_source_uri");
+  const parsed = parseCveFeed(feedText);
+  const result = {
+    version: 1,
+    source_uri: sourceUri,
+    schema_format: parsed.schema_format,
+    total_records: parsed.records.length,
+    total_with_matches: 0,
+    parser_warnings: parsed.parser_warnings,
+    errors: [],
+    records: [],
+  };
+  if (parsed.records.length === 0) {
+    return result;
+  }
+
+  let attackSurface;
+  try {
+    attackSurface = readAttackSurfaceStrict(domain);
+  } catch (error) {
+    result.errors.push(`attack_surface: ${error.message || String(error)}`);
+    return result;
+  }
+
+  let schemaContracts = [];
+  try {
+    schemaContracts = querySchemaContracts({ target_domain: domain }).contracts;
+  } catch (error) {
+    result.errors.push(`schema_contracts: ${error.message || String(error)}`);
+  }
+
+  const byId = new Map(parsed.records.map((record) => [record.cve_id, record]));
+  const batch = matchCveBatch({
+    cve_records: parsed.records,
+    surfaces: attackSurface.document.surfaces,
+    schema_contracts: schemaContracts,
+  });
+  const matched = batch.records
+    .filter((record) => record.match_count > 0)
+    .sort((a, b) => {
+      const ar = byId.get(a.cve_id) || {};
+      const br = byId.get(b.cve_id) || {};
+      const bySeverity = cveSeverityRank(ar.severity) - cveSeverityRank(br.severity);
+      if (bySeverity !== 0) return bySeverity;
+      const byCvss = (br.cvss_score || 0) - (ar.cvss_score || 0);
+      if (byCvss !== 0) return byCvss;
+      return a.cve_id.localeCompare(b.cve_id);
+    });
+
+  result.total_with_matches = matched.length;
+  result.records = matched
+    .slice(0, limit)
+    .map((matchResult) => compactCveRecord(byId.get(matchResult.cve_id) || {}, matchResult));
+  result.truncated = matched.length > limit;
+  return result;
+}
+
 async function bountyPublicIntel(args, { rankAttackSurfaces = null } = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const programHandle = normalizeProgramHandle(args.program);
+  const existing = readPublicIntelDocument(domain);
   const limit = args.limit == null
     ? PUBLIC_INTEL_MAX_ITEMS
     : assertInteger(args.limit, "limit", { min: 1, max: PUBLIC_INTEL_MAX_ITEMS });
+  const cveLimit = args.cve_limit == null
+    ? limit
+    : assertInteger(args.cve_limit, "cve_limit", { min: 1, max: PUBLIC_INTEL_MAX_ITEMS });
   const keywords = args.keywords == null
     ? []
     : (Array.isArray(args.keywords)
@@ -292,68 +437,74 @@ async function bountyPublicIntel(args, { rankAttackSurfaces = null } = {}) {
     policy_summary: null,
     structured_scopes: [],
     disclosed_reports: [],
+    cve_matches: existing && existing.cve_matches ? existing.cve_matches : null,
     errors: [],
   };
 
   if (typeof fetch !== "function") {
     result.errors.push("fetch is unavailable in this Node runtime");
-    writeFileAtomic(publicIntelPath(domain), `${JSON.stringify(result, null, 2)}\n`);
-    return JSON.stringify(result, null, 2);
-  }
-
-  if (programHandle) {
-    try {
-      const programUrl = `https://hackerone.com/${encodeURIComponent(programHandle)}.json`;
-      const fetched = await fetchTextWithTimeout(programUrl);
-      if (!fetched.ok) {
-        result.errors.push(`program ${programHandle}: HTTP ${fetched.status}`);
-      } else {
-        const programJson = JSON.parse(fetched.text);
-        result.program_stats = pickProgramStats(programJson);
-        result.policy_summary = compactPolicyText(
-          programJson.policy ||
-          programJson.program?.policy ||
-          programJson.profile?.policy ||
-          programJson.policy_html,
-        );
-        result.structured_scopes = extractStructuredScopes(programJson, limit);
+  } else {
+    if (programHandle) {
+      try {
+        const programUrl = `https://hackerone.com/${encodeURIComponent(programHandle)}.json`;
+        const fetched = await fetchTextWithTimeout(programUrl);
+        if (!fetched.ok) {
+          result.errors.push(`program ${programHandle}: HTTP ${fetched.status}`);
+        } else {
+          const programJson = JSON.parse(fetched.text);
+          result.program_stats = pickProgramStats(programJson);
+          result.policy_summary = compactPolicyText(
+            programJson.policy ||
+            programJson.program?.policy ||
+            programJson.profile?.policy ||
+            programJson.policy_html,
+          );
+          result.structured_scopes = extractStructuredScopes(programJson, limit);
+        }
+      } catch (error) {
+        result.errors.push(`program ${programHandle}: ${error.message || String(error)}`);
       }
-    } catch (error) {
-      result.errors.push(`program ${programHandle}: ${error.message || String(error)}`);
     }
-  }
 
-  for (const keyword of keywords) {
-    if (result.disclosed_reports.length >= limit) break;
-    try {
-      const query = keyword || domain;
-      const url = `https://hackerone.com/hacktivity?querystring=${encodeURIComponent(query)}`;
-      const fetched = await fetchTextWithTimeout(url);
-      if (!fetched.ok) {
-        result.errors.push(`hacktivity ${query}: HTTP ${fetched.status}`);
-        continue;
-      }
-      let reports = [];
-      if (fetched.content_type.includes("json") || /^[\s{[]/.test(fetched.text)) {
-        try {
-          reports = parseHacktivityReportsFromJson(JSON.parse(fetched.text), query, limit - result.disclosed_reports.length);
-        } catch {
+    for (const keyword of keywords) {
+      if (result.disclosed_reports.length >= limit) break;
+      try {
+        const query = keyword || domain;
+        const url = `https://hackerone.com/hacktivity?querystring=${encodeURIComponent(query)}`;
+        const fetched = await fetchTextWithTimeout(url);
+        if (!fetched.ok) {
+          result.errors.push(`hacktivity ${query}: HTTP ${fetched.status}`);
+          continue;
+        }
+        let reports = [];
+        if (fetched.content_type.includes("json") || /^[\s{[]/.test(fetched.text)) {
+          try {
+            reports = parseHacktivityReportsFromJson(JSON.parse(fetched.text), query, limit - result.disclosed_reports.length);
+          } catch {
+            reports = parseHacktivityReportsFromHtml(fetched.text, query, limit - result.disclosed_reports.length);
+          }
+        } else {
           reports = parseHacktivityReportsFromHtml(fetched.text, query, limit - result.disclosed_reports.length);
         }
-      } else {
-        reports = parseHacktivityReportsFromHtml(fetched.text, query, limit - result.disclosed_reports.length);
+        const seen = new Set(result.disclosed_reports.map((report) => report.url || report.title));
+        for (const report of reports) {
+          const key = report.url || report.title;
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          result.disclosed_reports.push(report);
+          if (result.disclosed_reports.length >= limit) break;
+        }
+      } catch (error) {
+        result.errors.push(`hacktivity ${keyword}: ${error.message || String(error)}`);
       }
-      const seen = new Set(result.disclosed_reports.map((report) => report.url || report.title));
-      for (const report of reports) {
-        const key = report.url || report.title;
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        result.disclosed_reports.push(report);
-        if (result.disclosed_reports.length >= limit) break;
-      }
-    } catch (error) {
-      result.errors.push(`hacktivity ${keyword}: ${error.message || String(error)}`);
     }
+  }
+
+  if (args.cve_feed_json != null) {
+    result.cve_matches = buildCveScopeMatches(domain, args.cve_feed_json, {
+      limit: cveLimit,
+      source_uri: args.cve_source_uri,
+    });
   }
 
   writeFileAtomic(publicIntelPath(domain), `${JSON.stringify(result, null, 2)}\n`);
@@ -377,5 +528,6 @@ module.exports = {
   pickProgramStats,
   readPublicIntelDocument,
   readResponseTextCapped,
+  buildCveScopeMatches,
   summarizePublicIntelForSurface,
 };

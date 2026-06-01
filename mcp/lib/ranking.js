@@ -92,6 +92,9 @@ function scoreSurfaceRanking(surface, { trafficSummary = null, intelSummary = nu
   if (intelSummary && intelSummary.available && intelSummary.reports && intelSummary.reports.length > 0) {
     add(12, "disclosed_report_hints");
   }
+  if (intelSummary && intelSummary.available && Array.isArray(intelSummary.cve_matches) && intelSummary.cve_matches.length > 0) {
+    add(18, "matched_cve_hints");
+  }
 
   return {
     score,

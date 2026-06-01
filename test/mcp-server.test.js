@@ -17434,10 +17434,48 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
         program: "https://hackerone.com/example-program",
         keywords: ["team export", "graphql"],
         limit: 1,
+        cve_source_uri: "fixture:nvd",
+        cve_feed_json: JSON.stringify({
+          vulnerabilities: [
+            {
+              cve: {
+                id: "CVE-2026-0001",
+                descriptions: [
+                  { lang: "en", value: "GraphQL authorization bypass in field-level resolver checks." },
+                ],
+                metrics: {
+                  cvssMetricV31: [{ cvssData: { baseScore: 8.1 } }],
+                },
+                configurations: [
+                  {
+                    nodes: [
+                      {
+                        cpeMatch: [
+                          {
+                            vulnerable: true,
+                            criteria: "cpe:2.3:a:graphql:graphql:1.0:*:*:*:*:*:*:*",
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+                references: {
+                  references: [
+                    { url: "https://example.com/advisory/CVE-2026-0001", tags: ["Vendor Advisory"] },
+                  ],
+                },
+              },
+            },
+          ],
+        }),
       }));
       assert.equal(result.disclosed_reports.length, 1);
       assert.equal(result.structured_scopes.length, 1);
       assert.equal(result.program_stats.resolved_report_count, 42);
+      assert.equal(result.cve_matches.total_records, 1);
+      assert.equal(result.cve_matches.records[0].cve_id, "CVE-2026-0001");
+      assert.equal(result.cve_matches.records[0].matches[0].surface_id, "surface-api");
       assert.match(result.policy_summary, /Only test owned assets/);
       assert.ok(fs.existsSync(publicIntelPath(domain)));
       assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
@@ -17445,6 +17483,8 @@ test("bounty_public_intel caps output, persists optional intel, handles API fail
       const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
       assert.equal(brief.intel_hints.available, true);
       assert.equal(brief.intel_hints.reports.length, 1);
+      assert.equal(brief.intel_hints.cve_matches.length, 1);
+      assert.ok(brief.ranking_summary.reasons.includes("matched_cve_hints"));
       assert.ok(brief.ranking_summary.reasons.includes("disclosed_report_hints"));
       assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
 
