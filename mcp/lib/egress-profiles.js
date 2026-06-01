@@ -209,7 +209,7 @@ function ensureEgressProfilesConfig(projectRoot = projectRootFromMcp(), options 
       kind: EGRESS_PROFILES_FILE,
       symlink: "reject",
     });
-    if (!existing) {
+    if (existing == null) {
       writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument(), options);
       return { created: true, path: filePath };
     }
@@ -229,6 +229,7 @@ function ensureEgressProfilesExample(projectRoot = projectRootFromMcp(), options
   if (options.installFs) {
     options.installFs.writeJson(filePath, exampleEgressProfilesDocument(), {
       kind: EGRESS_PROFILES_EXAMPLE_FILE,
+      rejectExistingSymlink: true,
     });
   } else {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

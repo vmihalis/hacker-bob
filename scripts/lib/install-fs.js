@@ -6,7 +6,7 @@ const path = require("path");
 
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
-  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function pathForMessage(root, candidate) {
