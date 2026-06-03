@@ -136,6 +136,13 @@ function computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds) {
       !terminallyBlockedSet.has(surface.id)
     ))
     .map((surface) => surface.id);
+  const unexploredMediumSurfaceIds = surfaces
+    .filter((surface) => (
+      String(surface.priority || "").toUpperCase() === "MEDIUM" &&
+      !exploredSet.has(surface.id) &&
+      !terminallyBlockedSet.has(surface.id)
+    ))
+    .map((surface) => surface.id);
   const blockedHighSurfaceIds = surfaces
     .filter((surface) => isHighOrCritical(surface) && terminallyBlockedSet.has(surface.id))
     .map((surface) => surface.id);
@@ -159,6 +166,8 @@ function computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds) {
       : 100,
     unexplored_high: unexploredHighSurfaceIds.length,
     unexplored_high_surface_ids: unexploredHighSurfaceIds,
+    unexplored_medium: unexploredMediumSurfaceIds.length,
+    unexplored_medium_surface_ids: unexploredMediumSurfaceIds,
     blocked_high: blockedHighSurfaceIds.length,
     blocked_high_surface_ids: blockedHighSurfaceIds,
     open_requeue_surface_ids: openRequeueSurfaceIds,
@@ -224,6 +233,13 @@ function computeHuntToChainGate(domain, state) {
         { surface_ids: coverage.blocked_high_surface_ids },
       ));
     }
+    if (state.deep_mode === true && coverage.unexplored_medium_surface_ids.length > 0) {
+      blockers.push(blocker(
+        "unexplored_medium_surfaces",
+        "deep mode: MEDIUM attack surfaces remain unexplored; start the next wave to cover them, or accept the gap with override_reason",
+        { surface_ids: coverage.unexplored_medium_surface_ids },
+      ));
+    }
   }
 
   if (openRequeueSurfaceIds.length > 0) {
@@ -237,9 +253,9 @@ function computeHuntToChainGate(domain, state) {
   if (state.deep_mode === true) {
     try {
       const preview = surfaceLeadsLib().previewSurfaceLeadPromotion(domain, {
-        limit: 8,
-        min_score: 60,
-        include_medium: false,
+        limit: 25,
+        min_score: 40,
+        include_medium: true,
       });
       if (preview.would_promote_lead_ids.length > 0) {
         blockers.push(blocker(

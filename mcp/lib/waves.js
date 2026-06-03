@@ -488,9 +488,9 @@ function startNextWave(args) {
 
     const basePromotionPreview = state.deep_mode === true
       ? previewSurfaceLeadPromotion(domain, {
-          limit: 8,
-          min_score: 60,
-          include_medium: false,
+          limit: 25,
+          min_score: 40,
+          include_medium: true,
         })
       : {
           would_promote: 0,
@@ -526,9 +526,9 @@ function startNextWave(args) {
           snapshotFileForRollback(surfaceRoutesPath(domain)),
         ];
         const promoted = promoteSurfaceLeadsForWave(domain, {
-          limit: 8,
-          min_score: 60,
-          include_medium: false,
+          limit: 25,
+          min_score: 40,
+          include_medium: true,
         });
         promotedForThisStart = promoted.promoted_surface_ids.length > 0;
         promotion = {

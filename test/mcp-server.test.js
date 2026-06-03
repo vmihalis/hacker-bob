@@ -5744,6 +5744,40 @@ test("HUNT -> CHAIN gate exposes blocked_high_surface_ids and blocks transition 
   });
 });
 
+test("HUNT -> CHAIN gate blocks deep-mode hunts on unexplored MEDIUM surfaces, but not normal hunts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+      { id: "surface-m", hosts: [`https://${domain}`], priority: "MEDIUM" },
+    ]);
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      explored: ["surface-a"],
+      terminally_blocked: [],
+    });
+    const { computeHuntToChainGate } = require("../mcp/lib/phase-gates.js");
+    const baseState = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
+
+    // Coverage always tracks the unexplored MEDIUM surface in both modes.
+    const normal = computeHuntToChainGate(domain, { ...baseState, deep_mode: false });
+    assert.deepEqual(normal.coverage.unexplored_medium_surface_ids, ["surface-m"]);
+    // ...but only deep mode gates on it.
+    assert.ok(
+      !normal.transition_blockers.map((b) => b.code).includes("unexplored_medium_surfaces"),
+      "normal mode must NOT block HUNT -> CHAIN on unexplored MEDIUM",
+    );
+
+    const deep = computeHuntToChainGate(domain, { ...baseState, deep_mode: true });
+    assert.deepEqual(deep.coverage.unexplored_medium_surface_ids, ["surface-m"]);
+    assert.ok(
+      deep.transition_blockers.map((b) => b.code).includes("unexplored_medium_surfaces"),
+      "deep mode must block HUNT -> CHAIN until MEDIUM surfaces are explored",
+    );
+  });
+});
+
 test("bounty_start_wave rejects assignment of terminally_blocked surfaces", () => {
   withTempHome(() => {
     const domain = "example.com";

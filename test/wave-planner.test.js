@@ -36,6 +36,7 @@ test("planNextWave wave 1 orders buckets, fills to target, caps high-priority ov
     { agent: "a4", surface_id: "h4" },
     { agent: "a5", surface_id: "h5" },
     { agent: "a6", surface_id: "h6" },
+    { agent: "a7", surface_id: "h7" },
   ]);
 
   const fill = planNextWave({
@@ -53,6 +54,7 @@ test("planNextWave wave 1 orders buckets, fills to target, caps high-priority ov
     { agent: "a2", surface_id: "high-b" },
     { agent: "a3", surface_id: "med-a" },
     { agent: "a4", surface_id: "med-b" },
+    { agent: "a5", surface_id: "low-a" },
   ]);
 });
 
@@ -92,6 +94,7 @@ test("planNextWave wave 2+ prioritizes open requeue, lead IDs, remaining priorit
     { agent: "a2", surface_id: "lead-high" },
     { agent: "a3", surface_id: "critical" },
     { agent: "a4", surface_id: "medium" },
+    { agent: "a5", surface_id: "low" },
   ]);
 });
 

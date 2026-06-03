@@ -8,10 +8,10 @@ const {
   priorityRank,
 } = require("./ranking.js");
 
-const STANDARD_WAVE_TARGET = 4;
-const STANDARD_WAVE_MAX = 6;
-const DEEP_WAVE_TARGET = 6;
-const DEEP_WAVE_MAX = 8;
+const STANDARD_WAVE_TARGET = 6;
+const STANDARD_WAVE_MAX = 9;
+const DEEP_WAVE_TARGET = 8;
+const DEEP_WAVE_MAX = 12;
 
 function surfaceIdOf(value) {
   if (value == null) return null;
@@ -197,6 +197,7 @@ function planNextWave({
         },
         {
           name: "medium",
+          overflow_to_max: true,
           surfaces: priorityBucket(openSurfaces, normalizedState, ["MEDIUM"]),
         },
         {
@@ -226,6 +227,7 @@ function planNextWave({
         },
         {
           name: "medium",
+          overflow_to_max: true,
           surfaces: priorityBucket(openSurfaces, normalizedState, ["MEDIUM"]),
         },
         {
