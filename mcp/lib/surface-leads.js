@@ -42,6 +42,16 @@ const SURFACE_LEAD_ARRAY_LIMITS = Object.freeze({
   evidence: 25,
 });
 const SURFACE_LEAD_ITEM_MAX_CHARS = 500;
+// Deep-mode surface-lead promotion policy. Single source of truth shared by the
+// gate preview (phase-gates.js), the start_next_wave dry-run preview, and the
+// promotion execution (waves.js). These three call sites MUST agree or the gate
+// preview will disagree with what actually gets promoted — keep them reading
+// from this constant rather than re-inlining the literal.
+const DEEP_MODE_PROMOTION_POLICY = Object.freeze({
+  limit: 25,
+  min_score: 40,
+  include_medium: true,
+});
 
 function clampStringArray(value, fieldName, limit) {
   return normalizeStringArray(value, fieldName)
@@ -473,6 +483,7 @@ function promoteSurfaceLeadsForWave(domain, options = {}) {
 }
 
 module.exports = {
+  DEEP_MODE_PROMOTION_POLICY,
   LEAD_CONFIDENCE_VALUES,
   LEAD_STATUS_VALUES,
   isAssignableSurfaceLead,

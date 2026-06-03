@@ -252,11 +252,10 @@ function computeHuntToChainGate(domain, state) {
 
   if (state.deep_mode === true) {
     try {
-      const preview = surfaceLeadsLib().previewSurfaceLeadPromotion(domain, {
-        limit: 25,
-        min_score: 40,
-        include_medium: true,
-      });
+      const preview = surfaceLeadsLib().previewSurfaceLeadPromotion(
+        domain,
+        surfaceLeadsLib().DEEP_MODE_PROMOTION_POLICY,
+      );
       if (preview.would_promote_lead_ids.length > 0) {
         blockers.push(blocker(
           "promotable_surface_leads",

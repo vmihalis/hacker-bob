@@ -48,6 +48,7 @@ const {
   routeSurfacesInternal,
 } = require("./surface-router.js");
 const {
+  DEEP_MODE_PROMOTION_POLICY,
   isAssignableSurfaceLead,
   previewSurfaceLeadPromotion,
   promoteSurfaceLeadsForWave,
@@ -487,11 +488,7 @@ function startNextWave(args) {
     }
 
     const basePromotionPreview = state.deep_mode === true
-      ? previewSurfaceLeadPromotion(domain, {
-          limit: 25,
-          min_score: 40,
-          include_medium: true,
-        })
+      ? previewSurfaceLeadPromotion(domain, DEEP_MODE_PROMOTION_POLICY)
       : {
           would_promote: 0,
           would_promote_lead_ids: [],
@@ -525,11 +522,7 @@ function startNextWave(args) {
           snapshotFileForRollback(surfaceLeadsPath(domain)),
           snapshotFileForRollback(surfaceRoutesPath(domain)),
         ];
-        const promoted = promoteSurfaceLeadsForWave(domain, {
-          limit: 25,
-          min_score: 40,
-          include_medium: true,
-        });
+        const promoted = promoteSurfaceLeadsForWave(domain, DEEP_MODE_PROMOTION_POLICY);
         promotedForThisStart = promoted.promoted_surface_ids.length > 0;
         promotion = {
           ...basePromotionPreview,
