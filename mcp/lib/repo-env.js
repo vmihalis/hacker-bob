@@ -1277,6 +1277,13 @@ async function repoDockerRun({
     REPO_MOUNT_MODE_VALUES,
     "repo_mount_mode",
   );
+  if (normalizedCheckout && normalizedMountMode !== "read_only") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout runs require repo_mount_mode read_only",
+      { repo_error_code: "differential_checkout_requires_read_only_mount" },
+    );
+  }
   const normalizedTimeoutMs = timeoutMsOverride == null
     ? REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS
     : assertInteger(timeoutMsOverride, "timeout_ms", {

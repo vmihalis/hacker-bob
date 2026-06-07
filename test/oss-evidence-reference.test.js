@@ -496,7 +496,7 @@ test("completeness gate fires `mismatched` when the repo_command_run stdout file
   });
 });
 
-test("C10 differential records null stdout hash when the capture file is missing", () => {
+test("C10 differential rejects missing stdout capture files", () => {
   withTempHome(() => {
     const domain = "repo-oss-c10-missing-stdout.example";
     fs.mkdirSync(repoRunsDir(domain), { recursive: true });
@@ -522,38 +522,38 @@ test("C10 differential records null stdout hash when the capture file is missing
       checkout_kind: "self_patch",
     });
 
-    const document = normalizeEvidencePacksDocument({
-      version: 1,
-      target_domain: domain,
-      packs: [{
-        finding_id: "F-1",
-        sample_type: "oss_dynamic_replay",
-        sample_count: 1,
-        aggregate_counts: { runs: 2 },
-        representative_samples: [{ run_id: vulnRunId }],
-        sensitive_clusters: [],
-        replay_summary: "Replay rows exist but one stdout capture is missing.",
-        redaction_notes: null,
-        report_snippet: "Differential is retained with an explicit missing stdout hash.",
-        differential: {
-          control_kind: "self_patch",
-          vuln_run_id: vulnRunId,
-          control_run_id: controlRunId,
-          control_ref: "HEAD",
-          vuln_fired: true,
-          control_fired: false,
-          verdict: "patch_fixes",
-          control_summary: "Control run completed; vulnerable stdout capture was unavailable.",
-        },
-      }],
-    }, {
-      expectedDomain: domain,
-      findingIdSet: new Set(["F-1"]),
-      finalReportableIdSet: new Set(["F-1"]),
-    });
-
-    assert.equal(document.packs[0].differential.vuln_stdout_hash, null);
-    assert.equal(document.packs[0].differential.control_stdout_hash, sha256Hex("control quiet\n"));
+    assert.throws(
+      () => normalizeEvidencePacksDocument({
+        version: 1,
+        target_domain: domain,
+        packs: [{
+          finding_id: "F-1",
+          sample_type: "oss_dynamic_replay",
+          sample_count: 1,
+          aggregate_counts: { runs: 2 },
+          representative_samples: [{ run_id: vulnRunId }],
+          sensitive_clusters: [],
+          replay_summary: "Replay rows exist but one stdout capture is missing.",
+          redaction_notes: null,
+          report_snippet: "Differential rejects missing stdout captures.",
+          differential: {
+            control_kind: "self_patch",
+            vuln_run_id: vulnRunId,
+            control_run_id: controlRunId,
+            control_ref: "HEAD",
+            vuln_fired: true,
+            control_fired: false,
+            verdict: "patch_fixes",
+            control_summary: "Control run completed; vulnerable stdout capture was unavailable.",
+          },
+        }],
+      }, {
+        expectedDomain: domain,
+        findingIdSet: new Set(["F-1"]),
+        finalReportableIdSet: new Set(["F-1"]),
+      }),
+      /stdout file is missing/,
+    );
   });
 });
 

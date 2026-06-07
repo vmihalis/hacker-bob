@@ -336,6 +336,10 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
   withTempHome(() => {
     const domain = "evidence-c10-rejects.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-vuln-missing-replay-hash", {
+      stdout: "vuln fired\n",
+      replay_command_hash: null,
+    });
     appendRepoRunFixture(domain, "run-control-dry-run", {
       stdout: "control plan only\n",
       dry_run: true,
@@ -410,6 +414,20 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
       }),
       /same replay command hash/,
     );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln-missing-replay-hash",
+        control_run_id: "run-control-command-mismatch",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Legacy rows without replay hashes cannot prove command equality.",
+      }),
+      /replay_command_hash/,
+    );
   });
 });
 
@@ -417,6 +435,16 @@ test("C10 differential rejects controls without matching S14 checkout provenance
   withTempHome(() => {
     const domain = "evidence-c10-checkout-binding.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-vuln-checkout", {
+      stdout: "control checkout on the vuln side\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
     appendRepoRunFixture(domain, "run-control-unbound", { stdout: "control quiet\n" });
     appendRepoRunFixture(domain, "run-control-wrong-ref", {
       stdout: "control quiet\n",
@@ -444,6 +472,20 @@ test("C10 differential rejects controls without matching S14 checkout provenance
         /matching S14 checkout run/,
       );
     }
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln-checkout",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "The vulnerable side must be the baseline run, not another checkout.",
+      }),
+      /baseline non-checkout run/,
+    );
   });
 });
 

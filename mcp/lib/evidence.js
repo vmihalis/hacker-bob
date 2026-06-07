@@ -43,6 +43,9 @@ const {
 const {
   safeGovernanceContextForDomain,
 } = require("./governance-context.js");
+const {
+  normalizeHistoryRef,
+} = require("./repo-target.js");
 
 const EVIDENCE_PACKS_VERSION = 1;
 const MAX_SAMPLE_COUNT = 1000;
@@ -156,9 +159,6 @@ function replayCommandHashForRun(row, fieldName) {
   if (typeof row.replay_command_hash === "string" && HEX64_RE.test(row.replay_command_hash)) {
     return row.replay_command_hash.toLowerCase();
   }
-  if (row.checkout_ref == null && typeof row.command_hash === "string" && HEX64_RE.test(row.command_hash)) {
-    return row.command_hash.toLowerCase();
-  }
   throw new Error(`${fieldName} must carry a replay_command_hash for C10 comparison`);
 }
 
@@ -166,7 +166,10 @@ function stdoutHashForRun(domain, row, fieldName) {
   const runId = assertRepoRunId(row.run_id, `${fieldName}.run_id`);
   const recordedHash = assertHex64(row.stdout_hash, `${fieldName}.stdout_hash`);
   const observedHash = sha256File(path.join(repoRunsDir(domain), `${runId}.stdout`));
-  if (observedHash != null && observedHash !== recordedHash) {
+  if (observedHash == null) {
+    throw new Error(`${fieldName}.stdout file is missing or unreadable; cannot verify C10 stdout integrity`);
+  }
+  if (observedHash !== recordedHash) {
     throw new Error(`${fieldName}.stdout_hash does not match the captured stdout file`);
   }
   return observedHash;
@@ -204,12 +207,18 @@ function normalizeDifferential(differential, { domain }) {
     throw new Error("differential.vuln_run_id and differential.control_run_id must differ");
   }
   const controlRef = assertMaxChars(
-    assertRequiredText(differential.control_ref, "differential.control_ref"),
+    normalizeHistoryRef(
+      assertRequiredText(differential.control_ref, "differential.control_ref"),
+      "differential.control_ref",
+    ),
     "differential.control_ref",
     MAX_CONTROL_REF_CHARS,
   );
   const allRows = readRepoCommandRunRows(domain);
   const vulnRow = readRepoCommandRunRow(allRows, vulnRunId, "differential.vuln_run_id");
+  if (vulnRow.checkout_ref != null || vulnRow.checkout_kind != null) {
+    throw new Error("differential.vuln_run_id must reference a baseline non-checkout run");
+  }
   const controlRow = readRepoCommandRunRow(allRows, controlRunId, "differential.control_run_id", {
     ref: controlRef,
     kind: controlKind,

@@ -73,7 +73,7 @@ module.exports = Object.freeze({
       repo_mount_mode: {
         type: "string",
         enum: ["read_only", "read_write"],
-        description: "How /src is mounted. Defaults to read_only.",
+        description: "How /src is mounted. Defaults to read_only. Differential checkout runs require read_only.",
       },
       image_tag: {
         type: "string",

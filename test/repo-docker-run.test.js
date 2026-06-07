@@ -478,6 +478,26 @@ test("repoDockerRun checkout provenance wraps explicit command after S14 materia
   });
 });
 
+test("repoDockerRun differential checkout refuses read_write /src mounts", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "upstream_fix" },
+        command: ["true"],
+        repo_mount_mode: "read_write",
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "differential_checkout_requires_read_only_mount",
+    );
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "read_write differential rows must not land");
+  });
+});
+
 test("repoDockerRun self_patch checkout records patch content hash", async () => {
   await withTempHome(async () => {
     const { repoRoot } = makeGitRepo();
