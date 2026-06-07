@@ -19,15 +19,18 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const {
   initRepoSession,
 } = require("../mcp/lib/repo-target.js");
 const {
+  buildDifferentialCheckoutCommand,
   prepareRepoEnv,
   repoDockerRun,
   buildDockerRunArgv,
   buildImageTag,
+  DIFFERENTIAL_CHECKOUT_KIND_VALUES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
@@ -84,6 +87,33 @@ function indexOfFlag(args, flag) {
 function valueAfterFlag(args, flag) {
   const i = indexOfFlag(args, flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+function git(repoRoot, args) {
+  return execFileSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Bob Test",
+      GIT_AUTHOR_EMAIL: "bob-test@example.invalid",
+      GIT_COMMITTER_NAME: "Bob Test",
+      GIT_COMMITTER_EMAIL: "bob-test@example.invalid",
+    },
+  }).trim();
+}
+
+function makeGitRepo(prefix = "bob-differential-repo-") {
+  const repoRoot = makeTempRepoDir(prefix);
+  git(repoRoot, ["init", "-q"]);
+  write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+  git(repoRoot, ["add", "package.json"]);
+  git(repoRoot, ["commit", "-q", "-m", "initial"]);
+  const first = git(repoRoot, ["rev-parse", "HEAD"]);
+  write(repoRoot, "index.js", "module.exports = 1;\n");
+  git(repoRoot, ["add", "index.js"]);
+  git(repoRoot, ["commit", "-q", "-m", "second"]);
+  const second = git(repoRoot, ["rev-parse", "HEAD"]);
+  return { repoRoot, first, second };
 }
 
 // ---------- buildDockerRunArgv (pure) per-flag assertions ----------
@@ -279,6 +309,46 @@ test("buildDockerRunArgv does NOT thread proxy when allow_network=false", () => 
   assert.equal(argv.args.indexOf("--env"), -1, "--env should not appear under --network none");
 });
 
+// ---------- S14 differential checkout builder (pure) ----------
+
+test("buildDifferentialCheckoutCommand emits archive materialization for each checkout_kind", () => {
+  const ref = "abcdef1234567890";
+  for (const kind of DIFFERENTIAL_CHECKOUT_KIND_VALUES) {
+    const command = buildDifferentialCheckoutCommand({
+      checkout_ref: ref,
+      checkout_kind: kind,
+    });
+    assert.deepEqual(command.slice(0, 2), ["sh", "-lc"]);
+    assert.ok(command[2].length <= 2048, `${kind} command token exceeded cap`);
+    assert.match(command[2], /rm -rf '\/work\/repo'/);
+    assert.match(command[2], /mkdir -p '\/work\/repo'/);
+    assert.match(command[2], /git -C \/src cat-file -e/);
+    assert.match(command[2], /git -C \/src archive --format=tar/);
+    assert.match(command[2], /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+    if (kind === "self_patch") {
+      assert.match(command[2], /cat-file -e 'HEAD\^\{commit\}'/);
+      assert.match(command[2], /archive --format=tar 'HEAD'/);
+      assert.match(command[2], /test -f \/work\/patch\.diff/);
+      assert.match(command[2], /git -C '\/work\/repo' apply \/work\/patch\.diff/);
+    } else {
+      assert.match(command[2], new RegExp(`cat-file -e '${ref}\\^\\{commit\\}'`));
+      assert.match(command[2], new RegExp(`archive --format=tar '${ref}'`));
+      assert.doesNotMatch(command[2], /patch\.diff/);
+    }
+  }
+});
+
+test("buildDifferentialCheckoutCommand refuses destinations outside /work", () => {
+  assert.throws(
+    () => buildDifferentialCheckoutCommand({
+      checkout_ref: "abcdef1",
+      checkout_kind: "upstream_fix",
+      dest: "/src/repo",
+    }),
+    /dest must be a safe path under \/work/,
+  );
+});
+
 // ---------- repoDockerRun (dry-run) ----------
 
 test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without docker exec", async () => {
@@ -301,6 +371,8 @@ test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without dock
     assert.equal(result.dry_run, true);
     assert.equal(result.network_mode, "none");
     assert.equal(result.mount_mode, "read_only");
+    assert.equal(Object.prototype.hasOwnProperty.call(result, "checkout_ref"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, "checkout_kind"), false);
     assert.equal(result.image_tag, `bob-oss-${init.target_domain}:${init.repo_hash.slice(0, 16)}`);
     assert.equal(result.exit_code, null);
     assert.equal(result.stdout_hash, null);
@@ -320,7 +392,55 @@ test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without dock
     assert.equal(rows[0].image_tag, result.image_tag);
     assert.equal(rows[0].network_mode, "none");
     assert.equal(rows[0].mount_mode, "read_only");
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_ref"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_kind"), false);
     assert.ok(typeof rows[0].command_hash === "string" && /^[0-9a-f]{64}$/.test(rows[0].command_hash));
+  });
+});
+
+test("repoDockerRun dry_run injects S14 checkout command and records provenance", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "pre_introduction" },
+    });
+    assert.equal(result.dry_run, true);
+    assert.equal(result.checkout_ref, first);
+    assert.equal(result.checkout_kind, "pre_introduction");
+    assert.equal(result.network_mode, "none");
+    assert.equal(result.mount_mode, "read_only");
+    assert.ok(result.planned_argv.some((arg) => arg === `${repoRoot}:/src:ro`), "differential run must keep /src read-only");
+    const script = result.planned_argv[result.planned_argv.length - 1];
+    assert.match(script, /git -C \/src cat-file -e/);
+    assert.match(script, /git -C \/src archive --format=tar/);
+    assert.match(script, /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].checkout_ref, first);
+    assert.equal(rows[0].checkout_kind, "pre_introduction");
+    assert.equal(rows[0].network_mode, "none");
+    assert.equal(rows[0].mount_mode, "read_only");
+  });
+});
+
+test("repoDockerRun checkout provenance is scrub-validated before persistence", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "upstream_fix" },
+        command: ["echo", "eyJhbGciOiJxxx.aabbccddeexxxxx.aabbccddeexxxxx"],
+      }),
+      /secrets|secret|tokens|cookies/i,
+    );
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "no checkout provenance row should land when scrub fails");
   });
 });
 

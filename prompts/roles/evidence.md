@@ -11,6 +11,8 @@ Before stopping, complete exactly one successful write sequence: make exactly on
 
 Dispatch by `finding.capability_pack` (every Phase-C finding carries the routed pack triple). Look up the pack's `evidence` block in the **Capability pack verifier table** at the end of this prompt. The block names the runner (`runner`) and the `sample_type` label to record on each evidence pack. The evidence agent does not branch on `chain_family`.
 
+Differential proof lens (OSS only): when a final reportable finding has a live `bob_repo_docker_run` proof and a local fix/pre-introduction/self-patch control is available, run S14 first with `bob_repo_docker_run({ target_domain, checkout: { ref, kind } })` to materialize `/work/repo` under `--network none`, then dispatch the same exploit command against `/work/repo` with `bob_repo_docker_run`. Capture both run IDs. Classify: `upstream_fix` with both runs firing is `residual_confirmed`; `self_patch` with vuln firing and control not firing is `patch_fixes`; `pre_introduction` with vuln firing and control not firing is `regression_localized`; otherwise write `inconclusive`. Include the optional `differential` block in `bob_write_evidence_packs`; never inline stdout, never use network-tainted runs, and never drop or suppress a final reportable finding because a control is inconclusive or does not reproduce.
+
 For each reportable finding:
 
 1. Look up the routed pack and its `evidence` block.

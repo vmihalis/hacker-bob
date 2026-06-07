@@ -6,6 +6,7 @@ async function handler(args) {
   const result = await repoDockerRun({
     target_domain: args.target_domain,
     command: args.command,
+    checkout: args.checkout,
     dry_run: args.dry_run,
     allow_network: args.allow_network,
     repo_mount_mode: args.repo_mount_mode,
@@ -42,7 +43,24 @@ module.exports = Object.freeze({
       command: {
         type: "array",
         items: { type: "string" },
-        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars.",
+        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. Optional when checkout is provided; Bob injects the differential materialization command.",
+      },
+      checkout: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Local git ref or 7-64 hex object prefix already present in the bound repo history.",
+          },
+          kind: {
+            type: "string",
+            enum: ["upstream_fix", "pre_introduction", "self_patch"],
+            description: "Differential checkout kind to materialize under /work/repo.",
+          },
+        },
+        required: ["ref", "kind"],
+        additionalProperties: false,
+        description: "Optional S14 differential checkout provenance. Refuses shallow or absent local history before docker argv construction.",
       },
       dry_run: {
         type: "boolean",
@@ -80,7 +98,7 @@ module.exports = Object.freeze({
         description: "Optional egress profile name override. Defaults to the session's bound profile.",
       },
     },
-    required: ["target_domain", "command"],
+    required: ["target_domain"],
   },
   handler,
   // Per O.4 §9: evaluator-shared, verifier, evidence. Orchestrator

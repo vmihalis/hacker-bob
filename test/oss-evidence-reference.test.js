@@ -50,6 +50,9 @@ const {
   readCurrentClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
+  normalizeEvidencePacksDocument,
+} = require("../mcp/lib/evidence.js");
+const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
@@ -114,6 +117,7 @@ function appendRepoCommandRunRow(domain, {
   exit_code: exitCode,
   stdout_hash: stdoutHash,
   stderr_hash: stderrHash,
+  network_mode: networkMode = "none",
 }) {
   fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
   fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify({
@@ -123,6 +127,7 @@ function appendRepoCommandRunRow(domain, {
     dry_run: false,
     command_hash: commandHash,
     exit_code: exitCode,
+    network_mode: networkMode,
     stdout_hash: stdoutHash,
     stderr_hash: stderrHash,
     timed_out: false,
@@ -479,6 +484,63 @@ test("completeness gate fires `mismatched` when the repo_command_run stdout file
     assert.equal(verdict.mismatched[0].ref_key, `repo_command_run:${runId}`);
     assert.equal(verdict.mismatched[0].expected_hash, originalHash);
     assert.equal(verdict.mismatched[0].observed_hash, sha256Hex(tamperedStdout));
+  });
+});
+
+test("C10 differential records null stdout hash when the capture file is missing", () => {
+  withTempHome(() => {
+    const domain = "repo-oss-c10-missing-stdout.example";
+    fs.mkdirSync(repoRunsDir(domain), { recursive: true });
+    const vulnRunId = "run-c10-vuln-missing";
+    const controlRunId = "run-c10-control-present";
+    appendRepoCommandRunRow(domain, {
+      run_id: vulnRunId,
+      command_hash: "a".repeat(64),
+      exit_code: 0,
+      stdout_hash: "b".repeat(64),
+      stderr_hash: "c".repeat(64),
+    });
+    writeStdoutFile(domain, controlRunId, "control quiet\n");
+    appendRepoCommandRunRow(domain, {
+      run_id: controlRunId,
+      command_hash: "d".repeat(64),
+      exit_code: 0,
+      stdout_hash: sha256Hex("control quiet\n"),
+      stderr_hash: sha256Hex(""),
+    });
+
+    const document = normalizeEvidencePacksDocument({
+      version: 1,
+      target_domain: domain,
+      packs: [{
+        finding_id: "F-1",
+        sample_type: "oss_dynamic_replay",
+        sample_count: 1,
+        aggregate_counts: { runs: 2 },
+        representative_samples: [{ run_id: vulnRunId }],
+        sensitive_clusters: [],
+        replay_summary: "Replay rows exist but one stdout capture is missing.",
+        redaction_notes: null,
+        report_snippet: "Differential is retained with an explicit missing stdout hash.",
+        differential: {
+          control_kind: "self_patch",
+          vuln_run_id: vulnRunId,
+          control_run_id: controlRunId,
+          control_ref: "HEAD",
+          vuln_fired: true,
+          control_fired: false,
+          verdict: "patch_fixes",
+          control_summary: "Control run completed; vulnerable stdout capture was unavailable.",
+        },
+      }],
+    }, {
+      expectedDomain: domain,
+      findingIdSet: new Set(["F-1"]),
+      finalReportableIdSet: new Set(["F-1"]),
+    });
+
+    assert.equal(document.packs[0].differential.vuln_stdout_hash, null);
+    assert.equal(document.packs[0].differential.control_stdout_hash, sha256Hex("control quiet\n"));
   });
 });
 

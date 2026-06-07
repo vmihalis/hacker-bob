@@ -10,6 +10,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -27,13 +28,17 @@ const {
 } = require("../mcp/lib/claim-freeze.js");
 const {
   assertEvidenceCompletenessForFreeze,
+  normalizeEvidencePacksDocument,
   readFrozenEvidenceFindingIdSet,
+  renderEvidencePacksMarkdown,
 } = require("../mcp/lib/evidence.js");
 const {
   appendJsonlLine,
 } = require("../mcp/lib/storage.js");
 const {
   sessionDir,
+  repoCommandRunsJsonlPath,
+  repoRunsDir,
 } = require("../mcp/lib/paths.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
@@ -91,6 +96,201 @@ function appendClaimsJsonlDirect(domain, id, overrides = {}) {
     }],
   });
 }
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function appendRepoRunFixture(domain, runId, {
+  stdout = "",
+  network_mode: networkMode = "none",
+  command_hash: commandHash = "a".repeat(64),
+  stderr_hash: stderrHash = "b".repeat(64),
+} = {}) {
+  fs.mkdirSync(repoRunsDir(domain), { recursive: true });
+  fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
+  fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), "");
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), {
+    version: 1,
+    target_domain: domain,
+    run_id: runId,
+    dry_run: false,
+    command_hash: commandHash,
+    argv_hash: "c".repeat(64),
+    network_mode: networkMode,
+    mount_mode: "read_only",
+    image_tag: `bob-oss-${domain}:fixture`,
+    exit_code: 0,
+    timed_out: false,
+    stdout_hash: sha256Hex(stdout),
+    stderr_hash: stderrHash,
+  });
+}
+
+function baseEvidencePack(findingId = "F-1", differential = null) {
+  return {
+    finding_id: findingId,
+    sample_type: "oss_dynamic_replay",
+    sample_count: 1,
+    aggregate_counts: { runs: 1 },
+    representative_samples: [{ run_id: differential ? differential.vuln_run_id : "run-vuln" }],
+    sensitive_clusters: [],
+    replay_summary: "Sanitizer harness reproduced the issue in the repo sandbox.",
+    redaction_notes: null,
+    report_snippet: "The sanitizer harness reproduces attacker-controlled parser memory corruption.",
+    ...(differential ? { differential } : {}),
+  };
+}
+
+function normalizePacksForC10(domain, differential) {
+  return normalizeEvidencePacksDocument({
+    version: 1,
+    target_domain: domain,
+    packs: [baseEvidencePack("F-1", differential)],
+  }, {
+    expectedDomain: domain,
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  });
+}
+
+test("C10 differential normalizer accepts each control_kind truth-table verdict", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-truth-table.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-upstream", { stdout: "upstream still fired\n" });
+    appendRepoRunFixture(domain, "run-self-patch", { stdout: "patched quiet\n" });
+    appendRepoRunFixture(domain, "run-pre-intro", { stdout: "pre intro quiet\n" });
+
+    const cases = [
+      {
+        control_kind: "upstream_fix",
+        control_run_id: "run-upstream",
+        control_fired: true,
+        verdict: "residual_confirmed",
+      },
+      {
+        control_kind: "self_patch",
+        control_run_id: "run-self-patch",
+        control_fired: false,
+        verdict: "patch_fixes",
+      },
+      {
+        control_kind: "pre_introduction",
+        control_run_id: "run-pre-intro",
+        control_fired: false,
+        verdict: "regression_localized",
+      },
+    ];
+
+    for (const item of cases) {
+      const document = normalizePacksForC10(domain, {
+        control_kind: item.control_kind,
+        vuln_run_id: "run-vuln",
+        control_run_id: item.control_run_id,
+        control_ref: "abcdef123456",
+        vuln_fired: true,
+        control_fired: item.control_fired,
+        verdict: item.verdict,
+        control_summary: "Control replay completed in the offline repo sandbox.",
+      });
+      const differential = document.packs[0].differential;
+      assert.equal(differential.verdict, item.verdict);
+      assert.equal(differential.vuln_stdout_hash, sha256Hex("vuln fired\n"));
+      assert.match(differential.control_stdout_hash, /^[0-9a-f]{64}$/);
+      assert.equal(Object.prototype.hasOwnProperty.call(differential, "stdout"), false);
+    }
+  });
+});
+
+test("C10 differential rejects identical run ids and network-tainted controls", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-rejects.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control-network", {
+      stdout: "control fired\n",
+      network_mode: "bridge",
+    });
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "upstream_fix",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-vuln",
+        control_ref: "abcdef123456",
+        vuln_fired: true,
+        control_fired: true,
+        verdict: "residual_confirmed",
+        control_summary: "Same run should be rejected.",
+      }),
+      /must differ/,
+    );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "upstream_fix",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control-network",
+        control_ref: "abcdef123456",
+        vuln_fired: true,
+        control_fired: true,
+        verdict: "residual_confirmed",
+        control_summary: "Network-tainted control should be rejected.",
+      }),
+      /--network none/,
+    );
+  });
+});
+
+test("C10 differential is scrub-validated before persistence", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-scrub.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control", { stdout: "control quiet\n" });
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "eyJhbGciOiJxxx.aabbccddeexxxxx.aabbccddeexxxxx",
+      }),
+      /secrets|secret|tokens|cookies/i,
+    );
+  });
+});
+
+test("C10 inconsistent control downgrades to inconclusive without dropping the finding", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-inconclusive.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control", { stdout: "control also fired\n" });
+
+    const document = normalizePacksForC10(domain, {
+      control_kind: "self_patch",
+      vuln_run_id: "run-vuln",
+      control_run_id: "run-control",
+      control_ref: "HEAD",
+      vuln_fired: true,
+      control_fired: true,
+      verdict: "patch_fixes",
+      control_summary: "The self patch did not quiet the proof; record the ambiguity.",
+    });
+
+    assert.equal(document.packs.length, 1);
+    assert.equal(document.packs[0].finding_id, "F-1");
+    assert.equal(document.packs[0].differential.verdict, "inconclusive");
+    const markdown = renderEvidencePacksMarkdown(document);
+    assert.match(markdown, /- Differential:/);
+    assert.match(markdown, /Verdict: inconclusive/);
+    assert.match(markdown, /Vulnerable Stdout Hash: [0-9a-f]{64}/);
+    assert.match(markdown, /Control Stdout Hash: [0-9a-f]{64}/);
+  });
+});
 
 test("evidence work-set derives from frozen EvidenceReference set, not live findings.jsonl", () => {
   withTempHome(() => {

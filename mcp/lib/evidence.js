@@ -1,7 +1,9 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
 const {
+  assertEnumValue,
   assertInteger,
   assertNonEmptyString,
   assertRequiredText,
@@ -10,6 +12,8 @@ const {
 } = require("./validation.js");
 const {
   evidencePackPaths,
+  repoCommandRunsJsonlPath,
+  repoRunsDir,
   verificationRoundPaths,
 } = require("./paths.js");
 const {
@@ -27,6 +31,7 @@ const {
 } = require("./sensitive-material.js");
 const {
   readCurrentClaimFreeze,
+  sha256File,
 } = require("./claim-freeze.js");
 const {
   claimIdSetFromFindingIds,
@@ -47,6 +52,15 @@ const MAX_TEXT_CHARS = 4000;
 const MAX_REPLAY_SUMMARY_CHARS = 2000;
 const MAX_REDACTION_NOTES_CHARS = 1000;
 const MAX_JSON_VALUE_CHARS = 8000;
+const DIFFERENTIAL_CONTROL_KINDS = Object.freeze(["upstream_fix", "self_patch", "pre_introduction"]);
+const DIFFERENTIAL_VERDICTS = Object.freeze([
+  "residual_confirmed",
+  "patch_fixes",
+  "regression_localized",
+  "inconclusive",
+]);
+const MAX_CONTROL_SUMMARY_CHARS = 1000;
+const MAX_CONTROL_REF_CHARS = 120;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -73,6 +87,102 @@ function cloneJsonValue(value, fieldName) {
     throw new Error(`${fieldName} is too large; keep evidence samples bounded`);
   }
   return JSON.parse(serialized);
+}
+
+function readRepoCommandRunRows(domain) {
+  const filePath = repoCommandRunsJsonlPath(domain);
+  if (!fs.existsSync(filePath)) return [];
+  const raw = fs.readFileSync(filePath, "utf8");
+  const rows = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    rows.push(JSON.parse(trimmed));
+  }
+  return rows;
+}
+
+function readRepoCommandRunRow(domain, runId, fieldName) {
+  const rows = readRepoCommandRunRows(domain);
+  const row = rows.find((entry) => entry && entry.run_id === runId);
+  if (!row) {
+    throw new Error(`${fieldName} does not match a repo-command-runs.jsonl row`);
+  }
+  if (row.network_mode !== "none") {
+    throw new Error(`${fieldName} must reference a --network none repo docker run`);
+  }
+  return row;
+}
+
+function stdoutHashForRun(domain, runId) {
+  return sha256File(path.join(repoRunsDir(domain), `${runId}.stdout`));
+}
+
+// C10 differential verdict contract:
+// - upstream_fix: vuln_fired=true and control_fired=true -> residual_confirmed
+// - self_patch: vuln_fired=true and control_fired=false -> patch_fixes
+// - pre_introduction: vuln_fired=true and control_fired=false -> regression_localized
+// Any other fired pattern is recorded as inconclusive. Inconsistent supplied
+// verdicts are downgraded to inconclusive rather than rejected so control runs
+// never suppress a final reportable finding.
+function expectedDifferentialVerdict(controlKind, vulnFired, controlFired) {
+  if (controlKind === "upstream_fix" && vulnFired === true && controlFired === true) {
+    return "residual_confirmed";
+  }
+  if (controlKind === "self_patch" && vulnFired === true && controlFired === false) {
+    return "patch_fixes";
+  }
+  if (controlKind === "pre_introduction" && vulnFired === true && controlFired === false) {
+    return "regression_localized";
+  }
+  return "inconclusive";
+}
+
+function normalizeDifferential(differential, { domain }) {
+  if (!isPlainObject(differential)) {
+    throw new Error("differential must be an object");
+  }
+  const controlKind = assertEnumValue(differential.control_kind, DIFFERENTIAL_CONTROL_KINDS, "differential.control_kind");
+  const suppliedVerdict = assertEnumValue(differential.verdict, DIFFERENTIAL_VERDICTS, "differential.verdict");
+  const vulnRunId = assertNonEmptyString(differential.vuln_run_id, "differential.vuln_run_id");
+  const controlRunId = assertNonEmptyString(differential.control_run_id, "differential.control_run_id");
+  if (vulnRunId === controlRunId) {
+    throw new Error("differential.vuln_run_id and differential.control_run_id must differ");
+  }
+  readRepoCommandRunRow(domain, vulnRunId, "differential.vuln_run_id");
+  readRepoCommandRunRow(domain, controlRunId, "differential.control_run_id");
+  const controlRef = assertMaxChars(
+    assertRequiredText(differential.control_ref, "differential.control_ref"),
+    "differential.control_ref",
+    MAX_CONTROL_REF_CHARS,
+  );
+  const controlSummary = assertMaxChars(
+    assertRequiredText(differential.control_summary, "differential.control_summary"),
+    "differential.control_summary",
+    MAX_CONTROL_SUMMARY_CHARS,
+  );
+  const vulnFired = typeof differential.vuln_fired === "boolean"
+    ? differential.vuln_fired
+    : (() => { throw new Error("differential.vuln_fired must be a boolean"); })();
+  const controlFired = typeof differential.control_fired === "boolean"
+    ? differential.control_fired
+    : (() => { throw new Error("differential.control_fired must be a boolean"); })();
+  const expectedVerdict = expectedDifferentialVerdict(controlKind, vulnFired, controlFired);
+  const verdict = suppliedVerdict === expectedVerdict ? suppliedVerdict : "inconclusive";
+  const normalized = {
+    control_kind: controlKind,
+    vuln_run_id: vulnRunId,
+    control_run_id: controlRunId,
+    control_ref: controlRef,
+    vuln_fired: vulnFired,
+    control_fired: controlFired,
+    verdict,
+    control_summary: controlSummary,
+    vuln_stdout_hash: stdoutHashForRun(domain, vulnRunId),
+    control_stdout_hash: stdoutHashForRun(domain, controlRunId),
+  };
+  validateNoSensitiveMaterial(normalized, "differential");
+  return normalized;
 }
 
 function normalizeAggregateCounts(value) {
@@ -196,7 +306,7 @@ function finalReportableIds(document) {
     .map((result) => result.finding_id);
 }
 
-function normalizeEvidencePack(pack, { findingIdSet, finalReportableIdSet }) {
+function normalizeEvidencePack(pack, { domain, findingIdSet, finalReportableIdSet }) {
   if (!isPlainObject(pack)) {
     throw new Error("packs entries must be objects");
   }
@@ -233,7 +343,7 @@ function normalizeEvidencePack(pack, { findingIdSet, finalReportableIdSet }) {
   if (redactionNotes) validateNoSensitiveMaterial(redactionNotes, "redaction_notes");
   validateNoSensitiveMaterial(reportSnippet, "report_snippet");
 
-  return {
+  const normalized = {
     finding_id: findingId,
     sample_type: sampleType,
     sample_count: sampleCount,
@@ -244,6 +354,10 @@ function normalizeEvidencePack(pack, { findingIdSet, finalReportableIdSet }) {
     redaction_notes: redactionNotes,
     report_snippet: reportSnippet,
   };
+  if (pack.differential != null) {
+    normalized.differential = normalizeDifferential(pack.differential, { domain });
+  }
+  return normalized;
 }
 
 function normalizeEvidencePacksDocument(document, {
@@ -287,6 +401,7 @@ function normalizeEvidencePacksDocument(document, {
   const seen = new Set();
   for (const pack of document.packs) {
     const normalizedPack = normalizeEvidencePack(pack, {
+      domain,
       findingIdSet: knownFindingIds,
       finalReportableIdSet: reportableIds,
     });
@@ -501,6 +616,17 @@ function renderEvidencePacksMarkdown(document) {
     lines.push("```");
     lines.push(pack.report_snippet);
     lines.push("```");
+    if (pack.differential) {
+      lines.push("- Differential:");
+      lines.push(`  - Control Kind: ${pack.differential.control_kind}`);
+      lines.push(`  - Verdict: ${pack.differential.verdict}`);
+      lines.push(`  - Vulnerable Run: ${pack.differential.vuln_run_id}`);
+      lines.push(`  - Control Run: ${pack.differential.control_run_id}`);
+      lines.push(`  - Control Ref: ${pack.differential.control_ref}`);
+      lines.push(`  - Vulnerable Stdout Hash: ${pack.differential.vuln_stdout_hash || "missing"}`);
+      lines.push(`  - Control Stdout Hash: ${pack.differential.control_stdout_hash || "missing"}`);
+      lines.push(`  - Control Summary: ${pack.differential.control_summary}`);
+    }
     lines.push("");
   }
 
@@ -581,8 +707,13 @@ function readEvidencePacks(args) {
 }
 
 module.exports = {
+  DIFFERENTIAL_CONTROL_KINDS,
+  DIFFERENTIAL_VERDICTS,
   EVIDENCE_PACKS_VERSION,
+  MAX_CONTROL_REF_CHARS,
+  MAX_CONTROL_SUMMARY_CHARS,
   assertEvidenceCompletenessForFreeze,
+  normalizeDifferential,
   normalizeEvidencePacksDocument,
   readEvidencePacks,
   readFrozenEvidenceFindingIdSet,

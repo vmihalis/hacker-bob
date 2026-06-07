@@ -74,6 +74,7 @@ const {
   readSessionStateStrict,
 } = require("./session-state-store.js");
 const {
+  assertHistoryAvailableForRef,
   readRepoSession,
 } = require("./repo-target.js");
 
@@ -837,6 +838,12 @@ const REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS = 200;
 // does not pull 16 MB into RAM just to compute a 200-char preview.
 const REPO_DOCKER_RUN_FIRST_LINE_PROBE_BYTES = 4096;
 const REPO_MOUNT_MODE_VALUES = Object.freeze(["read_only", "read_write"]);
+const DIFFERENTIAL_CHECKOUT_KIND_VALUES = Object.freeze([
+  "upstream_fix",
+  "pre_introduction",
+  "self_patch",
+]);
+const DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS = 120;
 const REPO_DOCKER_RUN_DNS = "1.1.1.1";
 const REPO_DOCKER_RUN_PROXY_ARG = Object.freeze({
   http: "HTTP_PROXY",
@@ -888,6 +895,90 @@ function assertCommandArray(command) {
     normalized.push(raw);
   }
   return normalized;
+}
+
+function assertCheckoutRef(value, fieldName) {
+  const ref = assertNonEmptyString(value, fieldName);
+  if (ref.length > DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${fieldName} must be at most ${DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS} characters`,
+      { repo_error_code: "invalid_differential_ref" },
+    );
+  }
+  if (/^[0-9a-f]{7,64}$/i.test(ref)) return ref;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(ref)
+      || ref.includes("..")
+      || ref.includes("//")
+      || ref.includes("@{")
+      || ref.endsWith("/")
+      || ref.endsWith(".")
+      || ref.endsWith(".lock")) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${fieldName} must be a 7-64 hex object prefix or safe local git ref`,
+      { repo_error_code: "invalid_differential_ref" },
+    );
+  }
+  return ref;
+}
+
+function normalizeDifferentialCheckout(checkout) {
+  if (checkout == null) return null;
+  if (typeof checkout !== "object" || Array.isArray(checkout)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "checkout must be an object when provided",
+    );
+  }
+  return {
+    ref: assertCheckoutRef(checkout.ref, "checkout.ref"),
+    kind: assertEnumValue(checkout.kind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout.kind"),
+  };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function assertWorkDest(dest) {
+  const normalized = assertNonEmptyString(dest, "dest");
+  if (!normalized.startsWith("/work/")
+      || normalized.includes("..")
+      || normalized.includes("//")
+      || !/^\/work\/[A-Za-z0-9._/-]+$/.test(normalized)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "dest must be a safe path under /work",
+      { repo_error_code: "invalid_differential_dest" },
+    );
+  }
+  return normalized;
+}
+
+function buildDifferentialCheckoutCommand({
+  checkout_ref: checkoutRef,
+  checkout_kind: checkoutKind,
+  dest = "/work/repo",
+} = {}) {
+  const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
+  const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
+  const checkoutDest = assertWorkDest(dest);
+  const archiveRef = kind === "self_patch" ? "HEAD" : ref;
+  const script = [
+    "set -eu",
+    `rm -rf ${shellQuote(checkoutDest)}`,
+    `mkdir -p ${shellQuote(checkoutDest)}`,
+    `git -C /src cat-file -e ${shellQuote(`${archiveRef}^{commit}`)}`,
+    `git -C /src archive --format=tar ${shellQuote(archiveRef)} > /work/checkout.tar`,
+    `tar -x -f /work/checkout.tar -C ${shellQuote(checkoutDest)}`,
+    "rm -f /work/checkout.tar",
+  ];
+  if (kind === "self_patch") {
+    script.push("test -f /work/patch.diff");
+    script.push(`git -C ${shellQuote(checkoutDest)} apply /work/patch.diff`);
+  }
+  return assertCommandArray(["sh", "-lc", script.join(" && ")]);
 }
 
 // Build the docker run argv. Each O-P3 sandbox flag is emitted in
@@ -1149,6 +1240,7 @@ function normalizeReplayContext(value) {
 async function repoDockerRun({
   target_domain: targetDomain,
   command,
+  checkout = null,
   dry_run: dryRun = true,
   allow_network: allowNetwork = false,
   repo_mount_mode: repoMountMode = "read_only",
@@ -1170,7 +1262,17 @@ async function repoDockerRun({
     );
   }
 
-  const normalizedCommand = assertCommandArray(command);
+  const normalizedCheckout = normalizeDifferentialCheckout(checkout);
+  if (normalizedCheckout) {
+    assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
+  }
+  const effectiveCommand = command == null && normalizedCheckout
+    ? buildDifferentialCheckoutCommand({
+        checkout_ref: normalizedCheckout.ref,
+        checkout_kind: normalizedCheckout.kind,
+      })
+    : command;
+  const normalizedCommand = assertCommandArray(effectiveCommand);
   const normalizedDryRun = dryRun == null ? true : assertBoolean(dryRun, "dry_run");
   const normalizedAllowNetwork = allowNetwork == null ? false : assertBoolean(allowNetwork, "allow_network");
   const normalizedMountMode = assertEnumValue(
@@ -1280,6 +1382,10 @@ async function repoDockerRun({
       planned_argv: argv.args,
       egress_profile: egressProfileSummary,
     };
+    if (normalizedCheckout) {
+      planRow.checkout_ref = normalizedCheckout.ref;
+      planRow.checkout_kind = normalizedCheckout.kind;
+    }
     if (normalizedReplayContext) planRow.replay_context = normalizedReplayContext;
     if (normalizedBlockedHarnessRunId) planRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
     // O-P7: scrub-validate before persistence. planned_argv carries the
@@ -1312,6 +1418,10 @@ async function repoDockerRun({
       egress_profile: egressProfileSummary,
       replay_context: normalizedReplayContext,
       blocked_harness_run_id: normalizedBlockedHarnessRunId,
+      ...(normalizedCheckout ? {
+        checkout_ref: normalizedCheckout.ref,
+        checkout_kind: normalizedCheckout.kind,
+      } : {}),
     };
   }
 
@@ -1409,6 +1519,10 @@ async function repoDockerRun({
     stderr_size_bytes: stderrBytes,
     egress_profile: egressProfileSummary,
   };
+  if (normalizedCheckout) {
+    liveRow.checkout_ref = normalizedCheckout.ref;
+    liveRow.checkout_kind = normalizedCheckout.kind;
+  }
   if (normalizedReplayContext) liveRow.replay_context = normalizedReplayContext;
   if (normalizedBlockedHarnessRunId) liveRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
   // O-P7: pre-flight before persistence. The validator catches both the
@@ -1451,6 +1565,10 @@ async function repoDockerRun({
     egress_profile: egressProfileSummary,
     replay_context: normalizedReplayContext,
     blocked_harness_run_id: normalizedBlockedHarnessRunId,
+    ...(normalizedCheckout ? {
+      checkout_ref: normalizedCheckout.ref,
+      checkout_kind: normalizedCheckout.kind,
+    } : {}),
   };
 }
 
@@ -1461,6 +1579,7 @@ module.exports = {
   // Helpers exposed for cross-module reuse / tests
   buildDockerfileBob,
   buildDockerBuildArgv,
+  buildDifferentialCheckoutCommand,
   buildDockerRunArgv,
   buildImageTag,
   detectLanguageProfile,
@@ -1474,6 +1593,7 @@ module.exports = {
   loadNfsXdrShape,
   // Constants
   DEFAULT_DOCKER_BUILD_TIMEOUT_MS,
+  DIFFERENTIAL_CHECKOUT_KIND_VALUES,
   MAX_DOCKER_BUILD_TIMEOUT_MS,
   RECOMMENDED_COMMAND_ROLES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,

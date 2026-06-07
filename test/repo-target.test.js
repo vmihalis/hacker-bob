@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const {
   attackSurfacePath,
@@ -14,6 +15,7 @@ const {
   surfaceRoutesPath,
 } = require("../mcp/lib/paths.js");
 const {
+  assertHistoryAvailableForRef,
   buildRepoInventory,
   initRepoSession,
   repoCheck,
@@ -83,6 +85,34 @@ function writeFile(root, relativePath, content) {
   const filePath = path.join(root, relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+function git(repoRoot, args) {
+  return execFileSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Bob Test",
+      GIT_AUTHOR_EMAIL: "bob-test@example.invalid",
+      GIT_COMMITTER_NAME: "Bob Test",
+      GIT_COMMITTER_EMAIL: "bob-test@example.invalid",
+    },
+  }).trim();
+}
+
+function createTwoCommitGitRepo(home, name = "history-fixture") {
+  const repo = path.join(home, name);
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q"]);
+  writeFile(repo, "README.md", "# fixture\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-q", "-m", "initial"]);
+  const first = git(repo, ["rev-parse", "HEAD"]);
+  writeFile(repo, "src/parser.c", "int parse(void){return 1;}\n");
+  git(repo, ["add", "src/parser.c"]);
+  git(repo, ["commit", "-q", "-m", "second"]);
+  const second = git(repo, ["rev-parse", "HEAD"]);
+  return { repo, first, second };
 }
 
 function parseResult(value) {
@@ -219,6 +249,47 @@ function nativeClaimInput(context, evidenceRefs, overrides = {}) {
     ...overrides,
   };
 }
+
+test("assertHistoryAvailableForRef passes for clean local refs and object prefixes", () => withTempHome((home) => {
+  const { repo, first, second } = createTwoCommitGitRepo(home, "history-clean");
+  const branch = git(repo, ["branch", "--show-current"]);
+  const byBranch = assertHistoryAvailableForRef(repo, branch);
+  assert.equal(byBranch.checkout_ref, branch);
+  const byHex = assertHistoryAvailableForRef(repo, first.slice(0, 12));
+  assert.equal(byHex.checkout_ref, first.slice(0, 12));
+  const byFullHex = assertHistoryAvailableForRef(repo, second);
+  assert.equal(byFullHex.checkout_ref, second);
+}));
+
+test("assertHistoryAvailableForRef refuses shallow clones loudly", () => withTempHome((home) => {
+  const { repo, first } = createTwoCommitGitRepo(home, "history-shallow");
+  fs.writeFileSync(path.join(repo, ".git", "shallow"), `${first}\n`);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, first),
+    (error) => error && error.details && error.details.repo_error_code === "shallow_clone_blocks_differential",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses refs absent from local history", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-absent");
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "refs/heads/not-present"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "deadbee"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef handles linked worktree gitdir files", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-linked");
+  const worktree = path.join(home, "history-linked-worktree");
+  git(repo, ["worktree", "add", "-q", worktree, second]);
+  assert.ok(fs.statSync(path.join(worktree, ".git")).isFile(), "linked worktree must use a .git file");
+  const result = assertHistoryAvailableForRef(worktree, second.slice(0, 12));
+  assert.equal(result.checkout_ref, second.slice(0, 12));
+}));
 
 test("repo session inventory emits OSS surfaces and routes to OSS packs", () => withTempHome((home) => {
   const repo = path.join(home, "sample-project");

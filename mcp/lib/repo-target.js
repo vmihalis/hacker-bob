@@ -135,6 +135,216 @@ function repoPathError(error) {
   return null;
 }
 
+const GIT_REF_MAX_CHARS = 120;
+const HEX_REF_RE = /^[0-9a-f]{7,64}$/i;
+const LOCAL_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
+
+function gitMetadataError(message, repoErrorCode, details = {}) {
+  return new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, {
+    repo_error_code: repoErrorCode,
+    ...details,
+  });
+}
+
+function normalizeHistoryRef(ref) {
+  const normalized = assertNonEmptyString(ref, "checkout.ref");
+  if (normalized.length > GIT_REF_MAX_CHARS) {
+    throw gitMetadataError(
+      `checkout.ref must be at most ${GIT_REF_MAX_CHARS} characters`,
+      "invalid_differential_ref",
+    );
+  }
+  if (HEX_REF_RE.test(normalized)) return normalized;
+  if (!LOCAL_REF_RE.test(normalized)
+      || normalized.includes("..")
+      || normalized.includes("//")
+      || normalized.includes("@{")
+      || normalized.endsWith("/")
+      || normalized.endsWith(".")
+      || normalized.endsWith(".lock")) {
+    throw gitMetadataError(
+      "checkout.ref must be a 7-64 hex object prefix or safe local git ref",
+      "invalid_differential_ref",
+    );
+  }
+  return normalized;
+}
+
+function resolveGitFilePointer(repoRoot, dotGitPath) {
+  const content = fs.readFileSync(dotGitPath, "utf8").trim();
+  const match = content.match(/^gitdir:\s*(.+)$/i);
+  if (!match) {
+    throw gitMetadataError(
+      `.git file is not a gitdir pointer: ${dotGitPath}`,
+      "repo_git_metadata_invalid",
+    );
+  }
+  const rawGitDir = match[1].trim();
+  return path.resolve(repoRoot, rawGitDir);
+}
+
+function resolveCommonGitDir(gitDir) {
+  const commonDirPath = path.join(gitDir, "commondir");
+  if (!fs.existsSync(commonDirPath)) return gitDir;
+  const raw = fs.readFileSync(commonDirPath, "utf8").trim();
+  if (!raw) return gitDir;
+  return path.resolve(gitDir, raw);
+}
+
+function resolveGitDirectories(repoRoot) {
+  const dotGitPath = path.join(repoRoot, ".git");
+  if (!fs.existsSync(dotGitPath)) {
+    throw gitMetadataError(
+      `repo is missing .git metadata: ${repoRoot}`,
+      "repo_git_metadata_missing",
+    );
+  }
+  const stat = fs.lstatSync(dotGitPath);
+  const gitDir = stat.isDirectory()
+    ? dotGitPath
+    : resolveGitFilePointer(repoRoot, dotGitPath);
+  if (!fs.existsSync(gitDir) || !fs.statSync(gitDir).isDirectory()) {
+    throw gitMetadataError(
+      `gitdir does not exist for repo: ${gitDir}`,
+      "repo_git_metadata_missing",
+    );
+  }
+  const commonDir = resolveCommonGitDir(gitDir);
+  if (!fs.existsSync(commonDir) || !fs.statSync(commonDir).isDirectory()) {
+    throw gitMetadataError(
+      `commondir does not exist for repo: ${commonDir}`,
+      "repo_git_metadata_missing",
+    );
+  }
+  return { gitDir, commonDir };
+}
+
+function gitRelativePath(baseDir, relPath) {
+  const resolved = path.resolve(baseDir, relPath);
+  const root = `${path.resolve(baseDir)}${path.sep}`;
+  if (resolved !== path.resolve(baseDir) && !resolved.startsWith(root)) return null;
+  return resolved;
+}
+
+function refNameCandidates(ref) {
+  if (ref === "HEAD") return ["HEAD"];
+  if (ref.startsWith("refs/")) return [ref];
+  return [
+    `refs/heads/${ref}`,
+    `refs/tags/${ref}`,
+    `refs/remotes/${ref}`,
+  ];
+}
+
+function hasLooseRef(ref, { gitDir, commonDir }) {
+  for (const candidate of refNameCandidates(ref)) {
+    for (const base of [gitDir, commonDir]) {
+      const filePath = gitRelativePath(base, candidate);
+      if (filePath && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function packedRefsContain(ref, { gitDir, commonDir }) {
+  const names = new Set(refNameCandidates(ref));
+  for (const packedRefsPath of [path.join(gitDir, "packed-refs"), path.join(commonDir, "packed-refs")]) {
+    if (!fs.existsSync(packedRefsPath)) continue;
+    const raw = fs.readFileSync(packedRefsPath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("^")) continue;
+      const parts = trimmed.split(/\s+/);
+      if (parts.length >= 2 && names.has(parts[1])) return true;
+    }
+  }
+  return false;
+}
+
+function looseObjectExists(hexRef, commonDir) {
+  const normalized = hexRef.toLowerCase();
+  const objectDir = path.join(commonDir, "objects", normalized.slice(0, 2));
+  if (!fs.existsSync(objectDir) || !fs.statSync(objectDir).isDirectory()) return false;
+  const suffix = normalized.slice(2);
+  if (normalized.length === 40 || normalized.length === 64) {
+    return fs.existsSync(path.join(objectDir, suffix));
+  }
+  return fs.readdirSync(objectDir).some((name) => name.startsWith(suffix));
+}
+
+function packIndexContainsPrefix(idxPath, hexRef, shaBytes) {
+  const prefix = hexRef.toLowerCase();
+  if (prefix.length > shaBytes * 2) return false;
+  const data = fs.readFileSync(idxPath);
+  if (data.length < 8 + 256 * 4) return false;
+  if (data.readUInt32BE(0) !== 0xff744f63) return false;
+  const version = data.readUInt32BE(4);
+  if (version !== 2) return false;
+  const objectCount = data.readUInt32BE(8 + 255 * 4);
+  const namesOffset = 8 + 256 * 4;
+  const namesEnd = namesOffset + objectCount * shaBytes;
+  if (namesEnd > data.length) return false;
+  for (let i = 0; i < objectCount; i += 1) {
+    const start = namesOffset + i * shaBytes;
+    const objectName = data.subarray(start, start + shaBytes).toString("hex");
+    if (objectName.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function packedObjectExists(hexRef, commonDir) {
+  const packDir = path.join(commonDir, "objects", "pack");
+  if (!fs.existsSync(packDir) || !fs.statSync(packDir).isDirectory()) return false;
+  for (const entry of fs.readdirSync(packDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".idx")) continue;
+    const idxPath = path.join(packDir, entry.name);
+    try {
+      if (packIndexContainsPrefix(idxPath, hexRef, 20)) return true;
+      if (packIndexContainsPrefix(idxPath, hexRef, 32)) return true;
+    } catch {
+      // Ignore unreadable/corrupt pack indexes; absence is handled by the
+      // caller as a loud ref_not_in_local_history refusal.
+    }
+  }
+  return false;
+}
+
+function refAvailableInLocalHistory(ref, gitDirs) {
+  if (HEX_REF_RE.test(ref)) {
+    return looseObjectExists(ref, gitDirs.commonDir) || packedObjectExists(ref, gitDirs.commonDir);
+  }
+  return hasLooseRef(ref, gitDirs) || packedRefsContain(ref, gitDirs);
+}
+
+function assertHistoryAvailableForRef(repoRoot, ref) {
+  const root = assertNonEmptyString(repoRoot, "repo_root");
+  const normalizedRef = normalizeHistoryRef(ref);
+  const gitDirs = resolveGitDirectories(root);
+  if (fs.existsSync(path.join(gitDirs.gitDir, "shallow"))
+      || fs.existsSync(path.join(gitDirs.commonDir, "shallow"))) {
+    throw gitMetadataError(
+      `Differential checkout refused for shallow clone: ${root}. Deepen the local clone before retrying.`,
+      "shallow_clone_blocks_differential",
+      { checkout_ref: normalizedRef },
+    );
+  }
+  if (!refAvailableInLocalHistory(normalizedRef, gitDirs)) {
+    throw gitMetadataError(
+      `Differential checkout ref is not present in local git history: ${normalizedRef}`,
+      "ref_not_in_local_history",
+      { checkout_ref: normalizedRef },
+    );
+  }
+  return {
+    repo_root: root,
+    checkout_ref: normalizedRef,
+    git_dir: gitDirs.gitDir,
+    common_git_dir: gitDirs.commonDir,
+  };
+}
+
 function initRepoSession({
   repo_path: repoPath,
   target_domain: requestedTargetDomain = null,
@@ -1883,6 +2093,7 @@ function recordOssObservation({
 }
 
 module.exports = {
+  assertHistoryAvailableForRef,
   deriveRepoTargetDomain,
   deriveRepoHashFromPath,
   initRepoSession,

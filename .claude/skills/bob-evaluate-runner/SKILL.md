@@ -377,11 +377,11 @@ Final reminder: agents own seed mapping, behavior probes, control checks, claim 
 
 ## Optional: Differential Workflows
 Orchestrator-driven differentials run outside the wave/evaluator loop and feed `severity_class: "security"` rows into `bob_record_candidate_claim`.
-
+### C10_oss_patched_vs_unpatched
+**OSS Patched-vs-Unpatched Differential.** Use only for repo sessions with local history. First materialize the control tree with `bob_repo_docker_run({ target_domain, checkout: { ref, kind } })`; S14 refuses shallow or absent refs and keeps `/src` read-only. Run the same exploit against `/work/repo` under default `--network none`, then write `bob_write_evidence_packs` with `differential: { control_kind, vuln_run_id, control_run_id, control_ref, vuln_fired, control_fired, verdict, control_summary }`. Verdicts are bounded: `upstream_fix` + both fired => `residual_confirmed`; `self_patch` or `pre_introduction` + vuln fired/control quiet => `patch_fixes` or `regression_localized`; anything else is recorded as `inconclusive`, never suppressing the finding.
 ### C2_doc_vs_behavior
 **Doc-vs-Behavior Differential.** Ingest OpenAPI 3 / GraphQL SDL / Postman v2.1 with `bob_ingest_schema_doc` (content-hashed, idempotent), confirm coverage with `bob_query_schema_contracts`, run per auth profile via `bob_run_doc_delta({ target_domain, base_url, auth_profile, run_id, egress_profile, block_internal_hosts })`, read with `bob_read_doc_delta_results({ target_domain, summary_only: true })`. Divergence classes: `security`, `info_leak_potential`, `doc_or_infra`.
 
 Web evaluators also see the schema corpus through `schema_slice` in their brief once it's seeded.
-
 ### C4_multi_account_differential
 **Multi-Account Differential.** Confirm ≥2 profiles via `bob_list_auth_profiles`, fan with `bob_run_auth_differential({ target_domain, base_url, endpoints, auth_profiles, run_id, egress_profile, block_internal_hosts })`. Endpoints come from `bob_query_schema_contracts` or `attack_surface.json`. Names like `guest`/`anon`/`noauth`/`public`/`unauthenticated` auto-flag `sent_with_auth: false` so `unauth_succeeds_where_auth_blocked` fires; otherwise pass `profile_metadata`. Read with `bob_read_auth_differential_results({ summary_only: true })`.

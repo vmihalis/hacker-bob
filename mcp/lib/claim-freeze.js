@@ -431,5 +431,6 @@ module.exports = {
   projectRepoCommandRunObservedRef,
   projectRepoFileObservedRef,
   readCurrentClaimFreeze,
+  sha256File,
   verificationSnapshotFromClaimFreeze,
 };
