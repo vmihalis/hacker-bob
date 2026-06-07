@@ -293,29 +293,47 @@ function validateFindingEntry(entry: unknown, index: number): asserts entry is F
 
   const e = entry as Record<string, unknown>;
 
-  // Required string fields.
-  for (const key of ["surface_id", "file", "title", "description", "evidence", "hunk_text"] as const) {
-    if (typeof e[key] !== "string") {
-      throw new TypeError(
-        `${prefix}: field "${key}" must be a string, got ${typeof e[key]}`
-      );
-    }
+  // Essential string fields — a comment cannot be posted without a file path.
+  if (typeof e["file"] !== "string" || (e["file"] as string).length === 0) {
+    throw new TypeError(
+      `${prefix}: field "file" must be a non-empty string, got ${typeof e["file"]}`
+    );
   }
 
-  // Required numeric fields.
-  for (const key of ["line_start", "line_end"] as const) {
-    if (typeof e[key] !== "number" || !Number.isFinite(e[key] as number)) {
-      throw new TypeError(
-        `${prefix}: field "${key}" must be a finite number, got ${typeof e[key]}`
-      );
-    }
+  // Essential numeric field — the inline position needs a start line.
+  if (typeof e["line_start"] !== "number" || !Number.isFinite(e["line_start"] as number)) {
+    throw new TypeError(
+      `${prefix}: field "line_start" must be a finite number, got ${typeof e["line_start"]}`
+    );
   }
 
-  // Severity enum check.
+  // Severity enum — drives the comment body and the Check Run conclusion.
   if (!(VALID_SEVERITIES as ReadonlyArray<unknown>).includes(e["severity"])) {
     throw new TypeError(
       `${prefix}: field "severity" must be one of ${VALID_SEVERITIES.join(", ")}, ` +
         `got ${JSON.stringify(e["severity"])}`
+    );
+  }
+
+  // Supplementary string fields — present in PATH A output but the degraded /
+  // PATH B path may omit them. Default to "" so downstream (body builder,
+  // resolver) always sees a string; reject only a present non-string value.
+  for (const key of ["surface_id", "title", "description", "evidence", "hunk_text"] as const) {
+    if (e[key] === undefined || e[key] === null) {
+      e[key] = "";
+    } else if (typeof e[key] !== "string") {
+      throw new TypeError(
+        `${prefix}: field "${key}" must be a string when present, got ${typeof e[key]}`
+      );
+    }
+  }
+
+  // line_end is optional — default it to line_start (single-line finding).
+  if (e["line_end"] === undefined || e["line_end"] === null) {
+    e["line_end"] = e["line_start"];
+  } else if (typeof e["line_end"] !== "number" || !Number.isFinite(e["line_end"] as number)) {
+    throw new TypeError(
+      `${prefix}: field "line_end" must be a finite number when present, got ${typeof e["line_end"]}`
     );
   }
 }
