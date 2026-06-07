@@ -460,11 +460,17 @@ export async function runBobDiffReview(
   // Skills are invoked as a slash-command prompt in print (-p) mode. The
   // claude CLI does not support a --skill flag; skills resolve via /skill-name
   // in the prompt argument.
+  // NOTE: we deliberately do NOT pass --target-domain-override to the skill.
+  // The MCP repo-session authority requires the server-derived
+  // `repo-<name>-<sha8>` slug and rejects any other value (normalization_failed),
+  // so the skill must let bob_init_repo_session derive the session domain. The
+  // GitHub-context slug (targetDomainOverride, e.g. gh-<id>) is stamped into
+  // diff-review-findings.json by this runner after the skill returns — handing it
+  // to the skill only tempts it to feed the rejected slug to the MCP (PATH B).
   const skillPrompt = [
     `/bob-diff-review`,
     `--repo`, path.resolve(repo),
     `--diff-file`, path.resolve(diffFile),
-    `--target-domain-override`, targetDomainOverride,
     `--output-dir`, outputDir,
   ].join(" ");
   const claudeArgs: string[] = [
