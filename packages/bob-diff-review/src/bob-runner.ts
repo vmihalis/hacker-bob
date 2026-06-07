@@ -227,24 +227,26 @@ export function validateDiffReviewFindings(value: unknown): DiffReviewFindings {
 
   const obj = value as Record<string, unknown>;
 
-  // Top-level required string fields. session_id is intentionally NOT required:
-  // degraded / PATH B runs (Bob MCP server unavailable) have no Bob session, so
-  // the skill legitimately omits it. It is metadata and not needed to post
-  // comments; when present it must be a string.
-  for (const key of ["target_domain", "generated_at"] as const) {
-    if (typeof obj[key] !== "string" || (obj[key] as string).length === 0) {
-      throw new TypeError(
-        `diff-review-findings.json: required string field "${key}" is missing or empty`
-      );
-    }
-  }
-  if (obj["session_id"] !== undefined && typeof obj["session_id"] !== "string") {
+  // target_domain is the only required top-level string: it scopes the review
+  // and the runner injects it from the invocation when the skill omits it.
+  if (typeof obj["target_domain"] !== "string" || (obj["target_domain"] as string).length === 0) {
     throw new TypeError(
-      `diff-review-findings.json: "session_id" must be a string when present`
+      `diff-review-findings.json: required string field "target_domain" is missing or empty`
     );
   }
-  if (obj["session_id"] === undefined) {
-    obj["session_id"] = "";
+  // session_id and generated_at are metadata, NOT required: degraded / PATH B
+  // runs (Bob MCP server unavailable, heuristic dispatch) have no Bob session
+  // and the skill may omit them. They are not needed to post comments; when
+  // present they must be strings, and default to "" when absent.
+  for (const key of ["session_id", "generated_at"] as const) {
+    if (obj[key] !== undefined && typeof obj[key] !== "string") {
+      throw new TypeError(
+        `diff-review-findings.json: "${key}" must be a string when present`
+      );
+    }
+    if (obj[key] === undefined) {
+      obj[key] = "";
+    }
   }
 
   // impacted_entries must be an array (may be empty).
@@ -627,7 +629,21 @@ export async function runBobDiffReview(
     });
   }
 
-  // 12. Validate the schema.
+  // 12. Enrich with runner-authoritative metadata, then validate.
+  //     The skill's degraded / PATH B output may omit target_domain and
+  //     generated_at. The runner knows the target domain it was invoked with
+  //     and can stamp the generation time, so inject both when missing rather
+  //     than failing a review that has valid findings.
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const p = parsed as Record<string, unknown>;
+    if (typeof p["target_domain"] !== "string" || !(p["target_domain"] as string)) {
+      p["target_domain"] = targetDomainOverride;
+    }
+    if (typeof p["generated_at"] !== "string" || !(p["generated_at"] as string)) {
+      p["generated_at"] = new Date().toISOString();
+    }
+  }
+
   let findings: DiffReviewFindings;
   try {
     findings = validateDiffReviewFindings(parsed);

@@ -106,8 +106,13 @@ describe("validateDiffReviewFindings", () => {
     expect(() => validateDiffReviewFindings(bad)).toThrow(/target_domain/);
   });
 
-  it("rejects missing generated_at", () => {
+  it("accepts missing/empty generated_at (degraded PATH B output omits it)", () => {
     const bad = { ...MOCK_FINDINGS_FIXTURE, generated_at: "" };
+    expect(validateDiffReviewFindings(bad).generated_at).toBe("");
+  });
+
+  it("rejects generated_at present but not a string", () => {
+    const bad = { ...MOCK_FINDINGS_FIXTURE, generated_at: 123 };
     expect(() => validateDiffReviewFindings(bad)).toThrow(/generated_at/);
   });
 
@@ -368,7 +373,7 @@ describe("runBobDiffReview mock mode (BOB_MOCK_FINDINGS_JSON)", () => {
         targetDomainOverride: "gh-1-pr1",
         anthropicApiKey: "mock-key",
       })
-    ).rejects.toThrow(/generated_at/);
+    ).rejects.toThrow(/impacted_entries/);
   });
 
   it("returns empty findings array when fixture has no findings", async () => {
