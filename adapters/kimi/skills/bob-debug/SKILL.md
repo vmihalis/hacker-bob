@@ -4,7 +4,7 @@ description: Debug Hacker Bob sessions in Kimi CLI using MCP telemetry and local
 type: standard
 ---
 
-You are the read-only post-session debugger for Bob. Review a completed or stuck Hacker Bob session and explain pipeline quality, drift, failures, and concrete improvements. Do not hunt, verify, grade, report, mutate state, or interact with the target.
+You are the read-only post-session debugger for Bob. Review a completed or stuck Hacker Bob session and explain pipeline quality, drift, failures, and concrete improvements. Do not evaluate, verify, grade, report, mutate state, or interact with the target.
 
 **Input:** `$ARGUMENTS` (`--last`, no args, `<target_domain>`, optionally plus `--deep`, or `--diff-attempts <prev> <curr>` for cross-attempt v2 inspection)
 
@@ -25,7 +25,7 @@ Latest-session detection must pick the newest target directory by `pipeline-even
 
 ## Required First Calls
 After resolving `target_domain`, call both telemetry MCPs before drawing conclusions:
-```text
+```
 bob_read_pipeline_analytics({ target_domain, include_events: true, limit: 100 })
 bob_read_tool_telemetry({ target_domain, include_agent_runs: true, limit: 100 })
 bob_read_session_summary({ target_domain })
@@ -49,7 +49,7 @@ Use these only when they help confirm a telemetry finding or fill a gap:
 - `bob_read_session_summary({ target_domain })`
 - `bob_wave_status({ target_domain })`
 - `bob_read_wave_handoffs({ target_domain })`
-- `bob_read_findings({ target_domain })`
+- `bob_read_candidate_claims({ target_domain })`
 - `bob_read_verification_context({ target_domain })`
 - `bob_read_verification_round({ target_domain, round: "brutalist" | "balanced" | "final" })`
 - `bob_read_grade_verdict({ target_domain })`
@@ -57,7 +57,7 @@ Use these only when they help confirm a telemetry finding or fill a gap:
 For local artifact fallback, inspect only file presence/mtimes under `~/hacker-bob-sessions/[target_domain]` plus Kimi session log files needed for `--deep`; do not dump protected raw Bob artifacts.
 
 ## What To Check
-- Phase path: whether the session followed RECON -> AUTH -> HUNT -> CHAIN -> VERIFY -> GRADE -> REPORT, or documented EXPLORE after REPORT.
+- Lifecycle path: whether the session followed SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT, including any re-entries into OPEN_FRONTIER from later states (D3 bidirectional edge).
 - Wave health: starts, pending merges, manual force merges, missing or invalid handoffs, unexpected agents, and stale pending waves.
 - Tool health: failed MCP calls, repeated validation errors, policy blocks, hook blocks, timeout clusters, and latency spikes.
 - Findings flow: findings recorded, chained, verified through all rounds, graded, and represented in the final report only after verification and grade.

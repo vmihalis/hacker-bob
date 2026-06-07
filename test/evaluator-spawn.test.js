@@ -328,7 +328,7 @@ test(".claude/agents/evaluator-spawn.md exists with the honest X-P7 framing pros
   );
 });
 
-test("evaluator-spawn agent frontmatter carries the union of evaluator-family tools + bob_prepare_node/bob_finalize_node/bob_resolve_body", () => {
+test("evaluator-spawn agent frontmatter carries evaluator-family tools without self-finalize authority", () => {
   const body = fs.readFileSync(EVALUATOR_SPAWN_AGENT_PATH, "utf8");
   const frontmatterEnd = body.indexOf("\n---\n", 4);
   assert.ok(frontmatterEnd > 0, "expected YAML frontmatter terminator");
@@ -340,7 +340,6 @@ test("evaluator-spawn agent frontmatter carries the union of evaluator-family to
     // each chain bundle + the dispatch + body-pull tools.
     "mcp__hacker-bob__bob_resolve_body",
     "mcp__hacker-bob__bob_prepare_node",
-    "mcp__hacker-bob__bob_finalize_node",
     "mcp__hacker-bob__bob_http_scan",          // evaluator-web
     "mcp__hacker-bob__bob_foundry_run",        // evaluator-evm
     "mcp__hacker-bob__bob_anchor_run",         // evaluator-svm
@@ -358,4 +357,9 @@ test("evaluator-spawn agent frontmatter carries the union of evaluator-family to
       `expected evaluator-spawn frontmatter tools line to include ${tool}`,
     );
   }
+  assert.equal(
+    toolsLine.includes("mcp__hacker-bob__bob_finalize_node"),
+    false,
+    "evaluator-spawn must not self-finalize; orchestrator owns bob_finalize_node",
+  );
 });

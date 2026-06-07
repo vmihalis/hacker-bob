@@ -197,7 +197,7 @@ def check_mutating_path_commands(command):
         if blocked:
             block(
                 f"BLOCKED: Bash {verb} on '{blocked}' in session directory. "
-                f"Use the appropriate bountyagent MCP tool instead."
+                f"Use the appropriate hacker-bob MCP tool instead."
             )
 
     for index, token in enumerate(tokens):
@@ -262,7 +262,7 @@ if "file_path" in tool_input:
     if blocked:
         block(
             f"BLOCKED: Direct write to '{blocked}' in session directory. "
-            f"Use the appropriate bountyagent MCP tool instead."
+            f"Use the appropriate hacker-bob MCP tool instead."
         )
     raise SystemExit(0)
 
@@ -288,7 +288,7 @@ if has_redirects:
         if blocked:
             block(
                 f"BLOCKED: Bash redirect to '{blocked}' in session directory. "
-                f"Use the appropriate bountyagent MCP tool instead."
+                f"Use the appropriate hacker-bob MCP tool instead."
             )
 
 # Extract and check inline script file writes (open(), Path().write_text(), etc.)
@@ -298,7 +298,7 @@ if has_open_call:
         if blocked:
             block(
                 f"BLOCKED: Inline script writes to '{blocked}' in session directory. "
-                f"Use the appropriate bountyagent MCP tool instead."
+                f"Use the appropriate hacker-bob MCP tool instead."
             )
 
 raise SystemExit(0)

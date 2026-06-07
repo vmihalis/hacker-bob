@@ -316,7 +316,17 @@ const SURFACE_INDEX_SCALAR_FIELDS = [
   "kind",
   "owner",
   "surface_type",
+  "attack_vector",
+  "severity_ceiling",
   "chain_family",
+  "file_path",
+  "language",
+];
+
+const SURFACE_INDEX_BOOLEAN_FIELDS = [
+  "network_reachable",
+  "native_source",
+  "native_build",
 ];
 
 const SURFACE_INDEX_ARRAY_FIELDS = [
@@ -330,6 +340,10 @@ const SURFACE_INDEX_ARRAY_FIELDS = [
   "bug_class_hints",
   "high_value_flows",
   "evidence",
+  "network_reachable_anchors",
+  "network_reachable_dirs",
+  "local_only_candidate_dirs",
+  "residual_hunt_targets",
 ];
 
 function readSurfaceIndexDocument(domain) {
@@ -367,6 +381,11 @@ function projectMaterializedSurface(materialized) {
       projected[field] = materialized[field].trim();
     }
   }
+  for (const field of SURFACE_INDEX_BOOLEAN_FIELDS) {
+    if (typeof materialized[field] === "boolean") {
+      projected[field] = materialized[field];
+    }
+  }
   for (const field of SURFACE_INDEX_ARRAY_FIELDS) {
     if (Array.isArray(materialized[field]) && materialized[field].length > 0) {
       projected[field] = materialized[field].slice();
@@ -395,8 +414,21 @@ function currentSurfaces(targetDomain) {
   // during the D.3 deprecation window) are unioned in so promotion paths
   // that emit surface.observed events do not silently drop the baseline.
   const surfaceIndex = readSurfaceIndexDocument(domain);
-  const legacy = readAttackSurfaceDocumentLegacy(domain);
   if (surfaceIndex && Array.isArray(surfaceIndex.surfaces) && surfaceIndex.surfaces.length > 0) {
+    let legacy = null;
+    let legacyWarning = null;
+    try {
+      legacy = readAttackSurfaceDocumentLegacy(domain);
+    } catch (error) {
+      // The materialized surface-index is authoritative in the hot path;
+      // a corrupted legacy attack_surface.json must not block current readers.
+      legacyWarning = {
+        code: "legacy_attack_surface_unreadable",
+        path: attackSurfacePath(domain),
+        message: error && error.message ? error.message : String(error),
+      };
+      legacy = null;
+    }
     const surfaces = [];
     const seen = new Set();
     for (const entry of surfaceIndex.surfaces) {
@@ -420,17 +452,20 @@ function currentSurfaces(targetDomain) {
       path: surfaceIndexPath(domain),
       document: { surfaces },
       surfaces,
+      warnings: legacyWarning ? [legacyWarning] : [],
       surface_index_hash: typeof surfaceIndex.surface_index_hash === "string"
         ? surfaceIndex.surface_index_hash
-        : null,
+      : null,
     };
   }
+  const legacy = readAttackSurfaceDocumentLegacy(domain);
   if (legacy == null) {
     return {
       source: "missing",
       path: surfaceIndexPath(domain),
       document: { surfaces: [] },
       surfaces: [],
+      warnings: [],
       surface_index_hash: null,
     };
   }
@@ -440,6 +475,7 @@ function currentSurfaces(targetDomain) {
     path: attackSurfacePath(domain),
     document: legacy,
     surfaces: surfacesArray,
+    warnings: [],
     surface_index_hash: null,
   };
 }

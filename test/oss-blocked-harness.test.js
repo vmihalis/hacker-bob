@@ -10,7 +10,8 @@
 //   2. CandidateClaim with severity high/critical against a native-code module
 //      (C/C++/Rust-unsafe/asm) and zero `repo_command_run` evidence_refs is
 //      rejected with `O_P4_static_only_native_code_high_severity`. Mixed
-//      `repo_file + repo_command_run` evidence is accepted.
+//      `repo_file + repo_command_run` evidence is accepted when the run ref
+//      is backed by a non-dry-run row.
 //   3. `BLOCKED_HARNESS_KIND_VALUES` enum carries the four OSS additions
 //      (docker_unavailable, sanitizer_unavailable, static_analyzer_unavailable,
 //      cve_feed_stale).
@@ -35,6 +36,9 @@ const {
 const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
+const {
+  repoCommandRunsJsonlPath,
+} = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -95,6 +99,28 @@ function seedNativeCodeSurface(domain, surfaceId, language) {
   });
 }
 
+function appendRepoCommandRunRow(domain, {
+  run_id: runId = "rr-fuzz-001",
+  command_hash: commandHash = "c".repeat(64),
+  exit_code: exitCode = 0,
+  stdout_hash: stdoutHash = "d".repeat(64),
+  stderr_hash: stderrHash = "e".repeat(64),
+} = {}) {
+  fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    run_id: runId,
+    dry_run: false,
+    command_hash: commandHash,
+    exit_code: exitCode,
+    stdout_hash: stdoutHash,
+    stderr_hash: stderrHash,
+    timed_out: false,
+  })}\n`);
+  return { run_id: runId, command_hash: commandHash, exit_code: exitCode, stdout_hash: stdoutHash, stderr_hash: stderrHash };
+}
+
 const HIGH_SEVERITY_NATIVE_CLAIM_BASE = Object.freeze({
   title: "Bounded copy parses attacker-length field",
   summary: "Parser reads a length-prefixed field but the underlying buffer is shorter; reachable via packet input.",
@@ -141,6 +167,7 @@ test("high-severity native-code claim with repo_file + repo_command_run evidence
     const domain = "repo-oss-o7-mixed.example";
     const surfaceId = "repo:module:src_parser_c-fedcba";
     seedNativeCodeSurface(domain, surfaceId, "c");
+    const row = appendRepoCommandRunRow(domain);
 
     const claim = appendCandidateClaim({
       target_domain: domain,
@@ -157,11 +184,11 @@ test("high-severity native-code claim with repo_file + repo_command_run evidence
           // hashes carry command + capture-file identity. Raw stdout/stderr
           // never appear in the EvidenceReference itself (O-P7).
           kind: "repo_command_run",
-          run_id: "rr-fuzz-001",
-          command_hash: "c".repeat(64),
-          exit_code: 0,
-          stdout_hash: "d".repeat(64),
-          stderr_hash: "e".repeat(64),
+          run_id: row.run_id,
+          command_hash: row.command_hash,
+          exit_code: row.exit_code,
+          stdout_hash: row.stdout_hash,
+          stderr_hash: row.stderr_hash,
         },
       ],
     });

@@ -77,6 +77,23 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "evaluator_spawn_friction_log_on_internal_error",
     ]),
   }),
+  Object.freeze({
+    producer_id: "repo_inventory_reachability_stamp",
+    mcp_tool_or_artifact: "bob_repo_inventory / buildRepoInventory",
+    trace_shape_ref: "mcp/lib/reachability.js#classifyRepoReachability",
+    registered_consumers: Object.freeze([
+      "assignment_brief_reachability_triage_renderer",
+      "grade_verdict_reachability_ceiling_reconciler",
+    ]),
+  }),
+  Object.freeze({
+    producer_id: "oss_technique_pack_registry",
+    mcp_tool_or_artifact: "OSS_TECHNIQUE_PACKS",
+    trace_shape_ref: "mcp/lib/technique-packs.js#OSS_TECHNIQUE_PACKS",
+    registered_consumers: Object.freeze([
+      "assignment_brief_oss_technique_pack_renderer",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

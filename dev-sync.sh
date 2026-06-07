@@ -105,8 +105,12 @@ sync_shared_runtime() {
 
 sync_kimi_adapter() {
   local kimi_dir="$TARGET_ABS/.kimi"
-  mkdir -p "$kimi_dir/skills/bob-hunt" "$kimi_dir/skills/bob-status" "$kimi_dir/skills/bob-debug" "$kimi_dir/skills/bob-update" "$kimi_dir/skills/bob-export" "$kimi_dir/skills/bob-egress" "$kimi_dir/bob"
-  cp "$SCRIPT_DIR/adapters/kimi/skills/bob-hunt/SKILL.md" "$kimi_dir/skills/bob-hunt/"
+  # Sweep legacy kimi skill dirs. `bob-hunt` (v1) and `bob-evaluate-runner`
+  # (interim v2 misname) predate the rename to bob-evaluate; they otherwise
+  # survive across reinstalls and shadow the renamed skill with stale dirs.
+  rm -rf "$kimi_dir/skills/bob-hunt" "$kimi_dir/skills/bob-evaluate-runner"
+  mkdir -p "$kimi_dir/skills/bob-evaluate" "$kimi_dir/skills/bob-status" "$kimi_dir/skills/bob-debug" "$kimi_dir/skills/bob-update" "$kimi_dir/skills/bob-export" "$kimi_dir/skills/bob-egress" "$kimi_dir/bob"
+  cp "$SCRIPT_DIR/adapters/kimi/skills/bob-evaluate/SKILL.md" "$kimi_dir/skills/bob-evaluate/"
   cp "$SCRIPT_DIR/adapters/kimi/skills/bob-status/SKILL.md" "$kimi_dir/skills/bob-status/"
   cp "$SCRIPT_DIR/adapters/kimi/skills/bob-debug/SKILL.md" "$kimi_dir/skills/bob-debug/"
   cp "$SCRIPT_DIR/adapters/kimi/skills/bob-update/SKILL.md" "$kimi_dir/skills/bob-update/"

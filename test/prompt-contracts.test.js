@@ -58,8 +58,14 @@ const {
 } = require("../scripts/lib/claude-role-renderer.js");
 const {
   CODEX_SKILL_SPECS,
+  CODEX_WORKER_CONTRACT_ROLE_IDS,
   renderCodexSkill,
 } = require("../scripts/lib/codex-role-renderer.js");
+const {
+  KIMI_SKILL_SPECS,
+  KIMI_WORKER_CONTRACT_ROLE_IDS,
+  renderKimiSkill,
+} = require("../scripts/lib/kimi-role-renderer.js");
 const {
   CODEX_ROLE_SPECS,
 } = require("../adapters/codex/role-specs.js");
@@ -417,6 +423,61 @@ test("CandidateClaim severity and status enums are stable, complete sets", () =>
   }
 });
 
+test("reporter prompt renders reachability graded severity when C9 stamps it", () => {
+  const reporterPrompt = readFile("prompts/roles/reporter.md");
+  assert.match(reporterPrompt, /reachability\.graded_severity/);
+  assert.match(reporterPrompt, /public severity/);
+  assert.match(reporterPrompt, /reachability disposition/);
+});
+
+test("reporter OSS branch carries CWE, suggested CVSS-4.0, and references guidance", () => {
+  const reporterPrompt = readFile("prompts/roles/reporter.md");
+  const ossBranchStart = reporterPrompt.indexOf("**OSS repo findings**");
+  const httpBranchStart = reporterPrompt.indexOf("**HTTP findings**");
+  assert.ok(ossBranchStart >= 0, "OSS branch must exist");
+  assert.ok(httpBranchStart > ossBranchStart, "HTTP branch must follow OSS branch");
+  const ossBranch = reporterPrompt.slice(ossBranchStart, httpBranchStart);
+  assert.match(ossBranch, /CWE/);
+  assert.match(ossBranch, /Suggested CVSS-4\.0/);
+  assert.match(ossBranch, /derive AV from the reachability prose|reachability prose/);
+  assert.match(ossBranch, /References/);
+  assert.match(ossBranch, /stable remote\/commit URL/);
+  assert.match(ossBranch, /CVE\/GHSA|CVE|GHSA/);
+  assert.match(ossBranch, /Do not fabricate advisory, commit, or GitHub links/);
+});
+
+test("evaluator OSS stanza tells fuzz_run to consume readable repo-env recommendations", () => {
+  const evaluatorPrompt = readFile("prompts/roles/evaluator.md");
+  const ossBranchStart = evaluatorPrompt.indexOf("Repo-bound (OSS) surfaces");
+  assert.ok(ossBranchStart >= 0, "OSS evaluator stanza must exist");
+  const ossBranch = evaluatorPrompt.slice(ossBranchStart, ossBranchStart + 5000);
+  assert.match(ossBranch, /fuzz_run/);
+  assert.match(ossBranch, /repo_env_recommendations/);
+  assert.match(ossBranch, /recommended_commands\[\]/);
+  assert.match(ossBranch, /role: "fuzz"/);
+  assert.match(ossBranch, /command\.seed_path/);
+  assert.match(ossBranch, /seed-corpus|seed corpus/i);
+  assert.match(ossBranch, /Do not parse `description` prose or shell argv/);
+  assert.doesNotMatch(ossBranch, /read `repo-env\.json`/i);
+});
+
+// NOTE: the roadmap-era "Kimi hunter catalogue routes OSS brief profiles through
+// the generic worker path" test was dropped when Δ1 integrated onto main's Kimi v2
+// adapter (PR #67). Main's Kimi adapter does not yet render OSS brief-profile
+// routing; the roadmap Kimi-OSS feature + this test must be re-ported. Tracked in #65.
+
+test("Kimi reporter spawn uses structured report composition", () => {
+  const kimiSkill = readFile("adapters/kimi/skills/bob-evaluate/SKILL.md");
+  const reporterStart = kimiSkill.indexOf('Bob role: report-writer');
+  assert.ok(reporterStart >= 0, "Kimi skill must render the reporter spawn prompt");
+  const reporterSpawn = kimiSkill.slice(reporterStart, reporterStart + 1200);
+  assert.match(reporterSpawn, /bob_compose_report/);
+  assert.match(reporterSpawn, /bob_finalize_report/);
+  assert.match(reporterSpawn, /confirmed chain evidence/);
+  assert.match(reporterSpawn, /BOB_REPORT_DONE/);
+  assert.doesNotMatch(reporterSpawn, /write the canonical .*report\.md/);
+});
+
 // =============================================================================
 // SECTION 5 — Structural invariance (the P.4 guarantee)
 // =============================================================================
@@ -494,6 +555,84 @@ test("Codex skills render exactly from the shared role model", () => {
   }
 });
 
+test("Kimi skills render exactly from the shared role model", () => {
+  for (const [skillId, spec] of Object.entries(KIMI_SKILL_SPECS)) {
+    assert.equal(
+      readFile(spec.output_path),
+      renderKimiSkill(skillId),
+      `${spec.output_path} drifted from ${skillId}`,
+    );
+  }
+});
+
+test("Kimi and Codex orchestrators embed the identical worker-contract role set, including the generic evaluator-spawn shell", () => {
+  // The kimi-connector regression dropped the generic TaskGraph evaluator
+  // shell from the Kimi appendix while the file-drift check still passed
+  // (renderer output and on-disk file stayed in sync, both missing it). Lock
+  // the cross-adapter invariant directly: both adapters embed the same set of
+  // Bob worker-role contracts; host differences live in how each contract is
+  // rendered, not in which contracts are present.
+  assert.ok(
+    KIMI_WORKER_CONTRACT_ROLE_IDS.includes("evaluator-spawn"),
+    "Kimi worker contracts must include the generic evaluator-spawn shell",
+  );
+  assert.deepEqual(
+    [...KIMI_WORKER_CONTRACT_ROLE_IDS],
+    [...CODEX_WORKER_CONTRACT_ROLE_IDS],
+    "Kimi and Codex worker-contract role lists must stay in parity",
+  );
+});
+
+test("Kimi orchestrator skill renders TaskGraph contracts with host-correct text", () => {
+  const body = readFile("adapters/kimi/skills/bob-evaluate/SKILL.md");
+  // The generic evaluator-spawn contract and its TaskGraph dispatch tool must
+  // render into the Kimi appendix (the exact gap the regression introduced).
+  assert.match(body, /BEGIN evaluator-spawn CONTRACT/);
+  assert.match(body, /END evaluator-spawn CONTRACT/);
+  assertToolReferenced(body, "bob_prepare_node");
+  // Host-text replacements must not silently go dead when the shared role
+  // bodies change wording: the Claude-specific phrasing must be rewritten for
+  // Kimi, not leaked verbatim nor mangled by the generic Claude Code -> Kimi
+  // CLI rule (e.g. "Kimi CLI enforces `maxTurns`").
+  assert.doesNotMatch(body, /enforces `maxTurns`/);
+  assert.doesNotMatch(body, /Evaluator waves MUST use the host's asynchronous/);
+  // The Kimi-specific rewrite of that line must be present.
+  assert.match(body, /Evaluator waves MUST use Agent with run_in_background/);
+  // Kimi does not install Bob evaluator subagents; evaluator_agent selects the
+  // embedded Bob contract while the host subagent remains Kimi's coder.
+  assert.doesNotMatch(body, /Use each assignment's `evaluator_agent` as the subagent type/);
+  assert.match(body, /Use `Agent\(subagent_type="coder"\)` for every evaluator worker/);
+  assert.match(body, /Generic evaluator spawn template \(uses Kimi `coder` workers/);
+  // Report rendering is MCP-owned; the Kimi launch prompt must not ask the
+  // worker to Write the audit-graded report path directly.
+  assert.doesNotMatch(body, /then write the canonical ~\/hacker-bob-sessions\/\[domain\]\/report\.md/);
+  assert.match(body, /compose and finalize through bob_compose_report and bob_finalize_report; do not Write report\.md directly/);
+});
+
+test("every Kimi skill is host-correct: no Claude/Codex syntax and no stale v1 vocabulary", () => {
+  // Mirrors the Codex "must not leak Claude-specific syntax" guard, but across
+  // ALL Kimi skills (derived from the renderer specs so new skills are guarded
+  // automatically) and with the inverse host expectation: Kimi legitimately
+  // uses Agent(subagent_type="coder") / run_in_background, so those are NOT
+  // forbidden — Codex-isms, Claude-isms, and stale pre-v2.1 tokens are.
+  for (const spec of Object.values(KIMI_SKILL_SPECS)) {
+    const body = readFile(spec.output_path);
+    // Must not pretend to be the Codex adapter.
+    assert.doesNotMatch(body, /\bCodex\b/, `${spec.output_path} leaks "Codex"`);
+    assert.doesNotMatch(body, /spawn_agent|close_agent/, `${spec.output_path} leaks Codex spawn verbs`);
+    assert.doesNotMatch(body, /\$bob-[a-z]/, `${spec.output_path} leaks the Codex $bob- command form`);
+    // Must not pretend to be the Claude adapter.
+    assert.doesNotMatch(body, /CLAUDE_PROJECT_DIR|SubagentStop|Claude Code/, `${spec.output_path} leaks Claude-specific syntax`);
+    assert.doesNotMatch(body, new RegExp(MCP_PERMISSION_PREFIX.replace(/_/g, "\\_")), `${spec.output_path} leaks Claude MCP permission strings`);
+    // Must not carry stale pre-v2.1 vocabulary (the kimi-connector regression).
+    assert.doesNotMatch(body, /`bounty_\*`/, `${spec.output_path} carries the stale bounty_* tool glob`);
+    assert.doesNotMatch(body, /\bBOB_HUNTER_DONE\b/, `${spec.output_path} carries the stale BOB_HUNTER_DONE marker`);
+    assert.doesNotMatch(body, /\bhunter\b/, `${spec.output_path} carries the stale "hunter" role token`);
+    assert.doesNotMatch(body, /\bdeep-recon\b|\brecon-agent\b/, `${spec.output_path} carries stale recon role tokens`);
+    assert.doesNotMatch(body, /\bbountyagent\b/, `${spec.output_path} carries the legacy bountyagent server key`);
+  }
+});
+
 test("Claude agent colors use supported values", () => {
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind !== "agent") continue;
@@ -518,9 +657,10 @@ test("no rendered artifact leaks an unsubstituted {{...}} placeholder", () => {
       .filter((name) => name.endsWith(".md"))
       .map((name) => `.claude/agents/${name}`),
     ".claude/skills/bob-evaluate-runner/SKILL.md",
-    "adapters/codex/skills/bob-evaluate/SKILL.md",
-    "adapters/codex/skills/bob-status/SKILL.md",
-    "adapters/codex/skills/bob-debug/SKILL.md",
+    // Cover the full Codex + Kimi skill sets (all six skill ids each), derived
+    // from the renderer specs so newly added skills are guarded automatically.
+    ...Object.values(CODEX_SKILL_SPECS).map((spec) => spec.output_path),
+    ...Object.values(KIMI_SKILL_SPECS).map((spec) => spec.output_path),
   ];
   for (const relativePath of generatedFiles) {
     const matches = readFile(relativePath).match(/\{\{[A-Z][A-Z0-9_]+\}\}/g) || [];
@@ -727,6 +867,19 @@ test("orchestrator skill allowed-tools equal the orchestrator + auth permission 
   assert.deepEqual(mcpOnly, permissionsForRoleBundles(["orchestrator", "auth"]).slice().sort());
 });
 
+test("/bob-evaluate command loads the runner playbook directly and shares its registry tool bundle", () => {
+  // The runner skill is disable-model-invocation:true, so current Claude Code
+  // refuses Skill-tool invocation of it — a delegator command (allowed-tools:
+  // [Skill]) is dead on arrival. The command must instead carry the orchestrator
+  // bundle and read+execute the playbook. This binds the command to the same
+  // registry source as the skill so the two can never drift.
+  const cmd = readFile(".claude/commands/bob-evaluate.md");
+  const cmdTools = parseYamlListFrontmatter(cmd, "allowed-tools", "bob-evaluate.md");
+  assert.ok(!cmdTools.includes("Skill"), "bob-evaluate command must not delegate via the Skill tool");
+  assert.deepEqual(cmdTools.slice().sort(), hackerBobSkillAllowedTools().slice().sort());
+  assert.match(cmd, /\.claude\/skills\/bob-evaluate-runner\/SKILL\.md/, "command must load the runner playbook");
+});
+
 test("orchestrator skill stays bounded and reflects the lifecycle topology", () => {
   const lines = lineCount(".claude/skills/bob-evaluate-runner/SKILL.md");
   // Cycle O.1 added bob_init_repo_session to the orchestrator bundle, which
@@ -856,10 +1009,10 @@ test("capability packs expose versioned context budgets and complete spawn metad
     assert.equal(pack.capability_pack_version, 1);
     assert.ok(pack.evaluator_agent);
     assert.ok(pack.brief_profile);
-    if (pack.brief_profile === "web") {
-      assert.deepEqual(pack.context_budget, DEFAULT_CONTEXT_BUDGET);
-    } else {
+    if (pack.spawn.profile === "smart_contract") {
       assert.deepEqual(pack.context_budget, SMART_CONTRACT_CONTEXT_BUDGET);
+    } else {
+      assert.deepEqual(pack.context_budget, DEFAULT_CONTEXT_BUDGET);
     }
     assert.ok(pack.spawn, `pack ${pack.id} must declare a spawn block`);
     if (pack.spawn.profile === "smart_contract") {
@@ -1017,7 +1170,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.brief_profile === "web" ? 43 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 43 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

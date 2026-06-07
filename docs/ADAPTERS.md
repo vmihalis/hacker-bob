@@ -43,7 +43,7 @@ Adapters own host-specific packaging and ergonomics:
   metadata, plugin command wrappers, `.codex` configuration, repo-local plugin
   marketplace metadata, Codex cache/config activation, and MCP config.
 - Kimi adapter: `.kimi/skills`, `.kimi/mcp.json`, and `.kimi/bob`
-  compatibility metadata. Kimi skills are invoked as `/skill:bob-hunt`,
+  compatibility metadata. Kimi skills are invoked as `/skill:bob-evaluate`,
   `/skill:bob-status`, `/skill:bob-debug`, `/skill:bob-update`,
   `/skill:bob-export`, and `/skill:bob-egress`. The Kimi adapter does not
   install PreToolUse hooks; session enforcement currently relies on prompt

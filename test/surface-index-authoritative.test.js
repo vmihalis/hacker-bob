@@ -81,6 +81,8 @@ test("currentSurfaces prefers surface-index.json over a corrupted attack_surface
     assert.equal(projection.surfaces.length, 1);
     assert.equal(projection.surfaces[0].id, "surface:billing");
     assert.equal(projection.surfaces[0].priority, "HIGH");
+    assert.equal(projection.warnings[0].code, "legacy_attack_surface_unreadable");
+    assert.match(projection.warnings[0].message, /attack_surface\.json|JSON|Unexpected token/);
   });
 });
 
@@ -152,6 +154,7 @@ test("currentSurfaces falls back to attack_surface.json when surface-index.json 
       ["surface:legacy-a", "surface:legacy-b"],
     );
     assert.equal(projection.path, attackSurfacePath(domain));
+    assert.deepEqual(projection.warnings, []);
   });
 });
 
@@ -162,6 +165,7 @@ test("currentSurfaces returns 'missing' when neither surface-index.json nor atta
     const projection = currentSurfaces(domain);
     assert.equal(projection.source, "missing");
     assert.deepEqual(projection.surfaces, []);
+    assert.deepEqual(projection.warnings, []);
   });
 });
 
@@ -198,5 +202,6 @@ test("currentSurfaces with an empty surface-index.json falls back to attack_surf
     assert.equal(projection.source, "attack_surface_legacy");
     assert.equal(projection.surfaces.length, 1);
     assert.equal(projection.surfaces[0].id, "surface:still-here");
+    assert.deepEqual(projection.warnings, []);
   });
 });

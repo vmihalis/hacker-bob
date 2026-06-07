@@ -78,6 +78,12 @@ function detectInstalledAdapterIds(targetAbs) {
   if (fs.existsSync(path.join(targetAbs, ".codex", "plugins", "hacker-bob"))) {
     ids.push("codex");
   }
+  if (
+    fs.existsSync(path.join(targetAbs, ".kimi", "bob", "VERSION")) ||
+    fs.existsSync(path.join(targetAbs, ".kimi", "skills", "bob-evaluate", "SKILL.md"))
+  ) {
+    ids.push("kimi");
+  }
   if (fs.existsSync(path.join(targetAbs, BOB_RESOURCE_DIR, "generic-mcp", "hacker-bob.md"))) {
     ids.push("generic-mcp");
   }

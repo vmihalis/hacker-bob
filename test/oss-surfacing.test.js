@@ -56,6 +56,9 @@ const {
 const {
   sessionDir,
 } = require("../mcp/lib/paths.js");
+const {
+  CAPABILITY_PACKS,
+} = require("../mcp/lib/capability-packs.js");
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -158,6 +161,24 @@ test("briefSliceRegistryForProfile('oss') returns the OSS registry", () => {
   assert.equal(briefSliceRegistryForProfile("web"), ASSIGNMENT_BRIEF_SLICE_REGISTRY.web);
   assert.equal(briefSliceRegistryForProfile("smart_contract_evm"), ASSIGNMENT_BRIEF_SLICE_REGISTRY.smart_contract);
   assert.equal(briefSliceRegistryForProfile("unknown_profile"), null);
+});
+
+test("OSS capability packs use the oss brief profile while keeping generic evaluator spawn", () => {
+  for (const packId of [
+    "oss_dependency",
+    "oss_native_code",
+    "oss_api_schema",
+    "oss_authz",
+    "oss_ci_cd",
+    "oss_secrets_config",
+    "oss_docs_behavior",
+  ]) {
+    const pack = CAPABILITY_PACKS[packId];
+    assert.ok(pack, `${packId} must be registered`);
+    assert.equal(pack.brief_profile, "oss");
+    assert.equal(pack.spawn.profile, "web");
+    assert.deepEqual(pack.role_bundles, ["evaluator-shared", "evaluator-web"]);
+  }
 });
 
 test("OSS_BRIEF_SLICE_REGISTRY carries the required slice keys per O-D8", () => {

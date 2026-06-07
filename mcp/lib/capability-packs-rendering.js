@@ -72,10 +72,10 @@ function substituteCapabilityPackVerifierTable(document) {
 // from wave-start result.data.assignments[]. Catalogue lines are keyed by
 // `capability_pack` (not chain_family) because that is the field every
 // downstream consumer — verifier, evidence, reporter — uses for dispatch.
-// Brief-profile dispatch: the orchestrator picks between the generic web
-// SPAWN_EVALUATOR_AGENT body (when `assignment.brief_profile === "web"`) and
-// the SC canonical template below (otherwise). Never use both for one
-// assignment.
+// Brief-profile dispatch: the orchestrator picks between the generic evaluator
+// SPAWN_EVALUATOR_AGENT body (when `assignment.brief_profile` is "web" or
+// "oss") and the SC canonical template below (otherwise). Never use both for
+// one assignment.
 
 function assertSpawnField(pack, fieldName) {
   const value = pack && pack.spawn ? pack.spawn[fieldName] : undefined;
@@ -152,7 +152,7 @@ function eachSmartContractPackValidated() {
 function renderEvaluatorPackCataloguePreamble() {
   return [
     "Smart-contract spawn dispatch:",
-    "- If `assignment.brief_profile === \"web\"` -> use the generic evaluator spawn template above; do not use the SC template below.",
+    "- If `assignment.brief_profile === \"web\"` or `assignment.brief_profile === \"oss\"` -> use the generic evaluator spawn template above; do not use the SC template below.",
     "- Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.",
     "",
     "Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.",

@@ -72,7 +72,7 @@ function ossCapabilityPack(id, sampleType) {
     id,
     capability_pack_version: 1,
     evaluator_agent: "evaluator-agent",
-    brief_profile: "web",
+    brief_profile: "oss",
     role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
     completion_gate: "web_wave_handoff",
     context_budget: DEFAULT_CONTEXT_BUDGET,

@@ -30,7 +30,7 @@ const {
 } = require("../mcp/lib/waves.js");
 const {
   initSession,
-  transitionPhase,
+  advanceSession,
 } = require("../mcp/lib/session-state.js");
 const {
   writeFileAtomic,
@@ -61,17 +61,15 @@ function seedAttackSurfaces(domain, surfaces) {
 // handoff_token for each agent so subsequent handoff writes succeed).
 function driveWaveStart(domain, surfaceIds) {
   // init the session first (refuses on a non-empty session dir), then seed
-  // attack surfaces, then transition through AUTH -> EVALUATE.
+  // attack surfaces, then advance into OPEN_FRONTIER so wave scheduling can run.
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
   seedAttackSurfaces(
     domain,
     surfaceIds.map((id) => ({ id, hosts: [`https://${domain}`], priority: "HIGH" })),
   );
-  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
-  JSON.parse(transitionPhase({
+  JSON.parse(advanceSession({
     target_domain: domain,
-    to_phase: "EVALUATE",
-    auth_status: "authenticated",
+    to_state: "OPEN_FRONTIER",
   }));
   return JSON.parse(startWave({
     target_domain: domain,

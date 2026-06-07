@@ -27,6 +27,7 @@ const path = require("path");
 const {
   initRepoSession,
   buildRepoInventory,
+  SEED_CORPUS_SUMMARY_LIMIT,
 } = require("../mcp/lib/repo-target.js");
 const {
   prepareRepoEnv,
@@ -221,6 +222,18 @@ test("recommendedCommandsFor c uses compose role with sh -lc staging recipe", ()
 test("recommendedCommandsFor c surfaces NFS/XDR note when shape detected", () => {
   const commands = recommendedCommandsFor("c", { nfsXdrShape: true });
   assert.match(commands[0].description, /NFS\/XDR/);
+});
+
+test("recommendedCommandsFor c emits one fuzz seed command when seed corpus is present", () => {
+  const commands = recommendedCommandsFor("c", {
+    seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
+  });
+  const fuzzCommands = commands.filter((command) => command.role === "fuzz");
+  assert.equal(fuzzCommands.length, 1);
+  assert.equal(fuzzCommands[0].id, "fuzz_seed_probe");
+  assert.equal(fuzzCommands[0].seed_path, "fuzz/corpus");
+  assert.match(fuzzCommands[0].description, /fuzz\/corpus/);
+  assert.match(fuzzCommands[0].command[2], /find 'fuzz\/corpus'/);
 });
 
 test("every recommended_commands[].role is in RECOMMENDED_COMMAND_ROLES", () => {
@@ -606,6 +619,49 @@ test("prepareRepoEnv reads nfs_xdr_shape from repo-inventory.json when present",
   });
 });
 
+test("prepareRepoEnv threads seed_corpus from repo-inventory into C/C++ fuzz command", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(seed C)\n");
+    write(repoRoot, "src/main.c", "int main(){return 0;}\n");
+    write(repoRoot, "fuzz/corpus/minimal.bin", "AAAA");
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    const result = await prepareRepoEnv({ target_domain: init.target_domain });
+    assert.equal(result.language, "c");
+    assert.equal(result.seed_corpus.length, 1);
+    assert.ok(result.recommended_commands.some((command) => command.role === "fuzz"));
+
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.detection.seed_corpus_count, 1);
+    assert.equal(repoEnv.seed_corpus[0].rel_path, "fuzz/corpus");
+    assert.ok(repoEnv.recommended_commands.some((command) => command.id === "fuzz_seed_probe"));
+  });
+});
+
+test("prepareRepoEnv uses inventory counts for capped seed corpus summaries", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(seed_count C)\n");
+    write(repoRoot, "src/main.c", "int main(){return 0;}\n");
+    const corpusCount = SEED_CORPUS_SUMMARY_LIMIT + 2;
+    for (let index = 0; index < corpusCount; index += 1) {
+      write(repoRoot, `sample_${String(index).padStart(2, "0")}_seed_corpus/input.bin`, `seed-${index}`);
+    }
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    const result = await prepareRepoEnv({ target_domain: init.target_domain });
+    assert.equal(result.seed_corpus.length, SEED_CORPUS_SUMMARY_LIMIT);
+    assert.equal(result.seed_corpus_count, corpusCount);
+
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.seed_corpus.length, SEED_CORPUS_SUMMARY_LIMIT);
+    assert.equal(repoEnv.detection.seed_corpus_count, corpusCount);
+  });
+});
+
 test("prepareRepoEnv refuses dry_run + build_image together", async () => {
   await withTempHome(async () => {
     const repoRoot = makeTempRepoDir();
@@ -631,9 +687,12 @@ test("prepareRepoEnv allow_network=true injects egress proxy via --build-arg (no
   // can assert the proxy flows through --build-arg and never lands in the
   // resulting Dockerfile.
   await withTempHome(async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-repo-env-project-"));
+    const previousProjectDir = process.env.BOB_PROJECT_DIR;
+    process.env.BOB_PROJECT_DIR = projectRoot;
+
     const repoRoot = makeTempRepoDir();
     write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
-    const init = initRepoSession({ repo_path: repoRoot });
 
     const calls = [];
     const runtime = {
@@ -651,13 +710,9 @@ test("prepareRepoEnv allow_network=true injects egress proxy via --build-arg (no
 
     // Inject a synthetic proxy via the egress profile by writing the
     // proxy URL into the resolved egress profile through the env var hook.
-    // The default profile uses proxy_url: null; to test proxy routing we
-    // pre-resolve a custom profile by writing a project egress-profiles.json.
-    // projectRootFromMcp resolves to <repo-root>; __dirname here is
-    // <repo-root>/test, so a single dirname() climb gets us there.
-    const projectRoot = path.dirname(__dirname);
+    // Use an isolated BOB_PROJECT_DIR so this test never mutates the shared
+    // repo-root egress-profiles.json consumed by the full MCP test manifest.
     const egressPath = path.join(projectRoot, ".claude", "bob", "egress-profiles.json");
-    const originalEgress = fs.existsSync(egressPath) ? fs.readFileSync(egressPath, "utf8") : null;
     fs.mkdirSync(path.dirname(egressPath), { recursive: true });
     fs.writeFileSync(
       egressPath,
@@ -688,6 +743,7 @@ test("prepareRepoEnv allow_network=true injects egress proxy via --build-arg (no
     const originalProxyEnv = process.env.BOB_TEST_PROXY_URL;
     process.env.BOB_TEST_PROXY_URL = "http://proxy.invalid:3128/";
     try {
+      const init = initRepoSession({ repo_path: repoRoot });
       await prepareRepoEnv({
         target_domain: init.target_domain,
         dry_run: false,
@@ -722,8 +778,9 @@ test("prepareRepoEnv allow_network=true injects egress proxy via --build-arg (no
     } finally {
       if (originalProxyEnv === undefined) delete process.env.BOB_TEST_PROXY_URL;
       else process.env.BOB_TEST_PROXY_URL = originalProxyEnv;
-      if (originalEgress != null) fs.writeFileSync(egressPath, originalEgress);
-      else fs.rmSync(egressPath, { force: true });
+      if (previousProjectDir === undefined) delete process.env.BOB_PROJECT_DIR;
+      else process.env.BOB_PROJECT_DIR = previousProjectDir;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 });

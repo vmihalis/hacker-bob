@@ -62,6 +62,10 @@ const LEGACY_BOB_COMMAND_FILES = Object.freeze([
 ]);
 
 const COMMAND_SPECS = Object.freeze({
+  evaluate: Object.freeze({
+    file: "bob-evaluate.md",
+    slash: "/bob-evaluate",
+  }),
   update: Object.freeze({
     file: "bob-update.md",
     slash: "/bob-update",
@@ -195,6 +199,51 @@ function commandIds() {
   return Object.keys(COMMAND_SPECS);
 }
 
+// The /bob-evaluate command loads and runs the bob-evaluate-runner skill
+// DIRECTLY rather than invoking it through the Skill tool. The runner skill is
+// `disable-model-invocation: true` (so the model never spuriously auto-fires the
+// orchestrator), and current Claude Code refuses Skill-tool invocation of such
+// skills — a thin `allowed-tools: [Skill]` delegator command is dead on arrival.
+// So the command carries the orchestrator's own tool bundle (registry-driven via
+// hackerBobSkillAllowedTools, identical to the runner skill's allowed-tools, so
+// it can never drift) and instructs the model to read and execute the playbook.
+// This preserves orchestrator/evaluator role separation: the bundle excludes
+// evaluator-only tools like bob_repo_docker_run.
+function renderEvaluateCommand() {
+  const allowedTools = config.hackerBobSkillAllowedTools();
+  return [
+    "---",
+    "description: Run or resume a Hacker Bob bug bounty evaluate.",
+    "allowed-tools:",
+    ...allowedTools.map((tool) => `  - ${tool}`),
+    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
+    "---",
+    "Run or resume a Hacker Bob bug bounty evaluate.",
+    "",
+    "You ARE the Hacker Bob orchestrator for this run. Load the runner playbook and",
+    "execute it verbatim. Do NOT invoke it through the Skill tool — the",
+    "`bob-evaluate-runner` skill is `disable-model-invocation: true` and cannot be",
+    "called that way.",
+    "",
+    "1. Read the playbook at the project-relative path",
+    "   `.claude/skills/bob-evaluate-runner/SKILL.md`",
+    '   (under `${CLAUDE_PROJECT_DIR:-$PWD}`).',
+    "2. Act as that skill's orchestrator, treating the text below as its exact input:",
+    "",
+    "```text",
+    "$ARGUMENTS",
+    "```",
+    "",
+    "Follow the runner skill's guardrails exactly: the lifecycle FSM",
+    "(SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT), role",
+    "separation (you schedule and read; per-surface evaluators own",
+    "`bob_repo_docker_run` and the smart-contract family runners — never call them",
+    "yourself), the scope / SSRF / PII rules, and the re-entry reconciliation",
+    "contract. The playbook is authoritative; do not improvise around it.",
+    "",
+  ].join("\n");
+}
+
 function renderUpdateCommand() {
   return [
     "---",
@@ -234,6 +283,7 @@ function renderExportCommand() {
 }
 
 function renderCommand(commandId) {
+  if (commandId === "evaluate") return renderEvaluateCommand();
   if (commandId === "update") return renderUpdateCommand();
   if (commandId === "export") return renderExportCommand();
   throw new Error(`Unknown Claude command: ${commandId}`);
@@ -437,17 +487,13 @@ function install({
     );
   }
 
-  // Copy static command files (not renderer-driven). bob-egress.md and
-  // bob-evaluate.md are hand-authored and shipped verbatim; the renderer
-  // pattern is only used for commands that have dynamic per-host content
-  // like bob-update.md.
+  // Copy static command files (not renderer-driven). Only bob-egress.md is
+  // hand-authored and shipped verbatim. The renderer pattern (commandIds() loop
+  // above) owns bob-evaluate.md, bob-update.md, and bob-export.md — do NOT also
+  // copy those here or the verbatim copy would clobber the generated output.
   copyFile(
     path.join(sourceRoot, ".claude", "commands", "bob-egress.md"),
     path.join(claudeDir, "commands", "bob-egress.md"),
-  );
-  copyFile(
-    path.join(sourceRoot, ".claude", "commands", "bob-evaluate.md"),
-    path.join(claudeDir, "commands", "bob-evaluate.md"),
   );
 
   for (const skill of BOB_SKILLS) {

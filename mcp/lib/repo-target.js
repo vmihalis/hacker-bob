@@ -80,6 +80,12 @@ const {
   redactTextSensitiveValues,
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
+const {
+  classifyRepoReachability,
+} = require("./reachability.js");
+const {
+  NATIVE_SOURCE_EXTENSIONS,
+} = require("./native-extensions.js");
 
 // Cycle O.1: SAFE_NAME_PATTERN keeps the basename safe for the
 // target_domain slug. Any character outside `[A-Za-z0-9._-]` is folded
@@ -286,6 +292,8 @@ function readRepoSession(targetDomain) {
 const REPO_INVENTORY_VERSION = 1;
 const REPO_WALK_MAX_FILES = 50000;
 const REPO_WALK_PROBE_MAX_BYTES = 64 * 1024; // cap text probes (NFS detection)
+const SEED_CORPUS_SUMMARY_LIMIT = 16;
+const SEED_CORPUS_SAMPLE_RELS_LIMIT = 10;
 
 // Default-excluded directory names (per O.2 spec). These are layered ON TOP
 // of .gitignore patterns; .gitignore is the authoritative source for a
@@ -302,6 +310,17 @@ const DEFAULT_EXCLUDED_DIRS = Object.freeze(new Set([
   "__pycache__",
   "coverage",
 ]));
+
+const SEED_CORPUS_DIR_NAMES = Object.freeze(new Set([
+  "testdata",
+  "corpus",
+  "seeds",
+]));
+const SEED_CORPUS_NESTED_DIRS = Object.freeze([
+  "fuzz/corpus",
+]);
+const OSS_FUZZ_SEED_CORPUS_DIR_RE = /(?:^|\/)[^/]+_seed_corpus$/i;
+const OSS_FUZZ_SEED_CORPUS_ZIP_RE = /(?:^|\/)[^/]+_seed_corpus\.zip$/i;
 
 // Manifest filenames that flag a package/module surface.
 const MANIFEST_NAMES = Object.freeze(new Set([
@@ -338,16 +357,6 @@ const NATIVE_BUILD_NAMES = Object.freeze(new Set([
   "Makefile.am",
   "Makefile",
   "meson.build",
-]));
-
-const NATIVE_SOURCE_EXTENSIONS = Object.freeze(new Set([
-  ".c",
-  ".cc",
-  ".cpp",
-  ".cxx",
-  ".h",
-  ".hh",
-  ".hpp",
 ]));
 
 // CI/CD config paths. The first match wins; we want the file relative path
@@ -434,6 +443,11 @@ const NFS_XDR_SIGNALS = Object.freeze([
   /rpc\/xdr\.h/i,
   /\bxdr_/i,
 ]);
+
+const RESIDUAL_TARGET_LIMIT = 20;
+const RESIDUAL_SOURCE_LINE_LIMIT = 12;
+const RESIDUAL_SECURITY_LINE_RE = /\b(CVE-\d{4}-\d{4,}|GHSA-[a-z0-9-]+|buffer overflow|heap overflow|stack overflow|overflow|underflow|use-after-free|uaf|out[- ]of[- ]bounds|oob|memory corruption|crash|segfault|security|vulnerab)\b/i;
+const RESIDUAL_SOURCE_FILE_RE = /(^|\/)(CHANGELOG|CHANGES|NEWS|RELEASES?|SECURITY)(\.[^/]*)?$/i;
 
 // Minimal .gitignore parser. Supports negation (`!pattern`), trailing slashes
 // (directory-only), and glob characters via a converted RegExp. We do not
@@ -525,6 +539,7 @@ class RepoTooLargeError extends Error {
 
 function walkRepo(rootPath, gitignorePatterns) {
   const files = [];
+  const rootReal = fs.realpathSync(rootPath);
   const visited = new Set();
   const queue = [{ absPath: rootPath, relPath: "" }];
   while (queue.length > 0) {
@@ -555,6 +570,8 @@ function walkRepo(rootPath, gitignorePatterns) {
       let isFile = entry.isFile();
       if (entry.isSymbolicLink()) {
         try {
+          const childReal = fs.realpathSync(childAbs);
+          if (!pathWithinRoot(rootReal, childReal)) continue;
           const linkStat = fs.statSync(childAbs);
           isDir = linkStat.isDirectory();
           isFile = linkStat.isFile();
@@ -578,9 +595,18 @@ function walkRepo(rootPath, gitignorePatterns) {
   return files.sort();
 }
 
-function safeReadProbe(absPath, maxBytes = REPO_WALK_PROBE_MAX_BYTES) {
+function pathWithinRoot(rootReal, candidateReal) {
+  const relative = path.relative(rootReal, candidateReal);
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function safeReadProbe(rootPath, relPath, maxBytes = REPO_WALK_PROBE_MAX_BYTES) {
   try {
-    const fd = fs.openSync(absPath, "r");
+    const rootReal = fs.realpathSync(rootPath);
+    const absPath = path.resolve(rootReal, relPath);
+    const realPath = fs.realpathSync(absPath);
+    if (!pathWithinRoot(rootReal, realPath)) return null;
+    const fd = fs.openSync(realPath, "r");
     try {
       const buf = Buffer.alloc(maxBytes);
       const bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
@@ -595,6 +621,19 @@ function safeReadProbe(absPath, maxBytes = REPO_WALK_PROBE_MAX_BYTES) {
   }
 }
 
+function safeFileStatWithinRoot(rootPath, relPath) {
+  try {
+    const rootReal = fs.realpathSync(rootPath);
+    const absPath = path.resolve(rootReal, relPath);
+    const realPath = fs.realpathSync(absPath);
+    if (!pathWithinRoot(rootReal, realPath)) return null;
+    const stat = fs.statSync(realPath);
+    return stat.isFile() ? stat : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectNfsXdrShape(rootPath, files) {
   // Scan a bounded number of native-build files for NFS/XDR signals. The
   // probe stays under 64KiB per file so a pathological CMakeLists does not
@@ -602,7 +641,7 @@ function detectNfsXdrShape(rootPath, files) {
   for (const file of files) {
     const base = path.basename(file);
     if (!NATIVE_BUILD_NAMES.has(base)) continue;
-    const probe = safeReadProbe(path.join(rootPath, file));
+    const probe = safeReadProbe(rootPath, file);
     if (!probe) continue;
     for (const re of NFS_XDR_SIGNALS) {
       if (re.test(probe)) return true;
@@ -614,6 +653,49 @@ function detectNfsXdrShape(rootPath, files) {
     if (/(^|\/)rpc\/xdr\.h$/i.test(file)) return true;
   }
   return false;
+}
+
+function uniqueStrings(values, limit = null) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+    if (limit != null && out.length >= limit) break;
+  }
+  return out;
+}
+
+function detectResidualLinesFromFiles(repoRoot, files) {
+  const targets = [];
+  for (const file of files) {
+    if (!RESIDUAL_SOURCE_FILE_RE.test(file)) continue;
+    const text = safeReadProbe(repoRoot, file);
+    if (!text) continue;
+    const lines = text.split(/\r?\n/);
+    let captured = 0;
+    for (const line of lines) {
+      const trimmed = line.trim().replace(/^\s*[-*]\s*/, "");
+      if (!trimmed || !RESIDUAL_SECURITY_LINE_RE.test(trimmed)) continue;
+      const excerpt = redactTextSensitiveValues(trimmed);
+      const capped = excerpt.length > REPO_CHECK_MAX_EXCERPT_CHARS
+        ? `${excerpt.slice(0, REPO_CHECK_MAX_EXCERPT_CHARS)}…`
+        : excerpt;
+      targets.push(`${file}: ${capped}`);
+      captured += 1;
+      if (captured >= RESIDUAL_SOURCE_LINE_LIMIT) break;
+    }
+  }
+  return targets;
+}
+
+function detectResidualHuntTargets(repoRoot, files, modules) {
+  const nativeModules = modules.filter((mod) => mod && (mod.nativeSource || mod.nativeBuild));
+  if (nativeModules.length === 0) return [];
+  return uniqueStrings(detectResidualLinesFromFiles(repoRoot, files), RESIDUAL_TARGET_LIMIT);
 }
 
 function detectEcosystemForManifest(base) {
@@ -629,6 +711,59 @@ function findLockfileForManifest(manifestRel, files) {
   return null;
 }
 
+function matchingNestedSeedCorpusDir(segments) {
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    for (const nested of SEED_CORPUS_NESTED_DIRS) {
+      const nestedSegments = nested.split("/");
+      const slice = segments.slice(index, index + nestedSegments.length);
+      if (slice.length === nestedSegments.length && slice.join("/") === nested) {
+        return segments.slice(0, index + nestedSegments.length).join("/");
+      }
+    }
+  }
+  return null;
+}
+
+function seedCorpusForRel(rel) {
+  const normalized = String(rel || "").split(path.sep).join("/");
+  if (!normalized) return null;
+  if (OSS_FUZZ_SEED_CORPUS_ZIP_RE.test(normalized)) {
+    return { dir: normalized, isZip: true };
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  const nested = matchingNestedSeedCorpusDir(segments);
+  if (nested) return { dir: nested, isZip: false };
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const base = segments[index];
+    const dir = segments.slice(0, index + 1).join("/");
+    if (SEED_CORPUS_DIR_NAMES.has(base)) {
+      return { dir, isZip: false };
+    }
+    if (OSS_FUZZ_SEED_CORPUS_DIR_RE.test(dir)) {
+      return { dir, isZip: false };
+    }
+  }
+  return null;
+}
+
+function buildSeedCorpusSummary(entries) {
+  const summaries = [];
+  const sortedEntries = Array.from(entries.entries()).sort(([a], [b]) => a.localeCompare(b));
+  for (const [relPath, entry] of sortedEntries.slice(0, SEED_CORPUS_SUMMARY_LIMIT)) {
+    const summary = {
+      rel_path: relPath,
+      file_count: entry.fileCount,
+      total_bytes: entry.totalBytes,
+      has_zip: entry.hasZip,
+      sample_rels: entry.sampleRels.slice(),
+      truncated: entry.fileCount > entry.sampleRels.length,
+    };
+    summary.manifest_hash = hashDocumentExcluding(summary, ["manifest_hash"]);
+    summaries.push(summary);
+  }
+  return summaries;
+}
+
 function classifyFile(rel) {
   const base = path.basename(rel);
   const ext = path.extname(rel).toLowerCase();
@@ -639,6 +774,7 @@ function classifyFile(rel) {
   const language = LANGUAGE_BY_EXT[ext] || null;
   const nativeSource = NATIVE_SOURCE_EXTENSIONS.has(ext);
   const nativeBuild = NATIVE_BUILD_NAMES.has(base);
+  const seedCorpus = seedCorpusForRel(rel);
   return {
     base,
     ext,
@@ -649,6 +785,7 @@ function classifyFile(rel) {
     language,
     nativeSource,
     nativeBuild,
+    seedCorpus,
   };
 }
 
@@ -690,6 +827,7 @@ function buildInventoryProjection(domain, repoRoot, files) {
   const entryPoints = [];
   const ciPipelines = [];
   const configs = [];
+  const seedCorpusEntries = new Map();
   const manifests = [];
   const languageCounts = {};
   let nativeSourceCount = 0;
@@ -732,9 +870,35 @@ function buildInventoryProjection(domain, repoRoot, files) {
     if (info.ci) ciPipelines.push(rel);
     if (info.entry) entryPoints.push(rel);
     if (info.config) configs.push(rel);
+    if (info.seedCorpus) {
+      const stat = safeFileStatWithinRoot(repoRoot, rel);
+      if (stat) {
+        const relPath = info.seedCorpus.dir;
+        let entry = seedCorpusEntries.get(relPath);
+        if (!entry) {
+          entry = {
+            fileCount: 0,
+            totalBytes: 0,
+            hasZip: false,
+            sampleRels: [],
+          };
+          seedCorpusEntries.set(relPath, entry);
+        }
+        entry.fileCount += 1;
+        entry.totalBytes += stat.size;
+        entry.hasZip = entry.hasZip || info.seedCorpus.isZip || /\.zip$/i.test(rel);
+        if (entry.sampleRels.length < SEED_CORPUS_SAMPLE_RELS_LIMIT) {
+          entry.sampleRels.push(rel);
+        }
+      }
+    }
   }
 
   const nfsShape = detectNfsXdrShape(repoRoot, files);
+  const residualHuntTargets = detectResidualHuntTargets(repoRoot, files, modules);
+  const seedCorpus = buildSeedCorpusSummary(seedCorpusEntries);
+  const seedCorpusCount = seedCorpusEntries.size;
+  const seedCorpusHash = hashCanonicalJson({ seed_corpus: seedCorpus });
   return {
     modules,
     dependencies,
@@ -746,18 +910,61 @@ function buildInventoryProjection(domain, repoRoot, files) {
     nativeSourceCount,
     nativeBuildCount,
     nfsShape,
+    residualHuntTargets,
+    seedCorpus,
+    seedCorpusCount,
+    seedCorpusHash,
   };
 }
 
 function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOverride } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
-  const root = repoPathOverride
+  const requestedRoot = repoPathOverride
     ? assertNonEmptyString(repoPathOverride, "repo_path")
     : repoSession.target_repo.root_path;
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `repo_path is not a directory: ${root}`);
+  if (!fs.existsSync(requestedRoot) || !fs.statSync(requestedRoot).isDirectory()) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `repo_path is not a directory: ${requestedRoot}`);
   }
+  const canonicalRoot = fs.realpathSync(requestedRoot);
+  const canonicalSessionRoot = fs.realpathSync(repoSession.target_repo.root_path);
+  const relativeToSessionRoot = path.relative(canonicalSessionRoot, canonicalRoot);
+  if (relativeToSessionRoot.startsWith("..") || path.isAbsolute(relativeToSessionRoot)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "repo_path must stay within the initialized repo session root", {
+      repo_error_code: "repo_path_mismatch",
+    });
+  }
+  const root = canonicalRoot;
+  const subdirPrefix = relativeToSessionRoot
+    ? relativeToSessionRoot.split(path.sep).join("/")
+    : "";
+  const rootRel = (rel) => {
+    const normalized = String(rel || "").split(path.sep).join("/");
+    if (!normalized) return normalized;
+    return subdirPrefix ? `${subdirPrefix}/${normalized}` : normalized;
+  };
+  const rootRelArray = (values) => (
+    Array.isArray(values) ? values.map((value) => rootRel(value)) : values
+  );
+  const rootRelResidualTarget = (target) => {
+    const separator = typeof target === "string" ? target.indexOf(": ") : -1;
+    if (separator === -1) return rootRel(target);
+    return `${rootRel(target.slice(0, separator))}${target.slice(separator)}`;
+  };
+  const rootRelSeedCorpusEntry = (entry) => ({
+    ...entry,
+    rel_path: rootRel(entry.rel_path),
+    sample_rels: rootRelArray(entry.sample_rels),
+  });
+  const rootRelReachabilityMap = (value) => {
+    if (value == null || typeof value !== "object" || Array.isArray(value)) return value;
+    return {
+      ...value,
+      network_reachable_anchors: rootRelArray(value.network_reachable_anchors),
+      network_reachable_dirs: rootRelArray(value.network_reachable_dirs),
+      local_only_candidate_dirs: rootRelArray(value.local_only_candidate_dirs),
+    };
+  };
 
   const gitignorePatterns = loadGitignore(root);
   let files;
@@ -773,6 +980,25 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     throw error;
   }
   const projection = buildInventoryProjection(domain, root, files);
+  const reachability = classifyRepoReachability({
+    repoRoot: root,
+    files,
+    projection,
+    surfaceIdForRel: (rel) => safeSurfaceId(rootRel(rel), "repo:module"),
+  });
+  const inventoryResidualHuntTargets = projection.residualHuntTargets.map(rootRelResidualTarget);
+  const inventorySeedCorpus = projection.seedCorpus.map(rootRelSeedCorpusEntry);
+  const inventorySeedCorpusHash = hashCanonicalJson({ seed_corpus: inventorySeedCorpus });
+  const reachabilitySummary = {
+    ...reachability.reachability,
+    surface_ceilings: Array.isArray(reachability.reachability.surface_ceilings)
+      ? reachability.reachability.surface_ceilings.map((entry) => ({
+        ...entry,
+        file_path: rootRel(entry.file_path),
+      }))
+      : reachability.reachability.surface_ceilings,
+    native_attack_vector_map: rootRelReachabilityMap(reachability.reachability.native_attack_vector_map),
+  };
 
   return withSessionLock(domain, () => {
     const generatedAt = new Date().toISOString();
@@ -780,16 +1006,27 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
 
     // Per-module frontier events.
     for (const mod of projection.modules) {
+      const reachabilityStamp = reachability.perSurface.get(mod.rel);
+      const modRel = rootRel(mod.rel);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(mod.rel, "repo:module"),
+        surfaceId: safeSurfaceId(modRel, "repo:module"),
         kind: "code_module",
-        title: mod.rel,
+        title: modRel,
         payload: {
-          file_path: mod.rel,
+          file_path: modRel,
+          surface_type: mod.nativeSource || mod.nativeBuild ? "oss_native_code" : "code_module",
           language: mod.language,
           native_source: mod.nativeSource,
           native_build: mod.nativeBuild,
+          ...(reachabilityStamp ? {
+            network_reachable: reachabilityStamp.network_reachable,
+            attack_vector: reachabilityStamp.attack_vector,
+            severity_ceiling: reachabilityStamp.severity_ceiling,
+            network_reachable_anchors: rootRelArray(reachabilityStamp.network_reachable_anchors),
+            network_reachable_dirs: rootRelArray(reachabilityStamp.network_reachable_dirs),
+            local_only_candidate_dirs: rootRelArray(reachabilityStamp.local_only_candidate_dirs),
+          } : {}),
         },
         emittedCount,
       });
@@ -798,13 +1035,15 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     // Per-manifest frontier event.
     for (const manifestPath of projection.manifests) {
       const ecosystem = detectEcosystemForManifest(path.basename(manifestPath)) || "unknown";
+      const manifestRel = rootRel(manifestPath);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(manifestPath, "repo:manifest"),
+        surfaceId: safeSurfaceId(manifestRel, "repo:manifest"),
         kind: "manifest",
-        title: manifestPath,
+        title: manifestRel,
         payload: {
-          file_path: manifestPath,
+          file_path: manifestRel,
+          surface_type: "oss_dependency",
           ecosystem,
         },
         emittedCount,
@@ -813,13 +1052,15 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
 
     // Per-dependency frontier event (one per manifest, top-level only).
     for (const dep of projection.dependencies) {
+      const depRel = rootRel(dep.rel);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(`${dep.rel}#deps`, "repo:dependency"),
+        surfaceId: safeSurfaceId(`${depRel}#deps`, "repo:dependency"),
         kind: "dependency",
-        title: dep.rel,
+        title: depRel,
         payload: {
-          manifest_path: dep.rel,
+          manifest_path: depRel,
+          surface_type: "oss_dependency",
           ecosystem: dep.ecosystem,
           has_lockfile: dep.hasLockfile,
         },
@@ -829,13 +1070,15 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
 
     // Per-CI-pipeline frontier event.
     for (const ci of projection.ciPipelines) {
+      const ciRel = rootRel(ci);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(ci, "repo:ci"),
+        surfaceId: safeSurfaceId(ciRel, "repo:ci"),
         kind: "ci_pipeline",
-        title: ci,
+        title: ciRel,
         payload: {
-          file_path: ci,
+          file_path: ciRel,
+          surface_type: "oss_ci_cd",
         },
         emittedCount,
       });
@@ -843,13 +1086,15 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
 
     // Per-entry-point frontier event.
     for (const entry of projection.entryPoints) {
+      const entryRel = rootRel(entry);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(entry, "repo:entry"),
+        surfaceId: safeSurfaceId(entryRel, "repo:entry"),
         kind: "entry_point",
-        title: entry,
+        title: entryRel,
         payload: {
-          file_path: entry,
+          file_path: entryRel,
+          surface_type: "oss_api_schema",
         },
         emittedCount,
       });
@@ -859,13 +1104,15 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
     // and basename. Secret values live in the file itself and would land in
     // session-read-guard's protected list, not in the inventory payload).
     for (const cfg of projection.configs) {
+      const cfgRel = rootRel(cfg);
       emitSurfaceObserved({
         domain,
-        surfaceId: safeSurfaceId(cfg, "repo:config"),
+        surfaceId: safeSurfaceId(cfgRel, "repo:config"),
         kind: "config",
-        title: cfg,
+        title: cfgRel,
         payload: {
-          file_path: cfg,
+          file_path: cfgRel,
+          surface_type: "oss_secrets_config",
         },
         emittedCount,
       });
@@ -892,14 +1139,20 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
         code_modules: projection.modules.length,
         native_source_files: projection.nativeSourceCount,
         native_build_files: projection.nativeBuildCount,
+        residual_hunt_targets: projection.residualHuntTargets.length,
+        seed_corpus: projection.seedCorpusCount,
         surface_events_emitted: emittedCount.value,
       },
       languages: projection.languageCounts,
       nfs_xdr_shape: projection.nfsShape,
-      manifests: projection.manifests,
-      ci_pipelines: projection.ciPipelines,
-      entry_points: projection.entryPoints,
-      configs: projection.configs,
+      residual_hunt_targets: inventoryResidualHuntTargets,
+      seed_corpus: inventorySeedCorpus,
+      seed_corpus_hash: inventorySeedCorpusHash,
+      reachability: reachabilitySummary,
+      manifests: projection.manifests.map(rootRel),
+      ci_pipelines: projection.ciPipelines.map(rootRel),
+      entry_points: projection.entryPoints.map(rootRel),
+      configs: projection.configs.map(rootRel),
     };
     // O-P7: validate the persisted document before it lands on disk. The
     // inventory carries only file paths and structural counts — no file
@@ -919,6 +1172,10 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
       counts: inventory.counts,
       inventory_hash: inventory.inventory_hash,
       nfs_xdr_shape: projection.nfsShape,
+      residual_hunt_targets: inventoryResidualHuntTargets,
+      seed_corpus: inventory.seed_corpus,
+      seed_corpus_hash: inventory.seed_corpus_hash,
+      reachability: inventory.reachability,
     };
   });
 }
@@ -1640,6 +1897,8 @@ module.exports = {
   REPO_CHECK_SUMMARY_TOP_N,
   REPO_CHECK_TYPES,
   REPO_WALK_MAX_FILES,
+  SEED_CORPUS_SUMMARY_LIMIT,
+  SEED_CORPUS_SAMPLE_RELS_LIMIT,
   RepoTooLargeError,
   safeBasename,
   sha8,

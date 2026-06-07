@@ -82,7 +82,17 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
   "owner",
   "priority",
   "surface_type",
+  "attack_vector",
+  "severity_ceiling",
   "chain_family",
+  "file_path",
+  "language",
+];
+
+const SURFACE_BOOLEAN_FIELDS = [
+  "network_reachable",
+  "native_source",
+  "native_build",
 ];
 
 // Array text fields carried by surface.observed payloads. Mirrors the legacy
@@ -99,6 +109,10 @@ const SURFACE_TEXT_ARRAY_FIELDS = [
   "bug_class_hints",
   "high_value_flows",
   "evidence",
+  "network_reachable_anchors",
+  "network_reachable_dirs",
+  "local_only_candidate_dirs",
+  "residual_hunt_targets",
 ];
 
 function safeStringArray(value) {
@@ -125,6 +139,13 @@ function applySurfaceFields(surface, event) {
   for (const field of SURFACE_SCALAR_TEXT_FIELDS) {
     if (typeof payload[field] === "string" && payload[field].trim()) {
       surface[field] = payload[field].trim();
+    }
+  }
+  for (const field of SURFACE_BOOLEAN_FIELDS) {
+    if (typeof payload[field] === "boolean") {
+      surface[field] = payload[field];
+    } else if (payload[field] === "true" || payload[field] === "false") {
+      surface[field] = payload[field] === "true";
     }
   }
   for (const field of SURFACE_TEXT_ARRAY_FIELDS) {

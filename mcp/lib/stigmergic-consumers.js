@@ -29,6 +29,7 @@ const DECISION_BOUNDARY_VALUES = Object.freeze([
   "handoff_receipt",
   "chain_attempt_proposal",
   "claim_recording",
+  "grade_time_reconciliation",
   "validator_invocation",
 ]);
 
@@ -98,6 +99,39 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     decision_boundary: "validator_invocation",
     rationale:
       "evaluator-spawn logs friction on unexpected MCP INTERNAL_ERROR",
+  }),
+  Object.freeze({
+    consumer_id: "assignment_brief_reachability_triage_renderer",
+    source_location: Object.freeze({
+      file: "mcp/lib/assignment-brief.js",
+      token_or_regex: /attack_vector[\s\S]*severity_ceiling[\s\S]*network_reachable/,
+    }),
+    producer_id: "repo_inventory_reachability_stamp",
+    decision_boundary: "brief_composition",
+    rationale:
+      "evaluator brief whitelists reachability triage fields so AV:N surfaces are pursued",
+  }),
+  Object.freeze({
+    consumer_id: "grade_verdict_reachability_ceiling_reconciler",
+    source_location: Object.freeze({
+      file: "mcp/lib/grade-verdict-store.js",
+      token_or_regex: "reachabilityDispositionForFinding",
+    }),
+    producer_id: "repo_inventory_reachability_stamp",
+    decision_boundary: "grade_time_reconciliation",
+    rationale:
+      "grade verdicts consume I9 surface ceilings to cap local AV:L severity and certify AV:N findings",
+  }),
+  Object.freeze({
+    consumer_id: "assignment_brief_oss_technique_pack_renderer",
+    source_location: Object.freeze({
+      file: "mcp/lib/assignment-brief.js",
+      token_or_regex: "buildOssTechniquePacksSlice",
+    }),
+    producer_id: "oss_technique_pack_registry",
+    decision_boundary: "brief_composition",
+    rationale:
+      "OSS brief composition consumes OSS_TECHNIQUE_PACKS and partitions them by task-lens affinity",
   }),
 ]);
 

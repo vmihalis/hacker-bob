@@ -59,6 +59,7 @@ const {
 const {
   claimFreezePath,
   repoChecksJsonlPath,
+  repoCommandRunsJsonlPath,
   repoRunsDir,
 } = require("../mcp/lib/paths.js");
 const {
@@ -105,6 +106,27 @@ function writeStdoutFile(domain, runId, content) {
   const stderrPath = path.join(dir, `${runId}.stderr`);
   fs.writeFileSync(stderrPath, "");
   return { stdoutPath, stderrPath };
+}
+
+function appendRepoCommandRunRow(domain, {
+  run_id: runId,
+  command_hash: commandHash,
+  exit_code: exitCode,
+  stdout_hash: stdoutHash,
+  stderr_hash: stderrHash,
+}) {
+  fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    run_id: runId,
+    dry_run: false,
+    command_hash: commandHash,
+    exit_code: exitCode,
+    stdout_hash: stdoutHash,
+    stderr_hash: stderrHash,
+    timed_out: false,
+  })}\n`);
 }
 
 function seedNativeCodeSurface(domain, surfaceId, language, filePath = "src/parser.c") {
@@ -571,6 +593,13 @@ test("O-P4 validator accepts the same high-severity native-code claim once a pro
     const domain = "repo-oss-o8-accepts.example";
     const surfaceId = "repo:module:src_parser_c-aa0002";
     seedNativeCodeSurface(domain, surfaceId, "c");
+    appendRepoCommandRunRow(domain, {
+      run_id: "run-fuzzer-001",
+      command_hash: "b".repeat(64),
+      exit_code: 134,
+      stdout_hash: "c".repeat(64),
+      stderr_hash: "d".repeat(64),
+    });
 
     const claim = appendCandidateClaim({
       target_domain: domain,

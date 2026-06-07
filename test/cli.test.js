@@ -195,6 +195,133 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
   }
 });
 
+test("CLI installs and doctors the Kimi adapter without Claude or Codex files", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-kimi-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", "--adapter", "kimi", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+
+    for (const skill of ["bob-evaluate", "bob-status", "bob-debug", "bob-update", "bob-export", "bob-egress"]) {
+      assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", skill, "SKILL.md")), `${skill} missing`);
+    }
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "bob", "VERSION")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".codex")));
+
+    // .kimi/mcp.json must register the canonical v2.0 `hacker-bob` server key,
+    // never the legacy `bountyagent` key (CHANGELOG v2.0 + TROUBLESHOOTING.md).
+    const mcp = JSON.parse(fs.readFileSync(path.join(workspace, ".kimi", "mcp.json"), "utf8"));
+    assert.ok(mcp.mcpServers["hacker-bob"], "Kimi install must register the hacker-bob server key");
+    assert.ok(!mcp.mcpServers.bountyagent, "v2.0+ Kimi installs must not emit the legacy bountyagent server key");
+    assert.equal(mcp.mcpServers["hacker-bob"].command, "node");
+    assert.ok(mcp.mcpServers["hacker-bob"].args.some((arg) => arg.endsWith(path.join("mcp", "server.js"))));
+
+    const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".hacker-bob", "install.json"), "utf8"));
+    assert.deepEqual(installMeta.installed_adapters, ["kimi"]);
+
+    const output = execFileSync(process.execPath, [CLI, "doctor", workspace, "--adapter", "kimi", "--json"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const result = JSON.parse(output);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.adapters, ["kimi"]);
+    assert.ok(result.checks.some((check) => check.id === "kimi_skills" && check.status === "ok"));
+    assert.ok(result.checks.some((check) => check.id === "kimi_mcp_server_config" && check.status === "ok"));
+    assert.ok(!result.checks.some((check) => check.id.startsWith("claude_") || check.id.startsWith("codex_")));
+
+    const uninstall = JSON.parse(execFileSync(process.execPath, [CLI, "uninstall", workspace, "--adapter", "kimi", "--yes", "--json"], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }));
+    assert.equal(uninstall.dry_run, false);
+    assert.deepEqual(uninstall.adapters, ["kimi"]);
+    assert.equal(uninstall.remove_shared, true);
+    assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "skills", "bob-evaluate", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "mcp.json")));
+    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "server.js")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("CLI auto-selects kimi when project has .kimi/ and no --adapter flag", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-detect-kimi-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(path.join(workspace, ".kimi"), { recursive: true });
+  const cleanEnv = { ...process.env, HOME: tempHome };
+  delete cleanEnv.CLAUDE_PROJECT_DIR;
+  delete cleanEnv.CODEX_HOME;
+  delete cleanEnv.KIMI_PROJECT_DIR;
+
+  try {
+    const result = spawnSync(process.execPath, [CLI, "install", workspace], {
+      cwd: ROOT,
+      env: cleanEnv,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `install failed: ${result.stderr}`);
+    assert.match(result.stderr, /auto-selected adapter kimi/);
+    assert.match(result.stderr, /reason: project_dot_kimi/);
+    const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".hacker-bob", "install.json"), "utf8"));
+    assert.deepEqual(installMeta.installed_adapters, ["kimi"]);
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", "bob-evaluate", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "settings.json")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("CLI reinstall with no --adapter preserves a kimi-only install (does not flip to claude)", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-kimi-reinstall-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  try {
+    execFileSync(process.execPath, [CLI, "install", "--adapter", "kimi", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+    const initialMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".hacker-bob", "install.json"), "utf8"));
+    assert.deepEqual(initialMeta.installed_adapters, ["kimi"]);
+
+    const cleanEnv = { ...process.env, HOME: tempHome };
+    delete cleanEnv.CLAUDE_PROJECT_DIR;
+    delete cleanEnv.CODEX_HOME;
+    delete cleanEnv.KIMI_PROJECT_DIR;
+    const reinstall = spawnSync(process.execPath, [CLI, "update", workspace], {
+      cwd: ROOT,
+      env: cleanEnv,
+      encoding: "utf8",
+    });
+    assert.equal(reinstall.status, 0, `update failed: ${reinstall.stderr}`);
+    assert.match(reinstall.stderr, /reason: reinstall_metadata/);
+    const finalMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".hacker-bob", "install.json"), "utf8"));
+    assert.deepEqual(finalMeta.installed_adapters, ["kimi"]);
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", "bob-evaluate", "SKILL.md")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bob-evaluate-runner", "SKILL.md")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("CLI generic MCP adapter install and uninstall preserve unrelated MCP config", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-generic-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-cli-home-"));

@@ -40,6 +40,7 @@
     "bin/**/*.js",
     "docs/**/*.md",
     "!docs/refactor-*.md",
+    "docs/**/*.json",
     "docs/**/*.html",
     "docs/**/*.png",
     "mcp/**/*",
@@ -65,13 +66,14 @@
     "check:authority-inventory": "node scripts/authority-inventory.js --check",
     "check:skill": "node scripts/generate-hacker-bob-skill.js --check",
     "check:codex-skill": "node scripts/generate-codex-skills.js --check",
+    "check:kimi-skill": "node scripts/generate-kimi-roles.js --check",
     "check:settings": "node scripts/generate-claude-settings.js --check",
     "check:skill-protocol-coherence": "node scripts/check-skill-protocol-coherence.js",
     "check:skill-runtime-constraint-drift": "node scripts/check-skill-runtime-constraint-drift.js",
     "check:skill-scheduler-coherence": "node scripts/check-skill-scheduler-coherence.js",
     "check:stigmergy-coherence": "node scripts/check-stigmergy-coherence.js",
     "test:mcp": "node scripts/run-mcp-tests.js",
-    "test:prompts": "npm run check:agent-tools && npm run check:skill && npm run check:codex-skill && npm run check:settings && npm run check:skill-protocol-coherence && npm run check:skill-runtime-constraint-drift && npm run check:skill-scheduler-coherence && npm run check:stigmergy-coherence && node --test test/prompt-contracts.test.js test/skill-protocol-coherence.test.js test/skill-runtime-constraint-drift.test.js test/skill-scheduler-coherence.test.js test/scheduler-preconditions-shape.test.js test/wave-handoff-store-merge-snapshot.test.js test/session-cap.test.js test/report-finalize-remediation.test.js test/stigmergic-consumers-shape.test.js test/stigmergy-coherence.test.js test/single-spawner-topology.test.js",
+    "test:prompts": "npm run check:agent-tools && npm run check:skill && npm run check:codex-skill && npm run check:kimi-skill && npm run check:settings && npm run check:skill-protocol-coherence && npm run check:skill-runtime-constraint-drift && npm run check:skill-scheduler-coherence && npm run check:stigmergy-coherence && node --test test/prompt-contracts.test.js test/skill-protocol-coherence.test.js test/skill-runtime-constraint-drift.test.js test/skill-scheduler-coherence.test.js test/scheduler-preconditions-shape.test.js test/wave-handoff-store-merge-snapshot.test.js test/session-cap.test.js test/report-finalize-remediation.test.js test/stigmergic-consumers-shape.test.js test/stigmergy-coherence.test.js test/single-spawner-topology.test.js",
     "test:install": "node --test test/install-smoke.test.js test/installer-legacy-upgrade.test.js",
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",
@@ -88,11 +90,11 @@
     "install-browser": "npx patchright install chromium"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.159",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.167",
     "proxy-agent": "^8.0.1",
     "psl": "^1.15.0"
   },
   "optionalDependencies": {
-    "patchright": "^1.59.4"
+    "patchright": "^1.60.2"
   }
 }

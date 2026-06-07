@@ -3,11 +3,11 @@
 const path = require("path");
 
 const KIMI_SKILL_SPECS = Object.freeze({
-  hunt: Object.freeze({
+  evaluate: Object.freeze({
     role_id: "orchestrator",
-    output_path: path.join("adapters", "kimi", "skills", "bob-evaluate-runner", "SKILL.md"),
-    references_path: path.join("adapters", "kimi", "skills", "bob-evaluate-runner", "references"),
-    name: "bob-evaluate-runner",
+    output_path: path.join("adapters", "kimi", "skills", "bob-evaluate", "SKILL.md"),
+    references_path: path.join("adapters", "kimi", "skills", "bob-evaluate", "references"),
+    name: "bob-evaluate",
     description: "Run or resume a Hacker Bob bug bounty evaluate in Kimi CLI using the shared MCP runtime.",
     type: "standard",
   }),
@@ -52,8 +52,11 @@ const KIMI_SKILL_SPECS = Object.freeze({
 // — strictly worse than the codex adapter's prompt-only discipline model.
 // When a future PR researches the TOML format and ships the wiring, restore
 // KIMI_HOOK_FILES + EXECUTABLE_HOOKS here and re-introduce the install block.
-const BOB_SKILLS = Object.freeze(["bob-evaluate-runner", "bob-status", "bob-debug", "bob-update", "bob-export", "bob-egress"]);
-const LEGACY_BOB_SKILLS = Object.freeze([]);
+const BOB_SKILLS = Object.freeze(["bob-evaluate", "bob-status", "bob-debug", "bob-update", "bob-export", "bob-egress"]);
+// bob-hunt (v1) and bob-evaluate-runner (interim v2 misname that copied Claude's
+// internal skill name) predate the rename to the user-facing bob-evaluate; list
+// them so uninstall and dev-sync sweep stale skill dirs left by prior installs.
+const LEGACY_BOB_SKILLS = Object.freeze(["bob-evaluate-runner", "bob-hunt"]);
 
 module.exports = {
   BOB_SKILLS,

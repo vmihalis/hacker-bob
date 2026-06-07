@@ -1985,7 +1985,10 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "wave-N-assignments.json",
     "state.json",
     "surface-leads.json",
-    "attack_surface.json",
+    "frontier-events.jsonl",
+    "surface-index.json",
+    "task-queue.json",
+    "task-graph.json",
   ]);
   assert.equal(TOOL_MANIFEST.bob_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_start_wave.global_preapproval, false);
@@ -2034,7 +2037,13 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.browser_access, false);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.scope_required, false);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.sensitive_output, false);
-  assert.deepEqual(TOOL_MANIFEST.bob_promote_surface_leads.session_artifacts_written, ["surface-leads.json", "attack_surface.json", "state.json"]);
+  assert.deepEqual(TOOL_MANIFEST.bob_promote_surface_leads.session_artifacts_written, [
+    "surface-leads.json",
+    "frontier-events.jsonl",
+    "surface-index.json",
+    "task-queue.json",
+    "task-graph.json",
+  ]);
   assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, ["evaluator-shared", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.mutating, false);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.network_access, false);

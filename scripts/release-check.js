@@ -193,14 +193,15 @@ function checkCanonicalPack(rootPackage) {
     }
   }
 
-  // Pack-size budget raised to 3 MB to accommodate the kimi adapter family
+  // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
   // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
   // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
-  // Y.3 Stage c substrate growth. Mirrors the test/package.test.js ceiling.
-  if (canonical.size < 3000000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3 MB`);
+  // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
+  // Mirrors the test/package.test.js ceiling.
+  if (canonical.size < 3100000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.1 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.1 MB`);
   }
 
   let foundDisallowed = false;

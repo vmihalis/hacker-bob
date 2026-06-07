@@ -57,7 +57,10 @@ function managedDirs() {
 function mergeConfig({ serverPath }) {
   return {
     mcpServers: {
-      bountyagent: {
+      // Canonical v2.0 server key. v1.x installs used the legacy `bountyagent`
+      // key; install() migrates a Bob-managed legacy entry to this key and
+      // uninstall() removes either (CHANGELOG v2.0 + docs/TROUBLESHOOTING.md).
+      "hacker-bob": {
         command: "node",
         args: [serverPath],
       },
@@ -104,6 +107,16 @@ function install({
     safeFs.mkdirp(path.join(kimiDir, dirname));
   }
 
+  // Sweep stale skill dirs left by prior installs (bob-hunt v1,
+  // bob-evaluate-runner interim misname) before copying current skills, so a
+  // normal install/update never leaves old prompts/tool names beside the
+  // current bob-evaluate skill. Mirrors the Codex removeLegacyDirectSkillDirs
+  // sweep and Claude's legacy-skill rmSync loop; uninstall and dev-sync already
+  // remove these. Idempotent: a no-op when the legacy dirs are absent.
+  for (const legacySkill of LEGACY_BOB_SKILLS) {
+    safeFs.removePath(path.join(kimiDir, "skills", legacySkill), { recursive: true });
+  }
+
   for (const skill of BOB_SKILLS) {
     const sourceSkillDir = path.join(sourceRoot, "adapters", "kimi", "skills", skill);
     const targetSkillDir = path.join(kimiDir, "skills", skill);
@@ -117,10 +130,17 @@ function install({
     kind: ".kimi/mcp.json",
     symlink: "reject",
   });
+  const existingServers = { ...((existingMcp && existingMcp.mcpServers) || {}) };
+  // Migrate the legacy v1.x `bountyagent` server key to the canonical
+  // `hacker-bob` key when it is Bob-managed, so reinstalls/updates do not leave
+  // a duplicate server entry behind (CHANGELOG v2.0 + docs/TROUBLESHOOTING.md).
+  if (existingServers.bountyagent && mcpServerMatches(existingServers.bountyagent, targetAbs)) {
+    delete existingServers.bountyagent;
+  }
   const nextMcp = {
     ...existingMcp,
     mcpServers: {
-      ...((existingMcp && existingMcp.mcpServers) || {}),
+      ...existingServers,
       ...mergeConfig({ serverPath }).mcpServers,
     },
   };
@@ -238,10 +258,10 @@ function doctor({ targetAbs }) {
   if (fileExists(mcpPath)) {
     try {
       const mcp = readJson(mcpPath);
-      if (mcpServerMatches(mcp.mcpServers && mcp.mcpServers.bountyagent, targetAbs)) {
-        addCheck(checks, "ok", "kimi_mcp_server_config", ".kimi/mcp.json points bountyagent at this project's mcp/server.js");
+      if (mcpServerMatches(mcp.mcpServers && mcp.mcpServers["hacker-bob"], targetAbs)) {
+        addCheck(checks, "ok", "kimi_mcp_server_config", ".kimi/mcp.json points hacker-bob at this project's mcp/server.js");
       } else {
-        addCheck(checks, "error", "kimi_mcp_server_config", ".kimi/mcp.json is missing the Bob-managed bountyagent server entry");
+        addCheck(checks, "error", "kimi_mcp_server_config", ".kimi/mcp.json is missing the Bob-managed hacker-bob server entry");
       }
       const brutalistEntry = mcp.mcpServers && mcp.mcpServers.brutalist;
       if (brutalistEntry && brutalistEntry.command === BRUTALIST_MCP_SERVER.command) {
@@ -286,13 +306,20 @@ function removeMcpConfig(targetAbs, result) {
     result.skipped.push({ type: "config", path: ".kimi/mcp.json", reason: `invalid JSON: ${error.message || String(error)}` });
     return;
   }
-  if (!isPlainObject(mcp) || !isPlainObject(mcp.mcpServers) || !("bountyagent" in mcp.mcpServers)) return;
-  if (!mcpServerMatches(mcp.mcpServers.bountyagent, targetAbs)) {
-    result.skipped.push({ type: "config", path: ".kimi/mcp.json", reason: "bountyagent server entry is not Bob-managed" });
+  if (!isPlainObject(mcp) || !isPlainObject(mcp.mcpServers)) return;
+  // Remove the canonical `hacker-bob` key and the legacy v1.x `bountyagent`
+  // key (whichever is Bob-managed), mirroring the generic-mcp uninstall path.
+  const candidates = ["hacker-bob", "bountyagent"].filter((key) => key in mcp.mcpServers);
+  if (candidates.length === 0) return;
+  const mismatched = candidates.filter((key) => !mcpServerMatches(mcp.mcpServers[key], targetAbs));
+  if (mismatched.length === candidates.length) {
+    result.skipped.push({ type: "config", path: ".kimi/mcp.json", reason: `${mismatched.join(", ")} server entry is not Bob-managed` });
     return;
   }
   const next = { ...mcp, mcpServers: { ...mcp.mcpServers } };
-  delete next.mcpServers.bountyagent;
+  for (const key of candidates) {
+    if (mcpServerMatches(mcp.mcpServers[key], targetAbs)) delete next.mcpServers[key];
+  }
   if (
     next.mcpServers.brutalist
     && next.mcpServers.brutalist.command === BRUTALIST_MCP_SERVER.command

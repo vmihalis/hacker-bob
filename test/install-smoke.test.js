@@ -11,6 +11,7 @@ const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
 const PACKAGE_VERSION = require("../package.json").version;
 const CODEX_ADAPTER = getAdapter("codex");
+const KIMI_ADAPTER = getAdapter("kimi");
 const GENERIC_MCP_ADAPTER = getAdapter("generic-mcp");
 
 test("installer copies a require-able complete MCP runtime", () => {
@@ -587,6 +588,137 @@ test("codex adapter installs direct skills and doctor checks MCP wiring", () => 
     }
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor/uninstall round-trip", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-kimi-adapter-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const serverPath = path.join(workspace, "mcp", "server.js");
+
+  try {
+    // Base install lays down the shared runtime (mcp/server.js); then exercise
+    // the Kimi adapter methods directly, mirroring the Codex adapter test.
+    execFileSync(process.execPath, [CLI, "install", workspace], {
+      cwd: ROOT,
+      env: { ...process.env, HOME: tempHome },
+      stdio: "pipe",
+    });
+
+    const install = KIMI_ADAPTER.install({
+      sourceRoot: ROOT,
+      targetAbs: workspace,
+      serverPath,
+      manifest: { version: PACKAGE_VERSION, name: "hacker-bob" },
+    });
+    assert.equal(install.skills, 6);
+    assert.ok(install.kimiDir);
+    for (const skill of ["bob-evaluate", "bob-status", "bob-debug", "bob-update", "bob-export", "bob-egress"]) {
+      assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", skill, "SKILL.md")), `${skill} SKILL.md missing`);
+    }
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "bob", "VERSION")));
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "bob", "install.json")));
+
+    // v2.0 server key: must be the canonical `hacker-bob`, never the legacy
+    // `bountyagent` (CHANGELOG v2.0 + docs/TROUBLESHOOTING.md).
+    const mcp = JSON.parse(fs.readFileSync(path.join(workspace, ".kimi", "mcp.json"), "utf8"));
+    assert.deepEqual(mcp.mcpServers["hacker-bob"], { command: "node", args: [serverPath] });
+    assert.ok(!mcp.mcpServers.bountyagent, "fresh Kimi install must not emit the legacy bountyagent key");
+    assert.ok(mcp.mcpServers.brutalist, "Kimi install registers the optional brutalist server");
+
+    const doctor = KIMI_ADAPTER.doctor({ targetAbs: workspace });
+    assert.equal(doctor.ok, true);
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_installed_version" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_install_metadata" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_skills" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_mcp_server_config" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_mcp_brutalist_optional"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_cli_on_path"));
+    // No cross-adapter check leakage.
+    assert.ok(!doctor.checks.some((check) => check.id.startsWith("claude_") || check.id.startsWith("codex_")));
+
+    // Legacy migration: a Bob-managed v1.x `bountyagent` entry is rewritten to
+    // `hacker-bob` on reinstall, preserving operator-owned sibling servers.
+    fs.writeFileSync(path.join(workspace, ".kimi", "mcp.json"), `${JSON.stringify({
+      mcpServers: {
+        bountyagent: { command: "node", args: [serverPath] },
+        operator: { command: "node", args: ["sibling.js"] },
+      },
+    }, null, 2)}\n`);
+    // Seed stale skill dirs from a prior build (bob-hunt v1, bob-evaluate-runner
+    // interim misname). A normal reinstall/update must sweep them so old prompts
+    // and tool names are never left exposed beside the current bob-evaluate
+    // skill — parity with the Codex and Claude install-time legacy sweep.
+    for (const legacySkill of ["bob-evaluate-runner", "bob-hunt"]) {
+      fs.mkdirSync(path.join(workspace, ".kimi", "skills", legacySkill), { recursive: true });
+      fs.writeFileSync(path.join(workspace, ".kimi", "skills", legacySkill, "SKILL.md"), `# stale ${legacySkill}\n`);
+    }
+    KIMI_ADAPTER.install({ sourceRoot: ROOT, targetAbs: workspace, serverPath, manifest: { version: PACKAGE_VERSION, name: "hacker-bob" } });
+    const migrated = JSON.parse(fs.readFileSync(path.join(workspace, ".kimi", "mcp.json"), "utf8"));
+    assert.ok(migrated.mcpServers["hacker-bob"], "migration must add the hacker-bob key");
+    assert.ok(!migrated.mcpServers.bountyagent, "migration must drop the legacy bountyagent key");
+    assert.ok(migrated.mcpServers.operator, "migration must preserve operator-owned sibling servers");
+    // The reinstall swept the legacy skill dirs while keeping current skills.
+    for (const legacySkill of ["bob-evaluate-runner", "bob-hunt"]) {
+      assert.ok(
+        !fs.existsSync(path.join(workspace, ".kimi", "skills", legacySkill, "SKILL.md")),
+        `${legacySkill} legacy skill must be swept on reinstall`,
+      );
+    }
+    assert.ok(
+      fs.existsSync(path.join(workspace, ".kimi", "skills", "bob-evaluate", "SKILL.md")),
+      "current bob-evaluate skill must survive the legacy sweep",
+    );
+
+    const dryRun = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: workspace, dryRun: true });
+    assert.equal(dryRun.dry_run, true);
+    assert.ok(dryRun.actions.some((action) => action.path === path.join(".kimi", "skills", "bob-evaluate", "SKILL.md")));
+    assert.ok(dryRun.actions.some((action) => action.path === path.join(".kimi", "mcp.json")));
+    assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", "bob-evaluate", "SKILL.md")));
+
+    const removed = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: workspace, dryRun: false });
+    assert.equal(removed.dry_run, false);
+    for (const skill of ["bob-evaluate", "bob-export", "bob-egress"]) {
+      assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "skills", skill, "SKILL.md")), `${skill} should be removed`);
+    }
+    // `.kimi/` is a Bob-owned directory (it is created by the Kimi install and
+    // listed in managedFiles), so uninstall removes the whole `.kimi/mcp.json`.
+    assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "mcp.json")), ".kimi/mcp.json should be removed on uninstall");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("detectInstalledAdapterIds recognizes an installed kimi layout (claude/codex parity)", () => {
+  // Locks the fix for reinstall/update/uninstall auto-detection: a project that
+  // has a kimi install but no neutral install.json metadata must still resolve
+  // to the kimi adapter via filesystem detection, exactly like claude and codex.
+  const { detectInstalledAdapterIds } = require("../scripts/install.js");
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-detect-adapters-"));
+  try {
+    const viaVersion = path.join(tempRoot, "kimi-version");
+    fs.mkdirSync(path.join(viaVersion, ".kimi", "bob"), { recursive: true });
+    fs.writeFileSync(path.join(viaVersion, ".kimi", "bob", "VERSION"), `${PACKAGE_VERSION}\n`);
+    assert.deepEqual(detectInstalledAdapterIds(viaVersion), ["kimi"]);
+
+    const viaSkill = path.join(tempRoot, "kimi-skill");
+    fs.mkdirSync(path.join(viaSkill, ".kimi", "skills", "bob-evaluate"), { recursive: true });
+    fs.writeFileSync(path.join(viaSkill, ".kimi", "skills", "bob-evaluate", "SKILL.md"), "x\n");
+    assert.deepEqual(detectInstalledAdapterIds(viaSkill), ["kimi"]);
+
+    const codexLayout = path.join(tempRoot, "codex");
+    fs.mkdirSync(path.join(codexLayout, ".codex", "plugins", "hacker-bob"), { recursive: true });
+    assert.deepEqual(detectInstalledAdapterIds(codexLayout), ["codex"]);
+
+    const claudeLayout = path.join(tempRoot, "claude");
+    fs.mkdirSync(path.join(claudeLayout, ".claude", "bob"), { recursive: true });
+    fs.writeFileSync(path.join(claudeLayout, ".claude", "bob", "VERSION"), `${PACKAGE_VERSION}\n`);
+    assert.deepEqual(detectInstalledAdapterIds(claudeLayout), ["claude"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
 

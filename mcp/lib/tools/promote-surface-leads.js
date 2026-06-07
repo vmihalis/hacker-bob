@@ -6,7 +6,7 @@ module.exports = Object.freeze({
   name: "bob_promote_surface_leads",
   aliases: ["bounty_promote_surface_leads"],
   description:
-    "Promote top-ranked entries from surface-leads.json into attack_surface.json and session lead_surface_ids so later waves can assign them.",
+    "Promote top-ranked entries from surface-leads.json into frontier surface events so later waves can assign them from surface-index.json.",
   inputSchema: {
     type: "object",
     properties: {
@@ -26,5 +26,5 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["surface-leads.json", "attack_surface.json", "state.json"],
+  session_artifacts_written: ["surface-leads.json", "frontier-events.jsonl", "surface-index.json", "task-queue.json", "task-graph.json"],
 });

@@ -181,6 +181,15 @@ function synthesizeOssRepoFixture(prefix = "bob-o10-oss-fixture-") {
     "}",
     "",
   ].join("\n"));
+  write("src/helper.c", [
+    "#include <stdio.h>",
+    "",
+    "int helper_packet(const unsigned char *buf, int len) {",
+    "  if (len <= 0) return -1;",
+    "  return buf[len - 1];",
+    "}",
+    "",
+  ].join("\n"));
 
   write(".github/workflows/ci.yml", [
     "name: ci",
@@ -199,28 +208,6 @@ function synthesizeOssRepoFixture(prefix = "bob-o10-oss-fixture-") {
   write("README.md", "# Synthesized fixture\n");
 
   return root;
-}
-
-// Seed a non-native code_module surface on the frontier ledger for the
-// claim under test so the O-P4 validator's surface_id branch has a clear
-// language signal. Native severity ≥ high would trip O_P4_static_only_
-// native_code_high_severity without a repo_command_run evidence_ref; the
-// smoke keeps severity at medium specifically to avoid that gate (per the
-// task spec's pact constraint).
-function seedSmokeSurface(domain, surfaceId, language, filePath) {
-  appendFrontierEvent({
-    target_domain: domain,
-    kind: "surface.observed",
-    surface_id: surfaceId,
-    payload: {
-      kind: "code_module",
-      file_path: filePath,
-      language,
-      native_source: language === "c" || language === "cpp",
-      native_build: false,
-    },
-    source: { tool: "test:oss_smoke_seed", artifact: "test-fixture" },
-  });
 }
 
 // Drive the OSS-only realization flow against a repo session. Returns the
@@ -253,6 +240,16 @@ async function driveOssRealizationFlow({
   assert.equal(inventoryResponse.created, true);
   assert.ok(fs.existsSync(repoInventoryPath(domain)),
     "repo-inventory.json must be materialized by bob_repo_inventory");
+  const inventoryOnDisk = JSON.parse(fs.readFileSync(repoInventoryPath(domain), "utf8"));
+  const surfaceCeilings = inventoryOnDisk.reachability && Array.isArray(inventoryOnDisk.reachability.surface_ceilings)
+    ? inventoryOnDisk.reachability.surface_ceilings
+    : [];
+  const surfaceIdForFile = (filePath) => {
+    const match = surfaceCeilings.find((surface) => surface && surface.file_path === filePath);
+    assert.ok(match && typeof match.id === "string",
+      `repo inventory must emit a reachability surface id for ${filePath}`);
+    return match.id;
+  };
 
   // Step 3 — bob_repo_prepare_env (dry_run is the default per O-P3). The
   // smoke does not invoke docker; this exercises the dockerfile-generation
@@ -311,10 +308,8 @@ async function driveOssRealizationFlow({
   // chain has more than one finding to walk (parity with the Z.1 web smoke
   // which also records N=2). Both claims stay at medium severity to keep
   // the O-P4 gate dormant.
-  const firstSurfaceId = "repo:module:src_parser_c-o10";
-  seedSmokeSurface(domain, firstSurfaceId, "c", "src/parser.c");
-  const secondSurfaceId = "repo:module:src_index_js-o10";
-  seedSmokeSurface(domain, secondSurfaceId, "javascript", "src/index.js");
+  const firstSurfaceId = surfaceIdForFile("src/parser.c");
+  const secondSurfaceId = surfaceIdForFile("src/helper.c");
 
   const firstClaim = appendCandidateClaim({
     target_domain: domain,

@@ -391,6 +391,8 @@ function readRepoCommandRunRecords(domain) {
   return rows;
 }
 
+const O_P4_DISALLOWED_REPO_COMMAND_EXIT_CODES = Object.freeze([125, 126, 127]);
+
 function repoCommandRunRowSatisfiesEvidence(row, ref) {
   // The cross-check (additive to the evidence_ref shape gate): the row must
   // exist, be a live execution (not a dry-run plan), and bind back to the
@@ -405,6 +407,7 @@ function repoCommandRunRowSatisfiesEvidence(row, ref) {
   // exit_code on the row must be a concrete integer (live execution produced
   // a result). If the evidence_ref also pinned a value, it must match.
   if (!Number.isInteger(row.exit_code)) return false;
+  if (O_P4_DISALLOWED_REPO_COMMAND_EXIT_CODES.includes(row.exit_code)) return false;
   if (Number.isInteger(ref.exit_code) && row.exit_code !== ref.exit_code) return false;
   return true;
 }
@@ -433,6 +436,25 @@ function assertNotStaticOnlyNativeHighSeverity(claim) {
         code: "O_P4_static_only_native_code_high_severity",
         severity: claim.severity,
         native_surfaces: nativeSurfaces,
+      },
+    );
+  }
+  const runRows = readRepoCommandRunRecords(claim.target_domain);
+  // This proof gate is domain-scoped: it proves the cited repo_command_run row
+  // exists and was live. File/surface-level linkage remains part of the
+  // evaluator-authored evidence narrative and verifier review.
+  const backedRef = repoCommandRunRefs.some((ref) => (
+    runRows.some((row) => repoCommandRunRowSatisfiesEvidence(row, ref))
+  ));
+  if (!backedRef) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "high/critical native-code claims require at least one repo_command_run evidence_ref backed by a matching non-dry-run repo-command-runs.jsonl row.",
+      {
+        code: "O_P4_unbacked_repo_command_run_evidence",
+        severity: claim.severity,
+        native_surfaces: nativeSurfaces,
+        disallowed_repo_command_exit_codes: O_P4_DISALLOWED_REPO_COMMAND_EXIT_CODES,
       },
     );
   }

@@ -427,6 +427,7 @@ function updateCodexSkillFiles({ check = false, root = DEFAULT_ROOT, skillIds = 
 
 module.exports = {
   CODEX_SKILL_SPECS,
+  CODEX_WORKER_CONTRACT_ROLE_IDS,
   codexSkillOutputPath,
   renderCodexPromptBody,
   renderCodexSkill,

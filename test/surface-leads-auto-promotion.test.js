@@ -55,8 +55,13 @@ const {
 } = require("../mcp/lib/friction-scanners.js");
 const {
   sessionDir,
+  attackSurfacePath,
   queuePolicyPath,
+  surfaceIndexPath,
 } = require("../mcp/lib/paths.js");
+const {
+  currentSurfaces,
+} = require("../mcp/lib/frontier-projections.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -269,6 +274,72 @@ test("bob_promote_surface_leads inputSchema is UNCHANGED — no per-lead promote
   assert.ok(!("promote" in props), "rev-4 fabricated `promote` parameter must NOT exist");
   assert.ok(!("demote_rationale" in props), "rev-4 fabricated `demote_rationale` parameter must NOT exist");
   assert.ok(!("leads" in props), "bob_promote_surface_leads must not gain per-lead axis");
+});
+
+test("bob_promote_surface_leads preserves assigned lead surfaces already in attack_surface.json", () => {
+  withTempHome(() => {
+    const domain = "y12-preserve-assigned-leads.example.com";
+    ensureSessionDir(domain);
+    const attackPath = attackSurfacePath(domain);
+    const legacyAttackSurface = {
+      surfaces: [
+        {
+          id: "lead-admin-api",
+          title: "Previously assigned admin API",
+          hosts: ["https://assigned.y12-preserve-assigned-leads.example.com"],
+          endpoints: ["/api/assigned"],
+          priority: "HIGH",
+          surface_type: "web",
+          labels: ["promoted_surface_lead"],
+        },
+        {
+          id: "surface-baseline",
+          hosts: ["https://y12-preserve-assigned-leads.example.com"],
+          endpoints: ["/"],
+          priority: "MEDIUM",
+          surface_type: "web",
+        },
+      ],
+    };
+    fs.writeFileSync(attackPath, `${JSON.stringify(legacyAttackSurface, null, 2)}\n`);
+
+    const recorded = JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({
+          title: "Admin API",
+          hosts: ["https://new-admin.y12-preserve-assigned-leads.example.com"],
+          endpoints: ["/api/new-admin"],
+          confidence: "high",
+          score: 91,
+        }),
+      ],
+    }));
+    assert.equal(recorded.recorded, 1);
+
+    const attackBeforePromotion = fs.readFileSync(attackPath, "utf8");
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 5,
+      min_score: 60,
+    }));
+
+    assert.equal(promoted.promoted, 1);
+    assert.deepEqual(promoted.promoted_surface_ids, ["lead-admin-api-2"]);
+    assert.equal(
+      fs.readFileSync(attackPath, "utf8"),
+      attackBeforePromotion,
+      "promotion must not rewrite attack_surface.json and drop already-assigned lead surfaces",
+    );
+
+    const surfaceIndex = JSON.parse(fs.readFileSync(surfaceIndexPath(domain), "utf8"));
+    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === "lead-admin-api-2"),
+      "newly promoted lead must materialize into surface-index.json");
+
+    const projectionIds = currentSurfaces(domain).surfaces.map((surface) => surface.id).sort();
+    assert.deepEqual(projectionIds, ["lead-admin-api", "lead-admin-api-2", "surface-baseline"]);
+  });
 });
 
 // (g) ─────────────────────────────────────────────────────────────────────

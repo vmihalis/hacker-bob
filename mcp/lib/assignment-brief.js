@@ -22,6 +22,9 @@ const {
   readAttackSurfaceStrict,
 } = require("./attack-surface.js");
 const {
+  currentSurfaces,
+} = require("./frontier-projections.js");
+const {
   rankAttackSurfaces,
 } = require("./ranking.js");
 const {
@@ -77,6 +80,7 @@ const {
 } = require("./trace-reading-composer.js");
 const {
   EVALUATOR_KNOWLEDGE_MAX_CHARS,
+  OSS_TECHNIQUE_PACKS,
   evaluatorKnowledgeCandidatePaths,
   resolveEvaluatorKnowledge,
   selectTechniquePacksForSurface,
@@ -92,9 +96,15 @@ const {
   loadPackTelemetry,
 } = require("./pack-telemetry.js");
 const {
+  safeGovernanceContextForDomain,
+} = require("./governance-context.js");
+const {
   checkCliToolInstallation,
   presenceCachePath,
 } = require("./cli-tool-presence.js");
+const {
+  repoEnvPath,
+} = require("./paths.js");
 const fs = require("fs");
 
 // Bypass table tech-to-file map used by evaluator brief generation.
@@ -141,6 +151,10 @@ const ASSIGNMENT_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
   network_reachable: 8,
   chain_family: 40,
   chain_id: 20,
+  file_path: 240,
+  language: 40,
+  native_source: 8,
+  native_build: 8,
   // Per-chain harness paths. Each smart-contract evaluator prompt expects a
   // chain-specific scalar — whitelisting them all keeps slim surfaces lossy
   // only on cap, not on field name. Adding a new chain pack is one entry.
@@ -337,6 +351,55 @@ function buildTechniquePacksSlice(context) {
   return base;
 }
 
+function ossTechniquePackForBrief(pack, { summary = true } = {}) {
+  const brief = {
+    id: pack.id,
+    title: pack.title,
+    ...(Array.isArray(pack.lens_affinity) ? { lens_affinity: pack.lens_affinity.slice() } : {}),
+  };
+  if (summary && typeof pack.summary === "string") {
+    brief.summary = pack.summary;
+  }
+  return brief;
+}
+
+function partitionOssTechniquePacksByLens(packs, taskLens) {
+  const packList = Array.isArray(packs) ? packs : [];
+  if (!isOssLens(taskLens)) {
+    return {
+      selected: packList.map((pack) => ossTechniquePackForBrief(pack)),
+      other_applicable: [],
+    };
+  }
+  const selected = [];
+  const otherApplicable = [];
+  for (const pack of packList) {
+    const affinity = Array.isArray(pack.lens_affinity) ? pack.lens_affinity : [];
+    if (affinity.includes(taskLens)) {
+      selected.push(ossTechniquePackForBrief(pack));
+    } else {
+      otherApplicable.push(ossTechniquePackForBrief(pack, { summary: false }));
+    }
+  }
+  return {
+    selected,
+    other_applicable: otherApplicable,
+  };
+}
+
+function buildOssTechniquePacksSlice(taskLens) {
+  const partitioned = partitionOssTechniquePacksByLens(OSS_TECHNIQUE_PACKS, taskLens);
+  return {
+    selected: partitioned.selected,
+    other_applicable: partitioned.other_applicable,
+    selection_limits: {
+      selected_chars: JSON.stringify(partitioned.selected).length,
+      selected_count: partitioned.selected.length,
+    },
+    lens_partitioned: isOssLens(taskLens),
+  };
+}
+
 const SMART_CONTRACT_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("bob_spec_status", 4096, (context) => context.bobSpecStatus),
   briefSliceEntry("rpc_pool", 4096, (context) => context.rpcPool),
@@ -400,6 +463,7 @@ const OSS_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("governance", 1024, (context) => context.governance),
   briefSliceEntry("goal_orientation", 1024, (context) => context.goalOrientation),
   briefSliceEntry("code_surface_pack", 4096, (context) => context.codeSurfacePack),
+  briefSliceEntry("repo_env_recommendations", 4096, (context) => context.repoEnvRecommendations),
   briefSliceEntry("technique_packs", 8192, (context) => context.ossTechniquePacks),
   briefSliceEntry("cli_tools", 2048, (context) => renderAvailableCliToolsSectionSync({
     surface_fingerprint: context.cliToolSurfaceFingerprint,
@@ -581,6 +645,107 @@ function capStringValue(value, maxChars) {
   };
 }
 
+const REPO_ENV_RECOMMENDED_COMMAND_LIMIT = 8;
+const REPO_ENV_COMMAND_ARG_LIMIT = 12;
+const REPO_ENV_COMMAND_ARG_MAX_CHARS = 400;
+const REPO_ENV_STRING_MAX_CHARS = 240;
+const REPO_ENV_SEED_CORPUS_LIMIT = 8;
+const REPO_ENV_SEED_SAMPLE_LIMIT = 8;
+
+function cappedBriefString(value, maxChars = REPO_ENV_STRING_MAX_CHARS) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return capStringValue(trimmed, maxChars).value;
+}
+
+function slimRepoEnvCommand(command) {
+  if (command == null || typeof command !== "object" || Array.isArray(command)) return null;
+  const slim = {};
+  for (const field of ["id", "role", "description", "seed_path"]) {
+    const value = cappedBriefString(command[field]);
+    if (value) slim[field] = value;
+  }
+  if (Array.isArray(command.command)) {
+    const argv = command.command
+      .slice(0, REPO_ENV_COMMAND_ARG_LIMIT)
+      .map((arg) => cappedBriefString(String(arg), REPO_ENV_COMMAND_ARG_MAX_CHARS))
+      .filter(Boolean);
+    if (argv.length > 0) slim.command = argv;
+  }
+  return Object.keys(slim).length > 0 ? slim : null;
+}
+
+function slimSeedCorpusEntry(entry) {
+  if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const relPath = cappedBriefString(entry.rel_path);
+  if (!relPath) return null;
+  const slim = { rel_path: relPath };
+  for (const field of ["file_count", "total_bytes"]) {
+    if (Number.isInteger(entry[field]) && entry[field] >= 0) slim[field] = entry[field];
+  }
+  if (typeof entry.has_zip === "boolean") slim.has_zip = entry.has_zip;
+  if (typeof entry.truncated === "boolean") slim.truncated = entry.truncated;
+  if (Array.isArray(entry.sample_rels)) {
+    const samples = entry.sample_rels
+      .slice(0, REPO_ENV_SEED_SAMPLE_LIMIT)
+      .map((sample) => cappedBriefString(String(sample), REPO_ENV_STRING_MAX_CHARS))
+      .filter(Boolean);
+    if (samples.length > 0) slim.sample_rels = samples;
+  }
+  const hash = cappedBriefString(entry.manifest_hash, 80);
+  if (hash) slim.manifest_hash = hash;
+  return slim;
+}
+
+function buildRepoEnvRecommendationsForBrief(domain) {
+  const filePath = repoEnvPath(domain);
+  if (!fs.existsSync(filePath)) return null;
+  let document;
+  try {
+    document = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+  if (document == null || typeof document !== "object" || Array.isArray(document)) return null;
+
+  const recommendedCommands = Array.isArray(document.recommended_commands)
+    ? document.recommended_commands
+      .slice(0, REPO_ENV_RECOMMENDED_COMMAND_LIMIT)
+      .map(slimRepoEnvCommand)
+      .filter(Boolean)
+    : [];
+  const seedCorpus = Array.isArray(document.seed_corpus)
+    ? document.seed_corpus
+      .slice(0, REPO_ENV_SEED_CORPUS_LIMIT)
+      .map(slimSeedCorpusEntry)
+      .filter(Boolean)
+    : [];
+
+  const detection = document.detection && typeof document.detection === "object" && !Array.isArray(document.detection)
+    ? document.detection
+    : {};
+  const seedCorpusCount = Number.isInteger(detection.seed_corpus_count) && detection.seed_corpus_count >= 0
+    ? detection.seed_corpus_count
+    : seedCorpus.length;
+
+  if (recommendedCommands.length === 0 && seedCorpus.length === 0) return null;
+  const result = {
+    source: "repo-env.json",
+    language: cappedBriefString(detection.language, 80),
+    dry_run: typeof document.dry_run === "boolean" ? document.dry_run : null,
+    build_image: typeof document.build_image === "boolean" ? document.build_image : null,
+    seed_corpus_count: seedCorpusCount,
+    recommended_commands: recommendedCommands,
+    seed_corpus: seedCorpus,
+    usage: "Readable bounded subset for OSS evaluators; run command arrays through bob_repo_docker_run, not shell reads of repo-env.json.",
+  };
+  for (const key of Object.keys(result)) {
+    if (result[key] == null) delete result[key];
+  }
+  return result;
+}
+
 function cappedSurfaceArray(value, limit) {
   const values = Array.isArray(value)
     ? value
@@ -670,6 +835,25 @@ function slimSurfaceForBrief(surface) {
   };
 }
 
+function readSurfaceInfoForBrief(domain, routeMetadata) {
+  if (routeMetadata.brief_profile === "oss") {
+    const projected = currentSurfaces(domain);
+    if (projected.source === "missing") {
+      throw new Error(`Missing surface projection: ${projected.path}`);
+    }
+    return projected;
+  }
+  try {
+    return readAttackSurfaceStrict(domain);
+  } catch (error) {
+    if (error && /^Missing attack surface JSON:/.test(error.message || "")) {
+      const projected = currentSurfaces(domain);
+      if (projected.source !== "missing") return projected;
+    }
+    throw error;
+  }
+}
+
 function readAssignmentBrief(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -693,14 +877,17 @@ function readAssignmentBrief(args) {
   // smart_contract_* once SC packs are added) is accepted by assignment-brief.
   const routeMetadata = normalizeAssignmentRouteMetadata(assignment);
 
-  // 2. Load attack surface and find assigned surface
-  const attackSurface = readAttackSurfaceStrict(domain);
+  // 2. Load surfaces and find assigned surface. OSS repo sessions usually
+  // only have the materialized surface-index.json. Web/SC briefs prefer the
+  // legacy attack_surface.json when present because it carries rich cross-
+  // cutting fields (for example valid_surface_ids) that the projection trims.
+  const attackSurface = readSurfaceInfoForBrief(domain, routeMetadata);
   let surfacesForBrief = attackSurface.document.surfaces;
   // Ranking summarizes traffic + public intel per surface, neither of which
-  // a smart-contract evaluator consumes. Skip it for non-web profiles to avoid
+  // non-web evaluators consume. Skip it for non-web profiles to avoid
   // paying that I/O cost for a result we'd just drop.
-  const isSmartContractBrief = routeMetadata.brief_profile !== "web";
-  if (!isSmartContractBrief) {
+  const isWebBrief = routeMetadata.brief_profile === "web";
+  if (isWebBrief) {
     try {
       const ranked = rankAttackSurfaces(domain);
       if (ranked && Array.isArray(ranked.surfaces)) {
@@ -712,7 +899,7 @@ function readAssignmentBrief(args) {
     (s) => s.id === assignment.surface_id,
   );
   if (!surfaceObj) {
-    throw new Error(`Surface ${assignment.surface_id} not found in attack_surface.json`);
+    throw new Error(`Surface ${assignment.surface_id} not found in current surface projection`);
   }
 
   // 3. Read session state for exclusions
@@ -805,7 +992,7 @@ function readAssignmentBrief(args) {
     agent,
     surface: slimSurface.surface,
     surface_limits: slimSurface.surface_limits,
-    valid_surface_ids: attackSurface.surface_ids,
+    valid_surface_ids: attackSurface.surface_ids || attackSurface.document.surfaces.map((s) => s.id),
     dead_ends: deadEndResult.filtered,
     waf_blocked_endpoints: wafResult.filtered,
     exclusions_summary: {
@@ -840,6 +1027,9 @@ function buildBriefExtrasForProfile(profile, { domain, surface, assignment, rout
   if (registry === WEB_BRIEF_SLICE_REGISTRY) {
     return buildWebBriefExtras(domain, surface, routeMetadata, assignment);
   }
+  if (registry === OSS_BRIEF_SLICE_REGISTRY) {
+    return buildOssBriefExtras(domain, surface, routeMetadata, assignment);
+  }
   if (registry === SMART_CONTRACT_BRIEF_SLICE_REGISTRY) {
     return buildSmartContractBriefExtras(domain, surface, assignment);
   }
@@ -870,6 +1060,8 @@ function buildCliToolSurfaceFingerprint(surfaceObj, brief_profile, domain) {
   if (typeof brief_profile === "string") {
     if (brief_profile === "web") {
       fingerprint.kind = "web";
+    } else if (brief_profile === "oss") {
+      fingerprint.kind = "repo";
     } else if (brief_profile.startsWith("smart_contract")) {
       fingerprint.kind = "smart_contract";
     }
@@ -1053,6 +1245,60 @@ function buildWebBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
   // other than `browser_behavior_probe`.
   if (!extras.browser_workflow) {
     delete extras.browser_workflow;
+  }
+  return extras;
+}
+
+function buildOssBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
+  const taskLens = assignment && typeof assignment.task_lens === "string" ? assignment.task_lens : null;
+  const slimSurface = slimSurfaceForBrief(surfaceObj);
+  const cliToolSurfaceFingerprint = buildCliToolSurfaceFingerprint(surfaceObj, routeMetadata.brief_profile, domain);
+  const cliToolObservations = buildCliToolObservationsSummary(surfaceObj);
+  const ossBriefContext = {
+    taskLens,
+    governance: safeGovernanceContextForDomain(domain),
+    goalOrientation: {
+      target_domain: domain,
+      task_lens: taskLens,
+      capability_pack: routeMetadata.capability_pack,
+      instruction:
+        "Repo-bound OSS assignment: pursue the assigned local code surface, keep evidence inside the repo or sandboxed /work area, and do not infer authorization for a hosted sibling.",
+    },
+    codeSurfacePack: {
+      assigned_surface: slimSurface.surface,
+      surface_limits: slimSurface.surface_limits,
+      route_metadata: {
+        capability_pack: routeMetadata.capability_pack,
+        capability_pack_version: routeMetadata.capability_pack_version,
+        evaluator_agent: routeMetadata.evaluator_agent,
+        brief_profile: routeMetadata.brief_profile,
+      },
+    },
+    repoEnvRecommendations: buildRepoEnvRecommendationsForBrief(domain),
+    ossTechniquePacks: buildOssTechniquePacksSlice(taskLens),
+    cliToolSurfaceFingerprint,
+    cliToolTaskLens: taskLens,
+    cliToolObservations,
+    cliToolTargetDomain: domain,
+    recapAndHandoff: {
+      completion:
+        "Before finalizing, log at least one completion-status technique attempt, write exactly one wave handoff for this surface, then call bob_finalize_agent_run.",
+      required_tools: [
+        "bob_log_technique_attempt",
+        "bob_write_wave_handoff",
+        "bob_finalize_agent_run",
+      ],
+    },
+  };
+  const extras = buildBriefExtrasFromRegistry(OSS_BRIEF_SLICE_REGISTRY, ossBriefContext);
+  if (!extras.repo_workflow) {
+    delete extras.repo_workflow;
+  }
+  if (!extras.cli_tools) {
+    delete extras.cli_tools;
+  }
+  if (!extras.repo_env_recommendations) {
+    delete extras.repo_env_recommendations;
   }
   return extras;
 }
@@ -1307,6 +1553,10 @@ module.exports = {
   BROWSER_BEHAVIOR_PROBE_LENS,
   BROWSER_BEHAVIOR_PROBE_WORKFLOW_TEXT,
   partitionTechniquePacksByLensAffinity,
+  partitionOssTechniquePacksByLens,
+  buildOssBriefExtras,
+  buildRepoEnvRecommendationsForBrief,
+  buildBriefExtrasForProfile,
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   readAssignmentBrief,
   renderAvailableCliToolsSection,

@@ -43,6 +43,12 @@ const {
 const {
   normalizeVerificationRoundDocument,
 } = require("./verification-round-store.js");
+const {
+  finalSeverityByFinding,
+  missingReachabilityStampsForReportableFindings,
+  normalizeReachabilityDispositionStamp,
+  reachabilityDispositionForFinding,
+} = require("./reachability-ceiling.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -115,6 +121,9 @@ function normalizeGradeFinding(result, findingIdSet) {
     total_score: assertInteger(result.total_score, "total_score", { min: 0 }),
     feedback: normalizeOptionalText(result.feedback, "feedback"),
   };
+  if (result.reachability != null) {
+    normalized.reachability = normalizeReachabilityDispositionStamp(result.reachability, "reachability");
+  }
 
   const expectedTotal = normalized.impact
     + normalized.proof_quality
@@ -301,6 +310,12 @@ function renderGradeVerdictMarkdown(document) {
     lines.push(`- Chain Potential: ${finding.chain_potential}`);
     lines.push(`- Report Quality: ${finding.report_quality}`);
     lines.push(`- Total Score: ${finding.total_score}`);
+    if (finding.reachability) {
+      lines.push(`- Graded Severity: ${finding.reachability.graded_severity}`);
+      lines.push(`- Attack Vector: ${finding.reachability.attack_vector}`);
+      lines.push(`- Reachability Disposition: ${finding.reachability.disposition}`);
+      lines.push(`- Reachability Defensible: ${finding.reachability.defensible ? "yes" : "no"}`);
+    }
     lines.push(`- Feedback: ${finding.feedback || "N/A"}`);
     lines.push("");
   }
@@ -325,13 +340,39 @@ function writeGradeVerdict(args) {
   // freeze exists yet.
   const findingIdSet = resolveGradeFindingIdSet(domain, args);
   const seenIds = new Set();
-  const findings = args.findings.map((finding) => {
+  const normalizedFindings = args.findings.map((finding) => {
     const normalizedFinding = normalizeGradeFinding(finding, findingIdSet);
     if (seenIds.has(normalizedFinding.finding_id)) {
       throw new Error(`Duplicate finding_id in findings: ${normalizedFinding.finding_id}`);
     }
     seenIds.add(normalizedFinding.finding_id);
     return normalizedFinding;
+  });
+
+  const finalReportableSeveritySet = requireFinalReportableSeveritySet(domain, findingIdSet);
+  const missingReachability = missingReachabilityStampsForReportableFindings(domain);
+  if (missingReachability.missing.length > 0) {
+    const prefix = missingReachability.inventory_absent === true
+      ? "Reachability inventory is required before grading final reportable repo module findings: "
+      : "Reachability stamps are required for final reportable repo module findings before grading: ";
+    throw new Error(
+      prefix + missingReachability.missing.join(", "),
+    );
+  }
+  const finalSeverities = finalSeverityByFinding(domain);
+  const findings = normalizedFindings.map((finding) => {
+    const recordedSeverity = finalSeverities.get(finding.finding_id);
+    if (!recordedSeverity) return finding;
+    const reachability = reachabilityDispositionForFinding({
+      domain,
+      findingId: finding.finding_id,
+      recordedSeverity,
+    });
+    if (reachability.disposition === "unknown") return finding;
+    return {
+      ...finding,
+      reachability,
+    };
   });
 
   const claimFreezeId = currentClaimFreezeId(domain);
@@ -347,7 +388,7 @@ function writeGradeVerdict(args) {
     claim_freeze_id: claimFreezeId,
   };
   enforceGradeVerdictConsistency(document, {
-    finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
+    finalReportableSeveritySet,
   });
   verificationLib().requireVerificationCompleteForGrade(domain, { findingIdSet });
 

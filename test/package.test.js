@@ -140,13 +140,13 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.equal(isExcludedCanonicalPackageFile(excluded), true, `${excluded} should be denied by policy`);
     }
 
-    // Pack-size budget raised to 3 MB to accommodate the kimi adapter family
+    // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
     // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
     // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
     // Y.3 Stage c substrate growth (evidence_refs[] validator + LARGE_BODY_THRESHOLD_BYTES
     // export + EVIDENCE_REF_HANDLE_PREFIXES constant on bob_write_chain_rollup
-    // per Y-P14b / O4).
-    assert.ok(pack.size < 3000000, `npm pack size ${pack.size} exceeds 3 MB threshold`);
+    // per Y-P14b / O4), plus the packable Plane-Delta graph JSON docs.
+    assert.ok(pack.size < 3100000, `npm pack size ${pack.size} exceeds 3.1 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

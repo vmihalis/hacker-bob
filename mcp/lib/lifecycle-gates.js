@@ -16,6 +16,12 @@
 const {
   LIFECYCLE_STATE_VALUES,
 } = require("./governance-contracts.js");
+const {
+  readSessionStateStrict,
+} = require("./session-state-store.js");
+const {
+  missingReachabilityStampsForReportableFindings,
+} = require("./reachability-ceiling.js");
 
 const ALLOWED_TRANSITIONS = Object.freeze({
   SETUP: Object.freeze(["OPEN_FRONTIER"]),
@@ -61,6 +67,49 @@ function gateVerifyToGrade(context) {
       blocked_by: "verification_stale",
       message: `VERIFY -> GRADE blocked: ${prefix}: ${message}`,
       error: message,
+    });
+  }
+  if (blockers.length > 0) return blockers;
+  try {
+    const { state } = readSessionStateStrict(context.target_domain);
+    if (!state || state.target_repo == null) return blockers;
+  } catch (error) {
+    const message = compactError(error);
+    blockers.push({
+      code: "reachability_stamp_missing",
+      blocked_by: "reachability_absent",
+      message: `VERIFY -> GRADE blocked: session state unavailable for reachability checks: ${message}`,
+      error: message,
+      remediation:
+        "restore valid session state and rerun bob_repo_inventory so reachability stamps can be resolved",
+    });
+    return blockers;
+  }
+  try {
+    const reachability = missingReachabilityStampsForReportableFindings(context.target_domain);
+    if (reachability.missing.length === 0) return blockers;
+    const inventoryAbsent = reachability.inventory_absent === true;
+    blockers.push({
+      code: "reachability_stamp_missing",
+      blocked_by: "reachability_absent",
+      missing_finding_ids: reachability.missing,
+      message: inventoryAbsent
+        ? `VERIFY -> GRADE blocked: repo session has no reachability inventory; ${reachability.missing.length}`
+          + " final reportable repo-module finding(s) would be graded without an I9 ceiling"
+        : `VERIFY -> GRADE blocked: ${reachability.missing.length} final reportable finding(s)`
+          + " lack an I9 reachability stamp",
+      remediation: inventoryAbsent
+        ? "run bob_repo_inventory so repo-inventory.json carries surface_ceilings before grading"
+        : "rerun bob_repo_inventory so repo-inventory.json carries surface_ceilings for the frozen claim surfaces",
+    });
+  } catch (error) {
+    blockers.push({
+      code: "reachability_stamp_missing",
+      blocked_by: "reachability_absent",
+      message: `VERIFY -> GRADE blocked: reachability stamp check failed: ${compactError(error)}`,
+      error: compactError(error),
+      remediation:
+        "rerun bob_repo_inventory and verify candidate claims cite repo surface_ids emitted by the inventory",
     });
   }
   return blockers;
