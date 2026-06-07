@@ -16,6 +16,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -81,6 +82,10 @@ function readJsonl(filePath) {
   if (!fs.existsSync(filePath)) return [];
   const raw = fs.readFileSync(filePath, "utf8");
   return raw.split(/\r?\n/).filter((line) => line.trim().length > 0).map((line) => JSON.parse(line));
+}
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
 }
 
 function indexOfFlag(args, flag) {
@@ -408,6 +413,7 @@ test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without dock
     assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_ref"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_kind"), false);
     assert.ok(typeof rows[0].command_hash === "string" && /^[0-9a-f]{64}$/.test(rows[0].command_hash));
+    assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["echo", "hi"])));
   });
 });
 
@@ -440,6 +446,7 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(rows[0].checkout_kind, "pre_introduction");
     assert.equal(rows[0].network_mode, "none");
     assert.equal(rows[0].mount_mode, "read_only");
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "replay_command_hash"), false);
   });
 });
 
@@ -462,6 +469,33 @@ test("repoDockerRun checkout provenance wraps explicit command after S14 materia
     assert.ok(script.endsWith(`cd '${checkoutDest}' && 'node' '-e' 'console.log('\\''control'\\'')'`));
     assert.equal(result.checkout_ref, first);
     assert.equal(result.checkout_kind, "upstream_fix");
+    assert.equal(result.replay_command_hash, sha256Hex(JSON.stringify(["node", "-e", "console.log('control')"])));
+    assert.notEqual(result.command_hash, result.replay_command_hash);
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].replay_command_hash, result.replay_command_hash);
+  });
+});
+
+test("repoDockerRun self_patch checkout records patch content hash", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const patchBody = "diff --git a/file.txt b/file.txt\n";
+    fs.mkdirSync(repoWorkDir(init.target_domain), { recursive: true });
+    fs.writeFileSync(path.join(repoWorkDir(init.target_domain), "patch.diff"), patchBody);
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: "HEAD", kind: "self_patch" },
+      command: ["true"],
+    });
+
+    assert.equal(result.checkout_kind, "self_patch");
+    assert.equal(result.checkout_patch_hash, sha256Hex(patchBody));
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
+    assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["true"])));
   });
 });
 

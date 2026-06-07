@@ -169,6 +169,7 @@ function appendRepoRunFixture(domain, runId, stdout, {
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
 } = {}) {
+  const replayCommandHash = sha256Hex(JSON.stringify(["sh", "-lc", "./repro.sh"]));
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), "");
@@ -177,7 +178,8 @@ function appendRepoRunFixture(domain, runId, stdout, {
     target_domain: domain,
     run_id: runId,
     dry_run: false,
-    command_hash: sha256Hex(JSON.stringify(["sh", "-lc", "./repro.sh"])),
+    command_hash: replayCommandHash,
+    replay_command_hash: replayCommandHash,
     argv_hash: sha256Hex(JSON.stringify(["run", "--network", "none"])),
     network_mode: "none",
     mount_mode: "read_only",
@@ -189,6 +191,7 @@ function appendRepoRunFixture(domain, runId, stdout, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutKind === "self_patch") row.checkout_patch_hash = sha256Hex("fixture patch\n");
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 

@@ -1267,6 +1267,7 @@ async function repoDockerRun({
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
   const repoRoot = repoSession.target_repo.root_path;
+  const workDir = repoWorkDir(domain);
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -1277,6 +1278,7 @@ async function repoDockerRun({
 
   const runId = generateRunId();
   const normalizedCheckout = normalizeDifferentialCheckout(checkout);
+  const normalizedInputCommand = command == null ? null : assertCommandArray(command);
   if (normalizedCheckout) {
     assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
@@ -1286,9 +1288,9 @@ async function repoDockerRun({
         checkout_kind: normalizedCheckout.kind,
         dest: `/work/${runId}/repo`,
         tar_path: `/work/${runId}/checkout.tar`,
-        after_command: command == null ? null : command,
+        after_command: normalizedInputCommand,
       })
-    : command;
+    : normalizedInputCommand;
   const normalizedCommand = assertCommandArray(effectiveCommand);
   const normalizedDryRun = dryRun == null ? true : assertBoolean(dryRun, "dry_run");
   const normalizedAllowNetwork = allowNetwork == null ? false : assertBoolean(allowNetwork, "allow_network");
@@ -1360,7 +1362,6 @@ async function repoDockerRun({
 
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
-  const workDir = repoWorkDir(domain);
   const argv = buildDockerRunArgv({
     repoRoot,
     workDir,
@@ -1371,10 +1372,16 @@ async function repoDockerRun({
     egressProfile: egressProfileResolved,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
+  const replayCommandHash = normalizedInputCommand
+    ? sha256Hex(JSON.stringify(normalizedInputCommand))
+    : null;
   const argvHash = sha256Hex(JSON.stringify(argv.args));
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);
+  const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
+    ? hashFile(path.join(workDir, "patch.diff"))
+    : null;
   const startedAt = new Date().toISOString();
 
   // Network mode is the value we'd hand to docker --network. We capture
@@ -1398,9 +1405,13 @@ async function repoDockerRun({
       planned_argv: argv.args,
       egress_profile: egressProfileSummary,
     };
+    if (replayCommandHash) planRow.replay_command_hash = replayCommandHash;
     if (normalizedCheckout) {
       planRow.checkout_ref = normalizedCheckout.ref;
       planRow.checkout_kind = normalizedCheckout.kind;
+      if (normalizedCheckout.kind === "self_patch") {
+        planRow.checkout_patch_hash = checkoutPatchHash;
+      }
     }
     if (normalizedReplayContext) planRow.replay_context = normalizedReplayContext;
     if (normalizedBlockedHarnessRunId) planRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
@@ -1422,6 +1433,7 @@ async function repoDockerRun({
       network_mode: networkMode,
       mount_mode: normalizedMountMode,
       command_hash: commandHash,
+      replay_command_hash: replayCommandHash,
       argv_hash: argvHash,
       planned_argv: argv.args,
       stdout_path: null,
@@ -1437,6 +1449,7 @@ async function repoDockerRun({
       ...(normalizedCheckout ? {
         checkout_ref: normalizedCheckout.ref,
         checkout_kind: normalizedCheckout.kind,
+        ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
       } : {}),
     };
   }
@@ -1535,9 +1548,13 @@ async function repoDockerRun({
     stderr_size_bytes: stderrBytes,
     egress_profile: egressProfileSummary,
   };
+  if (replayCommandHash) liveRow.replay_command_hash = replayCommandHash;
   if (normalizedCheckout) {
     liveRow.checkout_ref = normalizedCheckout.ref;
     liveRow.checkout_kind = normalizedCheckout.kind;
+    if (normalizedCheckout.kind === "self_patch") {
+      liveRow.checkout_patch_hash = checkoutPatchHash;
+    }
   }
   if (normalizedReplayContext) liveRow.replay_context = normalizedReplayContext;
   if (normalizedBlockedHarnessRunId) liveRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
@@ -1560,6 +1577,7 @@ async function repoDockerRun({
     network_mode: networkMode,
     mount_mode: normalizedMountMode,
     command_hash: commandHash,
+    replay_command_hash: replayCommandHash,
     argv_hash: argvHash,
     planned_argv: argv.args,
     stdout_path: stdoutPath,
@@ -1584,6 +1602,7 @@ async function repoDockerRun({
     ...(normalizedCheckout ? {
       checkout_ref: normalizedCheckout.ref,
       checkout_kind: normalizedCheckout.kind,
+      ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
     } : {}),
   };
 }

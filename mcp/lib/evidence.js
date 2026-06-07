@@ -61,6 +61,7 @@ const DIFFERENTIAL_VERDICTS = Object.freeze([
 ]);
 const MAX_CONTROL_SUMMARY_CHARS = 1000;
 const MAX_CONTROL_REF_CHARS = 120;
+const HEX64_RE = /^[0-9a-f]{64}$/i;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -97,16 +98,24 @@ function readRepoCommandRunRows(domain) {
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    rows.push(JSON.parse(trimmed));
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (isPlainObject(parsed)) rows.push(parsed);
+    } catch {
+      // Skip corrupt JSONL rows; interrupted appends should not brick later
+      // evidence writes that can still resolve their run ids.
+    }
   }
   return rows;
 }
 
-function readRepoCommandRunRow(domain, runId, fieldName, expectedCheckout = null) {
-  const rows = readRepoCommandRunRows(domain);
+function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) {
   const row = rows.find((entry) => entry && entry.run_id === runId);
   if (!row) {
     throw new Error(`${fieldName} does not match a repo-command-runs.jsonl row`);
+  }
+  if (row.dry_run === true) {
+    throw new Error(`${fieldName} must reference a live non-dry-run repo docker run`);
   }
   if (row.network_mode !== "none") {
     throw new Error(`${fieldName} must reference a --network none repo docker run`);
@@ -117,6 +126,23 @@ function readRepoCommandRunRow(domain, runId, fieldName, expectedCheckout = null
     }
   }
   return row;
+}
+
+function assertHex64(value, fieldName) {
+  if (typeof value !== "string" || !HEX64_RE.test(value)) {
+    throw new Error(`${fieldName} must be a 64-hex content digest`);
+  }
+  return value.toLowerCase();
+}
+
+function replayCommandHashForRun(row, fieldName) {
+  if (typeof row.replay_command_hash === "string" && HEX64_RE.test(row.replay_command_hash)) {
+    return row.replay_command_hash.toLowerCase();
+  }
+  if (row.checkout_ref == null && typeof row.command_hash === "string" && HEX64_RE.test(row.command_hash)) {
+    return row.command_hash.toLowerCase();
+  }
+  throw new Error(`${fieldName} must carry a replay_command_hash for C10 comparison`);
 }
 
 function stdoutHashForRun(domain, runId) {
@@ -159,11 +185,20 @@ function normalizeDifferential(differential, { domain }) {
     "differential.control_ref",
     MAX_CONTROL_REF_CHARS,
   );
-  readRepoCommandRunRow(domain, vulnRunId, "differential.vuln_run_id");
-  readRepoCommandRunRow(domain, controlRunId, "differential.control_run_id", {
+  const allRows = readRepoCommandRunRows(domain);
+  const vulnRow = readRepoCommandRunRow(allRows, vulnRunId, "differential.vuln_run_id");
+  const controlRow = readRepoCommandRunRow(allRows, controlRunId, "differential.control_run_id", {
     ref: controlRef,
     kind: controlKind,
   });
+  const vulnReplayCommandHash = replayCommandHashForRun(vulnRow, "differential.vuln_run_id");
+  const controlReplayCommandHash = replayCommandHashForRun(controlRow, "differential.control_run_id");
+  if (vulnReplayCommandHash !== controlReplayCommandHash) {
+    throw new Error("differential runs must use the same replay command hash");
+  }
+  const patchHash = controlKind === "self_patch"
+    ? assertHex64(controlRow.checkout_patch_hash, "differential.patch_hash")
+    : null;
   const controlSummary = assertMaxChars(
     assertRequiredText(differential.control_summary, "differential.control_summary"),
     "differential.control_summary",
@@ -186,9 +221,11 @@ function normalizeDifferential(differential, { domain }) {
     control_fired: controlFired,
     verdict,
     control_summary: controlSummary,
+    replay_command_hash: vulnReplayCommandHash,
     vuln_stdout_hash: stdoutHashForRun(domain, vulnRunId),
     control_stdout_hash: stdoutHashForRun(domain, controlRunId),
   };
+  if (patchHash) normalized.patch_hash = patchHash;
   validateNoSensitiveMaterial(normalized, "differential");
   return normalized;
 }
@@ -631,6 +668,10 @@ function renderEvidencePacksMarkdown(document) {
       lines.push(`  - Vulnerable Run: ${pack.differential.vuln_run_id}`);
       lines.push(`  - Control Run: ${pack.differential.control_run_id}`);
       lines.push(`  - Control Ref: ${pack.differential.control_ref}`);
+      lines.push(`  - Replay Command Hash: ${pack.differential.replay_command_hash}`);
+      if (pack.differential.patch_hash) {
+        lines.push(`  - Patch Hash: ${pack.differential.patch_hash}`);
+      }
       lines.push(`  - Vulnerable Stdout Hash: ${pack.differential.vuln_stdout_hash || "missing"}`);
       lines.push(`  - Control Stdout Hash: ${pack.differential.control_stdout_hash || "missing"}`);
       lines.push(`  - Control Summary: ${pack.differential.control_summary}`);

@@ -114,12 +114,14 @@ function writeStdoutFile(domain, runId, content) {
 function appendRepoCommandRunRow(domain, {
   run_id: runId,
   command_hash: commandHash,
+  replay_command_hash: replayCommandHash = commandHash,
   exit_code: exitCode,
   stdout_hash: stdoutHash,
   stderr_hash: stderrHash,
   network_mode: networkMode = "none",
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
+  checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
 }) {
   fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
   const row = {
@@ -128,6 +130,7 @@ function appendRepoCommandRunRow(domain, {
     run_id: runId,
     dry_run: false,
     command_hash: commandHash,
+    replay_command_hash: replayCommandHash,
     exit_code: exitCode,
     network_mode: networkMode,
     stdout_hash: stdoutHash,
@@ -136,6 +139,7 @@ function appendRepoCommandRunRow(domain, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutPatchHash) row.checkout_patch_hash = checkoutPatchHash;
   fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
 }
 
@@ -501,6 +505,7 @@ test("C10 differential records null stdout hash when the capture file is missing
     appendRepoCommandRunRow(domain, {
       run_id: vulnRunId,
       command_hash: "a".repeat(64),
+      replay_command_hash: "e".repeat(64),
       exit_code: 0,
       stdout_hash: "b".repeat(64),
       stderr_hash: "c".repeat(64),
@@ -509,6 +514,7 @@ test("C10 differential records null stdout hash when the capture file is missing
     appendRepoCommandRunRow(domain, {
       run_id: controlRunId,
       command_hash: "d".repeat(64),
+      replay_command_hash: "e".repeat(64),
       exit_code: 0,
       stdout_hash: sha256Hex("control quiet\n"),
       stderr_hash: sha256Hex(""),

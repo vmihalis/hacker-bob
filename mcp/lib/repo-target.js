@@ -305,12 +305,21 @@ function packIndexContainsPrefix(idxPath, hexRef, shaBytes) {
   const namesOffset = 8 + 256 * 4;
   const namesEnd = namesOffset + objectCount * shaBytes;
   if (namesEnd > data.length) return false;
-  for (let i = 0; i < objectCount; i += 1) {
-    const start = namesOffset + i * shaBytes;
-    const objectName = data.subarray(start, start + shaBytes).toString("hex");
-    if (objectName.startsWith(prefix)) return true;
+  const objectNameAt = (index) => {
+    const start = namesOffset + index * shaBytes;
+    return data.subarray(start, start + shaBytes).toString("hex");
+  };
+  let low = 0;
+  let high = objectCount;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (objectNameAt(mid) < prefix) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
   }
-  return false;
+  return low < objectCount && objectNameAt(low).startsWith(prefix);
 }
 
 function packedObjectExists(hexRef, commonDir) {

@@ -104,10 +104,13 @@ function sha256Hex(value) {
 function appendRepoRunFixture(domain, runId, {
   stdout = "",
   network_mode: networkMode = "none",
+  dry_run: dryRun = false,
   command_hash: commandHash = "a".repeat(64),
+  replay_command_hash: replayCommandHash = commandHash,
   stderr_hash: stderrHash = "b".repeat(64),
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
+  checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
 } = {}) {
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
@@ -116,8 +119,9 @@ function appendRepoRunFixture(domain, runId, {
     version: 1,
     target_domain: domain,
     run_id: runId,
-    dry_run: false,
+    dry_run: dryRun,
     command_hash: commandHash,
+    replay_command_hash: replayCommandHash,
     argv_hash: "c".repeat(64),
     network_mode: networkMode,
     mount_mode: "read_only",
@@ -129,6 +133,7 @@ function appendRepoRunFixture(domain, runId, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutPatchHash) row.checkout_patch_hash = checkoutPatchHash;
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 
@@ -216,22 +221,64 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
       });
       const differential = document.packs[0].differential;
       assert.equal(differential.verdict, item.verdict);
+      assert.equal(differential.replay_command_hash, "a".repeat(64));
       assert.equal(differential.vuln_stdout_hash, sha256Hex("vuln fired\n"));
       assert.match(differential.control_stdout_hash, /^[0-9a-f]{64}$/);
+      if (item.control_kind === "self_patch") {
+        assert.equal(differential.patch_hash, sha256Hex("fixture patch\n"));
+      }
       assert.equal(Object.prototype.hasOwnProperty.call(differential, "stdout"), false);
     }
   });
 });
 
-test("C10 differential rejects identical run ids and network-tainted controls", () => {
+test("C10 differential skips corrupt JSONL rows when resolving live proof rows", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-corrupt-jsonl.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    fs.appendFileSync(repoCommandRunsJsonlPath(domain), "{\"run_id\":\n");
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+
+    const document = normalizePacksForC10(domain, {
+      control_kind: "self_patch",
+      vuln_run_id: "run-vuln",
+      control_run_id: "run-control",
+      control_ref: "HEAD",
+      vuln_fired: true,
+      control_fired: false,
+      verdict: "patch_fixes",
+      control_summary: "Corrupt JSONL row did not block valid later evidence rows.",
+    });
+
+    assert.equal(document.packs[0].differential.verdict, "patch_fixes");
+  });
+});
+
+test("C10 differential rejects identical run ids, dry-run rows, network-tainted controls, and command mismatch", () => {
   withTempHome(() => {
     const domain = "evidence-c10-rejects.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control-dry-run", {
+      stdout: "control plan only\n",
+      dry_run: true,
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
     appendRepoRunFixture(domain, "run-control-network", {
       stdout: "control fired\n",
       network_mode: "bridge",
       checkout_ref: "abcdef123456",
       checkout_kind: "upstream_fix",
+    });
+    appendRepoRunFixture(domain, "run-control-command-mismatch", {
+      stdout: "control quiet\n",
+      replay_command_hash: "f".repeat(64),
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
     });
 
     assert.throws(
@@ -250,6 +297,20 @@ test("C10 differential rejects identical run ids and network-tainted controls", 
 
     assert.throws(
       () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control-dry-run",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Plan rows should be rejected.",
+      }),
+      /live non-dry-run/,
+    );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
         control_kind: "upstream_fix",
         vuln_run_id: "run-vuln",
         control_run_id: "run-control-network",
@@ -260,6 +321,20 @@ test("C10 differential rejects identical run ids and network-tainted controls", 
         control_summary: "Network-tainted control should be rejected.",
       }),
       /--network none/,
+    );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control-command-mismatch",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Different commands cannot prove patched-vs-unpatched.",
+      }),
+      /same replay command hash/,
     );
   });
 });
@@ -351,6 +426,8 @@ test("C10 inconsistent control downgrades to inconclusive without dropping the f
     const markdown = renderEvidencePacksMarkdown(document);
     assert.match(markdown, /- Differential:/);
     assert.match(markdown, /Verdict: inconclusive/);
+    assert.match(markdown, /Replay Command Hash: [0-9a-f]{64}/);
+    assert.match(markdown, /Patch Hash: [0-9a-f]{64}/);
     assert.match(markdown, /Vulnerable Stdout Hash: [0-9a-f]{64}/);
     assert.match(markdown, /Control Stdout Hash: [0-9a-f]{64}/);
   });
