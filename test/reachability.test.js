@@ -243,6 +243,55 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
   );
 
   assert.deepEqual(
+    computeReachabilityDisposition("high", {
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      reachability_source: "asserted",
+      call_path: "listener -> parser -> sink",
+    }),
+    {
+      recorded_severity: "high",
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: false,
+      reachability_source: "asserted",
+      call_path: "listener -> parser -> sink",
+    },
+  );
+
+  assert.throws(
+    () => computeReachabilityDisposition("high", {
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      reachability_source: "asserted-v2",
+    }),
+    /reachability\.reachability_source must be one of/,
+  );
+  assert.throws(
+    () => computeReachabilityDisposition("high", {
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      reachability_source: "asserted",
+    }),
+    /reachability\.call_path is required when reachability_source is "asserted"/,
+  );
+  assert.throws(
+    () => computeReachabilityDisposition("high", {
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      call_path: "listener -> parser -> sink",
+    }),
+    /reachability\.call_path is only allowed when reachability_source is "asserted"/,
+  );
+
+  assert.deepEqual(
     computeReachabilityDisposition("medium", null),
     {
       recorded_severity: "medium",

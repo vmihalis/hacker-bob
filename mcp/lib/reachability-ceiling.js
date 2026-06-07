@@ -39,6 +39,10 @@ const REACHABILITY_SOURCE_VALUES = Object.freeze([
   "heuristic",
   "none",
 ]);
+const REACHABILITY_INPUT_SOURCE_VALUES = Object.freeze([
+  "asserted",
+  "heuristic",
+]);
 const SEVERITY_CEILING_VALUES = Object.freeze([
   ...SEVERITY_VALUES,
   "unknown",
@@ -57,8 +61,10 @@ const REACHABILITY_STAMPED_SURFACE_PREFIXES = Object.freeze([
 // C9 truth table:
 // - unknown reachability => preserve recorded severity, disposition unknown.
 // - local ceiling below recorded severity => cap graded_severity to ceiling.
-// - network reachable + recorded high/critical => certify as lifted/defensible,
-//   without inventing severity above the verified round.
+// - network reachable + recorded high/critical => mark as lifted without
+//   inventing severity above the verified round. Heuristic reachability is
+//   independently defensible; evaluator assertions carry their source for
+//   operator review instead of self-certifying defensibility.
 // - otherwise preserve recorded severity as unchanged.
 function computeReachabilityDisposition(recordedSeverity, reachability = null) {
   const normalizedRecorded = normalizeRecordedSeverity(recordedSeverity);
@@ -81,10 +87,10 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
     };
   }
 
-  const networkDefensible = normalizedReachability.network_reachable === true
+  const networkLifted = normalizedReachability.network_reachable === true
     && normalizedReachability.attack_vector === "network"
     && (normalizedRecorded === "high" || normalizedRecorded === "critical");
-  if (networkDefensible) {
+  if (networkLifted) {
     return {
       recorded_severity: normalizedRecorded,
       severity_ceiling: ceiling,
@@ -92,7 +98,7 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
       network_reachable: true,
       graded_severity: normalizedRecorded,
       disposition: "lifted",
-      defensible: true,
+      defensible: normalizedReachability.reachability_source !== "asserted",
       ...reachabilityMetadata(normalizedReachability),
     };
   }
@@ -139,12 +145,13 @@ function normalizeReachabilityInput(reachability) {
   const networkReachable = typeof reachability.network_reachable === "boolean"
     ? reachability.network_reachable
     : null;
-  const rawSource = typeof reachability.reachability_source === "string"
-    ? reachability.reachability_source
-    : "heuristic";
-  const reachabilitySource = rawSource === "asserted" || rawSource === "heuristic"
-    ? rawSource
-    : "heuristic";
+  const reachabilitySource = reachability.reachability_source == null
+    ? "heuristic"
+    : assertEnumValue(
+      reachability.reachability_source,
+      REACHABILITY_INPUT_SOURCE_VALUES,
+      "reachability.reachability_source",
+    );
   const reachabilityDivergence = normalizeOptionalText(
     reachability.reachability_divergence,
     "reachability.reachability_divergence",
@@ -153,6 +160,12 @@ function normalizeReachabilityInput(reachability) {
     reachability.call_path,
     "reachability.call_path",
   );
+  if (reachabilitySource === "asserted" && !callPath) {
+    throw new Error("reachability.call_path is required when reachability_source is \"asserted\"");
+  }
+  if (callPath && reachabilitySource !== "asserted") {
+    throw new Error("reachability.call_path is only allowed when reachability_source is \"asserted\"");
+  }
   return {
     severity_ceiling: ceiling,
     attack_vector: attackVector,
@@ -269,7 +282,7 @@ function claimsForFinding(domain, findingId) {
 function claimCreatedAtMs(claim) {
   const raw = claim && typeof claim.created_at === "string" ? claim.created_at : "";
   const parsed = Date.parse(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
 }
 
 function compareClaimsByCreatedAtThenId(a, b) {
@@ -305,7 +318,6 @@ function reachabilityAssertionRecordForFinding(domain, findingId) {
     const key = JSON.stringify({
       attack_vector: assertion.attack_vector,
       network_reachable: assertion.network_reachable,
-      call_path: assertion.call_path,
     });
     if (seen.has(key)) continue;
     seen.add(key);
@@ -406,7 +418,8 @@ function severityCeilingForAssertedReachability(assertion, heuristic) {
 }
 
 function reachabilityDivergenceNote(assertion, heuristic, severityCeiling = null) {
-  if (!assertion || !heuristic) return null;
+  if (!assertion) return null;
+  if (!heuristic) return "asserted reachability has no producer inventory or stamped-surface fallback";
   const notes = [];
   if (
     assertion.attack_vector !== heuristic.attack_vector

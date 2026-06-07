@@ -586,7 +586,7 @@ module.exports = Object.freeze({
       },
       "reachability_assertion": {
         "type": "object",
-        "description": "Optional evaluator-asserted finding reachability. Only allowed for routed oss_native_code findings. Cite the entrypoint-to-sink path the evaluator verified; this evaluator-authored assertion is trusted grading provenance at grade time and overrides the repo-inventory file-locality heuristic while respecting stricter producer ceilings when present. It is not independently verifier-reviewed. Frozen conflict policy is first distinct assertion wins by claim time; corrections require operator amendment/re-freeze rather than another conflicting claim.",
+        "description": "Optional evaluator-asserted finding reachability. Only allowed for routed oss_native_code findings. Cite the entrypoint-to-sink path the evaluator verified; this evaluator-authored assertion is trusted grading provenance at grade time and overrides the repo-inventory file-locality heuristic while respecting stricter producer ceilings when present. It is not independently verifier-reviewed and does not self-certify reachability defensibility. Frozen conflict policy is first distinct attack_vector/network_reachable assertion wins by claim time; same-classification call_path refinements are not conflicts; corrections to attack_vector/network_reachable require operator amendment/re-freeze rather than another conflicting claim.",
         "properties": {
           "attack_vector": {
             "type": "string",
@@ -601,7 +601,7 @@ module.exports = Object.freeze({
             "type": "string",
             "minLength": 7,
             "maxLength": 4000,
-            "pattern": "\\S[^\\n\\r]*->[^\\n\\r]*->[^\\n\\r]*\\S",
+            "pattern": "^\\S[^\\n\\r]*->[^\\n\\r]*->[^\\n\\r]*\\S$",
             "description": "Cited entrypoint-to-sink path with at least two hops, for example: UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid."
           },
           "justification": {

@@ -453,6 +453,43 @@ test("asserted network reachability overrides heuristic locality but preserves t
   });
 });
 
+test("asserted reachability can grade without producer inventory and records an audit note", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assertion-no-inventory");
+    const domain = repoSession.target_domain;
+    fs.rmSync(repoInventoryPath(domain), { force: true });
+    seedFrozenRepoFinding(domain, [repoSession.surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "UDP listener -> parse_packet -> buffer read",
+        justification: "The cited parser path is reached directly from UDP input.",
+      },
+    });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.deepEqual(read.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: false,
+      reachability_source: "asserted",
+      call_path: "UDP listener -> parse_packet -> buffer read",
+      reachability_divergence: "asserted reachability has no producer inventory or stamped-surface fallback",
+    });
+  });
+});
+
 test("asserted network reachability stays network when the heuristic agrees", () => {
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-network-over-network");
@@ -481,7 +518,7 @@ test("asserted network reachability stays network when the heuristic agrees", ()
       network_reachable: true,
       graded_severity: "high",
       disposition: "lifted",
-      defensible: true,
+      defensible: false,
       reachability_source: "asserted",
       call_path: "UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid",
     });
@@ -521,7 +558,7 @@ test("asserted network reachability does not exceed a stricter producer network 
       network_reachable: true,
       graded_severity: "high",
       disposition: "lifted",
-      defensible: true,
+      defensible: false,
       reachability_source: "asserted",
       call_path: "TCP listener -> parse_packet -> bounded sink",
       reachability_divergence: "producer ceiling high constrains asserted network ceiling critical",
@@ -646,6 +683,86 @@ test("conflicting forced reachability assertions use the earliest assertion with
     assert.equal(
       read.findings[0].reachability.reachability_divergence,
       "conflicting reachability assertions present (2); using earliest; asserted network/true overrides heuristic local/false; producer ceiling medium constrains asserted network ceiling critical",
+    );
+  });
+});
+
+test("same-classification frozen reachability assertions with different call paths do not conflict", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assertion-refined-path");
+    const domain = repoSession.target_domain;
+    const baseClaim = {
+      target_domain: domain,
+      title: "Native parser over-read",
+      summary: "Parser reads past the available buffer.",
+      severity: "medium",
+      status: "candidate",
+      created_at: "2026-05-27T00:00:00.000Z",
+      surface_ids: [repoSession.surface_id],
+      evidence_refs: [{
+        kind: "finding",
+        finding_id: "F-1",
+        content_hash: "0".repeat(64),
+      }],
+      impact: "Parser crash on crafted input.",
+    };
+    appendCandidateClaim({
+      ...baseClaim,
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: true,
+            call_path: "UDP listener -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    appendCandidateClaim({
+      ...baseClaim,
+      title: "Native parser over-read refined path",
+      created_at: "2026-05-27T00:00:01.000Z",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: true,
+            call_path: "UDP listener -> parse_pdu_value -> decode_varbind -> buffer read",
+          },
+        },
+      },
+    });
+    buildClaimFreeze(domain, {
+      write: true,
+      now: new Date("2026-05-27T01:00:00.000Z"),
+    });
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({
+        target_domain: domain,
+        round,
+        notes: null,
+        results: [verificationResult("F-1", { severity: "high", reportable: true })],
+      });
+    }
+    writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.equal(read.findings[0].reachability.reachability_source, "asserted");
+    assert.equal(read.findings[0].reachability.call_path, "UDP listener -> parse_packet -> buffer read");
+    assert.doesNotMatch(
+      read.findings[0].reachability.reachability_divergence || "",
+      /conflicting reachability assertions/,
     );
   });
 });
