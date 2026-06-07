@@ -109,6 +109,7 @@ function appendRepoRunFixture(domain, runId, {
   replay_command_hash: replayCommandHash = commandHash,
   stderr_hash: stderrHash = "b".repeat(64),
   exit_code: exitCode = 0,
+  mount_mode: mountMode = "read_only",
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
   checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
@@ -125,7 +126,7 @@ function appendRepoRunFixture(domain, runId, {
     replay_command_hash: replayCommandHash,
     argv_hash: "c".repeat(64),
     network_mode: networkMode,
-    mount_mode: "read_only",
+    mount_mode: mountMode,
     image_tag: `bob-oss-${domain}:fixture`,
     exit_code: exitCode,
     timed_out: false,
@@ -371,6 +372,10 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
       stdout: "vuln fired\n",
       replay_command_hash: null,
     });
+    appendRepoRunFixture(domain, "run-vuln-read-write", {
+      stdout: "vuln fired after source mutation\n",
+      mount_mode: "read_write",
+    });
     appendRepoRunFixture(domain, "run-control-dry-run", {
       stdout: "control plan only\n",
       dry_run: true,
@@ -458,6 +463,20 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
         control_summary: "Legacy rows without replay hashes cannot prove command equality.",
       }),
       /replay_command_hash/,
+    );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln-read-write",
+        control_run_id: "run-control-command-mismatch",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "The vulnerable baseline must not have mutable source access.",
+      }),
+      /read-only \/src/,
     );
   });
 });

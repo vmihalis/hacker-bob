@@ -303,6 +303,23 @@ test("assertHistoryAvailableForRef handles linked worktree gitdir files", () => 
   assert.equal(result.checkout_ref, second.slice(0, 12));
 }));
 
+test("assertHistoryAvailableForRef accepts linked worktree metadata with a non-basename id", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-linked-renamed-main");
+  const worktree = path.join(home, "history-linked-renamed-worktree");
+  git(repo, ["worktree", "add", "-q", worktree, second]);
+  const dotGitPath = path.join(worktree, ".git");
+  const match = fs.readFileSync(dotGitPath, "utf8").trim().match(/^gitdir:\s*(.+)$/i);
+  assert.ok(match, "linked worktree .git file must carry a gitdir pointer");
+  const oldGitDir = path.resolve(worktree, match[1].trim());
+  const newGitDir = path.join(path.dirname(oldGitDir), "renamed-worktree-metadata");
+  assert.notEqual(path.basename(newGitDir), path.basename(worktree));
+  fs.renameSync(oldGitDir, newGitDir);
+  fs.writeFileSync(dotGitPath, `gitdir: ${newGitDir}\n`);
+
+  const result = assertHistoryAvailableForRef(worktree, second.slice(0, 12));
+  assert.equal(result.checkout_ref, second.slice(0, 12));
+}));
+
 test("assertHistoryAvailableForRef refuses gitdir pointers outside repo/worktree metadata", () => withTempHome((home) => {
   const repo = path.join(home, "history-malicious-gitdir");
   fs.mkdirSync(repo, { recursive: true });
@@ -316,6 +333,17 @@ test("assertHistoryAvailableForRef refuses gitdir pointers outside repo/worktree
   } finally {
     fs.rmSync(outsideGitDir, { recursive: true, force: true });
   }
+}));
+
+test("assertHistoryAvailableForRef resolves packed SHA-1 objects without SHA-256 probing", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-packed-sha1");
+  git(repo, ["gc", "--prune=now"]);
+  const packed = assertHistoryAvailableForRef(repo, second.slice(0, 12));
+  assert.equal(packed.checkout_ref, second.slice(0, 12));
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, `${second}${"0".repeat(24)}`),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
 }));
 
 test("repo session inventory emits OSS surfaces and routes to OSS packs", () => withTempHome((home) => {

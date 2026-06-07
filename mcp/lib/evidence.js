@@ -135,6 +135,9 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) 
   if (row.network_mode !== "none") {
     throw new Error(`${fieldName} must reference a --network none repo docker run`);
   }
+  if (row.mount_mode !== "read_only") {
+    throw new Error(`${fieldName} must reference a read-only /src repo docker run`);
+  }
   if (expectedCheckout) {
     if (row.checkout_ref !== expectedCheckout.ref || row.checkout_kind !== expectedCheckout.kind) {
       throw new Error(`${fieldName} must reference a matching S14 checkout run`);

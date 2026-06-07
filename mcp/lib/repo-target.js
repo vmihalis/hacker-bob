@@ -191,8 +191,13 @@ function standardSiblingWorktreeBoundary(repoRootReal, candidateReal) {
   const gitIndex = parts.indexOf(".git");
   if (gitIndex < 1) return null;
   if (parts[gitIndex + 1] !== "worktrees") return null;
-  if (parts[gitIndex + 2] !== path.basename(repoRootReal)) return null;
   if (parts.length !== gitIndex + 3) return null;
+  const reverseGitDirPath = path.join(candidateReal, "gitdir");
+  if (!fs.existsSync(reverseGitDirPath) || !fs.statSync(reverseGitDirPath).isFile()) return null;
+  const rawReverseGitDir = fs.readFileSync(reverseGitDirPath, "utf8").trim();
+  if (!rawReverseGitDir) return null;
+  const reverseGitDir = realpathIfPossible(path.resolve(candidateReal, rawReverseGitDir));
+  if (reverseGitDir !== realpathIfPossible(path.join(repoRootReal, ".git"))) return null;
   return { parentReal };
 }
 
@@ -388,7 +393,6 @@ function packedObjectExists(hexRef, commonDir) {
     const idxPath = path.join(packDir, entry.name);
     try {
       if (packIndexContainsPrefix(idxPath, hexRef, 20)) return true;
-      if (packIndexContainsPrefix(idxPath, hexRef, 32)) return true;
     } catch {
       // Ignore unreadable/corrupt pack indexes; absence is handled by the
       // caller as a loud ref_not_in_local_history refusal.
