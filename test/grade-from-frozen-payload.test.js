@@ -411,7 +411,7 @@ test("asserted local reachability overrides heuristic network and caps without d
   });
 });
 
-test("asserted network reachability overrides heuristic local", () => {
+test("asserted network reachability overrides heuristic locality but preserves the producer ceiling", () => {
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-network-over-local");
     const domain = repoSession.target_domain;
@@ -434,14 +434,14 @@ test("asserted network reachability overrides heuristic local", () => {
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.deepEqual(read.findings[0].reachability, {
       recorded_severity: "high",
-      severity_ceiling: "critical",
+      severity_ceiling: "medium",
       attack_vector: "network",
       network_reachable: true,
-      graded_severity: "high",
-      disposition: "lifted",
-      defensible: true,
+      graded_severity: "medium",
+      disposition: "capped",
+      defensible: false,
       reachability_source: "asserted",
-      reachability_divergence: "asserted network/true overrides heuristic local/false",
+      reachability_divergence: "asserted network/true overrides heuristic local/false; producer ceiling medium constrains asserted network ceiling critical",
     });
   });
 });
@@ -476,6 +476,46 @@ test("asserted network reachability stays network when the heuristic agrees", ()
       disposition: "lifted",
       defensible: true,
       reachability_source: "asserted",
+    });
+  });
+});
+
+test("asserted network reachability does not exceed a stricter producer network ceiling", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-network-bounded");
+    const domain = repoSession.target_domain;
+    const inventoryPath = repoInventoryPath(domain);
+    const inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8"));
+    const stamp = inventory.reachability.surface_ceilings.find((entry) => entry.id === repoSession.network_surface_id);
+    stamp.severity_ceiling = "high";
+    fs.writeFileSync(inventoryPath, JSON.stringify(inventory), "utf8");
+    seedFrozenRepoFinding(domain, [repoSession.network_surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "TCP listener -> parse_packet -> bounded sink",
+        justification: "The path is network-reachable, but the producer ceiling remains high.",
+      },
+    });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.deepEqual(read.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "high",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: true,
+      reachability_source: "asserted",
+      reachability_divergence: "producer ceiling high constrains asserted network ceiling critical",
     });
   });
 });

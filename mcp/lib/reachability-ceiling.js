@@ -249,7 +249,11 @@ function reachabilityAssertionForFinding(domain, findingId) {
     if (typeof finding.id === "string" && finding.id !== findingId) continue;
     const assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
     if (!assertion) continue;
-    const key = JSON.stringify(assertion);
+    const key = JSON.stringify({
+      attack_vector: assertion.attack_vector,
+      network_reachable: assertion.network_reachable,
+      call_path: assertion.call_path,
+    });
     if (seen.has(key)) continue;
     seen.add(key);
     assertions.push(assertion);
@@ -319,19 +323,37 @@ function severityCeilingForAssertedAttackVector(attackVector) {
   return attackVector === "network" ? "critical" : "medium";
 }
 
-function reachabilityDivergenceNote(assertion, heuristic) {
+function stricterSeverityCeiling(primary, candidate) {
+  if (!candidate) return primary;
+  const primaryRank = severityRank(primary);
+  const candidateRank = severityRank(candidate);
+  if (primaryRank === 0 || candidateRank === 0) return primary;
+  return candidateRank < primaryRank ? candidate : primary;
+}
+
+function severityCeilingForAssertedReachability(assertion, heuristic) {
+  const assertedCeiling = severityCeilingForAssertedAttackVector(assertion.attack_vector);
+  return stricterSeverityCeiling(assertedCeiling, heuristic && heuristic.severity_ceiling);
+}
+
+function reachabilityDivergenceNote(assertion, heuristic, severityCeiling = null) {
   if (!assertion || !heuristic) return null;
+  const notes = [];
   if (
-    assertion.attack_vector === heuristic.attack_vector
-    && assertion.network_reachable === heuristic.network_reachable
+    assertion.attack_vector !== heuristic.attack_vector
+    || assertion.network_reachable !== heuristic.network_reachable
   ) {
-    return null;
+    const assertedReachable = assertion.network_reachable === true ? "true" : "false";
+    const heuristicReachable = heuristic.network_reachable === true
+      ? "true"
+      : (heuristic.network_reachable === false ? "false" : "null");
+    notes.push(`asserted ${assertion.attack_vector}/${assertedReachable} overrides heuristic ${heuristic.attack_vector}/${heuristicReachable}`);
   }
-  const assertedReachable = assertion.network_reachable === true ? "true" : "false";
-  const heuristicReachable = heuristic.network_reachable === true
-    ? "true"
-    : (heuristic.network_reachable === false ? "false" : "null");
-  return `asserted ${assertion.attack_vector}/${assertedReachable} overrides heuristic ${heuristic.attack_vector}/${heuristicReachable}`;
+  const assertedCeiling = severityCeilingForAssertedAttackVector(assertion.attack_vector);
+  if (severityCeiling && severityCeiling !== assertedCeiling && heuristic.severity_ceiling === severityCeiling) {
+    notes.push(`producer ceiling ${severityCeiling} constrains asserted ${assertion.attack_vector} ceiling ${assertedCeiling}`);
+  }
+  return notes.length > 0 ? notes.join("; ") : null;
 }
 
 function resolveFindingReachabilityFromHeuristic({ domain, findingId } = {}) {
@@ -383,9 +405,10 @@ function resolveFindingReachability({ domain, findingId } = {}) {
     } catch {
       heuristic = null;
     }
-    const divergence = reachabilityDivergenceNote(assertion, heuristic);
+    const severityCeiling = severityCeilingForAssertedReachability(assertion, heuristic);
+    const divergence = reachabilityDivergenceNote(assertion, heuristic, severityCeiling);
     return {
-      severity_ceiling: severityCeilingForAssertedAttackVector(assertion.attack_vector),
+      severity_ceiling: severityCeiling,
       attack_vector: assertion.attack_vector,
       network_reachable: assertion.network_reachable,
       reachability_source: "asserted",
