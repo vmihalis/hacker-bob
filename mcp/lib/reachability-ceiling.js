@@ -21,6 +21,7 @@ const {
   readCurrentClaimFreeze,
 } = require("./claim-freeze.js");
 const {
+  findingSupportsReachabilityAssertion,
   normalizeReachabilityAssertion,
 } = require("./finding-contracts.js");
 const {
@@ -235,10 +236,24 @@ function claimsForFinding(domain, findingId) {
   });
 }
 
-function reachabilityAssertionForFinding(domain, findingId) {
+function claimCreatedAtMs(claim) {
+  const raw = claim && typeof claim.created_at === "string" ? claim.created_at : "";
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareClaimsByCreatedAtThenId(a, b) {
+  const byCreatedAt = claimCreatedAtMs(a) - claimCreatedAtMs(b);
+  if (byCreatedAt !== 0) return byCreatedAt;
+  const aId = a && typeof a.claim_id === "string" ? a.claim_id : "";
+  const bId = b && typeof b.claim_id === "string" ? b.claim_id : "";
+  return aId.localeCompare(bId);
+}
+
+function reachabilityAssertionRecordForFinding(domain, findingId) {
   const assertions = [];
   const seen = new Set();
-  for (const claim of claimsForFinding(domain, findingId)) {
+  for (const claim of claimsForFinding(domain, findingId).slice().sort(compareClaimsByCreatedAtThenId)) {
     const payload = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
       ? claim.payload
       : {};
@@ -247,6 +262,7 @@ function reachabilityAssertionForFinding(domain, findingId) {
       : null;
     if (!finding) continue;
     if (typeof finding.id === "string" && finding.id !== findingId) continue;
+    if (!findingSupportsReachabilityAssertion(finding)) continue;
     const assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
     if (!assertion) continue;
     const key = JSON.stringify({
@@ -258,10 +274,22 @@ function reachabilityAssertionForFinding(domain, findingId) {
     seen.add(key);
     assertions.push(assertion);
   }
+  if (assertions.length === 0) return null;
   if (assertions.length > 1) {
-    throw new Error(`conflicting reachability assertions for finding ${findingId}`);
+    return {
+      assertion: assertions[0],
+      conflict_note: `conflicting reachability assertions present (${assertions.length}); using earliest`,
+    };
   }
-  return assertions[0] || null;
+  return {
+    assertion: assertions[0],
+    conflict_note: null,
+  };
+}
+
+function reachabilityAssertionForFinding(domain, findingId) {
+  const record = reachabilityAssertionRecordForFinding(domain, findingId);
+  return record ? record.assertion : null;
 }
 
 function findingHasReachabilityAssertion(domain, findingId) {
@@ -356,6 +384,11 @@ function reachabilityDivergenceNote(assertion, heuristic, severityCeiling = null
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
+function combineReachabilityDivergenceNotes(...notes) {
+  const filtered = notes.filter((note) => typeof note === "string" && note.trim()).map((note) => note.trim());
+  return filtered.length > 0 ? filtered.join("; ") : null;
+}
+
 function resolveFindingReachabilityFromHeuristic({ domain, findingId } = {}) {
   const inventory = readReachabilityInventory(domain);
   if (!inventory) return null;
@@ -397,16 +430,15 @@ function resolveFindingReachabilityFromHeuristic({ domain, findingId } = {}) {
 
 function resolveFindingReachability({ domain, findingId } = {}) {
   assertResolveFindingReachabilityArgs({ domain, findingId });
-  const assertion = reachabilityAssertionForFinding(domain, findingId);
+  const assertionRecord = reachabilityAssertionRecordForFinding(domain, findingId);
+  const assertion = assertionRecord ? assertionRecord.assertion : null;
   if (assertion) {
-    let heuristic = null;
-    try {
-      heuristic = resolveFindingReachabilityFromHeuristic({ domain, findingId });
-    } catch {
-      heuristic = null;
-    }
+    const heuristic = resolveFindingReachabilityFromHeuristic({ domain, findingId });
     const severityCeiling = severityCeilingForAssertedReachability(assertion, heuristic);
-    const divergence = reachabilityDivergenceNote(assertion, heuristic, severityCeiling);
+    const divergence = combineReachabilityDivergenceNotes(
+      assertionRecord.conflict_note,
+      reachabilityDivergenceNote(assertion, heuristic, severityCeiling),
+    );
     return {
       severity_ceiling: severityCeiling,
       attack_vector: assertion.attack_vector,

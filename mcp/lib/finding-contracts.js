@@ -93,7 +93,7 @@ function normalizeReachabilityAssertion(value, fieldName = "reachability_asserti
   if (attackVector === "local" && networkReachable !== false) {
     throw new Error(`${fieldName}.network_reachable must be false when attack_vector is local`);
   }
-  const callPath = assertRequiredText(value.call_path, `${fieldName}.call_path`);
+  const callPath = normalizeReachabilityCallPath(value.call_path, `${fieldName}.call_path`);
   const justification = normalizeOptionalText(value.justification, `${fieldName}.justification`);
   const normalized = {
     attack_vector: attackVector,
@@ -102,6 +102,27 @@ function normalizeReachabilityAssertion(value, fieldName = "reachability_asserti
   };
   if (justification) normalized.justification = justification;
   return normalized;
+}
+
+function normalizeReachabilityCallPath(value, fieldName) {
+  const callPath = assertRequiredText(value, fieldName);
+  const segments = callPath.split("->").map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length < 2) {
+    throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least one '->' hop`);
+  }
+  return callPath;
+}
+
+function findingSupportsReachabilityAssertion(finding) {
+  return finding
+    && typeof finding.capability_pack === "string"
+    && finding.capability_pack === "oss_native_code";
+}
+
+function assertReachabilityAssertionScope(finding, fieldName = "reachability_assertion") {
+  if (!findingSupportsReachabilityAssertion(finding)) {
+    throw new Error(`${fieldName} is only allowed for oss_native_code findings`);
+  }
 }
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -459,10 +480,6 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
-    const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
-    if (reachabilityAssertion) {
-      finding.reachability_assertion = reachabilityAssertion;
-    }
     const missingRouting = !finding.capability_pack || !finding.evaluator_agent || !finding.brief_profile;
     if (missingRouting) {
       const backfill = capabilityPackForLegacyFinding({
@@ -474,6 +491,11 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
         if (!finding.evaluator_agent) finding.evaluator_agent = backfill.evaluator_agent;
         if (!finding.brief_profile) finding.brief_profile = backfill.brief_profile;
       }
+    }
+    const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
+    if (reachabilityAssertion) {
+      assertReachabilityAssertionScope(finding);
+      finding.reachability_assertion = reachabilityAssertion;
     }
     if (finding.surface_type === "smart_contract" && !finding.sc_evidence) {
       throw new Error("smart-contract findings must include sc_evidence");
@@ -581,6 +603,7 @@ module.exports = {
   normalizeBech32Address,
   normalizeFindingRecord,
   normalizeReachabilityAssertion,
+  findingSupportsReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,
   renderFindingMarkdownEntry,

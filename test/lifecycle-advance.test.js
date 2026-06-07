@@ -134,6 +134,7 @@ function seedRepoVerification(home, {
     claim.payload = {
       finding: {
         id: "F-1",
+        capability_pack: "oss_native_code",
         reachability_assertion: reachabilityAssertion,
       },
     };

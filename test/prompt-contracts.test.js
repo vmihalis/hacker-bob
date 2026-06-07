@@ -472,6 +472,8 @@ test("evaluator prompts require cited reachability assertions for OSS native fin
     const body = readFile(surface);
     assert.match(body, /reachability_assertion/, `${surface} must mention reachability_assertion`);
     assert.match(body, /entrypoint-to-sink path/, `${surface} must require an entrypoint-to-sink path`);
+    assert.match(body, /oss_native_code/, `${surface} must scope assertions to oss_native_code`);
+    assert.match(body, /Do not include this field for web or smart-contract findings/, `${surface} must forbid non-OSS assertion use`);
     assert.match(body, /UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid/, `${surface} must carry the network example`);
     assert.match(body, /AgentX master unix socket -> handle_subagent_set_response/, `${surface} must carry the local IPC example`);
   }
@@ -1637,10 +1639,12 @@ test("the claim-recording tool's schema requires cited reachability assertions",
   assert.ok(tool, "bob_record_candidate_claim tool not registered");
   const assertion = tool.inputSchema.properties.reachability_assertion;
   assert.equal(assertion.type, "object");
+  assert.match(assertion.description, /Only allowed for routed oss_native_code findings/);
   assert.deepEqual([...assertion.required].sort(), ["attack_vector", "call_path", "network_reachable"].sort());
   assert.deepEqual([...assertion.properties.attack_vector.enum].sort(), ["local", "network"]);
-  assert.equal(assertion.properties.call_path.minLength, 1);
+  assert.equal(assertion.properties.call_path.minLength, 4);
   assert.ok(assertion.properties.call_path.maxLength <= 4000);
+  assert.match(assertion.properties.call_path.pattern, /->/);
 });
 
 // =============================================================================
