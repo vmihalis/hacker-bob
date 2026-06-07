@@ -475,6 +475,9 @@ test("evaluator prompts require cited reachability assertions for OSS native fin
     assert.match(body, /at least two `->` hops and no line breaks/, `${surface} must require single-line two-hop reachability paths`);
     assert.match(body, /oss_native_code/, `${surface} must scope assertions to oss_native_code`);
     assert.match(body, /Do not include this field for web or smart-contract findings/, `${surface} must forbid non-OSS assertion use`);
+    assert.match(body, /not independently verifier-reviewed/, `${surface} must document the assertion trust boundary`);
+    assert.match(body, /first distinct assertion wins/, `${surface} must document frozen assertion conflict policy`);
+    assert.match(body, /amend\/re-freeze/, `${surface} must direct corrections to operator amendment`);
     assert.match(body, /UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid/, `${surface} must carry the network example`);
     assert.match(body, /AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response/, `${surface} must carry the local IPC example`);
   }
@@ -1641,6 +1644,8 @@ test("the claim-recording tool's schema requires cited reachability assertions",
   const assertion = tool.inputSchema.properties.reachability_assertion;
   assert.equal(assertion.type, "object");
   assert.match(assertion.description, /Only allowed for routed oss_native_code findings/);
+  assert.match(assertion.description, /not independently verifier-reviewed/);
+  assert.match(assertion.description, /first distinct assertion wins/);
   assert.deepEqual([...assertion.required].sort(), ["attack_vector", "call_path", "network_reachable"].sort());
   assert.deepEqual([...assertion.properties.attack_vector.enum].sort(), ["local", "network"]);
   assert.equal(assertion.properties.call_path.minLength, 7);

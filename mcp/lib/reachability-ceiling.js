@@ -313,6 +313,8 @@ function reachabilityAssertionRecordForFinding(domain, findingId) {
   }
   if (assertions.length === 0) return null;
   if (assertions.length > 1) {
+    // Frozen conflict policy: first distinct valid assertion wins. Later
+    // corrections require operator amendment / re-freeze, not another claim.
     return {
       assertion: assertions[0],
       conflict_note: `conflicting reachability assertions present (${assertions.length}); using earliest`,

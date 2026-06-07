@@ -26,6 +26,10 @@ A finding MAY carry an **evaluator-asserted reachability** (`attack_vector` + `n
 
 **Precedence:** `asserted` (with non-empty `call_path`) > `heuristic` surface stamp > `unknown`. On disagreement, asserted wins and a divergence note is recorded (no silent override). `severity_ceiling` stays class-based (from the heuristic/producer); only `attack_vector` + `network_reachable` come from the assertion.
 
+**Trust boundary:** `reachability_assertion` is evaluator-authored grading provenance. It is not independently verifier-revalidated in this PR, so evaluators must record it only when they personally verified the cited entrypoint-to-sink path from code or replay evidence. This is a deliberate Δ2 bridge until full data-flow provenance lands.
+
+**Conflict policy:** frozen claims are ordered by `created_at`, then `claim_id`. The first distinct valid assertion wins; conflicting later assertions add an audit note but do not override the first one. Correcting a stale frozen assertion requires operator amendment / re-freeze, not recording another conflicting claim.
+
 ---
 
 ## Build slices (real anchors on the Δ1 base; verify exact lines at build time)
