@@ -408,12 +408,12 @@ test("asserted local reachability overrides heuristic network and caps without d
       defensible: false,
       reachability_source: "asserted",
       call_path: "AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response",
-      reachability_divergence: "asserted local/false overrides heuristic network/true",
+      reachability_divergence: "asserted local/false overrides heuristic network/true; asserted local ceiling medium constrains producer ceiling critical",
     });
     const markdown = fs.readFileSync(gradeArtifactPaths(domain).markdown, "utf8");
     assert.match(markdown, /- Reachability Source: asserted/);
     assert.match(markdown, /- Reachability Call Path: AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response/);
-    assert.match(markdown, /- Reachability Divergence: asserted local\/false overrides heuristic network\/true/);
+    assert.match(markdown, /- Reachability Divergence: asserted local\/false overrides heuristic network\/true; asserted local ceiling medium constrains producer ceiling critical/);
   });
 });
 
@@ -529,6 +529,47 @@ test("asserted network reachability does not exceed a stricter producer network 
   });
 });
 
+test("asserted local reachability records when it constrains a producer high ceiling", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-local-bounds-high");
+    const domain = repoSession.target_domain;
+    const inventoryPath = repoInventoryPath(domain);
+    const inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8"));
+    const stamp = inventory.reachability.surface_ceilings.find((entry) => entry.id === repoSession.network_surface_id);
+    stamp.severity_ceiling = "high";
+    fs.writeFileSync(inventoryPath, JSON.stringify(inventory), "utf8");
+    seedFrozenRepoFinding(domain, [repoSession.network_surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "local",
+        network_reachable: false,
+        call_path: "local IPC message -> parse_packet -> bounded sink",
+        justification: "The exploitable path is local-only even though the producer allows high.",
+      },
+    });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.deepEqual(read.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "medium",
+      attack_vector: "local",
+      network_reachable: false,
+      graded_severity: "medium",
+      disposition: "capped",
+      defensible: false,
+      reachability_source: "asserted",
+      call_path: "local IPC message -> parse_packet -> bounded sink",
+      reachability_divergence: "asserted local/false overrides heuristic network/true; asserted local ceiling medium constrains producer ceiling high",
+    });
+  });
+});
+
 test("conflicting forced reachability assertions use the earliest assertion with an audit note", () => {
   withTempHome((home) => {
     const repoSession = seedLocalParserRepo(home, "grade-reachability-conflicting-forced");
@@ -606,6 +647,100 @@ test("conflicting forced reachability assertions use the earliest assertion with
       read.findings[0].reachability.reachability_divergence,
       "conflicting reachability assertions present (2); using earliest; asserted network/true overrides heuristic local/false; producer ceiling medium constrains asserted network ceiling critical",
     );
+  });
+});
+
+test("grade-time reachability ignores malformed or idless frozen assertions", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assertion-bad-frozen");
+    const domain = repoSession.target_domain;
+    const baseClaim = {
+      target_domain: domain,
+      title: "Native parser over-read",
+      summary: "Parser reads past the available buffer.",
+      severity: "medium",
+      status: "candidate",
+      surface_ids: [repoSession.network_surface_id],
+      evidence_refs: [{
+        kind: "finding",
+        finding_id: "F-1",
+        content_hash: "0".repeat(64),
+      }],
+      impact: "Parser crash on crafted input.",
+    };
+    appendCandidateClaim({
+      ...baseClaim,
+      created_at: "2026-05-27T00:00:00.000Z",
+      payload: {
+        finding: {
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "local",
+            network_reachable: false,
+            call_path: "local IPC -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    appendCandidateClaim({
+      ...baseClaim,
+      title: "Malformed frozen assertion",
+      created_at: "2026-05-27T00:00:01.000Z",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: false,
+            call_path: "UDP listener -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    appendCandidateClaim({
+      ...baseClaim,
+      title: "Valid frozen assertion",
+      created_at: "2026-05-27T00:00:02.000Z",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: true,
+            call_path: "UDP listener -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    buildClaimFreeze(domain, {
+      write: true,
+      now: new Date("2026-05-27T01:00:00.000Z"),
+    });
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({
+        target_domain: domain,
+        round,
+        notes: null,
+        results: [verificationResult("F-1", { severity: "high", reportable: true })],
+      });
+    }
+    writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.equal(read.findings[0].reachability.attack_vector, "network");
+    assert.equal(read.findings[0].reachability.reachability_source, "asserted");
+    assert.equal(read.findings[0].reachability.call_path, "UDP listener -> parse_packet -> buffer read");
+    assert.equal(read.findings[0].reachability.disposition, "lifted");
+    assert.equal(read.findings[0].reachability.reachability_divergence, undefined);
   });
 });
 

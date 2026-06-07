@@ -291,9 +291,16 @@ function reachabilityAssertionRecordForFinding(domain, findingId) {
       ? payload.finding
       : null;
     if (!finding) continue;
-    if (typeof finding.id === "string" && finding.id !== findingId) continue;
+    if (finding.id !== findingId) continue;
     if (!findingSupportsReachabilityAssertion(finding)) continue;
-    const assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
+    let assertion = null;
+    try {
+      assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
+    } catch {
+      // Frozen claims are durable session input. A corrupt assertion should not
+      // crash grading for every finding in the domain.
+      continue;
+    }
     if (!assertion) continue;
     const key = JSON.stringify({
       attack_vector: assertion.attack_vector,
@@ -412,6 +419,14 @@ function reachabilityDivergenceNote(assertion, heuristic, severityCeiling = null
   const assertedCeiling = severityCeilingForAssertedAttackVector(assertion.attack_vector);
   if (severityCeiling && severityCeiling !== assertedCeiling && heuristic.severity_ceiling === severityCeiling) {
     notes.push(`producer ceiling ${severityCeiling} constrains asserted ${assertion.attack_vector} ceiling ${assertedCeiling}`);
+  }
+  if (
+    severityCeiling
+    && severityCeiling === assertedCeiling
+    && heuristic.severity_ceiling !== assertedCeiling
+    && severityRank(assertedCeiling) < severityRank(heuristic.severity_ceiling)
+  ) {
+    notes.push(`asserted ${assertion.attack_vector} ceiling ${assertedCeiling} constrains producer ceiling ${heuristic.severity_ceiling}`);
   }
   return notes.length > 0 ? notes.join("; ") : null;
 }
