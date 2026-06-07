@@ -227,13 +227,24 @@ export function validateDiffReviewFindings(value: unknown): DiffReviewFindings {
 
   const obj = value as Record<string, unknown>;
 
-  // Top-level required string fields.
-  for (const key of ["session_id", "target_domain", "generated_at"] as const) {
+  // Top-level required string fields. session_id is intentionally NOT required:
+  // degraded / PATH B runs (Bob MCP server unavailable) have no Bob session, so
+  // the skill legitimately omits it. It is metadata and not needed to post
+  // comments; when present it must be a string.
+  for (const key of ["target_domain", "generated_at"] as const) {
     if (typeof obj[key] !== "string" || (obj[key] as string).length === 0) {
       throw new TypeError(
         `diff-review-findings.json: required string field "${key}" is missing or empty`
       );
     }
+  }
+  if (obj["session_id"] !== undefined && typeof obj["session_id"] !== "string") {
+    throw new TypeError(
+      `diff-review-findings.json: "session_id" must be a string when present`
+    );
+  }
+  if (obj["session_id"] === undefined) {
+    obj["session_id"] = "";
   }
 
   // impacted_entries must be an array (may be empty).

@@ -91,8 +91,13 @@ describe("validateDiffReviewFindings", () => {
     expect(() => validateDiffReviewFindings([])).toThrow(/expected an object/);
   });
 
-  it("rejects missing session_id", () => {
+  it("accepts missing/empty session_id (degraded PATH B runs have no Bob session)", () => {
     const bad = { ...MOCK_FINDINGS_FIXTURE, session_id: "" };
+    expect(validateDiffReviewFindings(bad).session_id).toBe("");
+  });
+
+  it("rejects session_id present but not a string", () => {
+    const bad = { ...MOCK_FINDINGS_FIXTURE, session_id: 123 };
     expect(() => validateDiffReviewFindings(bad)).toThrow(/session_id/);
   });
 
@@ -363,7 +368,7 @@ describe("runBobDiffReview mock mode (BOB_MOCK_FINDINGS_JSON)", () => {
         targetDomainOverride: "gh-1-pr1",
         anthropicApiKey: "mock-key",
       })
-    ).rejects.toThrow(/session_id/);
+    ).rejects.toThrow(/generated_at/);
   });
 
   it("returns empty findings array when fixture has no findings", async () => {

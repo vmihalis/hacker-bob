@@ -517,7 +517,7 @@ async function run(): Promise<void> {
     // 4i. Build the review summary for the top-level review body.
     // -----------------------------------------------------------------------
     const reviewSummary = {
-      session_id: bobFindings.session_id,
+      session_id: bobFindings.session_id ?? "",
       target_domain: bobFindings.target_domain,
       finding_count: bobFindings.findings.length,
       severity: {

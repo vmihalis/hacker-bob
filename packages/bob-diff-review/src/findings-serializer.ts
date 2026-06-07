@@ -134,8 +134,12 @@ export interface FindingEntry {
  * Top-level schema for diff-review-findings.json.
  */
 export interface DiffReviewFindings {
-  /** Bob session_id used for this review run. */
-  session_id: string;
+  /**
+   * Bob session_id used for this review run. Optional: in degraded / PATH B
+   * runs (Bob MCP server unavailable, heuristic dispatch) there is no Bob
+   * session, so the skill may omit it. Defaults to "" when absent.
+   */
+  session_id?: string;
   /** Bob session target_domain (e.g. "gh-12345678"). */
   target_domain: string;
   /** ISO 8601 timestamp when the file was generated. */
