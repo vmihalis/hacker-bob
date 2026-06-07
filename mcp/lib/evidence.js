@@ -46,6 +46,9 @@ const {
 const {
   normalizeHistoryRef,
 } = require("./repo-target.js");
+const {
+  hashCanonicalJson,
+} = require("./verification-contracts.js");
 
 const EVIDENCE_PACKS_VERSION = 1;
 const MAX_SAMPLE_COUNT = 1000;
@@ -115,10 +118,17 @@ function readRepoCommandRunRows(domain) {
 
 function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) {
   const normalizedRunId = assertRepoRunId(runId, fieldName);
-  const row = rows.find((entry) => entry && entry.run_id === normalizedRunId);
-  if (!row) {
+  const matchingRows = rows.filter((entry) => entry && entry.run_id === normalizedRunId);
+  if (matchingRows.length === 0) {
     throw new Error(`${fieldName} does not match a repo-command-runs.jsonl row`);
   }
+  if (matchingRows.length > 1) {
+    const rowHashes = new Set(matchingRows.map((row) => hashCanonicalJson(row)));
+    if (rowHashes.size > 1) {
+      throw new Error(`${fieldName} has ambiguous duplicate entries in repo-command-runs.jsonl; re-run is required`);
+    }
+  }
+  const row = matchingRows[0];
   if (row.dry_run === true) {
     throw new Error(`${fieldName} must reference a live non-dry-run repo docker run`);
   }
@@ -263,6 +273,11 @@ function normalizeDifferential(differential, { domain }) {
     control_stdout_hash: stdoutHashForRun(domain, controlRow, "differential.control_run_id"),
   };
   if (patchHash) normalized.patch_hash = patchHash;
+  if (suppliedVerdict !== expectedVerdict) {
+    normalized._verdict_overridden = true;
+    normalized._supplied_verdict = suppliedVerdict;
+    normalized._expected_verdict = expectedVerdict;
+  }
   validateNoSensitiveMaterial(normalized, "differential");
   return normalized;
 }
@@ -702,6 +717,9 @@ function renderEvidencePacksMarkdown(document) {
       lines.push("- Differential:");
       lines.push(`  - Control Kind: ${pack.differential.control_kind}`);
       lines.push(`  - Verdict: ${pack.differential.verdict}`);
+      if (pack.differential._verdict_overridden) {
+        lines.push(`  - Verdict Override: supplied=${pack.differential._supplied_verdict}; expected=${pack.differential._expected_verdict}`);
+      }
       lines.push(`  - Vulnerable Run: ${pack.differential.vuln_run_id}`);
       lines.push(`  - Control Run: ${pack.differential.control_run_id}`);
       lines.push(`  - Control Ref: ${pack.differential.control_ref}`);

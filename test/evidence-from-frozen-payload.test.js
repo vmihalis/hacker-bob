@@ -262,6 +262,37 @@ test("C10 differential skips corrupt JSONL rows when resolving live proof rows",
   });
 });
 
+test("C10 differential rejects ambiguous duplicate repo run rows", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-duplicate-run-row.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet replay\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Duplicate run rows must not bind evidence by first match.",
+      }),
+      /ambiguous duplicate entries/,
+    );
+  });
+});
+
 test("C10 differential rejects unsafe run ids, tampered stdout captures, and malformed exit codes", () => {
   withTempHome(() => {
     const unsafeDomain = "evidence-c10-unsafe-run-id.example.com";
@@ -539,9 +570,13 @@ test("C10 inconsistent control downgrades to inconclusive without dropping the f
     assert.equal(document.packs.length, 1);
     assert.equal(document.packs[0].finding_id, "F-1");
     assert.equal(document.packs[0].differential.verdict, "inconclusive");
+    assert.equal(document.packs[0].differential._verdict_overridden, true);
+    assert.equal(document.packs[0].differential._supplied_verdict, "patch_fixes");
+    assert.equal(document.packs[0].differential._expected_verdict, "inconclusive");
     const markdown = renderEvidencePacksMarkdown(document);
     assert.match(markdown, /- Differential:/);
     assert.match(markdown, /Verdict: inconclusive/);
+    assert.match(markdown, /Verdict Override: supplied=patch_fixes; expected=inconclusive/);
     assert.match(markdown, /Vulnerable Exit Code: 0/);
     assert.match(markdown, /Control Exit Code: 0/);
     assert.match(markdown, /Firedness Source: agent_asserted_from_replay_output/);
