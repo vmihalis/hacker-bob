@@ -941,30 +941,36 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function assertWorkDest(dest) {
-  const normalized = assertNonEmptyString(dest, "dest");
+function assertWorkPath(value, fieldName) {
+  const normalized = assertNonEmptyString(value, fieldName);
   if (!normalized.startsWith("/work/")
       || normalized.includes("..")
       || normalized.includes("//")
       || !/^\/work\/[A-Za-z0-9._/-]+$/.test(normalized)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "dest must be a safe path under /work",
+      `${fieldName} must be a safe path under /work`,
       { repo_error_code: "invalid_differential_dest" },
     );
   }
   return normalized;
 }
 
+function assertWorkDest(dest) {
+  return assertWorkPath(dest, "dest");
+}
+
 function buildDifferentialCheckoutCommand({
   checkout_ref: checkoutRef,
   checkout_kind: checkoutKind,
   dest = "/work/repo",
+  tar_path: tarPath = "/work/checkout.tar",
   after_command: afterCommand = null,
 } = {}) {
   const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
   const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
   const checkoutDest = assertWorkDest(dest);
+  const checkoutTar = assertWorkPath(tarPath, "tar_path");
   const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
   const archiveRef = kind === "self_patch" ? "HEAD" : ref;
   const script = [
@@ -972,9 +978,10 @@ function buildDifferentialCheckoutCommand({
     `rm -rf ${shellQuote(checkoutDest)}`,
     `mkdir -p ${shellQuote(checkoutDest)}`,
     `git -C /src cat-file -e ${shellQuote(`${archiveRef}^{commit}`)}`,
-    `git -C /src archive --format=tar ${shellQuote(archiveRef)} > /work/checkout.tar`,
-    `tar -x -f /work/checkout.tar -C ${shellQuote(checkoutDest)}`,
-    "rm -f /work/checkout.tar",
+    `rm -f ${shellQuote(checkoutTar)}`,
+    `git -C /src archive --format=tar ${shellQuote(archiveRef)} > ${shellQuote(checkoutTar)}`,
+    `tar -x -f ${shellQuote(checkoutTar)} -C ${shellQuote(checkoutDest)}`,
+    `rm -f ${shellQuote(checkoutTar)}`,
   ];
   if (kind === "self_patch") {
     script.push("test -f /work/patch.diff");
@@ -1268,6 +1275,7 @@ async function repoDockerRun({
     );
   }
 
+  const runId = generateRunId();
   const normalizedCheckout = normalizeDifferentialCheckout(checkout);
   if (normalizedCheckout) {
     assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
@@ -1276,6 +1284,8 @@ async function repoDockerRun({
     ? buildDifferentialCheckoutCommand({
         checkout_ref: normalizedCheckout.ref,
         checkout_kind: normalizedCheckout.kind,
+        dest: `/work/${runId}/repo`,
+        tar_path: `/work/${runId}/checkout.tar`,
         after_command: command == null ? null : command,
       })
     : command;
@@ -1362,7 +1372,6 @@ async function repoDockerRun({
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
   const argvHash = sha256Hex(JSON.stringify(argv.args));
-  const runId = generateRunId();
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);

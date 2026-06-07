@@ -43,7 +43,7 @@ module.exports = Object.freeze({
       command: {
         type: "array",
         items: { type: "string" },
-        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. Optional when checkout is provided; Bob injects the differential materialization command.",
+        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. Optional when checkout is provided; when both are present Bob materializes the checkout first and runs the command from that checkout.",
       },
       checkout: {
         type: "object",
@@ -55,7 +55,7 @@ module.exports = Object.freeze({
           kind: {
             type: "string",
             enum: ["upstream_fix", "pre_introduction", "self_patch"],
-            description: "Differential checkout kind to materialize under /work/repo.",
+            description: "Differential checkout kind to materialize under a run-scoped /work checkout.",
           },
         },
         required: ["ref", "kind"],
@@ -99,6 +99,10 @@ module.exports = Object.freeze({
       },
     },
     required: ["target_domain"],
+    anyOf: [
+      { required: ["command"], additionalProperties: true },
+      { required: ["checkout"], additionalProperties: true },
+    ],
   },
   handler,
   // Per O.4 §9: evaluator-shared, verifier, evidence. Orchestrator

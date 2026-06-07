@@ -255,6 +255,8 @@ test("assertHistoryAvailableForRef passes for clean local refs and object prefix
   const branch = git(repo, ["branch", "--show-current"]);
   const byBranch = assertHistoryAvailableForRef(repo, branch);
   assert.equal(byBranch.checkout_ref, branch);
+  const byHead = assertHistoryAvailableForRef(repo, "HEAD");
+  assert.equal(byHead.checkout_ref, "HEAD");
   const byHex = assertHistoryAvailableForRef(repo, first.slice(0, 12));
   assert.equal(byHex.checkout_ref, first.slice(0, 12));
   const byFullHex = assertHistoryAvailableForRef(repo, second);
@@ -278,6 +280,16 @@ test("assertHistoryAvailableForRef refuses refs absent from local history", () =
   );
   assert.throws(
     () => assertHistoryAvailableForRef(repo, "deadbee"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses unborn HEAD before docker", () => withTempHome((home) => {
+  const repo = path.join(home, "history-unborn-head");
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q"]);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "HEAD"),
     (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
   );
 }));

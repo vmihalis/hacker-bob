@@ -22,6 +22,9 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const {
+  executeTool,
+} = require("../mcp/lib/dispatch.js");
+const {
   initRepoSession,
 } = require("../mcp/lib/repo-target.js");
 const {
@@ -324,7 +327,7 @@ test("buildDifferentialCheckoutCommand emits archive materialization for each ch
     assert.match(command[2], /mkdir -p '\/work\/repo'/);
     assert.match(command[2], /git -C \/src cat-file -e/);
     assert.match(command[2], /git -C \/src archive --format=tar/);
-    assert.match(command[2], /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+    assert.match(command[2], /tar -x -f '\/work\/checkout\.tar' -C '\/work\/repo'/);
     if (kind === "self_patch") {
       assert.match(command[2], /cat-file -e 'HEAD\^\{commit\}'/);
       assert.match(command[2], /archive --format=tar 'HEAD'/);
@@ -355,7 +358,7 @@ test("buildDifferentialCheckoutCommand appends caller command after materializat
     checkout_kind: "upstream_fix",
     after_command: ["node", "-e", "console.log(process.cwd())"],
   });
-  assert.match(command[2], /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+  assert.match(command[2], /tar -x -f '\/work\/checkout\.tar' -C '\/work\/repo'/);
   assert.match(command[2], /cd '\/work\/repo' && 'node' '-e' 'console\.log\(process\.cwd\(\)\)'$/);
 });
 
@@ -424,9 +427,12 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(result.mount_mode, "read_only");
     assert.ok(result.planned_argv.some((arg) => arg === `${repoRoot}:/src:ro`), "differential run must keep /src read-only");
     const script = result.planned_argv[result.planned_argv.length - 1];
+    const checkoutDest = `/work/${result.run_id}/repo`;
+    const checkoutTar = `/work/${result.run_id}/checkout.tar`;
     assert.match(script, /git -C \/src cat-file -e/);
     assert.match(script, /git -C \/src archive --format=tar/);
-    assert.match(script, /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+    assert.ok(script.includes(`> '${checkoutTar}'`));
+    assert.ok(script.includes(`tar -x -f '${checkoutTar}' -C '${checkoutDest}'`));
 
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.equal(rows.length, 1);
@@ -449,9 +455,11 @@ test("repoDockerRun checkout provenance wraps explicit command after S14 materia
     });
 
     const script = result.planned_argv[result.planned_argv.length - 1];
+    const checkoutDest = `/work/${result.run_id}/repo`;
+    const checkoutTar = `/work/${result.run_id}/checkout.tar`;
     assert.match(script, /git -C \/src archive --format=tar/);
-    assert.match(script, /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
-    assert.match(script, /cd '\/work\/repo' && 'node' '-e' 'console\.log\('\\''control'\\''\)'$/);
+    assert.ok(script.includes(`tar -x -f '${checkoutTar}' -C '${checkoutDest}'`));
+    assert.ok(script.endsWith(`cd '${checkoutDest}' && 'node' '-e' 'console.log('\\''control'\\'')'`));
     assert.equal(result.checkout_ref, first);
     assert.equal(result.checkout_kind, "upstream_fix");
   });
@@ -938,6 +946,27 @@ test("bob_repo_docker_run tool handler returns a JSON envelope (dry-run)", async
     assert.equal(payload.dry_run, true);
     assert.equal(payload.target_domain, init.target_domain);
     assert.match(payload.run_id, /^run-[0-9a-f]+-[0-9a-f]+$/);
+  });
+});
+
+test("bob_repo_docker_run schema requires command or checkout", async () => {
+  await withTempHome(async () => {
+    const missing = await executeTool("bob_repo_docker_run", {
+      target_domain: "repo-schema-missing.example",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "INVALID_ARGUMENTS");
+    assert.match(missing.error.message, /must match at least one allowed schema/);
+
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const withBoth = await executeTool("bob_repo_docker_run", {
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "upstream_fix" },
+      command: ["true"],
+    });
+    assert.equal(withBoth.ok, true);
+    assert.equal(withBoth.data.checkout_ref, first);
   });
 });
 

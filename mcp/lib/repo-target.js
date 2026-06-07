@@ -137,6 +137,7 @@ function repoPathError(error) {
 
 const GIT_REF_MAX_CHARS = 120;
 const HEX_REF_RE = /^[0-9a-f]{7,64}$/i;
+const FULL_HEX_OBJECT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const LOCAL_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
 
 function gitMetadataError(message, repoErrorCode, details = {}) {
@@ -236,19 +237,14 @@ function refNameCandidates(ref) {
   ];
 }
 
-function hasLooseRef(ref, { gitDir, commonDir }) {
-  for (const candidate of refNameCandidates(ref)) {
-    for (const base of [gitDir, commonDir]) {
-      const filePath = gitRelativePath(base, candidate);
-      if (filePath && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-        return true;
-      }
-    }
-  }
-  return false;
+function readLooseRefValue(baseDir, refName) {
+  const filePath = gitRelativePath(baseDir, refName);
+  if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+  const value = fs.readFileSync(filePath, "utf8").trim();
+  return value || null;
 }
 
-function packedRefsContain(ref, { gitDir, commonDir }) {
+function packedRefObject(ref, { gitDir, commonDir }) {
   const names = new Set(refNameCandidates(ref));
   for (const packedRefsPath of [path.join(gitDir, "packed-refs"), path.join(commonDir, "packed-refs")]) {
     if (!fs.existsSync(packedRefsPath)) continue;
@@ -257,10 +253,33 @@ function packedRefsContain(ref, { gitDir, commonDir }) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("^")) continue;
       const parts = trimmed.split(/\s+/);
-      if (parts.length >= 2 && names.has(parts[1])) return true;
+      if (parts.length >= 2 && names.has(parts[1]) && FULL_HEX_OBJECT_RE.test(parts[0])) return parts[0];
     }
   }
-  return false;
+  return null;
+}
+
+function resolveRefToObject(ref, gitDirs, seen = new Set()) {
+  if (seen.has(ref)) return null;
+  seen.add(ref);
+  for (const candidate of refNameCandidates(ref)) {
+    for (const base of [gitDirs.gitDir, gitDirs.commonDir]) {
+      const value = readLooseRefValue(base, candidate);
+      if (!value) continue;
+      if (value.startsWith("ref:")) {
+        const targetRef = value.slice(4).trim();
+        const resolved = resolveRefToObject(targetRef, gitDirs, seen);
+        if (resolved) return resolved;
+        continue;
+      }
+      if (FULL_HEX_OBJECT_RE.test(value)) return value;
+    }
+  }
+  return packedRefObject(ref, gitDirs);
+}
+
+function objectExists(hexRef, commonDir) {
+  return looseObjectExists(hexRef, commonDir) || packedObjectExists(hexRef, commonDir);
 }
 
 function looseObjectExists(hexRef, commonDir) {
@@ -313,9 +332,10 @@ function packedObjectExists(hexRef, commonDir) {
 
 function refAvailableInLocalHistory(ref, gitDirs) {
   if (HEX_REF_RE.test(ref)) {
-    return looseObjectExists(ref, gitDirs.commonDir) || packedObjectExists(ref, gitDirs.commonDir);
+    return objectExists(ref, gitDirs.commonDir);
   }
-  return hasLooseRef(ref, gitDirs) || packedRefsContain(ref, gitDirs);
+  const resolvedObject = resolveRefToObject(ref, gitDirs);
+  return resolvedObject ? objectExists(resolvedObject, gitDirs.commonDir) : false;
 }
 
 function assertHistoryAvailableForRef(repoRoot, ref) {
