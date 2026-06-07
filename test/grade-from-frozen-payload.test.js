@@ -40,6 +40,9 @@ const {
 const {
   normalizeFindingRecord,
 } = require("../mcp/lib/finding-contracts.js");
+const {
+  validateAgainstSchema,
+} = require("../mcp/lib/tool-validation.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
   writeVerificationRound,
@@ -1054,6 +1057,75 @@ test("record-candidate-claim rejects reachability assertions on web-routed findi
 });
 
 test("reachability assertions require a structured entrypoint-to-sink call_path", () => {
+  const schema = recordFindingTool.inputSchema
+    .properties.reachability_assertion
+    .properties.call_path;
+  const schemaAccepts = (callPath) => {
+    try {
+      validateAgainstSchema(callPath, schema, ["reachability_assertion", "call_path"]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const normalizerAccepts = (callPath) => {
+    try {
+      normalizeFindingRecord({
+        id: "F-1",
+        target_domain: "reachability-assertion-path-contract.example.com",
+        title: "Native parser over-read",
+        severity: "high",
+        endpoint: "src/parser.c",
+        description: "Parser reads past the available buffer.",
+        proof_of_concept: "Run the parser against the crafted input.",
+        validated: true,
+        capability_pack: "oss_native_code",
+        evaluator_agent: "evaluator-agent",
+        brief_profile: "oss",
+        reachability_assertion: {
+          attack_vector: "network",
+          network_reachable: true,
+          call_path: callPath,
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const assertRejectedBySchemaAndNormalizer = (callPath) => {
+    assert.equal(schemaAccepts(callPath), false, `${callPath} must be rejected by the schema`);
+    assert.equal(normalizerAccepts(callPath), false, `${callPath} must be rejected by the normalizer`);
+  };
+  const assertAcceptedBySchemaAndNormalizer = (callPath) => {
+    assert.equal(schemaAccepts(callPath), true, `${callPath} must be accepted by the schema`);
+    assert.equal(normalizerAccepts(callPath), true, `${callPath} must be accepted by the normalizer`);
+  };
+
+  assertRejectedBySchemaAndNormalizer("a->x->->");
+  assertRejectedBySchemaAndNormalizer("X->Y->->");
+  assertAcceptedBySchemaAndNormalizer("a->b->c");
+  assertAcceptedBySchemaAndNormalizer("UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid");
+
+  const fuzzSegments = ["", " ", "a", " b ", "X", "-", "UDP-161 SNMP SET"];
+  const fuzzInputs = new Set(["x", "a->b", "a->b->c\n"]);
+  for (const first of fuzzSegments) {
+    for (const second of fuzzSegments) {
+      for (const third of fuzzSegments) {
+        fuzzInputs.add(`${first}->${second}->${third}`);
+        for (const fourth of fuzzSegments) {
+          fuzzInputs.add(`${first}->${second}->${third}->${fourth}`);
+        }
+      }
+    }
+  }
+  for (const callPath of fuzzInputs) {
+    assert.ok(
+      !(schemaAccepts(callPath) && !normalizerAccepts(callPath)),
+      `schema accepted a call_path the normalizer rejected: ${JSON.stringify(callPath)}`,
+    );
+  }
+
   assert.throws(
     () => normalizeFindingRecord({
       id: "F-1",

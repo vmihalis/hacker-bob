@@ -440,6 +440,7 @@ function stricterSeverityCeiling(primary, candidate) {
 
 function severityCeilingForAssertedReachability(assertion, heuristic) {
   const assertedCeiling = severityCeilingForAssertedAttackVector(assertion.attack_vector);
+  // Delta 2 assertions set AV/reachability only; severity lift on locality under-counts waits for Delta 3 taint provenance.
   return stricterSeverityCeiling(assertedCeiling, heuristic && heuristic.severity_ceiling);
 }
 

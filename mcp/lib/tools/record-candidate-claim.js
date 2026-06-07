@@ -601,7 +601,7 @@ module.exports = Object.freeze({
             "type": "string",
             "minLength": 7,
             "maxLength": 4000,
-            "pattern": "^\\S[^\\n\\r]*->\\s*\\S[^\\n\\r]*->\\s*\\S(?:[^\\n\\r]*\\S)?$",
+            "pattern": "^(?!.*[\\n\\r])(?!\\s*->)(?!.*->\\s*(?:->|$))[^\\n\\r]*->[^\\n\\r]*->[^\\n\\r]*$",
             "description": "Cited entrypoint-to-sink path with at least two hops, for example: UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid."
           },
           "justification": {

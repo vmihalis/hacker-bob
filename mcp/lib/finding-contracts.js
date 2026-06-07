@@ -109,7 +109,10 @@ function normalizeReachabilityCallPath(value, fieldName) {
   if (/[\r\n]/.test(callPath)) {
     throw new Error(`${fieldName} must not contain line breaks`);
   }
-  const segments = callPath.split("->").map((segment) => segment.trim()).filter(Boolean);
+  const segments = callPath.split("->").map((segment) => segment.trim());
+  if (segments.some((segment) => !segment)) {
+    throw new Error(`${fieldName} must not contain empty '->'-separated segments`);
+  }
   if (segments.length < 3) {
     throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least two '->' hops`);
   }
