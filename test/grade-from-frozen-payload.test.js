@@ -25,6 +25,7 @@ const {
 const {
   evidencePackPaths,
   gradeArtifactPaths,
+  claimFreezePath,
   repoInventoryPath,
   sessionDir,
   verificationRoundPaths,
@@ -53,6 +54,9 @@ const {
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+const {
+  hashDocumentExcluding,
+} = require("../mcp/lib/fabric-common.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -763,6 +767,98 @@ test("same-classification frozen reachability assertions with different call pat
     assert.doesNotMatch(
       read.findings[0].reachability.reachability_divergence || "",
       /conflicting reachability assertions/,
+    );
+  });
+});
+
+test("reachability assertion ordering sorts missing created_at after valid timestamps", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assertion-missing-created-at");
+    const domain = repoSession.target_domain;
+    const baseClaim = {
+      target_domain: domain,
+      title: "Native parser over-read",
+      summary: "Parser reads past the available buffer.",
+      severity: "medium",
+      status: "candidate",
+      surface_ids: [repoSession.network_surface_id],
+      evidence_refs: [{
+        kind: "finding",
+        finding_id: "F-1",
+        content_hash: "0".repeat(64),
+      }],
+      impact: "Parser crash on crafted input.",
+    };
+    appendCandidateClaim({
+      ...baseClaim,
+      created_at: "2026-05-27T00:00:01.000Z",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: true,
+            call_path: "UDP listener -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    appendCandidateClaim({
+      ...baseClaim,
+      title: "Native parser local correction",
+      created_at: "2026-05-27T00:00:02.000Z",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "local",
+            network_reachable: false,
+            call_path: "local IPC -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    const freeze = buildClaimFreeze(domain, {
+      write: true,
+      now: new Date("2026-05-27T01:00:00.000Z"),
+    });
+    const undatedClaim = freeze.claims.find((claim) => (
+      claim
+      && claim.payload
+      && claim.payload.finding
+      && claim.payload.finding.reachability_assertion
+      && claim.payload.finding.reachability_assertion.attack_vector === "network"
+    ));
+    assert.ok(undatedClaim, "fixture must include a network assertion to make timestamp fallback observable");
+    delete undatedClaim.created_at;
+    freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
+    writeFileAtomic(claimFreezePath(domain), `${JSON.stringify(freeze, null, 2)}\n`);
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({
+        target_domain: domain,
+        round,
+        notes: null,
+        results: [verificationResult("F-1", { severity: "high", reportable: true })],
+      });
+    }
+    writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.equal(read.findings[0].reachability.attack_vector, "local");
+    assert.equal(read.findings[0].reachability.network_reachable, false);
+    assert.equal(read.findings[0].reachability.call_path, "local IPC -> parse_packet -> buffer read");
+    assert.equal(
+      read.findings[0].reachability.reachability_divergence,
+      "conflicting reachability assertions present (2); using earliest; asserted local/false overrides heuristic network/true; asserted local ceiling medium constrains producer ceiling critical",
     );
   });
 });
