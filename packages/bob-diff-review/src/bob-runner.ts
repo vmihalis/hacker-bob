@@ -249,8 +249,13 @@ export function validateDiffReviewFindings(value: unknown): DiffReviewFindings {
     }
   }
 
-  // impacted_entries must be an array (may be empty).
-  if (!Array.isArray(obj["impacted_entries"])) {
+  // impacted_entries: optional. PATH A produces the symbol-surface intersection;
+  // degraded / PATH B runs omit it. Defaults to []; when present must be an array.
+  // The resolver maps findings to diff positions via the diff position map, so an
+  // empty impacted_entries still yields inline comments (or PR-level fallbacks).
+  if (obj["impacted_entries"] === undefined) {
+    obj["impacted_entries"] = [];
+  } else if (!Array.isArray(obj["impacted_entries"])) {
     throw new TypeError(
       `diff-review-findings.json: "impacted_entries" must be an array`
     );

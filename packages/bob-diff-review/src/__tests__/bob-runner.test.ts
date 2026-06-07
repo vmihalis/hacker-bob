@@ -373,7 +373,7 @@ describe("runBobDiffReview mock mode (BOB_MOCK_FINDINGS_JSON)", () => {
         targetDomainOverride: "gh-1-pr1",
         anthropicApiKey: "mock-key",
       })
-    ).rejects.toThrow(/impacted_entries/);
+    ).rejects.toThrow(/findings/);
   });
 
   it("returns empty findings array when fixture has no findings", async () => {
