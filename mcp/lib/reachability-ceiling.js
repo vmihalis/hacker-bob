@@ -149,7 +149,7 @@ function normalizeReachabilityInput(reachability) {
     reachability.reachability_divergence,
     "reachability.reachability_divergence",
   );
-  const callPath = normalizeOptionalText(
+  const callPath = normalizeReachabilityCallPathMetadata(
     reachability.call_path,
     "reachability.call_path",
   );
@@ -192,7 +192,19 @@ function normalizeReachabilityDispositionStamp(value, fieldName = "reachability"
     value.reachability_divergence,
     `${fieldName}.reachability_divergence`,
   );
-  const callPath = normalizeOptionalText(value.call_path, `${fieldName}.call_path`);
+  const callPath = normalizeReachabilityCallPathMetadata(value.call_path, `${fieldName}.call_path`);
+  if (disposition === "unknown" && reachabilitySource !== "none") {
+    throw new Error(`${fieldName}.reachability_source must be "none" when disposition is "unknown"`);
+  }
+  if (disposition !== "unknown" && reachabilitySource === "none") {
+    throw new Error(`${fieldName}.reachability_source must not be "none" unless disposition is "unknown"`);
+  }
+  if (reachabilitySource === "asserted" && !callPath) {
+    throw new Error(`${fieldName}.call_path is required when reachability_source is "asserted"`);
+  }
+  if (callPath && reachabilitySource !== "asserted") {
+    throw new Error(`${fieldName}.call_path is only allowed when reachability_source is "asserted"`);
+  }
   const stamp = {
     recorded_severity: assertEnumValue(value.recorded_severity, SEVERITY_VALUES, `${fieldName}.recorded_severity`),
     severity_ceiling: assertEnumValue(value.severity_ceiling, SEVERITY_CEILING_VALUES, `${fieldName}.severity_ceiling`),
@@ -206,6 +218,14 @@ function normalizeReachabilityDispositionStamp(value, fieldName = "reachability"
   if (reachabilityDivergence) stamp.reachability_divergence = reachabilityDivergence;
   if (callPath) stamp.call_path = callPath;
   return stamp;
+}
+
+function normalizeReachabilityCallPathMetadata(value, fieldName) {
+  const callPath = normalizeOptionalText(value, fieldName);
+  if (callPath && /[\r\n]/.test(callPath)) {
+    throw new Error(`${fieldName} must not contain line breaks`);
+  }
+  return callPath;
 }
 
 function isMediumOrHigher(severity) {

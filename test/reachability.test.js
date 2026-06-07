@@ -13,6 +13,7 @@ const {
 } = require("../mcp/lib/reachability.js");
 const {
   computeReachabilityDisposition,
+  normalizeReachabilityDispositionStamp,
 } = require("../mcp/lib/reachability-ceiling.js");
 
 function withRepo(files, fn) {
@@ -252,6 +253,71 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
       disposition: "unknown",
       defensible: false,
       reachability_source: "none",
+    },
+  );
+});
+
+test("normalizeReachabilityDispositionStamp rejects impossible provenance combinations", () => {
+  const base = {
+    recorded_severity: "high",
+    severity_ceiling: "critical",
+    attack_vector: "network",
+    network_reachable: true,
+    graded_severity: "high",
+    disposition: "lifted",
+    defensible: true,
+  };
+  assert.throws(
+    () => normalizeReachabilityDispositionStamp({
+      ...base,
+      reachability_source: "none",
+    }),
+    /reachability\.reachability_source must not be "none" unless disposition is "unknown"/,
+  );
+  assert.throws(
+    () => normalizeReachabilityDispositionStamp({
+      ...base,
+      reachability_source: "asserted",
+    }),
+    /reachability\.call_path is required when reachability_source is "asserted"/,
+  );
+  assert.throws(
+    () => normalizeReachabilityDispositionStamp({
+      ...base,
+      reachability_source: "heuristic",
+      call_path: "listener -> parser -> sink",
+    }),
+    /reachability\.call_path is only allowed when reachability_source is "asserted"/,
+  );
+  assert.throws(
+    () => normalizeReachabilityDispositionStamp({
+      ...base,
+      reachability_source: "asserted",
+      call_path: "listener -> parser\n## forged grade section -> sink",
+    }),
+    /reachability\.call_path must not contain line breaks/,
+  );
+  assert.throws(
+    () => normalizeReachabilityDispositionStamp({
+      ...base,
+      severity_ceiling: "unknown",
+      attack_vector: "unknown",
+      network_reachable: null,
+      disposition: "unknown",
+      reachability_source: "asserted",
+    }),
+    /reachability\.reachability_source must be "none" when disposition is "unknown"/,
+  );
+  assert.deepEqual(
+    normalizeReachabilityDispositionStamp({
+      ...base,
+      reachability_source: "asserted",
+      call_path: "listener -> parser -> sink",
+    }),
+    {
+      ...base,
+      reachability_source: "asserted",
+      call_path: "listener -> parser -> sink",
     },
   );
 });
