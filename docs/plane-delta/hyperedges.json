@@ -11,7 +11,7 @@
     {"id":"H-C10","predecessors":["S14"],"unlocks":["C14","C15","C17"],"kind":"blocking","note":"differential proof is substrate for proof-carrying disclosure, self-patch loop, AND the regression sentinel"},
     {"id":"H-S13","predecessors":["S10"],"unlocks":["X6"],"kind":"blocking"},
     {"id":"H-X6","predecessors":["S13"],"unlocks":["hardened-ingestion"],"kind":"blocking"},
-    {"id":"H-C14","predecessors":["C10"],"unlocks":["file-ready-disclosures","C17"],"kind":"blocking","note":"I12 predecessor DROPPED (tier inversion); CWE/CVSS from final-verifier severity + attack_vector. C14-lite (CWE/CVSS/refs) ships Δ1 with NO predecessor"},
+    {"id":"H-C14","predecessors":["C10"],"unlocks":["file-ready-disclosures","C17"],"kind":"blocking","note":"I12 predecessor DROPPED (tier inversion); CWE/CVSS from final-verifier severity + attack_vector. C14-lite (CWE/CVSS/refs) ships Δ1 with NO predecessor. ALSO lands-before: reachability-provenance (#78 / PR #80, the I9-prov spec lead extending shipped I9/C9) must precede C14 — it supplies the finding-level asserted attack_vector C14's disclosure-bundle CVSS reads (see detail/reachability-provenance.md). Recorded on this edge rather than as a separate node->node edge because I9-prov is a spec-doc lead, not a nodes.json node; keeping it here preserves graph node-coherence."},
     {"id":"H-IP7","predecessors":["S15"],"unlocks":["I10"],"kind":"blocking","note":"SARIF ingest only; runner ships (cli-tool-packs.js)"},
     {"id":"H-I10","predecessors":["IP7","S15"],"unlocks":["C11"],"kind":"blocking"},
     {"id":"H-I12","predecessors":["I5"],"unlocks":["C11(augment)"],"kind":"augment","note":"reuse shipped I5 invariant-template-corpus shape"},

@@ -21,6 +21,7 @@
 - [X10](X10.md) — Reasoning-divergence adjudication
 - [X6](X6.md) — Agent self-security
 - [X7](X7.md) — Evaluator-run-avoided telemetry
+- [reachability-provenance](reachability-provenance.md) — Finding-level `attack_vector` assertion (I9-prov lead; #78 / PR #80; extends shipped I9/C9, lands before C14)
 
 ## Tier Δ3
 - [C11](C11.md) — Static-analysis-driven source audit
