@@ -407,10 +407,12 @@ test("asserted local reachability overrides heuristic network and caps without d
       disposition: "capped",
       defensible: false,
       reachability_source: "asserted",
+      call_path: "AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response",
       reachability_divergence: "asserted local/false overrides heuristic network/true",
     });
     const markdown = fs.readFileSync(gradeArtifactPaths(domain).markdown, "utf8");
     assert.match(markdown, /- Reachability Source: asserted/);
+    assert.match(markdown, /- Reachability Call Path: AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response/);
     assert.match(markdown, /- Reachability Divergence: asserted local\/false overrides heuristic network\/true/);
   });
 });
@@ -445,6 +447,7 @@ test("asserted network reachability overrides heuristic locality but preserves t
       disposition: "capped",
       defensible: false,
       reachability_source: "asserted",
+      call_path: "UDP-161 SNMP SET -> parse_pdu_value -> render_mib_value",
       reachability_divergence: "asserted network/true overrides heuristic local/false; producer ceiling medium constrains asserted network ceiling critical",
     });
   });
@@ -480,6 +483,7 @@ test("asserted network reachability stays network when the heuristic agrees", ()
       disposition: "lifted",
       defensible: true,
       reachability_source: "asserted",
+      call_path: "UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid",
     });
   });
 });
@@ -519,6 +523,7 @@ test("asserted network reachability does not exceed a stricter producer network 
       disposition: "lifted",
       defensible: true,
       reachability_source: "asserted",
+      call_path: "TCP listener -> parse_packet -> bounded sink",
       reachability_divergence: "producer ceiling high constrains asserted network ceiling critical",
     });
   });
@@ -656,6 +661,27 @@ test("reachability assertions require a structured entrypoint-to-sink call_path"
       },
     }),
     /reachability_assertion\.call_path must cite an entrypoint-to-sink path/,
+  );
+  assert.throws(
+    () => normalizeFindingRecord({
+      id: "F-1",
+      target_domain: "reachability-assertion-one-hop-path.example.com",
+      title: "Native parser over-read",
+      severity: "high",
+      endpoint: "src/parser.c",
+      description: "Parser reads past the available buffer.",
+      proof_of_concept: "Run the parser against the crafted input.",
+      validated: true,
+      capability_pack: "oss_native_code",
+      evaluator_agent: "evaluator-agent",
+      brief_profile: "oss",
+      reachability_assertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "entrypoint -> sink",
+      },
+    }),
+    /reachability_assertion\.call_path must cite an entrypoint-to-sink path with at least two '->' hops/,
   );
 });
 

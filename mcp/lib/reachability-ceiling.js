@@ -149,12 +149,17 @@ function normalizeReachabilityInput(reachability) {
     reachability.reachability_divergence,
     "reachability.reachability_divergence",
   );
+  const callPath = normalizeOptionalText(
+    reachability.call_path,
+    "reachability.call_path",
+  );
   return {
     severity_ceiling: ceiling,
     attack_vector: attackVector,
     network_reachable: networkReachable,
     reachability_source: reachabilitySource,
     reachability_divergence: reachabilityDivergence,
+    call_path: callPath,
   };
 }
 
@@ -164,6 +169,9 @@ function reachabilityMetadata(normalizedReachability) {
   };
   if (normalizedReachability.reachability_divergence) {
     metadata.reachability_divergence = normalizedReachability.reachability_divergence;
+  }
+  if (normalizedReachability.call_path) {
+    metadata.call_path = normalizedReachability.call_path;
   }
   return metadata;
 }
@@ -184,6 +192,7 @@ function normalizeReachabilityDispositionStamp(value, fieldName = "reachability"
     value.reachability_divergence,
     `${fieldName}.reachability_divergence`,
   );
+  const callPath = normalizeOptionalText(value.call_path, `${fieldName}.call_path`);
   const stamp = {
     recorded_severity: assertEnumValue(value.recorded_severity, SEVERITY_VALUES, `${fieldName}.recorded_severity`),
     severity_ceiling: assertEnumValue(value.severity_ceiling, SEVERITY_CEILING_VALUES, `${fieldName}.severity_ceiling`),
@@ -195,6 +204,7 @@ function normalizeReachabilityDispositionStamp(value, fieldName = "reachability"
     reachability_source: reachabilitySource,
   };
   if (reachabilityDivergence) stamp.reachability_divergence = reachabilityDivergence;
+  if (callPath) stamp.call_path = callPath;
   return stamp;
 }
 
@@ -334,7 +344,9 @@ function normalizeSurfaceCeilingEntry(entry) {
   if (!reachability) return null;
   return {
     id: entry.id,
-    ...reachability,
+    severity_ceiling: reachability.severity_ceiling,
+    attack_vector: reachability.attack_vector,
+    network_reachable: reachability.network_reachable,
   };
 }
 
@@ -444,6 +456,7 @@ function resolveFindingReachability({ domain, findingId } = {}) {
       attack_vector: assertion.attack_vector,
       network_reachable: assertion.network_reachable,
       reachability_source: "asserted",
+      call_path: assertion.call_path,
       ...(divergence ? { reachability_divergence: divergence } : {}),
     };
   }

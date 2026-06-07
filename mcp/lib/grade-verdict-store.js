@@ -315,6 +315,9 @@ function renderGradeVerdictMarkdown(document) {
       lines.push(`- Attack Vector: ${finding.reachability.attack_vector}`);
       lines.push(`- Reachability Disposition: ${finding.reachability.disposition}`);
       lines.push(`- Reachability Source: ${finding.reachability.reachability_source}`);
+      if (finding.reachability.call_path) {
+        lines.push(`- Reachability Call Path: ${finding.reachability.call_path}`);
+      }
       if (finding.reachability.reachability_divergence) {
         lines.push(`- Reachability Divergence: ${finding.reachability.reachability_divergence}`);
       }

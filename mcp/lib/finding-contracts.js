@@ -107,8 +107,8 @@ function normalizeReachabilityAssertion(value, fieldName = "reachability_asserti
 function normalizeReachabilityCallPath(value, fieldName) {
   const callPath = assertRequiredText(value, fieldName);
   const segments = callPath.split("->").map((segment) => segment.trim()).filter(Boolean);
-  if (segments.length < 2) {
-    throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least one '->' hop`);
+  if (segments.length < 3) {
+    throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least two '->' hops`);
   }
   return callPath;
 }
