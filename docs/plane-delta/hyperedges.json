@@ -12,6 +12,7 @@
     {"id":"H-S13","predecessors":["S10"],"unlocks":["X6"],"kind":"blocking"},
     {"id":"H-X6","predecessors":["S13"],"unlocks":["hardened-ingestion"],"kind":"blocking"},
     {"id":"H-C14","predecessors":["C10"],"unlocks":["file-ready-disclosures","C17"],"kind":"blocking","note":"I12 predecessor DROPPED (tier inversion); CWE/CVSS from final-verifier severity + attack_vector. C14-lite (CWE/CVSS/refs) ships Δ1 with NO predecessor"},
+    {"id":"H-I9prov-C14","predecessors":["I9-prov"],"unlocks":["C14"],"kind":"blocking","note":"reachability-provenance (#78 / PR #80) lands the finding-level asserted attack_vector that C14's disclosure-bundle CVSS reads; must precede C14. I9-prov is the detail/reachability-provenance.md Δ2 lead extending shipped I9/C9 — NOT a standalone S/I/IP/C/X node, so it has no nodes.json entry by design (the spec doc + capability-hypergraph.md progress log are its record). C14's hard substrate predecessor remains C10; this edge adds the lands-before sequencing constraint only."},
     {"id":"H-IP7","predecessors":["S15"],"unlocks":["I10"],"kind":"blocking","note":"SARIF ingest only; runner ships (cli-tool-packs.js)"},
     {"id":"H-I10","predecessors":["IP7","S15"],"unlocks":["C11"],"kind":"blocking"},
     {"id":"H-I12","predecessors":["I5"],"unlocks":["C11(augment)"],"kind":"augment","note":"reuse shipped I5 invariant-template-corpus shape"},
