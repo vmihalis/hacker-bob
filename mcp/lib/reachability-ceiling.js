@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const {
+  ATTACK_VECTOR_VALUES,
   SEVERITY_VALUES,
 } = require("./constants.js");
 const {
@@ -14,10 +15,14 @@ const {
 const {
   assertBoolean,
   assertEnumValue,
+  normalizeOptionalText,
 } = require("./validation.js");
 const {
   readCurrentClaimFreeze,
 } = require("./claim-freeze.js");
+const {
+  normalizeReachabilityAssertion,
+} = require("./finding-contracts.js");
 const {
   normalizeVerificationRoundDocument,
 } = require("./verification-round-store.js");
@@ -28,10 +33,10 @@ const REACHABILITY_DISPOSITION_VALUES = Object.freeze([
   "unchanged",
   "unknown",
 ]);
-const ATTACK_VECTOR_VALUES = Object.freeze([
-  "network",
-  "local",
-  "unknown",
+const REACHABILITY_SOURCE_VALUES = Object.freeze([
+  "asserted",
+  "heuristic",
+  "none",
 ]);
 const SEVERITY_CEILING_VALUES = Object.freeze([
   ...SEVERITY_VALUES,
@@ -71,6 +76,7 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
       graded_severity: ceiling,
       disposition: "capped",
       defensible: false,
+      ...reachabilityMetadata(normalizedReachability),
     };
   }
 
@@ -86,6 +92,7 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
       graded_severity: normalizedRecorded,
       disposition: "lifted",
       defensible: true,
+      ...reachabilityMetadata(normalizedReachability),
     };
   }
 
@@ -97,6 +104,7 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
     graded_severity: normalizedRecorded,
     disposition: "unchanged",
     defensible: false,
+    ...reachabilityMetadata(normalizedReachability),
   };
 }
 
@@ -109,6 +117,7 @@ function unknownDisposition(recordedSeverity) {
     graded_severity: recordedSeverity,
     disposition: "unknown",
     defensible: false,
+    reachability_source: "none",
   };
 }
 
@@ -129,11 +138,33 @@ function normalizeReachabilityInput(reachability) {
   const networkReachable = typeof reachability.network_reachable === "boolean"
     ? reachability.network_reachable
     : null;
+  const rawSource = typeof reachability.reachability_source === "string"
+    ? reachability.reachability_source
+    : "heuristic";
+  const reachabilitySource = rawSource === "asserted" || rawSource === "heuristic"
+    ? rawSource
+    : "heuristic";
+  const reachabilityDivergence = normalizeOptionalText(
+    reachability.reachability_divergence,
+    "reachability.reachability_divergence",
+  );
   return {
     severity_ceiling: ceiling,
     attack_vector: attackVector,
     network_reachable: networkReachable,
+    reachability_source: reachabilitySource,
+    reachability_divergence: reachabilityDivergence,
   };
+}
+
+function reachabilityMetadata(normalizedReachability) {
+  const metadata = {
+    reachability_source: normalizedReachability.reachability_source,
+  };
+  if (normalizedReachability.reachability_divergence) {
+    metadata.reachability_divergence = normalizedReachability.reachability_divergence;
+  }
+  return metadata;
 }
 
 function normalizeReachabilityDispositionStamp(value, fieldName = "reachability") {
@@ -143,15 +174,27 @@ function normalizeReachabilityDispositionStamp(value, fieldName = "reachability"
   const networkReachable = value.network_reachable == null
     ? null
     : assertBoolean(value.network_reachable, `${fieldName}.network_reachable`);
-  return {
+  const disposition = assertEnumValue(value.disposition, REACHABILITY_DISPOSITION_VALUES, `${fieldName}.disposition`);
+  const defaultSource = disposition === "unknown" ? "none" : "heuristic";
+  const reachabilitySource = value.reachability_source == null
+    ? defaultSource
+    : assertEnumValue(value.reachability_source, REACHABILITY_SOURCE_VALUES, `${fieldName}.reachability_source`);
+  const reachabilityDivergence = normalizeOptionalText(
+    value.reachability_divergence,
+    `${fieldName}.reachability_divergence`,
+  );
+  const stamp = {
     recorded_severity: assertEnumValue(value.recorded_severity, SEVERITY_VALUES, `${fieldName}.recorded_severity`),
     severity_ceiling: assertEnumValue(value.severity_ceiling, SEVERITY_CEILING_VALUES, `${fieldName}.severity_ceiling`),
     attack_vector: assertEnumValue(value.attack_vector, ATTACK_VECTOR_VALUES, `${fieldName}.attack_vector`),
     network_reachable: networkReachable,
     graded_severity: assertEnumValue(value.graded_severity, SEVERITY_VALUES, `${fieldName}.graded_severity`),
-    disposition: assertEnumValue(value.disposition, REACHABILITY_DISPOSITION_VALUES, `${fieldName}.disposition`),
+    disposition,
     defensible: assertBoolean(value.defensible, `${fieldName}.defensible`),
+    reachability_source: reachabilitySource,
   };
+  if (reachabilityDivergence) stamp.reachability_divergence = reachabilityDivergence;
+  return stamp;
 }
 
 function isMediumOrHigher(severity) {
@@ -190,6 +233,35 @@ function claimsForFinding(domain, findingId) {
       ref && typeof ref === "object" && ref.kind === "finding" && ref.finding_id === findingId
     ));
   });
+}
+
+function reachabilityAssertionForFinding(domain, findingId) {
+  const assertions = [];
+  const seen = new Set();
+  for (const claim of claimsForFinding(domain, findingId)) {
+    const payload = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload
+      : {};
+    const finding = payload.finding && typeof payload.finding === "object" && !Array.isArray(payload.finding)
+      ? payload.finding
+      : null;
+    if (!finding) continue;
+    if (typeof finding.id === "string" && finding.id !== findingId) continue;
+    const assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
+    if (!assertion) continue;
+    const key = JSON.stringify(assertion);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    assertions.push(assertion);
+  }
+  if (assertions.length > 1) {
+    throw new Error(`conflicting reachability assertions for finding ${findingId}`);
+  }
+  return assertions[0] || null;
+}
+
+function findingHasReachabilityAssertion(domain, findingId) {
+  return reachabilityAssertionForFinding(domain, findingId) != null;
 }
 
 function surfaceIdsForFinding(domain, findingId) {
@@ -234,13 +306,35 @@ function normalizeSurfaceCeilingEntry(entry) {
   };
 }
 
-function resolveFindingReachability({ domain, findingId } = {}) {
+function assertResolveFindingReachabilityArgs({ domain, findingId } = {}) {
   if (typeof domain !== "string" || !domain.trim()) {
     throw new Error("domain must be a non-empty string");
   }
   if (typeof findingId !== "string" || !findingId.trim()) {
     throw new Error("findingId must be a non-empty string");
   }
+}
+
+function severityCeilingForAssertedAttackVector(attackVector) {
+  return attackVector === "network" ? "critical" : "medium";
+}
+
+function reachabilityDivergenceNote(assertion, heuristic) {
+  if (!assertion || !heuristic) return null;
+  if (
+    assertion.attack_vector === heuristic.attack_vector
+    && assertion.network_reachable === heuristic.network_reachable
+  ) {
+    return null;
+  }
+  const assertedReachable = assertion.network_reachable === true ? "true" : "false";
+  const heuristicReachable = heuristic.network_reachable === true
+    ? "true"
+    : (heuristic.network_reachable === false ? "false" : "null");
+  return `asserted ${assertion.attack_vector}/${assertedReachable} overrides heuristic ${heuristic.attack_vector}/${heuristicReachable}`;
+}
+
+function resolveFindingReachabilityFromHeuristic({ domain, findingId } = {}) {
   const inventory = readReachabilityInventory(domain);
   if (!inventory) return null;
   const surfaceIds = stampedSurfaceIdsForFinding(domain, findingId);
@@ -275,7 +369,30 @@ function resolveFindingReachability({ domain, findingId } = {}) {
     severity_ceiling: selectedCeiling,
     attack_vector: allNetwork ? "network" : (anyLocal ? "local" : "unknown"),
     network_reachable: allNetwork ? true : (anyLocal ? false : null),
+    reachability_source: "heuristic",
   };
+}
+
+function resolveFindingReachability({ domain, findingId } = {}) {
+  assertResolveFindingReachabilityArgs({ domain, findingId });
+  const assertion = reachabilityAssertionForFinding(domain, findingId);
+  if (assertion) {
+    let heuristic = null;
+    try {
+      heuristic = resolveFindingReachabilityFromHeuristic({ domain, findingId });
+    } catch {
+      heuristic = null;
+    }
+    const divergence = reachabilityDivergenceNote(assertion, heuristic);
+    return {
+      severity_ceiling: severityCeilingForAssertedAttackVector(assertion.attack_vector),
+      attack_vector: assertion.attack_vector,
+      network_reachable: assertion.network_reachable,
+      reachability_source: "asserted",
+      ...(divergence ? { reachability_divergence: divergence } : {}),
+    };
+  }
+  return resolveFindingReachabilityFromHeuristic({ domain, findingId });
 }
 
 function readFinalVerificationResults(domain) {
@@ -318,6 +435,7 @@ function missingReachabilityStampsForReportableFindings(domain) {
   if (!hasReachabilityInventory(domain)) {
     const missing = [];
     for (const [findingId] of finalReportableFindingSeverities(domain)) {
+      if (findingHasReachabilityAssertion(domain, findingId)) continue;
       if (findingHasReachabilityStampedSurface(domain, findingId)) {
         missing.push(findingId);
       }
@@ -330,7 +448,9 @@ function missingReachabilityStampsForReportableFindings(domain) {
   }
   const missing = [];
   for (const [findingId, severity] of finalReportableFindingSeverities(domain)) {
-    if (!findingHasReachabilityStampedSurface(domain, findingId)) continue;
+    if (!findingHasReachabilityStampedSurface(domain, findingId) && !findingHasReachabilityAssertion(domain, findingId)) {
+      continue;
+    }
     const disposition = reachabilityDispositionForFinding({
       domain,
       findingId,
@@ -350,10 +470,12 @@ function missingReachabilityStampsForReportableFindings(domain) {
 module.exports = {
   ATTACK_VECTOR_VALUES,
   REACHABILITY_DISPOSITION_VALUES,
+  REACHABILITY_SOURCE_VALUES,
   REACHABILITY_STAMPED_SURFACE_PREFIXES,
   SEVERITY_CEILING_VALUES,
   computeReachabilityDisposition,
   finalSeverityByFinding,
+  findingHasReachabilityAssertion,
   findingHasReachabilityStampedSurface,
   hasReachabilityInventory,
   isReachabilityStampedSurfaceId,

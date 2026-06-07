@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   APTOS_NETWORK_VALUES,
+  ATTACK_VECTOR_VALUES,
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
   SEVERITY_VALUES,
@@ -69,6 +70,38 @@ function normalizeSurfaceType(value) {
     throw new Error(`surface_type must be one of: ${SURFACE_TYPE_VALUES.join(", ")}`);
   }
   return trimmed;
+}
+
+const REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES = Object.freeze(
+  ATTACK_VECTOR_VALUES.filter((value) => value !== "unknown"),
+);
+
+function normalizeReachabilityAssertion(value, fieldName = "reachability_assertion") {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  const attackVector = assertEnumValue(
+    value.attack_vector,
+    REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES,
+    `${fieldName}.attack_vector`,
+  );
+  const networkReachable = assertBoolean(value.network_reachable, `${fieldName}.network_reachable`);
+  if (attackVector === "network" && networkReachable !== true) {
+    throw new Error(`${fieldName}.network_reachable must be true when attack_vector is network`);
+  }
+  if (attackVector === "local" && networkReachable !== false) {
+    throw new Error(`${fieldName}.network_reachable must be false when attack_vector is local`);
+  }
+  const callPath = assertRequiredText(value.call_path, `${fieldName}.call_path`);
+  const justification = normalizeOptionalText(value.justification, `${fieldName}.justification`);
+  const normalized = {
+    attack_vector: attackVector,
+    network_reachable: networkReachable,
+    call_path: callPath,
+  };
+  if (justification) normalized.justification = justification;
+  return normalized;
 }
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -426,6 +459,10 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
+    const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
+    if (reachabilityAssertion) {
+      finding.reachability_assertion = reachabilityAssertion;
+    }
     const missingRouting = !finding.capability_pack || !finding.evaluator_agent || !finding.brief_profile;
     if (missingRouting) {
       const backfill = capabilityPackForLegacyFinding({
@@ -543,6 +580,7 @@ module.exports = {
   computeFindingDedupeKey,
   normalizeBech32Address,
   normalizeFindingRecord,
+  normalizeReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,
   renderFindingMarkdownEntry,

@@ -461,6 +461,22 @@ test("evaluator OSS stanza tells fuzz_run to consume readable repo-env recommend
   assert.doesNotMatch(ossBranch, /read `repo-env\.json`/i);
 });
 
+test("evaluator prompts require cited reachability assertions for OSS native findings", () => {
+  const surfaces = [
+    "prompts/roles/evaluator.md",
+    ".claude/agents/evaluator-agent.md",
+    "adapters/codex/skills/bob-evaluate/SKILL.md",
+    "adapters/kimi/skills/bob-evaluate/SKILL.md",
+  ];
+  for (const surface of surfaces) {
+    const body = readFile(surface);
+    assert.match(body, /reachability_assertion/, `${surface} must mention reachability_assertion`);
+    assert.match(body, /entrypoint-to-sink path/, `${surface} must require an entrypoint-to-sink path`);
+    assert.match(body, /UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid/, `${surface} must carry the network example`);
+    assert.match(body, /AgentX master unix socket -> handle_subagent_set_response/, `${surface} must carry the local IPC example`);
+  }
+});
+
 // NOTE: the roadmap-era "Kimi hunter catalogue routes OSS brief profiles through
 // the generic worker path" test was dropped when Δ1 integrated onto main's Kimi v2
 // adapter (PR #67). Main's Kimi adapter does not yet render OSS brief-profile
@@ -1614,6 +1630,17 @@ test("the claim-recording tool's schema requires sc_evidence sub-fields for SC f
     ["aptos", "cosmwasm", "evm", "substrate", "sui", "svm"],
   );
   assert.ok(Array.isArray(sc.properties.chain_id.oneOf) && sc.properties.chain_id.oneOf.length === 2);
+});
+
+test("the claim-recording tool's schema requires cited reachability assertions", () => {
+  const tool = TOOLS.find((entry) => entry.name === "bob_record_candidate_claim");
+  assert.ok(tool, "bob_record_candidate_claim tool not registered");
+  const assertion = tool.inputSchema.properties.reachability_assertion;
+  assert.equal(assertion.type, "object");
+  assert.deepEqual([...assertion.required].sort(), ["attack_vector", "call_path", "network_reachable"].sort());
+  assert.deepEqual([...assertion.properties.attack_vector.enum].sort(), ["local", "network"]);
+  assert.equal(assertion.properties.call_path.minLength, 1);
+  assert.ok(assertion.properties.call_path.maxLength <= 4000);
 });
 
 // =============================================================================

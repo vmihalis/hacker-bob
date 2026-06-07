@@ -79,6 +79,9 @@ function recordFindingViaTool(domain, overrides = {}) {
     auth_profile: overrides.auth_profile || "attacker",
     surface_id: overrides.surface_id || "surface:billing-profile",
   };
+  if (overrides.reachability_assertion) {
+    args.reachability_assertion = overrides.reachability_assertion;
+  }
   return JSON.parse(recordFindingTool.handler(args));
 }
 
@@ -178,8 +181,12 @@ function seedLocalParserRepo(home, targetDomain) {
   };
 }
 
-function seedFrozenRepoFinding(domain, surfaceIds, { findingId = "F-1", severity = "high" } = {}) {
-  appendCandidateClaim({
+function seedFrozenRepoFinding(domain, surfaceIds, {
+  findingId = "F-1",
+  severity = "high",
+  reachabilityAssertion = null,
+} = {}) {
+  const claim = {
     target_domain: domain,
     title: "Native parser over-read",
     summary: "Local file parser reads past the available buffer.",
@@ -192,7 +199,16 @@ function seedFrozenRepoFinding(domain, surfaceIds, { findingId = "F-1", severity
       content_hash: "0".repeat(64),
     }],
     impact: "Parser crash on crafted input.",
-  });
+  };
+  if (reachabilityAssertion) {
+    claim.payload = {
+      finding: {
+        id: findingId,
+        reachability_assertion: reachabilityAssertion,
+      },
+    };
+  }
+  appendCandidateClaim(claim);
   buildClaimFreeze(domain, {
     write: true,
     now: new Date("2026-05-27T01:00:00.000Z"),
@@ -320,6 +336,7 @@ test("reachability cap stamps graded severity without removing the reportable fi
       graded_severity: "medium",
       disposition: "capped",
       defensible: false,
+      reachability_source: "heuristic",
     });
 
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
@@ -352,6 +369,155 @@ test("reachability cap stamps graded severity without removing the reportable fi
       "capped",
       "reachability must resolve from the frozen claim batch, not post-freeze live claims",
     );
+  });
+});
+
+test("asserted local reachability overrides heuristic network and caps without dropping the finding", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-local-over-network");
+    const domain = repoSession.target_domain;
+    seedFrozenRepoFinding(domain, [repoSession.network_surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "local",
+        network_reachable: false,
+        call_path: "AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response",
+        justification: "AgentX handling is local unix-socket IPC, not UDP-161 network input.",
+      },
+    });
+
+    const written = JSON.parse(writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    }));
+    assert.equal(written.findings_count, 1, "AV:L cap must not remove the finding from grade/reportability");
+
+    const onDisk = JSON.parse(fs.readFileSync(gradeArtifactPaths(domain).json, "utf8"));
+    assert.deepEqual(onDisk.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "medium",
+      attack_vector: "local",
+      network_reachable: false,
+      graded_severity: "medium",
+      disposition: "capped",
+      defensible: false,
+      reachability_source: "asserted",
+      reachability_divergence: "asserted local/false overrides heuristic network/true",
+    });
+    const markdown = fs.readFileSync(gradeArtifactPaths(domain).markdown, "utf8");
+    assert.match(markdown, /- Reachability Source: asserted/);
+    assert.match(markdown, /- Reachability Divergence: asserted local\/false overrides heuristic network\/true/);
+  });
+});
+
+test("asserted network reachability overrides heuristic local", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-network-over-local");
+    const domain = repoSession.target_domain;
+    seedFrozenRepoFinding(domain, [repoSession.surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "UDP-161 SNMP SET -> parse_pdu_value -> render_mib_value",
+        justification: "The sink renders a reflected PDU value received over the SNMP listener.",
+      },
+    });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.deepEqual(read.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: true,
+      reachability_source: "asserted",
+      reachability_divergence: "asserted network/true overrides heuristic local/false",
+    });
+  });
+});
+
+test("asserted network reachability stays network when the heuristic agrees", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-assert-network-over-network");
+    const domain = repoSession.target_domain;
+    seedFrozenRepoFinding(domain, [repoSession.network_surface_id], {
+      reachabilityAssertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid",
+        justification: "The call path starts at the UDP SNMP listener and reaches the sink.",
+      },
+    });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.deepEqual(read.findings[0].reachability, {
+      recorded_severity: "high",
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: true,
+      reachability_source: "asserted",
+    });
+  });
+});
+
+test("record-candidate-claim rejects reachability assertions without a call_path", () => {
+  withTempHome(() => {
+    assert.throws(
+      () => recordFindingViaTool("reachability-assertion-missing-path.example.com", {
+        reachability_assertion: {
+          attack_vector: "network",
+          network_reachable: true,
+          justification: "Missing the cited entrypoint-to-sink path.",
+        },
+      }),
+      /reachability_assertion\.call_path must be a non-empty string/,
+    );
+  });
+});
+
+test("reachability assertion does not change candidate-claim dedupe identity", () => {
+  withTempHome(() => {
+    const domain = "reachability-assertion-dedupe.example.com";
+    const first = recordFindingViaTool(domain, {
+      reachability_assertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "UDP listener -> parse_packet -> sink",
+      },
+    });
+    const second = recordFindingViaTool(domain, {
+      reachability_assertion: {
+        attack_vector: "local",
+        network_reachable: false,
+        call_path: "local file parser -> parse_packet -> sink",
+      },
+    });
+
+    assert.equal(first.recorded, true);
+    assert.equal(second.recorded, false);
+    assert.equal(second.duplicate, true);
+    assert.equal(second.existing_finding_id, first.finding_id);
+    assert.equal(second.dedupe_key, first.dedupe_key);
   });
 });
 
@@ -445,6 +611,7 @@ test("reachability aggregation keeps mixed frozen repo module surfaces capped by
       graded_severity: "medium",
       disposition: "capped",
       defensible: false,
+      reachability_source: "heuristic",
     });
   });
 });
@@ -479,6 +646,7 @@ test("reachability aggregation does not turn attack_vector network with network_
       graded_severity: "high",
       disposition: "unchanged",
       defensible: false,
+      reachability_source: "heuristic",
     });
   });
 });

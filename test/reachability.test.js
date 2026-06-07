@@ -219,6 +219,7 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
       graded_severity: "medium",
       disposition: "capped",
       defensible: false,
+      reachability_source: "heuristic",
     },
   );
 
@@ -236,6 +237,7 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
       graded_severity: "high",
       disposition: "lifted",
       defensible: true,
+      reachability_source: "heuristic",
     },
   );
 
@@ -249,6 +251,7 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
       graded_severity: "medium",
       disposition: "unknown",
       defensible: false,
+      reachability_source: "none",
     },
   );
 });
