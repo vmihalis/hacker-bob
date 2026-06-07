@@ -202,6 +202,27 @@ export function buildClaudeAuthEnv(creds: {
   return {};
 }
 
+/**
+ * Build the claude `--mcp-config` payload that registers the Bob MCP server.
+ *
+ * Wiring this server is what enables PATH A in the skill: with the bob_* tools
+ * available the skill runs bob_init_repo_session -> bob_repo_inventory ->
+ * bob_extract_routes -> bob_build_symbol_surface_index -> bob_summarize_diff_impact
+ * (real symbol-surface analysis + session cache). Without it the skill falls
+ * back to PATH B heuristic dispatch.
+ *
+ * @param serverPath - Absolute path to the hacker-bob mcp/server.js.
+ */
+export function buildMcpConfig(
+  serverPath: string
+): { mcpServers: Record<string, { command: string; args: string[] }> } {
+  return {
+    mcpServers: {
+      "hacker-bob": { command: "node", args: [serverPath] },
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Schema validation
 // ---------------------------------------------------------------------------
@@ -449,8 +470,35 @@ export async function runBobDiffReview(
   const claudeArgs: string[] = [
     "--dangerously-skip-permissions",
     "--print",
-    skillPrompt,
   ];
+
+  // Wire the Bob MCP server when available so the skill can run PATH A
+  // (symbol-surface index + diff-impact via bob_* tools). The cache-bob-workspace
+  // action installs the hacker-bob runtime and exports BOB_MCP_SERVER_PATH. When
+  // it is set and the file exists, write a strict mcp-config and pass it to
+  // claude; otherwise the skill falls back to PATH B (heuristic dispatch).
+  const mcpServerPath = process.env["BOB_MCP_SERVER_PATH"];
+  if (mcpServerPath && fs.existsSync(mcpServerPath)) {
+    const mcpConfigPath = path.join(outputDir, "bob-mcp-config.json");
+    fs.writeFileSync(
+      mcpConfigPath,
+      JSON.stringify(buildMcpConfig(path.resolve(mcpServerPath))),
+      "utf8"
+    );
+    // --strict-mcp-config: ignore any ambient .mcp.json so only the Bob server
+    // loads. The variadic --mcp-config consumes the file path and stops at the
+    // next flag, keeping the skill prompt as the trailing positional argument.
+    claudeArgs.push("--mcp-config", mcpConfigPath, "--strict-mcp-config");
+    process.stderr.write(
+      `[bob-runner] Bob MCP wired (PATH A enabled): ${mcpServerPath}\n`
+    );
+  } else {
+    process.stderr.write(
+      `[bob-runner] BOB_MCP_SERVER_PATH not set or file missing — skill will use PATH B (heuristic dispatch)\n`
+    );
+  }
+
+  claudeArgs.push(skillPrompt);
 
   // 3. Build child process environment.
   //    Inherit the current env so PATH, HOME, etc. are available, then overlay

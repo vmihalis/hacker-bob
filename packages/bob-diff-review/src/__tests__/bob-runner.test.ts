@@ -19,6 +19,7 @@ import {
   validateDiffReviewFindings,
   resolveOutputDir,
   buildClaudeAuthEnv,
+  buildMcpConfig,
   BobRunnerError,
 } from "../bob-runner.js";
 import * as fs from "node:fs";
@@ -261,6 +262,24 @@ describe("buildClaudeAuthEnv (dual-auth precedence)", () => {
     });
     expect(buildClaudeAuthEnv({ apiKey: " sk-ant-key-456 " })).toEqual({
       ANTHROPIC_API_KEY: "sk-ant-key-456",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildMcpConfig — Bob MCP server registration (enables PATH A)
+// ---------------------------------------------------------------------------
+
+describe("buildMcpConfig", () => {
+  it("registers the hacker-bob server with a node command + the server path", () => {
+    const cfg = buildMcpConfig("/home/runner/bob-workspace/mcp/server.js");
+    expect(cfg).toEqual({
+      mcpServers: {
+        "hacker-bob": {
+          command: "node",
+          args: ["/home/runner/bob-workspace/mcp/server.js"],
+        },
+      },
     });
   });
 });
