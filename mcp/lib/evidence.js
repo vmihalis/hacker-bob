@@ -102,7 +102,7 @@ function readRepoCommandRunRows(domain) {
   return rows;
 }
 
-function readRepoCommandRunRow(domain, runId, fieldName) {
+function readRepoCommandRunRow(domain, runId, fieldName, expectedCheckout = null) {
   const rows = readRepoCommandRunRows(domain);
   const row = rows.find((entry) => entry && entry.run_id === runId);
   if (!row) {
@@ -110,6 +110,11 @@ function readRepoCommandRunRow(domain, runId, fieldName) {
   }
   if (row.network_mode !== "none") {
     throw new Error(`${fieldName} must reference a --network none repo docker run`);
+  }
+  if (expectedCheckout) {
+    if (row.checkout_ref !== expectedCheckout.ref || row.checkout_kind !== expectedCheckout.kind) {
+      throw new Error(`${fieldName} must reference a matching S14 checkout run`);
+    }
   }
   return row;
 }
@@ -149,13 +154,16 @@ function normalizeDifferential(differential, { domain }) {
   if (vulnRunId === controlRunId) {
     throw new Error("differential.vuln_run_id and differential.control_run_id must differ");
   }
-  readRepoCommandRunRow(domain, vulnRunId, "differential.vuln_run_id");
-  readRepoCommandRunRow(domain, controlRunId, "differential.control_run_id");
   const controlRef = assertMaxChars(
     assertRequiredText(differential.control_ref, "differential.control_ref"),
     "differential.control_ref",
     MAX_CONTROL_REF_CHARS,
   );
+  readRepoCommandRunRow(domain, vulnRunId, "differential.vuln_run_id");
+  readRepoCommandRunRow(domain, controlRunId, "differential.control_run_id", {
+    ref: controlRef,
+    kind: controlKind,
+  });
   const controlSummary = assertMaxChars(
     assertRequiredText(differential.control_summary, "differential.control_summary"),
     "differential.control_summary",

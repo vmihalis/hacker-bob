@@ -118,9 +118,11 @@ function appendRepoCommandRunRow(domain, {
   stdout_hash: stdoutHash,
   stderr_hash: stderrHash,
   network_mode: networkMode = "none",
+  checkout_ref: checkoutRef = null,
+  checkout_kind: checkoutKind = null,
 }) {
   fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
-  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify({
+  const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
@@ -131,7 +133,10 @@ function appendRepoCommandRunRow(domain, {
     stdout_hash: stdoutHash,
     stderr_hash: stderrHash,
     timed_out: false,
-  })}\n`);
+  };
+  if (checkoutRef) row.checkout_ref = checkoutRef;
+  if (checkoutKind) row.checkout_kind = checkoutKind;
+  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
 }
 
 function seedNativeCodeSurface(domain, surfaceId, language, filePath = "src/parser.c") {
@@ -507,6 +512,8 @@ test("C10 differential records null stdout hash when the capture file is missing
       exit_code: 0,
       stdout_hash: sha256Hex("control quiet\n"),
       stderr_hash: sha256Hex(""),
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
     });
 
     const document = normalizeEvidencePacksDocument({

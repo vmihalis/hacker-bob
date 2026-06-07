@@ -960,10 +960,12 @@ function buildDifferentialCheckoutCommand({
   checkout_ref: checkoutRef,
   checkout_kind: checkoutKind,
   dest = "/work/repo",
+  after_command: afterCommand = null,
 } = {}) {
   const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
   const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
   const checkoutDest = assertWorkDest(dest);
+  const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
   const archiveRef = kind === "self_patch" ? "HEAD" : ref;
   const script = [
     "set -eu",
@@ -977,6 +979,10 @@ function buildDifferentialCheckoutCommand({
   if (kind === "self_patch") {
     script.push("test -f /work/patch.diff");
     script.push(`git -C ${shellQuote(checkoutDest)} apply /work/patch.diff`);
+  }
+  if (normalizedAfterCommand) {
+    script.push(`cd ${shellQuote(checkoutDest)}`);
+    script.push(normalizedAfterCommand.map(shellQuote).join(" "));
   }
   return assertCommandArray(["sh", "-lc", script.join(" && ")]);
 }
@@ -1266,10 +1272,11 @@ async function repoDockerRun({
   if (normalizedCheckout) {
     assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
-  const effectiveCommand = command == null && normalizedCheckout
+  const effectiveCommand = normalizedCheckout
     ? buildDifferentialCheckoutCommand({
         checkout_ref: normalizedCheckout.ref,
         checkout_kind: normalizedCheckout.kind,
+        after_command: command == null ? null : command,
       })
     : command;
   const normalizedCommand = assertCommandArray(effectiveCommand);

@@ -349,6 +349,16 @@ test("buildDifferentialCheckoutCommand refuses destinations outside /work", () =
   );
 });
 
+test("buildDifferentialCheckoutCommand appends caller command after materialization", () => {
+  const command = buildDifferentialCheckoutCommand({
+    checkout_ref: "abcdef123456",
+    checkout_kind: "upstream_fix",
+    after_command: ["node", "-e", "console.log(process.cwd())"],
+  });
+  assert.match(command[2], /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+  assert.match(command[2], /cd '\/work\/repo' && 'node' '-e' 'console\.log\(process\.cwd\(\)\)'$/);
+});
+
 // ---------- repoDockerRun (dry-run) ----------
 
 test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without docker exec", async () => {
@@ -424,6 +434,26 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(rows[0].checkout_kind, "pre_introduction");
     assert.equal(rows[0].network_mode, "none");
     assert.equal(rows[0].mount_mode, "read_only");
+  });
+});
+
+test("repoDockerRun checkout provenance wraps explicit command after S14 materialization", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "upstream_fix" },
+      command: ["node", "-e", "console.log('control')"],
+    });
+
+    const script = result.planned_argv[result.planned_argv.length - 1];
+    assert.match(script, /git -C \/src archive --format=tar/);
+    assert.match(script, /tar -x -f \/work\/checkout\.tar -C '\/work\/repo'/);
+    assert.match(script, /cd '\/work\/repo' && 'node' '-e' 'console\.log\('\\''control'\\''\)'$/);
+    assert.equal(result.checkout_ref, first);
+    assert.equal(result.checkout_kind, "upstream_fix");
   });
 });
 

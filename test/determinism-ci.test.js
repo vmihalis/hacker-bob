@@ -165,11 +165,14 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function appendRepoRunFixture(domain, runId, stdout) {
+function appendRepoRunFixture(domain, runId, stdout, {
+  checkout_ref: checkoutRef = null,
+  checkout_kind: checkoutKind = null,
+} = {}) {
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), "");
-  appendJsonlLine(repoCommandRunsJsonlPath(domain), {
+  const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
@@ -183,12 +186,18 @@ function appendRepoRunFixture(domain, runId, stdout) {
     timed_out: false,
     stdout_hash: sha256Hex(stdout),
     stderr_hash: sha256Hex(""),
-  });
+  };
+  if (checkoutRef) row.checkout_ref = checkoutRef;
+  if (checkoutKind) row.checkout_kind = checkoutKind;
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 
 function exerciseDifferentialEvidence(domain) {
   appendRepoRunFixture(domain, "det-ci-vuln-run", "vuln fired\n");
-  appendRepoRunFixture(domain, "det-ci-control-run", "control quiet\n");
+  appendRepoRunFixture(domain, "det-ci-control-run", "control quiet\n", {
+    checkout_ref: "HEAD",
+    checkout_kind: "self_patch",
+  });
   const document = normalizeEvidencePacksDocument({
     version: 1,
     target_domain: domain,

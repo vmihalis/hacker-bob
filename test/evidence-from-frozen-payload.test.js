@@ -106,11 +106,13 @@ function appendRepoRunFixture(domain, runId, {
   network_mode: networkMode = "none",
   command_hash: commandHash = "a".repeat(64),
   stderr_hash: stderrHash = "b".repeat(64),
+  checkout_ref: checkoutRef = null,
+  checkout_kind: checkoutKind = null,
 } = {}) {
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), "");
-  appendJsonlLine(repoCommandRunsJsonlPath(domain), {
+  const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
@@ -124,7 +126,10 @@ function appendRepoRunFixture(domain, runId, {
     timed_out: false,
     stdout_hash: sha256Hex(stdout),
     stderr_hash: stderrHash,
-  });
+  };
+  if (checkoutRef) row.checkout_ref = checkoutRef;
+  if (checkoutKind) row.checkout_kind = checkoutKind;
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 
 function baseEvidencePack(findingId = "F-1", differential = null) {
@@ -158,26 +163,41 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
   withTempHome(() => {
     const domain = "evidence-c10-truth-table.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
-    appendRepoRunFixture(domain, "run-upstream", { stdout: "upstream still fired\n" });
-    appendRepoRunFixture(domain, "run-self-patch", { stdout: "patched quiet\n" });
-    appendRepoRunFixture(domain, "run-pre-intro", { stdout: "pre intro quiet\n" });
+    appendRepoRunFixture(domain, "run-upstream", {
+      stdout: "upstream still fired\n",
+      checkout_ref: "upstream-fix",
+      checkout_kind: "upstream_fix",
+    });
+    appendRepoRunFixture(domain, "run-self-patch", {
+      stdout: "patched quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    appendRepoRunFixture(domain, "run-pre-intro", {
+      stdout: "pre intro quiet\n",
+      checkout_ref: "pre-introduction",
+      checkout_kind: "pre_introduction",
+    });
 
     const cases = [
       {
         control_kind: "upstream_fix",
         control_run_id: "run-upstream",
+        control_ref: "upstream-fix",
         control_fired: true,
         verdict: "residual_confirmed",
       },
       {
         control_kind: "self_patch",
         control_run_id: "run-self-patch",
+        control_ref: "HEAD",
         control_fired: false,
         verdict: "patch_fixes",
       },
       {
         control_kind: "pre_introduction",
         control_run_id: "run-pre-intro",
+        control_ref: "pre-introduction",
         control_fired: false,
         verdict: "regression_localized",
       },
@@ -188,7 +208,7 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
         control_kind: item.control_kind,
         vuln_run_id: "run-vuln",
         control_run_id: item.control_run_id,
-        control_ref: "abcdef123456",
+        control_ref: item.control_ref,
         vuln_fired: true,
         control_fired: item.control_fired,
         verdict: item.verdict,
@@ -210,6 +230,8 @@ test("C10 differential rejects identical run ids and network-tainted controls", 
     appendRepoRunFixture(domain, "run-control-network", {
       stdout: "control fired\n",
       network_mode: "bridge",
+      checkout_ref: "abcdef123456",
+      checkout_kind: "upstream_fix",
     });
 
     assert.throws(
@@ -242,11 +264,49 @@ test("C10 differential rejects identical run ids and network-tainted controls", 
   });
 });
 
+test("C10 differential rejects controls without matching S14 checkout provenance", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-checkout-binding.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control-unbound", { stdout: "control quiet\n" });
+    appendRepoRunFixture(domain, "run-control-wrong-ref", {
+      stdout: "control quiet\n",
+      checkout_ref: "other-ref",
+      checkout_kind: "self_patch",
+    });
+    appendRepoRunFixture(domain, "run-control-wrong-kind", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "upstream_fix",
+    });
+
+    for (const controlRunId of ["run-control-unbound", "run-control-wrong-ref", "run-control-wrong-kind"]) {
+      assert.throws(
+        () => normalizePacksForC10(domain, {
+          control_kind: "self_patch",
+          vuln_run_id: "run-vuln",
+          control_run_id: controlRunId,
+          control_ref: "HEAD",
+          vuln_fired: true,
+          control_fired: false,
+          verdict: "patch_fixes",
+          control_summary: "Control binding must match the S14 checkout provenance.",
+        }),
+        /matching S14 checkout run/,
+      );
+    }
+  });
+});
+
 test("C10 differential is scrub-validated before persistence", () => {
   withTempHome(() => {
     const domain = "evidence-c10-scrub.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
-    appendRepoRunFixture(domain, "run-control", { stdout: "control quiet\n" });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
 
     assert.throws(
       () => normalizePacksForC10(domain, {
@@ -268,7 +328,11 @@ test("C10 inconsistent control downgrades to inconclusive without dropping the f
   withTempHome(() => {
     const domain = "evidence-c10-inconclusive.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
-    appendRepoRunFixture(domain, "run-control", { stdout: "control also fired\n" });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control also fired\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
 
     const document = normalizePacksForC10(domain, {
       control_kind: "self_patch",
