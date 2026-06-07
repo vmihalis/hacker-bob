@@ -137,7 +137,7 @@ quoting before exec.
 |------|----------|-------------|
 | `--repo` | Yes | Absolute path to the locally checked-out repository. Must be an existing directory. Refuses remote shapes (`git@`, `git+`, `ssh://`, bare slugs). |
 | `--diff-file` | Yes | Path to a unified diff file (output of `git diff base...head`). The pipeline reads the full text from this file. |
-| `--target-domain-override` | No | Override for the Bob session `target_domain` slug. Defaults to the MCP-derived `repo-<safeName>-<sha8>` form when omitted. Useful for stable cache keys across re-runs on the same repository. |
+| `--target-domain-override` | No | GitHub context slug (e.g. `gh-<repository_id>`) stamped into `diff-review-findings.json` for traceability. NOT used for the Bob session: the MCP authority requires the server-derived `repo-<safeName>-<sha8>` slug, so the session domain always comes from `bob_init_repo_session`'s result. |
 | `--output-dir` | No | Directory where `diff-review-findings.json` is written. Defaults to `$RUNNER_TEMP/bob-diff-review` when running inside GitHub Actions, or a temp directory otherwise. |
 
 ## Pipeline Steps (S2-S6)
@@ -151,18 +151,24 @@ succeeding. Log each step start and completion to stdout.
    not exist, is not a directory, or looks like a remote ref (`git@`, `git+`,
    `ssh://`, bare `owner/repo` slugs). Surface the refusal as a structured JSON
    error and stop the pipeline.
-2. Detect whether `~/hacker-bob-sessions/<target_domain>` already exists.  If
-   it does, the C2 cache was restored; log `S2: resuming existing session`.
-   Call `bob_init_repo_session({ repo_path, target_domain, deep_mode: false,
-   egress_profile: "default" })` either way — the MCP server merges existing
-   state when the session dir is present rather than overwriting it.  Always
-   pass `target_domain` as `--target-domain-override` or the `gh-<repository_id>`
-   value from C2.  Surface any structured error (`repo_path_not_found`,
-   `repo_path_not_directory`, `target_domain_mismatch`, `session_corrupt`) as a
-   JSON object on stdout and stop.
-3. Verify `bob_read_session_nucleus({ target_domain })` returns successfully.
-   This confirms the session nucleus was written to MCP state and is readable
-   before proceeding.
+2. Call `bob_init_repo_session({ repo_path, deep_mode: false,
+   egress_profile: "default" })`.
+   **Do NOT pass a `target_domain` override.** The MCP repo-session authority
+   requires the server-derived `repo-<safeName>-<sha8>` slug and rejects any
+   other value (e.g. a `gh-<id>` slug) with `normalization_failed`. Omit
+   `target_domain` so the server derives it, then read the derived slug from
+   `result.data.target_domain` and use THAT value as `<target_domain>` for every
+   subsequent S2–S6 MCP call. `result.data.created === false` means the C2 cache
+   restored an existing session (resume); the server merges existing state either
+   way, so calling init is always safe. Surface any structured error
+   (`repo_path_not_found`, `repo_path_not_directory`, `session_corrupt`) as a JSON
+   object on stdout and stop.
+   Note: the `--target-domain-override` argument is GitHub context for the
+   findings file only — the runner stamps it into `diff-review-findings.json`.
+   Never pass it to the MCP repo-session tools.
+3. Verify `bob_read_session_nucleus({ target_domain })` returns successfully
+   (using the derived `<target_domain>` from step 2). This confirms the session
+   nucleus was written to MCP state and is readable before proceeding.
 4. Call `bob_repo_inventory({ target_domain })` to walk the repo and emit
    `surface.observed` events (writes `repo-inventory.json` to the session dir).
    Stop if inventory returns zero files or an error; surface the failure as a
@@ -173,7 +179,8 @@ succeeding. Log each step start and completion to stdout.
 
 Check whether `SKIP_SURFACE_BUILD=true` is set in the runner environment or
 whether `symbol-surface-index.json` already exists in the session directory
-(restored from cache). If either condition holds, log exactly:
+(`result.data.session_dir` from the S2 init result, restored from cache). If
+either condition holds, log exactly:
 
 ```
 CACHE HIT: skipping index build
