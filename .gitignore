@@ -21,3 +21,7 @@ __pycache__/
 .claude/bob/VERSION
 .claude/bob/install.json
 .claude/bob/egress-profiles.json
+# act local testing — secrets and log files
+.secrets
+test/act-run.log
+test/act-mock-api.log

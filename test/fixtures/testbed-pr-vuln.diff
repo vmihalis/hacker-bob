@@ -1,0 +1,102 @@
+diff --git a/src/routes/users.js b/src/routes/users.js
+new file mode 100644
+index 0000000..e6f3c1a
+--- /dev/null
++++ b/src/routes/users.js
+@@ -0,0 +1,60 @@
++const express = require('express');
++const db = require('../db');
++
++const router = express.Router();
++
++/**
++ * GET /users/search
++ *
++ * Search users by name.  The `name` query parameter is inserted directly
++ * into the SQL query without sanitisation — SQL injection is possible.
++ *
++ * Example (safe): SELECT * FROM users WHERE name = $1   (parameterised)
++ * Example (UNSAFE, current): SELECT * FROM users WHERE name = '${name}'
++ */
++router.get('/search', async (req, res) => {
++  const name = req.query.name;
++
++  // VULNERABILITY: unsanitised user input interpolated into SQL string.
++  // An attacker can supply: ' OR '1'='1 to dump all users.
++  const query = `SELECT id, username, email FROM users WHERE name = '${name}'`;
++
++  try {
++    const result = await db.raw(query);
++    res.json(result.rows);
++  } catch (err) {
++    res.status(500).json({ error: 'Database error' });
++  }
++});
++
++/**
++ * GET /users/:id
++ *
++ * Fetch user profile by id.  No authorization check — any authenticated
++ * session (or unauthenticated request if the middleware is not applied)
++ * can read any user record.
++ *
++ * VULNERABILITY: broken object-level authorization (BOLA / IDOR).
++ */
++router.get('/:id', async (req, res) => {
++  const userId = req.params.id;
++  // No ownership or role check before querying
++  const user = await db('users').where({ id: userId }).first();
++  if (!user) return res.status(404).json({ error: 'Not found' });
++  res.json(user);
++});
++
++/**
++ * POST /users/:id/admin
++ *
++ * Promote user to admin.  The `role` body parameter is trusted without
++ * validating that the caller is themselves an admin.
++ *
++ * VULNERABILITY: mass-assignment / privilege escalation.
++ */
++router.post('/:id/admin', async (req, res) => {
++  const userId = req.params.id;
++  const { role } = req.body;
++  // No authZ check — any user can escalate any account
++  await db('users').where({ id: userId }).update({ role });
++  res.json({ ok: true });
++});
++
++module.exports = router;
+diff --git a/src/db.js b/src/db.js
+new file mode 100644
+index 0000000..b2a3f01
+--- /dev/null
++++ b/src/db.js
+@@ -0,0 +1,12 @@
++const knex = require('knex');
++
++const db = knex({
++  client: 'pg',
++  connection: {
++    host: process.env.DB_HOST || 'localhost',
++    database: process.env.DB_NAME || 'app',
++    user: process.env.DB_USER || 'app',
++    password: process.env.DB_PASS || 'change_me_in_production',
++  },
++});
++module.exports = db;
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,9 @@
++{
++  "name": "testbed-app",
++  "version": "1.0.1",
++  "dependencies": {
++    "express": "^4.18.2",
++    "knex": "^3.1.0",
++    "pg": "^8.11.3"
++  }
++}

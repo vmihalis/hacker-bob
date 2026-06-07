@@ -528,7 +528,7 @@ function printInstallSummary(summary) {
   if (summary.adapterResults.claude) {
     console.log(`  ${summary.agents} Claude agent definitions`);
     console.log("  Claude command shims (/bob-update, /bob-egress, /bob-export)");
-    console.log("  Claude bob-evaluate-runner + bob-status + bob-debug skills");
+    console.log("  Claude bob-evaluate-runner + bob-status + bob-debug + bob-diff-review skills");
     console.log(`  ${summary.rules} Claude rules`);
     console.log("  Claude session guard hooks, update/export helpers, and status line");
     console.log("  Claude .mcp.json and settings.json merged");

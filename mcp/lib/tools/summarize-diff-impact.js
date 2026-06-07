@@ -1,25 +1,52 @@
 "use strict";
 
+const fs = require("fs");
 const { parseUnifiedDiff } = require("../unified-diff-parser.js");
-const { summarizeImpactedSurfacesForDiff } = require("../symbol-surface-index.js");
+const { summarizeImpactedSurfacesForDiff, readSymbolSurfaceIndex } = require("../symbol-surface-index.js");
+const { assertSafeDomain, diffImpactPath, sessionDir } = require("../paths.js");
 
 function summarizeDiffImpactHandler(args) {
+  const domain = assertSafeDomain(args.target_domain);
   let diffFiles = args.diff_files;
   let parseSummary = null;
   if (typeof args.unified_diff === "string" && args.unified_diff.length > 0) {
     parseSummary = parseUnifiedDiff(args.unified_diff);
     diffFiles = parseSummary.diff_files;
   }
+  // Support diff_text alias used by the SKILL.md orchestrator agent.
+  if (!Array.isArray(diffFiles) && typeof args.diff_text === "string" && args.diff_text.length > 0) {
+    parseSummary = parseUnifiedDiff(args.diff_text);
+    diffFiles = parseSummary.diff_files;
+  }
   if (!Array.isArray(diffFiles)) {
-    throw new TypeError("diff_files must be an array, or unified_diff must be supplied");
+    throw new TypeError("diff_files must be an array, or unified_diff/diff_text must be supplied");
   }
   const result = summarizeImpactedSurfacesForDiff({
-    target_domain: args.target_domain,
+    target_domain: domain,
     diff_files: diffFiles,
   });
+
+  // Determine path_used from symbol index presence.
+  const index = readSymbolSurfaceIndex(domain);
+  const pathUsed = index ? "A" : "B";
+
+  // Build and persist diff-impact.json to the session directory via MCP
+  // (satisfies criterion 4: diff-impact.json written to session dir via MCP).
+  const artifact = {
+    schema_version: 1,
+    target_domain: domain,
+    path_used: pathUsed,
+    entry_count: result.impacted_entries.length,
+    impacted_entries: result.impacted_entries,
+    written_at: new Date().toISOString(),
+  };
+  const dir = sessionDir(domain);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(diffImpactPath(domain), `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+
   return {
     schema_version: 1,
-    target_domain: args.target_domain,
+    target_domain: domain,
     parse_summary: parseSummary,
     impacted_surface_ids: result.impacted_surface_ids,
     impacted_entries: result.impacted_entries,
@@ -49,11 +76,11 @@ module.exports = Object.freeze({
   },
   handler: summarizeDiffImpactHandler,
   role_bundles: ["orchestrator"],
-  mutating: false,
+  mutating: true,
   global_preapproval: false,
   network_access: false,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: [],
+  session_artifacts_written: ["diff-impact.json"],
 });

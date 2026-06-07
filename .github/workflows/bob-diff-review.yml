@@ -1,0 +1,81 @@
+###############################################################################
+# Bob Diff Review — caller workflow
+#
+# This is the caller workflow that invokes the composite bob-diff-review action.
+# It is the correct place to declare the `permissions:` block for checks:write
+# because composite actions cannot declare permissions themselves (the key is
+# only valid at the workflow job level in GitHub Actions).
+#
+# Required org-level secrets:
+#   ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token for the headless Claude runner
+#                           (RECOMMENDED; generate with `claude setup-token`).
+#   ANTHROPIC_API_KEY  — Anthropic API key (pay-per-use fallback) for the runner.
+#                        At least one of ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY
+#                        is required; OAuth wins when both are set.
+#   BOB_INSTALL_TOKEN  — GitHub App token or PAT (read:packages + contents:read)
+#                        used to pull @bobnetsec/* packages from GitHub Packages.
+###############################################################################
+
+name: Bob Diff Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Restrict to branches targeting main so feature-branch-to-feature-branch
+    # PRs do not consume Anthropic API quota.
+    branches:
+      - main
+
+# ---------------------------------------------------------------------------
+# Job-level permissions
+# ---------------------------------------------------------------------------
+# IMPORTANT: composite actions cannot declare a `permissions:` block.
+# The checks:write permission must be granted here, at the job level.
+# Without checks:write the "Bob Diff Review" Check Run creation will be
+# silently skipped and an error logged to the runner console.
+#
+# pull-requests:write is required to post inline review comments.
+# contents:read is required to fetch the PR diff.
+# checks:write is required to create and update the Check Run status badge.
+# ---------------------------------------------------------------------------
+
+jobs:
+  bob-diff-review:
+    name: Bob Diff Review
+    runs-on: ubuntu-latest
+
+    # Restrict to internal contributors only — forked PRs do not receive org
+    # secrets, so the action would fail silently.  The repository_owner check
+    # ensures forks from external contributors are skipped.
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write          # Required: allows creating the "Bob Diff Review" Check Run
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history for the diff to be accurate.
+          fetch-depth: 0
+
+      - name: Run Bob Diff Review
+        uses: bobnetsec/hacker-bob/packages/bob-diff-review@main
+        with:
+          anthropic_oauth_token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          bob_install_token:  ${{ secrets.BOB_INSTALL_TOKEN }}
+          github_token:       ${{ secrets.GITHUB_TOKEN }}
+          min_severity_for_failure: high
+
+      # Optional: surface the review outputs for downstream steps or notifications.
+      - name: Log review outputs
+        if: always()
+        shell: bash
+        run: |
+          echo "findings_count=${{ steps.bob-diff-review.outputs.findings_count }}"
+          echo "critical_count=${{ steps.bob-diff-review.outputs.critical_count }}"
+          echo "review_url=${{ steps.bob-diff-review.outputs.review_url }}"

@@ -312,6 +312,14 @@ function repoInventoryPath(domain) {
   return path.join(sessionDir(domain), "repo-inventory.json");
 }
 
+// Cycle O.S4 — diff-impact.json is written by bob_summarize_diff_impact after
+// a successful PATH A analysis. Records which files/line-ranges were touched by
+// the diff and which surface IDs they map to. This is a scratch artifact (not
+// audit-graded); agents MUST NOT write it directly via the Write tool.
+function diffImpactPath(domain) {
+  return path.join(sessionDir(domain), "diff-impact.json");
+}
+
 // Cycle O.4: repo-command-runs.jsonl is the append-only run ledger for
 // bob_repo_docker_run. Each entry carries the run id, command hash, exit
 // code, duration, network/mount/image identity, and the on-disk paths to
@@ -525,6 +533,7 @@ module.exports = {
   auditReportsJsonlPath,
   authDifferentialResultsPath,
   agentRunsJsonlPath,
+  diffImpactPath,
   chainTreeJsonlPath,
   claimClustersJsonlPath,
   claimFreezePath,

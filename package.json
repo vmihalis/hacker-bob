@@ -1,6 +1,9 @@
 {
   "name": "hacker-bob",
   "version": "2.0.0",
+  "workspaces": [
+    "packages/bob-diff-review"
+  ],
   "description": "Portable autonomous bug bounty evaluating MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {

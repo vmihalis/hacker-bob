@@ -1,0 +1,88 @@
+name: Cache Bob Workspace
+description: >
+  Restore ~/bob-workspace from cache keyed on runner OS and BOB_VERSION.
+  On cache miss, checks out hacker-bob at BOB_VERSION and runs install.sh
+  to populate ~/bob-workspace/node_modules. On cache hit, skips install
+  entirely so the job proceeds without re-downloading Bob.
+
+inputs:
+  bob_version:
+    description: >
+      The Bob version tag to install (e.g. "v1.2.3"). Must match
+      vars.BOB_VERSION set at the org level. Used to key the cache so
+      a version bump automatically busts the old cache entry.
+    required: true
+
+outputs:
+  cache-hit:
+    description: "'true' when a matching cache entry was restored; 'false' on miss."
+    value: ${{ steps.cache-bob.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------
+    # 1. Attempt to restore ~/bob-workspace from the Actions cache.
+    #    Key: runner.os-bob-workspace-<BOB_VERSION>
+    #    Path: ~/bob-workspace  (absolute; not relative to GITHUB_WORKSPACE)
+    # ------------------------------------------------------------------
+    - name: Restore Bob workspace cache
+      id: cache-bob
+      uses: actions/cache@v4
+      with:
+        path: ~/bob-workspace
+        key: ${{ runner.os }}-bob-workspace-${{ inputs.bob_version }}
+        # No restore-keys fallback — a partial/stale Bob install is worse
+        # than a clean one, so we always install on a version miss.
+
+    # ------------------------------------------------------------------
+    # 2. Guard: abort early if BOB_VERSION is empty.
+    #    An empty version string produces the key "<OS>-bob-workspace-"
+    #    which would match *any* cache entry from any Bob version.
+    # ------------------------------------------------------------------
+    - name: Validate BOB_VERSION is set
+      if: inputs.bob_version == ''
+      shell: bash
+      run: |
+        echo "::error::BOB_VERSION (inputs.bob_version) is empty. Set vars.BOB_VERSION at the org or repo level."
+        exit 1
+
+    # ------------------------------------------------------------------
+    # 3. On cache miss: check out hacker-bob at the pinned version and
+    #    run install.sh targeting ~/bob-workspace.
+    #    The checkout is placed in a temporary directory that is NOT
+    #    cached, so only ~/bob-workspace/node_modules is preserved.
+    # ------------------------------------------------------------------
+    - name: Check out hacker-bob source
+      if: steps.cache-bob.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: bobnetsec/hacker-bob
+        ref: ${{ inputs.bob_version }}
+        path: /tmp/hacker-bob-src
+        # Use a PAT or fine-grained token if the repo is private:
+        # token: ${{ inputs.github_token }}
+
+    - name: Install Bob into ~/bob-workspace
+      if: steps.cache-bob.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        INSTALL_TARGET="$HOME/bob-workspace"
+        SRC="/tmp/hacker-bob-src"
+
+        echo "Installing Bob ${{ inputs.bob_version }} into $INSTALL_TARGET"
+        mkdir -p "$INSTALL_TARGET"
+
+        # install.sh expects an absolute target path as its first argument.
+        bash "$SRC/install.sh" "$INSTALL_TARGET"
+
+        # Sanity check: ensure node_modules was populated.
+        if [[ ! -d "$INSTALL_TARGET/node_modules" ]]; then
+          echo "::error::install.sh did not create $INSTALL_TARGET/node_modules — cache boundary broken."
+          exit 1
+        fi
+
+        echo "Bob workspace ready at $INSTALL_TARGET"
+        echo "node_modules size: $(du -sh "$INSTALL_TARGET/node_modules" | cut -f1)"

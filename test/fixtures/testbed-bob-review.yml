@@ -1,0 +1,37 @@
+###############################################################################
+# bobnetsec/bob-workflows-testbed — Bob Diff Review caller workflow
+#
+# Place this file at .github/workflows/bob-review.yml in the testbed repo.
+#
+# This is the minimal caller that the T3 live integration test exercises.
+# It delegates all logic to the reusable workflow in bobnetsec/bob-workflows.
+#
+# Required org-level secrets (Settings > Secrets > Actions > Organization):
+#   ANTHROPIC_API_KEY  — Anthropic API key for headless Claude reviewer
+#   BOB_INSTALL_TOKEN  — GitHub App token or PAT (read:packages + contents:read)
+#
+# Required org-level variable (Settings > Secrets > Variables > Organization):
+#   BOB_VERSION        — Bob release tag, e.g. "v1.2.3"
+###############################################################################
+
+name: Bob Diff Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Cross-repo reusable workflows inherit the caller's GITHUB_TOKEN permissions.
+# Declare the permissions the reusable workflow needs at the workflow level so
+# GitHub grants them before the job starts. Job-level permissions are not allowed
+# on reusable workflow call jobs.
+permissions:
+  pull-requests: write
+  checks: write
+  contents: read
+
+jobs:
+  bob-review:
+    uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@main
+    secrets: inherit
+    with:
+      anthropic-model: claude-haiku-4-5

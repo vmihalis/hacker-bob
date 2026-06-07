@@ -80,6 +80,7 @@ const BOB_SKILLS = Object.freeze([
   "bob-evaluate-runner",
   "bob-status",
   "bob-debug",
+  "bob-diff-review",
 ]);
 
 // Legacy Claude skill directory names that prior installer generations created
@@ -166,6 +167,7 @@ function managedDirs() {
     path.join(".claude", "skills", "bob-evaluate-runner"),
     path.join(".claude", "skills", "bob-status"),
     path.join(".claude", "skills", "bob-debug"),
+    path.join(".claude", "skills", "bob-diff-review"),
     // Legacy skill directories — managed for cleanup on uninstall/upgrade.
     path.join(".claude", "skills", "bob-evaluate"),
     path.join(".claude", "skills", "bob-hunt"),

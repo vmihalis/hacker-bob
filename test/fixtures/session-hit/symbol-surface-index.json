@@ -1,0 +1,9 @@
+{
+  "_meta": {
+    "generated_by": "test-local-hit-fixture",
+    "version": "1",
+    "note": "Pre-seeded fixture for act --hit cache simulation. Bind-mounted into the container at /root/hacker-bob-sessions/gh-987654321/ so the C2 detect-symbol-index step sets cache_hit_symbol_index=true and the workflow sets SKIP_SURFACE_BUILD=true."
+  },
+  "surfaces": [],
+  "routes": []
+}
