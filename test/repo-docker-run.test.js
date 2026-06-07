@@ -425,6 +425,7 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     const result = await repoDockerRun({
       target_domain: init.target_domain,
       checkout: { ref: first, kind: "pre_introduction" },
+      command: ["true"],
     });
     assert.equal(result.dry_run, true);
     assert.equal(result.checkout_ref, first);
@@ -446,7 +447,7 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(rows[0].checkout_kind, "pre_introduction");
     assert.equal(rows[0].network_mode, "none");
     assert.equal(rows[0].mount_mode, "read_only");
-    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "replay_command_hash"), false);
+    assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["true"])));
   });
 });
 
@@ -496,6 +497,25 @@ test("repoDockerRun self_patch checkout records patch content hash", async () =>
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
     assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["true"])));
+  });
+});
+
+test("repoDockerRun self_patch checkout requires a patch file before recording provenance", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: "HEAD", kind: "self_patch" },
+        command: ["true"],
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "missing_differential_patch",
+    );
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "self_patch rows without patch hashes must not land");
   });
 });
 
@@ -983,17 +1003,33 @@ test("bob_repo_docker_run tool handler returns a JSON envelope (dry-run)", async
   });
 });
 
-test("bob_repo_docker_run schema requires command or checkout", async () => {
+test("bob_repo_docker_run schema requires command even when checkout is provided", async () => {
   await withTempHome(async () => {
     const missing = await executeTool("bob_repo_docker_run", {
       target_domain: "repo-schema-missing.example",
     });
     assert.equal(missing.ok, false);
     assert.equal(missing.error.code, "INVALID_ARGUMENTS");
-    assert.match(missing.error.message, /must match at least one allowed schema/);
+    assert.match(missing.error.message, /command is required/);
 
     const { repoRoot, first } = makeGitRepo();
     const init = initRepoSession({ repo_path: repoRoot });
+    const checkoutOnly = await executeTool("bob_repo_docker_run", {
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "upstream_fix" },
+    });
+    assert.equal(checkoutOnly.ok, false);
+    assert.equal(checkoutOnly.error.code, "INVALID_ARGUMENTS");
+    assert.match(checkoutOnly.error.message, /command is required/);
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "upstream_fix" },
+      }),
+      /command must be a non-empty array/,
+    );
+
     const withBoth = await executeTool("bob_repo_docker_run", {
       target_domain: init.target_domain,
       checkout: { ref: first, kind: "upstream_fix" },

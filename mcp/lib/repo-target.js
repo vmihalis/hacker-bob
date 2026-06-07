@@ -147,11 +147,11 @@ function gitMetadataError(message, repoErrorCode, details = {}) {
   });
 }
 
-function normalizeHistoryRef(ref) {
-  const normalized = assertNonEmptyString(ref, "checkout.ref");
+function normalizeHistoryRef(ref, fieldName = "checkout.ref") {
+  const normalized = assertNonEmptyString(ref, fieldName);
   if (normalized.length > GIT_REF_MAX_CHARS) {
     throw gitMetadataError(
-      `checkout.ref must be at most ${GIT_REF_MAX_CHARS} characters`,
+      `${fieldName} must be at most ${GIT_REF_MAX_CHARS} characters`,
       "invalid_differential_ref",
     );
   }
@@ -164,11 +164,68 @@ function normalizeHistoryRef(ref) {
       || normalized.endsWith(".")
       || normalized.endsWith(".lock")) {
     throw gitMetadataError(
-      "checkout.ref must be a 7-64 hex object prefix or safe local git ref",
+      `${fieldName} must be a 7-64 hex object prefix or safe local git ref`,
       "invalid_differential_ref",
     );
   }
   return normalized;
+}
+
+function pathContains(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function realpathIfPossible(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function standardSiblingWorktreeBoundary(repoRootReal, candidateReal) {
+  const parentReal = path.dirname(repoRootReal);
+  if (!pathContains(parentReal, candidateReal)) return null;
+  const parts = path.relative(parentReal, candidateReal).split(path.sep);
+  const gitIndex = parts.indexOf(".git");
+  if (gitIndex < 1) return null;
+  if (parts[gitIndex + 1] !== "worktrees") return null;
+  if (parts[gitIndex + 2] !== path.basename(repoRootReal)) return null;
+  if (parts.length !== gitIndex + 3) return null;
+  return { parentReal };
+}
+
+function assertGitDirBoundary(repoRoot, gitDir) {
+  const repoRootReal = realpathIfPossible(repoRoot);
+  const gitDirReal = realpathIfPossible(gitDir);
+  if (pathContains(repoRootReal, gitDirReal)) {
+    return { path: gitDirReal, kind: "embedded" };
+  }
+  const siblingWorktree = standardSiblingWorktreeBoundary(repoRootReal, gitDirReal);
+  if (siblingWorktree) {
+    return { path: gitDirReal, kind: "sibling_worktree", parentReal: siblingWorktree.parentReal };
+  }
+  throw gitMetadataError(
+    `.git gitdir pointer resolves outside the repo/worktree metadata boundary: ${gitDirReal}`,
+    "repo_git_metadata_outside_repo",
+    { git_dir: gitDirReal },
+  );
+}
+
+function assertCommonGitDirBoundary(repoRoot, commonDir, gitBoundary) {
+  const repoRootReal = realpathIfPossible(repoRoot);
+  const commonDirReal = realpathIfPossible(commonDir);
+  if (pathContains(repoRootReal, commonDirReal)) return commonDirReal;
+  if (gitBoundary.kind === "sibling_worktree") {
+    const parts = path.relative(gitBoundary.parentReal, commonDirReal).split(path.sep);
+    if (parts.length === 2 && parts[1] === ".git") return commonDirReal;
+  }
+  throw gitMetadataError(
+    `commondir resolves outside the repo/worktree metadata boundary: ${commonDirReal}`,
+    "repo_git_metadata_outside_repo",
+    { common_git_dir: commonDirReal },
+  );
 }
 
 function resolveGitFilePointer(repoRoot, dotGitPath) {
@@ -201,16 +258,17 @@ function resolveGitDirectories(repoRoot) {
     );
   }
   const stat = fs.lstatSync(dotGitPath);
-  const gitDir = stat.isDirectory()
-    ? dotGitPath
-    : resolveGitFilePointer(repoRoot, dotGitPath);
+  const gitBoundary = stat.isDirectory()
+    ? { path: realpathIfPossible(dotGitPath), kind: "embedded" }
+    : assertGitDirBoundary(repoRoot, resolveGitFilePointer(repoRoot, dotGitPath));
+  const gitDir = gitBoundary.path;
   if (!fs.existsSync(gitDir) || !fs.statSync(gitDir).isDirectory()) {
     throw gitMetadataError(
       `gitdir does not exist for repo: ${gitDir}`,
       "repo_git_metadata_missing",
     );
   }
-  const commonDir = resolveCommonGitDir(gitDir);
+  const commonDir = assertCommonGitDirBoundary(repoRoot, resolveCommonGitDir(gitDir), gitBoundary);
   if (!fs.existsSync(commonDir) || !fs.statSync(commonDir).isDirectory()) {
     throw gitMetadataError(
       `commondir does not exist for repo: ${commonDir}`,
@@ -2125,6 +2183,7 @@ module.exports = {
   assertHistoryAvailableForRef,
   deriveRepoTargetDomain,
   deriveRepoHashFromPath,
+  normalizeHistoryRef,
   initRepoSession,
   readRepoSession,
   buildRepoInventory,

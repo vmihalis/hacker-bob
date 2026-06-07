@@ -108,6 +108,7 @@ function appendRepoRunFixture(domain, runId, {
   command_hash: commandHash = "a".repeat(64),
   replay_command_hash: replayCommandHash = commandHash,
   stderr_hash: stderrHash = "b".repeat(64),
+  exit_code: exitCode = 0,
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
   checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
@@ -126,7 +127,7 @@ function appendRepoRunFixture(domain, runId, {
     network_mode: networkMode,
     mount_mode: "read_only",
     image_tag: `bob-oss-${domain}:fixture`,
-    exit_code: 0,
+    exit_code: exitCode,
     timed_out: false,
     stdout_hash: sha256Hex(stdout),
     stderr_hash: stderrHash,
@@ -222,6 +223,9 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
       const differential = document.packs[0].differential;
       assert.equal(differential.verdict, item.verdict);
       assert.equal(differential.replay_command_hash, "a".repeat(64));
+      assert.equal(differential.vuln_exit_code, 0);
+      assert.equal(differential.control_exit_code, 0);
+      assert.equal(differential.firedness_source, "agent_asserted_from_replay_output");
       assert.equal(differential.vuln_stdout_hash, sha256Hex("vuln fired\n"));
       assert.match(differential.control_stdout_hash, /^[0-9a-f]{64}$/);
       if (item.control_kind === "self_patch") {
@@ -255,6 +259,76 @@ test("C10 differential skips corrupt JSONL rows when resolving live proof rows",
     });
 
     assert.equal(document.packs[0].differential.verdict, "patch_fixes");
+  });
+});
+
+test("C10 differential rejects unsafe run ids, tampered stdout captures, and malformed exit codes", () => {
+  withTempHome(() => {
+    const unsafeDomain = "evidence-c10-unsafe-run-id.example.com";
+    appendRepoRunFixture(unsafeDomain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    assert.throws(
+      () => normalizePacksForC10(unsafeDomain, {
+        control_kind: "self_patch",
+        vuln_run_id: "../escape",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Unsafe run ids must not become capture-file paths.",
+      }),
+      /path-safe repo run id/,
+    );
+
+    const tamperDomain = "evidence-c10-tampered-stdout.example.com";
+    appendRepoRunFixture(tamperDomain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(tamperDomain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    fs.writeFileSync(path.join(repoRunsDir(tamperDomain), "run-vuln.stdout"), "tampered stdout\n");
+    assert.throws(
+      () => normalizePacksForC10(tamperDomain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "The JSONL stdout hash must agree with the capture file.",
+      }),
+      /stdout_hash does not match/,
+    );
+
+    const malformedDomain = "evidence-c10-malformed-exit.example.com";
+    appendRepoRunFixture(malformedDomain, "run-vuln", {
+      stdout: "vuln fired\n",
+      exit_code: null,
+    });
+    appendRepoRunFixture(malformedDomain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    assert.throws(
+      () => normalizePacksForC10(malformedDomain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "C10 firedness requires an actual live-run exit code.",
+      }),
+      /integer exit_code/,
+    );
   });
 });
 
@@ -426,6 +500,9 @@ test("C10 inconsistent control downgrades to inconclusive without dropping the f
     const markdown = renderEvidencePacksMarkdown(document);
     assert.match(markdown, /- Differential:/);
     assert.match(markdown, /Verdict: inconclusive/);
+    assert.match(markdown, /Vulnerable Exit Code: 0/);
+    assert.match(markdown, /Control Exit Code: 0/);
+    assert.match(markdown, /Firedness Source: agent_asserted_from_replay_output/);
     assert.match(markdown, /Replay Command Hash: [0-9a-f]{64}/);
     assert.match(markdown, /Patch Hash: [0-9a-f]{64}/);
     assert.match(markdown, /Vulnerable Stdout Hash: [0-9a-f]{64}/);

@@ -303,6 +303,21 @@ test("assertHistoryAvailableForRef handles linked worktree gitdir files", () => 
   assert.equal(result.checkout_ref, second.slice(0, 12));
 }));
 
+test("assertHistoryAvailableForRef refuses gitdir pointers outside repo/worktree metadata", () => withTempHome((home) => {
+  const repo = path.join(home, "history-malicious-gitdir");
+  fs.mkdirSync(repo, { recursive: true });
+  const outsideGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-outside-gitdir-"));
+  try {
+    fs.writeFileSync(path.join(repo, ".git"), `gitdir: ${outsideGitDir}\n`);
+    assert.throws(
+      () => assertHistoryAvailableForRef(repo, "HEAD"),
+      (error) => error && error.details && error.details.repo_error_code === "repo_git_metadata_outside_repo",
+    );
+  } finally {
+    fs.rmSync(outsideGitDir, { recursive: true, force: true });
+  }
+}));
+
 test("repo session inventory emits OSS surfaces and routes to OSS packs", () => withTempHome((home) => {
   const repo = path.join(home, "sample-project");
   fs.mkdirSync(repo, { recursive: true });

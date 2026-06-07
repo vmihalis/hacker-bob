@@ -117,24 +117,6 @@ function validateOneOf(value, schema, pathParts) {
   }
 }
 
-function validateAnyOf(value, schema, pathParts) {
-  if (!Array.isArray(schema.anyOf)) {
-    return;
-  }
-
-  const errors = [];
-  for (const option of schema.anyOf) {
-    try {
-      validateAgainstSchema(value, option, pathParts);
-      return;
-    } catch (error) {
-      errors.push(error.message || String(error));
-    }
-  }
-
-  throw new Error(`${formatPath(pathParts)} must match at least one allowed schema: ${errors.join("; ")}`);
-}
-
 function validateObject(value, schema, pathParts) {
   const properties = schema.properties || {};
   const required = Array.isArray(schema.required) ? schema.required : [];
@@ -183,7 +165,6 @@ function validateAgainstSchema(value, schema, pathParts = []) {
     validateOneOf(value, schema, pathParts);
     return;
   }
-  validateAnyOf(value, schema, pathParts);
 
   if (schema.type && !schemaTypeMatches(value, schema.type)) {
     throw new Error(`${formatPath(pathParts)} must be ${expectedTypeLabel(schema.type)}`);

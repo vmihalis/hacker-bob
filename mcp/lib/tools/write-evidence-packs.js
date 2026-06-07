@@ -72,7 +72,7 @@ module.exports = wrapWriteTool({
                 "control_summary",
               ],
               additionalProperties: false,
-              description: "Optional C10 patched-vs-unpatched differential proof. Run IDs must resolve to live non-dry-run --network none bob_repo_docker_run rows with matching replay_command_hash; stdout and self_patch diffs are content-addressed by sha256, never inlined.",
+              description: "Optional C10 patched-vs-unpatched differential proof. Run IDs must resolve to live non-dry-run --network none bob_repo_docker_run rows with matching replay_command_hash; fired booleans are caller-interpreted while Bob binds exit codes, stdout hashes, and self_patch diffs by sha256.",
             },
           },
           required: [

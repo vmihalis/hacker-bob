@@ -43,7 +43,7 @@ module.exports = Object.freeze({
       command: {
         type: "array",
         items: { type: "string" },
-        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. Optional when checkout is provided; when both are present Bob materializes the checkout first and runs the command from that checkout.",
+        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. When checkout is provided Bob materializes the checkout first and runs this command from that checkout.",
       },
       checkout: {
         type: "object",
@@ -98,11 +98,7 @@ module.exports = Object.freeze({
         description: "Optional egress profile name override. Defaults to the session's bound profile.",
       },
     },
-    required: ["target_domain"],
-    anyOf: [
-      { required: ["command"], additionalProperties: true },
-      { required: ["checkout"], additionalProperties: true },
-    ],
+    required: ["target_domain", "command"],
   },
   handler,
   // Per O.4 §9: evaluator-shared, verifier, evidence. Orchestrator

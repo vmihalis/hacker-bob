@@ -62,6 +62,7 @@ const DIFFERENTIAL_VERDICTS = Object.freeze([
 const MAX_CONTROL_SUMMARY_CHARS = 1000;
 const MAX_CONTROL_REF_CHARS = 120;
 const HEX64_RE = /^[0-9a-f]{64}$/i;
+const REPO_RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,127}$/;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -110,7 +111,8 @@ function readRepoCommandRunRows(domain) {
 }
 
 function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) {
-  const row = rows.find((entry) => entry && entry.run_id === runId);
+  const normalizedRunId = assertRepoRunId(runId, fieldName);
+  const row = rows.find((entry) => entry && entry.run_id === normalizedRunId);
   if (!row) {
     throw new Error(`${fieldName} does not match a repo-command-runs.jsonl row`);
   }
@@ -128,11 +130,26 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) 
   return row;
 }
 
+function assertRepoRunId(value, fieldName) {
+  const normalized = assertNonEmptyString(value, fieldName);
+  if (!REPO_RUN_ID_RE.test(normalized)) {
+    throw new Error(`${fieldName} must be a path-safe repo run id`);
+  }
+  return normalized;
+}
+
 function assertHex64(value, fieldName) {
   if (typeof value !== "string" || !HEX64_RE.test(value)) {
     throw new Error(`${fieldName} must be a 64-hex content digest`);
   }
   return value.toLowerCase();
+}
+
+function exitCodeForRun(row, fieldName) {
+  if (!Number.isInteger(row.exit_code)) {
+    throw new Error(`${fieldName} must carry an integer exit_code for C10 firedness review`);
+  }
+  return row.exit_code;
 }
 
 function replayCommandHashForRun(row, fieldName) {
@@ -145,8 +162,14 @@ function replayCommandHashForRun(row, fieldName) {
   throw new Error(`${fieldName} must carry a replay_command_hash for C10 comparison`);
 }
 
-function stdoutHashForRun(domain, runId) {
-  return sha256File(path.join(repoRunsDir(domain), `${runId}.stdout`));
+function stdoutHashForRun(domain, row, fieldName) {
+  const runId = assertRepoRunId(row.run_id, `${fieldName}.run_id`);
+  const recordedHash = assertHex64(row.stdout_hash, `${fieldName}.stdout_hash`);
+  const observedHash = sha256File(path.join(repoRunsDir(domain), `${runId}.stdout`));
+  if (observedHash != null && observedHash !== recordedHash) {
+    throw new Error(`${fieldName}.stdout_hash does not match the captured stdout file`);
+  }
+  return observedHash;
 }
 
 // C10 differential verdict contract:
@@ -191,6 +214,8 @@ function normalizeDifferential(differential, { domain }) {
     ref: controlRef,
     kind: controlKind,
   });
+  const vulnExitCode = exitCodeForRun(vulnRow, "differential.vuln_run_id");
+  const controlExitCode = exitCodeForRun(controlRow, "differential.control_run_id");
   const vulnReplayCommandHash = replayCommandHashForRun(vulnRow, "differential.vuln_run_id");
   const controlReplayCommandHash = replayCommandHashForRun(controlRow, "differential.control_run_id");
   if (vulnReplayCommandHash !== controlReplayCommandHash) {
@@ -217,13 +242,16 @@ function normalizeDifferential(differential, { domain }) {
     vuln_run_id: vulnRunId,
     control_run_id: controlRunId,
     control_ref: controlRef,
+    vuln_exit_code: vulnExitCode,
+    control_exit_code: controlExitCode,
     vuln_fired: vulnFired,
     control_fired: controlFired,
+    firedness_source: "agent_asserted_from_replay_output",
     verdict,
     control_summary: controlSummary,
     replay_command_hash: vulnReplayCommandHash,
-    vuln_stdout_hash: stdoutHashForRun(domain, vulnRunId),
-    control_stdout_hash: stdoutHashForRun(domain, controlRunId),
+    vuln_stdout_hash: stdoutHashForRun(domain, vulnRow, "differential.vuln_run_id"),
+    control_stdout_hash: stdoutHashForRun(domain, controlRow, "differential.control_run_id"),
   };
   if (patchHash) normalized.patch_hash = patchHash;
   validateNoSensitiveMaterial(normalized, "differential");
@@ -668,18 +696,25 @@ function renderEvidencePacksMarkdown(document) {
       lines.push(`  - Vulnerable Run: ${pack.differential.vuln_run_id}`);
       lines.push(`  - Control Run: ${pack.differential.control_run_id}`);
       lines.push(`  - Control Ref: ${pack.differential.control_ref}`);
+      lines.push(`  - Vulnerable Exit Code: ${pack.differential.vuln_exit_code}`);
+      lines.push(`  - Control Exit Code: ${pack.differential.control_exit_code}`);
+      lines.push(`  - Firedness Source: ${pack.differential.firedness_source}`);
       lines.push(`  - Replay Command Hash: ${pack.differential.replay_command_hash}`);
       if (pack.differential.patch_hash) {
         lines.push(`  - Patch Hash: ${pack.differential.patch_hash}`);
       }
       lines.push(`  - Vulnerable Stdout Hash: ${pack.differential.vuln_stdout_hash || "missing"}`);
       lines.push(`  - Control Stdout Hash: ${pack.differential.control_stdout_hash || "missing"}`);
-      lines.push(`  - Control Summary: ${pack.differential.control_summary}`);
+      lines.push(`  - Control Summary: ${markdownInline(pack.differential.control_summary)}`);
     }
     lines.push("");
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+function markdownInline(value) {
+  return String(value).replace(/[\r\n]+/g, " ").trim();
 }
 
 function writeEvidencePacks(args) {

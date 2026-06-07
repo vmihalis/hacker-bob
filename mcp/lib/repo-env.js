@@ -75,6 +75,7 @@ const {
 } = require("./session-state-store.js");
 const {
   assertHistoryAvailableForRef,
+  normalizeHistoryRef,
   readRepoSession,
 } = require("./repo-target.js");
 
@@ -843,7 +844,6 @@ const DIFFERENTIAL_CHECKOUT_KIND_VALUES = Object.freeze([
   "pre_introduction",
   "self_patch",
 ]);
-const DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS = 120;
 const REPO_DOCKER_RUN_DNS = "1.1.1.1";
 const REPO_DOCKER_RUN_PROXY_ARG = Object.freeze({
   http: "HTTP_PROXY",
@@ -898,29 +898,7 @@ function assertCommandArray(command) {
 }
 
 function assertCheckoutRef(value, fieldName) {
-  const ref = assertNonEmptyString(value, fieldName);
-  if (ref.length > DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `${fieldName} must be at most ${DIFFERENTIAL_CHECKOUT_REF_MAX_CHARS} characters`,
-      { repo_error_code: "invalid_differential_ref" },
-    );
-  }
-  if (/^[0-9a-f]{7,64}$/i.test(ref)) return ref;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(ref)
-      || ref.includes("..")
-      || ref.includes("//")
-      || ref.includes("@{")
-      || ref.endsWith("/")
-      || ref.endsWith(".")
-      || ref.endsWith(".lock")) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `${fieldName} must be a 7-64 hex object prefix or safe local git ref`,
-      { repo_error_code: "invalid_differential_ref" },
-    );
-  }
-  return ref;
+  return normalizeHistoryRef(value, fieldName);
 }
 
 function normalizeDifferentialCheckout(checkout) {
@@ -1278,7 +1256,7 @@ async function repoDockerRun({
 
   const runId = generateRunId();
   const normalizedCheckout = normalizeDifferentialCheckout(checkout);
-  const normalizedInputCommand = command == null ? null : assertCommandArray(command);
+  const normalizedInputCommand = assertCommandArray(command);
   if (normalizedCheckout) {
     assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
@@ -1382,6 +1360,13 @@ async function repoDockerRun({
   const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
     ? hashFile(path.join(workDir, "patch.diff"))
     : null;
+  if (normalizedCheckout && normalizedCheckout.kind === "self_patch" && !checkoutPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
+      { repo_error_code: "missing_differential_patch" },
+    );
+  }
   const startedAt = new Date().toISOString();
 
   // Network mode is the value we'd hand to docker --network. We capture
