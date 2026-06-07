@@ -93,6 +93,15 @@ inputs:
     required: false
     default: ''
 
+  pr-number:
+    description: >
+      Pull request number to review. Optional. On a pull_request event the PR is
+      read from the event payload and this input is ignored. For manual runs
+      (workflow_dispatch) or other non-PR events, set this so the action can
+      resolve the PR via the API. Must be a positive integer.
+    required: false
+    default: ''
+
   mock-findings-json:
     description: >
       When set to a non-empty JSON string matching the DiffReviewFindings schema,
