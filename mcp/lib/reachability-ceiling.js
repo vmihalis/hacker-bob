@@ -98,7 +98,8 @@ function computeReachabilityDisposition(recordedSeverity, reachability = null) {
       network_reachable: true,
       graded_severity: normalizedRecorded,
       disposition: "lifted",
-      defensible: normalizedReachability.reachability_source !== "asserted",
+      defensible: normalizedReachability.reachability_source !== "asserted"
+        && !normalizedReachability.reachability_divergence,
       ...reachabilityMetadata(normalizedReachability),
     };
   }
@@ -295,7 +296,8 @@ function compareClaimsByCreatedAtThenId(a, b) {
 
 function reachabilityAssertionRecordForFinding(domain, findingId) {
   const assertions = [];
-  const seen = new Set();
+  const byKey = new Map();
+  const auditNotes = [];
   for (const claim of claimsForFinding(domain, findingId).slice().sort(compareClaimsByCreatedAtThenId)) {
     const payload = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
       ? claim.payload
@@ -309,9 +311,12 @@ function reachabilityAssertionRecordForFinding(domain, findingId) {
     let assertion = null;
     try {
       assertion = normalizeReachabilityAssertion(finding.reachability_assertion);
-    } catch {
+    } catch (error) {
       // Frozen claims are durable session input. A corrupt assertion should not
-      // crash grading for every finding in the domain.
+      // crash grading for every finding in the domain, but it must stay visible
+      // so fallback heuristic grades are not mistaken for clean provenance.
+      const claimId = claim && typeof claim.claim_id === "string" ? claim.claim_id : "unknown-claim";
+      auditNotes.push(`invalid reachability assertion in ${claimId}: ${normalizeErrorMessage(error)}`);
       continue;
     }
     if (!assertion) continue;
@@ -319,28 +324,49 @@ function reachabilityAssertionRecordForFinding(domain, findingId) {
       attack_vector: assertion.attack_vector,
       network_reachable: assertion.network_reachable,
     });
-    if (seen.has(key)) continue;
-    seen.add(key);
-    assertions.push(assertion);
+    const existing = byKey.get(key);
+    if (existing) {
+      if (existing.assertion.call_path !== assertion.call_path) {
+        existing.assertion = {
+          ...existing.assertion,
+          call_path: assertion.call_path,
+        };
+      }
+      continue;
+    }
+    const entry = { assertion };
+    byKey.set(key, entry);
+    assertions.push(entry);
   }
-  if (assertions.length === 0) return null;
-  if (assertions.length > 1) {
-    // Frozen conflict policy: first distinct valid assertion wins. Later
-    // corrections require operator amendment / re-freeze, not another claim.
+  if (assertions.length === 0) {
+    if (auditNotes.length === 0) return null;
     return {
-      assertion: assertions[0],
+      assertion: null,
+      conflict_note: null,
+      audit_note: combineReachabilityDivergenceNotes(...auditNotes),
+    };
+  }
+  const selected = assertions[0];
+  if (assertions.length > 1) {
+    // Frozen conflict policy: first distinct valid classification wins. Later
+    // classification corrections require operator amendment / re-freeze, while
+    // same-classification call_path refinements update the selected metadata.
+    return {
+      assertion: selected.assertion,
       conflict_note: `conflicting reachability assertions present (${assertions.length}); using earliest`,
+      audit_note: combineReachabilityDivergenceNotes(...auditNotes),
     };
   }
   return {
-    assertion: assertions[0],
+    assertion: selected.assertion,
     conflict_note: null,
+    audit_note: combineReachabilityDivergenceNotes(...auditNotes),
   };
 }
 
 function reachabilityAssertionForFinding(domain, findingId) {
   const record = reachabilityAssertionRecordForFinding(domain, findingId);
-  return record ? record.assertion : null;
+  return record && record.assertion ? record.assertion : null;
 }
 
 function findingHasReachabilityAssertion(domain, findingId) {
@@ -451,6 +477,11 @@ function combineReachabilityDivergenceNotes(...notes) {
   return filtered.length > 0 ? filtered.join("; ") : null;
 }
 
+function normalizeErrorMessage(error) {
+  const raw = error && typeof error.message === "string" ? error.message : String(error || "unknown error");
+  return raw.replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
 function resolveFindingReachabilityFromHeuristic({ domain, findingId } = {}) {
   const inventory = readReachabilityInventory(domain);
   if (!inventory) return null;
@@ -498,6 +529,7 @@ function resolveFindingReachability({ domain, findingId } = {}) {
     const heuristic = resolveFindingReachabilityFromHeuristic({ domain, findingId });
     const severityCeiling = severityCeilingForAssertedReachability(assertion, heuristic);
     const divergence = combineReachabilityDivergenceNotes(
+      assertionRecord.audit_note,
       assertionRecord.conflict_note,
       reachabilityDivergenceNote(assertion, heuristic, severityCeiling),
     );
@@ -510,7 +542,12 @@ function resolveFindingReachability({ domain, findingId } = {}) {
       ...(divergence ? { reachability_divergence: divergence } : {}),
     };
   }
-  return resolveFindingReachabilityFromHeuristic({ domain, findingId });
+  const heuristic = resolveFindingReachabilityFromHeuristic({ domain, findingId });
+  if (!heuristic || !assertionRecord || !assertionRecord.audit_note) return heuristic;
+  return {
+    ...heuristic,
+    reachability_divergence: assertionRecord.audit_note,
+  };
 }
 
 function readFinalVerificationResults(domain) {

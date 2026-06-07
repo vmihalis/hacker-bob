@@ -759,7 +759,7 @@ test("same-classification frozen reachability assertions with different call pat
 
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.equal(read.findings[0].reachability.reachability_source, "asserted");
-    assert.equal(read.findings[0].reachability.call_path, "UDP listener -> parse_packet -> buffer read");
+    assert.equal(read.findings[0].reachability.call_path, "UDP listener -> parse_pdu_value -> decode_varbind -> buffer read");
     assert.doesNotMatch(
       read.findings[0].reachability.reachability_divergence || "",
       /conflicting reachability assertions/,
@@ -857,7 +857,72 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
     assert.equal(read.findings[0].reachability.reachability_source, "asserted");
     assert.equal(read.findings[0].reachability.call_path, "UDP listener -> parse_packet -> buffer read");
     assert.equal(read.findings[0].reachability.disposition, "lifted");
-    assert.equal(read.findings[0].reachability.reachability_divergence, undefined);
+    assert.match(
+      read.findings[0].reachability.reachability_divergence,
+      /invalid reachability assertion in CL-[a-f0-9]+: reachability_assertion\.network_reachable must be true when attack_vector is network/,
+    );
+  });
+});
+
+test("corrupt frozen reachability assertion fallback is audited and not defensible", () => {
+  withTempHome((home) => {
+    const repoSession = seedLocalParserRepo(home, "grade-reachability-corrupt-fallback");
+    const domain = repoSession.target_domain;
+    appendCandidateClaim({
+      target_domain: domain,
+      title: "Native parser over-read",
+      summary: "Parser reads past the available buffer.",
+      severity: "medium",
+      status: "candidate",
+      created_at: "2026-05-27T00:00:00.000Z",
+      surface_ids: [repoSession.network_surface_id],
+      evidence_refs: [{
+        kind: "finding",
+        finding_id: "F-1",
+        content_hash: "0".repeat(64),
+      }],
+      impact: "Parser crash on crafted input.",
+      payload: {
+        finding: {
+          id: "F-1",
+          capability_pack: "oss_native_code",
+          reachability_assertion: {
+            attack_vector: "network",
+            network_reachable: false,
+            call_path: "UDP listener -> parse_packet -> buffer read",
+          },
+        },
+      },
+    });
+    buildClaimFreeze(domain, {
+      write: true,
+      now: new Date("2026-05-27T01:00:00.000Z"),
+    });
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({
+        target_domain: domain,
+        round,
+        notes: null,
+        results: [verificationResult("F-1", { severity: "high", reportable: true })],
+      });
+    }
+    writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+
+    writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 75,
+      findings: [gradeFinding("F-1")],
+    });
+
+    const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
+    assert.equal(read.findings[0].reachability.reachability_source, "heuristic");
+    assert.equal(read.findings[0].reachability.disposition, "lifted");
+    assert.equal(read.findings[0].reachability.defensible, false);
+    assert.match(
+      read.findings[0].reachability.reachability_divergence,
+      /invalid reachability assertion in CL-[a-f0-9]+: reachability_assertion\.network_reachable must be true when attack_vector is network/,
+    );
   });
 });
 

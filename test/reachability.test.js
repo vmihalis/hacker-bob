@@ -247,6 +247,26 @@ test("computeReachabilityDisposition caps, certifies, and preserves unknowns", (
       severity_ceiling: "critical",
       attack_vector: "network",
       network_reachable: true,
+      reachability_divergence: "invalid reachability assertion in C-ABC123: malformed",
+    }),
+    {
+      recorded_severity: "high",
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
+      graded_severity: "high",
+      disposition: "lifted",
+      defensible: false,
+      reachability_source: "heuristic",
+      reachability_divergence: "invalid reachability assertion in C-ABC123: malformed",
+    },
+  );
+
+  assert.deepEqual(
+    computeReachabilityDisposition("high", {
+      severity_ceiling: "critical",
+      attack_vector: "network",
+      network_reachable: true,
       reachability_source: "asserted",
       call_path: "listener -> parser -> sink",
     }),

@@ -28,7 +28,7 @@ A finding MAY carry an **evaluator-asserted reachability** (`attack_vector` + `n
 
 **Trust boundary:** `reachability_assertion` is evaluator-authored grading provenance. It is not independently verifier-revalidated in this PR, so evaluators must record it only when they personally verified the cited entrypoint-to-sink path from code or replay evidence. Assertion-backed AV:N HIGH/CRIT findings may be marked `lifted`, but they do not set `defensible:true`; `reachability_source:"asserted"` stays visible so the operator can review the cited path. This is a deliberate Δ2 bridge until full data-flow provenance lands.
 
-**Conflict policy:** frozen claims are ordered by `created_at`, then `claim_id`. The first distinct valid `attack_vector`/`network_reachable` assertion wins; same-classification `call_path` refinements are not conflicts, while conflicting later classifications add an audit note but do not override the first one. Correcting a stale frozen classification requires operator amendment / re-freeze, not recording another conflicting claim.
+**Conflict policy:** frozen claims are ordered by `created_at`, then `claim_id`. The first distinct valid `attack_vector`/`network_reachable` assertion wins; same-classification `call_path` refinements are not conflicts and update the rendered call path, while conflicting later classifications add an audit note but do not override the first one. Correcting a stale frozen classification requires operator amendment / re-freeze, not recording another conflicting claim.
 
 ---
 
