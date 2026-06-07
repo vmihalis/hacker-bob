@@ -42,7 +42,8 @@ inputs:
       Anthropic OAuth token used to authenticate the claude headless runner —
       the RECOMMENDED auth path. Generate a long-lived token with
       `claude setup-token` and store it as the org-level secret
-      ANTHROPIC_OAUTH_TOKEN, passing it via ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}.
+      ANTHROPIC_OAUTH_TOKEN, passing it from the caller workflow via
+      secrets.ANTHROPIC_OAUTH_TOKEN.
       Injected into the claude subprocess as CLAUDE_CODE_OAUTH_TOKEN. Optional,
       but at least one of anthropic-oauth-token or anthropic-api-key must be
       provided. When both are supplied this token takes precedence and the API
@@ -53,9 +54,9 @@ inputs:
   anthropic-api-key:
     description: >
       Anthropic API key (pay-per-use) used to authenticate the claude headless
-      runner. Store as the org-level secret ANTHROPIC_API_KEY and pass via
-      ${{ secrets.ANTHROPIC_API_KEY }}. Injected into the claude subprocess as
-      ANTHROPIC_API_KEY. Optional, but at least one of anthropic-oauth-token or
+      runner. Store as the org-level secret ANTHROPIC_API_KEY and pass it from
+      the caller workflow via secrets.ANTHROPIC_API_KEY. Injected into the claude
+      subprocess as ANTHROPIC_API_KEY. Optional, but at least one of anthropic-oauth-token or
       anthropic-api-key must be provided. PRECEDENCE: when anthropic-oauth-token
       is also set, OAuth wins and this API key is NOT injected, so it cannot
       silently shadow OAuth and exhaust pay-per-use credits. Prefer
@@ -68,8 +69,8 @@ inputs:
       GitHub App installation token (preferred) or fine-grained PAT with
       read:packages and contents:read scopes. Used to authenticate npm
       against npm.pkg.github.com for @bobnetsec/* packages. Store as the
-      org-level secret BOB_INSTALL_TOKEN and pass via
-      ${{ secrets.BOB_INSTALL_TOKEN }}. Required — package installation
+      org-level secret BOB_INSTALL_TOKEN and pass it from the caller workflow
+      via secrets.BOB_INSTALL_TOKEN. Required — package installation
       will fail without this token.
     required: true
 
