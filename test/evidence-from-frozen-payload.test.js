@@ -244,7 +244,7 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
   });
 });
 
-test("C10 differential skips corrupt JSONL rows when resolving live proof rows", () => {
+test("C10 differential rejects corrupt JSONL rows before resolving live proof rows", () => {
   withTempHome(() => {
     const domain = "evidence-c10-corrupt-jsonl.example.com";
     appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
@@ -255,18 +255,62 @@ test("C10 differential skips corrupt JSONL rows when resolving live proof rows",
       checkout_kind: "self_patch",
     });
 
-    const document = normalizePacksForC10(domain, {
-      control_kind: "self_patch",
-      vuln_run_id: "run-vuln",
-      control_run_id: "run-control",
-      control_ref: "HEAD",
-      vuln_fired: true,
-      control_fired: false,
-      verdict: "patch_fixes",
-      control_summary: "Corrupt JSONL row did not block valid later evidence rows.",
-    });
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Corrupt JSONL row must block audit-grade evidence rows.",
+      }),
+      /repo-command-runs\.jsonl contains malformed JSON at line 2/,
+    );
+  });
+});
 
-    assert.equal(document.packs[0].differential.verdict, "patch_fixes");
+test("C10 differential rejects oversized repo command run ledgers", () => {
+  withTempHome(() => {
+    const domain = "evidence-c10-oversized-jsonl.example.com";
+    appendRepoRunFixture(domain, "run-vuln", { stdout: "vuln fired\n" });
+    appendRepoRunFixture(domain, "run-control", {
+      stdout: "control quiet\n",
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    const runLogPath = repoCommandRunsJsonlPath(domain);
+    const originalStatSync = fs.statSync;
+    try {
+      fs.statSync = function patchedStatSync(filePath, ...args) {
+        const stats = originalStatSync.call(this, filePath, ...args);
+        if (path.resolve(String(filePath)) !== path.resolve(runLogPath)) {
+          return stats;
+        }
+        return Object.create(stats, {
+          size: {
+            value: 17 * 1024 * 1024,
+            enumerable: true,
+          },
+        });
+      };
+      assert.throws(
+        () => normalizePacksForC10(domain, {
+          control_kind: "self_patch",
+          vuln_run_id: "run-vuln",
+          control_run_id: "run-control",
+          control_ref: "HEAD",
+          vuln_fired: true,
+          control_fired: false,
+          verdict: "patch_fixes",
+          control_summary: "Oversized repo-command-runs ledger should not be read into memory.",
+        }),
+        /repo-command-runs\.jsonl exceeds read cap/,
+      );
+    } finally {
+      fs.statSync = originalStatSync;
+    }
   });
 });
 

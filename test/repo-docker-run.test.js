@@ -35,6 +35,7 @@ const {
   buildDockerRunArgv,
   buildImageTag,
   DIFFERENTIAL_CHECKOUT_KIND_VALUES,
+  DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
@@ -326,7 +327,7 @@ test("buildDifferentialCheckoutCommand emits archive materialization for each ch
       checkout_ref: ref,
       checkout_kind: kind,
     });
-    assert.deepEqual(command.slice(0, 2), ["sh", "-lc"]);
+    assert.deepEqual(command.slice(0, 2), ["sh", "-c"]);
     assert.ok(command[2].length <= 2048, `${kind} command token exceeded cap`);
     assert.match(command[2], /rm -rf '\/work\/repo'/);
     assert.match(command[2], /mkdir -p '\/work\/repo'/);
@@ -533,6 +534,30 @@ test("repoDockerRun self_patch checkout requires a patch file before recording p
 
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.equal(rows.length, 0, "self_patch rows without patch hashes must not land");
+  });
+});
+
+test("repoDockerRun self_patch dry_run refuses symlinked repo-work before patch hashing", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const workDir = repoWorkDir(init.target_domain);
+    const outsideWork = makeTempRepoDir("bob-outside-self-patch-work-");
+    fs.writeFileSync(path.join(outsideWork, "patch.diff"), "outside patch body\n");
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.symlinkSync(outsideWork, workDir);
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: "HEAD", kind: "self_patch" },
+        command: ["true"],
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "repo_work_symlink_escape",
+    );
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "symlinked self_patch dry-runs must not land patch hash rows");
   });
 });
 
@@ -1263,6 +1288,7 @@ test("repo-command-runs.jsonl path lives under the session dir", () => {
 test("REPO_DOCKER_RUN constants expose the documented defaults", () => {
   assert.equal(REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS, 300_000);
   assert.equal(REPO_DOCKER_RUN_MAX_TIMEOUT_MS, 600_000);
+  assert.equal(DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS, 30_000);
   assert.equal(REPO_DOCKER_RUN_MAX_OUTPUT_BYTES, 16 * 1024 * 1024);
   assert.deepEqual(REPO_MOUNT_MODE_VALUES.slice().sort(), ["read_only", "read_write"]);
 });

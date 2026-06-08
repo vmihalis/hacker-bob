@@ -826,6 +826,7 @@ async function prepareRepoEnv({
 const REPO_DOCKER_RUN_VERSION = 1;
 const REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS = 300_000;
 const REPO_DOCKER_RUN_MAX_TIMEOUT_MS = 600_000;
+const DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS = 30_000;
 const REPO_DOCKER_RUN_MAX_OUTPUT_BYTES = 16 * 1024 * 1024; // 16 MB per stream
 const REPO_DOCKER_RUN_MAX_COMMAND_TOKENS = 64;
 const REPO_DOCKER_RUN_MAX_TOKEN_LENGTH = 2048;
@@ -1020,7 +1021,7 @@ function runScopedHostPath(workDir, sessionRoot, runId, ...parts) {
 async function execDifferentialMaterializer(command, args, stage) {
   try {
     await execFilePromise(command, args, {
-      timeout: REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
+      timeout: DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     });
   } catch (error) {
@@ -1121,7 +1122,7 @@ function buildDifferentialCheckoutCommand({
     script.push(`cd ${shellQuote(checkoutDest)}`);
     script.push(normalizedAfterCommand.map(shellQuote).join(" "));
   }
-  return assertCommandArray(["sh", "-lc", script.join(" && ")]);
+  return assertCommandArray(["sh", "-c", script.join(" && ")]);
 }
 
 // Build the docker run argv. Each O-P3 sandbox flag is emitted in
@@ -1518,6 +1519,9 @@ async function repoDockerRun({
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);
+  if (normalizedCheckout && normalizedCheckout.kind === "self_patch") {
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+  }
   const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
     ? hashFile(path.join(workDir, "patch.diff"))
     : null;
@@ -1803,6 +1807,7 @@ module.exports = {
   // Constants
   DEFAULT_DOCKER_BUILD_TIMEOUT_MS,
   DIFFERENTIAL_CHECKOUT_KIND_VALUES,
+  DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS,
   MAX_DOCKER_BUILD_TIMEOUT_MS,
   RECOMMENDED_COMMAND_ROLES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,

@@ -17,6 +17,7 @@ const {
   verificationRoundPaths,
 } = require("./paths.js");
 const {
+  readFileUtf8,
   loadJsonDocumentStrict,
   withSessionLock,
   writeFileAtomic,
@@ -102,17 +103,23 @@ function cloneJsonValue(value, fieldName) {
 function readRepoCommandRunRows(domain) {
   const filePath = repoCommandRunsJsonlPath(domain);
   if (!fs.existsSync(filePath)) return [];
-  const raw = fs.readFileSync(filePath, "utf8");
+  const raw = readFileUtf8(filePath, { label: "repo-command-runs.jsonl" });
   const rows = [];
+  let lineNumber = 0;
   for (const line of raw.split(/\r?\n/)) {
+    lineNumber += 1;
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed);
-      if (isPlainObject(parsed)) rows.push(parsed);
-    } catch {
-      // Skip corrupt JSONL rows; interrupted appends should not brick later
-      // evidence writes that can still resolve their run ids.
+      if (!isPlainObject(parsed)) {
+        throw new Error("row is not an object");
+      }
+      rows.push(parsed);
+    } catch (error) {
+      throw new Error(
+        `repo-command-runs.jsonl contains malformed JSON at line ${lineNumber}; repair or re-run repo docker evidence before writing C10 differential evidence`,
+      );
     }
   }
   return rows;
