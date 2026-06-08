@@ -938,6 +938,100 @@ function assertWorkDest(dest) {
   return assertWorkPath(dest, "dest");
 }
 
+function hostPathContains(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function runScopedHostPath(workDir, runId, ...parts) {
+  const base = path.resolve(workDir);
+  const candidate = path.resolve(base, runId, ...parts);
+  if (!hostPathContains(base, candidate)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout run path escaped the repo work directory",
+      { repo_error_code: "invalid_differential_dest" },
+    );
+  }
+  return candidate;
+}
+
+async function execDifferentialMaterializer(command, args, stage) {
+  try {
+    await execFilePromise(command, args, {
+      timeout: REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `differential checkout materialization failed during ${stage}: ${error.message || error}`,
+      { repo_error_code: "differential_checkout_materialization_failed" },
+    );
+  }
+}
+
+async function materializeDifferentialCheckoutArchive({
+  repoRoot,
+  workDir,
+  runId,
+  checkoutRef,
+  checkoutKind,
+  expectedPatchHash = null,
+}) {
+  const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
+  const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
+  const runWorkDir = runScopedHostPath(workDir, runId);
+  const checkoutTar = runScopedHostPath(workDir, runId, "checkout.tar");
+  fs.rmSync(runWorkDir, { recursive: true, force: true });
+  fs.mkdirSync(runWorkDir, { recursive: true });
+
+  if (kind !== "self_patch") {
+    await execDifferentialMaterializer(
+      "git",
+      ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, ref],
+      "git archive",
+    );
+    return { checkout_tar_path: checkoutTar };
+  }
+
+  const patchPath = path.join(workDir, "patch.diff");
+  const observedPatchHash = hashFile(patchPath);
+  if (!observedPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
+      { repo_error_code: "missing_differential_patch" },
+    );
+  }
+  if (expectedPatchHash && observedPatchHash !== expectedPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout patch changed during differential materialization",
+      { repo_error_code: "differential_patch_changed" },
+    );
+  }
+
+  const tempRoot = runScopedHostPath(workDir, runId, "host-materialize");
+  const tempRepo = path.join(tempRoot, "repo");
+  const baseTar = runScopedHostPath(workDir, runId, "base.tar");
+  fs.mkdirSync(tempRepo, { recursive: true });
+  try {
+    await execDifferentialMaterializer(
+      "git",
+      ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, ref],
+      "git archive",
+    );
+    await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", tempRepo], "tar extract");
+    await execDifferentialMaterializer("git", ["-C", tempRepo, "apply", patchPath], "git apply");
+    await execDifferentialMaterializer("tar", ["-c", "-f", checkoutTar, "-C", tempRepo, "."], "tar create");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(baseTar, { force: true });
+  }
+  return { checkout_tar_path: checkoutTar };
+}
+
 function buildDifferentialCheckoutCommand({
   checkout_ref: checkoutRef,
   checkout_kind: checkoutKind,
@@ -950,21 +1044,14 @@ function buildDifferentialCheckoutCommand({
   const checkoutDest = assertWorkDest(dest);
   const checkoutTar = assertWorkPath(tarPath, "tar_path");
   const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
-  const archiveRef = kind === "self_patch" ? "HEAD" : ref;
   const script = [
     "set -eu",
     `rm -rf ${shellQuote(checkoutDest)}`,
     `mkdir -p ${shellQuote(checkoutDest)}`,
-    `git -C /src cat-file -e ${shellQuote(`${archiveRef}^{commit}`)}`,
-    `rm -f ${shellQuote(checkoutTar)}`,
-    `git -C /src archive --format=tar ${shellQuote(archiveRef)} > ${shellQuote(checkoutTar)}`,
+    `test -f ${shellQuote(checkoutTar)}`,
     `tar -x -f ${shellQuote(checkoutTar)} -C ${shellQuote(checkoutDest)}`,
     `rm -f ${shellQuote(checkoutTar)}`,
   ];
-  if (kind === "self_patch") {
-    script.push("test -f /work/patch.diff");
-    script.push(`git -C ${shellQuote(checkoutDest)} apply /work/patch.diff`);
-  }
   if (normalizedAfterCommand) {
     script.push(`cd ${shellQuote(checkoutDest)}`);
     script.push(normalizedAfterCommand.map(shellQuote).join(" "));
@@ -1456,6 +1543,16 @@ async function repoDockerRun({
       "docker is not installed or not in PATH; rerun with dry_run: true",
       { repo_error_code: "docker_unavailable" },
     );
+  }
+  if (normalizedCheckout) {
+    await materializeDifferentialCheckoutArchive({
+      repoRoot,
+      workDir,
+      runId,
+      checkoutRef: normalizedCheckout.ref,
+      checkoutKind: normalizedCheckout.kind,
+      expectedPatchHash: checkoutPatchHash,
+    });
   }
   withSessionLock(domain, () => {
     fs.mkdirSync(runsDir, { recursive: true });

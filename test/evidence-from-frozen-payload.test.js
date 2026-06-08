@@ -109,6 +109,7 @@ function appendRepoRunFixture(domain, runId, {
   replay_command_hash: replayCommandHash = commandHash,
   stderr_hash: stderrHash = "b".repeat(64),
   exit_code: exitCode = 0,
+  timed_out: timedOut = false,
   mount_mode: mountMode = "read_only",
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
@@ -129,7 +130,7 @@ function appendRepoRunFixture(domain, runId, {
     mount_mode: mountMode,
     image_tag: `bob-oss-${domain}:fixture`,
     exit_code: exitCode,
-    timed_out: false,
+    timed_out: timedOut,
     stdout_hash: sha256Hex(stdout),
     stderr_hash: stderrHash,
   };
@@ -394,6 +395,20 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
       checkout_ref: "HEAD",
       checkout_kind: "self_patch",
     });
+    appendRepoRunFixture(domain, "run-control-timeout", {
+      stdout: "control timed out\n",
+      timed_out: true,
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+    for (const exitCode of [125, 126, 127]) {
+      appendRepoRunFixture(domain, `run-control-exit-${exitCode}`, {
+        stdout: `control infra failure ${exitCode}\n`,
+        exit_code: exitCode,
+        checkout_ref: "HEAD",
+        checkout_kind: "self_patch",
+      });
+    }
 
     assert.throws(
       () => normalizePacksForC10(domain, {
@@ -450,6 +465,36 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
       }),
       /same replay command hash/,
     );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control-timeout",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Timed-out controls cannot prove a quiet replay.",
+      }),
+      /timed-out run/,
+    );
+
+    for (const exitCode of [125, 126, 127]) {
+      assert.throws(
+        () => normalizePacksForC10(domain, {
+          control_kind: "self_patch",
+          vuln_run_id: "run-vuln",
+          control_run_id: `run-control-exit-${exitCode}`,
+          control_ref: "HEAD",
+          vuln_fired: true,
+          control_fired: false,
+          verdict: "patch_fixes",
+          control_summary: "Docker/runtime infrastructure failures cannot prove a quiet replay.",
+        }),
+        /infrastructure failure exit code/,
+      );
+    }
 
     assert.throws(
       () => normalizePacksForC10(domain, {

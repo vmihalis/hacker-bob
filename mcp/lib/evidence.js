@@ -69,6 +69,7 @@ const MAX_CONTROL_SUMMARY_CHARS = 1000;
 const MAX_CONTROL_REF_CHARS = 120;
 const HEX64_RE = /^[0-9a-f]{64}$/i;
 const REPO_RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,127}$/;
+const DISALLOWED_REPO_COMMAND_EXIT_CODES = Object.freeze([125, 126, 127]);
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -131,6 +132,12 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) 
   const row = matchingRows[0];
   if (row.dry_run === true) {
     throw new Error(`${fieldName} must reference a live non-dry-run repo docker run`);
+  }
+  if (row.timed_out === true) {
+    throw new Error(`${fieldName} must reference a completed repo docker run, not a timed-out run`);
+  }
+  if (DISALLOWED_REPO_COMMAND_EXIT_CODES.includes(row.exit_code)) {
+    throw new Error(`${fieldName} must not reference a Docker/runtime infrastructure failure exit code`);
   }
   if (row.network_mode !== "none") {
     throw new Error(`${fieldName} must reference a --network none repo docker run`);
