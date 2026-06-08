@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Codex MCP wiring for the Hacker Bob bug bounty evaluating runtime.",
   "author": {
     "name": "Hacker Bob contributors",

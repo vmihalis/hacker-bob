@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.0.1] - 2026-06-08
+
+First npm publication of the v2 line. `v2.0.0` was tagged but never released to npm; the registry `latest` remained on the v1.3.x maintenance line. `2.0.1` publishes the accumulated v2.0.x work on top of the [2.0.0] topology.
+
+### OSS / repo-mode diff review
+
+- Repo-bound sessions accept the synthetic `repo-<name>-<sha8>` `target_domain` across the `initialized_session_read` and `initialized_session_mutation` session-authority classes, not only at bootstrap. `bob_extract_routes`, `bob_build_symbol_surface_index`, and `bob_summarize_diff_impact` now run against a locally checked-out repository instead of being rejected by the registrable-domain normalization that governs live-target sessions. This lets a headless diff-review build a real symbol-surface index and diff-impact map rather than falling back to heuristic dispatch.
+- `deriveRepoTargetDomain` emits an 8-character path hash that matches the `REPO_TARGET_DOMAIN_PATTERN` authority guard, so the deriver and the validator agree on the repo-session slug.
+- Structured OSS fuzz-seed paths and the repo reachability producer are exposed for evaluator dispatch.
+
+### Report and topology authority
+
+- Structured report composition (`bob_compose_report`, `bob_write_chain_rollup`, `bob_amend_report`) and the `AUDIT_GRADED_PATHS` registry are authoritative; the Write tool is removed from `report-writer` and `chain-builder`.
+- Frontier and scheduler coherence hardening: surface-leads producer rationale with orchestrator handoff receipts, an advance-session partial-surface runtime gate, and single-spawner topology enforcement.
+
+### CI / release
+
+- Tag-triggered release pipeline with clean-release and dependency-freshness audits and npm provenance.
+
 ## [2.0.0] - 2026-05-28
 
 ### Topology realization
