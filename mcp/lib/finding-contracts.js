@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   APTOS_NETWORK_VALUES,
+  ATTACK_VECTOR_VALUES,
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
   SEVERITY_VALUES,
@@ -69,6 +70,65 @@ function normalizeSurfaceType(value) {
     throw new Error(`surface_type must be one of: ${SURFACE_TYPE_VALUES.join(", ")}`);
   }
   return trimmed;
+}
+
+const REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES = Object.freeze(
+  ATTACK_VECTOR_VALUES.filter((value) => value !== "unknown"),
+);
+
+function normalizeReachabilityAssertion(value, fieldName = "reachability_assertion") {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  const attackVector = assertEnumValue(
+    value.attack_vector,
+    REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES,
+    `${fieldName}.attack_vector`,
+  );
+  const networkReachable = assertBoolean(value.network_reachable, `${fieldName}.network_reachable`);
+  if (attackVector === "network" && networkReachable !== true) {
+    throw new Error(`${fieldName}.network_reachable must be true when attack_vector is network`);
+  }
+  if (attackVector === "local" && networkReachable !== false) {
+    throw new Error(`${fieldName}.network_reachable must be false when attack_vector is local`);
+  }
+  const callPath = normalizeReachabilityCallPath(value.call_path, `${fieldName}.call_path`);
+  const justification = normalizeOptionalText(value.justification, `${fieldName}.justification`);
+  const normalized = {
+    attack_vector: attackVector,
+    network_reachable: networkReachable,
+    call_path: callPath,
+  };
+  if (justification) normalized.justification = justification;
+  return normalized;
+}
+
+function normalizeReachabilityCallPath(value, fieldName) {
+  const callPath = assertRequiredText(value, fieldName);
+  if (/[\r\n]/.test(callPath)) {
+    throw new Error(`${fieldName} must not contain line breaks`);
+  }
+  const segments = callPath.split("->").map((segment) => segment.trim());
+  if (segments.some((segment) => !segment)) {
+    throw new Error(`${fieldName} must not contain empty '->'-separated segments`);
+  }
+  if (segments.length < 3) {
+    throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least two '->' hops`);
+  }
+  return segments.join(" -> ");
+}
+
+function findingSupportsReachabilityAssertion(finding) {
+  return finding
+    && typeof finding.capability_pack === "string"
+    && finding.capability_pack === "oss_native_code";
+}
+
+function assertReachabilityAssertionScope(finding, fieldName = "reachability_assertion") {
+  if (!findingSupportsReachabilityAssertion(finding)) {
+    throw new Error(`${fieldName} is only allowed for oss_native_code findings`);
+  }
 }
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -438,6 +498,11 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
         if (!finding.brief_profile) finding.brief_profile = backfill.brief_profile;
       }
     }
+    const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
+    if (reachabilityAssertion) {
+      assertReachabilityAssertionScope(finding);
+      finding.reachability_assertion = reachabilityAssertion;
+    }
     if (finding.surface_type === "smart_contract" && !finding.sc_evidence) {
       throw new Error("smart-contract findings must include sc_evidence");
     }
@@ -543,6 +608,8 @@ module.exports = {
   computeFindingDedupeKey,
   normalizeBech32Address,
   normalizeFindingRecord,
+  normalizeReachabilityAssertion,
+  findingSupportsReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,
   renderFindingMarkdownEntry,

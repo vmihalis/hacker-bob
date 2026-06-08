@@ -17,6 +17,7 @@ Execution contract:
 - Use exactly the 7 Bash calls below, in order. Do not make any additional Bash calls.
 - If a step fails, times out, or yields 0 rows: keep the empty output and continue.
 - Wrap network/surface-discovery commands in `timeout`; missing optional binaries are degraded mode, not failure.
+- Run each step's Bash block in the foreground and wait for it to finish. Never start a step as a detached background job and then poll its output file in a loop; long scans (nuclei, amass, katana) can take many minutes, and waiting for them to complete is expected.
 - Keep bulky collection captures in temporary scratch outside `[SESSION]`; only compact derived artifacts belong in `[SESSION]`.
 - Do not dump raw URLs, JavaScript bodies, or scanner output into prose.
 - Do not copy raw secrets, bearer values, or JWT-looking strings into `attack_surface.json`, `deep-summary.json`, `surface-leads.json`, or prose. Use counts and local artifact names instead.
@@ -196,7 +197,7 @@ if [ -s "$SESSION/brand-sibling-probe-candidates.txt" ] && [ -n "$HTTPX" ]; then
 DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 { echo "$DOMAIN"; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null | sed 's#^https\?://##; s#/.*##'; awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null | sed 's#^https\?://##; s#/.*##' | head -n 8; awk '{print $1}' "$SESSION/tlsx_sans.txt" 2>/dev/null | head -n 16; } | sort -u | head -n 16 > "$SESSION/cdx_roots.txt"
 : > "$SESSION/all_urls.txt"
-while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=5000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=5000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
+while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
 { awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 80 > "$SESSION/crawl_roots.txt"
 : > "$SESSION/katana_urls.txt"
 KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
@@ -226,9 +227,9 @@ DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/bob-deep-surface-discovery-js.XXXXXX")" || exit 0
 trap 'rm -rf "$scratch"' EXIT
 js_capture="$scratch/js-capture.txt"
-grep -Eai '\.js([?#].*)?$' "$SESSION/all_urls.txt" 2>/dev/null | sort -u | head -n 60 > "$SESSION/js_urls.txt" || true
+grep -Eai '\.js([?#].*)?$' "$SESSION/all_urls.txt" 2>/dev/null | sort -u | head -n 200 > "$SESSION/js_urls.txt" || true
 : > "$js_capture"
-while read -r u; do timeout 10 curl -ksSL "$u" 2>/dev/null | head -c 500000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "$SESSION/js_urls.txt"
+while read -r u; do timeout 10 curl -ksSL "$u" 2>/dev/null | head -c 2000000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "$SESSION/js_urls.txt"
 python3 - "$SESSION" "$js_capture" <<'PY'
 import pathlib, re, sys
 session, capture_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -250,7 +251,7 @@ PY
 7. Compact summaries, ranked leads, and attack surface
 ```bash
 DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
-{ awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 120 > "$SESSION/live_urls.txt"
+{ awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 400 > "$SESSION/live_urls.txt"
 : > "$SESSION/nuclei_results.txt"
 if command -v nuclei >/dev/null; then timeout 720 nuclei -l "$SESSION/live_urls.txt" -severity medium,high,critical -silent -o "$SESSION/nuclei_results.txt" -timeout 10 -retries 1 -rate-limit 75 2>/dev/null || true; fi
 python3 - "$DOMAIN" "$SESSION" <<'PY'

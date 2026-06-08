@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob-kimi",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Hacker Bob — Kimi CLI adapter wrapper. Pins --adapter kimi and delegates to the canonical hacker-bob CLI.",
   "license": "Apache-2.0",
   "repository": {
@@ -22,6 +22,6 @@
     "README.md"
   ],
   "dependencies": {
-    "hacker-bob": "2.0.0"
+    "hacker-bob": "2.0.1"
   }
 }

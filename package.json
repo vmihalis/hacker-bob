@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "workspaces": [
     "packages/bob-diff-review"
   ],
@@ -43,6 +43,7 @@
     "bin/**/*.js",
     "docs/**/*.md",
     "!docs/refactor-*.md",
+    "!docs/plane-delta/detail/**/*",
     "docs/**/*.json",
     "docs/**/*.html",
     "docs/**/*.png",

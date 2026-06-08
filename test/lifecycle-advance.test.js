@@ -106,6 +106,7 @@ function seedRepoVerification(home, {
   surfaceIds = null,
   finalSeverity = "high",
   runInventory = true,
+  reachabilityAssertion = null,
 } = {}) {
   const repo = path.join(home, targetDomain);
   fs.mkdirSync(repo, { recursive: true });
@@ -115,7 +116,7 @@ function seedRepoVerification(home, {
   if (runInventory) {
     buildRepoInventory({ target_domain: init.target_domain });
   }
-  appendCandidateClaim({
+  const claim = {
     target_domain: init.target_domain,
     title: "Native parser over-read",
     summary: "Parser reads past the available buffer.",
@@ -128,7 +129,17 @@ function seedRepoVerification(home, {
       content_hash: "0".repeat(64),
     }],
     impact: "Parser crash on crafted local input.",
-  });
+  };
+  if (reachabilityAssertion) {
+    claim.payload = {
+      finding: {
+        id: "F-1",
+        capability_pack: "oss_native_code",
+        reachability_assertion: reachabilityAssertion,
+      },
+    };
+  }
+  appendCandidateClaim(claim);
   buildClaimFreeze(init.target_domain, {
     write: true,
     now: new Date("2026-05-27T01:00:00.000Z"),
@@ -450,6 +461,61 @@ test("VERIFY -> GRADE reachability gate fails closed for repo sessions before I9
     assert.deepEqual(evaluation.blockers[0].missing_finding_ids, ["F-1"]);
     assert.match(evaluation.blockers[0].message, /no reachability inventory/);
     assert.match(evaluation.blockers[0].message, /without an I9 ceiling/);
+  });
+});
+
+test("VERIFY -> GRADE reachability gate accepts cited assertion before I9 inventory exists", () => {
+  withTempHome((home) => {
+    const domain = seedRepoVerification(home, {
+      targetDomain: "reachability-absent-asserted-ok",
+      surfaceId: "repo:module:src-parser.c",
+      runInventory: false,
+      reachabilityAssertion: {
+        attack_vector: "local",
+        network_reachable: false,
+        call_path: "local file input -> parse_packet -> buffer read",
+        justification: "The finding is reached through local file parsing, not a network listener.",
+      },
+    });
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "VERIFY",
+      to_state: "GRADE",
+    });
+
+    assert.deepEqual(evaluation.blockers, []);
+  });
+});
+
+test("VERIFY -> GRADE reachability gate accepts cited assertion when stamped heuristic is unresolved", () => {
+  withTempHome((home) => {
+    const domain = seedRepoVerification(home, {
+      targetDomain: "reachability-malformed-asserted-ok",
+      surfaceId: "repo:module:src-parser.c",
+      runInventory: true,
+      reachabilityAssertion: {
+        attack_vector: "network",
+        network_reachable: true,
+        call_path: "UDP listener -> parse_packet -> buffer read",
+        justification: "The evaluator traced attacker-controlled network input to the sink.",
+      },
+    });
+    const inventoryPath = repoInventoryPath(domain);
+    const inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8"));
+    inventory.reachability = {
+      max_credible_severity_ceiling: "medium",
+      network_reachable: false,
+    };
+    fs.writeFileSync(inventoryPath, JSON.stringify(inventory), "utf8");
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "VERIFY",
+      to_state: "GRADE",
+    });
+
+    assert.deepEqual(evaluation.blockers, []);
   });
 });
 

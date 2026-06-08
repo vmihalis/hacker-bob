@@ -118,6 +118,10 @@ function isInternalRefactorDoc(file) {
   return /^docs\/refactor-[^/]+\.md$/.test(file);
 }
 
+function isInternalPlaneDeltaDetailDoc(file) {
+  return /^docs\/plane-delta\/detail\/[^/]+\.md$/.test(file);
+}
+
 function isInternalRefactorScratch(file) {
   return file === "tmp" || file.startsWith("tmp/");
 }
@@ -177,7 +181,7 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
     ...sourceTreeFiles(root, ".claude").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
     ...sourceTreeFiles(root, "adapters"),
     ...sourceTreeFiles(root, "bin").filter(isPackableBin),
-    ...sourceTreeFiles(root, "docs").filter((file) => !isInternalRefactorDoc(file)),
+    ...sourceTreeFiles(root, "docs").filter((file) => !isInternalRefactorDoc(file) && !isInternalPlaneDeltaDetailDoc(file)),
     ...sourceTreeFiles(root, "mcp"),
     ...sourceTreeFiles(root, "prompts"),
     ...sourceTreeFiles(root, "scripts").filter(isPackableScript),
@@ -197,6 +201,7 @@ module.exports = {
   expectedCanonicalFiles,
   isInternalRefactorScratch,
   isInternalRefactorDoc,
+  isInternalPlaneDeltaDetailDoc,
   isExcludedCanonicalPackageFile,
   isPackableBin,
   isPackableBobResource,

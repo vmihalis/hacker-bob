@@ -59,6 +59,8 @@ const CLAIM_TEXT_LIMITS = Object.freeze({
   response_evidence: 16000,
   impact: 8000,
   auth_profile: 200,
+  reachability_assertion_call_path: 4000,
+  reachability_assertion_justification: 2000,
 });
 
 const SECRET_DETECTION_BYPASS_FIELDS = Object.freeze(new Set([
@@ -157,6 +159,20 @@ function validateClaimForPersistence(finding, secretBypass = new Map()) {
     }
     validateNoSensitiveMaterial(finding[field], field, { maxTextChars });
   }
+  if (finding.reachability_assertion) {
+    validateNoSensitiveMaterial(
+      finding.reachability_assertion.call_path,
+      "reachability_assertion.call_path",
+      { maxTextChars: CLAIM_TEXT_LIMITS.reachability_assertion_call_path },
+    );
+    if (finding.reachability_assertion.justification != null) {
+      validateNoSensitiveMaterial(
+        finding.reachability_assertion.justification,
+        "reachability_assertion.justification",
+        { maxTextChars: CLAIM_TEXT_LIMITS.reachability_assertion_justification },
+      );
+    }
+  }
 }
 
 function buildFindingPayloadRecord(args, context, findingId) {
@@ -189,6 +205,7 @@ function buildFindingPayloadRecord(args, context, findingId) {
     evaluator_agent: context.evaluatorAgent,
     brief_profile: context.briefProfile,
     sc_evidence: args.sc_evidence,
+    reachability_assertion: args.reachability_assertion,
     dedupe_key: args.dedupe_key,
     auth_profile: args.auth_profile,
     force_record: args.force_record === true,
@@ -271,6 +288,7 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args) {
     "evaluator_agent",
     "brief_profile",
     "sc_evidence",
+    "reachability_assertion",
     "auth_profile",
     "dedupe_key",
     "force_record",
@@ -565,6 +583,35 @@ module.exports = Object.freeze({
           "required": ["field", "rationale"],
           "additionalProperties": false
         }
+      },
+      "reachability_assertion": {
+        "type": "object",
+        "description": "Optional evaluator-asserted finding reachability. Only allowed for routed oss_native_code findings. Cite the entrypoint-to-sink path the evaluator verified; this evaluator-authored assertion is trusted grading provenance at grade time and overrides the repo-inventory attack-vector/network-reachability classification. An existing inventory/heuristic severity ceiling still constrains the asserted class ceiling, while assertion-only grading derives the ceiling from the asserted class and records an audit note. It is not independently verifier-reviewed and does not self-certify reachability defensibility. Frozen conflict policy is first distinct attack_vector/network_reachable assertion wins by claim time; same-classification call_path refinements are not conflicts and update the rendered call path; corrections to attack_vector/network_reachable require operator amendment/re-freeze rather than another conflicting claim.",
+        "properties": {
+          "attack_vector": {
+            "type": "string",
+            "enum": ["network", "local"],
+            "description": "Evaluator-classified attack vector for the finding-level call path."
+          },
+          "network_reachable": {
+            "type": "boolean",
+            "description": "True only when the cited call path is reachable from network-controlled input."
+          },
+          "call_path": {
+            "type": "string",
+            "minLength": 7,
+            "maxLength": 4000,
+            "pattern": "^(?!.*[\\n\\r])(?!\\s*->)(?!.*->\\s*(?:->|$))[^\\n\\r]*->[^\\n\\r]*->[^\\n\\r]*$",
+            "description": "Cited entrypoint-to-sink path with at least two hops, for example: UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid."
+          },
+          "justification": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Short rationale for why this path is network or local reachable."
+          }
+        },
+        "required": ["attack_vector", "network_reachable", "call_path"],
+        "additionalProperties": false
       },
       "sc_evidence": {
         "type": "object",

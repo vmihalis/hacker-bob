@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const {
   attackSurfacePath,
@@ -14,6 +15,7 @@ const {
   surfaceRoutesPath,
 } = require("../mcp/lib/paths.js");
 const {
+  assertHistoryAvailableForRef,
   buildRepoInventory,
   initRepoSession,
   repoCheck,
@@ -83,6 +85,61 @@ function writeFile(root, relativePath, content) {
   const filePath = path.join(root, relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+function git(repoRoot, args) {
+  return execFileSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Bob Test",
+      GIT_AUTHOR_EMAIL: "bob-test@example.invalid",
+      GIT_COMMITTER_NAME: "Bob Test",
+      GIT_COMMITTER_EMAIL: "bob-test@example.invalid",
+    },
+  }).trim();
+}
+
+function createTwoCommitGitRepo(home, name = "history-fixture") {
+  const repo = path.join(home, name);
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q"]);
+  writeFile(repo, "README.md", "# fixture\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-q", "-m", "initial"]);
+  const first = git(repo, ["rev-parse", "HEAD"]);
+  writeFile(repo, "src/parser.c", "int parse(void){return 1;}\n");
+  git(repo, ["add", "src/parser.c"]);
+  git(repo, ["commit", "-q", "-m", "second"]);
+  const second = git(repo, ["rev-parse", "HEAD"]);
+  return { repo, first, second };
+}
+
+function writeSyntheticPackIndex(repo, objectIds, name = "pack-ambiguous") {
+  const packDir = path.join(repo, ".git", "objects", "pack");
+  fs.mkdirSync(packDir, { recursive: true });
+  const sorted = objectIds.slice().sort();
+  const shaBytes = sorted[0].length / 2;
+  const fanout = new Array(256).fill(0);
+  for (const objectId of sorted) {
+    const bucket = Number.parseInt(objectId.slice(0, 2), 16);
+    for (let i = bucket; i < fanout.length; i += 1) {
+      fanout[i] += 1;
+    }
+  }
+  const headerLength = 8 + 256 * 4;
+  const buffer = Buffer.alloc(headerLength + sorted.length * shaBytes);
+  buffer.writeUInt32BE(0xff744f63, 0);
+  buffer.writeUInt32BE(2, 4);
+  for (let i = 0; i < fanout.length; i += 1) {
+    buffer.writeUInt32BE(fanout[i], 8 + i * 4);
+  }
+  let offset = headerLength;
+  for (const objectId of sorted) {
+    Buffer.from(objectId, "hex").copy(buffer, offset);
+    offset += shaBytes;
+  }
+  fs.writeFileSync(path.join(packDir, `${name}.idx`), buffer);
 }
 
 function parseResult(value) {
@@ -219,6 +276,154 @@ function nativeClaimInput(context, evidenceRefs, overrides = {}) {
     ...overrides,
   };
 }
+
+test("assertHistoryAvailableForRef passes for clean local refs and object prefixes", () => withTempHome((home) => {
+  const { repo, first, second } = createTwoCommitGitRepo(home, "history-clean");
+  const branch = git(repo, ["branch", "--show-current"]);
+  const byBranch = assertHistoryAvailableForRef(repo, branch);
+  assert.equal(byBranch.checkout_ref, branch);
+  assert.equal(byBranch.checkout_object, second);
+  assert.equal(byBranch.checkout_object_format, "sha1");
+  const byHead = assertHistoryAvailableForRef(repo, "HEAD");
+  assert.equal(byHead.checkout_ref, "HEAD");
+  assert.equal(byHead.checkout_object, second);
+  const byHex = assertHistoryAvailableForRef(repo, first.slice(0, 12));
+  assert.equal(byHex.checkout_ref, first.slice(0, 12));
+  assert.equal(byHex.checkout_object, first);
+  const byFullHex = assertHistoryAvailableForRef(repo, second);
+  assert.equal(byFullHex.checkout_ref, second);
+  assert.equal(byFullHex.checkout_object, second);
+}));
+
+test("assertHistoryAvailableForRef refuses shallow clones loudly", () => withTempHome((home) => {
+  const { repo, first } = createTwoCommitGitRepo(home, "history-shallow");
+  fs.writeFileSync(path.join(repo, ".git", "shallow"), `${first}\n`);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, first),
+    (error) => error && error.details && error.details.repo_error_code === "shallow_clone_blocks_differential",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses refs absent from local history", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-absent");
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "refs/heads/not-present"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "deadbee"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses unborn HEAD before docker", () => withTempHome((home) => {
+  const repo = path.join(home, "history-unborn-head");
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q"]);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "HEAD"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef handles linked worktree gitdir files", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-linked");
+  const worktree = path.join(home, "history-linked-worktree");
+  git(repo, ["worktree", "add", "-q", worktree, second]);
+  assert.ok(fs.statSync(path.join(worktree, ".git")).isFile(), "linked worktree must use a .git file");
+  const result = assertHistoryAvailableForRef(worktree, second.slice(0, 12));
+  assert.equal(result.checkout_ref, second.slice(0, 12));
+}));
+
+test("assertHistoryAvailableForRef accepts linked worktree metadata with a non-basename id", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-linked-renamed-main");
+  const worktree = path.join(home, "history-linked-renamed-worktree");
+  git(repo, ["worktree", "add", "-q", worktree, second]);
+  const dotGitPath = path.join(worktree, ".git");
+  const match = fs.readFileSync(dotGitPath, "utf8").trim().match(/^gitdir:\s*(.+)$/i);
+  assert.ok(match, "linked worktree .git file must carry a gitdir pointer");
+  const oldGitDir = path.resolve(worktree, match[1].trim());
+  const newGitDir = path.join(path.dirname(oldGitDir), "renamed-worktree-metadata");
+  assert.notEqual(path.basename(newGitDir), path.basename(worktree));
+  fs.renameSync(oldGitDir, newGitDir);
+  fs.writeFileSync(dotGitPath, `gitdir: ${newGitDir}\n`);
+
+  const result = assertHistoryAvailableForRef(worktree, second.slice(0, 12));
+  assert.equal(result.checkout_ref, second.slice(0, 12));
+}));
+
+test("assertHistoryAvailableForRef refuses gitdir pointers outside repo/worktree metadata", () => withTempHome((home) => {
+  const repo = path.join(home, "history-malicious-gitdir");
+  fs.mkdirSync(repo, { recursive: true });
+  const outsideGitDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-outside-gitdir-"));
+  try {
+    fs.writeFileSync(path.join(repo, ".git"), `gitdir: ${outsideGitDir}\n`);
+    assert.throws(
+      () => assertHistoryAvailableForRef(repo, "HEAD"),
+      (error) => error && error.details && error.details.repo_error_code === "repo_git_metadata_outside_repo",
+    );
+  } finally {
+    fs.rmSync(outsideGitDir, { recursive: true, force: true });
+  }
+}));
+
+test("assertHistoryAvailableForRef refuses symlinked loose refs", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-symlink-ref");
+  const outsideRef = path.join(home, "outside-ref");
+  fs.writeFileSync(outsideRef, `${"a".repeat(40)}\n`);
+  const maliciousRef = path.join(repo, ".git", "refs", "heads", "malicious");
+  fs.symlinkSync(outsideRef, maliciousRef);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "refs/heads/malicious"),
+    (error) => error && error.details && error.details.repo_error_code === "repo_git_metadata_outside_repo",
+  );
+}));
+
+test("assertHistoryAvailableForRef resolves packed SHA-1 objects without SHA-256 probing", () => withTempHome((home) => {
+  const { repo, second } = createTwoCommitGitRepo(home, "history-packed-sha1");
+  git(repo, ["gc", "--prune=now"]);
+  const packed = assertHistoryAvailableForRef(repo, second.slice(0, 12));
+  assert.equal(packed.checkout_ref, second.slice(0, 12));
+  assert.equal(packed.checkout_object, second);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, `${second}${"0".repeat(24)}`),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses ambiguous packed object prefixes", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-packed-ambiguous-prefix");
+  writeSyntheticPackIndex(repo, [
+    "abcdef1000000000000000000000000000000000",
+    "abcdef1fffffffffffffffffffffffffffffffff",
+  ]);
+
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "abcdef1"),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef resolves packed SHA-256 objects", (t) => withTempHome((home) => {
+  const repo = path.join(home, "history-packed-sha256");
+  fs.mkdirSync(repo, { recursive: true });
+  try {
+    git(repo, ["init", "-q", "--object-format=sha256"]);
+  } catch {
+    t.skip("local git does not support --object-format=sha256");
+    return;
+  }
+  writeFile(repo, "README.md", "# sha256 fixture\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-q", "-m", "initial"]);
+  const commit = git(repo, ["rev-parse", "HEAD"]);
+  assert.equal(commit.length, 64);
+  git(repo, ["gc", "--prune=now"]);
+  const packed = assertHistoryAvailableForRef(repo, commit.slice(0, 16));
+  assert.equal(packed.checkout_ref, commit.slice(0, 16));
+  assert.equal(packed.checkout_object, commit);
+  assert.equal(packed.checkout_object_format, "sha256");
+}));
 
 test("repo session inventory emits OSS surfaces and routes to OSS packs", () => withTempHome((home) => {
   const repo = path.join(home, "sample-project");

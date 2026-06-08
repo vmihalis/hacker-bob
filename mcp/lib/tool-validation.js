@@ -180,7 +180,7 @@ function validateAgainstSchema(value, schema, pathParts = []) {
   }
 
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (types.includes("object") || (!schema.type && (schema.properties || schema.additionalProperties))) {
+  if (types.includes("object") || (!schema.type && (schema.properties || schema.additionalProperties || schema.required))) {
     if (typeof value === "object" && !Array.isArray(value)) {
       validateObject(value, schema, pathParts);
     }

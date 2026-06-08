@@ -47,6 +47,7 @@ const {
 const {
   assertSafeDomain,
   repoCommandRunsJsonlPath,
+  repoCheckoutDir,
   repoInventoryPath,
   repoRunsDir,
   repoWorkDir,
@@ -74,6 +75,8 @@ const {
   readSessionStateStrict,
 } = require("./session-state-store.js");
 const {
+  assertHistoryAvailableForRef,
+  normalizeHistoryRef,
   readRepoSession,
 } = require("./repo-target.js");
 
@@ -824,6 +827,7 @@ async function prepareRepoEnv({
 const REPO_DOCKER_RUN_VERSION = 1;
 const REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS = 300_000;
 const REPO_DOCKER_RUN_MAX_TIMEOUT_MS = 600_000;
+const DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS = 30_000;
 const REPO_DOCKER_RUN_MAX_OUTPUT_BYTES = 16 * 1024 * 1024; // 16 MB per stream
 const REPO_DOCKER_RUN_MAX_COMMAND_TOKENS = 64;
 const REPO_DOCKER_RUN_MAX_TOKEN_LENGTH = 2048;
@@ -837,6 +841,11 @@ const REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS = 200;
 // does not pull 16 MB into RAM just to compute a 200-char preview.
 const REPO_DOCKER_RUN_FIRST_LINE_PROBE_BYTES = 4096;
 const REPO_MOUNT_MODE_VALUES = Object.freeze(["read_only", "read_write"]);
+const DIFFERENTIAL_CHECKOUT_KIND_VALUES = Object.freeze([
+  "upstream_fix",
+  "pre_introduction",
+  "self_patch",
+]);
 const REPO_DOCKER_RUN_DNS = "1.1.1.1";
 const REPO_DOCKER_RUN_PROXY_ARG = Object.freeze({
   http: "HTTP_PROXY",
@@ -888,6 +897,305 @@ function assertCommandArray(command) {
     normalized.push(raw);
   }
   return normalized;
+}
+
+function assertCheckoutRef(value, fieldName) {
+  return normalizeHistoryRef(value, fieldName);
+}
+
+function normalizeDifferentialCheckout(checkout) {
+  if (checkout == null) return null;
+  if (typeof checkout !== "object" || Array.isArray(checkout)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "checkout must be an object when provided",
+    );
+  }
+  return {
+    ref: assertCheckoutRef(checkout.ref, "checkout.ref"),
+    kind: assertEnumValue(checkout.kind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout.kind"),
+  };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function assertWorkPath(value, fieldName) {
+  const normalized = assertNonEmptyString(value, fieldName);
+  if (!normalized.startsWith("/work/")
+      || normalized.includes("..")
+      || normalized.includes("//")
+      || !/^\/work\/[A-Za-z0-9._/-]+$/.test(normalized)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${fieldName} must be a safe path under /work`,
+      { repo_error_code: "invalid_differential_dest" },
+    );
+  }
+  return normalized;
+}
+
+function assertWorkDest(dest) {
+  return assertWorkPath(dest, "dest");
+}
+
+function assertContainerCheckoutDest(dest) {
+  const normalized = assertNonEmptyString(dest, "dest");
+  // S14 control replay intentionally runs from /src: repoDockerRun binds
+  // /src to a run-scoped checkout under repo-checkouts/, outside writable
+  // /work. Other container paths must stay under /work.
+  if (normalized === "/src") return normalized;
+  return assertWorkDest(normalized);
+}
+
+function hostPathContains(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function realpathIfPossible(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function assertRunScopedPathBoundary(base, candidate) {
+  const baseReal = realpathIfPossible(base);
+  const relative = path.relative(base, candidate);
+  if (!relative) return;
+  let cursor = base;
+  for (const part of relative.split(path.sep)) {
+    if (!part || part === ".") continue;
+    cursor = path.join(cursor, part);
+    let lstat = null;
+    try {
+      lstat = fs.lstatSync(cursor);
+    } catch (error) {
+      if (error && error.code === "ENOENT") break;
+      throw error;
+    }
+    if (lstat.isSymbolicLink()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "differential checkout run path must not include symlinks",
+        { repo_error_code: "differential_checkout_symlink_escape" },
+      );
+    }
+    const cursorReal = realpathIfPossible(cursor);
+    if (!hostPathContains(baseReal, cursorReal)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "differential checkout run path escaped the repo work directory",
+        { repo_error_code: "differential_checkout_symlink_escape" },
+      );
+    }
+  }
+}
+
+function assertRepoWorkDirBoundary(workDir, sessionRoot) {
+  const base = path.resolve(workDir);
+  const sessionReal = realpathIfPossible(sessionRoot);
+  const parent = path.dirname(base);
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "repo work directory parent is missing",
+      { repo_error_code: "repo_work_path_invalid" },
+    );
+  }
+  const parentReal = realpathIfPossible(parent);
+  if (!hostPathContains(sessionReal, parentReal)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "repo work directory parent escaped the session directory",
+      { repo_error_code: "repo_work_symlink_escape" },
+    );
+  }
+  let baseLstat = null;
+  try {
+    baseLstat = fs.lstatSync(base);
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  if (baseLstat) {
+    const lstat = baseLstat;
+    if (lstat.isSymbolicLink()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work directory must not be a symlink",
+        { repo_error_code: "repo_work_symlink_escape" },
+      );
+    }
+    if (!fs.statSync(base).isDirectory()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work path is not a directory",
+        { repo_error_code: "repo_work_path_invalid" },
+      );
+    }
+    const baseReal = realpathIfPossible(base);
+    if (!hostPathContains(sessionReal, baseReal)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work directory escaped the session directory",
+        { repo_error_code: "repo_work_symlink_escape" },
+      );
+    }
+  }
+  return base;
+}
+
+function runScopedHostPath(workDir, sessionRoot, runId, ...parts) {
+  const base = assertRepoWorkDirBoundary(workDir, sessionRoot);
+  const candidate = path.resolve(base, runId, ...parts);
+  if (!hostPathContains(base, candidate)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout run path escaped the repo work directory",
+      { repo_error_code: "invalid_differential_dest" },
+    );
+  }
+  assertRunScopedPathBoundary(base, candidate);
+  return candidate;
+}
+
+function mkdirDifferentialRunDirectory(dirPath, mode) {
+  try {
+    fs.mkdirSync(dirPath, { mode });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `differential checkout run path could not be created safely: ${error.message || error}`,
+      { repo_error_code: "differential_checkout_symlink_escape" },
+    );
+  }
+  const lstat = fs.lstatSync(dirPath);
+  if (lstat.isSymbolicLink() || !fs.statSync(dirPath).isDirectory()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout run path must be a directory and must not be a symlink",
+      { repo_error_code: "differential_checkout_symlink_escape" },
+    );
+  }
+  fs.chmodSync(dirPath, mode);
+}
+
+async function execDifferentialMaterializer(command, args, stage) {
+  try {
+    await execFilePromise(command, args, {
+      timeout: DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `differential checkout materialization failed during ${stage}: ${error.message || error}`,
+      { repo_error_code: "differential_checkout_materialization_failed" },
+    );
+  }
+}
+
+async function materializeDifferentialCheckoutTree({
+  repoRoot,
+  checkoutRoot,
+  workDir,
+  sessionRoot,
+  runId,
+  checkoutRef,
+  checkoutObject,
+  checkoutKind,
+  expectedPatchHash = null,
+}) {
+  assertCheckoutRef(checkoutRef, "checkout_ref");
+  const archiveRef = assertCheckoutRef(checkoutObject || checkoutRef, "checkout_object");
+  const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
+  const runWorkDir = runScopedHostPath(checkoutRoot, sessionRoot, runId);
+  const checkoutDir = runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo");
+  const checkoutTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "checkout.tar");
+  fs.rmSync(runWorkDir, { recursive: true, force: true });
+  fs.mkdirSync(checkoutRoot, { recursive: true, mode: 0o755 });
+  assertRepoWorkDirBoundary(checkoutRoot, sessionRoot);
+  fs.mkdirSync(workDir, { recursive: true, mode: 0o755 });
+  assertRepoWorkDirBoundary(workDir, sessionRoot);
+  mkdirDifferentialRunDirectory(runWorkDir, 0o755);
+  assertRunScopedPathBoundary(path.resolve(checkoutRoot), runWorkDir);
+  mkdirDifferentialRunDirectory(checkoutDir, 0o755);
+  assertRunScopedPathBoundary(path.resolve(checkoutRoot), checkoutDir);
+
+  if (kind !== "self_patch") {
+    try {
+      await execDifferentialMaterializer(
+        "git",
+        ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
+        "git archive",
+      );
+      await execDifferentialMaterializer("tar", ["-x", "-f", checkoutTar, "-C", checkoutDir], "tar extract");
+    } finally {
+      fs.rmSync(checkoutTar, { force: true });
+    }
+    return { checkout_path: checkoutDir };
+  }
+
+  const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
+  const observedPatchHash = patchBuffer ? sha256Hex(patchBuffer) : null;
+  if (!observedPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
+      { repo_error_code: "missing_differential_patch" },
+    );
+  }
+  if (expectedPatchHash && observedPatchHash !== expectedPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout patch changed during differential materialization",
+      { repo_error_code: "differential_patch_changed" },
+    );
+  }
+
+  const tempRoot = runScopedHostPath(checkoutRoot, sessionRoot, runId, "host-materialize");
+  const patchSnapshot = path.join(tempRoot, "patch.diff");
+  const baseTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "base.tar");
+  fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+  try {
+    fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
+    await execDifferentialMaterializer(
+      "git",
+      ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, archiveRef],
+      "git archive",
+    );
+    await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", checkoutDir], "tar extract");
+    await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(baseTar, { force: true });
+    fs.rmSync(checkoutTar, { force: true });
+  }
+  return { checkout_path: checkoutDir };
+}
+
+function buildDifferentialCheckoutCommand({
+  checkout_ref: checkoutRef,
+  checkout_kind: checkoutKind,
+  dest = "/src",
+  after_command: afterCommand = null,
+} = {}) {
+  assertCheckoutRef(checkoutRef, "checkout_ref");
+  assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
+  const checkoutDest = assertContainerCheckoutDest(dest);
+  const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
+  const script = [
+    "set -eu",
+    `test -d ${shellQuote(checkoutDest)}`,
+  ];
+  if (normalizedAfterCommand) {
+    script.push(`cd ${shellQuote(checkoutDest)}`);
+    script.push(normalizedAfterCommand.map(shellQuote).join(" "));
+  }
+  return assertCommandArray(["sh", "-c", script.join(" && ")]);
 }
 
 // Build the docker run argv. Each O-P3 sandbox flag is emitted in
@@ -1065,6 +1373,40 @@ function hashFile(filePath) {
   }
 }
 
+function readSelfPatchBuffer(workDir, sessionRoot) {
+  const base = assertRepoWorkDirBoundary(workDir, sessionRoot);
+  const patchPath = path.join(base, "patch.diff");
+  let lstat = null;
+  try {
+    lstat = fs.lstatSync(patchPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (!lstat.isFile()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff to be a regular Bob-owned file",
+      { repo_error_code: "invalid_differential_patch" },
+    );
+  }
+  const baseReal = realpathIfPossible(base);
+  const patchReal = realpathIfPossible(patchPath);
+  if (!hostPathContains(baseReal, patchReal)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout patch escaped the repo work directory",
+      { repo_error_code: "differential_patch_symlink_escape" },
+    );
+  }
+  return fs.readFileSync(patchPath);
+}
+
+function hashSelfPatchFile(workDir, sessionRoot) {
+  const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
+  return patchBuffer ? sha256Hex(patchBuffer) : null;
+}
+
 // Plane X Cycle X.7 (X-P9 retrofit): read the first line of a capture
 // file for the brief-inlinable summary. Bounded by a 4KB probe so a
 // degenerate single-line capture file does not pull 16MB into memory
@@ -1149,6 +1491,7 @@ function normalizeReplayContext(value) {
 async function repoDockerRun({
   target_domain: targetDomain,
   command,
+  checkout = null,
   dry_run: dryRun = true,
   allow_network: allowNetwork = false,
   repo_mount_mode: repoMountMode = "read_only",
@@ -1162,6 +1505,9 @@ async function repoDockerRun({
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
   const repoRoot = repoSession.target_repo.root_path;
+  const sessionRoot = sessionDir(domain);
+  const workDir = repoWorkDir(domain);
+  const checkoutRoot = repoCheckoutDir(domain);
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -1170,7 +1516,25 @@ async function repoDockerRun({
     );
   }
 
-  const normalizedCommand = assertCommandArray(command);
+  const runId = generateRunId();
+  const normalizedCheckout = normalizeDifferentialCheckout(checkout);
+  const normalizedInputCommand = assertCommandArray(command);
+  let checkoutHistory = null;
+  if (normalizedCheckout) {
+    checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
+  }
+  const checkoutSrcRoot = normalizedCheckout
+    ? runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo")
+    : repoRoot;
+  const effectiveCommand = normalizedCheckout
+    ? buildDifferentialCheckoutCommand({
+        checkout_ref: normalizedCheckout.ref,
+        checkout_kind: normalizedCheckout.kind,
+        dest: "/src",
+        after_command: normalizedInputCommand,
+      })
+    : normalizedInputCommand;
+  const normalizedCommand = assertCommandArray(effectiveCommand);
   const normalizedDryRun = dryRun == null ? true : assertBoolean(dryRun, "dry_run");
   const normalizedAllowNetwork = allowNetwork == null ? false : assertBoolean(allowNetwork, "allow_network");
   const normalizedMountMode = assertEnumValue(
@@ -1178,6 +1542,13 @@ async function repoDockerRun({
     REPO_MOUNT_MODE_VALUES,
     "repo_mount_mode",
   );
+  if (normalizedCheckout && normalizedMountMode !== "read_only") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout runs require repo_mount_mode read_only",
+      { repo_error_code: "differential_checkout_requires_read_only_mount" },
+    );
+  }
   const normalizedTimeoutMs = timeoutMsOverride == null
     ? REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS
     : assertInteger(timeoutMsOverride, "timeout_ms", {
@@ -1241,9 +1612,8 @@ async function repoDockerRun({
 
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
-  const workDir = repoWorkDir(domain);
   const argv = buildDockerRunArgv({
-    repoRoot,
+    repoRoot: checkoutSrcRoot,
     workDir,
     imageTag,
     command: normalizedCommand,
@@ -1252,11 +1622,26 @@ async function repoDockerRun({
     egressProfile: egressProfileResolved,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
+  const replayCommandHash = normalizedInputCommand
+    ? sha256Hex(JSON.stringify(normalizedInputCommand))
+    : null;
   const argvHash = sha256Hex(JSON.stringify(argv.args));
-  const runId = generateRunId();
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);
+  if (normalizedCheckout && normalizedCheckout.kind === "self_patch") {
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+  }
+  const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
+    ? hashSelfPatchFile(workDir, sessionRoot)
+    : null;
+  if (normalizedCheckout && normalizedCheckout.kind === "self_patch" && !checkoutPatchHash) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
+      { repo_error_code: "missing_differential_patch" },
+    );
+  }
   const startedAt = new Date().toISOString();
 
   // Network mode is the value we'd hand to docker --network. We capture
@@ -1280,6 +1665,18 @@ async function repoDockerRun({
       planned_argv: argv.args,
       egress_profile: egressProfileSummary,
     };
+    if (replayCommandHash) planRow.replay_command_hash = replayCommandHash;
+    if (normalizedCheckout) {
+      planRow.checkout_ref = normalizedCheckout.ref;
+      planRow.checkout_kind = normalizedCheckout.kind;
+      if (normalizedCheckout.kind === "self_patch") {
+        planRow.checkout_patch_hash = checkoutPatchHash;
+      }
+      if (checkoutHistory) {
+        planRow.checkout_object = checkoutHistory.checkout_object;
+        planRow.checkout_object_format = checkoutHistory.checkout_object_format;
+      }
+    }
     if (normalizedReplayContext) planRow.replay_context = normalizedReplayContext;
     if (normalizedBlockedHarnessRunId) planRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
     // O-P7: scrub-validate before persistence. planned_argv carries the
@@ -1300,6 +1697,7 @@ async function repoDockerRun({
       network_mode: networkMode,
       mount_mode: normalizedMountMode,
       command_hash: commandHash,
+      replay_command_hash: replayCommandHash,
       argv_hash: argvHash,
       planned_argv: argv.args,
       stdout_path: null,
@@ -1312,6 +1710,15 @@ async function repoDockerRun({
       egress_profile: egressProfileSummary,
       replay_context: normalizedReplayContext,
       blocked_harness_run_id: normalizedBlockedHarnessRunId,
+      ...(normalizedCheckout ? {
+        checkout_ref: normalizedCheckout.ref,
+        checkout_kind: normalizedCheckout.kind,
+        ...(checkoutHistory ? {
+          checkout_object: checkoutHistory.checkout_object,
+          checkout_object_format: checkoutHistory.checkout_object_format,
+        } : {}),
+        ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+      } : {}),
     };
   }
 
@@ -1325,6 +1732,19 @@ async function repoDockerRun({
       "docker is not installed or not in PATH; rerun with dry_run: true",
       { repo_error_code: "docker_unavailable" },
     );
+  }
+  if (normalizedCheckout) {
+    await materializeDifferentialCheckoutTree({
+      repoRoot,
+      checkoutRoot,
+      workDir,
+      sessionRoot,
+      runId,
+      checkoutRef: normalizedCheckout.ref,
+      checkoutObject: checkoutHistory && checkoutHistory.checkout_object,
+      checkoutKind: normalizedCheckout.kind,
+      expectedPatchHash: checkoutPatchHash,
+    });
   }
   withSessionLock(domain, () => {
     fs.mkdirSync(runsDir, { recursive: true });
@@ -1409,6 +1829,18 @@ async function repoDockerRun({
     stderr_size_bytes: stderrBytes,
     egress_profile: egressProfileSummary,
   };
+  if (replayCommandHash) liveRow.replay_command_hash = replayCommandHash;
+  if (normalizedCheckout) {
+    liveRow.checkout_ref = normalizedCheckout.ref;
+    liveRow.checkout_kind = normalizedCheckout.kind;
+    if (checkoutHistory) {
+      liveRow.checkout_object = checkoutHistory.checkout_object;
+      liveRow.checkout_object_format = checkoutHistory.checkout_object_format;
+    }
+    if (normalizedCheckout.kind === "self_patch") {
+      liveRow.checkout_patch_hash = checkoutPatchHash;
+    }
+  }
   if (normalizedReplayContext) liveRow.replay_context = normalizedReplayContext;
   if (normalizedBlockedHarnessRunId) liveRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
   // O-P7: pre-flight before persistence. The validator catches both the
@@ -1430,6 +1862,7 @@ async function repoDockerRun({
     network_mode: networkMode,
     mount_mode: normalizedMountMode,
     command_hash: commandHash,
+    replay_command_hash: replayCommandHash,
     argv_hash: argvHash,
     planned_argv: argv.args,
     stdout_path: stdoutPath,
@@ -1451,6 +1884,15 @@ async function repoDockerRun({
     egress_profile: egressProfileSummary,
     replay_context: normalizedReplayContext,
     blocked_harness_run_id: normalizedBlockedHarnessRunId,
+    ...(normalizedCheckout ? {
+      checkout_ref: normalizedCheckout.ref,
+      checkout_kind: normalizedCheckout.kind,
+      ...(checkoutHistory ? {
+        checkout_object: checkoutHistory.checkout_object,
+        checkout_object_format: checkoutHistory.checkout_object_format,
+      } : {}),
+      ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+    } : {}),
   };
 }
 
@@ -1461,8 +1903,10 @@ module.exports = {
   // Helpers exposed for cross-module reuse / tests
   buildDockerfileBob,
   buildDockerBuildArgv,
+  buildDifferentialCheckoutCommand,
   buildDockerRunArgv,
   buildImageTag,
+  runScopedHostPath,
   detectLanguageProfile,
   recommendedCommandsFor,
   loadSeedCorpus,
@@ -1474,6 +1918,8 @@ module.exports = {
   loadNfsXdrShape,
   // Constants
   DEFAULT_DOCKER_BUILD_TIMEOUT_MS,
+  DIFFERENTIAL_CHECKOUT_KIND_VALUES,
+  DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS,
   MAX_DOCKER_BUILD_TIMEOUT_MS,
   RECOMMENDED_COMMAND_ROLES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,

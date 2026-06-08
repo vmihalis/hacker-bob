@@ -6,6 +6,7 @@ async function handler(args) {
   const result = await repoDockerRun({
     target_domain: args.target_domain,
     command: args.command,
+    checkout: args.checkout,
     dry_run: args.dry_run,
     allow_network: args.allow_network,
     repo_mount_mode: args.repo_mount_mode,
@@ -42,7 +43,24 @@ module.exports = Object.freeze({
       command: {
         type: "array",
         items: { type: "string" },
-        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars.",
+        description: "Command to execute inside the container, as a token array (e.g. [\"sh\", \"-lc\", \"...\"]). 1-64 tokens; each <= 2048 chars. When checkout is provided Bob materializes the checkout first and runs this command from that checkout.",
+      },
+      checkout: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Local git ref or 7-64 hex object prefix already present in the bound repo history.",
+          },
+          kind: {
+            type: "string",
+            enum: ["upstream_fix", "pre_introduction", "self_patch"],
+            description: "Differential checkout kind to materialize under a run-scoped /work checkout.",
+          },
+        },
+        required: ["ref", "kind"],
+        additionalProperties: false,
+        description: "Optional S14 differential checkout provenance. Refuses shallow or absent local history before docker argv construction.",
       },
       dry_run: {
         type: "boolean",
@@ -55,7 +73,7 @@ module.exports = Object.freeze({
       repo_mount_mode: {
         type: "string",
         enum: ["read_only", "read_write"],
-        description: "How /src is mounted. Defaults to read_only.",
+        description: "How /src is mounted. Defaults to read_only. Differential checkout runs require read_only.",
       },
       image_tag: {
         type: "string",
@@ -96,5 +114,6 @@ module.exports = Object.freeze({
     "repo-command-runs.jsonl",
     "repo-runs/",
     "repo-work/",
+    "repo-checkouts/",
   ],
 });

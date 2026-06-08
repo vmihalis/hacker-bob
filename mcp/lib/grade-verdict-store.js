@@ -314,6 +314,13 @@ function renderGradeVerdictMarkdown(document) {
       lines.push(`- Graded Severity: ${finding.reachability.graded_severity}`);
       lines.push(`- Attack Vector: ${finding.reachability.attack_vector}`);
       lines.push(`- Reachability Disposition: ${finding.reachability.disposition}`);
+      lines.push(`- Reachability Source: ${finding.reachability.reachability_source}`);
+      if (finding.reachability.call_path) {
+        lines.push(`- Reachability Call Path: ${finding.reachability.call_path}`);
+      }
+      if (finding.reachability.reachability_divergence) {
+        lines.push(`- Reachability Divergence: ${finding.reachability.reachability_divergence}`);
+      }
       lines.push(`- Reachability Defensible: ${finding.reachability.defensible ? "yes" : "no"}`);
     }
     lines.push(`- Feedback: ${finding.feedback || "N/A"}`);

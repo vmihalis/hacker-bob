@@ -5,6 +5,7 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
 // SURFACE_TYPE_VALUES (web/smart_contract is the finding-level technology
@@ -152,6 +153,7 @@ const VERIFICATION_ROUND_FILE_MAP = {
 module.exports = {
   AGENT_ID_RE,
   APTOS_NETWORK_VALUES,
+  ATTACK_VECTOR_VALUES,
   AUTH_STATUS_VALUES,
   CHAIN_ATTEMPT_OUTCOME_VALUES,
   CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,

@@ -50,6 +50,9 @@ const {
   readCurrentClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
+  normalizeEvidencePacksDocument,
+} = require("../mcp/lib/evidence.js");
+const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
@@ -68,6 +71,8 @@ const {
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+
+const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -111,22 +116,39 @@ function writeStdoutFile(domain, runId, content) {
 function appendRepoCommandRunRow(domain, {
   run_id: runId,
   command_hash: commandHash,
+  replay_command_hash: replayCommandHash = commandHash,
   exit_code: exitCode,
   stdout_hash: stdoutHash,
   stderr_hash: stderrHash,
+  network_mode: networkMode = "none",
+  mount_mode: mountMode = "read_only",
+  checkout_ref: checkoutRef = null,
+  checkout_kind: checkoutKind = null,
+  checkout_object: checkoutObject = checkoutRef ? FIXTURE_CHECKOUT_OBJECT : null,
+  checkout_object_format: checkoutObjectFormat = checkoutObject ? "sha1" : null,
+  checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
 }) {
   fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
-  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify({
+  const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
     dry_run: false,
     command_hash: commandHash,
+    replay_command_hash: replayCommandHash,
     exit_code: exitCode,
+    network_mode: networkMode,
+    mount_mode: mountMode,
     stdout_hash: stdoutHash,
     stderr_hash: stderrHash,
     timed_out: false,
-  })}\n`);
+  };
+  if (checkoutRef) row.checkout_ref = checkoutRef;
+  if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutObject) row.checkout_object = checkoutObject;
+  if (checkoutObjectFormat) row.checkout_object_format = checkoutObjectFormat;
+  if (checkoutPatchHash) row.checkout_patch_hash = checkoutPatchHash;
+  fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
 }
 
 function seedNativeCodeSurface(domain, surfaceId, language, filePath = "src/parser.c") {
@@ -479,6 +501,67 @@ test("completeness gate fires `mismatched` when the repo_command_run stdout file
     assert.equal(verdict.mismatched[0].ref_key, `repo_command_run:${runId}`);
     assert.equal(verdict.mismatched[0].expected_hash, originalHash);
     assert.equal(verdict.mismatched[0].observed_hash, sha256Hex(tamperedStdout));
+  });
+});
+
+test("C10 differential rejects missing stdout capture files", () => {
+  withTempHome(() => {
+    const domain = "repo-oss-c10-missing-stdout.example";
+    fs.mkdirSync(repoRunsDir(domain), { recursive: true });
+    const vulnRunId = "run-c10-vuln-missing";
+    const controlRunId = "run-c10-control-present";
+    appendRepoCommandRunRow(domain, {
+      run_id: vulnRunId,
+      command_hash: "a".repeat(64),
+      replay_command_hash: "e".repeat(64),
+      exit_code: 0,
+      stdout_hash: "b".repeat(64),
+      stderr_hash: "c".repeat(64),
+    });
+    writeStdoutFile(domain, controlRunId, "control quiet\n");
+    appendRepoCommandRunRow(domain, {
+      run_id: controlRunId,
+      command_hash: "d".repeat(64),
+      replay_command_hash: "e".repeat(64),
+      exit_code: 0,
+      stdout_hash: sha256Hex("control quiet\n"),
+      stderr_hash: sha256Hex(""),
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
+
+    assert.throws(
+      () => normalizeEvidencePacksDocument({
+        version: 1,
+        target_domain: domain,
+        packs: [{
+          finding_id: "F-1",
+          sample_type: "oss_dynamic_replay",
+          sample_count: 1,
+          aggregate_counts: { runs: 2 },
+          representative_samples: [{ run_id: vulnRunId }],
+          sensitive_clusters: [],
+          replay_summary: "Replay rows exist but one stdout capture is missing.",
+          redaction_notes: null,
+          report_snippet: "Differential rejects missing stdout captures.",
+          differential: {
+            control_kind: "self_patch",
+            vuln_run_id: vulnRunId,
+            control_run_id: controlRunId,
+            control_ref: "HEAD",
+            vuln_fired: true,
+            control_fired: false,
+            verdict: "patch_fixes",
+            control_summary: "Control run completed; vulnerable stdout capture was unavailable.",
+          },
+        }],
+      }, {
+        expectedDomain: domain,
+        findingIdSet: new Set(["F-1"]),
+        finalReportableIdSet: new Set(["F-1"]),
+      }),
+      /stdout file is missing/,
+    );
   });
 });
 

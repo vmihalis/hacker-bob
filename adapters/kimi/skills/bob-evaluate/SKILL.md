@@ -259,10 +259,7 @@ Agent(subagent_type="coder", prompt: "Bob role: report-writer. Domain: [domain].
 ```
 After the report writer finishes, call `bob_read_session_summary({ target_domain: "[domain]" })` and present `result.data.summary` plus the `result.data.summary.report.path`. If `result.data.summary.report.present` is false after a SUBMIT or SKIP grade, retry the report writer once with the canonical path error text; do not accept reports written only under a target workspace as session-complete. Do not read `report.md` in the root orchestrator. If the user wants more evaluating, re-enter the frontier with `bob_advance_session({ target_domain, to_state: "OPEN_FRONTIER" })`; otherwise stop.
 
-Post-REPORT user intent stays flexible:
-- If the user asks to dig more, find more issues, run more evaluators, test more surfaces, or continue the bounty workflow, treat that as permission to re-enter `OPEN_FRONTIER` and use the normal wave system.
-- If the user asks to amplify evidence for an already reported finding (catalog exposed records, summarize impact, enumerate a known bypass, or produce supporting evidence), spawn `evaluator-agent` in post-report evidence mode without re-entering `OPEN_FRONTIER`. This is not a wave and must not update findings, handoffs, verification, grade, or report artifacts unless the user separately asks for a report edit.
-- A post-report evidence evaluator prompt must say `Mode: post-report evidence`, include `Egress profile: [egress_profile]` and `Block internal hosts: [block_internal_hosts]`, require both on every `bob_http_scan` call, omit wave/agent/handoff token fields, tell the evaluator not to call `bob_read_assignment_brief`, `bob_record_candidate_claim`, or `bob_write_wave_handoff`, and require this final marker: `BOB_AGENT_RUN_DONE {"target_domain":"[domain]","mode":"evidence","surface_id":"F-N or evidence topic","summary":"short evidence result"}`.
+Post-REPORT user intent stays flexible: requests to dig more, find more issues, run more evaluators, test more surfaces, or continue the bounty workflow re-enter `OPEN_FRONTIER` through the normal wave system; requests to amplify evidence for an already reported finding spawn `evaluator-agent` in post-report evidence mode without re-entering `OPEN_FRONTIER`. This is not a wave and must not update findings, handoffs, verification, grade, or report artifacts unless the user separately asks for a report edit. The prompt must say `Mode: post-report evidence`, include `Egress profile: [egress_profile]` and `Block internal hosts: [block_internal_hosts]`, require both on every `bob_http_scan` call, omit wave/agent/handoff token fields, forbid `bob_read_assignment_brief`, `bob_record_candidate_claim`, and `bob_write_wave_handoff`, and require final marker `BOB_AGENT_RUN_DONE {"target_domain":"[domain]","mode":"evidence","surface_id":"F-N or evidence topic","summary":"short evidence result"}`.
 
 **Exit conditions.** Report snapshot persisted; either the operator stops or re-enters `OPEN_FRONTIER`.
 
@@ -270,6 +267,9 @@ Final reminder: agents own seed mapping, behavior probes, control checks, claim 
 
 ## Optional: Differential Workflows
 Orchestrator-driven differentials run outside the wave/evaluator loop and feed `severity_class: "security"` rows into `bob_record_candidate_claim`.
+
+### C10_oss_patched_vs_unpatched
+**OSS Patched-vs-Unpatched Differential.** Use only for repo sessions with local history. The orchestrator delegates C10 execution to the evidence flow; it does not call docker or evidence-write tools itself. The evidence agent runs the same exploit through live non-dry-run `bob_repo_docker_run` calls, then repeats that exploit with `checkout: { ref, kind }` plus the same `command` so S14 materializes a run-scoped control checkout outside writable `/work`, mounts that control tree as read-only `/src`, records `checkout_ref`/`checkout_kind`, records the exploit `replay_command_hash`, and records `checkout_patch_hash` for `self_patch` controls. The evidence pack carries `differential: { control_kind, vuln_run_id, control_run_id, control_ref, vuln_fired, control_fired, verdict, control_summary }`; `vuln_fired` and `control_fired` are the evidence agent's interpretation of the replay output, while Bob binds the proof to live exit codes plus stdout hashes. Bob rejects dry-run, network-tainted, mismatched-command, tampered-stdout, or unbound self-patch rows and emits stdout/patch hashes itself. Verdicts are one-to-one: `upstream_fix` + both fired => `residual_confirmed`; `self_patch` + vuln fired/control quiet => `patch_fixes`; `pre_introduction` + vuln fired/control quiet => `regression_localized`; anything else is `inconclusive`, never suppressing the finding.
 
 ### C2_doc_vs_behavior
 **Doc-vs-Behavior Differential.** Ingest OpenAPI 3 / GraphQL SDL / Postman v2.1 with `bob_ingest_schema_doc` (content-hashed, idempotent), confirm coverage with `bob_query_schema_contracts`, run per auth profile via `bob_run_doc_delta({ target_domain, base_url, auth_profile, run_id, egress_profile, block_internal_hosts })`, read with `bob_read_doc_delta_results({ target_domain, summary_only: true })`. Divergence classes: `security`, `info_leak_potential`, `doc_or_infra`.
@@ -293,7 +293,7 @@ Execution contract:
 - Use exactly the 7 Bash calls below, in order. Do not make any additional Bash calls.
 - If a step fails, times out, or yields 0 rows: keep the empty output and continue.
 - Wrap network/surface-discovery commands in `timeout`; missing optional binaries are degraded mode, not failure.
-- Keep surface-discovery under 10 minutes and keep prompt-facing output compact.
+- Run each step's Bash block in the foreground and wait for it to finish. Never start a step as a detached background job and then poll its output file in a loop; long scans (nuclei, katana) can take many minutes, and waiting for them to complete is expected. Keep prompt-facing output compact.
 - Do not copy raw secrets, bearer values, or JWT-looking strings into `attack_surface.json` or prose. Use counts and local artifact names instead.
 
 1. Binary check
@@ -305,7 +305,7 @@ mkdir -p "[SESSION]" && { for t in subfinder nuclei curl python3; do command -v 
 : > "[SESSION]/subdomains.txt"
 timeout 45 sh -c 'command -v subfinder >/dev/null && subfinder -d "$1" -silent -all' sh "[DOMAIN]" 2>/dev/null >> "[SESSION]/subdomains.txt" || true
 printf "%s\nwww.%s\n" "[DOMAIN]" "[DOMAIN]" >> "[SESSION]/subdomains.txt"
-tmp="$(mktemp "${TMPDIR:-/tmp}/bob-surface-discovery-subdomains.XXXXXX")" && sort -u "[SESSION]/subdomains.txt" | head -n 800 > "$tmp" && mv "$tmp" "[SESSION]/subdomains.txt"; rm -f "${tmp:-}"
+tmp="$(mktemp "${TMPDIR:-/tmp}/bob-surface-discovery-subdomains.XXXXXX")" && sort -u "[SESSION]/subdomains.txt" | head -n 5000 > "$tmp" && mv "$tmp" "[SESSION]/subdomains.txt"; rm -f "${tmp:-}"
 ```
 3. Live hosts
 ```bash
@@ -348,7 +348,7 @@ if [ -s "[SESSION]/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 
 ```bash
 { echo "[DOMAIN]"; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null | sed 's#^https\?://##; s#/.*##'; } | sort -u | head -n 3 > "[SESSION]/cdx_roots.txt"
 : > "[SESSION]/all_urls.txt"
-while read -r root; do timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=1500" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=1500" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; done < "[SESSION]/cdx_roots.txt"
+while read -r root; do timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; done < "[SESSION]/cdx_roots.txt"
 { printf "https://%s\nhttps://www.%s\n" "[DOMAIN]" "[DOMAIN]"; awk '{print $1}' "[SESSION]/live_hosts.txt" 2>/dev/null; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null; } | sort -u | head -n 20 > "[SESSION]/crawl_roots.txt"
 : > "[SESSION]/katana_urls.txt"
 KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
@@ -358,7 +358,7 @@ sort -u -o "[SESSION]/all_urls.txt" "[SESSION]/all_urls.txt"
 ```
 6. Safe nuclei pass
 ```bash
-{ awk '{print $1}' "[SESSION]/live_hosts.txt" 2>/dev/null; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null; } | sort -u | head -n 60 > "[SESSION]/live_urls.txt"
+{ awk '{print $1}' "[SESSION]/live_hosts.txt" 2>/dev/null; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null; } | sort -u | head -n 250 > "[SESSION]/live_urls.txt"
 : > "[SESSION]/nuclei_results.txt"
 if command -v nuclei >/dev/null; then timeout 480 nuclei -l "[SESSION]/live_urls.txt" -severity medium,high,critical -silent -o "[SESSION]/nuclei_results.txt" -timeout 10 -retries 1 -rate-limit 100 2>/dev/null || true; fi
 ```
@@ -367,9 +367,9 @@ if command -v nuclei >/dev/null; then timeout 480 nuclei -l "[SESSION]/live_urls
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/bob-surface-discovery-js.XXXXXX")" || exit 0
 trap 'rm -rf "$scratch"' EXIT
 js_capture="$scratch/js-capture.txt"
-grep -Eai '\.js([?#].*)?$' "[SESSION]/all_urls.txt" 2>/dev/null | sort -u | head -n 8 > "[SESSION]/js_urls.txt" || true
+grep -Eai '\.js([?#].*)?$' "[SESSION]/all_urls.txt" 2>/dev/null | sort -u | head -n 60 > "[SESSION]/js_urls.txt" || true
 : > "$js_capture"
-while read -r u; do timeout 6 curl -ksSL "$u" 2>/dev/null | head -c 250000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "[SESSION]/js_urls.txt"
+while read -r u; do timeout 6 curl -ksSL "$u" 2>/dev/null | head -c 1500000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "[SESSION]/js_urls.txt"
 python3 - "[SESSION]" "$js_capture" <<'PY'
 import json, pathlib, re, sys
 session, capture_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -445,6 +445,7 @@ Execution contract:
 - Use exactly the 7 Bash calls below, in order. Do not make any additional Bash calls.
 - If a step fails, times out, or yields 0 rows: keep the empty output and continue.
 - Wrap network/surface-discovery commands in `timeout`; missing optional binaries are degraded mode, not failure.
+- Run each step's Bash block in the foreground and wait for it to finish. Never start a step as a detached background job and then poll its output file in a loop; long scans (nuclei, amass, katana) can take many minutes, and waiting for them to complete is expected.
 - Keep bulky collection captures in temporary scratch outside `[SESSION]`; only compact derived artifacts belong in `[SESSION]`.
 - Do not dump raw URLs, JavaScript bodies, or scanner output into prose.
 - Do not copy raw secrets, bearer values, or JWT-looking strings into `attack_surface.json`, `deep-summary.json`, `surface-leads.json`, or prose. Use counts and local artifact names instead.
@@ -624,7 +625,7 @@ if [ -s "$SESSION/brand-sibling-probe-candidates.txt" ] && [ -n "$HTTPX" ]; then
 DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 { echo "$DOMAIN"; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null | sed 's#^https\?://##; s#/.*##'; awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null | sed 's#^https\?://##; s#/.*##' | head -n 8; awk '{print $1}' "$SESSION/tlsx_sans.txt" 2>/dev/null | head -n 16; } | sort -u | head -n 16 > "$SESSION/cdx_roots.txt"
 : > "$SESSION/all_urls.txt"
-while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=5000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=5000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
+while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
 { awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 80 > "$SESSION/crawl_roots.txt"
 : > "$SESSION/katana_urls.txt"
 KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
@@ -654,9 +655,9 @@ DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/bob-deep-surface-discovery-js.XXXXXX")" || exit 0
 trap 'rm -rf "$scratch"' EXIT
 js_capture="$scratch/js-capture.txt"
-grep -Eai '\.js([?#].*)?$' "$SESSION/all_urls.txt" 2>/dev/null | sort -u | head -n 60 > "$SESSION/js_urls.txt" || true
+grep -Eai '\.js([?#].*)?$' "$SESSION/all_urls.txt" 2>/dev/null | sort -u | head -n 200 > "$SESSION/js_urls.txt" || true
 : > "$js_capture"
-while read -r u; do timeout 10 curl -ksSL "$u" 2>/dev/null | head -c 500000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "$SESSION/js_urls.txt"
+while read -r u; do timeout 10 curl -ksSL "$u" 2>/dev/null | head -c 2000000 >> "$js_capture" || true; printf "\n/* %s */\n" "$u" >> "$js_capture"; done < "$SESSION/js_urls.txt"
 python3 - "$SESSION" "$js_capture" <<'PY'
 import pathlib, re, sys
 session, capture_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -678,7 +679,7 @@ PY
 7. Compact summaries, ranked leads, and attack surface
 ```bash
 DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
-{ awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 120 > "$SESSION/live_urls.txt"
+{ awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 400 > "$SESSION/live_urls.txt"
 : > "$SESSION/nuclei_results.txt"
 if command -v nuclei >/dev/null; then timeout 720 nuclei -l "$SESSION/live_urls.txt" -severity medium,high,critical -silent -o "$SESSION/nuclei_results.txt" -timeout 10 -retries 1 -rate-limit 75 2>/dev/null || true; fi
 python3 - "$DOMAIN" "$SESSION" <<'PY'
@@ -1002,11 +1003,12 @@ Repo-bound (OSS) surfaces (when the brief carries `profile: "oss"` and an OSS le
 - If `run_context.capability_pack` starts with `oss_`, you are reviewing a local open-source checkout, not a web target. Treat `surface.endpoints[]` as repo-relative files/manifests. Do not call `bob_http_scan` or interact with hosted instances unless the operator separately authorized a local dev server or scoped network target. Prefer `Read`, `bob_repo_check({ target_domain, file_path, pattern?, check_type? })`, and bounded `bob_repo_docker_run` for evidence. Top-level unsupported repo-tool fields such as `description` or background-run flags are schema-rejected; `replay_context` is schema-present but reserved semantically for verifier/evidence replay, so do not pass it from evaluator work. Record repo findings with `endpoint` as the primary file or manifest key plus `file_path`, `symbol`, `manifest`, `affected_package`, `affected_version_range`, and `repro_command` when applicable. For OSS surfaces, `surface_status: complete` requires at least one logged coverage row or a recorded finding; zero-coverage static summaries must be `partial` with blockers or concrete next steps.
 - For `oss_native_code` C/C++ surfaces, focus on parser, protocol, and memory-safety issues reachable from attacker-controlled network/file/API input: bounds checks, integer truncation, signed/unsigned conversion, allocation-size math, NUL/path handling, state-machine confusion, lifetime/ownership mistakes, double-free/use-after-free, and sanitizer/fuzzer-repro candidates. Before recording, name the exact file/function, input path, malformed field or object, impact, minimal build/test/fuzz/sanitizer command or blocker, and what would make the claim a false positive. Use `repo_env_recommendations` when present and prefer its build status plus `recommended_commands[]` before inventing compile commands. High/critical native-code findings require a real non-dry-run `bob_repo_docker_run` replay matching `repro_command`; if replay cannot run, write `blocked_harness_runs[]` and leave the surface `partial` rather than recording a static-only CVE claim.
 - Severity-ceiling discipline: the surface carries `severity_ceiling`, `attack_vector`, and `network_reachable`. When `attack_vector` is `network` (a daemon/server/RPC listener feeds this parser), an out-of-bounds READ is only the HIGH floor — push for the write/UAF/RCE primitive that reaches CRITICAL and spell out the unauthenticated reachability path (which listener, what malformed input arrives). When `attack_vector` is `local`, an honest MEDIUM is the realistic ceiling for a file-parser bug; record it as MEDIUM rather than inflating to HIGH. `severity_ceiling` is the surface's best case, not a per-file verdict: when the surface lists `network_reachable_anchors[]` / `network_reachable_dirs[]`, those listener paths are the AV:N targets — pursue CRITICAL there; but a bug in a file under `local_only_candidate_dirs[]` is AV:L, so record an honest MEDIUM instead of inheriting the surface's CRITICAL.
+- Reachability provenance: when recording a routed `oss_native_code` finding and you can cite the entrypoint-to-sink path, include `reachability_assertion` in `bob_record_candidate_claim`: `attack_vector` (`network` or `local`), matching `network_reachable`, required `call_path` with at least two `->` hops and no line breaks, and short `justification`. Do not include this field for web or smart-contract findings. This finding-level assertion is evaluator-authored trusted grading provenance and overrides the repo-inventory attack-vector/network-reachability classification at grade time; an existing inventory/heuristic severity ceiling still constrains the asserted class ceiling, while assertion-only grading derives the ceiling from the asserted class and records an audit note. It is not independently verifier-reviewed and does not self-certify reachability defensibility, so assert only paths you verified from code or replay evidence. Frozen conflict policy is first distinct `attack_vector`/`network_reachable` assertion wins by claim time; same-classification `call_path` refinements are not conflicts and update the rendered call path, but if you need to correct an earlier network/local classification, stop and ask the operator to amend/re-freeze rather than recording another conflicting claim. Use a cited path such as `UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid` for network reachability, or `AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response` for local IPC reachability.
 - Incomplete-fix residual hunting is your highest-yield play: the surface carries `residual_hunt_targets[]` — recently-patched security fixes mined from git history and the changelog. For each, read the actual patch, then test the SIBLING code the fix did NOT cover: the same struct's other length/count field, the parallel branch, the adjacent unbounded loop that mirrors the one just bounded. A recent CVE/GHSA patch almost always leaves an unfixed twin, and that twin is the reliable HIGH on an otherwise-hardened codebase. Log a technique attempt for each residual target you check.
 
 Never record these as standalone findings: missing security headers, SPF/DKIM/DMARC, GraphQL introspection, banner/version disclosure without working proof, clickjacking without PoC, tabnabbing, CSV injection, CORS wildcard without credentialed exfil, logout CSRF, self-XSS, open redirect, mobile app client_secret, SSRF DNS-only, host header injection, rate limit on non-critical forms, logout session issues, concurrent sessions, internal IP disclosure, missing cookie flags, password autocomplete. Only keep one if you prove the chain.
 
-Record proven findings immediately using `bob_record_candidate_claim` with all fields: target_domain, wave ("w[N]"), agent ("a[N]"), surface_id, auth_profile when applicable, title, severity (`critical|high|medium|low|info`), cwe, endpoint, description, proof_of_concept (FULL — do not truncate), response_evidence, impact, validated (true).
+Record proven findings immediately using `bob_record_candidate_claim` with all fields: target_domain, wave ("w[N]"), agent ("a[N]"), surface_id, auth_profile when applicable, title, severity (`critical|high|medium|low|info`), cwe, endpoint, description, proof_of_concept (FULL — do not truncate), response_evidence, impact, validated (true), and `reachability_assertion` only for routed `oss_native_code` findings when a cited entrypoint-to-sink path is known.
 Severity guidance: `critical` = RCE/admin takeover/mass prod data compromise; `high` = strong auth bypass/IDOR with sensitive data/stored XSS/injection/privesc; `medium` = real but narrower auth/CSRF/XSS; `low` = informative but still reportable.
 
 Before stopping, first ensure this assigned surface has at least one completion-status `bob_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Then make exactly one final `bob_write_wave_handoff` call for your assigned surface, then call `bob_finalize_agent_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
@@ -2008,6 +2010,8 @@ For every final verification result with `reportable: true`, collect one bounded
 Before stopping, complete exactly one successful write sequence: make exactly one successful `bob_write_evidence_packs` call, then read it back with `bob_read_evidence_packs`. For v2, MCP binds the write to the current attempt ID, snapshot hash, and `final_verification_hash`; if the final verification is stale, do NOT retry or edit artifacts — report the blocker so the orchestrator can restart VERIFY. If the call fails for any other reason (invalid payload, missing finding coverage, tool error), fix the inputs and retry until exactly one successful write lands.
 
 Dispatch by `finding.capability_pack` (every Phase-C finding carries the routed pack triple). Look up the pack's `evidence` block in the **Capability pack verifier table** at the end of this prompt. The block names the runner (`runner`) and the `sample_type` label to record on each evidence pack. The evidence agent does not branch on `chain_family`.
+
+Differential proof lens (OSS only): when a final reportable finding has a live non-dry-run `bob_repo_docker_run` proof and a local fix/pre-introduction/self-patch control is available, run the same exploit command through `bob_repo_docker_run({ target_domain, checkout: { ref, kind }, command, dry_run: false })`. S14 refuses shallow/absent refs, keeps `/src` read-only, materializes a run-scoped control checkout under `/work`, records `checkout_ref`/`checkout_kind`, records the exploit `replay_command_hash`, and records `checkout_patch_hash` for `self_patch` controls. Capture the vulnerable and control run IDs. Classify: `upstream_fix` with both runs firing is `residual_confirmed`; `self_patch` with vuln firing and control not firing is `patch_fixes`; `pre_introduction` with vuln firing and control not firing is `regression_localized`; otherwise write `inconclusive`. The fired booleans are your interpretation of replay output; Bob stores exit codes and stdout hashes but does not infer exploit semantics from arbitrary harness text. Include the optional `differential` block in `bob_write_evidence_packs`; Bob rejects dry-run, network-tainted, mismatched-command, tampered-stdout, or unbound self-patch rows. Never inline stdout, and never drop or suppress a final reportable finding because a control is inconclusive or does not reproduce.
 
 For each reportable finding:
 

@@ -13,6 +13,7 @@ const {
   STALE_HOOK_SCRIPT_NAMES,
   expectedCanonicalFiles,
   isExcludedCanonicalPackageFile,
+  isInternalPlaneDeltaDetailDoc,
   isInternalRefactorDoc,
   isInternalRefactorScratch,
   isPackableBin,
@@ -152,6 +153,7 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
       assert.ok(!file.startsWith("test/"), `${file} should not be packed`);
       assert.ok(!isInternalRefactorDoc(file), `${file} should not be packed`);
+      assert.ok(!isInternalPlaneDeltaDetailDoc(file), `${file} should not be packed`);
       assert.ok(!isInternalRefactorScratch(file), `${file} should not be packed`);
       assert.ok(!file.startsWith("scripts/replay-prompts/"), `${file} should not be packed`);
       assert.ok(!DISALLOWED_PACKED_FILE_PATTERNS.some((pattern) => pattern.test(file)), `${file} should not be packed`);
@@ -203,6 +205,7 @@ test("canonical package excludes internal refactor docs and scratch topology", (
   const files = new Set(pack.files.map((file) => file.path));
   for (const file of files) {
     assert.ok(!isInternalRefactorDoc(file), `${file} should not be packed`);
+    assert.ok(!isInternalPlaneDeltaDetailDoc(file), `${file} should not be packed`);
     assert.ok(!isInternalRefactorScratch(file), `${file} should not be packed`);
   }
 });
@@ -211,17 +214,20 @@ test("package policy excludes denied files even if they exist in the source tree
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bob-package-policy-"));
   try {
     fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "docs", "plane-delta", "detail"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard.sh"), "stale\n");
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard-mcp.sh"), "stale\n");
     fs.writeFileSync(path.join(root, "docs", "hacker-bob-offline-guide.pdf"), "stale\n");
+    fs.writeFileSync(path.join(root, "docs", "plane-delta", "detail", "S14.md"), "internal\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-prompts", "00-baseline.md"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "keep.js"), "keep\n");
 
     const expectedFiles = expectedCanonicalFiles(root);
     assert.ok(expectedFiles.includes("scripts/keep.js"));
+    assert.ok(!expectedFiles.includes("docs/plane-delta/detail/S14.md"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {
       assert.ok(!expectedFiles.includes(excluded), `${excluded} should not be expected`);
     }

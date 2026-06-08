@@ -24,4 +24,6 @@ S = slab/substrate · I = index · IP = ingestion path · C = capability · X = 
 2. Verification — **DONE** (`verification/`).
 3. Progressive detail — **DONE** (30 specs in `detail/`, all 4 tiers).
 4. Promotion to repo — **DONE** (this dir; untracked, not committed).
-5. **Next:** implement, starting Δ1 PR1 (S15 + DOC) → PR2 (I9 + S12) → PR3 (C9). Promote each shipped node into `../capability-hypergraph.md`'s progress log.
+5. **Δ1 — SHIPPED** (PR #73 S15+DOC · #74 I9+S12 · #75 C9 · #76 PR4 ride-alongs C14-lite/IP8/I12-plumbing · #79 integrated onto `main`). Each shipped node is promoted in `../capability-hypergraph.md`'s progress log (the authoritative done-tracker; this `nodes.json`/`hyperedges.json` graph stays a *proposal* topology, not a per-node status board).
+6. **In flight:** PR #80 — reachability-provenance (issue #78), the I9-prov Δ2 lead extending the shipped I9/C9 (spec: `detail/reachability-provenance.md`). Must land before C14 (the asserted `attack_vector` feeds C14's disclosure-bundle CVSS).
+7. **Next (Δ2):** differential-proof thread S14 → C10 → C14; hardening thread S13 → X6; cheap parallel X7 / X10.

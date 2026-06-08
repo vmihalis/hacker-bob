@@ -461,6 +461,29 @@ test("evaluator OSS stanza tells fuzz_run to consume readable repo-env recommend
   assert.doesNotMatch(ossBranch, /read `repo-env\.json`/i);
 });
 
+test("evaluator prompts require cited reachability assertions for OSS native findings", () => {
+  const surfaces = [
+    "prompts/roles/evaluator.md",
+    ".claude/agents/evaluator-agent.md",
+    "adapters/codex/skills/bob-evaluate/SKILL.md",
+    "adapters/kimi/skills/bob-evaluate/SKILL.md",
+  ];
+  for (const surface of surfaces) {
+    const body = readFile(surface);
+    assert.match(body, /reachability_assertion/, `${surface} must mention reachability_assertion`);
+    assert.match(body, /entrypoint-to-sink path/, `${surface} must require an entrypoint-to-sink path`);
+    assert.match(body, /at least two `->` hops and no line breaks/, `${surface} must require single-line two-hop reachability paths`);
+    assert.match(body, /oss_native_code/, `${surface} must scope assertions to oss_native_code`);
+    assert.match(body, /Do not include this field for web or smart-contract findings/, `${surface} must forbid non-OSS assertion use`);
+    assert.match(body, /not independently verifier-reviewed/, `${surface} must document the assertion trust boundary`);
+    assert.match(body, /first distinct .*attack_vector.*network_reachable.* assertion wins/, `${surface} must document frozen assertion conflict policy`);
+    assert.match(body, /same-classification .*call_path.* update the rendered call path/, `${surface} must document call path refinement policy`);
+    assert.match(body, /amend\/re-freeze/, `${surface} must direct corrections to operator amendment`);
+    assert.match(body, /UDP-161 SNMP SET -> write_vacmAccessStatus -> access_parse_oid/, `${surface} must carry the network example`);
+    assert.match(body, /AgentX master unix socket -> handle_subagent_set_response -> parse_agentx_response/, `${surface} must carry the local IPC example`);
+  }
+});
+
 // NOTE: the roadmap-era "Kimi hunter catalogue routes OSS brief profiles through
 // the generic worker path" test was dropped when Δ1 integrated onto main's Kimi v2
 // adapter (PR #67). Main's Kimi adapter does not yet render OSS brief-profile
@@ -1614,6 +1637,31 @@ test("the claim-recording tool's schema requires sc_evidence sub-fields for SC f
     ["aptos", "cosmwasm", "evm", "substrate", "sui", "svm"],
   );
   assert.ok(Array.isArray(sc.properties.chain_id.oneOf) && sc.properties.chain_id.oneOf.length === 2);
+});
+
+test("the claim-recording tool's schema requires cited reachability assertions", () => {
+  const tool = TOOLS.find((entry) => entry.name === "bob_record_candidate_claim");
+  assert.ok(tool, "bob_record_candidate_claim tool not registered");
+  const assertion = tool.inputSchema.properties.reachability_assertion;
+  assert.equal(assertion.type, "object");
+  assert.match(assertion.description, /Only allowed for routed oss_native_code findings/);
+  assert.match(assertion.description, /not independently verifier-reviewed/);
+  assert.match(assertion.description, /first distinct attack_vector\/network_reachable assertion wins/);
+  assert.match(assertion.description, /same-classification call_path refinements are not conflicts and update the rendered call path/);
+  assert.deepEqual([...assertion.required].sort(), ["attack_vector", "call_path", "network_reachable"].sort());
+  assert.deepEqual([...assertion.properties.attack_vector.enum].sort(), ["local", "network"]);
+  assert.equal(assertion.properties.call_path.minLength, 7);
+  assert.ok(assertion.properties.call_path.maxLength <= 4000);
+  assert.match(assertion.properties.call_path.pattern, /->.*->/);
+  assert.match(assertion.properties.call_path.pattern, /^\^/);
+  assert.match(assertion.properties.call_path.pattern, /\$$/);
+  assert.ok(assertion.properties.call_path.pattern.includes("[^\\n\\r]*"));
+  assert.doesNotMatch(assertion.properties.call_path.pattern, /\[\\s\\S\]/);
+  const callPathPattern = new RegExp(assertion.properties.call_path.pattern);
+  assert.match("UDP listener -> parse_packet -> sink", callPathPattern);
+  assert.match("A->B->C", callPathPattern);
+  assert.doesNotMatch("A -> -> B", callPathPattern);
+  assert.doesNotMatch("A -> B -> ", callPathPattern);
 });
 
 // =============================================================================
