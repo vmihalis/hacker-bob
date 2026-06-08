@@ -943,8 +943,69 @@ function hostPathContains(root, candidate) {
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function runScopedHostPath(workDir, runId, ...parts) {
+function realpathIfPossible(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function assertRepoWorkDirBoundary(workDir, sessionRoot) {
   const base = path.resolve(workDir);
+  const sessionReal = realpathIfPossible(sessionRoot);
+  const parent = path.dirname(base);
+  if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "repo work directory parent is missing",
+      { repo_error_code: "repo_work_path_invalid" },
+    );
+  }
+  const parentReal = realpathIfPossible(parent);
+  if (!hostPathContains(sessionReal, parentReal)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "repo work directory parent escaped the session directory",
+      { repo_error_code: "repo_work_symlink_escape" },
+    );
+  }
+  let baseLstat = null;
+  try {
+    baseLstat = fs.lstatSync(base);
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  if (baseLstat) {
+    const lstat = baseLstat;
+    if (lstat.isSymbolicLink()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work directory must not be a symlink",
+        { repo_error_code: "repo_work_symlink_escape" },
+      );
+    }
+    if (!fs.statSync(base).isDirectory()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work path is not a directory",
+        { repo_error_code: "repo_work_path_invalid" },
+      );
+    }
+    const baseReal = realpathIfPossible(base);
+    if (!hostPathContains(sessionReal, baseReal)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "repo work directory escaped the session directory",
+        { repo_error_code: "repo_work_symlink_escape" },
+      );
+    }
+  }
+  return base;
+}
+
+function runScopedHostPath(workDir, sessionRoot, runId, ...parts) {
+  const base = assertRepoWorkDirBoundary(workDir, sessionRoot);
   const candidate = path.resolve(base, runId, ...parts);
   if (!hostPathContains(base, candidate)) {
     throw new ToolError(
@@ -974,22 +1035,26 @@ async function execDifferentialMaterializer(command, args, stage) {
 async function materializeDifferentialCheckoutArchive({
   repoRoot,
   workDir,
+  sessionRoot,
   runId,
   checkoutRef,
+  checkoutObject,
   checkoutKind,
   expectedPatchHash = null,
 }) {
-  const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
+  assertCheckoutRef(checkoutRef, "checkout_ref");
+  const archiveRef = assertCheckoutRef(checkoutObject || checkoutRef, "checkout_object");
   const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
-  const runWorkDir = runScopedHostPath(workDir, runId);
-  const checkoutTar = runScopedHostPath(workDir, runId, "checkout.tar");
+  const runWorkDir = runScopedHostPath(workDir, sessionRoot, runId);
+  const checkoutTar = runScopedHostPath(workDir, sessionRoot, runId, "checkout.tar");
   fs.rmSync(runWorkDir, { recursive: true, force: true });
-  fs.mkdirSync(runWorkDir, { recursive: true });
+  fs.mkdirSync(runWorkDir, { recursive: true, mode: 0o777 });
+  fs.chmodSync(runWorkDir, 0o777);
 
   if (kind !== "self_patch") {
     await execDifferentialMaterializer(
       "git",
-      ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, ref],
+      ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
       "git archive",
     );
     return { checkout_tar_path: checkoutTar };
@@ -1012,14 +1077,14 @@ async function materializeDifferentialCheckoutArchive({
     );
   }
 
-  const tempRoot = runScopedHostPath(workDir, runId, "host-materialize");
+  const tempRoot = runScopedHostPath(workDir, sessionRoot, runId, "host-materialize");
   const tempRepo = path.join(tempRoot, "repo");
-  const baseTar = runScopedHostPath(workDir, runId, "base.tar");
+  const baseTar = runScopedHostPath(workDir, sessionRoot, runId, "base.tar");
   fs.mkdirSync(tempRepo, { recursive: true });
   try {
     await execDifferentialMaterializer(
       "git",
-      ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, ref],
+      ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, archiveRef],
       "git archive",
     );
     await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", tempRepo], "tar extract");
@@ -1332,6 +1397,7 @@ async function repoDockerRun({
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
   const repoRoot = repoSession.target_repo.root_path;
+  const sessionRoot = sessionDir(domain);
   const workDir = repoWorkDir(domain);
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new ToolError(
@@ -1344,8 +1410,9 @@ async function repoDockerRun({
   const runId = generateRunId();
   const normalizedCheckout = normalizeDifferentialCheckout(checkout);
   const normalizedInputCommand = assertCommandArray(command);
+  let checkoutHistory = null;
   if (normalizedCheckout) {
-    assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
+    checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
   const effectiveCommand = normalizedCheckout
     ? buildDifferentialCheckoutCommand({
@@ -1491,6 +1558,10 @@ async function repoDockerRun({
       if (normalizedCheckout.kind === "self_patch") {
         planRow.checkout_patch_hash = checkoutPatchHash;
       }
+      if (checkoutHistory) {
+        planRow.checkout_object = checkoutHistory.checkout_object;
+        planRow.checkout_object_format = checkoutHistory.checkout_object_format;
+      }
     }
     if (normalizedReplayContext) planRow.replay_context = normalizedReplayContext;
     if (normalizedBlockedHarnessRunId) planRow.blocked_harness_run_id = normalizedBlockedHarnessRunId;
@@ -1528,6 +1599,10 @@ async function repoDockerRun({
       ...(normalizedCheckout ? {
         checkout_ref: normalizedCheckout.ref,
         checkout_kind: normalizedCheckout.kind,
+        ...(checkoutHistory ? {
+          checkout_object: checkoutHistory.checkout_object,
+          checkout_object_format: checkoutHistory.checkout_object_format,
+        } : {}),
         ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
       } : {}),
     };
@@ -1548,8 +1623,10 @@ async function repoDockerRun({
     await materializeDifferentialCheckoutArchive({
       repoRoot,
       workDir,
+      sessionRoot,
       runId,
       checkoutRef: normalizedCheckout.ref,
+      checkoutObject: checkoutHistory && checkoutHistory.checkout_object,
       checkoutKind: normalizedCheckout.kind,
       expectedPatchHash: checkoutPatchHash,
     });
@@ -1641,6 +1718,10 @@ async function repoDockerRun({
   if (normalizedCheckout) {
     liveRow.checkout_ref = normalizedCheckout.ref;
     liveRow.checkout_kind = normalizedCheckout.kind;
+    if (checkoutHistory) {
+      liveRow.checkout_object = checkoutHistory.checkout_object;
+      liveRow.checkout_object_format = checkoutHistory.checkout_object_format;
+    }
     if (normalizedCheckout.kind === "self_patch") {
       liveRow.checkout_patch_hash = checkoutPatchHash;
     }
@@ -1691,6 +1772,10 @@ async function repoDockerRun({
     ...(normalizedCheckout ? {
       checkout_ref: normalizedCheckout.ref,
       checkout_kind: normalizedCheckout.kind,
+      ...(checkoutHistory ? {
+        checkout_object: checkoutHistory.checkout_object,
+        checkout_object_format: checkoutHistory.checkout_object_format,
+      } : {}),
       ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
     } : {}),
   };

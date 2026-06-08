@@ -255,12 +255,17 @@ test("assertHistoryAvailableForRef passes for clean local refs and object prefix
   const branch = git(repo, ["branch", "--show-current"]);
   const byBranch = assertHistoryAvailableForRef(repo, branch);
   assert.equal(byBranch.checkout_ref, branch);
+  assert.equal(byBranch.checkout_object, second);
+  assert.equal(byBranch.checkout_object_format, "sha1");
   const byHead = assertHistoryAvailableForRef(repo, "HEAD");
   assert.equal(byHead.checkout_ref, "HEAD");
+  assert.equal(byHead.checkout_object, second);
   const byHex = assertHistoryAvailableForRef(repo, first.slice(0, 12));
   assert.equal(byHex.checkout_ref, first.slice(0, 12));
+  assert.equal(byHex.checkout_object, first);
   const byFullHex = assertHistoryAvailableForRef(repo, second);
   assert.equal(byFullHex.checkout_ref, second);
+  assert.equal(byFullHex.checkout_object, second);
 }));
 
 test("assertHistoryAvailableForRef refuses shallow clones loudly", () => withTempHome((home) => {
@@ -335,15 +340,49 @@ test("assertHistoryAvailableForRef refuses gitdir pointers outside repo/worktree
   }
 }));
 
+test("assertHistoryAvailableForRef refuses symlinked loose refs", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-symlink-ref");
+  const outsideRef = path.join(home, "outside-ref");
+  fs.writeFileSync(outsideRef, `${"a".repeat(40)}\n`);
+  const maliciousRef = path.join(repo, ".git", "refs", "heads", "malicious");
+  fs.symlinkSync(outsideRef, maliciousRef);
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "refs/heads/malicious"),
+    (error) => error && error.details && error.details.repo_error_code === "repo_git_metadata_outside_repo",
+  );
+}));
+
 test("assertHistoryAvailableForRef resolves packed SHA-1 objects without SHA-256 probing", () => withTempHome((home) => {
   const { repo, second } = createTwoCommitGitRepo(home, "history-packed-sha1");
   git(repo, ["gc", "--prune=now"]);
   const packed = assertHistoryAvailableForRef(repo, second.slice(0, 12));
   assert.equal(packed.checkout_ref, second.slice(0, 12));
+  assert.equal(packed.checkout_object, second);
   assert.throws(
     () => assertHistoryAvailableForRef(repo, `${second}${"0".repeat(24)}`),
     (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
   );
+}));
+
+test("assertHistoryAvailableForRef resolves packed SHA-256 objects", (t) => withTempHome((home) => {
+  const repo = path.join(home, "history-packed-sha256");
+  fs.mkdirSync(repo, { recursive: true });
+  try {
+    git(repo, ["init", "-q", "--object-format=sha256"]);
+  } catch {
+    t.skip("local git does not support --object-format=sha256");
+    return;
+  }
+  writeFile(repo, "README.md", "# sha256 fixture\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-q", "-m", "initial"]);
+  const commit = git(repo, ["rev-parse", "HEAD"]);
+  assert.equal(commit.length, 64);
+  git(repo, ["gc", "--prune=now"]);
+  const packed = assertHistoryAvailableForRef(repo, commit.slice(0, 16));
+  assert.equal(packed.checkout_ref, commit.slice(0, 16));
+  assert.equal(packed.checkout_object, commit);
+  assert.equal(packed.checkout_object_format, "sha256");
 }));
 
 test("repo session inventory emits OSS surfaces and routes to OSS packs", () => withTempHome((home) => {

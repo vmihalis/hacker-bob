@@ -68,6 +68,7 @@ const DIFFERENTIAL_VERDICTS = Object.freeze([
 const MAX_CONTROL_SUMMARY_CHARS = 1000;
 const MAX_CONTROL_REF_CHARS = 120;
 const HEX64_RE = /^[0-9a-f]{64}$/i;
+const GIT_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const REPO_RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const DISALLOWED_REPO_COMMAND_EXIT_CODES = Object.freeze([125, 126, 127]);
 
@@ -149,6 +150,8 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) 
     if (row.checkout_ref !== expectedCheckout.ref || row.checkout_kind !== expectedCheckout.kind) {
       throw new Error(`${fieldName} must reference a matching S14 checkout run`);
     }
+    const checkoutObject = assertGitObjectId(row.checkout_object, `${fieldName}.checkout_object`);
+    assertGitObjectFormat(row.checkout_object_format, checkoutObject, `${fieldName}.checkout_object_format`);
   }
   return row;
 }
@@ -166,6 +169,22 @@ function assertHex64(value, fieldName) {
     throw new Error(`${fieldName} must be a 64-hex content digest`);
   }
   return value.toLowerCase();
+}
+
+function assertGitObjectId(value, fieldName) {
+  if (typeof value !== "string" || !GIT_OBJECT_ID_RE.test(value)) {
+    throw new Error(`${fieldName} must be a 40-hex SHA-1 or 64-hex SHA-256 git object id`);
+  }
+  return value.toLowerCase();
+}
+
+function assertGitObjectFormat(value, objectId, fieldName) {
+  const fallback = objectId.length === 64 ? "sha256" : "sha1";
+  const format = value == null ? fallback : assertEnumValue(value, ["sha1", "sha256"], fieldName);
+  if ((format === "sha1" && objectId.length !== 40) || (format === "sha256" && objectId.length !== 64)) {
+    throw new Error(`${fieldName} does not match checkout_object length`);
+  }
+  return format;
 }
 
 function exitCodeForRun(row, fieldName) {
@@ -243,6 +262,12 @@ function normalizeDifferential(differential, { domain }) {
     ref: controlRef,
     kind: controlKind,
   });
+  const controlCheckoutObject = assertGitObjectId(controlRow.checkout_object, "differential.control_checkout_object");
+  const controlCheckoutObjectFormat = assertGitObjectFormat(
+    controlRow.checkout_object_format,
+    controlCheckoutObject,
+    "differential.control_checkout_object_format",
+  );
   const vulnExitCode = exitCodeForRun(vulnRow, "differential.vuln_run_id");
   const controlExitCode = exitCodeForRun(controlRow, "differential.control_run_id");
   const vulnReplayCommandHash = replayCommandHashForRun(vulnRow, "differential.vuln_run_id");
@@ -271,6 +296,8 @@ function normalizeDifferential(differential, { domain }) {
     vuln_run_id: vulnRunId,
     control_run_id: controlRunId,
     control_ref: controlRef,
+    control_checkout_object: controlCheckoutObject,
+    control_checkout_object_format: controlCheckoutObjectFormat,
     vuln_exit_code: vulnExitCode,
     control_exit_code: controlExitCode,
     vuln_fired: vulnFired,

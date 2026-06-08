@@ -422,6 +422,8 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(result.dry_run, true);
     assert.equal(result.checkout_ref, first);
     assert.equal(result.checkout_kind, "pre_introduction");
+    assert.equal(result.checkout_object, first);
+    assert.equal(result.checkout_object_format, "sha1");
     assert.equal(result.network_mode, "none");
     assert.equal(result.mount_mode, "read_only");
     assert.ok(result.planned_argv.some((arg) => arg === `${repoRoot}:/src:ro`), "differential run must keep /src read-only");
@@ -436,6 +438,8 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(rows.length, 1);
     assert.equal(rows[0].checkout_ref, first);
     assert.equal(rows[0].checkout_kind, "pre_introduction");
+    assert.equal(rows[0].checkout_object, first);
+    assert.equal(rows[0].checkout_object_format, "sha1");
     assert.equal(rows[0].network_mode, "none");
     assert.equal(rows[0].mount_mode, "read_only");
     assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["true"])));
@@ -462,6 +466,7 @@ test("repoDockerRun checkout provenance wraps explicit command after S14 materia
     assert.ok(script.endsWith(`cd '${checkoutDest}' && 'node' '-e' 'console.log('\\''control'\\'')'`));
     assert.equal(result.checkout_ref, first);
     assert.equal(result.checkout_kind, "upstream_fix");
+    assert.equal(result.checkout_object, first);
     assert.equal(result.replay_command_hash, sha256Hex(JSON.stringify(["node", "-e", "console.log('control')"])));
     assert.notEqual(result.command_hash, result.replay_command_hash);
 
@@ -552,6 +557,11 @@ test("repoDockerRun live differential run uses a host-created checkout archive",
           fs.existsSync(path.join(repoWorkDir(init.target_domain), runIdFromScript, "checkout.tar")),
           "host materializer must create the checkout tar before docker run starts",
         );
+        assert.equal(
+          fs.statSync(path.join(repoWorkDir(init.target_domain), runIdFromScript)).mode & 0o777,
+          0o777,
+          "run-scoped checkout directory must be writable by Docker UID 1000",
+        );
         fs.writeFileSync(stdoutPath, "linked worktree replay\n");
         fs.writeFileSync(stderrPath, "");
         return {
@@ -580,6 +590,85 @@ test("repoDockerRun live differential run uses a host-created checkout archive",
     assert.match(capturedScript, /tar -x -f '\/work\/run-[a-f0-9-]+-[a-f0-9]+\/checkout\.tar'/);
     assert.equal(result.checkout_ref, first);
     assert.equal(result.checkout_kind, "pre_introduction");
+    assert.equal(result.checkout_object, first);
+  });
+});
+
+test("repoDockerRun live differential checkout refuses symlinked repo-work", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const workDir = repoWorkDir(init.target_domain);
+    const outsideWork = makeTempRepoDir("bob-outside-repo-work-");
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.symlinkSync(outsideWork, workDir);
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async () => { throw new Error("must not run with symlinked repo-work"); },
+    };
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "upstream_fix" },
+        command: ["true"],
+        dry_run: false,
+        runtime,
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "repo_work_symlink_escape",
+    );
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "symlinked repo-work runs must not land rows");
+  });
+});
+
+test("repoDockerRun materializes branch refs via immutable checkout_object", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const branch = "control-base";
+    git(repoRoot, ["branch", branch, first]);
+    const init = initRepoSession({ repo_path: repoRoot });
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "branch replay\n");
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 5,
+          timed_out: false,
+          stdout_bytes: 14,
+          stderr_bytes: 0,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: branch, kind: "upstream_fix" },
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+
+    assert.equal(result.checkout_ref, branch);
+    assert.equal(result.checkout_object, first);
+    const extractDir = makeTempRepoDir("bob-branch-checkout-extract-");
+    execFileSync("tar", [
+      "-x",
+      "-f",
+      path.join(repoWorkDir(init.target_domain), result.run_id, "checkout.tar"),
+      "-C",
+      extractDir,
+    ]);
+    assert.equal(fs.existsSync(path.join(extractDir, "index.js")), false, "branch control must archive resolved object, not current HEAD");
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_ref, branch);
+    assert.equal(rows[0].checkout_object, first);
   });
 });
 

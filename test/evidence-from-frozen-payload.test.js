@@ -113,6 +113,8 @@ function appendRepoRunFixture(domain, runId, {
   mount_mode: mountMode = "read_only",
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
+  checkout_object: checkoutObject = checkoutRef ? "d".repeat(40) : null,
+  checkout_object_format: checkoutObjectFormat = checkoutObject && checkoutObject.length === 64 ? "sha256" : "sha1",
   checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
 } = {}) {
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
@@ -136,6 +138,8 @@ function appendRepoRunFixture(domain, runId, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutObject) row.checkout_object = checkoutObject;
+  if (checkoutObject) row.checkout_object_format = checkoutObjectFormat;
   if (checkoutPatchHash) row.checkout_patch_hash = checkoutPatchHash;
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
@@ -227,6 +231,8 @@ test("C10 differential normalizer accepts each control_kind truth-table verdict"
       assert.equal(differential.replay_command_hash, "a".repeat(64));
       assert.equal(differential.vuln_exit_code, 0);
       assert.equal(differential.control_exit_code, 0);
+      assert.equal(differential.control_checkout_object, "d".repeat(40));
+      assert.equal(differential.control_checkout_object_format, "sha1");
       assert.equal(differential.firedness_source, "agent_asserted_from_replay_output");
       assert.equal(differential.vuln_stdout_hash, sha256Hex("vuln fired\n"));
       assert.match(differential.control_stdout_hash, /^[0-9a-f]{64}$/);
