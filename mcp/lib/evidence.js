@@ -138,7 +138,7 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedCheckout = null) 
     }
   }
   const row = matchingRows[0];
-  if (row.dry_run === true) {
+  if (row.dry_run !== false) {
     throw new Error(`${fieldName} must reference a live non-dry-run repo docker run`);
   }
   if (row.timed_out === true) {

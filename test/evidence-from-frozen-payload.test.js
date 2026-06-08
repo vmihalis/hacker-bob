@@ -105,6 +105,7 @@ function appendRepoRunFixture(domain, runId, {
   stdout = "",
   network_mode: networkMode = "none",
   dry_run: dryRun = false,
+  omit_dry_run: omitDryRun = false,
   command_hash: commandHash = "a".repeat(64),
   replay_command_hash: replayCommandHash = commandHash,
   stderr_hash: stderrHash = "b".repeat(64),
@@ -124,7 +125,6 @@ function appendRepoRunFixture(domain, runId, {
     version: 1,
     target_domain: domain,
     run_id: runId,
-    dry_run: dryRun,
     command_hash: commandHash,
     replay_command_hash: replayCommandHash,
     argv_hash: "c".repeat(64),
@@ -136,6 +136,7 @@ function appendRepoRunFixture(domain, runId, {
     stdout_hash: sha256Hex(stdout),
     stderr_hash: stderrHash,
   };
+  if (!omitDryRun) row.dry_run = dryRun;
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
   if (checkoutObject) row.checkout_object = checkoutObject;
@@ -433,6 +434,12 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
       checkout_ref: "HEAD",
       checkout_kind: "self_patch",
     });
+    appendRepoRunFixture(domain, "run-control-missing-dry-run", {
+      stdout: "control row without dry_run flag\n",
+      omit_dry_run: true,
+      checkout_ref: "HEAD",
+      checkout_kind: "self_patch",
+    });
     appendRepoRunFixture(domain, "run-control-network", {
       stdout: "control fired\n",
       network_mode: "bridge",
@@ -484,6 +491,20 @@ test("C10 differential rejects identical run ids, dry-run rows, network-tainted 
         control_fired: false,
         verdict: "patch_fixes",
         control_summary: "Plan rows should be rejected.",
+      }),
+      /live non-dry-run/,
+    );
+
+    assert.throws(
+      () => normalizePacksForC10(domain, {
+        control_kind: "self_patch",
+        vuln_run_id: "run-vuln",
+        control_run_id: "run-control-missing-dry-run",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Rows must explicitly prove they were live runs.",
       }),
       /live non-dry-run/,
     );

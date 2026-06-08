@@ -939,6 +939,12 @@ function assertWorkDest(dest) {
   return assertWorkPath(dest, "dest");
 }
 
+function assertCheckoutDest(dest) {
+  const normalized = assertNonEmptyString(dest, "dest");
+  if (normalized === "/src") return normalized;
+  return assertWorkDest(normalized);
+}
+
 function hostPathContains(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -949,6 +955,39 @@ function realpathIfPossible(filePath) {
     return fs.realpathSync(filePath);
   } catch {
     return path.resolve(filePath);
+  }
+}
+
+function assertRunScopedPathBoundary(base, candidate) {
+  const baseReal = realpathIfPossible(base);
+  const relative = path.relative(base, candidate);
+  if (!relative) return;
+  let cursor = base;
+  for (const part of relative.split(path.sep)) {
+    if (!part || part === ".") continue;
+    cursor = path.join(cursor, part);
+    let lstat = null;
+    try {
+      lstat = fs.lstatSync(cursor);
+    } catch (error) {
+      if (error && error.code === "ENOENT") break;
+      throw error;
+    }
+    if (lstat.isSymbolicLink()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "differential checkout run path must not include symlinks",
+        { repo_error_code: "differential_checkout_symlink_escape" },
+      );
+    }
+    const cursorReal = realpathIfPossible(cursor);
+    if (!hostPathContains(baseReal, cursorReal)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "differential checkout run path escaped the repo work directory",
+        { repo_error_code: "differential_checkout_symlink_escape" },
+      );
+    }
   }
 }
 
@@ -1015,7 +1054,29 @@ function runScopedHostPath(workDir, sessionRoot, runId, ...parts) {
       { repo_error_code: "invalid_differential_dest" },
     );
   }
+  assertRunScopedPathBoundary(base, candidate);
   return candidate;
+}
+
+function mkdirDifferentialRunDirectory(dirPath, mode) {
+  try {
+    fs.mkdirSync(dirPath, { mode });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `differential checkout run path could not be created safely: ${error.message || error}`,
+      { repo_error_code: "differential_checkout_symlink_escape" },
+    );
+  }
+  const lstat = fs.lstatSync(dirPath);
+  if (lstat.isSymbolicLink() || !fs.statSync(dirPath).isDirectory()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "differential checkout run path must be a directory and must not be a symlink",
+      { repo_error_code: "differential_checkout_symlink_escape" },
+    );
+  }
+  fs.chmodSync(dirPath, mode);
 }
 
 async function execDifferentialMaterializer(command, args, stage) {
@@ -1033,7 +1094,7 @@ async function execDifferentialMaterializer(command, args, stage) {
   }
 }
 
-async function materializeDifferentialCheckoutArchive({
+async function materializeDifferentialCheckoutTree({
   repoRoot,
   workDir,
   sessionRoot,
@@ -1047,22 +1108,38 @@ async function materializeDifferentialCheckoutArchive({
   const archiveRef = assertCheckoutRef(checkoutObject || checkoutRef, "checkout_object");
   const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
   const runWorkDir = runScopedHostPath(workDir, sessionRoot, runId);
+  const checkoutDir = runScopedHostPath(workDir, sessionRoot, runId, "repo");
   const checkoutTar = runScopedHostPath(workDir, sessionRoot, runId, "checkout.tar");
   fs.rmSync(runWorkDir, { recursive: true, force: true });
-  fs.mkdirSync(runWorkDir, { recursive: true, mode: 0o777 });
-  fs.chmodSync(runWorkDir, 0o777);
+  fs.mkdirSync(workDir, { recursive: true, mode: 0o755 });
+  assertRepoWorkDirBoundary(workDir, sessionRoot);
+  mkdirDifferentialRunDirectory(runWorkDir, 0o755);
+  assertRunScopedPathBoundary(path.resolve(workDir), runWorkDir);
+  mkdirDifferentialRunDirectory(checkoutDir, 0o755);
+  assertRunScopedPathBoundary(path.resolve(workDir), checkoutDir);
 
   if (kind !== "self_patch") {
-    await execDifferentialMaterializer(
-      "git",
-      ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
-      "git archive",
-    );
-    return { checkout_tar_path: checkoutTar };
+    try {
+      await execDifferentialMaterializer(
+        "git",
+        ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
+        "git archive",
+      );
+      await execDifferentialMaterializer("tar", ["-x", "-f", checkoutTar, "-C", checkoutDir], "tar extract");
+    } finally {
+      fs.rmSync(checkoutTar, { force: true });
+    }
+    return { checkout_path: checkoutDir };
   }
 
   const patchPath = path.join(workDir, "patch.diff");
-  const observedPatchHash = hashFile(patchPath);
+  let patchBuffer = null;
+  try {
+    patchBuffer = fs.readFileSync(patchPath);
+  } catch {
+    patchBuffer = null;
+  }
+  const observedPatchHash = patchBuffer ? sha256Hex(patchBuffer) : null;
   if (!observedPatchHash) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -1079,44 +1156,41 @@ async function materializeDifferentialCheckoutArchive({
   }
 
   const tempRoot = runScopedHostPath(workDir, sessionRoot, runId, "host-materialize");
-  const tempRepo = path.join(tempRoot, "repo");
+  const patchSnapshot = path.join(tempRoot, "patch.diff");
   const baseTar = runScopedHostPath(workDir, sessionRoot, runId, "base.tar");
-  fs.mkdirSync(tempRepo, { recursive: true });
+  fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   try {
+    fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
     await execDifferentialMaterializer(
       "git",
       ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, archiveRef],
       "git archive",
     );
-    await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", tempRepo], "tar extract");
-    await execDifferentialMaterializer("git", ["-C", tempRepo, "apply", patchPath], "git apply");
-    await execDifferentialMaterializer("tar", ["-c", "-f", checkoutTar, "-C", tempRepo, "."], "tar create");
+    await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", checkoutDir], "tar extract");
+    await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(baseTar, { force: true });
+    fs.rmSync(checkoutTar, { force: true });
   }
-  return { checkout_tar_path: checkoutTar };
+  return { checkout_path: checkoutDir };
 }
 
 function buildDifferentialCheckoutCommand({
   checkout_ref: checkoutRef,
   checkout_kind: checkoutKind,
-  dest = "/work/repo",
-  tar_path: tarPath = "/work/checkout.tar",
+  dest = "/src",
+  tar_path: tarPath = null,
   after_command: afterCommand = null,
 } = {}) {
-  const ref = assertCheckoutRef(checkoutRef, "checkout_ref");
-  const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
-  const checkoutDest = assertWorkDest(dest);
-  const checkoutTar = assertWorkPath(tarPath, "tar_path");
+  assertCheckoutRef(checkoutRef, "checkout_ref");
+  assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
+  const checkoutDest = assertCheckoutDest(dest);
+  if (tarPath != null) assertWorkPath(tarPath, "tar_path");
   const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
   const script = [
     "set -eu",
-    `rm -rf ${shellQuote(checkoutDest)}`,
-    `mkdir -p ${shellQuote(checkoutDest)}`,
-    `test -f ${shellQuote(checkoutTar)}`,
-    `tar -x -f ${shellQuote(checkoutTar)} -C ${shellQuote(checkoutDest)}`,
-    `rm -f ${shellQuote(checkoutTar)}`,
+    `test -d ${shellQuote(checkoutDest)}`,
   ];
   if (normalizedAfterCommand) {
     script.push(`cd ${shellQuote(checkoutDest)}`);
@@ -1415,12 +1489,14 @@ async function repoDockerRun({
   if (normalizedCheckout) {
     checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
+  const checkoutSrcRoot = normalizedCheckout
+    ? runScopedHostPath(workDir, sessionRoot, runId, "repo")
+    : repoRoot;
   const effectiveCommand = normalizedCheckout
     ? buildDifferentialCheckoutCommand({
         checkout_ref: normalizedCheckout.ref,
         checkout_kind: normalizedCheckout.kind,
-        dest: `/work/${runId}/repo`,
-        tar_path: `/work/${runId}/checkout.tar`,
+        dest: "/src",
         after_command: normalizedInputCommand,
       })
     : normalizedInputCommand;
@@ -1503,7 +1579,7 @@ async function repoDockerRun({
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
   const argv = buildDockerRunArgv({
-    repoRoot,
+    repoRoot: checkoutSrcRoot,
     workDir,
     imageTag,
     command: normalizedCommand,
@@ -1624,7 +1700,7 @@ async function repoDockerRun({
     );
   }
   if (normalizedCheckout) {
-    await materializeDifferentialCheckoutArchive({
+    await materializeDifferentialCheckoutTree({
       repoRoot,
       workDir,
       sessionRoot,
@@ -1795,6 +1871,7 @@ module.exports = {
   buildDifferentialCheckoutCommand,
   buildDockerRunArgv,
   buildImageTag,
+  runScopedHostPath,
   detectLanguageProfile,
   recommendedCommandsFor,
   loadSeedCorpus,
