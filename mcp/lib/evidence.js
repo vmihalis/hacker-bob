@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const {
@@ -32,7 +33,6 @@ const {
 } = require("./sensitive-material.js");
 const {
   readCurrentClaimFreeze,
-  sha256File,
 } = require("./claim-freeze.js");
 const {
   claimIdSetFromFindingIds,
@@ -208,10 +208,37 @@ function replayCommandHashForRun(row, fieldName) {
   throw new Error(`${fieldName} must carry a replay_command_hash for C10 comparison`);
 }
 
+function sha256FileChunked(filePath) {
+  let fd = null;
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    fd = fs.openSync(filePath, "r");
+    const hash = crypto.createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    return hash.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Caller treats read failures as missing hashes.
+      }
+    }
+  }
+}
+
 function stdoutHashForRun(domain, row, fieldName) {
   const runId = assertRepoRunId(row.run_id, `${fieldName}.run_id`);
   const recordedHash = assertHex64(row.stdout_hash, `${fieldName}.stdout_hash`);
-  const observedHash = sha256File(path.join(repoRunsDir(domain), `${runId}.stdout`));
+  const observedHash = sha256FileChunked(path.join(repoRunsDir(domain), `${runId}.stdout`));
   if (observedHash == null) {
     throw new Error(`${fieldName}.stdout file is missing or unreadable; cannot verify C10 stdout integrity`);
   }
@@ -241,7 +268,7 @@ function expectedDifferentialVerdict(controlKind, vulnFired, controlFired) {
   return "inconclusive";
 }
 
-function normalizeDifferential(differential, { domain }) {
+function normalizeDifferential(differential, { domain, repoCommandRunRows = null }) {
   if (!isPlainObject(differential)) {
     throw new Error("differential must be an object");
   }
@@ -260,7 +287,7 @@ function normalizeDifferential(differential, { domain }) {
     "differential.control_ref",
     MAX_CONTROL_REF_CHARS,
   );
-  const allRows = readRepoCommandRunRows(domain);
+  const allRows = repoCommandRunRows || readRepoCommandRunRows(domain);
   const vulnRow = readRepoCommandRunRow(allRows, vulnRunId, "differential.vuln_run_id");
   if (vulnRow.checkout_ref != null || vulnRow.checkout_kind != null) {
     throw new Error("differential.vuln_run_id must reference a baseline non-checkout run");
@@ -321,7 +348,9 @@ function normalizeDifferential(differential, { domain }) {
     normalized._verdict_overridden = true;
     normalized._supplied_verdict = suppliedVerdict;
     normalized._expected_verdict = expectedVerdict;
+    normalized.verdict_warning = `supplied=${suppliedVerdict}; expected=${expectedVerdict}; recorded=inconclusive`;
   }
+  normalized.firedness_semantics = "agent_asserted; Bob verifies run identity, exit codes, replay command hash, stdout hashes, and patch hash but does not infer exploit semantics from arbitrary output";
   validateNoSensitiveMaterial(normalized, "differential");
   return normalized;
 }
@@ -447,7 +476,12 @@ function finalReportableIds(document) {
     .map((result) => result.finding_id);
 }
 
-function normalizeEvidencePack(pack, { domain, findingIdSet, finalReportableIdSet }) {
+function normalizeEvidencePack(pack, {
+  domain,
+  findingIdSet,
+  finalReportableIdSet,
+  repoCommandRunRows = null,
+}) {
   if (!isPlainObject(pack)) {
     throw new Error("packs entries must be objects");
   }
@@ -496,7 +530,7 @@ function normalizeEvidencePack(pack, { domain, findingIdSet, finalReportableIdSe
     report_snippet: reportSnippet,
   };
   if (pack.differential != null) {
-    normalized.differential = normalizeDifferential(pack.differential, { domain });
+    normalized.differential = normalizeDifferential(pack.differential, { domain, repoCommandRunRows });
   }
   return normalized;
 }
@@ -539,12 +573,16 @@ function normalizeEvidencePacksDocument(document, {
 
   const knownFindingIds = findingIdSet || new Set(document.packs.map((pack) => parseFindingId(pack.finding_id)));
   const reportableIds = finalReportableIdSet || knownFindingIds;
+  const repoCommandRunRows = document.packs.some((pack) => isPlainObject(pack) && pack.differential != null)
+    ? readRepoCommandRunRows(domain)
+    : null;
   const seen = new Set();
   for (const pack of document.packs) {
     const normalizedPack = normalizeEvidencePack(pack, {
       domain,
       findingIdSet: knownFindingIds,
       finalReportableIdSet: reportableIds,
+      repoCommandRunRows,
     });
     if (seen.has(normalizedPack.finding_id)) {
       throw new Error(`Duplicate finding_id in evidence packs: ${normalizedPack.finding_id}`);
@@ -764,12 +802,18 @@ function renderEvidencePacksMarkdown(document) {
       if (pack.differential._verdict_overridden) {
         lines.push(`  - Verdict Override: supplied=${pack.differential._supplied_verdict}; expected=${pack.differential._expected_verdict}`);
       }
+      if (pack.differential.verdict_warning) {
+        lines.push(`  - Verdict Warning: ${markdownInline(pack.differential.verdict_warning)}`);
+      }
       lines.push(`  - Vulnerable Run: ${pack.differential.vuln_run_id}`);
       lines.push(`  - Control Run: ${pack.differential.control_run_id}`);
       lines.push(`  - Control Ref: ${pack.differential.control_ref}`);
       lines.push(`  - Vulnerable Exit Code: ${pack.differential.vuln_exit_code}`);
       lines.push(`  - Control Exit Code: ${pack.differential.control_exit_code}`);
       lines.push(`  - Firedness Source: ${pack.differential.firedness_source}`);
+      if (pack.differential.firedness_semantics) {
+        lines.push(`  - Firedness Semantics: ${markdownInline(pack.differential.firedness_semantics)}`);
+      }
       lines.push(`  - Replay Command Hash: ${pack.differential.replay_command_hash}`);
       if (pack.differential.patch_hash) {
         lines.push(`  - Patch Hash: ${pack.differential.patch_hash}`);

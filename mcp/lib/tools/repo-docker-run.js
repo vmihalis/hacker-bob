@@ -114,5 +114,6 @@ module.exports = Object.freeze({
     "repo-command-runs.jsonl",
     "repo-runs/",
     "repo-work/",
+    "repo-checkouts/",
   ],
 });

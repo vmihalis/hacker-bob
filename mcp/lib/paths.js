@@ -333,6 +333,13 @@ function repoWorkDir(domain) {
   return path.join(sessionDir(domain), "repo-work");
 }
 
+// Cycle O.4/S14: host-materialized differential checkouts mounted as
+// /src:ro. Kept outside repo-work so the writable /work bind never aliases
+// the control tree.
+function repoCheckoutDir(domain) {
+  return path.join(sessionDir(domain), "repo-checkouts");
+}
+
 // Cycle O.5: repo-checks.jsonl is the append-only read-only evidence-probe
 // ledger written by bob_repo_check. Each entry carries the check id, the
 // probed file path, the optional literal/regex pattern, the match result,
@@ -505,6 +512,7 @@ module.exports = {
   resolveEvidencePath,
   repoChecksJsonlPath,
   repoCommandRunsJsonlPath,
+  repoCheckoutDir,
   repoDockerfilePath,
   repoEnvPath,
   repoInventoryPath,

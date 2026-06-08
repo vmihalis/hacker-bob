@@ -46,6 +46,7 @@ const {
   validateNoSensitiveMaterial,
 } = require("../mcp/lib/sensitive-material.js");
 const {
+  repoCheckoutDir,
   repoCommandRunsJsonlPath,
   repoRunsDir,
   repoWorkDir,
@@ -440,7 +441,7 @@ test("repoDockerRun dry_run injects S14 checkout command and records provenance"
     assert.equal(result.checkout_object_format, "sha1");
     assert.equal(result.network_mode, "none");
     assert.equal(result.mount_mode, "read_only");
-    const checkoutSrc = path.join(repoWorkDir(init.target_domain), result.run_id, "repo");
+    const checkoutSrc = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
     assert.ok(
       result.planned_argv.some((arg) => arg === `${checkoutSrc}:/src:ro`),
       "differential run must mount the materialized control checkout as /src",
@@ -577,6 +578,30 @@ test("repoDockerRun self_patch dry_run refuses symlinked repo-work before patch 
   });
 });
 
+test("repoDockerRun self_patch refuses symlinked patch files before hashing", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const workDir = repoWorkDir(init.target_domain);
+    const outsidePatch = path.join(makeTempRepoDir("bob-outside-self-patch-file-"), "patch.diff");
+    fs.writeFileSync(outsidePatch, "outside patch body\n");
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.symlinkSync(outsidePatch, path.join(workDir, "patch.diff"));
+
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: "HEAD", kind: "self_patch" },
+        command: ["true"],
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "invalid_differential_patch",
+    );
+
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "symlinked patch.diff dry-runs must not land hash rows");
+  });
+});
+
 test("repoDockerRun live differential run mounts a host-created checkout as /src", async () => {
   await withTempHome(async () => {
     const { repoRoot, first } = makeGitRepo();
@@ -600,8 +625,14 @@ test("repoDockerRun live differential run mounts a host-created checkout as /src
         const match = srcMount.match(/\/(run-[a-f0-9-]+)\/repo:\/src:ro$/);
         assert.ok(match, `expected run-scoped checkout repo in /src mount: ${srcMount}`);
         runIdFromMount = match[1];
-        const runRoot = path.join(repoWorkDir(init.target_domain), runIdFromMount);
+        const runRoot = path.join(repoCheckoutDir(init.target_domain), runIdFromMount);
         const checkoutDir = path.join(runRoot, "repo");
+        const workMount = mounts.find((mount) => mount.endsWith(":/work:rw"));
+        assert.equal(workMount, `${repoWorkDir(init.target_domain)}:/work:rw`);
+        assert.ok(
+          !checkoutDir.startsWith(`${repoWorkDir(init.target_domain)}${path.sep}`),
+          "control checkout must not be reachable through writable /work",
+        );
         assert.ok(
           fs.existsSync(checkoutDir),
           "host materializer must create the checkout directory before docker run starts",
@@ -709,7 +740,7 @@ test("repoDockerRun materializes branch refs via immutable checkout_object", asy
 
     assert.equal(result.checkout_ref, branch);
     assert.equal(result.checkout_object, first);
-    const checkoutDir = path.join(repoWorkDir(init.target_domain), result.run_id, "repo");
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
     assert.equal(fs.existsSync(path.join(checkoutDir, "index.js")), false, "branch control must materialize resolved object, not current HEAD");
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.equal(rows[0].checkout_ref, branch);
@@ -760,7 +791,7 @@ test("repoDockerRun self_patch materializes the requested ref before applying pa
       runtime,
     });
 
-    const checkoutDir = path.join(repoWorkDir(init.target_domain), result.run_id, "repo");
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
     assert.ok(fs.existsSync(path.join(checkoutDir, "file.txt")), "patch file should be applied to the control checkout");
     assert.equal(fs.existsSync(path.join(checkoutDir, "index.js")), false, "self_patch must materialize checkout.ref, not HEAD");
     assert.equal(result.checkout_ref, first);
@@ -1275,10 +1306,11 @@ test("bob_repo_docker_run authority class is initialized_session_mutation", () =
   assert.equal(EXPLICIT_AUTHORITY_CLASS_BY_TOOL.bob_repo_docker_run, "initialized_session_mutation");
 });
 
-test("bob_repo_docker_run declares the right artefacts (JSONL + repo-runs/ + repo-work/)", () => {
+test("bob_repo_docker_run declares the right artefacts (JSONL + repo-runs/ + repo-work/ + repo-checkouts/)", () => {
   assert.ok(repoDockerRunTool.session_artifacts_written.includes("repo-command-runs.jsonl"));
   assert.ok(repoDockerRunTool.session_artifacts_written.includes("repo-runs/"));
   assert.ok(repoDockerRunTool.session_artifacts_written.includes("repo-work/"));
+  assert.ok(repoDockerRunTool.session_artifacts_written.includes("repo-checkouts/"));
 });
 
 test("bob_repo_docker_run is mutating and declares no network/browser access", () => {

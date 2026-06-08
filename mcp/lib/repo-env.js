@@ -47,6 +47,7 @@ const {
 const {
   assertSafeDomain,
   repoCommandRunsJsonlPath,
+  repoCheckoutDir,
   repoInventoryPath,
   repoRunsDir,
   repoWorkDir,
@@ -939,8 +940,11 @@ function assertWorkDest(dest) {
   return assertWorkPath(dest, "dest");
 }
 
-function assertCheckoutDest(dest) {
+function assertContainerCheckoutDest(dest) {
   const normalized = assertNonEmptyString(dest, "dest");
+  // S14 control replay intentionally runs from /src: repoDockerRun binds
+  // /src to a run-scoped checkout under repo-checkouts/, outside writable
+  // /work. Other container paths must stay under /work.
   if (normalized === "/src") return normalized;
   return assertWorkDest(normalized);
 }
@@ -1096,6 +1100,7 @@ async function execDifferentialMaterializer(command, args, stage) {
 
 async function materializeDifferentialCheckoutTree({
   repoRoot,
+  checkoutRoot,
   workDir,
   sessionRoot,
   runId,
@@ -1107,16 +1112,18 @@ async function materializeDifferentialCheckoutTree({
   assertCheckoutRef(checkoutRef, "checkout_ref");
   const archiveRef = assertCheckoutRef(checkoutObject || checkoutRef, "checkout_object");
   const kind = assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
-  const runWorkDir = runScopedHostPath(workDir, sessionRoot, runId);
-  const checkoutDir = runScopedHostPath(workDir, sessionRoot, runId, "repo");
-  const checkoutTar = runScopedHostPath(workDir, sessionRoot, runId, "checkout.tar");
+  const runWorkDir = runScopedHostPath(checkoutRoot, sessionRoot, runId);
+  const checkoutDir = runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo");
+  const checkoutTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "checkout.tar");
   fs.rmSync(runWorkDir, { recursive: true, force: true });
+  fs.mkdirSync(checkoutRoot, { recursive: true, mode: 0o755 });
+  assertRepoWorkDirBoundary(checkoutRoot, sessionRoot);
   fs.mkdirSync(workDir, { recursive: true, mode: 0o755 });
   assertRepoWorkDirBoundary(workDir, sessionRoot);
   mkdirDifferentialRunDirectory(runWorkDir, 0o755);
-  assertRunScopedPathBoundary(path.resolve(workDir), runWorkDir);
+  assertRunScopedPathBoundary(path.resolve(checkoutRoot), runWorkDir);
   mkdirDifferentialRunDirectory(checkoutDir, 0o755);
-  assertRunScopedPathBoundary(path.resolve(workDir), checkoutDir);
+  assertRunScopedPathBoundary(path.resolve(checkoutRoot), checkoutDir);
 
   if (kind !== "self_patch") {
     try {
@@ -1132,13 +1139,7 @@ async function materializeDifferentialCheckoutTree({
     return { checkout_path: checkoutDir };
   }
 
-  const patchPath = path.join(workDir, "patch.diff");
-  let patchBuffer = null;
-  try {
-    patchBuffer = fs.readFileSync(patchPath);
-  } catch {
-    patchBuffer = null;
-  }
+  const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
   const observedPatchHash = patchBuffer ? sha256Hex(patchBuffer) : null;
   if (!observedPatchHash) {
     throw new ToolError(
@@ -1155,9 +1156,9 @@ async function materializeDifferentialCheckoutTree({
     );
   }
 
-  const tempRoot = runScopedHostPath(workDir, sessionRoot, runId, "host-materialize");
+  const tempRoot = runScopedHostPath(checkoutRoot, sessionRoot, runId, "host-materialize");
   const patchSnapshot = path.join(tempRoot, "patch.diff");
-  const baseTar = runScopedHostPath(workDir, sessionRoot, runId, "base.tar");
+  const baseTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "base.tar");
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   try {
     fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
@@ -1180,13 +1181,11 @@ function buildDifferentialCheckoutCommand({
   checkout_ref: checkoutRef,
   checkout_kind: checkoutKind,
   dest = "/src",
-  tar_path: tarPath = null,
   after_command: afterCommand = null,
 } = {}) {
   assertCheckoutRef(checkoutRef, "checkout_ref");
   assertEnumValue(checkoutKind, DIFFERENTIAL_CHECKOUT_KIND_VALUES, "checkout_kind");
-  const checkoutDest = assertCheckoutDest(dest);
-  if (tarPath != null) assertWorkPath(tarPath, "tar_path");
+  const checkoutDest = assertContainerCheckoutDest(dest);
   const normalizedAfterCommand = afterCommand == null ? null : assertCommandArray(afterCommand);
   const script = [
     "set -eu",
@@ -1374,6 +1373,40 @@ function hashFile(filePath) {
   }
 }
 
+function readSelfPatchBuffer(workDir, sessionRoot) {
+  const base = assertRepoWorkDirBoundary(workDir, sessionRoot);
+  const patchPath = path.join(base, "patch.diff");
+  let lstat = null;
+  try {
+    lstat = fs.lstatSync(patchPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (!lstat.isFile()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout requires /work/patch.diff to be a regular Bob-owned file",
+      { repo_error_code: "invalid_differential_patch" },
+    );
+  }
+  const baseReal = realpathIfPossible(base);
+  const patchReal = realpathIfPossible(patchPath);
+  if (!hostPathContains(baseReal, patchReal)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "self_patch checkout patch escaped the repo work directory",
+      { repo_error_code: "differential_patch_symlink_escape" },
+    );
+  }
+  return fs.readFileSync(patchPath);
+}
+
+function hashSelfPatchFile(workDir, sessionRoot) {
+  const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
+  return patchBuffer ? sha256Hex(patchBuffer) : null;
+}
+
 // Plane X Cycle X.7 (X-P9 retrofit): read the first line of a capture
 // file for the brief-inlinable summary. Bounded by a 4KB probe so a
 // degenerate single-line capture file does not pull 16MB into memory
@@ -1474,6 +1507,7 @@ async function repoDockerRun({
   const repoRoot = repoSession.target_repo.root_path;
   const sessionRoot = sessionDir(domain);
   const workDir = repoWorkDir(domain);
+  const checkoutRoot = repoCheckoutDir(domain);
   if (!fs.existsSync(repoRoot) || !fs.statSync(repoRoot).isDirectory()) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -1490,7 +1524,7 @@ async function repoDockerRun({
     checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
   }
   const checkoutSrcRoot = normalizedCheckout
-    ? runScopedHostPath(workDir, sessionRoot, runId, "repo")
+    ? runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo")
     : repoRoot;
   const effectiveCommand = normalizedCheckout
     ? buildDifferentialCheckoutCommand({
@@ -1599,7 +1633,7 @@ async function repoDockerRun({
     assertRepoWorkDirBoundary(workDir, sessionRoot);
   }
   const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
-    ? hashFile(path.join(workDir, "patch.diff"))
+    ? hashSelfPatchFile(workDir, sessionRoot)
     : null;
   if (normalizedCheckout && normalizedCheckout.kind === "self_patch" && !checkoutPatchHash) {
     throw new ToolError(
@@ -1702,6 +1736,7 @@ async function repoDockerRun({
   if (normalizedCheckout) {
     await materializeDifferentialCheckoutTree({
       repoRoot,
+      checkoutRoot,
       workDir,
       sessionRoot,
       runId,

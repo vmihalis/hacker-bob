@@ -78,10 +78,12 @@ ALLOWED_EXACT = {
 
 BLOCKED_DIRS = {
     "static-imports",
-    # Plane O O.7: raw docker-run stdout/stderr (`repo-runs/`) and any
-    # in-container scratch space (`repo-work/`) must stay opaque to agents.
+    # Plane O O.7: raw docker-run stdout/stderr (`repo-runs/`), any
+    # in-container scratch space (`repo-work/`), and S14 materialized
+    # control checkouts (`repo-checkouts/`) must stay opaque to agents.
     "repo-runs",
     "repo-work",
+    "repo-checkouts",
 }
 
 BLOCKED_PATTERNS = [

@@ -51,7 +51,7 @@ function renderCapabilityPlaybookAppendix({ root = DEFAULT_ROOT } = {}) {
     "Orchestrator-driven differentials run outside the wave/evaluator loop and feed `severity_class: \"security\"` rows into `bob_record_candidate_claim`.",
   ];
   for (const { capability_id, playbook } of playbooks) {
-    sections.push(`### ${capability_id}`, playbook.trimEnd());
+    sections.push("", `### ${capability_id}`, playbook.trimEnd());
   }
   return sections.join("\n");
 }

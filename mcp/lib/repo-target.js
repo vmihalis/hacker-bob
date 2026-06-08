@@ -139,6 +139,7 @@ const GIT_REF_MAX_CHARS = 120;
 const HEX_REF_RE = /^[0-9a-f]{7,64}$/i;
 const FULL_HEX_OBJECT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const LOCAL_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
+const AMBIGUOUS_OBJECT_PREFIX = Symbol("ambiguous-object-prefix");
 
 function gitMetadataError(message, repoErrorCode, details = {}) {
   return new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, {
@@ -424,25 +425,35 @@ function packIndexObjectForPrefix(idxPath, hexRef, shaBytes) {
   }
   if (low >= objectCount) return null;
   const match = objectNameAt(low);
-  return match.startsWith(prefix) ? match : null;
+  if (!match.startsWith(prefix)) return null;
+  if (prefix.length < shaBytes * 2 && low + 1 < objectCount) {
+    const next = objectNameAt(low + 1);
+    if (next.startsWith(prefix) && next !== match) return AMBIGUOUS_OBJECT_PREFIX;
+  }
+  return match;
 }
 
 function packedObjectForPrefix(hexRef, commonDir, objectFormat) {
   const packDir = path.join(commonDir, "objects", "pack");
   if (!fs.existsSync(packDir) || !fs.statSync(packDir).isDirectory()) return null;
   const shaBytes = objectFormat === "sha256" ? 32 : 20;
+  let resolved = null;
   for (const entry of fs.readdirSync(packDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".idx")) continue;
     const idxPath = path.join(packDir, entry.name);
     try {
       const object = packIndexObjectForPrefix(idxPath, hexRef, shaBytes);
-      if (object) return object;
+      if (object === AMBIGUOUS_OBJECT_PREFIX) return null;
+      if (object) {
+        if (resolved && resolved !== object) return null;
+        resolved = object;
+      }
     } catch {
       // Ignore unreadable/corrupt pack indexes; absence is handled by the
       // caller as a loud ref_not_in_local_history refusal.
     }
   }
-  return null;
+  return resolved;
 }
 
 function objectForPrefix(hexRef, commonDir, objectFormat) {

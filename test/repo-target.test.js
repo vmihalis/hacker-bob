@@ -115,6 +115,33 @@ function createTwoCommitGitRepo(home, name = "history-fixture") {
   return { repo, first, second };
 }
 
+function writeSyntheticPackIndex(repo, objectIds, name = "pack-ambiguous") {
+  const packDir = path.join(repo, ".git", "objects", "pack");
+  fs.mkdirSync(packDir, { recursive: true });
+  const sorted = objectIds.slice().sort();
+  const shaBytes = sorted[0].length / 2;
+  const fanout = new Array(256).fill(0);
+  for (const objectId of sorted) {
+    const bucket = Number.parseInt(objectId.slice(0, 2), 16);
+    for (let i = bucket; i < fanout.length; i += 1) {
+      fanout[i] += 1;
+    }
+  }
+  const headerLength = 8 + 256 * 4;
+  const buffer = Buffer.alloc(headerLength + sorted.length * shaBytes);
+  buffer.writeUInt32BE(0xff744f63, 0);
+  buffer.writeUInt32BE(2, 4);
+  for (let i = 0; i < fanout.length; i += 1) {
+    buffer.writeUInt32BE(fanout[i], 8 + i * 4);
+  }
+  let offset = headerLength;
+  for (const objectId of sorted) {
+    Buffer.from(objectId, "hex").copy(buffer, offset);
+    offset += shaBytes;
+  }
+  fs.writeFileSync(path.join(packDir, `${name}.idx`), buffer);
+}
+
 function parseResult(value) {
   return typeof value === "string" ? JSON.parse(value) : value;
 }
@@ -360,6 +387,19 @@ test("assertHistoryAvailableForRef resolves packed SHA-1 objects without SHA-256
   assert.equal(packed.checkout_object, second);
   assert.throws(
     () => assertHistoryAvailableForRef(repo, `${second}${"0".repeat(24)}`),
+    (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
+  );
+}));
+
+test("assertHistoryAvailableForRef refuses ambiguous packed object prefixes", () => withTempHome((home) => {
+  const { repo } = createTwoCommitGitRepo(home, "history-packed-ambiguous-prefix");
+  writeSyntheticPackIndex(repo, [
+    "abcdef1000000000000000000000000000000000",
+    "abcdef1fffffffffffffffffffffffffffffffff",
+  ]);
+
+  assert.throws(
+    () => assertHistoryAvailableForRef(repo, "abcdef1"),
     (error) => error && error.details && error.details.repo_error_code === "ref_not_in_local_history",
   );
 }));
