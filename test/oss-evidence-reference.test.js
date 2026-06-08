@@ -72,6 +72,8 @@ const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
 
+const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
+
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-oss-evref-"));
@@ -122,6 +124,8 @@ function appendRepoCommandRunRow(domain, {
   mount_mode: mountMode = "read_only",
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
+  checkout_object: checkoutObject = checkoutRef ? FIXTURE_CHECKOUT_OBJECT : null,
+  checkout_object_format: checkoutObjectFormat = checkoutObject ? "sha1" : null,
   checkout_patch_hash: checkoutPatchHash = checkoutKind === "self_patch" ? sha256Hex("fixture patch\n") : null,
 }) {
   fs.mkdirSync(path.dirname(repoCommandRunsJsonlPath(domain)), { recursive: true });
@@ -141,6 +145,8 @@ function appendRepoCommandRunRow(domain, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutObject) row.checkout_object = checkoutObject;
+  if (checkoutObjectFormat) row.checkout_object_format = checkoutObjectFormat;
   if (checkoutPatchHash) row.checkout_patch_hash = checkoutPatchHash;
   fs.appendFileSync(repoCommandRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
 }

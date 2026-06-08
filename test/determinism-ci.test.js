@@ -44,6 +44,8 @@ const {
   hashCanonicalJson,
 } = require("../mcp/lib/verification-contracts.js");
 
+const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
+
 function uniqueDomain(prefix = "bob-determinism-ci") {
   const suffix = crypto.randomBytes(4).toString("hex");
   return `${prefix}-${suffix}.local`;
@@ -168,6 +170,8 @@ function sha256Hex(value) {
 function appendRepoRunFixture(domain, runId, stdout, {
   checkout_ref: checkoutRef = null,
   checkout_kind: checkoutKind = null,
+  checkout_object: checkoutObject = checkoutRef ? FIXTURE_CHECKOUT_OBJECT : null,
+  checkout_object_format: checkoutObjectFormat = checkoutObject ? "sha1" : null,
 } = {}) {
   const replayCommandHash = sha256Hex(JSON.stringify(["sh", "-lc", "./repro.sh"]));
   fs.mkdirSync(repoRunsDir(domain), { recursive: true });
@@ -191,6 +195,8 @@ function appendRepoRunFixture(domain, runId, stdout, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutObject) row.checkout_object = checkoutObject;
+  if (checkoutObjectFormat) row.checkout_object_format = checkoutObjectFormat;
   if (checkoutKind === "self_patch") row.checkout_patch_hash = sha256Hex("fixture patch\n");
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
