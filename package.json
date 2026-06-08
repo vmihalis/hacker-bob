@@ -40,6 +40,7 @@
     "bin/**/*.js",
     "docs/**/*.md",
     "!docs/refactor-*.md",
+    "!docs/plane-delta/detail/**/*",
     "docs/**/*.json",
     "docs/**/*.html",
     "docs/**/*.png",
