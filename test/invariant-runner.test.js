@@ -381,6 +381,39 @@ test("re-running the same (finding, template, slot_values) upserts the same run_
   }
 });
 
+test("runs for duplicate audit findings keep distinct final finding run_hashes", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const stubFoundry = async () => ({ tests: [{ success: true }] });
+  try {
+    const first = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+    });
+    const second = await runInvariantForFinding({
+      target_domain: domain,
+      finding: {
+        ...SAMPLE_REENTRANCY_FINDING,
+        finding_id: "F-2",
+      },
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+    });
+
+    assert.notEqual(first.run_hash, second.run_hash);
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.total_in_corpus, 2);
+    assert.deepEqual(new Set(corpus.runs.map((run) => run.finding_id)), new Set(["F-1", "F-2"]));
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
 test("runs for different execution contexts keep distinct JSONL records", async () => {
   const domain = uniqueDomain();
   cleanupDomain(domain);

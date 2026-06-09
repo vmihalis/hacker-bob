@@ -411,7 +411,7 @@ function normalizeInvariantArtifact(artifact, { invariantRunRows, index, finding
     run_hash: assertHex64(row.run_hash, `artifacts[${index}].run_hash`),
     outcome: assertNonEmptyString(row.outcome || "unknown", `artifacts[${index}].outcome`),
   };
-  for (const key of ["template_id", "contract_name", "function_name", "test_path", "execution_context_hash"]) {
+  for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
     if (row[key] != null) normalized[key] = assertNonEmptyString(row[key], `artifacts[${index}].${key}`);
   }
   const snippet = normalizeOptionalBoundedText(artifact.snippet, `artifacts[${index}].snippet`, MAX_SNIPPET_CHARS);

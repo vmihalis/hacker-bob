@@ -404,6 +404,26 @@ test("bob_finalize_report binds proof bundles when report cites proof_bundle ref
   });
 });
 
+test("bob_finalize_report refuses proof bundle files with unnormalized fields", () => {
+  withTempHome(() => {
+    const domain = "proof-extra-field.example.com";
+    drivePipelineToReportWritten(domain);
+    const proofDocument = writeProofBundleDocument(domain);
+    proofDocument.packs[0].artifacts[0].local_debug_path = "/Users/operator/harness/test/BobInvariant.t.sol";
+    fs.writeFileSync(proofBundlePaths(domain).json, `${JSON.stringify(proofDocument, null, 2)}\n`);
+    fs.writeFileSync(
+      reportMarkdownPath(domain),
+      "# Bob Report\n\n## Proof Bundle\n\nEvidence:\n- `proof_bundle:F-1`\n",
+    );
+
+    assert.throws(
+      () => finalizeReportTool.handler({ target_domain: domain }),
+      /do not match the normalized proof bundle artifact/,
+    );
+    assert.equal(readReportSnapshots(domain).length, 0, "finalization must not append a snapshot for mutated proof bundles");
+  });
+});
+
 test("bob_finalize_report refuses proof_bundle refs without proof-bundles.json", () => {
   withTempHome(() => {
     const domain = "missing-proof.example.com";

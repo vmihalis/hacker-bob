@@ -323,7 +323,16 @@ function loadProofBundleHash(domain, { citedFindingIds = null, finalRound = null
       );
     }
   }
-  return hashCanonicalJson(normalized);
+  const normalizedHash = hashCanonicalJson(normalized);
+  if (hashCanonicalJson(document) !== normalizedHash) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `proof bundles at ${paths.json} do not match the normalized proof bundle artifact; rewrite proof bundles before finalization`,
+      { missing_artifact: "proof-bundles.json" },
+      { remediation: "call bob_write_proof_bundle({target_domain, packs: [...]}) so proof-bundles.json contains only validated proof bundle fields, then re-invoke bob_finalize_report" },
+    );
+  }
+  return normalizedHash;
 }
 
 function loadGradeVerdictHash(domain) {

@@ -360,6 +360,7 @@ test("bob_write_proof_bundle finds invariant rows beyond the read-tool display c
     assert.equal(written.bundles_count, 1);
     const doc = JSON.parse(fs.readFileSync(proofBundlePaths(domain).json, "utf8"));
     assert.equal(doc.packs[0].artifacts[0].run_hash, targetRunHash);
+    assert.equal(Object.hasOwn(doc.packs[0].artifacts[0], "test_path"), false);
   });
 });
 

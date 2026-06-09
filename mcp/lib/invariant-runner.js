@@ -665,6 +665,7 @@ async function runInvariantForFinding({
     }
     outcome = classifyFoundryOutcome(foundryRawResult);
     runHash = hashCanonicalJson({
+      finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
       slot_values: slot_values || null,
@@ -674,6 +675,7 @@ async function runInvariantForFinding({
     });
   } else {
     runHash = hashCanonicalJson({
+      finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
       slot_values: slot_values || null,
