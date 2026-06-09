@@ -1457,6 +1457,7 @@ function normalizeReplayContext(value) {
     "wave",
     "agent",
     "surface_id",
+    "finding_id",
     "task_lens",
     "technique_pack_id",
     "purpose",

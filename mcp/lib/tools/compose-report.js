@@ -197,7 +197,15 @@ function validateProofBundleRef(domain, id) {
   try {
     const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
     const packs = Array.isArray(doc && doc.packs) ? doc.packs : [];
-    return packs.some((pack) => pack && pack.finding_id === id);
+    if (!packs.some((pack) => pack && pack.finding_id === id)) return false;
+    const bindingFields = ["verification_attempt_id", "verification_snapshot_hash", "final_verification_hash"];
+    const hasBinding = bindingFields.some((field) => doc[field] != null);
+    if (!hasBinding) return true;
+    if (!bindingFields.every((field) => typeof doc[field] === "string" && doc[field].trim())) return false;
+    const finalPaths = verificationRoundPaths(domain, "final");
+    if (!fs.existsSync(finalPaths.json)) return false;
+    const finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
+    return bindingFields.every((field) => finalRound && finalRound[field] === doc[field]);
   } catch {
     return false;
   }

@@ -1213,18 +1213,20 @@ test("repoDockerRun records replay_context when provided", async () => {
     const result = await repoDockerRun({
       target_domain: init.target_domain,
       command: ["echo"],
-      replay_context: { wave: "w1", agent: "a1", surface_id: "repo:module:src-x" },
+      replay_context: { wave: "w1", agent: "a1", surface_id: "repo:module:src-x", finding_id: "F-1" },
     });
     assert.deepEqual(result.replay_context, {
       wave: "w1",
       agent: "a1",
       surface_id: "repo:module:src-x",
+      finding_id: "F-1",
     });
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.deepEqual(rows[0].replay_context, {
       wave: "w1",
       agent: "a1",
       surface_id: "repo:module:src-x",
+      finding_id: "F-1",
     });
   });
 });

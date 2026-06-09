@@ -11,8 +11,8 @@ const {
   parseFindingId,
 } = require("./validation.js");
 const {
-  invariantRunsJsonlPath,
   proofBundlePaths,
+  evidencePackPaths,
   repoCommandRunsJsonlPath,
   repoRunsDir,
   verificationRoundPaths,
@@ -127,10 +127,23 @@ function readRepoCommandRunRows(domain) {
 }
 
 function readInvariantRunRows(domain) {
-  return readJsonlRows(invariantRunsJsonlPath(domain), "invariant-runs.jsonl");
+  const { readInvariantRuns } = require("./invariant-runner.js");
+  return readInvariantRuns({ target_domain: domain }).runs;
 }
 
-function readRepoCommandRunRow(rows, runId, fieldName) {
+function assertReplayRunFindingBinding(row, findingId, fieldName) {
+  const replayContext = isPlainObject(row.replay_context) ? row.replay_context : null;
+  if (!replayContext || replayContext.finding_id == null) {
+    throw new Error(`${fieldName} must carry replay_context.finding_id for proof bundle binding`);
+  }
+  const actual = parseFindingId(replayContext.finding_id);
+  if (actual !== findingId) {
+    throw new Error(`${fieldName} replay_context.finding_id ${actual} does not match proof bundle finding_id ${findingId}`);
+  }
+  return actual;
+}
+
+function readRepoCommandRunRow(rows, runId, fieldName, expectedFindingId = null) {
   const normalizedRunId = assertRepoRunId(runId, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_id === normalizedRunId);
   if (matchingRows.length === 0) {
@@ -166,6 +179,9 @@ function readRepoCommandRunRow(rows, runId, fieldName) {
   }
   if (typeof row.replay_command_hash !== "string" || !HEX64_RE.test(row.replay_command_hash)) {
     throw new Error(`${fieldName} must carry a replay_command_hash for proof bundle replay`);
+  }
+  if (expectedFindingId) {
+    assertReplayRunFindingBinding(row, expectedFindingId, fieldName);
   }
   return row;
 }
@@ -229,9 +245,11 @@ function normalizeReplayCommand(value, row, fieldName) {
   return command;
 }
 
-function stableRepoRunProjection(domain, row, fieldName) {
+function stableRepoRunProjection(domain, row, fieldName, findingId) {
+  const replayFindingId = assertReplayRunFindingBinding(row, findingId, fieldName);
   const projection = {
     run_id: assertRepoRunId(row.run_id, `${fieldName}.run_id`),
+    replay_finding_id: replayFindingId,
     dry_run: row.dry_run,
     exit_code: Number.isInteger(row.exit_code) ? row.exit_code : null,
     signal: typeof row.signal === "string" ? row.signal : null,
@@ -261,13 +279,13 @@ function stableRepoRunProjection(domain, row, fieldName) {
   return projection;
 }
 
-function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index }) {
+function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
   }
-  const row = readRepoCommandRunRow(repoCommandRunRows, artifact.run_id, `artifacts[${index}].run_id`);
+  const row = readRepoCommandRunRow(repoCommandRunRows, artifact.run_id, `artifacts[${index}].run_id`, findingId);
   const replayCommand = normalizeReplayCommand(artifact.replay_command, row, `artifacts[${index}].replay_command`);
-  const runProjection = stableRepoRunProjection(domain, row, `artifacts[${index}].repo_run`);
+  const runProjection = stableRepoRunProjection(domain, row, `artifacts[${index}].repo_run`, findingId);
   const runHash = hashCanonicalJson(runProjection);
   if (artifact.run_hash != null && assertHex64(artifact.run_hash, `artifacts[${index}].run_hash`) !== runHash) {
     throw new Error(`artifacts[${index}].run_hash does not match the repo docker run handle`);
@@ -276,6 +294,7 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index }
     artifact_kind: "replay_script",
     replay_command: replayCommand,
     run_id: runProjection.run_id,
+    replay_finding_id: runProjection.replay_finding_id,
     run_hash: runHash,
     image_tag: runProjection.image_tag,
     network_mode: runProjection.network_mode,
@@ -315,7 +334,7 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index }
   return normalized;
 }
 
-function readInvariantRunRow(rows, runHash, fieldName) {
+function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
   const normalizedRunHash = assertHex64(runHash, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_hash === normalizedRunHash);
   if (matchingRows.length === 0) {
@@ -328,19 +347,26 @@ function readInvariantRunRow(rows, runHash, fieldName) {
     }
   }
   const row = matchingRows[0];
-  if (row.dry_run === true) {
+  if (row.dry_run !== false) {
     throw new Error(`${fieldName} must reference an executed invariant run, not a dry-run plan`);
+  }
+  if (row.finding_id !== expectedFindingId) {
+    throw new Error(`${fieldName} finding_id does not match proof bundle finding_id ${expectedFindingId}`);
+  }
+  if (row.outcome !== "test_passed") {
+    throw new Error(`${fieldName} must reference a reproducing invariant run with outcome test_passed`);
   }
   return row;
 }
 
-function normalizeInvariantArtifact(artifact, { invariantRunRows, index }) {
+function normalizeInvariantArtifact(artifact, { invariantRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
   }
-  const row = readInvariantRunRow(invariantRunRows, artifact.run_hash, `artifacts[${index}].run_hash`);
+  const row = readInvariantRunRow(invariantRunRows, artifact.run_hash, `artifacts[${index}].run_hash`, findingId);
   const normalized = {
     artifact_kind: "invariant",
+    finding_id: row.finding_id,
     run_hash: assertHex64(row.run_hash, `artifacts[${index}].run_hash`),
     outcome: assertNonEmptyString(row.outcome || "unknown", `artifacts[${index}].outcome`),
   };
@@ -353,13 +379,37 @@ function normalizeInvariantArtifact(artifact, { invariantRunRows, index }) {
   return normalized;
 }
 
-function normalizeDifferentialArtifact(artifact, { domain, index }) {
+function readEvidencePackDifferential(domain, findingId) {
+  const doc = loadJsonDocumentStrict(evidencePackPaths(domain).json, "evidence packs JSON");
+  const packs = Array.isArray(doc && doc.packs) ? doc.packs : [];
+  const pack = packs.find((entry) => entry && entry.finding_id === findingId);
+  if (!pack || !isPlainObject(pack.differential)) {
+    throw new Error(`differential proof for ${findingId} must match an evidence pack differential`);
+  }
+  return pack.differential;
+}
+
+function assertDifferentialBoundToFinding(domain, findingId, rawDifferential, normalizedDifferential) {
+  if (rawDifferential.finding_id != null) {
+    const suppliedFindingId = parseFindingId(rawDifferential.finding_id);
+    if (suppliedFindingId !== findingId) {
+      throw new Error(`differential.finding_id ${suppliedFindingId} does not match proof bundle finding_id ${findingId}`);
+    }
+  }
+  const evidenceDifferential = readEvidencePackDifferential(domain, findingId);
+  if (hashCanonicalJson(evidenceDifferential) !== hashCanonicalJson(normalizedDifferential)) {
+    throw new Error(`differential proof for ${findingId} must match the same finding's evidence pack differential`);
+  }
+}
+
+function normalizeDifferentialArtifact(artifact, { domain, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
   }
   const rawDifferential = isPlainObject(artifact.differential) ? artifact.differential : artifact;
   const { normalizeDifferential } = require("./evidence.js");
   const differential = normalizeDifferential(rawDifferential, { domain });
+  assertDifferentialBoundToFinding(domain, findingId, rawDifferential, differential);
   const normalized = {
     artifact_kind: "differential",
     differential: cloneJsonValue(differential, `artifacts[${index}].differential`),
@@ -368,7 +418,12 @@ function normalizeDifferentialArtifact(artifact, { domain, index }) {
   return normalized;
 }
 
-function normalizeArtifacts(pack, bundleKind, { domain, repoCommandRunRows = null, invariantRunRows = null }) {
+function normalizeArtifacts(pack, bundleKind, {
+  domain,
+  findingId,
+  repoCommandRunRows = null,
+  invariantRunRows = null,
+}) {
   if (!Array.isArray(pack.artifacts) || pack.artifacts.length === 0) {
     throw new Error("artifacts must be a non-empty array");
   }
@@ -378,15 +433,17 @@ function normalizeArtifacts(pack, bundleKind, { domain, repoCommandRunRows = nul
         domain,
         repoCommandRunRows: repoCommandRunRows || readRepoCommandRunRows(domain),
         index,
+        findingId,
       });
     }
     if (bundleKind === "invariant") {
       return normalizeInvariantArtifact(artifact, {
         invariantRunRows: invariantRunRows || readInvariantRunRows(domain),
         index,
+        findingId,
       });
     }
-    return normalizeDifferentialArtifact(artifact, { domain, index });
+    return normalizeDifferentialArtifact(artifact, { domain, index, findingId });
   });
 }
 
@@ -408,7 +465,7 @@ function proofBundleHashArtifact(artifact) {
   if (!isPlainObject(artifact)) return zeroTimestampFields(artifact);
   const normalized = {};
   for (const [key, value] of Object.entries(artifact)) {
-    if (artifact.artifact_kind === "replay_script" && (key === "image_tag" || key === "run_hash")) {
+    if (artifact.artifact_kind === "replay_script" && key === "run_hash") {
       continue;
     }
     normalized[key] = zeroTimestampFields(value);
@@ -447,6 +504,7 @@ function normalizeProofBundle(pack, {
     bundle_kind: bundleKind,
     artifacts: normalizeArtifacts(pack, bundleKind, {
       domain,
+      findingId,
       repoCommandRunRows,
       invariantRunRows,
     }),

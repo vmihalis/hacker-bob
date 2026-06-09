@@ -19,6 +19,7 @@ const {
 const {
   pipelineEventsJsonlPath,
   proofBundlePaths,
+  invariantRunsJsonlPath,
   repoCommandRunsJsonlPath,
   repoRunsDir,
   reportMarkdownPath,
@@ -98,6 +99,7 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
     network_mode: options.network_mode || "none",
     mount_mode: options.mount_mode || "read_only",
     work_mount_mode: options.work_mount_mode || "read_write",
+    replay_context: options.replay_context || { finding_id: options.finding_id || "F-1" },
     image_tag: options.image_tag || "bob-oss-fixture:stable",
     timeout_ms: 300000,
     exit_code: 1,
@@ -112,6 +114,22 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
   };
   if (options.omit_work_mount_mode) delete row.work_mount_mode;
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
+}
+
+function appendInvariantRunFixture(domain, runHash, options = {}) {
+  appendJsonlLine(invariantRunsJsonlPath(domain), {
+    run_hash: runHash,
+    target_domain: domain,
+    finding_id: options.finding_id || "F-1",
+    finding_hash: options.finding_hash || "finding-hash-fixture",
+    template_id: "reentrancy-basic",
+    contract_name: "BobInvariantTest_fixture",
+    function_name: "testBobInvariant_fixture",
+    execution_context_hash: sha256Hex("context"),
+    test_path: "/tmp/harness/test/bob-invariants/BobInvariantTest_fixture.t.sol",
+    outcome: options.outcome || "test_passed",
+    dry_run: options.dry_run === true ? true : false,
+  });
 }
 
 function replayBundle(findingId = "F-1", runId = "run-fixture", replayCommand = ["sh", "-lc", "./repro.sh"]) {
@@ -218,6 +236,79 @@ test("bob_write_proof_bundle rejects replay rows without a recorded /work mount 
   });
 });
 
+test("bob_write_proof_bundle rejects replay rows bound to another finding", () => {
+  withTempHome(() => {
+    const domain = "proof-wrong-replay-finding.example.com";
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendRepoRunFixture(domain, "run-fixture", ["sh", "-lc", "./repro.sh"], { finding_id: "F-2" });
+
+    assert.throws(
+      () => writeProofBundles({ target_domain: domain, packs: [replayBundle()] }),
+      /does not match proof bundle finding_id F-1/,
+    );
+  });
+});
+
+test("bob_write_proof_bundle rejects non-reproducing invariant rows", () => {
+  withTempHome(() => {
+    const domain = "proof-invariant-outcome.example.com";
+    const runHash = sha256Hex("invariant-run");
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendInvariantRunFixture(domain, runHash, { outcome: "test_failed" });
+
+    assert.throws(
+      () => writeProofBundles({
+        target_domain: domain,
+        packs: [{
+          finding_id: "F-1",
+          bundle_kind: "invariant",
+          artifacts: [{ run_hash: runHash }],
+        }],
+      }),
+      /outcome test_passed/,
+    );
+  });
+});
+
+test("bob_compose_report rejects proof_bundle refs stale against current final verification", () => {
+  withTempHome(() => {
+    const domain = "proof-stale-ref.example.com";
+    initSession({ target_domain: domain, target_url: `https://${domain}` });
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    const paths = proofBundlePaths(domain);
+    fs.writeFileSync(paths.json, `${JSON.stringify({
+      version: 1,
+      target_domain: domain,
+      verification_attempt_id: "old-attempt",
+      verification_snapshot_hash: "old-snapshot",
+      final_verification_hash: "old-final",
+      packs: [{
+        finding_id: "F-1",
+        bundle_kind: "replay_script",
+        artifacts: [],
+        bundle_hash: sha256Hex("bundle"),
+      }],
+    }, null, 2)}\n`);
+
+    assert.throws(
+      () => callTool(composeReportTool, {
+        target_domain: domain,
+        sections: [{
+          kind: "proof_bundle",
+          heading: "Runnable Proof Bundle",
+          prose: "The reportable parser crash has a sandboxed replay bundle attached.",
+          provenance: "bob_verified",
+          evidence_refs: ["verification_round:final:F-1", "proof_bundle:F-1"],
+        }],
+      }),
+      /proof_bundle:F-1 does not resolve/,
+    );
+  });
+});
+
 test("ProofBundle bundle_hash is stable across two target domains while proof-bundles.json keeps target_domain", () => {
   withTempHome(() => {
     const replayCommand = ["sh", "-lc", "./repro.sh"];
@@ -240,6 +331,31 @@ test("ProofBundle bundle_hash is stable across two target domains while proof-bu
 
     assert.equal(hashes[0], hashes[1], "bundle_hash must be target-domain independent for identical proof inputs");
     assert.notEqual(documentHashes[0], documentHashes[1], "proof-bundles.json must retain target_domain in the document payload");
+  });
+});
+
+test("ProofBundle bundle_hash changes when the replay image tag changes", () => {
+  withTempHome(() => {
+    const replayCommand = ["sh", "-lc", "./repro.sh"];
+    const hashes = [];
+    for (const [domain, imageTag] of [
+      ["proof-image-a.example.com", "bob-oss-fixture:a"],
+      ["proof-image-b.example.com", "bob-oss-fixture:b"],
+    ]) {
+      appendRepoRunFixture(domain, "run-fixture", replayCommand, { image_tag: imageTag });
+      const document = normalizeProofBundlesDocument({
+        version: 1,
+        target_domain: domain,
+        packs: [replayBundle("F-1", "run-fixture", replayCommand)],
+      }, {
+        expectedDomain: domain,
+        findingIdSet: new Set(["F-1"]),
+        finalReportableIdSet: new Set(["F-1"]),
+      });
+      hashes.push(document.packs[0].bundle_hash);
+    }
+
+    assert.notEqual(hashes[0], hashes[1], "bundle_hash must bind replay image_tag changes");
   });
 });
 

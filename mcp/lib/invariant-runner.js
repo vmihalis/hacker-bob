@@ -10,6 +10,9 @@ const {
   sessionsRoot,
 } = require("./paths.js");
 const {
+  parseFindingId,
+} = require("./validation.js");
+const {
   suggestInvariantsForFinding,
 } = require("./invariant-template-corpus.js");
 const {
@@ -27,6 +30,12 @@ const READ_CHUNK_BYTES = 64 * 1024;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeOptionalFindingId(finding) {
+  const raw = finding && (finding.id || finding.finding_id);
+  if (raw == null) return null;
+  return parseFindingId(raw, "finding.id");
 }
 
 function resolveInvariantRunsFilePath(filePath, { createDir = false } = {}) {
@@ -589,6 +598,7 @@ async function runInvariantForFinding({
   if (typeof foundry_run !== "function" && dry_run !== true) {
     throw new Error("foundry_run must be a function (or pass dry_run: true)");
   }
+  const findingId = normalizeOptionalFindingId(finding);
   const suggestion = suggestInvariantsForFinding(finding, { slot_values });
   if (suggestion.suggestions.length === 0) {
     return {
@@ -675,6 +685,7 @@ async function runInvariantForFinding({
   const record = {
     run_hash: runHash,
     target_domain: domain,
+    finding_id: findingId,
     finding_hash: finding.finding_hash || null,
     finding_title: finding.title || null,
     vulnerability_class: suggestion.vulnerability_class,
@@ -716,6 +727,7 @@ async function runInvariantForFinding({
     function_name,
     test_path: writtenPath,
     outcome,
+    finding_id: findingId,
     unfilled_slots: chosen.unfilled_slots,
     run_hash: runHash,
     execution_context_hash: executionContextHash,
