@@ -57,7 +57,7 @@ function escapeRegExp(value) {
 
 function sentinelPattern(sentinel) {
   const marker = sentinel.startsWith("<<") ? sentinel.slice(2) : sentinel;
-  const ltToken = "(?:<|&lt;|&#60;|&#x3c;|%3c)";
+  const ltToken = "(?:<|\\uff1c|\\u27e8|&lt;|&#60;|&#x3c;|%3c|%253c)";
   return new RegExp(`${ltToken}${ltToken}${escapeRegExp(marker)}`, "gi");
 }
 
@@ -76,10 +76,15 @@ function wrapUntrusted(content, { label } = {}) {
   const nonce = generateEnvelopeNonce();
   const safeLabel = normalizeLabel(label);
   const body = neutralizeFenceForgery(bodyText, nonce);
-  const header = `${OPEN_SENTINEL} nonce=${nonce} label=${safeLabel}>>`;
+  let header = `${OPEN_SENTINEL} nonce=${nonce} label=${safeLabel}>>`;
   const footer = `${CLOSE_SENTINEL} nonce=${nonce}>>`;
-  const text = `${header}\n${body}\n${footer}`;
-  const overhead = text.length - body.length;
+  let text = `${header}\n${body}\n${footer}`;
+  let overhead = text.length - body.length;
+  if (overhead > FENCE_OVERHEAD_CAP && safeLabel !== "untrusted") {
+    header = `${OPEN_SENTINEL} nonce=${nonce} label=untrusted>>`;
+    text = `${header}\n${body}\n${footer}`;
+    overhead = text.length - body.length;
+  }
   if (overhead > FENCE_OVERHEAD_CAP) {
     throw new Error(`untrusted envelope framing overhead ${overhead} exceeds ${FENCE_OVERHEAD_CAP}`);
   }
