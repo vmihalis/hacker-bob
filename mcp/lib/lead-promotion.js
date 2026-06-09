@@ -362,7 +362,7 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
         promoted: promotedSurfaceIds.length,
         filtered: newlyFiltered,
         deferred_by_limit: deferredByLimit,
-        evaluator_runs_avoided: newlyFiltered + deferredByLimit,
+        evaluator_runs_avoided: newlyFiltered,
       },
     }, safeGovernanceContextForDomain(domain));
   }

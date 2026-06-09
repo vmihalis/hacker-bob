@@ -446,7 +446,7 @@ test("bob_promote_surface_leads emits evaluator_run_avoided before all-filtered 
   });
 });
 
-test("bob_promote_surface_leads counts limit-deferred promotions as avoided for the call", () => {
+test("bob_promote_surface_leads reports limit-deferred promotions separately from avoided runs", () => {
   withTempHome(() => {
     const domain = "x7-limit-deferred.example.com";
     seedSession(domain);
@@ -475,8 +475,23 @@ test("bob_promote_surface_leads counts limit-deferred promotions as avoided for 
       promoted: 2,
       filtered: 0,
       deferred_by_limit: 1,
-      evaluator_runs_avoided: 1,
+      evaluator_runs_avoided: 0,
     });
+
+    const repeated = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 2,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(repeated.promoted, 1);
+    assert.equal(
+      readEvaluatorRunAvoidedEvents(domain)
+        .reduce((total, event) => total + (event.counts.evaluator_runs_avoided || 0), 0),
+      0,
+      "limit deferral must not inflate evaluator_runs_avoided across promotion calls",
+    );
   });
 });
 
