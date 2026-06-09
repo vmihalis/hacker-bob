@@ -1379,6 +1379,13 @@ const AVAILABLE_CLI_TOOLS_MAX = 5;
 const TELEMETRY_PROMOTION_WEIGHT = 0.5;
 const APPLICABLE_MATCH_WEIGHT = 2;
 const INSTALL_PRESENT_WEIGHT = 1;
+const CLI_TOOL_TIE_BREAK_PRIORITY = Object.freeze({
+  // I10's baseline repo scanners feed the SARIF/secret index path. Keep them
+  // visible under the five-pack cap when all repo packs tie on score.
+  semgrep: 0,
+  trivy: 1,
+});
+const CLI_TOOL_DEFAULT_TIE_BREAK_PRIORITY = 100;
 
 async function loadCliToolInstallStatus(targetDomain, packs) {
   const status = {};
@@ -1484,6 +1491,9 @@ function scoreAndRenderCliToolPacks({
     .filter((entry) => entry.applicable)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      const aPriority = CLI_TOOL_TIE_BREAK_PRIORITY[a.pack.id] ?? CLI_TOOL_DEFAULT_TIE_BREAK_PRIORITY;
+      const bPriority = CLI_TOOL_TIE_BREAK_PRIORITY[b.pack.id] ?? CLI_TOOL_DEFAULT_TIE_BREAK_PRIORITY;
+      if (aPriority !== bPriority) return aPriority - bPriority;
       return a.pack.id.localeCompare(b.pack.id);
     })
     .slice(0, AVAILABLE_CLI_TOOLS_MAX);

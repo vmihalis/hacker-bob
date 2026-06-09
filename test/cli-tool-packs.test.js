@@ -24,6 +24,7 @@ const {
 } = require("../mcp/lib/cli-tool-presence.js");
 const {
   renderAvailableCliToolsSection,
+  renderAvailableCliToolsSectionSync,
 } = require("../mcp/lib/assignment-brief.js");
 
 async function withTempHome(fn) {
@@ -472,6 +473,22 @@ test("renderAvailableCliToolsSection caps output at top 5", async () => {
     const packLines = md.split("\n").filter((line) => /^- \*\*/.test(line));
     assert.equal(packLines.length, 5, "section must respect top-5 cap");
   });
+});
+
+test("repo static baseline scanners stay visible under the top-5 cap", () => {
+  const md = renderAvailableCliToolsSectionSync({
+    surface_fingerprint: { kind: "repo" },
+    observations: [
+      { kind: "dependency_observed", payload: { ecosystem: "cargo" } },
+      { kind: "dependency_observed", payload: { ecosystem: "npm" } },
+      { kind: "dependency_observed", payload: { ecosystem: "pypi" } },
+    ],
+    target_domain: "repo-cli-priority.example",
+  });
+  const packLines = md.split("\n").filter((line) => /^- \*\*/.test(line));
+  assert.equal(packLines.length, 5, "section must still respect top-5 cap");
+  assert.match(md, /\*\*semgrep\*\*/, "semgrep must remain visible as the SARIF baseline scanner");
+  assert.match(md, /\*\*trivy\*\*/, "trivy must remain visible as the secret/static baseline scanner");
 });
 
 test("renderAvailableCliToolsSection returns empty string when nothing applies", async () => {
