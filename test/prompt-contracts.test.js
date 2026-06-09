@@ -892,6 +892,7 @@ test("evaluator-agent exposes claim-recording, handoff, coverage, and audit tool
     "bob_read_http_audit",
     "bob_import_static_artifact",
     "bob_static_scan",
+    "bob_ingest_sarif",
     "bob_record_surface_leads",
     "bob_read_surface_leads",
     "bob_get_context_budget",
@@ -979,7 +980,10 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // gaps_present verdict. Cap bumped 383 → 387.
   // C14 proof-carrying disclosure adds bob_write_proof_bundle to the
   // orchestrator bundle (+1 generated allowed-tools line).
-  assert.ok(lines <= 388, `bob-evaluate-runner skill is ${lines} lines (cap 388)`);
+  // IP7 SARIF ingest adds bob_ingest_sarif to the orchestrator bundle
+  // (+1 generated allowed-tools line) while keeping ingestion host-side and
+  // bounded.
+  assert.ok(lines <= 389, `bob-evaluate-runner skill is ${lines} lines (cap 389)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1208,7 +1212,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // payloads, no body fields, 5-tuple idempotent. Per-evaluator brief
   // tokens unchanged (no brief surfacing); budgets bump by +2 (SC 39→41,
   // web 41→43) to keep parity with the bundle surface.
-  const EVALUATOR_MCP_TOOL_BUDGET = 41;
+  // IP7 adds bob_ingest_sarif to evaluator-shared. It reads already-captured
+  // SARIF artifacts, returns a bounded summary, and writes lead seeds only;
+  // budgets bump by +1 (SC 41→42, web 43→44) to match the registry surface.
+  const EVALUATOR_MCP_TOOL_BUDGET = 42;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind === "agent" && typeof spec.output_path === "string") {
@@ -1217,7 +1224,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 43 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 44 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

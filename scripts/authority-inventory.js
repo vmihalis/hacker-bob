@@ -175,6 +175,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_start_next_wave: "initialized_session_mutation",
   bob_start_wave: "initialized_session_mutation",
   bob_static_scan: "initialized_session_mutation",
+  bob_ingest_sarif: "initialized_session_mutation",
   bob_substrate_fetch_runtime: "smart_contract_contextual",
   bob_substrate_fetch_storage: "smart_contract_contextual",
   bob_substrate_run: "smart_contract_contextual",

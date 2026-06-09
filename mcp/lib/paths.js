@@ -241,6 +241,10 @@ function staticScanResultsJsonlPath(domain) {
   return path.join(sessionDir(domain), "static-scan-results.jsonl");
 }
 
+function staticAnalysisResultsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "static-analysis-results.jsonl");
+}
+
 function verificationRoundPaths(domain, round) {
   const normalizedRound = assertEnumValue(round, VERIFICATION_ROUND_VALUES, "round");
   const fileNames = VERIFICATION_ROUND_FILE_MAP[normalizedRound];
@@ -573,6 +577,7 @@ module.exports = {
   staticArtifactImportDir,
   staticArtifactPath,
   staticArtifactsJsonlPath,
+  staticAnalysisResultsJsonlPath,
   staticScanResultsJsonlPath,
   taskGraphPath,
   taskQueuePath,

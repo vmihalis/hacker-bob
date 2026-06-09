@@ -18,6 +18,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_read_doc_delta_results
   - mcp__hacker-bob__bob_run_auth_differential
   - mcp__hacker-bob__bob_read_auth_differential_results
+  - mcp__hacker-bob__bob_ingest_sarif
   - mcp__hacker-bob__bob_record_candidate_claim
   - mcp__hacker-bob__bob_list_candidate_claims
   - mcp__hacker-bob__bob_read_chain_attempts

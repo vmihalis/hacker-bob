@@ -571,9 +571,11 @@ module.exports = {
   normalizeStaticArtifactRecord,
   normalizeStaticScanResultRecord,
   readStaticArtifactRecordsFromJsonl,
+  readJsonlRecords,
   readStaticScanResultsFromJsonl,
   redactStaticArtifactContent,
   scanTokenContractContent,
+  shortSha256,
   staticScan,
   summarizeStaticScanHints,
 };

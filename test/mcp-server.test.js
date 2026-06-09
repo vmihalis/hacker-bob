@@ -384,6 +384,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_run_auth_differential",
   "bob_read_auth_differential_results",
   "bob_static_scan",
+  "bob_ingest_sarif",
   "bob_record_candidate_claim",
   "bob_read_candidate_claims",
   "bob_list_candidate_claims",

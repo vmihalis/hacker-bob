@@ -219,14 +219,14 @@ const SEED_PACKS = [
   {
     id: "semgrep",
     install_check: "semgrep --version",
-    invocation_template: "semgrep --config auto /src",
+    invocation_template: "semgrep --sarif --config auto /src",
     applicable_when: ({ surface }) => Boolean(surface && surface.kind === "repo"),
     narrative: "Static analysis — auto-config rulepack scan over /src for bug-class hints.",
   },
   {
     id: "trivy",
     install_check: "trivy --version",
-    invocation_template: "trivy fs --scanners vuln,secret,misconfig /src",
+    invocation_template: "trivy fs --format sarif --output /work/trivy.sarif --scanners vuln,secret,misconfig /src",
     applicable_when: ({ surface }) => Boolean(surface && surface.kind === "repo"),
     narrative: "Repo scanner — vulnerabilities, leaked secrets, misconfigurations in /src.",
   },

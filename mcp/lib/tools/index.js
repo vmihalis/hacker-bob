@@ -17,6 +17,7 @@ const TOOL_MODULES = Object.freeze([
   require("./run-auth-differential.js"),
   require("./read-auth-differential-results.js"),
   require("./static-scan.js"),
+  require("./ingest-sarif.js"),
   require("./record-candidate-claim.js"),
   require("./read-candidate-claims.js"),
   require("./list-candidate-claims.js"),
