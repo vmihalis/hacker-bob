@@ -378,6 +378,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_build_verification_adjudication",
   "bob_write_evidence_packs",
   "bob_read_evidence_packs",
+  "bob_write_proof_bundle",
   "bob_write_grade_verdict",
   "bob_read_grade_verdict",
   "bob_init_session",

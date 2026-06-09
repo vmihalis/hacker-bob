@@ -111,6 +111,7 @@
   "test/write-base.test.js",
   "test/audit-graded-paths.test.js",
   "test/compose-report.test.js",
+  "test/proof-bundle.test.js",
   "test/amend-report.test.js",
   "test/write-chain-rollup.test.js",
   "test/tool-error-remediation.test.js",

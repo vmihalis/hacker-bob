@@ -16,6 +16,7 @@
       "mcp__hacker-bob__bob_read_verification_context",
       "mcp__hacker-bob__bob_write_evidence_packs",
       "mcp__hacker-bob__bob_read_evidence_packs",
+      "mcp__hacker-bob__bob_write_proof_bundle",
       "mcp__hacker-bob__bob_write_grade_verdict",
       "mcp__hacker-bob__bob_read_grade_verdict",
       "mcp__hacker-bob__bob_read_session_state",

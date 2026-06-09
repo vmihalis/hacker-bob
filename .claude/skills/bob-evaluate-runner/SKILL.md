@@ -30,6 +30,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_diff_verification_attempts
   - mcp__hacker-bob__bob_build_verification_adjudication
   - mcp__hacker-bob__bob_read_evidence_packs
+  - mcp__hacker-bob__bob_write_proof_bundle
   - mcp__hacker-bob__bob_read_grade_verdict
   - mcp__hacker-bob__bob_init_session
   - mcp__hacker-bob__bob_init_repo_session

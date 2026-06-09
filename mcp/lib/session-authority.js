@@ -192,6 +192,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_write_evidence_packs: "initialized_session_mutation",
   bob_write_grade_verdict: "initialized_session_mutation",
   bob_write_handoff: "initialized_session_mutation",
+  bob_write_proof_bundle: "initialized_session_mutation",
   bob_write_verification_round: "initialized_session_mutation",
   bob_write_wave_handoff: "initialized_session_mutation",
 });

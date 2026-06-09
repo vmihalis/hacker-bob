@@ -34,6 +34,10 @@ const {
   normalizeEvidencePacksDocument,
 } = require("../mcp/lib/evidence.js");
 const {
+  normalizeProofBundlesDocument,
+} = require("../mcp/lib/proof-bundle.js");
+const {
+  proofBundlePaths,
   repoCommandRunsJsonlPath,
   repoRunsDir,
 } = require("../mcp/lib/paths.js");
@@ -241,6 +245,32 @@ function exerciseDifferentialEvidence(domain) {
   };
 }
 
+function exerciseProofBundle(domain) {
+  const document = normalizeProofBundlesDocument({
+    version: 1,
+    target_domain: domain,
+    packs: [{
+      finding_id: "F-1",
+      bundle_kind: "replay_script",
+      artifacts: [{
+        run_id: "det-ci-vuln-run",
+        replay_command: ["sh", "-lc", "./repro.sh"],
+        replay_summary: "Deterministic proof bundle fixture replay.",
+      }],
+    }],
+  }, {
+    expectedDomain: domain,
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  });
+  const paths = proofBundlePaths(domain);
+  fs.writeFileSync(paths.json, `${JSON.stringify(document, null, 2)}\n`);
+  return {
+    bundle_hash: document.packs[0].bundle_hash,
+    document_hash: hashCanonicalJson(document),
+  };
+}
+
 async function exerciseDeterministicPipelines(domain) {
   ingestSchemaDoc({
     target_domain: domain,
@@ -280,7 +310,8 @@ async function exerciseDeterministicPipelines(domain) {
   });
 
   const c10 = exerciseDifferentialEvidence(domain);
-  return { docDelta, authDiff, c10 };
+  const proofBundle = exerciseProofBundle(domain);
+  return { docDelta, authDiff, c10, proofBundle };
 }
 
 function readJsonl(filePath) {
@@ -347,10 +378,14 @@ test("determinism CI: every v2-style content-addressed artifact reproduces byte-
     // bookkeeping).
     assert.notEqual(runA.docDelta.results_hash, runB.docDelta.results_hash, "doc-delta results_hash must include target_domain so cross-domain hashes diverge");
     assert.notEqual(runA.authDiff.results_hash, runB.authDiff.results_hash, "auth-differential results_hash must include target_domain so cross-domain hashes diverge");
+    assert.notEqual(runA.proofBundle.document_hash, runB.proofBundle.document_hash, "proof-bundles.json hash must include target_domain so cross-domain hashes diverge");
     assert.equal(runA.c10.differential_hash, runB.c10.differential_hash, "C10 differential hash must be target-domain independent");
+    assert.equal(runA.proofBundle.bundle_hash, runB.proofBundle.bundle_hash, "C14 bundle_hash must be target-domain independent");
     assert.ok(typeof runA.docDelta.results_hash === "string" && runA.docDelta.results_hash.length === 64);
     assert.ok(typeof runA.authDiff.results_hash === "string" && runA.authDiff.results_hash.length === 64);
     assert.ok(typeof runA.c10.differential_hash === "string" && runA.c10.differential_hash.length === 64);
+    assert.ok(typeof runA.proofBundle.bundle_hash === "string" && runA.proofBundle.bundle_hash.length === 64);
+    assert.ok(typeof runA.proofBundle.document_hash === "string" && runA.proofBundle.document_hash.length === 64);
     // The disk-resident copy must match the in-memory result we got back.
     assert.equal(readDocDeltaResults(domainA).results_hash, runA.docDelta.results_hash);
     assert.equal(readAuthDifferentialResults(domainA).results_hash, runA.authDiff.results_hash);
@@ -373,6 +408,8 @@ test("determinism CI: re-running the same pipeline against the same target produ
     assert.equal(firstRun.docDelta.results_hash, secondRun.docDelta.results_hash, "doc-delta results_hash drifted on second pass against the same target");
     assert.equal(firstRun.authDiff.results_hash, secondRun.authDiff.results_hash, "auth-differential results_hash drifted on second pass against the same target");
     assert.equal(firstRun.c10.differential_hash, secondRun.c10.differential_hash, "C10 differential hash drifted on second pass against the same target");
+    assert.equal(firstRun.proofBundle.bundle_hash, secondRun.proofBundle.bundle_hash, "C14 bundle_hash drifted on second pass against the same target");
+    assert.equal(firstRun.proofBundle.document_hash, secondRun.proofBundle.document_hash, "proof-bundles.json hash drifted on second pass against the same target");
   } finally {
     cleanupDomain(domain);
   }

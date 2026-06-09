@@ -40,6 +40,7 @@ const {
   verificationRoundPaths,
   frontierEventsJsonlPath,
   evidencePackPaths,
+  proofBundlePaths,
   chainAttemptsJsonlPath,
 } = require("../paths.js");
 const {
@@ -53,6 +54,7 @@ const SECTION_KINDS = Object.freeze([
   "severity",
   "remediation",
   "chain_summary",
+  "proof_bundle",
   "provenance",
 ]);
 const PROVENANCE_VALUES = Object.freeze([
@@ -73,6 +75,7 @@ const EVIDENCE_REF_PARSERS = Object.freeze([
   { prefix: "verification_round:", validate: validateVerificationRoundRef },
   { prefix: "chain_attempt:", validate: validateChainAttemptRef },
   { prefix: "evidence_pack:", validate: validateEvidencePackRef },
+  { prefix: "proof_bundle:", validate: validateProofBundleRef },
 ]);
 
 // Banner is prepended on every render so operators see the policy verbatim
@@ -188,6 +191,18 @@ function validateEvidencePackRef(domain, id) {
   }
 }
 
+function validateProofBundleRef(domain, id) {
+  const paths = proofBundlePaths(domain);
+  if (!fs.existsSync(paths.json)) return false;
+  try {
+    const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+    const packs = Array.isArray(doc && doc.packs) ? doc.packs : [];
+    return packs.some((pack) => pack && pack.finding_id === id);
+  } catch {
+    return false;
+  }
+}
+
 function validateProvenance(domain, section) {
   if (section.provenance !== "bob_verified") return;
   if (!Array.isArray(section.evidence_refs) || section.evidence_refs.length === 0) {
@@ -206,7 +221,7 @@ function validateProvenance(domain, section) {
     if (!classified) {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
-        `evidence_ref ${ref} does not parse as a known prefix (frontier_event:, http_record:, verification_round:, chain_attempt:, evidence_pack:)`,
+        `evidence_ref ${ref} does not parse as a known prefix (frontier_event:, http_record:, verification_round:, chain_attempt:, evidence_pack:, proof_bundle:)`,
         { ref },
         {
           remediation: "rewrite the evidence_ref with a known prefix or remove provenance: bob_verified",

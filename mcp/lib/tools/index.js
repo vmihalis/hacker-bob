@@ -33,6 +33,7 @@ const TOOL_MODULES = Object.freeze([
   require("./build-verification-adjudication.js"),
   require("./write-evidence-packs.js"),
   require("./read-evidence-packs.js"),
+  require("./write-proof-bundle.js"),
   require("./write-grade-verdict.js"),
   require("./read-grade-verdict.js"),
   require("./init-session.js"),

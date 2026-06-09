@@ -31,6 +31,8 @@ test("audit-graded basenames include the canonical hash-bound artifacts", () => 
     "report.md",
     "chains.md",
     "evidence-packs.md",
+    "proof-bundles.md",
+    "proof-bundles.json",
     "grade.md",
     "claim-freeze.json",
     "report-amendments.jsonl",

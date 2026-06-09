@@ -14,6 +14,7 @@ const {
 } = require("./validation.js");
 const {
   evidencePackPaths,
+  proofBundlePaths,
   verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationManifestPath,
@@ -140,6 +141,9 @@ function verificationSourceFiles(domain) {
   const evidence = evidencePackPaths(domain);
   files.push([path.basename(evidence.json), evidence.json]);
   files.push([path.basename(evidence.markdown), evidence.markdown]);
+  const proofBundles = proofBundlePaths(domain);
+  if (fs.existsSync(proofBundles.json)) files.push([path.basename(proofBundles.json), proofBundles.json]);
+  if (fs.existsSync(proofBundles.markdown)) files.push([path.basename(proofBundles.markdown), proofBundles.markdown]);
   return files;
 }
 

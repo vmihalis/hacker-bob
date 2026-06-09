@@ -268,6 +268,14 @@ function evidencePackPaths(domain) {
   };
 }
 
+function proofBundlePaths(domain) {
+  const dir = sessionDir(domain);
+  return {
+    json: path.join(dir, "proof-bundles.json"),
+    markdown: path.join(dir, "proof-bundles.md"),
+  };
+}
+
 function verificationSnapshotPath(domain) {
   return path.join(sessionDir(domain), "verification-input-snapshot.json");
 }
@@ -397,6 +405,8 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   "chains.md",
   "evidence-packs.md",
   "evidence-packs.json",
+  "proof-bundles.md",
+  "proof-bundles.json",
   "grade.md",
   "grade.json",
   "claim-freeze.json",
@@ -515,6 +525,7 @@ module.exports = {
   httpAuditJsonlPath,
   liveDeadEndsJsonlPath,
   pipelineEventsJsonlPath,
+  proofBundlePaths,
   publicIntelPath,
   queuePolicyPath,
   reportMarkdownPath,
