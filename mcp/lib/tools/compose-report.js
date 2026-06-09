@@ -191,19 +191,30 @@ function validateEvidencePackRef(domain, id) {
   }
 }
 
+function findingSetsFromFinalRound(finalRound) {
+  const findingIdSet = new Set();
+  const finalReportableIdSet = new Set();
+  const results = Array.isArray(finalRound && finalRound.results) ? finalRound.results : [];
+  for (const result of results) {
+    if (!result || typeof result.finding_id !== "string" || !result.finding_id.trim()) continue;
+    findingIdSet.add(result.finding_id);
+    if (result.reportable === true) finalReportableIdSet.add(result.finding_id);
+  }
+  return { findingIdSet, finalReportableIdSet };
+}
+
 function validateProofBundleRef(domain, id) {
   const paths = proofBundlePaths(domain);
   if (!fs.existsSync(paths.json)) return false;
   try {
     const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
-    const packs = Array.isArray(doc && doc.packs) ? doc.packs : [];
-    if (!packs.some((pack) => pack && pack.finding_id === id)) return false;
     const bindingFields = ["verification_attempt_id", "verification_snapshot_hash", "final_verification_hash"];
     const hasBinding = bindingFields.some((field) => doc[field] != null);
     const finalPaths = verificationRoundPaths(domain, "final");
     let finalBinding = null;
+    let finalRound = null;
     if (fs.existsSync(finalPaths.json)) {
-      const finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
+      finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
       const finalHasBinding = bindingFields.some((field) => finalRound && finalRound[field] != null);
       if ((finalRound && finalRound.version === 2) || finalHasBinding) {
         if (!bindingFields.every((field) => typeof finalRound[field] === "string" && finalRound[field].trim())) {
@@ -212,10 +223,19 @@ function validateProofBundleRef(domain, id) {
         finalBinding = Object.fromEntries(bindingFields.map((field) => [field, finalRound[field]]));
       }
     }
-    if (!hasBinding && !finalBinding) return true;
-    if (!hasBinding || !finalBinding) return false;
-    if (!bindingFields.every((field) => typeof doc[field] === "string" && doc[field].trim())) return false;
-    return bindingFields.every((field) => finalBinding[field] === doc[field]);
+    if (!finalRound) return false;
+    if (hasBinding || finalBinding) {
+      if (!hasBinding || !finalBinding) return false;
+      if (!bindingFields.every((field) => typeof doc[field] === "string" && doc[field].trim())) return false;
+      if (!bindingFields.every((field) => finalBinding[field] === doc[field])) return false;
+    }
+    const { normalizeProofBundlesDocument } = require("../proof-bundle.js");
+    const normalized = normalizeProofBundlesDocument(doc, {
+      expectedDomain: domain,
+      ...findingSetsFromFinalRound(finalRound),
+      verificationBinding: finalBinding,
+    });
+    return normalized.packs.some((pack) => pack && pack.finding_id === id);
   } catch {
     return false;
   }

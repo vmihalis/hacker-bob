@@ -166,6 +166,20 @@ function assertReplayRunFindingBinding(row, findingId, fieldName) {
   return actual;
 }
 
+function assertBaselineReplayRun(row, fieldName) {
+  const checkoutFields = [
+    "checkout_ref",
+    "checkout_kind",
+    "checkout_object",
+    "checkout_object_format",
+    "checkout_patch_hash",
+  ];
+  const present = checkoutFields.filter((field) => row[field] != null);
+  if (present.length > 0) {
+    throw new Error(`${fieldName} must reference a baseline repo docker run without checkout fields; use bundle_kind differential for control or patched-tree runs`);
+  }
+}
+
 function readRepoCommandRunRow(rows, runId, fieldName, expectedFindingId = null) {
   const normalizedRunId = assertRepoRunId(runId, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_id === normalizedRunId);
@@ -188,6 +202,7 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedFindingId = null)
   if (DISALLOWED_REPO_COMMAND_EXIT_CODES.includes(row.exit_code)) {
     throw new Error(`${fieldName} must not reference a Docker/runtime infrastructure failure exit code`);
   }
+  assertBaselineReplayRun(row, fieldName);
   assertReplayNetworkMode(row, fieldName);
   if (row.mount_mode !== "read_only") {
     throw new Error(`${fieldName} must reference a read-only /src repo docker run`);
@@ -303,11 +318,6 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
   else if (Number.isInteger(row.stderr_bytes)) projection.stderr_size_bytes = row.stderr_bytes;
   if (typeof row.stdout_truncated === "boolean") projection.stdout_truncated = row.stdout_truncated;
   if (typeof row.stderr_truncated === "boolean") projection.stderr_truncated = row.stderr_truncated;
-  if (typeof row.checkout_ref === "string") projection.checkout_ref = row.checkout_ref;
-  if (typeof row.checkout_kind === "string") projection.checkout_kind = row.checkout_kind;
-  if (typeof row.checkout_object === "string") projection.checkout_object = row.checkout_object;
-  if (typeof row.checkout_object_format === "string") projection.checkout_object_format = row.checkout_object_format;
-  if (typeof row.checkout_patch_hash === "string") projection.checkout_patch_hash = row.checkout_patch_hash;
   return projection;
 }
 
@@ -350,11 +360,6 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
     "stderr_size_bytes",
     "stdout_truncated",
     "stderr_truncated",
-    "checkout_ref",
-    "checkout_kind",
-    "checkout_object",
-    "checkout_object_format",
-    "checkout_patch_hash",
   ]) {
     if (runProjection[key] != null) normalized[key] = runProjection[key];
   }
@@ -501,9 +506,9 @@ function proofBundleHashArtifact(artifact) {
   if (!isPlainObject(artifact)) return zeroTimestampFields(artifact);
   const normalized = {};
   for (const [key, value] of Object.entries(artifact)) {
-    // replay run_hash and raw image_tag include target-scoped row identity; the
-    // bundle hash binds the target-independent replay fields directly.
-    if (artifact.artifact_kind === "replay_script" && key === "run_hash") {
+    // Replay run_id/run_hash and raw image_tag include random or target-scoped
+    // row identity; the bundle hash binds target-independent replay fields.
+    if (artifact.artifact_kind === "replay_script" && (key === "run_id" || key === "run_hash")) {
       continue;
     }
     if (artifact.artifact_kind === "replay_script" && key === "image_tag") {

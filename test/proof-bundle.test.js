@@ -115,6 +115,15 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
     stdout_truncated: false,
     stderr_truncated: false,
   };
+  for (const key of [
+    "checkout_ref",
+    "checkout_kind",
+    "checkout_object",
+    "checkout_object_format",
+    "checkout_patch_hash",
+  ]) {
+    if (options[key] != null) row[key] = options[key];
+  }
   if (options.omit_work_mount_mode) delete row.work_mount_mode;
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
@@ -162,6 +171,22 @@ function reportableResult(findingId = "F-1", overrides = {}) {
 function callTool(tool, args) {
   const response = tool.handler(args);
   return typeof response === "string" ? JSON.parse(response) : response;
+}
+
+function writeNormalizedProofBundleDocument(domain, { binding = null } = {}) {
+  const document = normalizeProofBundlesDocument({
+    version: 1,
+    target_domain: domain,
+    ...(binding || {}),
+    packs: [replayBundle()],
+  }, {
+    expectedDomain: domain,
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+    verificationBinding: binding,
+  });
+  fs.writeFileSync(proofBundlePaths(domain).json, `${JSON.stringify(document, null, 2)}\n`);
+  return document;
 }
 
 test("bob_write_proof_bundle rejects bundles for non-reportable final findings", () => {
@@ -251,6 +276,27 @@ test("bob_write_proof_bundle rejects replay rows with a non-read-write /work mou
     assert.throws(
       () => writeProofBundles({ target_domain: domain, packs: [replayBundle()] }),
       /read-write \/work repo docker run/,
+    );
+  });
+});
+
+test("bob_write_proof_bundle rejects replay-script proofs backed by checkout runs", () => {
+  withTempHome(() => {
+    const domain = "proof-checkout-run.example.com";
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendRepoRunFixture(domain, "run-checkout", ["sh", "-lc", "./repro.sh"], {
+      checkout_kind: "patch",
+      checkout_object: "control",
+      checkout_patch_hash: sha256Hex("patch"),
+    });
+
+    assert.throws(
+      () => writeProofBundles({
+        target_domain: domain,
+        packs: [replayBundle("F-1", "run-checkout")],
+      }),
+      /without checkout fields/,
     );
   });
 });
@@ -393,15 +439,15 @@ test("bob_compose_report rejects unbound proof_bundle refs when current final ve
   });
 });
 
-test("bob_compose_report accepts proof_bundle refs bound to current V2 final verification", () => {
+test("bob_compose_report rejects proof_bundle refs with malformed bundle shape", () => {
   withTempHome(() => {
-    const domain = "proof-bound-v2-ref.example.com";
+    const domain = "proof-malformed-ref.example.com";
     initSession({ target_domain: domain, target_url: `https://${domain}` });
     seedFinding(domain);
     const binding = {
       verification_attempt_id: "attempt-current",
-      verification_snapshot_hash: "c".repeat(64),
-      final_verification_hash: "d".repeat(64),
+      verification_snapshot_hash: "e".repeat(64),
+      final_verification_hash: "f".repeat(64),
     };
     seedFinalRound(domain, [reportableResult()], {
       version: 2,
@@ -419,6 +465,39 @@ test("bob_compose_report accepts proof_bundle refs bound to current V2 final ver
         bundle_hash: sha256Hex("bundle"),
       }],
     }, null, 2)}\n`);
+
+    assert.throws(
+      () => callTool(composeReportTool, {
+        target_domain: domain,
+        sections: [{
+          kind: "proof_bundle",
+          heading: "Runnable Proof Bundle",
+          prose: "The reportable parser crash has a sandboxed replay bundle attached.",
+          provenance: "bob_verified",
+          evidence_refs: ["verification_round:final:F-1", "proof_bundle:F-1"],
+        }],
+      }),
+      /proof_bundle:F-1 does not resolve/,
+    );
+  });
+});
+
+test("bob_compose_report accepts proof_bundle refs bound to current V2 final verification", () => {
+  withTempHome(() => {
+    const domain = "proof-bound-v2-ref.example.com";
+    initSession({ target_domain: domain, target_url: `https://${domain}` });
+    seedFinding(domain);
+    const binding = {
+      verification_attempt_id: "attempt-current",
+      verification_snapshot_hash: "c".repeat(64),
+      final_verification_hash: "d".repeat(64),
+    };
+    seedFinalRound(domain, [reportableResult()], {
+      version: 2,
+      ...binding,
+    });
+    appendRepoRunFixture(domain);
+    writeNormalizedProofBundleDocument(domain, { binding });
 
     const result = callTool(composeReportTool, {
       target_domain: domain,
@@ -484,6 +563,32 @@ test("ProofBundle bundle_hash changes when the replay image identity changes", (
     }
 
     assert.notEqual(hashes[0], hashes[1], "bundle_hash must bind replay image identity changes");
+  });
+});
+
+test("ProofBundle bundle_hash is stable across different repo run_id handles", () => {
+  withTempHome(() => {
+    const replayCommand = ["sh", "-lc", "./repro.sh"];
+    const hashes = [];
+    for (const [domain, runId] of [
+      ["proof-run-id-a.example.com", "run-alpha"],
+      ["proof-run-id-b.example.com", "run-beta"],
+    ]) {
+      appendRepoRunFixture(domain, runId, replayCommand, { image_tag: "bob-oss-shared:cccccccccccccccc" });
+      const document = normalizeProofBundlesDocument({
+        version: 1,
+        target_domain: domain,
+        packs: [replayBundle("F-1", runId, replayCommand)],
+      }, {
+        expectedDomain: domain,
+        findingIdSet: new Set(["F-1"]),
+        finalReportableIdSet: new Set(["F-1"]),
+      });
+      hashes.push(document.packs[0].bundle_hash);
+      assert.equal(document.packs[0].artifacts[0].run_id, runId);
+    }
+
+    assert.equal(hashes[0], hashes[1], "bundle_hash must not depend on random repo run_id handles");
   });
 });
 
