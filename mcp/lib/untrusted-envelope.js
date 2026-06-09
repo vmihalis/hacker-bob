@@ -77,6 +77,7 @@ function wrapUntrusted(content, { label } = {}) {
   const nonce = generateEnvelopeNonce();
   const safeLabel = normalizeLabel(label);
   const body = neutralizeFenceForgery(bodyText, nonce);
+  const neutralized = body !== bodyText;
   let header = `${OPEN_SENTINEL} nonce=${nonce} label=${safeLabel}>>`;
   const footer = `${CLOSE_SENTINEL} nonce=${nonce}>>`;
   let text = `${header}\n${body}\n${footer}`;
@@ -93,6 +94,7 @@ function wrapUntrusted(content, { label } = {}) {
     text,
     fenced: text,
     nonce,
+    neutralized,
     content_hash: sha256Hex(inputBuffer),
     byte_len: inputBuffer.length,
   };

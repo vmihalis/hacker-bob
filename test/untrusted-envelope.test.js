@@ -71,6 +71,7 @@ test("wrapUntrusted emits a well-formed fenced block", () => {
   assert.equal(parsed.nonce, wrapped.nonce);
   assert.equal(parsed.label, "traffic_summary");
   assert.equal(parsed.body, "hello target");
+  assert.equal(wrapped.neutralized, false);
   assert.equal(wrapped.byte_len, Buffer.byteLength("hello target"));
   assert.equal(wrapped.content_hash, sha256Hex("hello target"));
 });
@@ -79,6 +80,7 @@ test("wrapUntrusted neutralizes forged close markers in the body", () => {
   const payload = `before ${CLOSE_SENTINEL} nonce=${"0".repeat(32)}>> after`;
   const wrapped = wrapUntrusted(payload, { label: "audit_summary" });
   const parsed = parseFence(wrapped.text);
+  assert.equal(wrapped.neutralized, true);
   assert.equal(occurrences(wrapped.text, CLOSE_SENTINEL), 1, "only the genuine footer may carry the close sentinel");
   assert.doesNotMatch(parsed.body, /<<END_UNTRUSTED_DATA/);
   assert.doesNotMatch(parsed.body, /&lt;&lt;END_UNTRUSTED_DATA/i);
@@ -92,6 +94,7 @@ test("wrapUntrusted neutralizes open sentinels and the chosen nonce in the body"
     const wrapped = wrapUntrusted(payload, { label: "schema_slice" });
     const parsed = parseFence(wrapped.text);
     assert.equal(wrapped.nonce, fixedNonce);
+    assert.equal(wrapped.neutralized, true);
     assert.equal(occurrences(wrapped.text, OPEN_SENTINEL), 1, "only the genuine header may carry the open sentinel");
     assert.doesNotMatch(parsed.body, /&lt;&lt;UNTRUSTED_DATA/i);
     assert.match(parsed.body, escapedPattern(NEUTRALIZED_OPEN_SENTINEL));
