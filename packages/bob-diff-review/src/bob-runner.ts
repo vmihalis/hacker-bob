@@ -63,6 +63,36 @@ export const BOB_RUNNER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 /** Grace period between SIGTERM and SIGKILL. */
 const SIGKILL_GRACE_MS = 5_000;
 
+/** Non-secret environment variables the claude subprocess needs to run. */
+const CLAUDE_CHILD_ENV_ALLOWLIST = Object.freeze([
+  "PATH",
+  "Path",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "CI",
+  "GITHUB_ACTIONS",
+  "RUNNER_ARCH",
+  "RUNNER_OS",
+  "RUNNER_TEMP",
+  "RUNNER_TOOL_CACHE",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "BOB_MCP_SERVER_PATH",
+  "SKIP_SURFACE_BUILD",
+] as const);
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -200,6 +230,45 @@ export function buildClaudeAuthEnv(creds: {
   }
   // Defensive: no credential available. The entrypoint enforces at-least-one.
   return {};
+}
+
+/**
+ * Build the complete child process environment for the claude subprocess.
+ *
+ * Only non-secret runtime variables are copied from the parent process. GitHub
+ * Actions injects action inputs and secrets into INPUT_* and token-shaped env
+ * variables; forwarding process.env wholesale would expose those values to the
+ * model-driven child process and any tools it invokes.
+ */
+export function buildClaudeChildEnv(opts: {
+  anthropicOauthToken?: string;
+  anthropicApiKey?: string;
+  anthropicModel?: string;
+  sourceEnv?: NodeJS.ProcessEnv;
+}): NodeJS.ProcessEnv {
+  const sourceEnv = opts.sourceEnv ?? process.env;
+  const childEnv: NodeJS.ProcessEnv = {};
+
+  for (const key of CLAUDE_CHILD_ENV_ALLOWLIST) {
+    const value = sourceEnv[key];
+    if (value !== undefined) {
+      childEnv[key] = value;
+    }
+  }
+
+  if (opts.anthropicModel?.trim()) {
+    childEnv["ANTHROPIC_MODEL"] = opts.anthropicModel.trim();
+  }
+
+  Object.assign(
+    childEnv,
+    buildClaudeAuthEnv({
+      oauthToken: opts.anthropicOauthToken,
+      apiKey: opts.anthropicApiKey,
+    })
+  );
+
+  return childEnv;
 }
 
 /**
@@ -381,6 +450,10 @@ export function resolveOutputDir(outputDir?: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "bob-diff-"));
 }
 
+function quoteSkillPromptValue(value: string): string {
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
 // ---------------------------------------------------------------------------
 // Main runner
 // ---------------------------------------------------------------------------
@@ -469,9 +542,9 @@ export async function runBobDiffReview(
   // to the skill only tempts it to feed the rejected slug to the MCP (PATH B).
   const skillPrompt = [
     `/bob-diff-review`,
-    `--repo`, path.resolve(repo),
-    `--diff-file`, path.resolve(diffFile),
-    `--output-dir`, outputDir,
+    `--repo`, quoteSkillPromptValue(path.resolve(repo)),
+    `--diff-file`, quoteSkillPromptValue(path.resolve(diffFile)),
+    `--output-dir`, quoteSkillPromptValue(outputDir),
   ].join(" ");
   const claudeArgs: string[] = [
     "--dangerously-skip-permissions",
@@ -506,26 +579,15 @@ export async function runBobDiffReview(
 
   claudeArgs.push(skillPrompt);
 
-  // 3. Build child process environment.
-  //    Inherit the current env so PATH, HOME, etc. are available, then overlay
-  //    exactly one Anthropic credential via buildClaudeAuthEnv (OAuth wins —
-  //    when an OAuth token is present ANTHROPIC_API_KEY is omitted so it cannot
-  //    silently shadow OAuth and exhaust credits).  When anthropicModel is set,
-  //    also inject ANTHROPIC_MODEL so the claude CLI picks the specified model.
-  //
-  //    Inherited process.env may itself contain a stale ANTHROPIC_API_KEY or
-  //    CLAUDE_CODE_OAUTH_TOKEN; we strip BOTH first so the single chosen
-  //    credential is the only one the subprocess sees.
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...(anthropicModel ? { ANTHROPIC_MODEL: anthropicModel } : {}),
-  };
-  delete childEnv["ANTHROPIC_API_KEY"];
-  delete childEnv["CLAUDE_CODE_OAUTH_TOKEN"];
-  Object.assign(
-    childEnv,
-    buildClaudeAuthEnv({ oauthToken: anthropicOauthToken, apiKey: anthropicApiKey })
-  );
+  // 3. Build child process environment from an explicit allowlist plus exactly
+  //    one Anthropic credential. Do not forward process.env wholesale: Actions
+  //    inputs, GitHub tokens, package tokens, proxy credentials, and unrelated
+  //    operator secrets can all be present in the parent environment.
+  const childEnv = buildClaudeChildEnv({
+    anthropicOauthToken,
+    anthropicApiKey,
+    anthropicModel,
+  });
 
   // 4. Set up AbortController for the 10-minute timeout.
   const abortController = new AbortController();

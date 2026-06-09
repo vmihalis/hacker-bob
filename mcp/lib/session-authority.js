@@ -182,7 +182,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_sui_fetch_object: "smart_contract_contextual",
   bob_sui_fetch_package: "smart_contract_contextual",
   bob_sui_run: "smart_contract_contextual",
-  bob_summarize_diff_impact: "initialized_session_read",
+  bob_summarize_diff_impact: "initialized_session_mutation",
   bob_svm_fetch_account: "smart_contract_contextual",
   bob_svm_fetch_program: "smart_contract_contextual",
   bob_temp_email: "global_preapproval",

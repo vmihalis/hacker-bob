@@ -174,7 +174,8 @@ plus a Check Run result on every PR.
 
    | Name | Type | Description |
    |---|---|---|
-   | `ANTHROPIC_API_KEY` | Secret | Anthropic API key for the headless Claude reviewer. |
+   | `ANTHROPIC_OAUTH_TOKEN` | Secret | Recommended Anthropic OAuth token from `claude setup-token` for the headless Claude reviewer. |
+   | `ANTHROPIC_API_KEY` | Secret | Anthropic API key fallback for the headless Claude reviewer. Required only when `ANTHROPIC_OAUTH_TOKEN` is not set. |
    | `BOB_INSTALL_TOKEN` | Secret | GitHub App token or fine-grained PAT with `read:packages` and `contents:read` scopes. Used to install `@bobnetsec/*` packages. |
    | `BOB_VERSION` | Variable | Bob release tag to cache, e.g. `v1.2.3`. Shared across repos in the org so they reuse the same warm workspace cache. |
 
@@ -230,9 +231,10 @@ jobs:
 
 ### Fork PRs
 
-Forked PRs do not receive org-level secrets. The reusable workflow detects
-this automatically and skips the job rather than failing mid-run. No
-additional guard is needed in the caller workflow.
+Forked PRs do not receive org-level secrets, and same-repo PRs may also run
+before reviewer credentials are configured. The workflow detects missing
+Anthropic credentials and skips the Bob review steps instead of failing the PR
+check in setup. No additional guard is needed in the caller workflow.
 
 ### Versioning
 

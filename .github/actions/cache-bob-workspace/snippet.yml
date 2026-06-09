@@ -23,7 +23,7 @@ steps:
       # Absolute path — independent of GITHUB_WORKSPACE
       path: ~/bob-workspace
       # Bust automatically on version bump or OS change
-      key: ${{ runner.os }}-bob-workspace-${{ vars.BOB_VERSION }}
+      key: ${{ runner.os }}-bob-workspace-${{ vars.BOB_VERSION }}-runtime-v2
       # No restore-keys: a partial cache is worse than a fresh install
 
   # ── Step 2: Check out hacker-bob source (cache miss only) ────────────
@@ -31,9 +31,9 @@ steps:
     if: steps.cache-bob.outputs.cache-hit != 'true'
     uses: actions/checkout@v4
     with:
-      repository: bobnetsec/hacker-bob
+      repository: vmihalis/hacker-bob
       ref: ${{ vars.BOB_VERSION }}
-      path: /tmp/hacker-bob-src
+      path: .bob-workspace-source/hacker-bob-src
       # Uncomment for private repo access:
       # token: ${{ secrets.BOB_GITHUB_TOKEN }}
 
@@ -42,11 +42,25 @@ steps:
     if: steps.cache-bob.outputs.cache-hit != 'true'
     run: |
       set -euo pipefail
+      SRC="$GITHUB_WORKSPACE/.bob-workspace-source/hacker-bob-src"
       mkdir -p "$HOME/bob-workspace"
-      bash /tmp/hacker-bob-src/install.sh "$HOME/bob-workspace"
+      (cd "$SRC" && npm ci)
+      bash "$SRC/install.sh" "$HOME/bob-workspace"
+      npm install --prefix "$HOME/bob-workspace/claude" @anthropic-ai/claude-code@2.1.162
+      node "$HOME/bob-workspace/claude/node_modules/@anthropic-ai/claude-code/install.cjs"
+      mkdir -p "$HOME/bob-workspace/bin"
+      ln -sf "$HOME/bob-workspace/claude/node_modules/.bin/claude" "$HOME/bob-workspace/bin/claude"
       # Verify the cache boundary — node_modules must live inside the target
       if [[ ! -d "$HOME/bob-workspace/node_modules" ]]; then
         echo "::error::install.sh did not create ~/bob-workspace/node_modules"
         exit 1
       fi
+    shell: bash
+
+  - name: Export Bob runtime paths
+    run: |
+      set -euo pipefail
+      echo "$HOME/bob-workspace/bin" >> "$GITHUB_PATH"
+      echo "$HOME/bob-workspace/node_modules/.bin" >> "$GITHUB_PATH"
+      echo "BOB_MCP_SERVER_PATH=$HOME/bob-workspace/mcp/server.js" >> "$GITHUB_ENV"
     shell: bash

@@ -8,7 +8,7 @@
 # image size and tool availability. Override with --platform if needed.
 -P ubuntu-latest=catthehacker/ubuntu:act-latest
 
-# Pull the container image automatically on first run.
+# Do not pull the container image automatically; test-local.sh controls refreshes.
 --pull=false
 
 # Reuse containers between runs to speed up repeated testing.

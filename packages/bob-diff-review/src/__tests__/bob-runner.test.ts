@@ -19,6 +19,7 @@ import {
   validateDiffReviewFindings,
   resolveOutputDir,
   buildClaudeAuthEnv,
+  buildClaudeChildEnv,
   buildMcpConfig,
   BobRunnerError,
 } from "../bob-runner.js";
@@ -263,6 +264,39 @@ describe("buildClaudeAuthEnv (dual-auth precedence)", () => {
     expect(buildClaudeAuthEnv({ apiKey: " sk-ant-key-456 " })).toEqual({
       ANTHROPIC_API_KEY: "sk-ant-key-456",
     });
+  });
+});
+
+describe("buildClaudeChildEnv", () => {
+  it("copies only allowed runtime variables and the selected credential", () => {
+    const env = buildClaudeChildEnv({
+      anthropicApiKey: "sk-action-key",
+      anthropicModel: "claude-test-model",
+      sourceEnv: {
+        PATH: "/usr/bin",
+        HOME: "/tmp/bob-home",
+        BOB_MCP_SERVER_PATH: "/tmp/bob/mcp/server.js",
+        SKIP_SURFACE_BUILD: "true",
+        INPUT_GITHUB_TOKEN: "input-secret",
+        GITHUB_TOKEN: "github-secret",
+        BOB_INSTALL_TOKEN: "install-secret",
+        ANTHROPIC_API_KEY: "ambient-secret",
+        CLAUDE_CODE_OAUTH_TOKEN: "ambient-oauth",
+        HTTPS_PROXY: "http://user:pass@proxy.example:8080",
+      },
+    });
+
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/tmp/bob-home");
+    expect(env.BOB_MCP_SERVER_PATH).toBe("/tmp/bob/mcp/server.js");
+    expect(env.SKIP_SURFACE_BUILD).toBe("true");
+    expect(env.ANTHROPIC_MODEL).toBe("claude-test-model");
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-action-key");
+    expect("INPUT_GITHUB_TOKEN" in env).toBe(false);
+    expect("GITHUB_TOKEN" in env).toBe(false);
+    expect("BOB_INSTALL_TOKEN" in env).toBe(false);
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in env).toBe(false);
+    expect("HTTPS_PROXY" in env).toBe(false);
   });
 });
 

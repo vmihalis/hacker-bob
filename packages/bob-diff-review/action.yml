@@ -107,7 +107,8 @@ inputs:
       When set to a non-empty JSON string matching the DiffReviewFindings schema,
       the action bypasses the Claude subprocess and uses these pre-seeded findings
       instead. Intended only for integration testing environments where
-      ANTHROPIC_API_KEY is not funded. Must never be set in production workflows.
+      ANTHROPIC_API_KEY is not funded. Ignored unless the runner environment sets
+      BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS=true. Must never be set in production workflows.
       After returning mock findings the action writes a placeholder
       symbol-surface-index.json to the session directory so subsequent runs on
       the same PR receive a C2 cache hit (SKIP_SURFACE_BUILD=true).

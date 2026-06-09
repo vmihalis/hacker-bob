@@ -36,28 +36,12 @@ on:
         default: ''
         type: string
 
-      mock-findings-json:
+      min-severity-for-failure:
         description: >
-          Integration testing only. When set to a non-empty JSON string matching
-          the DiffReviewFindings schema, bypasses the Claude subprocess and uses
-          pre-seeded findings. Enables end-to-end pipeline validation (diff fetch,
-          position map, PR comments, check run, session cache) without API credits.
-          Must never be set in production workflows. Combined with mock-s3-delay-ms
-          this produces a measurable timing differential between the first run (S3
-          simulated) and second run (C2 cache hit, S3 skipped).
+          Minimum finding severity that causes the Check Run to report failure.
+          Accepted values: critical, high, medium, low.
         required: false
-        default: ''
-        type: string
-
-      mock-s3-delay-ms:
-        description: >
-          Integration testing only. When mock-findings-json is set and
-          SKIP_SURFACE_BUILD is false, sleep this many milliseconds to simulate S3
-          surface-build time. On a C2 cache-hit run (SKIP_SURFACE_BUILD=true) the
-          delay is skipped, producing a measurable speedup that validates AC5.
-          Defaults to 45000 (45 seconds). Set to 0 to disable for faster test loops.
-        required: false
-        default: '45000'
+        default: high
         type: string
 
     secrets:
@@ -123,6 +107,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check Bob Diff Review credentials
+        id: bob-secrets
+        shell: bash
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [[ -n "$ANTHROPIC_OAUTH_TOKEN" || -n "$ANTHROPIC_API_KEY" ]]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Bob Diff Review because no Anthropic credential secret is configured."
+          fi
+
       # -----------------------------------------------------------------------
       # C1 — Bob workspace cache
       # Restores ~/bob-workspace keyed on runner OS and BOB_VERSION.
@@ -131,6 +129,7 @@ jobs:
       # On cache hit, restores everything and adds ~/bob-workspace/bin to PATH.
       # -----------------------------------------------------------------------
       - name: Restore Bob workspace cache (C1)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
         id: cache-bob-workspace
         uses: bobnetsec/bob-workflows/.github/actions/cache-bob-workspace@main
         with:
@@ -144,6 +143,7 @@ jobs:
       # symbol-surface-index.json and sets cache-hit-symbol-index output.
       # -----------------------------------------------------------------------
       - name: Restore Bob session cache (C2)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
         id: cache-bob-session
         uses: bobnetsec/bob-workflows/.github/actions/cache-bob-session@main
         with:
@@ -164,6 +164,7 @@ jobs:
       # override the model for cost optimisation (e.g. claude-haiku-4-5).
       # -----------------------------------------------------------------------
       - name: Run Bob Diff Review
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
         id: bob-diff-review
         uses: bobnetsec/bob-workflows/packages/bob-diff-review@main
         env:
@@ -174,8 +175,7 @@ jobs:
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           bob-install-token: ${{ secrets.BOB_INSTALL_TOKEN }}
-          mock-findings-json: ${{ inputs.mock-findings-json }}
-          mock-s3-delay-ms: ${{ inputs.mock-s3-delay-ms }}
+          min-severity-for-failure: ${{ inputs.min-severity-for-failure }}
 
       # -----------------------------------------------------------------------
       # Surface action outputs for downstream steps / notifications.

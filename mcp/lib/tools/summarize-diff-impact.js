@@ -41,7 +41,7 @@ function summarizeDiffImpactHandler(args) {
     written_at: new Date().toISOString(),
   };
   const dir = sessionDir(domain);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(diffImpactPath(domain), `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
 
   return {
@@ -66,6 +66,10 @@ module.exports = Object.freeze({
       unified_diff: {
         type: "string",
         description: "Raw unified diff text (e.g. output of `git diff <base>..<head>` or a webhook payload).",
+      },
+      diff_text: {
+        type: "string",
+        description: "Alias for unified_diff used by the bob-diff-review skill orchestrator.",
       },
       diff_files: {
         type: "array",

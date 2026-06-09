@@ -92,6 +92,11 @@ interface FullOctokitLike {
   // From ReviewsOctokitLike (reviews-api.ts)
   rest: {
     pulls: {
+      get(params: {
+        owner: string;
+        repo: string;
+        pull_number: number;
+      }): Promise<{ data: { number: number; head: { sha: string } } }>;
       createReview(params: {
         owner: string;
         repo: string;
@@ -216,13 +221,28 @@ async function run(): Promise<void> {
   const prNumberInput = core.getInput("pr-number") || core.getInput("pr_number") || "";
 
   // Integration test bypass: pre-seeded findings JSON (see action.yml for docs).
-  // This takes precedence over BOB_MOCK_FINDINGS_JSON env var when set as an
-  // action input so it can be injected cleanly via workflow `with:` rather than
-  // requiring a repo/org secret or env var on the runner.
+  // This input is ignored unless BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS=true is
+  // set in the runner environment. Public reusable workflows must not expose a
+  // caller-controlled path that bypasses the Claude/Bob review.
+  const allowMockFindings = process.env["BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS"] === "true";
   const mockFindingsInput = core.getInput("mock-findings-json") || core.getInput("mock_findings_json") || "";
   if (mockFindingsInput) {
-    // Override the env var so bob-runner picks it up through its existing path.
-    process.env["BOB_MOCK_FINDINGS_JSON"] = mockFindingsInput;
+    if (allowMockFindings) {
+      // Override the env var so bob-runner picks it up through its existing path.
+      process.env["BOB_MOCK_FINDINGS_JSON"] = mockFindingsInput;
+    } else {
+      core.warning(
+        "mock-findings-json input was provided but ignored because " +
+          "BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS is not true."
+      );
+    }
+  }
+  if (!allowMockFindings && process.env["BOB_MOCK_FINDINGS_JSON"]) {
+    delete process.env["BOB_MOCK_FINDINGS_JSON"];
+    core.warning(
+      "BOB_MOCK_FINDINGS_JSON was set in the runner environment but ignored because " +
+        "BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS is not true."
+    );
   }
 
   // Delay in ms to simulate S3 surface-build time when mock mode is active and
@@ -267,19 +287,7 @@ async function run(): Promise<void> {
       return;
     }
     try {
-      const { data } = await (
-        octokit as unknown as {
-          rest: {
-            pulls: {
-              get: (args: {
-                owner: string;
-                repo: string;
-                pull_number: number;
-              }) => Promise<{ data: { number: number; head: { sha: string } } }>;
-            };
-          };
-        }
-      ).rest.pulls.get({ owner, repo, pull_number: parsed });
+      const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: parsed });
       headSha = data.head.sha;
       pullNumber = data.number;
     } catch (err: unknown) {
@@ -328,6 +336,7 @@ async function run(): Promise<void> {
   const checksOctokit  = octokit as unknown as import("./check-run.js").ChecksOctokitLike;
   const reviewsOctokit = octokit as unknown as import("./reviews-api.js").ReviewsOctokitLike;
   const diffOctokit    = octokit as unknown as import("./diff.js").OctokitLike;
+  let diffTmpDir: string | null = null;
 
   try {
     checkRunId = await startCheckRun(checksOctokit, owner, repo, headSha);
@@ -363,7 +372,7 @@ async function run(): Promise<void> {
     // 4c. Write the diff to a temp file so bob-runner can pass it to the
     //     headless claude process via --diff-file.
     // -----------------------------------------------------------------------
-    const diffTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-diff-input-"));
+    diffTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-diff-input-"));
     const diffFilePath = path.join(diffTmpDir, "pr.diff");
     fs.writeFileSync(diffFilePath, diffText, "utf8");
     core.info(`[bob-diff-review] Diff written to ${diffFilePath}`);
@@ -378,11 +387,11 @@ async function run(): Promise<void> {
     // -----------------------------------------------------------------------
     // 4e. Build the target domain override.
     //     Bob scopes sessions by "target domain". For diff reviews we use a
-    //     GitHub PR identifier: "gh-<repository_id>-pr<pullNumber>".
+    //     GitHub repository identifier: "gh-<repository_id>".
     //     This matches the format used by the cache-bob-session composite action.
     // -----------------------------------------------------------------------
     const repositoryId = process.env["GITHUB_REPOSITORY_ID"] ?? `${owner}-${repo}`;
-    const targetDomainOverride = `gh-${repositoryId}-pr${pullNumber}`;
+    const targetDomainOverride = `gh-${repositoryId}`;
 
     // -----------------------------------------------------------------------
     // 4f. Run the Bob diff-review skill headlessly.
@@ -443,11 +452,10 @@ async function run(): Promise<void> {
         "hacker-bob-sessions",
         `gh-${repositoryId}`
       );
-      const sessionDir = cacheSessionDir;
-      const symbolIndexPath = path.join(sessionDir, "symbol-surface-index.json");
+      const symbolIndexPath = path.join(cacheSessionDir, "symbol-surface-index.json");
       if (!fs.existsSync(symbolIndexPath)) {
         try {
-          fs.mkdirSync(sessionDir, { recursive: true });
+          fs.mkdirSync(cacheSessionDir, { recursive: true });
           fs.writeFileSync(
             symbolIndexPath,
             JSON.stringify({
@@ -459,7 +467,7 @@ async function run(): Promise<void> {
             "utf8"
           );
           core.info(
-            `[bob-diff-review] Mock mode: wrote symbol-surface-index.json to ${sessionDir} ` +
+            `[bob-diff-review] Mock mode: wrote symbol-surface-index.json to ${cacheSessionDir} ` +
               `(enables C2 cache hit on next run).`
           );
         } catch (writeErr: unknown) {
@@ -587,6 +595,9 @@ async function run(): Promise<void> {
         finalStatus,
         finalBreakdown
       );
+    }
+    if (diffTmpDir !== null) {
+      fs.rmSync(diffTmpDir, { recursive: true, force: true });
     }
   }
 }

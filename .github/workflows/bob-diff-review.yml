@@ -62,14 +62,49 @@ jobs:
           # Fetch enough history for the diff to be accurate.
           fetch-depth: 0
 
-      - name: Run Bob Diff Review
-        uses: bobnetsec/hacker-bob/packages/bob-diff-review@main
+      - name: Check Bob Diff Review credentials
+        id: bob-secrets
+        shell: bash
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [[ -n "$ANTHROPIC_OAUTH_TOKEN" || -n "$ANTHROPIC_API_KEY" ]]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Bob Diff Review because no Anthropic credential secret is configured."
+          fi
+
+      - name: Restore Bob workspace cache (C1)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: cache-bob-workspace
+        uses: ./.github/actions/cache-bob-workspace
         with:
-          anthropic_oauth_token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          bob_install_token:  ${{ secrets.BOB_INSTALL_TOKEN }}
-          github_token:       ${{ secrets.GITHUB_TOKEN }}
-          min_severity_for_failure: high
+          bob_version: ${{ github.event.pull_request.head.sha }}
+          bob_install_token: ${{ secrets.BOB_INSTALL_TOKEN }}
+
+      - name: Restore Bob session cache (C2)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: cache-bob-session
+        uses: ./.github/actions/cache-bob-session
+        with:
+          repository_id: ${{ github.repository_id }}
+          sha: ${{ github.event.pull_request.head.sha }}
+          base_ref: ${{ github.base_ref }}
+
+      - name: Run Bob Diff Review
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: bob-diff-review
+        uses: ./packages/bob-diff-review
+        env:
+          SKIP_SURFACE_BUILD: ${{ steps.cache-bob-session.outputs.cache-hit-symbol-index }}
+        with:
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          bob-install-token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          min-severity-for-failure: high
 
       # Optional: surface the review outputs for downstream steps or notifications.
       - name: Log review outputs

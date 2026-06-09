@@ -4,9 +4,9 @@
  * Tests for A2 — bob-runner.ts.
  *
  * Verifies acceptance criteria:
- *   1. Spawns: claude --dangerously-skip-permissions --skill bob-diff-review
- *      -- --repo <abs-path> --diff-file <path>
- *         --target-domain-override <gh-id> --output-dir <tmp-dir>
+ *   1. Spawns: claude --dangerously-skip-permissions --print
+ *      "/bob-diff-review --repo <abs-path> --diff-file <path>
+ *        --output-dir <tmp-dir>"
  *   2. ANTHROPIC_API_KEY set in child process env from action input.
  *   3. Process timeout: 10 minutes, SIGTERM then SIGKILL.
  *   4. Exit 0 → read and JSON-parse diff-review-findings.json → DiffReviewFindings.
@@ -33,6 +33,7 @@ const dist = path.join(__dirname, "..", "packages", "bob-diff-review", "dist");
 const {
   BOB_RUNNER_TIMEOUT_MS,
   BobRunnerError,
+  buildClaudeChildEnv,
   validateDiffReviewFindings,
   resolveOutputDir,
 } = require(path.join(dist, "bob-runner.js"));
@@ -161,21 +162,17 @@ test("validateDiffReviewFindings rejects an array at top level", () => {
   );
 });
 
-test("validateDiffReviewFindings rejects missing session_id", () => {
+test("validateDiffReviewFindings accepts missing session_id as degraded-run metadata", () => {
   const doc = makeValidFindings();
   delete doc.session_id;
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("session_id")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.session_id, "");
 });
 
-test("validateDiffReviewFindings rejects empty session_id", () => {
+test("validateDiffReviewFindings accepts empty session_id", () => {
   const doc = makeValidFindings({ session_id: "" });
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("session_id")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.session_id, "");
 });
 
 test("validateDiffReviewFindings rejects missing target_domain", () => {
@@ -187,13 +184,11 @@ test("validateDiffReviewFindings rejects missing target_domain", () => {
   );
 });
 
-test("validateDiffReviewFindings rejects missing generated_at", () => {
+test("validateDiffReviewFindings accepts missing generated_at as degraded-run metadata", () => {
   const doc = makeValidFindings();
   delete doc.generated_at;
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("generated_at")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.generated_at, "");
 });
 
 test("validateDiffReviewFindings rejects non-array impacted_entries", () => {
@@ -232,7 +227,7 @@ test("validateDiffReviewFindings rejects finding with non-number line_start", ()
 });
 
 test("validateDiffReviewFindings rejects finding with non-number line_end", () => {
-  const finding = makeValidFinding({ line_end: null });
+  const finding = makeValidFinding({ line_end: "twenty" });
   const doc = makeValidFindings({ findings: [finding] });
   assert.throws(
     () => validateDiffReviewFindings(doc),
@@ -249,34 +244,28 @@ test("validateDiffReviewFindings rejects finding with invalid severity", () => {
   );
 });
 
-test("validateDiffReviewFindings rejects finding with missing title", () => {
+test("validateDiffReviewFindings defaults missing title to empty string", () => {
   const finding = makeValidFinding();
   delete finding.title;
   const doc = makeValidFindings({ findings: [finding] });
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("title")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.findings[0].title, "");
 });
 
-test("validateDiffReviewFindings rejects finding with missing description", () => {
+test("validateDiffReviewFindings defaults missing description to empty string", () => {
   const finding = makeValidFinding();
   delete finding.description;
   const doc = makeValidFindings({ findings: [finding] });
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("description")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.findings[0].description, "");
 });
 
-test("validateDiffReviewFindings rejects finding with missing evidence", () => {
+test("validateDiffReviewFindings defaults missing evidence to empty string", () => {
   const finding = makeValidFinding();
   delete finding.evidence;
   const doc = makeValidFindings({ findings: [finding] });
-  assert.throws(
-    () => validateDiffReviewFindings(doc),
-    (err) => err instanceof TypeError && err.message.includes("evidence")
-  );
+  const result = validateDiffReviewFindings(doc);
+  assert.strictEqual(result.findings[0].evidence, "");
 });
 
 test("validateDiffReviewFindings rejects finding with NaN line_start", () => {
@@ -344,6 +333,26 @@ test("resolveOutputDir temp dir name starts with 'bob-diff-'", () => {
 // runBobDiffReview — integration-style tests using a fake claude binary
 // ---------------------------------------------------------------------------
 
+const EXTRACT_OUTPUT_DIR_SH = `
+OUTPUT_DIR=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--output-dir" ]; then
+    OUTPUT_DIR="$arg"
+  fi
+  if printf '%s\\n' "$arg" | grep -q -- "--output-dir "; then
+    FROM_PROMPT="$(printf '%s\\n' "$arg" | sed -n 's/.*--output-dir "\\([^"]*\\)".*/\\1/p')"
+    if [ -z "$FROM_PROMPT" ]; then
+      FROM_PROMPT="$(printf '%s\\n' "$arg" | sed -n 's/.*--output-dir \\([^ ]*\\).*/\\1/p')"
+    fi
+    if [ -n "$FROM_PROMPT" ]; then
+      OUTPUT_DIR="$FROM_PROMPT"
+    fi
+  fi
+  PREV_ARG="$arg"
+done
+`;
+
 /**
  * Write a tiny shell script to act as a fake "claude" binary for a test.
  * The script writes a findings JSON to --output-dir and exits with exitCode.
@@ -369,14 +378,7 @@ function writeFakeClaude(binDir, exitCode, findingsDoc, stderrMsg = "") {
 
   const writeFindings = findingsDoc !== null
     ? `
-OUTPUT_DIR=""
-PREV_ARG=""
-for arg in "$@"; do
-  if [ "$PREV_ARG" = "--output-dir" ]; then
-    OUTPUT_DIR="$arg"
-  fi
-  PREV_ARG="$arg"
-done
+${EXTRACT_OUTPUT_DIR_SH}
 if [ -n "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
   cat > "$OUTPUT_DIR/diff-review-findings.json" << 'FINDINGJSON'
@@ -521,14 +523,7 @@ test("runBobDiffReview throws BobRunnerError on invalid JSON in findings file", 
     // Write a script that produces invalid JSON.
     const binPath = path.join(binDir, "claude");
     const script = `#!/bin/sh
-OUTPUT_DIR=""
-PREV_ARG=""
-for arg in "$@"; do
-  if [ "$PREV_ARG" = "--output-dir" ]; then
-    OUTPUT_DIR="$arg"
-  fi
-  PREV_ARG="$arg"
-done
+${EXTRACT_OUTPUT_DIR_SH}
 if [ -n "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
   printf 'NOT VALID JSON {{{' > "$OUTPUT_DIR/diff-review-findings.json"
@@ -557,13 +552,12 @@ exit 0
 test("runBobDiffReview throws BobRunnerError on schema validation failure", async () => {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-fake-claude-"));
   try {
-    // Write valid JSON but missing required 'session_id'.
+    // Write valid JSON with a malformed required 'findings' field.
     const badDoc = {
-      // session_id intentionally missing
       target_domain: "gh-12345678",
       generated_at: new Date().toISOString(),
       impacted_entries: [],
-      findings: [],
+      findings: "not-an-array",
     };
     writeFakeClaude(binDir, 0, badDoc);
     await assert.rejects(
@@ -571,7 +565,7 @@ test("runBobDiffReview throws BobRunnerError on schema validation failure", asyn
       (err) => {
         assert.ok(err instanceof BobRunnerError);
         assert.ok(
-          err.message.includes("schema") || err.message.includes("session_id"),
+          err.message.includes("schema") || err.message.includes("findings"),
           `message should mention validation failure, got: ${err.message}`
         );
         return true;
@@ -607,14 +601,7 @@ test("runBobDiffReview injects ANTHROPIC_API_KEY into child env (verified via en
     const doc = makeValidFindings();
     const binPath = path.join(binDir, "claude");
     const script = `#!/bin/sh
-OUTPUT_DIR=""
-PREV_ARG=""
-for arg in "$@"; do
-  if [ "$PREV_ARG" = "--output-dir" ]; then
-    OUTPUT_DIR="$arg"
-  fi
-  PREV_ARG="$arg"
-done
+${EXTRACT_OUTPUT_DIR_SH}
 if [ -n "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
   echo "$ANTHROPIC_API_KEY" > "$OUTPUT_DIR/api-key-seen.txt"
@@ -642,4 +629,35 @@ exit 0
   } finally {
     fs.rmSync(binDir, { recursive: true, force: true });
   }
+});
+
+test("buildClaudeChildEnv allowlists runtime env and does not forward ambient secrets", () => {
+  const env = buildClaudeChildEnv({
+    anthropicApiKey: "sk-action-key",
+    anthropicModel: "claude-test-model",
+    sourceEnv: {
+      PATH: "/usr/bin",
+      HOME: "/tmp/bob-home",
+      BOB_MCP_SERVER_PATH: "/tmp/bob/mcp/server.js",
+      SKIP_SURFACE_BUILD: "true",
+      INPUT_GITHUB_TOKEN: "input-secret",
+      GITHUB_TOKEN: "github-secret",
+      BOB_INSTALL_TOKEN: "install-secret",
+      ANTHROPIC_API_KEY: "ambient-secret",
+      CLAUDE_CODE_OAUTH_TOKEN: "ambient-oauth",
+      HTTPS_PROXY: "http://user:pass@proxy.example:8080",
+    },
+  });
+
+  assert.strictEqual(env.PATH, "/usr/bin");
+  assert.strictEqual(env.HOME, "/tmp/bob-home");
+  assert.strictEqual(env.BOB_MCP_SERVER_PATH, "/tmp/bob/mcp/server.js");
+  assert.strictEqual(env.SKIP_SURFACE_BUILD, "true");
+  assert.strictEqual(env.ANTHROPIC_MODEL, "claude-test-model");
+  assert.strictEqual(env.ANTHROPIC_API_KEY, "sk-action-key");
+  assert.equal("INPUT_GITHUB_TOKEN" in env, false);
+  assert.equal("GITHUB_TOKEN" in env, false);
+  assert.equal("BOB_INSTALL_TOKEN" in env, false);
+  assert.equal("CLAUDE_CODE_OAUTH_TOKEN" in env, false);
+  assert.equal("HTTPS_PROXY" in env, false);
 });
