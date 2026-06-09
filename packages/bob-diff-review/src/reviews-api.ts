@@ -308,17 +308,23 @@ export async function submitPRReview(
 
     if (validComments.length > 0) {
       // Submit the remaining valid comments inline in a second review call.
+      // Preserve invalid-position findings in the PR-level body so recovery
+      // does not silently discard advisory content.
+      const recoveryBody =
+        invalidComments.length > 0
+          ? buildBodyFallback(reviewBody, invalidComments)
+          : reviewBody;
       const reviewUrl = await createReviewWithBackoff(
         octokit,
         owner,
         repo,
         pull_number,
-        reviewBody,
+        recoveryBody,
         validComments
       );
       console.log(
         `[reviews-api] Recovery review posted with ${validComments.length} valid inline comment(s) ` +
-          `(${invalidComments.length} bad position(s) dropped): ${reviewUrl}`
+          `(${invalidComments.length} bad position finding(s) preserved as body text): ${reviewUrl}`
       );
       return reviewUrl;
     }
@@ -441,7 +447,7 @@ async function probeComment(
  */
 function buildBodyFallback(
   reviewBody: string,
-  comments: ResolvedComment[]
+  comments: Array<{ path: string; position: number; body: string }>
 ): string {
   const sections = comments.map(
     (c, i) =>

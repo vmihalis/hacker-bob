@@ -32457,9 +32457,14 @@ async function submitPRReview(octokit, owner, repo, pull_number, comments, summa
         }
         if (validComments.length > 0) {
             // Submit the remaining valid comments inline in a second review call.
-            const reviewUrl = await createReviewWithBackoff(octokit, owner, repo, pull_number, reviewBody, validComments);
+            // Preserve invalid-position findings in the PR-level body so recovery
+            // does not silently discard advisory content.
+            const recoveryBody = invalidComments.length > 0
+                ? buildBodyFallback(reviewBody, invalidComments)
+                : reviewBody;
+            const reviewUrl = await createReviewWithBackoff(octokit, owner, repo, pull_number, recoveryBody, validComments);
             console.log(`[reviews-api] Recovery review posted with ${validComments.length} valid inline comment(s) ` +
-                `(${invalidComments.length} bad position(s) dropped): ${reviewUrl}`);
+                `(${invalidComments.length} bad position finding(s) preserved as body text): ${reviewUrl}`);
             return reviewUrl;
         }
         // All comments had bad positions — fall back to body-only review.

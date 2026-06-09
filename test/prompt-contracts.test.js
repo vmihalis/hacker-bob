@@ -1681,3 +1681,17 @@ test("generated surfaces describe central session authority and target_domain se
   assert.match(surfaces, /`target_domain` selects the session record/);
   assert.match(surfaces, /authority error.*session-integrity blocker/);
 });
+
+test("bob-diff-review skill advances to OPEN_FRONTIER before evaluator waves", () => {
+  const skill = readFile(".claude/skills/bob-diff-review/SKILL.md");
+  const s5 = skill.indexOf("### S5");
+  const readNucleus = skill.indexOf("bob_read_session_nucleus", s5);
+  const advance = skill.indexOf("bob_advance_session", s5);
+  const openFrontier = skill.indexOf('to_state: "OPEN_FRONTIER"', s5);
+  const startWave = skill.indexOf("bob_start_next_wave", s5);
+  assert.ok(s5 >= 0, "bob-diff-review skill must contain S5");
+  assert.ok(readNucleus > s5, "S5 must read session lifecycle before wave start");
+  assert.ok(advance > readNucleus, "S5 must advance lifecycle after reading nucleus");
+  assert.ok(openFrontier > advance, "S5 lifecycle advance must target OPEN_FRONTIER");
+  assert.ok(startWave > openFrontier, "S5 must advance lifecycle before bob_start_next_wave");
+});

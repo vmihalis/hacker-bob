@@ -38,6 +38,14 @@ function withDependencyFreshnessFixture(metadata, fn) {
   }
 }
 
+test("cache-bob-workspace action links bob-diff-review into Claude skill discovery", () => {
+  const action = fs.readFileSync(path.join(ROOT, ".github/actions/cache-bob-workspace/action.yml"), "utf8");
+  assert.match(action, /\$INSTALL_TARGET\/\.claude\/skills\/bob-diff-review/);
+  assert.match(action, /\$HOME\/\.claude\/skills\/bob-diff-review/);
+  assert.match(action, /ln -s "\$SKILL_SRC" "\$SKILL_DEST"/);
+  assert.match(action, /\[\[ ! -f "\$SKILL_DEST\/SKILL\.md" \]\]/);
+});
+
 test("canonical package declares PSL as a runtime dependency without vendoring it", () => {
   const packageJson = require("../package.json");
   const packageLock = require("../package-lock.json");

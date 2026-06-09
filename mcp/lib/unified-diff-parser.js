@@ -3,6 +3,7 @@
 const FILE_HEADER = /^\+\+\+\s+(?:b\/)?(.+?)(?:\s+|$)/;
 const FILE_DELETED_HEADER = /^---\s+(?:a\/)?(.+?)(?:\s+|$)/;
 const HUNK_HEADER = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/;
+const WHOLE_FILE_RANGE_END = Number.MAX_SAFE_INTEGER;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -22,6 +23,14 @@ function mergeRanges(ranges) {
     }
   }
   return merged;
+}
+
+function diffLineRanges(entry) {
+  const addedRanges = mergeRanges(entry.added_ranges);
+  if (addedRanges.length === 0 && entry.removed_lines > 0) {
+    return [{ start: 1, end: WHOLE_FILE_RANGE_END }];
+  }
+  return addedRanges;
 }
 
 function parseUnifiedDiff(rawDiff) {
@@ -77,7 +86,7 @@ function parseUnifiedDiff(rawDiff) {
   for (const [file, entry] of fileMap) {
     diffFiles.push({
       file,
-      line_ranges: mergeRanges(entry.added_ranges),
+      line_ranges: diffLineRanges(entry),
       added_lines: entry.added_lines,
       removed_lines: entry.removed_lines,
     });

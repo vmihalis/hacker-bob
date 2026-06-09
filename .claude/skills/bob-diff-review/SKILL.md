@@ -224,6 +224,13 @@ the same `impacted_entries` schema as PATH A.
 
 ### S5 — Evaluator agents (background, per impacted surface)
 
+Before starting any wave, call `bob_read_session_nucleus({ target_domain })`.
+If `lifecycle_state` is not `OPEN_FRONTIER`, call
+`bob_advance_session({ target_domain, to_state: "OPEN_FRONTIER" })` and log
+`S5: lifecycle advanced to OPEN_FRONTIER`. If the session is already
+`OPEN_FRONTIER`, log `S5: lifecycle already OPEN_FRONTIER`. If the advance
+fails, surface the structured error and stop; do not start evaluator waves.
+
 For each unique `surface_id` in `impacted_entries`, spawn a background evaluator
 agent scoped to that surface. Use `bob_start_next_wave` / `bob_start_wave` per
 the standard Bob orchestrator wave contract. Each agent receives:

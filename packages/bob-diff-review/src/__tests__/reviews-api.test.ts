@@ -319,6 +319,61 @@ describe("submitPRReview: 422 recovery path", () => {
     // At least one 422 was encountered (initial batch + probe).
     expect(callCount).toBeGreaterThan(0);
   });
+
+  it("preserves invalid-position findings in the final body when valid inline comments remain", async () => {
+    const validComment = makeComment({
+      path: "src/routes/users.js",
+      position: 21,
+      body: "[high] Valid inline finding",
+    });
+    const invalidComment = makeComment({
+      path: "src/routes/admin.js",
+      position: 99999,
+      body: "[medium] Invalid-position finding\n\nEvidence that must not be dropped.",
+    });
+    const createReviewFn = vi.fn().mockImplementation(async (params: {
+      body: string;
+      comments?: Array<{ path: string; position: number; body: string }>;
+    }) => {
+      if (params.comments && params.comments.length === 2) {
+        throw Object.assign(new Error("422 Unprocessable Entity"), { status: 422 });
+      }
+      if (
+        params.body.startsWith("[Bob probe]")
+        && params.comments?.[0]?.path === invalidComment.path
+      ) {
+        throw Object.assign(new Error("422 Unprocessable Entity"), { status: 422 });
+      }
+      return { data: { id: 3, html_url: "https://github.com/test/recovered" } };
+    });
+    const octokit = makeOctokit({ createReview: createReviewFn });
+
+    const url = await submitPRReview(
+      octokit,
+      "owner",
+      "repo",
+      1,
+      [validComment, invalidComment],
+      makeSummary({ finding_count: 2 })
+    );
+
+    expect(url).toBe("https://github.com/test/recovered");
+    const finalCall = createReviewFn.mock.calls.at(-1)![0] as {
+      body: string;
+      comments?: Array<{ path: string; position: number; body: string }>;
+    };
+    expect(finalCall.comments).toEqual([
+      {
+        path: validComment.path,
+        position: validComment.position,
+        body: validComment.body,
+      },
+    ]);
+    expect(finalCall.body).toContain("Invalid-position finding");
+    expect(finalCall.body).toContain("Evidence that must not be dropped.");
+    expect(finalCall.body).toContain("src/routes/admin.js");
+    expect(finalCall.body).toContain("position 99999");
+  });
 });
 
 // ---------------------------------------------------------------------------

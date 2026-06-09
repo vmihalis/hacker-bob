@@ -53,6 +53,7 @@ const {
   writeJsonDocument,
 } = require("./fabric-common.js");
 const {
+  readSessionStateStrict,
   writeSessionStateDocument,
 } = require("./session-state-store.js");
 const {
@@ -557,7 +558,39 @@ function initRepoSession({
     const filePath = statePath(domain);
 
     if (fs.existsSync(filePath)) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session already initialized: ${filePath}`);
+      let existing;
+      let state;
+      try {
+        existing = readRepoSession(domain);
+        state = readSessionStateStrict(domain).state;
+      } catch (error) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session resume failed: ${error.message || String(error)}`,
+        );
+      }
+      const existingRoot = existing.target_repo && existing.target_repo.root_path;
+      if (existingRoot !== targetRepo.root_path) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Session already initialized for a different repo: ${filePath}`,
+          {
+            existing_root_path: existingRoot || null,
+            requested_root_path: targetRepo.root_path,
+          },
+        );
+      }
+      return {
+        created: false,
+        session_dir: dir,
+        target_domain: domain,
+        target_repo: existing.target_repo,
+        repo_hash: existing.repo_hash || state.repo_hash || repoHash,
+        nucleus_hash: existing.nucleus_hash,
+        lifecycle_state: state.lifecycle_state || existing.lifecycle_state,
+        deep_mode: state.deep_mode,
+        egress_profile: state.egress_profile,
+      };
     }
     if (!isSessionDirEffectivelyEmpty(dir)) {
       throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Session directory is not empty: ${dir}`);

@@ -82,6 +82,14 @@ const SAMPLE_DIFF = [
   " app.post('/auth/logout', handleLogout);",
 ].join("\n");
 
+const DELETION_ONLY_DIFF = [
+  "--- a/src/auth/login.ts",
+  "+++ b/src/auth/login.ts",
+  "@@ -1,2 +1,1 @@",
+  "-app.post('/auth/login', handleLogin);",
+  " app.post('/auth/logout', handleLogout);",
+].join("\n");
+
 // ---------------------------------------------------------------------------
 // Core criterion 4 — diff-impact.json is written by the MCP tool handler
 // ---------------------------------------------------------------------------
@@ -179,6 +187,27 @@ test("diff-impact.json impacted_entries use the normalized PATH A dispatch schem
       assert.equal("line" in entry, false, "raw symbol-index line field must not leak into the PATH A dispatch schema");
     }
     assert.deepEqual(result.impacted_entries, artifact.impacted_entries);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("PATH A includes deletion-only hunks through a file-wide diff range", () => {
+  const domain = uniqueDomain();
+  try {
+    const routes = buildSampleRoutes();
+    buildSymbolSurfaceIndex({ target_domain: domain, route_records: routes, surfaces: SAMPLE_SURFACES });
+
+    const result = summarizeDiffImpactTool.handler({
+      target_domain: domain,
+      unified_diff: DELETION_ONLY_DIFF,
+    });
+
+    const artifact = JSON.parse(fs.readFileSync(diffImpactPath(domain), "utf8"));
+    assert.equal(result.path_used, "A");
+    assert.equal(artifact.path_used, "A");
+    assert.ok(result.impacted_entries.length > 0, "expected deletion-only auth/login.ts diff to match indexed surfaces");
+    assert.ok(artifact.entry_count > 0, "artifact must preserve deletion-only PATH A impact entries");
   } finally {
     cleanupDomain(domain);
   }

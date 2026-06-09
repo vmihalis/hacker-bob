@@ -140,9 +140,23 @@ runs:
 
         INSTALL_TARGET="$HOME/bob-workspace"
         MCP_SERVER_PATH="$INSTALL_TARGET/mcp/server.js"
+        SKILL_SRC="$INSTALL_TARGET/.claude/skills/bob-diff-review"
+        SKILL_DEST="$HOME/.claude/skills/bob-diff-review"
 
         if [[ ! -f "$MCP_SERVER_PATH" ]]; then
           echo "::error::Bob MCP server missing at $MCP_SERVER_PATH."
+          exit 1
+        fi
+        if [[ ! -f "$SKILL_SRC/SKILL.md" ]]; then
+          echo "::error::Bob diff-review skill missing at $SKILL_SRC."
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$SKILL_DEST")"
+        rm -rf "$SKILL_DEST"
+        ln -s "$SKILL_SRC" "$SKILL_DEST"
+        if [[ ! -f "$SKILL_DEST/SKILL.md" ]]; then
+          echo "::error::Bob diff-review skill is not discoverable at $SKILL_DEST."
           exit 1
         fi
 
@@ -150,3 +164,4 @@ runs:
         echo "$INSTALL_TARGET/node_modules/.bin" >> "$GITHUB_PATH"
         echo "BOB_MCP_SERVER_PATH=$MCP_SERVER_PATH" >> "$GITHUB_ENV"
         echo "mcp_server_path=$MCP_SERVER_PATH" >> "$GITHUB_OUTPUT"
+        echo "Bob diff-review skill linked at $SKILL_DEST"

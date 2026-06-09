@@ -474,6 +474,44 @@ test("repo session inventory emits OSS surfaces and routes to OSS packs", () => 
   assert.equal(check.check_type, "file_contains");
 }));
 
+test("initRepoSession resumes an existing repo session for the same canonical repo", () => withTempHome((home) => {
+  const repo = path.join(home, "resume-project");
+  fs.mkdirSync(repo, { recursive: true });
+  writeFile(repo, "package.json", JSON.stringify({ name: "resume-project" }, null, 2));
+
+  const first = parseResult(initRepoSession({ repo_path: repo }));
+  const second = parseResult(initRepoSession({ repo_path: repo }));
+
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.target_domain, first.target_domain);
+  assert.equal(second.session_dir, first.session_dir);
+  assert.equal(second.target_repo.root_path, fs.realpathSync(repo));
+  assert.equal(second.lifecycle_state, "SETUP");
+}));
+
+test("initRepoSession refuses to resume a target_domain bound to a different repo", () => withTempHome((home) => {
+  const firstRepo = path.join(home, "first-project");
+  const secondRepo = path.join(home, "second-project");
+  fs.mkdirSync(firstRepo, { recursive: true });
+  fs.mkdirSync(secondRepo, { recursive: true });
+  writeFile(firstRepo, "package.json", JSON.stringify({ name: "first-project" }, null, 2));
+  writeFile(secondRepo, "package.json", JSON.stringify({ name: "second-project" }, null, 2));
+
+  parseResult(initRepoSession({ repo_path: firstRepo, target_domain: "repo-shared-domain" }));
+
+  assert.throws(
+    () => initRepoSession({ repo_path: secondRepo, target_domain: "repo-shared-domain" }),
+    (error) => {
+      assert.equal(error.code, "STATE_CONFLICT");
+      assert.match(error.message, /different repo/);
+      assert.equal(error.details.existing_root_path, fs.realpathSync(firstRepo));
+      assert.equal(error.details.requested_root_path, fs.realpathSync(secondRepo));
+      return true;
+    },
+  );
+}));
+
 test("repo inventory stays bound to the initialized repo root", () => withTempHome((home) => {
   const repo = path.join(home, "sample-project");
   const serviceRepo = path.join(repo, "packages", "service");

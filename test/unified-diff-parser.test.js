@@ -86,7 +86,24 @@ test("parseUnifiedDiff captures deleted files (--- a/path + +++ /dev/null) under
   assert.equal(result.file_count, 1);
   assert.equal(result.diff_files[0].file, "d.js");
   assert.equal(result.diff_files[0].removed_lines, 2);
-  assert.deepEqual(result.diff_files[0].line_ranges, []);
+  assert.deepEqual(result.diff_files[0].line_ranges, [{ start: 1, end: Number.MAX_SAFE_INTEGER }]);
+});
+
+test("parseUnifiedDiff gives deletion-only hunks a file-wide fallback range", () => {
+  const diff = `diff --git a/src/auth/login.ts b/src/auth/login.ts
+--- a/src/auth/login.ts
++++ b/src/auth/login.ts
+@@ -10,3 +10,2 @@
+ line10
+-authCheck()
+ line12
+`;
+  const result = parseUnifiedDiff(diff);
+  assert.equal(result.file_count, 1);
+  assert.equal(result.diff_files[0].file, "src/auth/login.ts");
+  assert.equal(result.diff_files[0].added_lines, 0);
+  assert.equal(result.diff_files[0].removed_lines, 1);
+  assert.deepEqual(result.diff_files[0].line_ranges, [{ start: 1, end: Number.MAX_SAFE_INTEGER }]);
 });
 
 test("parseUnifiedDiff merges adjacent added line ranges into one continuous range", () => {
