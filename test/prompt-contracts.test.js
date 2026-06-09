@@ -956,7 +956,7 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // Playbooks and STATE: OPEN_FRONTIER). Closes the leverage_audit
   // gaps_present verdict. Cap bumped 383 → 387.
   // C14 proof-carrying disclosure adds bob_write_proof_bundle to the
-  // orchestrator/verifier bundle (+1 generated allowed-tools line).
+  // orchestrator bundle (+1 generated allowed-tools line).
   assert.ok(lines <= 388, `bob-evaluate-runner skill is ${lines} lines (cap 388)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
@@ -1216,8 +1216,6 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
   // read-only file probes (file_exists / file_contains / regex_match)
   // against the bound repo without taking the docker path.
-  // C14 adds bob_write_proof_bundle so verifiers can package existing replay,
-  // invariant, or C10 differential run handles without executing new proof code.
   assert.deepEqual(
     mutating.sort(),
     [
@@ -1225,7 +1223,6 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
-      "bob_write_proof_bundle",
       "bob_write_verification_round",
     ].sort(),
   );
@@ -1243,6 +1240,28 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
     const meta = TOOL_MANIFEST[tool];
     if (!meta) continue;
     assert.ok(!meta.role_bundles.includes("verifier"), `${tool} must not be in verifier bundle`);
+  }
+});
+
+test("proof-bundle writer stays limited to orchestrator and final verifier", () => {
+  assert.deepEqual(TOOL_MANIFEST.bob_write_proof_bundle.role_bundles, ["orchestrator"]);
+
+  const finalVerifierTools = agentToolsList(".claude/agents/final-verifier.md");
+  assertPermissionReferenced(
+    finalVerifierTools,
+    "bob_write_proof_bundle",
+    "final-verifier must retain the explicit C14 proof-bundle writer grant",
+  );
+
+  for (const agentPath of [
+    ".claude/agents/balanced-verifier.md",
+    ".claude/agents/brutalist-verifier.md",
+    ".claude/agents/evidence-agent.md",
+  ]) {
+    const tools = agentToolsList(agentPath);
+    for (const permission of primaryAndAliasPermissions("bob_write_proof_bundle")) {
+      assert.ok(!tools.includes(permission), `${agentPath} must not allow ${permission}`);
+    }
   }
 });
 

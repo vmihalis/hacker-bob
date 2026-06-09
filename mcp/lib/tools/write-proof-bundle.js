@@ -79,9 +79,10 @@ module.exports = wrapWriteTool({
     required: ["target_domain", "packs"],
   },
   handler: writeProofBundles,
-  role_bundles: ["evidence", "verifier", "orchestrator"],
+  // Keep role-bundle access narrow; final-verifier gets an explicit role-model grant.
+  role_bundles: ["orchestrator"],
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: false,
   browser_access: false,
   scope_required: false,

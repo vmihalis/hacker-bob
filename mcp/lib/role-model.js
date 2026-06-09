@@ -121,6 +121,7 @@ const ROLE_DEFINITIONS = Object.freeze({
     family: "verifier",
     prompt_body: path.join(ROLE_PROMPT_DIR, "final-verifier.md"),
     mcp_role_bundles: Object.freeze(["verifier"]),
+    mcp_tools: Object.freeze(["bob_write_proof_bundle"]),
   }),
   evidence: Object.freeze({
     id: "evidence",
