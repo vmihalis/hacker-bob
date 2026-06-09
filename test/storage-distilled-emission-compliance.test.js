@@ -42,6 +42,7 @@ const resolveBodyTool = require("../mcp/lib/tools/resolve-body.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
+  NEUTRALIZED_OPEN_SENTINEL,
   NEUTRALIZED_CLOSE_SENTINEL,
 } = require("../mcp/lib/untrusted-envelope.js");
 const {
@@ -133,14 +134,20 @@ test("X-D12 closed prefix set matches the body-resolvers registry (a)", () => {
   }
 });
 
-test("bob_resolve_body defaults every non-empty resolver body to an untrusted fence", () => {
+test("bob_resolve_body defaults every resolver body to an untrusted fence", () => {
   assert.deepEqual(
     resolveBodyTool.TRUSTED_BODY_PREFIX_VALUES,
     [],
     "trusted body prefixes must be explicit opt-outs from default fencing",
   );
+  const utf8Fixture = Buffer.from("a\u4e2db", "utf8");
+  assert.equal(resolveBodyTool.utf8SafeSliceLength(utf8Fixture, 2), 1);
+  assert.equal(resolveBodyTool.utf8SafeSliceLength(utf8Fixture, 3), 1);
+  assert.equal(resolveBodyTool.utf8SafeSliceLength(utf8Fixture, 4), 4);
   const fenced = resolveBodyTool.renderBodyForResponse("future_resolver", "future body");
   assert.equal(parseUntrustedFence(fenced, "future_resolver"), "future body");
+  const empty = resolveBodyTool.renderBodyForResponse("future_resolver", "");
+  assert.equal(parseUntrustedFence(empty, "future_resolver"), "");
 });
 
 test("frontier_event resolver round-trips bodies (c) + (d)", () => {
@@ -482,7 +489,7 @@ test("bob_resolve_body fences untrusted resolver output without changing raw met
     }));
     assert.equal(emptyPage.content_hash, helperResult.content_hash);
     assert.equal(emptyPage.body_size_bytes, helperResult.body_size_bytes);
-    assert.equal(emptyPage.body, "");
+    assert.equal(parseUntrustedFence(emptyPage.body, "repo_command_run"), "");
   });
 });
 
@@ -574,6 +581,51 @@ test("bob_resolve_body truncates at 1MB with truncated_at offset, paginated re-f
     assert.ok(
       totalReadable >= firstPage.body_size_bytes || secondPage.truncated_at != null,
     );
+  });
+});
+
+test("bob_resolve_body keeps fenced pages under 1MB after sentinel neutralization expansion", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const runsDir = repoRunsDir(domain);
+    fs.mkdirSync(runsDir, { recursive: true });
+    const runId = "run_truncation_neutralized_001";
+    const markerBlock = `${OPEN_SENTINEL}\u4e2d`.repeat(256);
+    const targetBytes = resolveBodyTool.BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES + 4096;
+    const oversizeStdout = markerBlock.repeat(Math.ceil(targetBytes / Buffer.byteLength(markerBlock, "utf8")));
+    fs.writeFileSync(path.join(runsDir, `${runId}.stdout`), oversizeStdout);
+    fs.writeFileSync(path.join(runsDir, `${runId}.stderr`), "");
+    const ref = `repo_command_run:${runId}`;
+    const helperResult = resolveArtifactBody(domain, ref);
+
+    const firstPage = JSON.parse(resolveBodyTool.handler({
+      target_domain: domain,
+      artifact_ref: ref,
+    }));
+    assert.equal(firstPage.found, true);
+    assert.equal(typeof firstPage.truncated_at, "number");
+    assert.ok(
+      firstPage.truncated_at < resolveBodyTool.BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES,
+      "sentinel expansion must reduce the raw page below the no-neutralization ceiling",
+    );
+    assert.ok(
+      Buffer.byteLength(firstPage.body, "utf8") <= resolveBodyTool.BODY_RESPONSE_MAX_BYTES,
+      "neutralized fenced response must stay within the advertised per-call cap",
+    );
+    const firstPageBody = parseUntrustedFence(firstPage.body, "repo_command_run");
+    assert.ok(firstPageBody.includes(NEUTRALIZED_OPEN_SENTINEL));
+    assert.doesNotMatch(firstPageBody, /\uFFFD/);
+    assert.equal(firstPage.content_hash, helperResult.content_hash);
+    assert.equal(firstPage.body_size_bytes, helperResult.body_size_bytes);
+
+    const secondPage = JSON.parse(resolveBodyTool.handler({
+      target_domain: domain,
+      artifact_ref: ref,
+      offset: firstPage.truncated_at,
+    }));
+    assert.equal(secondPage.offset, firstPage.truncated_at);
+    assert.ok(Buffer.byteLength(secondPage.body, "utf8") <= resolveBodyTool.BODY_RESPONSE_MAX_BYTES);
+    assert.doesNotMatch(parseUntrustedFence(secondPage.body, "repo_command_run"), /\uFFFD/);
   });
 });
 

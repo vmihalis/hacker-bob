@@ -14,9 +14,13 @@ const {
   NEUTRALIZED_CLOSE_SENTINEL,
   ENVELOPE_NONCE_BYTES,
   ENVELOPE_NONCE_HEX_CHARS,
+  FENCE_OVERHEAD_CAP,
   FENCE_OVERHEAD_CONTRACT,
-  FENCE_OVERHEAD_BUDGET,
+  UNTRUSTED_FENCE_OVERHEAD_CHARS,
+  KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS,
   ENVELOPE_LABEL_MAX_CHARS,
+  fenceOverheadForLabel,
+  untrustedEnvelopeByteLengthUpperBound,
   escapeRegExp,
 } = require("../mcp/lib/untrusted-envelope.js");
 
@@ -204,7 +208,30 @@ test("wrapUntrusted overhead stays within FENCE_OVERHEAD_CONTRACT", () => {
   const wrapped = wrapUntrusted(body, { label: "a".repeat(ENVELOPE_LABEL_MAX_CHARS) });
   const overhead = wrapped.text.length - body.length;
   assert.equal(overhead, FENCE_OVERHEAD_CONTRACT);
-  assert.ok(FENCE_OVERHEAD_BUDGET >= FENCE_OVERHEAD_CONTRACT);
+  assert.equal(fenceOverheadForLabel("a".repeat(ENVELOPE_LABEL_MAX_CHARS)), FENCE_OVERHEAD_CONTRACT);
+  assert.equal(FENCE_OVERHEAD_CAP, 256);
+  assert.equal(UNTRUSTED_FENCE_OVERHEAD_CHARS, 160);
+  assert.equal(KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS, 33);
+  assert.equal(fenceOverheadForLabel("a".repeat(KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS)), UNTRUSTED_FENCE_OVERHEAD_CHARS);
+  assert.ok(FENCE_OVERHEAD_CAP >= FENCE_OVERHEAD_CONTRACT);
+});
+
+test("untrusted envelope byte-length upper bound accounts for sentinel neutralization", () => {
+  const body = `${OPEN_SENTINEL}${CLOSE_SENTINEL}${OPEN_SENTINEL}`;
+  const wrapped = wrapUntrusted(body, { label: "repo_command_run" });
+  const upperBound = untrustedEnvelopeByteLengthUpperBound(body, { label: "repo_command_run" });
+  assert.ok(Buffer.byteLength(wrapped.text, "utf8") <= upperBound);
+  assert.ok(upperBound > Buffer.byteLength(body, "utf8") + fenceOverheadForLabel("repo_command_run"));
+});
+
+test("untrusted envelope byte-length upper bound is monotone across sentinel completion", () => {
+  const forgedSentinel = `<${"\u200b".repeat(80)}<${"\u200b".repeat(80)}UNTRUSTED_DATA`;
+  let previous = untrustedEnvelopeByteLengthUpperBound("", { label: "repo_command_run" });
+  for (let idx = 1; idx <= forgedSentinel.length; idx += 1) {
+    const next = untrustedEnvelopeByteLengthUpperBound(forgedSentinel.slice(0, idx), { label: "repo_command_run" });
+    assert.ok(next >= previous, `upper bound decreased at prefix ${idx}`);
+    previous = next;
+  }
 });
 
 test("system note stays bounded", () => {

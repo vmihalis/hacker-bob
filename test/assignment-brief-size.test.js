@@ -23,8 +23,13 @@ const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   NEUTRALIZED_CLOSE_SENTINEL,
-  FENCE_OVERHEAD_BUDGET,
+  KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS,
+  fenceOverheadForLabel,
+  wrapUntrusted,
 } = require("../mcp/lib/untrusted-envelope.js");
+const {
+  RESOLVER_PREFIXES,
+} = require("../mcp/lib/body-resolvers/index.js");
 const {
   startWave,
 } = require("../mcp/lib/waves.js");
@@ -182,7 +187,8 @@ function representativeRegistryContext() {
 }
 
 test("evaluator brief slice registry is explicit and budgeted per profile", () => {
-  assert.equal(UNTRUSTED_FENCE_OVERHEAD_CHARS, FENCE_OVERHEAD_BUDGET);
+  assert.equal(UNTRUSTED_FENCE_OVERHEAD_CHARS, 160);
+  assert.equal(KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS, 33);
   assert.deepEqual(ASSIGNMENT_BRIEF_SLICE_REGISTRY.web.map((slice) => slice.key), [
     // Plane T cycle T.4 — `browser_workflow` leads the web brief so the
     // Patchright workflow stanza appears first under `browser_behavior_probe`.
@@ -244,7 +250,33 @@ test("evaluator brief slice registry is explicit and budgeted per profile", () =
     const base = key === "cross_stack_composition" ? 8192 : key === "adjacent_hypotheses" ? 2048 : 4096;
     assert.equal(slice.budget_chars, base + UNTRUSTED_FENCE_OVERHEAD_CHARS);
   }
+  const wrappedLabels = [
+    ...WEB_UNTRUSTED_SLICE_KEYS,
+    ...SMART_CONTRACT_UNTRUSTED_SLICE_KEYS,
+    ...NODE_UNTRUSTED_SLICE_KEYS,
+    ...RESOLVER_PREFIXES,
+  ];
+  for (const label of wrappedLabels) {
+    assert.ok(
+      fenceOverheadForLabel(label) <= UNTRUSTED_FENCE_OVERHEAD_CHARS,
+      `${label} fence overhead must fit X6's declared budget addend`,
+    );
+  }
   assert.ok(UNTRUSTED_CONTENT_POLICY.length <= 256);
+});
+
+test("untrusted brief slice labels must fit the X6 known-label addend", () => {
+  assert.throws(
+    () => buildBriefExtrasFromRegistry([
+      {
+        key: "a".repeat(KNOWN_LABEL_FENCE_OVERHEAD_MAX_CHARS + 1),
+        budget_chars: 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS,
+        read: () => "attacker-controlled bytes",
+        untrusted: true,
+      },
+    ], {}),
+    /fence overhead .* exceeds addend/,
+  );
 });
 
 test("untrusted brief slices are fenced at the registry chokepoint", () => {

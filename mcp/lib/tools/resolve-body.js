@@ -35,11 +35,15 @@ const {
 } = require("../body-resolvers/index.js");
 const {
   wrapUntrusted,
-  FENCE_OVERHEAD_BUDGET,
+  FENCE_OVERHEAD_CONTRACT,
+  untrustedEnvelopeByteLengthUpperBound,
 } = require("../untrusted-envelope.js");
 
 const BODY_RESPONSE_MAX_BYTES = 1024 * 1024; // 1MB per X.7 Do step 1.
-const BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES = BODY_RESPONSE_MAX_BYTES - FENCE_OVERHEAD_BUDGET;
+// Resolver responses accept future prefix labels, so use the arbitrary-label
+// framing contract as the no-neutralization raw-page ceiling. Forged sentinel
+// neutralization may require a smaller per-page slice below.
+const BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES = BODY_RESPONSE_MAX_BYTES - FENCE_OVERHEAD_CONTRACT;
 const TRUSTED_BODY_PREFIX_VALUES = Object.freeze([]);
 const TRUSTED_BODY_PREFIXES = new Set(TRUSTED_BODY_PREFIX_VALUES);
 
@@ -56,7 +60,6 @@ function artifactRefPrefix(artifactRef) {
 }
 
 function renderBodyForResponse(prefix, body) {
-  if (body === "") return "";
   if (TRUSTED_BODY_PREFIXES.has(prefix)) return body;
   return wrapUntrusted(body, { label: prefix }).fenced;
 }
@@ -64,6 +67,55 @@ function renderBodyForResponse(prefix, body) {
 function bodyPayloadMaxBytes(prefix) {
   if (TRUSTED_BODY_PREFIXES.has(prefix)) return BODY_RESPONSE_MAX_BYTES;
   return BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES;
+}
+
+function utf8SafeSliceLength(buffer, length) {
+  let end = Math.max(0, Math.min(length, buffer.length));
+  // If `end` is the full buffer length there is no next byte to inspect; Bob
+  // artifact bodies are expected to be well-formed UTF-8 at their natural end.
+  while (end > 0 && end < buffer.length && (buffer[end] & 0xC0) === 0x80) {
+    end -= 1;
+  }
+  return end;
+}
+
+function fitBodyBufferForResponse(prefix, sliceBuffer) {
+  const payloadMaxBytes = bodyPayloadMaxBytes(prefix);
+  if (TRUSTED_BODY_PREFIXES.has(prefix)) {
+    const end = sliceBuffer.length > payloadMaxBytes
+      ? utf8SafeSliceLength(sliceBuffer, payloadMaxBytes)
+      : sliceBuffer.length;
+    return sliceBuffer.subarray(0, end);
+  }
+
+  const initialEnd = sliceBuffer.length > payloadMaxBytes
+    ? utf8SafeSliceLength(sliceBuffer, payloadMaxBytes)
+    : sliceBuffer.length;
+  const initialBuffer = sliceBuffer.subarray(0, initialEnd);
+  const initialBody = initialBuffer.toString("utf8");
+  if (untrustedEnvelopeByteLengthUpperBound(initialBody, { label: prefix }) <= BODY_RESPONSE_MAX_BYTES) {
+    return initialBuffer;
+  }
+
+  let low = 0;
+  let high = initialBuffer.length;
+  let best = 0;
+  while (low <= high) {
+    const rawMid = Math.floor((low + high) / 2);
+    const mid = utf8SafeSliceLength(initialBuffer, rawMid);
+    const candidateBody = initialBuffer.subarray(0, mid).toString("utf8");
+    const candidateLength = untrustedEnvelopeByteLengthUpperBound(candidateBody, { label: prefix });
+    if (candidateLength <= BODY_RESPONSE_MAX_BYTES) {
+      best = mid;
+      low = rawMid + 1;
+    } else {
+      high = rawMid - 1;
+    }
+  }
+  if (best === 0 && initialBuffer.length > 0) {
+    throw new Error("body response cannot fit a non-empty UTF-8 prefix inside the response cap");
+  }
+  return initialBuffer.subarray(0, best);
 }
 
 function handler(args) {
@@ -113,7 +165,6 @@ function handler(args) {
   const fullBody = resolved.body;
   const totalSize = resolved.body_size_bytes;
   const prefix = artifactRefPrefix(artifactRef);
-  const payloadMaxBytes = bodyPayloadMaxBytes(prefix);
   if (offsetRaw >= totalSize) {
     return JSON.stringify({
       version: 1,
@@ -133,10 +184,9 @@ function handler(args) {
     ? fullBody.subarray(offsetRaw)
     : Buffer.from(String(fullBody), "utf8").subarray(offsetRaw);
   let truncatedAt = null;
-  let outBuffer = sliceBuffer;
-  if (sliceBuffer.length > payloadMaxBytes) {
-    outBuffer = sliceBuffer.subarray(0, payloadMaxBytes);
-    truncatedAt = offsetRaw + payloadMaxBytes;
+  const outBuffer = fitBodyBufferForResponse(prefix, sliceBuffer);
+  if (outBuffer.length < sliceBuffer.length) {
+    truncatedAt = offsetRaw + outBuffer.length;
   }
   return JSON.stringify({
     version: 1,
@@ -198,4 +248,5 @@ module.exports = Object.freeze({
   BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES,
   TRUSTED_BODY_PREFIX_VALUES,
   renderBodyForResponse,
+  utf8SafeSliceLength,
 });
