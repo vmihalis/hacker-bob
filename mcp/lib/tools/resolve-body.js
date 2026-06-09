@@ -44,6 +44,8 @@ const UNTRUSTED_BODY_PREFIXES = Object.freeze(new Set([
   "repo_command_run",
   "evm_call",
   "frontier_event",
+  "finding",
+  "evidence_pack",
 ]));
 
 function structuredError(code, message, details) {
@@ -59,6 +61,7 @@ function artifactRefPrefix(artifactRef) {
 }
 
 function renderBodyForResponse(prefix, body) {
+  if (body === "") return "";
   if (!UNTRUSTED_BODY_PREFIXES.has(prefix)) return body;
   return wrapUntrusted(body, { label: prefix }).fenced;
 }

@@ -371,8 +371,7 @@ test("finding resolver round-trips claim records (c)", () => {
       artifact_ref: ref,
     }));
     assert.equal(result.found, true);
-    assert.doesNotMatch(result.body, /<<UNTRUSTED_DATA/);
-    const body = JSON.parse(result.body);
+    const body = JSON.parse(parseUntrustedFence(result.body, "finding"));
     assert.equal(body.finding_id, findingId);
     assert.equal(body.title, "fixture finding");
   });
@@ -399,15 +398,13 @@ test("evidence_pack resolver round-trips by pack_id/finding_id (c)", () => {
       artifact_ref: "evidence_pack:EP-001",
     }));
     assert.equal(byPackId.found, true);
-    assert.doesNotMatch(byPackId.body, /<<UNTRUSTED_DATA/);
-    assert.equal(JSON.parse(byPackId.body).pack_id, "EP-001");
+    assert.equal(JSON.parse(parseUntrustedFence(byPackId.body, "evidence_pack")).pack_id, "EP-001");
     const byFindingId = JSON.parse(resolveBodyTool.handler({
       target_domain: domain,
       artifact_ref: "evidence_pack:F-001",
     }));
     assert.equal(byFindingId.found, true);
-    assert.doesNotMatch(byFindingId.body, /<<UNTRUSTED_DATA/);
-    assert.equal(JSON.parse(byFindingId.body).finding_id, "F-001");
+    assert.equal(JSON.parse(parseUntrustedFence(byFindingId.body, "evidence_pack")).finding_id, "F-001");
   });
 });
 
@@ -473,7 +470,7 @@ test("bob_resolve_body fences untrusted resolver output without changing raw met
     }));
     assert.equal(emptyPage.content_hash, helperResult.content_hash);
     assert.equal(emptyPage.body_size_bytes, helperResult.body_size_bytes);
-    assert.equal(parseUntrustedFence(emptyPage.body, "repo_command_run"), "");
+    assert.equal(emptyPage.body, "");
   });
 });
 

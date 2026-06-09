@@ -48,6 +48,10 @@ const {
 const {
   appendContract,
 } = require("../mcp/lib/contracts.js");
+const {
+  OPEN_SENTINEL,
+  CLOSE_SENTINEL,
+} = require("../mcp/lib/untrusted-envelope.js");
 
 function parseFencedBriefJson(value, label) {
   const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
@@ -61,7 +65,13 @@ function sha256Hex(value) {
 }
 
 function normalizeEnvelopeNonces(value) {
-  return String(value).replace(/nonce=[0-9a-f]{32}/g, "nonce=<nonce>");
+  return String(value)
+    .replace(new RegExp(`${escapeRegExp(OPEN_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${OPEN_SENTINEL} nonce=<nonce>`)
+    .replace(new RegExp(`${escapeRegExp(CLOSE_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${CLOSE_SENTINEL} nonce=<nonce>`);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function withTempHome(fn) {
