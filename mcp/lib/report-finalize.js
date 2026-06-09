@@ -64,6 +64,12 @@ const {
 const {
   loadJsonDocumentStrict,
 } = require("./storage.js");
+const {
+  parseFindingId,
+} = require("./validation.js");
+const {
+  normalizeProofBundlesDocument,
+} = require("./proof-bundle.js");
 
 const HASH_HEX_RE = /^[0-9a-f]{64}$/i;
 
@@ -127,7 +133,7 @@ function loadClaimFreezeHash(domain) {
   };
 }
 
-function loadFinalVerificationHash(domain) {
+function loadFinalVerificationDocument(domain) {
   const paths = verificationRoundPaths(domain, "final");
   if (!fs.existsSync(paths.json)) {
     // Y.10 (Y-D12 / D15) — STATE_CONFLICT remediation backfill #4 of 6:
@@ -167,7 +173,12 @@ function loadFinalVerificationHash(domain) {
       },
     );
   }
-  return hash.toLowerCase();
+  document.final_verification_hash = hash.toLowerCase();
+  return document;
+}
+
+function loadFinalVerificationHash(domain) {
+  return loadFinalVerificationDocument(domain).final_verification_hash;
 }
 
 function loadEvidencePackHash(domain) {
@@ -213,7 +224,42 @@ function reportContentCitesProofBundle(contentBuffer) {
   return contentBuffer.toString("utf8").includes("proof_bundle:");
 }
 
-function loadProofBundleHash(domain) {
+function proofBundleRefsFromReportContent(contentBuffer) {
+  const text = contentBuffer.toString("utf8");
+  const refs = new Set();
+  for (const match of text.matchAll(/\bproof_bundle:(F-\d+)\b/g)) {
+    refs.add(parseFindingId(match[1], "proof_bundle ref"));
+  }
+  return refs;
+}
+
+function findingSetsFromFinalRound(finalRound) {
+  const findingIdSet = new Set();
+  const finalReportableIdSet = new Set();
+  const results = Array.isArray(finalRound && finalRound.results) ? finalRound.results : [];
+  for (const result of results) {
+    if (!result || typeof result.finding_id !== "string" || !result.finding_id.trim()) continue;
+    findingIdSet.add(result.finding_id);
+    if (result.reportable === true) finalReportableIdSet.add(result.finding_id);
+  }
+  return { findingIdSet, finalReportableIdSet };
+}
+
+function proofBundleBindingFromFinalRound(finalRound) {
+  const bindingFields = ["verification_attempt_id", "verification_snapshot_hash", "final_verification_hash"];
+  const finalHasBinding = bindingFields.some((field) => finalRound && finalRound[field] != null);
+  if (!((finalRound && finalRound.version === 2) || finalHasBinding)) return null;
+  const binding = {};
+  for (const field of bindingFields) {
+    if (typeof finalRound[field] !== "string" || !finalRound[field].trim()) {
+      throw new Error(`current final verification is missing ${field}`);
+    }
+    binding[field] = finalRound[field];
+  }
+  return binding;
+}
+
+function loadProofBundleHash(domain, { citedFindingIds = null, finalRound = null } = {}) {
   const paths = proofBundlePaths(domain);
   if (!fs.existsSync(paths.json)) {
     throw new ToolError(
@@ -240,7 +286,44 @@ function loadProofBundleHash(domain) {
       { missing_field: "packs" },
     );
   }
-  return hashCanonicalJson(document);
+  if (!finalRound || !(citedFindingIds instanceof Set)) {
+    return hashCanonicalJson(document);
+  }
+  if (citedFindingIds.size === 0) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      "report.md contains proof_bundle: text but no proof_bundle:F-N refs could be parsed",
+      { missing_ref: "proof_bundle:F-N" },
+    );
+  }
+  let normalized;
+  try {
+    const verificationBinding = proofBundleBindingFromFinalRound(finalRound);
+    normalized = normalizeProofBundlesDocument(document, {
+      expectedDomain: domain,
+      ...findingSetsFromFinalRound(finalRound),
+      verificationBinding,
+    });
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `proof bundles at ${paths.json} do not validate against the current final verification: ${error.message || String(error)}`,
+      { missing_artifact: "proof-bundles.json" },
+      { remediation: "call bob_write_proof_bundle({target_domain, packs: [...]}) for the current final reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
+  const normalizedIds = new Set(normalized.packs.map((pack) => pack.finding_id));
+  for (const findingId of citedFindingIds) {
+    if (!normalizedIds.has(findingId)) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `proof_bundle:${findingId} does not resolve to a current validated proof bundle; rewrite proof bundles before finalization`,
+        { ref: `proof_bundle:${findingId}`, missing_artifact: "proof-bundles.json" },
+        { remediation: "call bob_write_proof_bundle({target_domain, packs: [...]}) with a pack for the cited final-reportable finding, then re-invoke bob_finalize_report" },
+      );
+    }
+  }
+  return hashCanonicalJson(normalized);
 }
 
 function loadGradeVerdictHash(domain) {
@@ -277,12 +360,16 @@ function resolveReportFinalizationHashes(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const reportFile = readReportFileContent(domain);
   const claimFreeze = loadClaimFreezeHash(domain);
-  const finalVerificationHash = loadFinalVerificationHash(domain);
+  const finalVerification = loadFinalVerificationDocument(domain);
+  const finalVerificationHash = finalVerification.final_verification_hash;
   const evidenceHash = loadEvidencePackHash(domain);
   const gradeVerdictHash = loadGradeVerdictHash(domain);
   const reportContentHash = sha256Hex(reportFile.content_buffer);
   const proofBundleHash = reportContentCitesProofBundle(reportFile.content_buffer)
-    ? loadProofBundleHash(domain)
+    ? loadProofBundleHash(domain, {
+      citedFindingIds: proofBundleRefsFromReportContent(reportFile.content_buffer),
+      finalRound: finalVerification,
+    })
     : null;
   const bundle = {
     target_domain: domain,
@@ -316,9 +403,11 @@ module.exports = {
   HASH_HEX_RE,
   loadClaimFreezeHash,
   loadEvidencePackHash,
+  loadFinalVerificationDocument,
   loadFinalVerificationHash,
   loadGradeVerdictHash,
   loadProofBundleHash,
+  proofBundleRefsFromReportContent,
   readReportFileContent,
   reportContentCitesProofBundle,
   resolveReportFinalizationHashes,

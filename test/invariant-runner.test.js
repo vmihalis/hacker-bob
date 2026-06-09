@@ -43,6 +43,7 @@ function cleanupHarness(harnessPath) {
 }
 
 const SAMPLE_REENTRANCY_FINDING = Object.freeze({
+  finding_id: "F-1",
   finding_hash: "h1",
   title: "Reentrancy in withdraw",
   vulnerability_class: "reentrancy",
@@ -121,6 +122,7 @@ fs.openSync = function patchedOpenSync(filePath, ...args) {
   await runInvariantForFinding({
     target_domain: domain,
     finding: {
+      finding_id: "F-1",
       finding_hash: findingHash,
       title: "Reentrancy " + tag,
       vulnerability_class: "reentrancy",
@@ -1025,7 +1027,7 @@ test("missing class returns no_template and does not invoke foundry_run", async 
   try {
     const result = await runInvariantForFinding({
       target_domain: domain,
-      finding: { finding_hash: "x", vulnerability_class: "no_such_class" },
+      finding: { finding_id: "F-1", finding_hash: "x", vulnerability_class: "no_such_class" },
       harness_path: harness,
       foundry_run: stubFoundry,
     });
@@ -1352,6 +1354,15 @@ test("input validation rejects unsafe target_domain and missing finding/harness_
       foundry_run: async () => ({}),
     }),
     /finding/,
+  );
+  await assert.rejects(
+    () => runInvariantForFinding({
+      target_domain: "ok.example",
+      finding: { finding_hash: "h1", vulnerability_class: "reentrancy" },
+      harness_path: "/tmp",
+      foundry_run: async () => ({}),
+    }),
+    /finding\.finding_id/,
   );
   await assert.rejects(
     () => runInvariantForFinding({

@@ -32,10 +32,11 @@ function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeOptionalFindingId(finding) {
-  const raw = finding && (finding.id || finding.finding_id);
-  if (raw == null) return null;
-  return parseFindingId(raw, "finding.id");
+function normalizeRequiredFindingId(finding) {
+  if (!finding || finding.finding_id == null) {
+    throw new Error("finding.finding_id must be the Bob F-N id for the final finding");
+  }
+  return parseFindingId(finding.finding_id, "finding.finding_id");
 }
 
 function resolveInvariantRunsFilePath(filePath, { createDir = false } = {}) {
@@ -598,7 +599,7 @@ async function runInvariantForFinding({
   if (typeof foundry_run !== "function" && dry_run !== true) {
     throw new Error("foundry_run must be a function (or pass dry_run: true)");
   }
-  const findingId = normalizeOptionalFindingId(finding);
+  const findingId = normalizeRequiredFindingId(finding);
   const suggestion = suggestInvariantsForFinding(finding, { slot_values });
   if (suggestion.suggestions.length === 0) {
     return {

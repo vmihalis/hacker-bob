@@ -46,7 +46,16 @@ module.exports = Object.freeze({
       target_domain: { type: "string" },
       finding: {
         type: "object",
-        description: "An audit-report finding (from bob_query_audit_reports). Must include vulnerability_class.",
+        description: "An audit-report finding enriched with the current Bob finding_id. Must include finding_id and vulnerability_class.",
+        properties: {
+          finding_id: { type: "string", pattern: "^F-[0-9]+$" },
+          finding_hash: { type: "string" },
+          title: { type: "string" },
+          vulnerability_class: { type: "string" },
+          description: { type: "string" },
+        },
+        required: ["finding_id", "vulnerability_class"],
+        additionalProperties: true,
       },
       template_id: { type: "string", description: "Optional. Pin a specific template id; default is the first suggestion for the class." },
       slot_values: { type: "object", description: "Map of parameter_slot -> value (target_contract, vulnerable_function, etc.)." },
