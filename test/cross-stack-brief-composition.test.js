@@ -55,6 +55,13 @@ const {
 
 const KNOWN_TOOL = "bob_http_scan";
 
+function parseFencedBriefJson(value, label) {
+  const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
+  assert.ok(match, `expected fenced ${label} slice`);
+  assert.equal(match[2], label);
+  return JSON.parse(match[3]);
+}
+
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-x11-cross-stack-"));
@@ -306,7 +313,7 @@ test("Transition brief inlines the cross_stack_composition slice with transition
     // The Transition brief MUST inline the cross_stack_composition slice.
     assert.ok(prep.brief.cross_stack_composition,
       "Transition brief must inline cross_stack_composition slice per X.11 Do step 1");
-    const xs = prep.brief.cross_stack_composition;
+    const xs = parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition");
 
     // transition_kind + trust_assumption surfaced from the proposal payload.
     assert.equal(xs.transition_kind, "identity_propagation");
@@ -405,7 +412,7 @@ test("Surface node with ≥1 adjacent Transition surfaces the cross_stack_compos
     // because there is ≥1 adjacent Transition touching surface:web-auth.
     assert.ok(prep.brief.cross_stack_composition,
       "Surface brief with adjacent Transition must inline cross_stack_composition slice per X.11 Do step 2");
-    const xs = prep.brief.cross_stack_composition;
+    const xs = parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition");
 
     assert.equal(xs.surface_id, "surface:web-auth");
     assert.ok(Array.isArray(xs.adjacent_transitions));
@@ -481,13 +488,13 @@ test("Surface node with adjacent Transition AND adjacent Hypothesis surfaces BOT
 
     assert.ok(prep.brief.cross_stack_composition,
       "Surface brief must inline cross_stack_composition (adjacent Transition present)");
-    assert.equal(prep.brief.cross_stack_composition.adjacent_transitions.length, 1);
+    assert.equal(parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition").adjacent_transitions.length, 1);
 
     assert.ok(prep.brief.adjacent_hypotheses,
       "Surface brief must inline adjacent_hypotheses (adjacent Hypothesis present, X.8 slice)");
-    assert.equal(prep.brief.adjacent_hypotheses.hypotheses.length, 1);
+    assert.equal(parseFencedBriefJson(prep.brief.adjacent_hypotheses, "adjacent_hypotheses").hypotheses.length, 1);
     assert.equal(
-      prep.brief.adjacent_hypotheses.hypotheses[0].hypothesis_statement,
+      parseFencedBriefJson(prep.brief.adjacent_hypotheses, "adjacent_hypotheses").hypotheses[0].hypothesis_statement,
       "Web auth leaks privileged role in error response.",
     );
   });
@@ -558,8 +565,9 @@ test("Transition brief with 50 adjacent observations per endpoint stays under 30
     // endpoint_observations bucket count stays bounded by the per-surface
     // cap (NOT by the full 50 ledger events).
     assert.ok(prep.brief.cross_stack_composition);
-    const webEvents = prep.brief.cross_stack_composition.endpoint_observations["surface:web-auth"].events;
-    const evmEvents = prep.brief.cross_stack_composition.endpoint_observations["surface:evm-vault"].events;
+    const xs = parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition");
+    const webEvents = xs.endpoint_observations["surface:web-auth"].events;
+    const evmEvents = xs.endpoint_observations["surface:evm-vault"].events;
     assert.ok(webEvents.length <= 8, `web events cap exceeded: ${webEvents.length}`);
     assert.ok(evmEvents.length <= 8, `evm events cap exceeded: ${evmEvents.length}`);
   });
@@ -656,7 +664,7 @@ test("Transition node's derived pack UNIONs both endpoints' capability_pack tool
 
     // The brief's cross_stack_composition slice surfaces the same union
     // via the endpoint_capability_packs[] array.
-    const xs = prep.brief.cross_stack_composition;
+    const xs = parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition");
     assert.ok(xs.endpoint_capability_packs.includes("web"));
     assert.ok(xs.endpoint_capability_packs.includes("smart_contract_evm"));
   });
@@ -702,7 +710,7 @@ test("Transition node brief composition is deterministic: same fixture → same 
     // composition, the contract_template is the deterministic surface
     // (no clock / random / env reads).
     assert.ok(prep1.brief.cross_stack_composition);
-    const xs1 = prep1.brief.cross_stack_composition;
+    const xs1 = parseFencedBriefJson(prep1.brief.cross_stack_composition, "cross_stack_composition");
     const template1 = xs1.contract_template;
     const template2 = transitionKindBriefContent("value_movement").contract_template;
     assert.deepEqual(template1, template2);
@@ -749,7 +757,7 @@ test("Transition node with a transition_kind outside the X-D3 closed enum still 
     }));
 
     assert.ok(prep.brief.cross_stack_composition);
-    const xs = prep.brief.cross_stack_composition;
+    const xs = parseFencedBriefJson(prep.brief.cross_stack_composition, "cross_stack_composition");
     assert.equal(xs.transition_kind, "synthetic_unknown_kind");
     assert.equal(xs.hunting_vocab, null);
     assert.equal(xs.contract_template, null);

@@ -46,6 +46,13 @@ const WEB_UNTRUSTED_SLICE_KEYS = Object.freeze([
   "surface_graph_slice",
 ]);
 const SMART_CONTRACT_UNTRUSTED_SLICE_KEYS = Object.freeze(["surface_graph_slice"]);
+const NODE_UNTRUSTED_SLICE_KEYS = Object.freeze([
+  "cross_stack_composition",
+  "recommended_reads",
+  "adjacent_observations",
+  "prior_attempt",
+  "adjacent_hypotheses",
+]);
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -216,6 +223,10 @@ test("evaluator brief slice registry is explicit and budgeted per profile", () =
     ASSIGNMENT_BRIEF_SLICE_REGISTRY.smart_contract.filter((slice) => slice.untrusted).map((slice) => slice.key),
     SMART_CONTRACT_UNTRUSTED_SLICE_KEYS,
   );
+  assert.deepEqual(
+    ASSIGNMENT_BRIEF_SLICE_REGISTRY.node.filter((slice) => slice.untrusted).map((slice) => slice.key),
+    NODE_UNTRUSTED_SLICE_KEYS,
+  );
   for (const key of WEB_UNTRUSTED_SLICE_KEYS) {
     const slice = ASSIGNMENT_BRIEF_SLICE_REGISTRY.web.find((entry) => entry.key === key);
     const base = key === "schema_slice" || key === "surface_graph_slice" ? 8192 : 4096;
@@ -225,6 +236,11 @@ test("evaluator brief slice registry is explicit and budgeted per profile", () =
     ASSIGNMENT_BRIEF_SLICE_REGISTRY.smart_contract.find((entry) => entry.key === "surface_graph_slice").budget_chars,
     8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS,
   );
+  for (const key of NODE_UNTRUSTED_SLICE_KEYS) {
+    const slice = ASSIGNMENT_BRIEF_SLICE_REGISTRY.node.find((entry) => entry.key === key);
+    const base = key === "cross_stack_composition" ? 8192 : key === "adjacent_hypotheses" ? 2048 : 4096;
+    assert.equal(slice.budget_chars, base + UNTRUSTED_FENCE_OVERHEAD_CHARS);
+  }
   assert.ok(UNTRUSTED_CONTENT_POLICY.length <= 256);
 });
 

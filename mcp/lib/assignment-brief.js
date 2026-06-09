@@ -525,12 +525,12 @@ const NODE_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("governance", 1024, (context) => context.governance),
   briefSliceEntry("node_context", 1024, (context) => context.nodeContext),
   briefSliceEntry("contract", 4096, (context) => context.contract),
-  briefSliceEntry("cross_stack_composition", 8192, (context) => context.crossStackComposition || ""),
+  briefSliceEntry("cross_stack_composition", 8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.crossStackComposition || "", true),
   briefSliceEntry("allowed_tools_for_node", 2048, (context) => context.allowedToolsForNode),
-  briefSliceEntry("recommended_reads", 4096, (context) => context.recommendedReads),
-  briefSliceEntry("adjacent_observations", 4096, (context) => context.adjacentObservations),
-  briefSliceEntry("prior_attempt", 4096, (context) => context.priorAttempt || ""),
-  briefSliceEntry("adjacent_hypotheses", 2048, (context) => context.adjacentHypotheses || ""),
+  briefSliceEntry("recommended_reads", 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.recommendedReads, true),
+  briefSliceEntry("adjacent_observations", 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.adjacentObservations, true),
+  briefSliceEntry("prior_attempt", 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.priorAttempt || "", true),
+  briefSliceEntry("adjacent_hypotheses", 2048 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.adjacentHypotheses || "", true),
   briefSliceEntry("recap_and_handoff", 2048, (context) => context.recapAndHandoff),
 ]);
 

@@ -205,6 +205,10 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function normalizeUntrustedEnvelopeNoncesForHash(value) {
+  return String(value).replace(/nonce=[0-9a-f]{32}/g, "nonce=<nonce>");
+}
+
 function safeSurfaceRouteMap(targetDomain) {
   let result;
   try {
@@ -961,7 +965,9 @@ function handler(args) {
     ...briefExtras,
   };
   const briefJson = JSON.stringify(brief);
-  const briefHash = sha256Hex(briefJson);
+  // Node briefs may render nonce-fenced untrusted summaries; the prep token
+  // binds the summary content and graph state, not the per-render nonce.
+  const briefHash = sha256Hex(normalizeUntrustedEnvelopeNoncesForHash(briefJson));
 
   // Mint the prep_token. The token binds node_id + contract_hash + brief_hash
   // + materialized_at + graph_context_hash so any drift in the underlying

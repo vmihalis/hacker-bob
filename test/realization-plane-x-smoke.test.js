@@ -123,6 +123,13 @@ const {
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
+function parseFencedBriefJson(value, label) {
+  const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
+  assert.ok(match, `expected fenced ${label} slice`);
+  assert.equal(match[2], label);
+  return JSON.parse(match[3]);
+}
+
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-x12-smoke-"));
@@ -558,7 +565,7 @@ test("X.12 positive subtest: cross-stack relational_value_match holds, finalize 
 
     // The recommended_reads slice MUST inline distilled summaries of the
     // http_record + evm_call refs the Contract names.
-    const refs = prep.brief.recommended_reads.refs;
+    const refs = parseFencedBriefJson(prep.brief.recommended_reads, "recommended_reads").refs;
     const httpRef = refs.find((r) => r.artifact_ref === `http_record:${httpRequestId}`);
     assert.ok(httpRef, "recommended_reads must inline the http_record ref the Contract references");
     // For http_record we resolve through the paired http_record_observed
@@ -877,7 +884,7 @@ test("X.12 retry-with-recall subtest: re-contract the failed node, new prepare_n
     }));
     assert.ok(prep2.brief.prior_attempt,
       "prior_attempt slice MUST be present on re-prepare after a prior failed attempt");
-    const surfacedAttempt = prep2.brief.prior_attempt.attempts[0];
+    const surfacedAttempt = parseFencedBriefJson(prep2.brief.prior_attempt, "prior_attempt").attempts[0];
     assert.equal(surfacedAttempt.failure_reason.reason, "mechanical_verifier_failed");
     const surfacedWitnessFailure = surfacedAttempt.failure_reason.failures.find((f) => f.witness_id === "W-relational");
     assert.ok(surfacedWitnessFailure,
