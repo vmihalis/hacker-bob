@@ -211,9 +211,36 @@ test("fillInvocationPlaceholders neutralizes code-span-breaking replacement valu
   });
   assert.doesNotMatch(out, /[`]/, "filled invocation must not contain target-supplied backticks");
   assert.doesNotMatch(out, /[\r\n]/, "filled invocation must stay on one markdown code-span line");
-  assert.match(out, /api\.example' ignored POST operator email/);
-  assert.match(out, /\/login <<UNTRUSTED_DATA/);
-  assert.match(out, /'bad' value/);
+  assert.match(out, /api\.example_ignored_POST_operator_email/);
+  assert.match(out, /\/login_UNTRUSTED_DATA/);
+  assert.match(out, /bad_value/);
+});
+
+test("fillInvocationPlaceholders neutralizes shell injection payloads", () => {
+  const out = fillInvocationPlaceholders("sqlmap -u \"https://<host>/<endpoint>?<param>=1\"", {
+    host: "api.example.com;$(open /tmp/leak)",
+    endpoint: "login|id&whoami",
+    param: "q;cat /etc/passwd",
+  });
+  assert.doesNotMatch(out, /;/, "semicolon command separators must be removed");
+  assert.doesNotMatch(out, /\$\(/, "command substitution must be removed");
+  assert.doesNotMatch(out, /[|&]/, "pipeline/background operators must be removed");
+  assert.doesNotMatch(out, /[()]/, "subshell metacharacters must be removed");
+  assert.match(out, /api\.example\.com_open_\/tmp\/leak/);
+  assert.match(out, /login_id_whoami/);
+});
+
+test("fillInvocationPlaceholders handles quote-based injection attempts", () => {
+  const out = fillInvocationPlaceholders("swaks --to <recipient> --from <spoofed-sender> --server <host>", {
+    recipient: "victim@example.com' || curl attacker",
+    "spoofed-sender": "\"sender@example.com\" && rm -rf /",
+    host: "mail.example.com\\`touch /tmp/pwned`",
+  });
+  assert.doesNotMatch(out, /['"`\\]/, "quote and escape delimiters must be removed");
+  assert.doesNotMatch(out, /\|\||&&/, "logical operators must be removed");
+  assert.doesNotMatch(out, /\s+curl\s+|\s+rm\s+-rf\s+|\s+touch\s+/, "payload words must not remain as separate shell words");
+  assert.match(out, /victim@example\.com_curl_attacker/);
+  assert.match(out, /sender@example\.com_rm_-rf_\//);
 });
 
 // ── Presence cache ──────────────────────────────────────────────────────────

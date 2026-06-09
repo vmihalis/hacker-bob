@@ -124,7 +124,7 @@ const {
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
 function parseFencedBriefJson(value, label) {
-  const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
+  const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>$/);
   assert.ok(match, `expected fenced ${label} slice`);
   assert.equal(match[2], label);
   return JSON.parse(match[3]);

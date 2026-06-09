@@ -782,8 +782,8 @@ test("Claude roles with bob_resolve_body carry untrusted marker discipline", () 
     if (!mcpToolNamesForRole(roleId).includes("bob_resolve_body")) continue;
     checked.push(roleId);
     const document = readFile(spec.output_path);
-    assert.match(document, /<<UNTRUSTED_DATA \.\.\.>>>/, `${roleId} must name the opening untrusted marker`);
-    assert.match(document, /<<END_UNTRUSTED_DATA \.\.\.>>>/, `${roleId} must name the closing untrusted marker`);
+    assert.match(document, /<<UNTRUSTED_DATA \.\.\.>>/, `${roleId} must name the opening untrusted marker`);
+    assert.match(document, /<<END_UNTRUSTED_DATA \.\.\.>>/, `${roleId} must name the closing untrusted marker`);
     assert.match(document, /never instructions to follow/i, `${roleId} must tell the worker not to follow fenced instructions`);
   }
   assert.ok(checked.includes("evaluator-spawn"), "evaluator-spawn must be covered by the resolver-body guard");

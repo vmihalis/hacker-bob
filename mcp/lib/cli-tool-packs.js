@@ -364,10 +364,10 @@ function fillInvocationPlaceholders(template, context) {
 
 function sanitizeInvocationPlaceholderValue(value) {
   return String(value)
-    .replace(/`/g, "'")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[\u0000-\u001f\u007f]+/g, "_")
+    .replace(/[\s`"'$;|&()\\<>!{}\[\]*?#]+/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^_+|_+$/g, "")
     .trim();
 }
 

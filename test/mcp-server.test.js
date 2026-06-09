@@ -227,7 +227,7 @@ const findingsMarkdownPath = (domain) => path.join(sessionDir(domain), "claims.m
 function parseUntrustedBriefJsonSlice(brief, key) {
   const value = brief[key];
   const pattern = new RegExp(
-    `^${escapeRegex(OPEN_SENTINEL)} nonce=([0-9a-f]{32}) label=([^>\\n]+)>>>\n([\\s\\S]*)\n${escapeRegex(CLOSE_SENTINEL)} nonce=\\1>>>$`,
+    `^${escapeRegex(OPEN_SENTINEL)} nonce=([0-9a-f]{32}) label=([^>\\n]+)>>\n([\\s\\S]*)\n${escapeRegex(CLOSE_SENTINEL)} nonce=\\1>>$`,
   );
   const match = String(value).match(pattern);
   assert.ok(match, `${key} must be wrapped in an untrusted fence`);

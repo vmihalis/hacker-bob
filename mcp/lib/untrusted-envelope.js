@@ -63,8 +63,8 @@ function wrapUntrusted(content, { label } = {}) {
   const nonce = generateEnvelopeNonce();
   const safeLabel = normalizeLabel(label);
   const body = neutralizeFenceForgery(bodyText, nonce);
-  const header = `${OPEN_SENTINEL} nonce=${nonce} label=${safeLabel}>>>`;
-  const footer = `${CLOSE_SENTINEL} nonce=${nonce}>>>`;
+  const header = `${OPEN_SENTINEL} nonce=${nonce} label=${safeLabel}>>`;
+  const footer = `${CLOSE_SENTINEL} nonce=${nonce}>>`;
   const text = `${header}\n${body}\n${footer}`;
   const overhead = text.length - body.length;
   if (overhead > FENCE_OVERHEAD_CAP) {

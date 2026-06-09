@@ -128,7 +128,7 @@ function assertBriefWithinBudget(label, args) {
 }
 
 function parseUntrustedFence(text) {
-  const match = String(text).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
+  const match = String(text).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>$/);
   assert.ok(match, `expected untrusted fence, got ${JSON.stringify(text)}`);
   return {
     nonce: match[1],
