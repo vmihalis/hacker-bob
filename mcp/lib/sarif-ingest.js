@@ -15,7 +15,6 @@ const {
 } = require("./paths.js");
 const {
   appendJsonlLine,
-  readFileUtf8,
   withSessionLock,
 } = require("./storage.js");
 const {
@@ -28,8 +27,15 @@ const {
 } = require("./static-artifacts.js");
 
 const MAX_RESULTS = 500;
+const MAX_SARIF_BYTES = 10 * 1024 * 1024;
 const STATIC_ANALYSIS_RESULTS_MAX_RECORDS = 5_000;
 const TEXT_FIELD_MAX_CHARS = 500;
+const TOOL_NAME_MAX_CHARS = 120;
+const TOOL_VERSION_MAX_CHARS = 80;
+const RULE_ID_MAX_CHARS = 160;
+const ARTIFACT_URI_MAX_CHARS = 260;
+const FINGERPRINT_MAX_CHARS = 180;
+const SUMMARY_MESSAGE_MAX_CHARS = 160;
 const SUMMARY_RECORD_LIMIT = 5;
 const SUMMARY_WARNING_LIMIT = 10;
 const SAFE_RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -79,8 +85,6 @@ function normalizeArtifactUri(rawUri) {
   uri = safeDecode(uri).replace(/\\/g, "/");
   uri = uri.replace(/^\/src\/+/, "");
   uri = uri.replace(/^\.\/+/, "");
-  const srcSegment = uri.indexOf("/src/");
-  if (srcSegment >= 0) uri = uri.slice(srcSegment + "/src/".length);
   if (uri.startsWith("/")) return null;
   const normalized = path.posix.normalize(uri);
   if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === "..") {
@@ -95,7 +99,7 @@ function normalizeLine(value) {
 
 function severitySignalForLevel(level) {
   if (level === "error" || level === "warning" || level === "note") return level;
-  return "note";
+  return null;
 }
 
 function driverForRun(run) {
@@ -104,16 +108,31 @@ function driverForRun(run) {
   return { driver, rules };
 }
 
+function ruleForResult(result, rules) {
+  if (Number.isInteger(result.ruleIndex) && result.ruleIndex >= 0 && isObject(rules[result.ruleIndex])) {
+    return rules[result.ruleIndex];
+  }
+  return null;
+}
+
 function ruleIdForResult(result, rules) {
   if (typeof result.ruleId === "string" && result.ruleId.trim()) return result.ruleId.trim();
-  if (Number.isInteger(result.ruleIndex) && result.ruleIndex >= 0 && isObject(rules[result.ruleIndex])) {
-    const rule = rules[result.ruleIndex];
-    if (typeof rule.id === "string" && rule.id.trim()) return rule.id.trim();
-  }
+  const rule = ruleForResult(result, rules);
+  if (rule && typeof rule.id === "string" && rule.id.trim()) return rule.id.trim();
   if (isObject(result.rule) && typeof result.rule.id === "string" && result.rule.id.trim()) {
     return result.rule.id.trim();
   }
   return null;
+}
+
+function severitySignalForResult(result, rules) {
+  const directLevel = severitySignalForLevel(result.level);
+  if (directLevel) return directLevel;
+  const rule = ruleForResult(result, rules);
+  const defaultConfiguration = rule && isObject(rule.defaultConfiguration)
+    ? rule.defaultConfiguration
+    : {};
+  return severitySignalForLevel(defaultConfiguration.level) || "warning";
 }
 
 function messageForResult(result) {
@@ -155,8 +174,11 @@ function fingerprintForResult(result, dedupeMaterial) {
   if (isObject(result.partialFingerprints)) {
     const entries = Object.keys(result.partialFingerprints)
       .sort()
-      .map((key) => [key, String(result.partialFingerprints[key])]);
-    if (entries.length > 0) return truncateText(JSON.stringify(entries), 180);
+      .map((key) => [
+        truncateText(key, FINGERPRINT_MAX_CHARS),
+        truncateText(result.partialFingerprints[key], FINGERPRINT_MAX_CHARS),
+      ]);
+    if (entries.length > 0) return truncateText(JSON.stringify(entries), FINGERPRINT_MAX_CHARS);
   }
   return shortSha256(JSON.stringify(["sarif-fingerprint", ...dedupeMaterial]));
 }
@@ -170,33 +192,37 @@ function normalizeSarifResultInternal(result, run, ctx = {}) {
   }
 
   const { driver, rules } = driverForRun(run);
-  const toolName = optionalText(ctx.tool_name)
+  const toolName = truncateText(optionalText(ctx.tool_name)
     || optionalText(driver.name)
-    || "unknown";
-  const toolVersion = optionalText(driver.semanticVersion)
-    || optionalText(driver.version);
+    || "unknown", TOOL_NAME_MAX_CHARS);
+  const toolVersion = truncateText(
+    optionalText(driver.semanticVersion) || optionalText(driver.version) || "",
+    TOOL_VERSION_MAX_CHARS,
+  ) || null;
   const ruleId = ruleIdForResult(result, rules);
   if (!ruleId) return { record: null, warning: "SARIF result missing ruleId" };
+  const safeRuleId = truncateText(ruleId, RULE_ID_MAX_CHARS);
 
   const physicalLocation = firstLocation(result);
-  if (!physicalLocation) return { record: null, warning: `SARIF result ${ruleId} missing physicalLocation` };
-  const artifactUri = artifactUriForPhysicalLocation(physicalLocation);
-  if (!artifactUri) return { record: null, warning: `SARIF result ${ruleId} missing repo-relative artifact uri` };
+  if (!physicalLocation) return { record: null, warning: `SARIF result ${safeRuleId} missing physicalLocation` };
+  const artifactUriRaw = artifactUriForPhysicalLocation(physicalLocation);
+  const artifactUri = artifactUriRaw ? truncateText(artifactUriRaw, ARTIFACT_URI_MAX_CHARS) : null;
+  if (!artifactUri) return { record: null, warning: `SARIF result ${safeRuleId} missing repo-relative artifact uri` };
   const region = regionForPhysicalLocation(physicalLocation);
   const startLine = normalizeLine(region.startLine);
-  if (startLine == null) return { record: null, warning: `SARIF result ${ruleId} missing startLine` };
+  if (startLine == null) return { record: null, warning: `SARIF result ${safeRuleId} missing startLine` };
   const endLine = normalizeLine(region.endLine) || startLine;
   const message = redactSarifText(messageForResult(result)) || "";
   const snippet = redactSarifText(snippetForRegion(region));
-  const dedupeMaterial = [toolName, ruleId, artifactUri, startLine, message];
+  const dedupeMaterial = [toolName, safeRuleId, artifactUri, startLine, message];
   const resultSha256 = shortSha256(JSON.stringify(dedupeMaterial));
 
   return {
     record: {
       tool_name: toolName,
       tool_version: toolVersion,
-      rule_id: ruleId,
-      severity_signal: severitySignalForLevel(result.level),
+      rule_id: safeRuleId,
+      severity_signal: severitySignalForResult(result, rules),
       message,
       snippet,
       artifact_uri: artifactUri,
@@ -242,6 +268,7 @@ function parseSarif(jsonText, ctx = {}) {
   const runs = Array.isArray(parsed.runs) ? parsed.runs : [];
   const records = [];
   let totalResults = 0;
+  let processedResults = 0;
   let skippedResults = 0;
   let truncated = false;
 
@@ -253,12 +280,21 @@ function parseSarif(jsonText, ctx = {}) {
     }
     const results = Array.isArray(run.results) ? run.results : [];
     totalResults += results.length;
-    if (results.length > MAX_RESULTS) {
+    if (processedResults >= MAX_RESULTS) {
       truncated = true;
-      warnings.push(`SARIF run ${runIndex} has ${results.length} results; processed first ${MAX_RESULTS}`);
+      if (results.length > 0) {
+        warnings.push(`SARIF result cap ${MAX_RESULTS} reached before run ${runIndex}; skipped ${results.length} result(s)`);
+      }
+      continue;
     }
-    const limit = Math.min(results.length, MAX_RESULTS);
+    const remaining = MAX_RESULTS - processedResults;
+    const limit = Math.min(results.length, remaining);
+    if (results.length > limit) {
+      truncated = true;
+      warnings.push(`SARIF run ${runIndex} has ${results.length} results; processed first ${limit}`);
+    }
     for (let resultIndex = 0; resultIndex < limit; resultIndex += 1) {
+      processedResults += 1;
       let normalized;
       try {
         normalized = normalizeSarifResultInternal(results[resultIndex], run, ctx);
@@ -298,16 +334,16 @@ function normalizeStaticAnalysisResultRecord(record, lineNumber = null) {
       version: record.version == null ? 1 : assertInteger(record.version, "version", { min: 1, max: 1 }),
       target_domain: assertNonEmptyString(record.target_domain, "target_domain"),
       created_at: assertNonEmptyString(record.created_at, "created_at"),
-      tool_name: assertNonEmptyString(record.tool_name, "tool_name"),
-      tool_version: normalizeOptionalText(record.tool_version, "tool_version"),
-      rule_id: assertNonEmptyString(record.rule_id, "rule_id"),
+      tool_name: truncateText(assertNonEmptyString(record.tool_name, "tool_name"), TOOL_NAME_MAX_CHARS),
+      tool_version: truncateText(normalizeOptionalText(record.tool_version, "tool_version") || "", TOOL_VERSION_MAX_CHARS) || null,
+      rule_id: truncateText(assertNonEmptyString(record.rule_id, "rule_id"), RULE_ID_MAX_CHARS),
       severity_signal: assertNonEmptyString(record.severity_signal, "severity_signal"),
       message: typeof record.message === "string" ? truncateText(record.message) : "",
       snippet: record.snippet == null ? null : truncateText(record.snippet),
-      artifact_uri: assertNonEmptyString(record.artifact_uri, "artifact_uri"),
+      artifact_uri: truncateText(assertNonEmptyString(record.artifact_uri, "artifact_uri"), ARTIFACT_URI_MAX_CHARS),
       start_line: assertInteger(record.start_line, "start_line", { min: 1 }),
       end_line: assertInteger(record.end_line, "end_line", { min: 1 }),
-      fingerprint: assertNonEmptyString(record.fingerprint, "fingerprint"),
+      fingerprint: truncateText(assertNonEmptyString(record.fingerprint, "fingerprint"), FINGERPRINT_MAX_CHARS),
       result_sha256: assertNonEmptyString(record.result_sha256, "result_sha256"),
       source_run_id: normalizeOptionalText(record.source_run_id, "source_run_id"),
     };
@@ -342,14 +378,25 @@ function assertWithinRoot(resolvedPath, rootPath, label) {
 
 function assertExistingFileWithinRoot(filePath, rootPath, label) {
   const resolved = assertWithinRoot(filePath, rootPath, label);
-  const rootReal = fs.realpathSync(rootPath);
-  const fileReal = fs.realpathSync(resolved);
+  let rootReal;
+  let fileReal;
+  try {
+    rootReal = fs.realpathSync(rootPath);
+    fileReal = fs.realpathSync(resolved);
+  } catch {
+    throw new Error(`${label} is not readable`);
+  }
   if (fileReal !== rootReal && !fileReal.startsWith(`${rootReal}${path.sep}`)) {
     throw new Error(`${label} escapes allowed root via symlink`);
   }
-  const stat = fs.statSync(fileReal);
+  let stat;
+  try {
+    stat = fs.statSync(fileReal);
+  } catch {
+    throw new Error(`${label} is not readable`);
+  }
   if (!stat.isFile()) {
-    throw new Error(`${label} must be a file: ${resolved}`);
+    throw new Error(`${label} must be a file`);
   }
   return fileReal;
 }
@@ -404,14 +451,40 @@ function resolveSarifSourcePath(domain, { run_id: runIdRaw = null, artifact_path
 
 function compactRecordForResponse(record) {
   return {
-    tool_name: record.tool_name,
-    rule_id: record.rule_id,
+    tool_name: truncateText(record.tool_name, TOOL_NAME_MAX_CHARS),
+    rule_id: truncateText(record.rule_id, RULE_ID_MAX_CHARS),
     severity_signal: record.severity_signal,
-    artifact_uri: record.artifact_uri,
+    artifact_uri: truncateText(record.artifact_uri, ARTIFACT_URI_MAX_CHARS),
     start_line: record.start_line,
     result_sha256: record.result_sha256,
-    message: truncateText(record.message, 160),
+    message: truncateText(record.message, SUMMARY_MESSAGE_MAX_CHARS),
   };
+}
+
+function readSarifSourceUtf8(source) {
+  let fd = null;
+  try {
+    fd = fs.openSync(source.absolute_path, "r");
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile()) {
+      throw new Error(`${source.display_path} must be a file`);
+    }
+    if (stats.size > MAX_SARIF_BYTES) {
+      throw new Error(`${source.display_path} exceeds SARIF read cap of ${MAX_SARIF_BYTES} bytes`);
+    }
+    return fs.readFileSync(fd, "utf8");
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    if (message.startsWith(`${source.display_path} must be a file`)
+      || message.startsWith(`${source.display_path} exceeds SARIF read cap`)) {
+      throw error;
+    }
+    throw new Error(`${source.display_path} could not be read`);
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
 }
 
 function ingestSarif(args = {}) {
@@ -419,7 +492,7 @@ function ingestSarif(args = {}) {
   const toolName = normalizeOptionalText(args.tool_name, "tool_name");
   readSessionStateStrict(domain);
   const source = resolveSarifSourcePath(domain, args);
-  const jsonText = readFileUtf8(source.absolute_path, { label: source.display_path });
+  const jsonText = readSarifSourceUtf8(source);
   const parsed = parseSarif(jsonText, {
     source_run_id: source.source_run_id,
     tool_name: toolName,
@@ -465,7 +538,7 @@ function ingestSarif(args = {}) {
     truncated: parsed.truncated,
     warning_count: parsed.warnings.length,
     warnings: parsed.warnings.slice(0, SUMMARY_WARNING_LIMIT),
-    results_path: staticAnalysisResultsJsonlPath(domain),
+    results_path: "static-analysis-results.jsonl",
     records: ingested.slice(0, SUMMARY_RECORD_LIMIT).map(compactRecordForResponse),
     records_omitted: Math.max(0, ingested.length - SUMMARY_RECORD_LIMIT),
     doctrine: "lead_seed_only_no_findings_or_skips",
@@ -474,6 +547,7 @@ function ingestSarif(args = {}) {
 
 module.exports = {
   MAX_RESULTS,
+  MAX_SARIF_BYTES,
   ingestSarif,
   normalizeSarifResult,
   normalizeStaticAnalysisResultRecord,

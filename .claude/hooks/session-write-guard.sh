@@ -57,6 +57,7 @@ MCP_OWNED_EXACT = {
     "repo-inventory.json",
     "surface-routes.json",
     "static-artifacts.jsonl",
+    "static-analysis-results.jsonl",
     "static-scan-results.jsonl",
     "pipeline-events.jsonl",
     ".handoff-signing-key.json",

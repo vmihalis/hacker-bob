@@ -8,6 +8,7 @@ const path = require("node:path");
 
 const {
   MAX_RESULTS,
+  MAX_SARIF_BYTES,
   ingestSarif,
   parseSarif,
   readStaticAnalysisResultsFromJsonl,
@@ -170,6 +171,52 @@ test("parseSarif is deterministic for identical SARIF bytes and stable hash inpu
   assert.equal(runA.fingerprint, runB.fingerprint);
 });
 
+test("parseSarif preserves repo-relative paths that contain src directories", () => {
+  const relative = parseSarif(sarifDocument([
+    sarifResult({ uri: "packages/api/src/index.js" }),
+  ]));
+  assert.equal(relative.records[0].artifact_uri, "packages/api/src/index.js");
+
+  const mounted = parseSarif(sarifDocument([
+    sarifResult({ uri: "/src/packages/api/src/index.js" }),
+  ]));
+  assert.equal(mounted.records[0].artifact_uri, "packages/api/src/index.js");
+});
+
+test("parseSarif honors rule default severity and SARIF warning default", () => {
+  const defaulted = sarifResult({ ruleId: "RULE-DEFAULT", level: "warning" });
+  delete defaulted.ruleId;
+  delete defaulted.level;
+  defaulted.ruleIndex = 0;
+
+  const parsed = parseSarif(JSON.stringify({
+    version: "2.1.0",
+    runs: [
+      {
+        tool: {
+          driver: {
+            name: "semgrep",
+            rules: [
+              {
+                id: "RULE-DEFAULT",
+                defaultConfiguration: { level: "error" },
+              },
+            ],
+          },
+        },
+        results: [defaulted],
+      },
+    ],
+  }));
+  assert.equal(parsed.records[0].rule_id, "RULE-DEFAULT");
+  assert.equal(parsed.records[0].severity_signal, "error");
+
+  const noLevel = sarifResult({ ruleId: "RULE-WARNING", level: "warning" });
+  delete noLevel.level;
+  const fallback = parseSarif(sarifDocument([noLevel]));
+  assert.equal(fallback.records[0].severity_signal, "warning");
+});
+
 test("parseSarif warns and skips malformed, truncated, and missing-location rows without dropping valid rows", () => {
   assert.doesNotThrow(() => parseSarif("{not json"));
   const malformed = parseSarif("{not json");
@@ -217,6 +264,64 @@ test("parseSarif truncates over MAX_RESULTS deterministically per run", () => {
   assert.match(parsed.warnings.join("\n"), new RegExp(`processed first ${MAX_RESULTS}`));
 });
 
+test("parseSarif enforces MAX_RESULTS across multiple SARIF runs", () => {
+  const first = [];
+  const second = [];
+  for (let i = 0; i < 300; i += 1) {
+    first.push(sarifResult({
+      ruleId: `A-${String(i).padStart(3, "0")}`,
+      startLine: i + 1,
+      message: `first ${i}`,
+    }));
+    second.push(sarifResult({
+      ruleId: `B-${String(i).padStart(3, "0")}`,
+      startLine: i + 1,
+      message: `second ${i}`,
+    }));
+  }
+
+  const parsed = parseSarif(JSON.stringify({
+    version: "2.1.0",
+    runs: [
+      {
+        tool: { driver: { name: "semgrep" } },
+        results: first,
+      },
+      {
+        tool: { driver: { name: "trivy" } },
+        results: second,
+      },
+    ],
+  }));
+  assert.equal(parsed.total_results, 600);
+  assert.equal(parsed.records.length, MAX_RESULTS);
+  assert.equal(parsed.records[299].rule_id, "A-299");
+  assert.equal(parsed.records[300].rule_id, "B-000");
+  assert.equal(parsed.records[MAX_RESULTS - 1].rule_id, "B-199");
+  assert.equal(parsed.truncated, true);
+});
+
+test("parseSarif bounds untrusted scalar fields before emitting records", () => {
+  const parsed = parseSarif(sarifDocument([
+    sarifResult({
+      ruleId: `RULE-${"r".repeat(300)}`,
+      uri: `packages/${"a".repeat(400)}.js`,
+      message: "m".repeat(800),
+      snippet: "s".repeat(800),
+    }),
+  ], {
+    toolName: `tool-${"t".repeat(200)}`,
+    version: `version-${"v".repeat(120)}`,
+  }));
+  const record = parsed.records[0];
+  assert.equal(record.tool_name.length, 120);
+  assert.equal(record.tool_version.length, 80);
+  assert.equal(record.rule_id.length, 160);
+  assert.equal(record.artifact_uri.length, 260);
+  assert.equal(record.message.length, 500);
+  assert.equal(record.snippet.length, 500);
+});
+
 test("ingestSarif redacts secrets before persistence and dedupes by result_sha256", () => withTempHome(() => {
   const domain = "sarif-redact.example.com";
   const runId = "run-redact";
@@ -235,6 +340,8 @@ test("ingestSarif redacts secrets before persistence and dedupes by result_sha25
   const response = JSON.parse(ingestSarif({ target_domain: domain, run_id: runId }));
   assert.equal(response.ingested_results, 1);
   assert.equal(response.duplicate_results, 0);
+  assert.equal(response.results_path, "static-analysis-results.jsonl");
+  assert.equal(JSON.stringify(response).includes(process.env.HOME), false);
   assert.ok(JSON.stringify(response).length < 8_000, "ingest response must stay bounded");
 
   const rawJsonl = fs.readFileSync(staticAnalysisResultsJsonlPath(domain), "utf8");
@@ -276,4 +383,19 @@ test("ingestSarif reads explicit SARIF artifacts only under repo-work", () => wi
     /artifact_path escapes allowed root/,
   );
   fs.rmSync(outside, { force: true });
+}));
+
+test("ingestSarif rejects oversized SARIF artifacts without leaking host paths", () => withTempHome(() => {
+  const domain = "sarif-large.example.com";
+  initDomain(domain);
+  const filePath = writeWorkArtifact(domain, "large.sarif", " ".repeat(MAX_SARIF_BYTES + 1));
+
+  assert.throws(
+    () => ingestSarif({ target_domain: domain, artifact_path: "/work/large.sarif" }),
+    (error) => {
+      assert.match(error.message, /\/work\/large\.sarif exceeds SARIF read cap/);
+      assert.equal(error.message.includes(filePath), false);
+      return true;
+    },
+  );
 }));
