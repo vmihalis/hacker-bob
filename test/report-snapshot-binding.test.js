@@ -440,6 +440,22 @@ test("bob_finalize_report refuses proof_bundle refs without proof-bundles.json",
   });
 });
 
+test("bob_finalize_report ignores prose proof_bundle mentions without F-N refs", () => {
+  withTempHome(() => {
+    const domain = "loose-proof-prose.example.com";
+    drivePipelineToReportWritten(domain);
+    fs.writeFileSync(
+      reportMarkdownPath(domain),
+      "# Bob Report\n\n## Notes\n\nThe proof_bundle: field is documented for future evidence refs.\n",
+    );
+
+    const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));
+    assert.equal(response.finalized, true);
+    assert.equal(response.proof_bundle_hash, undefined);
+    assert.equal(readReportSnapshots(domain).length, 1);
+  });
+});
+
 test("bob_finalize_report refuses proof_bundle refs after proof bundle replacement", () => {
   withTempHome(() => {
     const domain = "replaced-proof.example.com";

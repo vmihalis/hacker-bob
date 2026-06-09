@@ -129,7 +129,7 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
 }
 
 function appendInvariantRunFixture(domain, runHash, options = {}) {
-  appendJsonlLine(invariantRunsJsonlPath(domain), {
+  const row = {
     run_hash: runHash,
     target_domain: domain,
     finding_id: options.finding_id || "F-1",
@@ -141,7 +141,9 @@ function appendInvariantRunFixture(domain, runHash, options = {}) {
     test_path: "/tmp/harness/test/bob-invariants/BobInvariantTest_fixture.t.sol",
     outcome: options.outcome || "test_passed",
     dry_run: options.dry_run === true ? true : false,
-  });
+  };
+  if (options.omit_finding_id) delete row.finding_id;
+  appendJsonlLine(invariantRunsJsonlPath(domain), row);
 }
 
 function replayBundle(findingId = "F-1", runId = "run-fixture", replayCommand = ["sh", "-lc", "./repro.sh"]) {
@@ -337,6 +339,28 @@ test("bob_write_proof_bundle rejects non-reproducing invariant rows", () => {
   });
 });
 
+test("bob_write_proof_bundle rejects legacy invariant rows without finding_id remediation", () => {
+  withTempHome(() => {
+    const domain = "proof-invariant-legacy-row.example.com";
+    const runHash = sha256Hex("legacy-invariant-run");
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendInvariantRunFixture(domain, runHash, { omit_finding_id: true });
+
+    assert.throws(
+      () => writeProofBundles({
+        target_domain: domain,
+        packs: [{
+          finding_id: "F-1",
+          bundle_kind: "invariant",
+          artifacts: [{ run_hash: runHash }],
+        }],
+      }),
+      /legacy invariant row without finding_id; re-run the invariant for proof bundle finding_id F-1/,
+    );
+  });
+});
+
 test("bob_write_proof_bundle finds invariant rows beyond the read-tool display cap", () => {
   withTempHome(() => {
     const domain = "proof-invariant-cap.example.com";
@@ -360,7 +384,11 @@ test("bob_write_proof_bundle finds invariant rows beyond the read-tool display c
     assert.equal(written.bundles_count, 1);
     const doc = JSON.parse(fs.readFileSync(proofBundlePaths(domain).json, "utf8"));
     assert.equal(doc.packs[0].artifacts[0].run_hash, targetRunHash);
-    assert.equal(Object.hasOwn(doc.packs[0].artifacts[0], "test_path"), false);
+    assert.equal(
+      Object.hasOwn(doc.packs[0].artifacts[0], "test_path"),
+      false,
+      "proof bundle artifacts must not contain local test_path values",
+    );
   });
 });
 

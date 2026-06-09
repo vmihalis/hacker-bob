@@ -391,6 +391,11 @@ function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
   if (row.dry_run !== false) {
     throw new Error(`${fieldName} must reference an executed invariant run, not a dry-run plan`);
   }
+  if (row.finding_id == null) {
+    throw new Error(
+      `${fieldName} references a legacy invariant row without finding_id; re-run the invariant for proof bundle finding_id ${expectedFindingId}`,
+    );
+  }
   if (row.finding_id !== expectedFindingId) {
     throw new Error(`${fieldName} finding_id does not match proof bundle finding_id ${expectedFindingId}`);
   }

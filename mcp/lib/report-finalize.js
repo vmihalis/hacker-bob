@@ -221,7 +221,7 @@ function loadEvidencePackHash(domain) {
 }
 
 function reportContentCitesProofBundle(contentBuffer) {
-  return contentBuffer.toString("utf8").includes("proof_bundle:");
+  return /\bproof_bundle:F-\d+\b/.test(contentBuffer.toString("utf8"));
 }
 
 function proofBundleRefsFromReportContent(contentBuffer) {
