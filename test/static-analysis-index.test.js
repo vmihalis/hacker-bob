@@ -13,6 +13,7 @@ const {
   parseTrivyJson,
   queryStaticAnalysisIndex,
   readStaticAnalysisIndex,
+  readStaticAnalysisIndexTool,
 } = require("../mcp/lib/static-analysis-index.js");
 const {
   isAuditGradedPath,
@@ -189,6 +190,13 @@ test("indexStaticResults treats dry-run rows without stdout_path as no-op", () =
   assert.equal(response.normalized_results, 0);
   assert.equal(response.indexed_results, 0);
   assert.equal(readStaticAnalysisIndex(domain).length, 0);
+}));
+
+test("readStaticAnalysisIndexTool requires an initialized session", () => withTempHome(() => {
+  assert.throws(
+    () => readStaticAnalysisIndexTool({ target_domain: "static-index-missing.example.com" }),
+    /Missing session state:/,
+  );
 }));
 
 test("indexStaticResults rejects malformed SARIF without partial index writes", () => withTempHome(() => {

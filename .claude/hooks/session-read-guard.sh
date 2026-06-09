@@ -56,6 +56,7 @@ BLOCKED_EXACT = {
     "surface-routes.json",
     "static-artifacts.jsonl",
     "static-analysis-results.jsonl",
+    "static-analysis-index.jsonl",
     "static-scan-results.jsonl",
     "pipeline-events.jsonl",
     "report.md",

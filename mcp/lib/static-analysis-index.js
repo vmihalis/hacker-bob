@@ -819,6 +819,7 @@ function queryStaticAnalysisIndex(domain, opts = {}) {
 
 function readStaticAnalysisIndexTool(args = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  readSessionStateStrict(domain);
   const records = queryStaticAnalysisIndex(domain, {
     top_k: args.top_k,
     min_severity: args.min_severity,
