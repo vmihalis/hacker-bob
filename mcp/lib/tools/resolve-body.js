@@ -35,9 +35,11 @@ const {
 } = require("../body-resolvers/index.js");
 const {
   wrapUntrusted,
+  FENCE_OVERHEAD_CAP,
 } = require("../untrusted-envelope.js");
 
 const BODY_RESPONSE_MAX_BYTES = 1024 * 1024; // 1MB per X.7 Do step 1.
+const BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES = BODY_RESPONSE_MAX_BYTES - FENCE_OVERHEAD_CAP;
 const TRUSTED_BODY_PREFIX_VALUES = Object.freeze([]);
 const TRUSTED_BODY_PREFIXES = new Set(TRUSTED_BODY_PREFIX_VALUES);
 
@@ -57,6 +59,11 @@ function renderBodyForResponse(prefix, body) {
   if (body === "") return "";
   if (TRUSTED_BODY_PREFIXES.has(prefix)) return body;
   return wrapUntrusted(body, { label: prefix }).fenced;
+}
+
+function bodyPayloadMaxBytes(prefix) {
+  if (TRUSTED_BODY_PREFIXES.has(prefix)) return BODY_RESPONSE_MAX_BYTES;
+  return BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES;
 }
 
 function handler(args) {
@@ -106,6 +113,7 @@ function handler(args) {
   const fullBody = resolved.body;
   const totalSize = resolved.body_size_bytes;
   const prefix = artifactRefPrefix(artifactRef);
+  const payloadMaxBytes = bodyPayloadMaxBytes(prefix);
   if (offsetRaw >= totalSize) {
     return JSON.stringify({
       version: 1,
@@ -126,9 +134,9 @@ function handler(args) {
     : Buffer.from(String(fullBody), "utf8").subarray(offsetRaw);
   let truncatedAt = null;
   let outBuffer = sliceBuffer;
-  if (sliceBuffer.length > BODY_RESPONSE_MAX_BYTES) {
-    outBuffer = sliceBuffer.subarray(0, BODY_RESPONSE_MAX_BYTES);
-    truncatedAt = offsetRaw + BODY_RESPONSE_MAX_BYTES;
+  if (sliceBuffer.length > payloadMaxBytes) {
+    outBuffer = sliceBuffer.subarray(0, payloadMaxBytes);
+    truncatedAt = offsetRaw + payloadMaxBytes;
   }
   return JSON.stringify({
     version: 1,
@@ -187,6 +195,7 @@ module.exports = Object.freeze({
   // assert on the truncation boundary without reaching into the
   // resolver-tool internals.
   BODY_RESPONSE_MAX_BYTES,
+  BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES,
   TRUSTED_BODY_PREFIX_VALUES,
   renderBodyForResponse,
 });

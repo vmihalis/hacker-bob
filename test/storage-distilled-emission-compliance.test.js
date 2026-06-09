@@ -546,11 +546,15 @@ test("bob_resolve_body truncates at 1MB with truncated_at offset, paginated re-f
     }));
     assert.equal(firstPage.found, true);
     assert.equal(firstPage.offset, 0);
-    assert.equal(firstPage.truncated_at, resolveBodyTool.BODY_RESPONSE_MAX_BYTES);
+    assert.equal(firstPage.truncated_at, resolveBodyTool.BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES);
+    assert.ok(
+      Buffer.byteLength(firstPage.body, "utf8") <= resolveBodyTool.BODY_RESPONSE_MAX_BYTES,
+      "fenced body response must stay within the advertised per-call cap",
+    );
     const firstPageBody = parseUntrustedFence(firstPage.body, "repo_command_run");
     assert.equal(
       Buffer.byteLength(firstPageBody, "utf8"),
-      resolveBodyTool.BODY_RESPONSE_MAX_BYTES,
+      resolveBodyTool.BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES,
     );
     assert.ok(firstPage.body_size_bytes > resolveBodyTool.BODY_RESPONSE_MAX_BYTES);
 
