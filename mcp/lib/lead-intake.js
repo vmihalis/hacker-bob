@@ -88,6 +88,9 @@ function normalizeSurfaceLead(input, context = {}) {
       ? null
       : assertNonEmptyString(input.promoted_surface_id, "promoted_surface_id"),
     promoted_at: input.promoted_at == null ? null : assertNonEmptyString(input.promoted_at, "promoted_at"),
+    evaluator_run_avoided_recorded_at: context.preserve_internal_telemetry !== true || input.evaluator_run_avoided_recorded_at == null
+      ? null
+      : assertNonEmptyString(input.evaluator_run_avoided_recorded_at, "evaluator_run_avoided_recorded_at"),
     // Y.12 (rev 4.1 defect 1) — producer-side rationale captured at record
     // time. The Y.7 silent_lead_threshold_drop scanner reads this field
     // alongside the queue-policy toggle to compute `rationale_required_but_missing`.
@@ -130,6 +133,8 @@ function mergeSurfaceLead(existing, incoming) {
     source_surface_id: existing.source_surface_id || incoming.source_surface_id,
     surface_type: existing.surface_type || incoming.surface_type,
     promote: existing.promote || incoming.promote,
+    evaluator_run_avoided_recorded_at: existing.evaluator_run_avoided_recorded_at
+      || incoming.evaluator_run_avoided_recorded_at,
     // Y.12 (rev 4.1 defect 1) — rationale on merge: incoming wins when the
     // existing entry lacked one, otherwise keep the existing rationale so
     // earlier producer-side reasoning is not overwritten by a later
@@ -163,7 +168,7 @@ function readSurfaceLeadsDocument(domain) {
   }
   return {
     version: 1,
-    leads: parsed.leads.map((lead) => normalizeSurfaceLead(lead)),
+    leads: parsed.leads.map((lead) => normalizeSurfaceLead(lead, { preserve_internal_telemetry: true })),
   };
 }
 

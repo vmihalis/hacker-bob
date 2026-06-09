@@ -518,10 +518,12 @@ function renderDashboardHtml(options) {
         cell(row, String(session.final_verification_count || 0) + " / " + String(session.final_reportable_count || 0));
         const activity = cell(row, formatActivity(session.latest_activity_ts));
         const avoided = session.lead_promotion ? session.lead_promotion.evaluator_runs_avoided || 0 : 0;
-        const avoidedNode = document.createElement("div");
-        avoidedNode.className = "muted";
-        avoidedNode.textContent = String(avoided) + " evaluator runs avoided this session";
-        activity.appendChild(avoidedNode);
+        if (avoided > 0) {
+          const avoidedNode = document.createElement("div");
+          avoidedNode.className = "muted";
+          avoidedNode.textContent = String(avoided) + " evaluator runs avoided this session";
+          activity.appendChild(avoidedNode);
+        }
         sessions.appendChild(row);
       }
       if (!snapshot.sessions.length) {

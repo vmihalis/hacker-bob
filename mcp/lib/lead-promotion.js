@@ -32,9 +32,8 @@ const {
   buildPromotionPreview,
   isAssignableSurfaceLead,
   normalizePromotionOptions,
-  selectPromotableSurfaceLeads,
+  partitionLeadPromotion,
   sortLeadsByScore,
-  summarizeLeadPromotion,
 } = require("./lead-scoring.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { loadQueuePolicy } = require("./queue-policy.js");
@@ -314,7 +313,7 @@ function recordSurfaceLeadsInternal(domain, leads, context = {}) {
 
 function previewSurfaceLeadPromotion(domain, options = {}) {
   const document = readSurfaceLeadsDocument(domain);
-  return buildPromotionPreview(domain, selectPromotableSurfaceLeads(document, options));
+  return buildPromotionPreview(domain, partitionLeadPromotion(document, options).selectedLeads);
 }
 
 function promoteSurfaceLeadsInternal(domain, options = {}) {
@@ -325,17 +324,11 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
     assertBoolean(options.update_state, "update_state");
   }
   const document = readSurfaceLeadsDocument(domain);
-  const candidates = selectPromotableSurfaceLeads(document, options);
-  const summary = summarizeLeadPromotion(document, options);
-  safeAppendPipelineEventDirect(domain, "evaluator_run_avoided", {
-    source: options.source || "bob_promote_surface_leads",
-    counts: {
-      ...summary,
-      evaluator_runs_avoided: summary.filtered,
-    },
-  }, safeGovernanceContextForDomain(domain));
-  if (candidates.length === 0) return buildPromotionEnvelope(domain, []);
-  const { promoted_surface_ids: promotedSurfaceIds } = applyPromotionToFrontier(domain, candidates);
+  const promotion = partitionLeadPromotion(document, options);
+  const candidates = promotion.selectedLeads;
+  const { promoted_surface_ids: promotedSurfaceIds } = candidates.length > 0
+    ? applyPromotionToFrontier(domain, candidates)
+    : { promoted_surface_ids: [] };
   const now = new Date().toISOString();
   for (let i = 0; i < candidates.length; i += 1) {
     const index = document.leads.findIndex((item) => item.id === candidates[i].id);
@@ -347,7 +340,32 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
       promoted_at: now,
     };
   }
-  writeSurfaceLeadsDocument(domain, document);
+  let newlyFiltered = 0;
+  for (const lead of promotion.filteredLeads) {
+    const index = document.leads.findIndex((item) => item.id === lead.id);
+    if (index === -1 || document.leads[index].evaluator_run_avoided_recorded_at) continue;
+    document.leads[index] = {
+      ...document.leads[index],
+      evaluator_run_avoided_recorded_at: now,
+    };
+    newlyFiltered += 1;
+  }
+  const deferredByLimit = Math.max(0, promotion.promotableLeads.length - promotion.limit);
+  if (candidates.length > 0 || newlyFiltered > 0) {
+    writeSurfaceLeadsDocument(domain, document);
+  }
+  if (promotedSurfaceIds.length > 0 || newlyFiltered > 0 || deferredByLimit > 0) {
+    safeAppendPipelineEventDirect(domain, "evaluator_run_avoided", {
+      source: options.source || "bob_promote_surface_leads",
+      counts: {
+        assignable: promotion.assignableLeads.length,
+        promoted: promotedSurfaceIds.length,
+        filtered: newlyFiltered,
+        deferred_by_limit: deferredByLimit,
+        evaluator_runs_avoided: newlyFiltered + deferredByLimit,
+      },
+    }, safeGovernanceContextForDomain(domain));
+  }
   return buildPromotionEnvelope(domain, promotedSurfaceIds);
 }
 

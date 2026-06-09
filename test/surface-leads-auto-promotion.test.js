@@ -400,6 +400,15 @@ test("bob_promote_surface_leads emits evaluator_run_avoided counts for filtered 
     });
     assert.equal(typeof events[0].nucleus_hash, "string");
     assert.equal(typeof events[0].egress_identity_hash, "string");
+
+    const repeated = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    }));
+    assert.equal(repeated.promoted, 0);
+    assert.equal(readEvaluatorRunAvoidedEvents(domain).length, 1);
   });
 });
 
@@ -433,6 +442,40 @@ test("bob_promote_surface_leads emits evaluator_run_avoided before all-filtered 
       filtered: 2,
       deferred_by_limit: 0,
       evaluator_runs_avoided: 2,
+    });
+  });
+});
+
+test("bob_promote_surface_leads counts limit-deferred promotions as avoided for the call", () => {
+  withTempHome(() => {
+    const domain = "x7-limit-deferred.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "high-a", hosts: ["high-a.example.com"], score: 90 }),
+        makeLead({ title: "high-b", hosts: ["high-b.example.com"], score: 85 }),
+        makeLead({ title: "high-c", hosts: ["high-c.example.com"], score: 80 }),
+      ],
+    }));
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 2,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(promoted.promoted, 2);
+    const events = readEvaluatorRunAvoidedEvents(domain);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].counts, {
+      assignable: 3,
+      promoted: 2,
+      filtered: 0,
+      deferred_by_limit: 1,
+      evaluator_runs_avoided: 1,
     });
   });
 });

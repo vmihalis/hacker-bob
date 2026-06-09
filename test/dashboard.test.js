@@ -223,6 +223,7 @@ test("dashboard server serves HTML and API JSON", async () => {
       const html = await requestText(started.url);
       assert.equal(html.statusCode, 200);
       assert.match(html.body, /Hacker Bob Dashboard/);
+      assert.match(html.body, /if \(avoided > 0\)/);
 
       const api = await requestText(`${started.url}api/snapshot?repo_only=true&limit=5`);
       assert.equal(api.statusCode, 200);

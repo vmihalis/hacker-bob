@@ -79,14 +79,7 @@ function sortLeadsByScore(leads) {
     || String(a.id).localeCompare(String(b.id)));
 }
 
-function selectPromotableSurfaceLeads(document, options = {}) {
-  const { limit, minScore, includeMedium } = normalizePromotionOptions(options);
-  return sortLeadsByScore(document.leads.filter(
-    (lead) => shouldPromoteLead(lead, { minScore, includeMedium }),
-  )).slice(0, limit);
-}
-
-function summarizeLeadPromotion(document, options = {}) {
+function partitionLeadPromotion(document, options = {}) {
   const { limit, minScore, includeMedium } = normalizePromotionOptions(options);
   const leads = Array.isArray(document && document.leads) ? document.leads : [];
   const assignableLeads = leads.filter((lead) => (
@@ -94,14 +87,30 @@ function summarizeLeadPromotion(document, options = {}) {
     !lead.promoted_surface_id &&
     isAssignableSurfaceLead(lead)
   ));
-  const promotableLeads = assignableLeads.filter(
+  const promotableLeads = sortLeadsByScore(assignableLeads.filter(
     (lead) => shouldPromoteLead(lead, { minScore, includeMedium }),
-  );
+  ));
+  const promotableSet = new Set(promotableLeads);
   return {
-    assignable: assignableLeads.length,
-    promoted: Math.min(promotableLeads.length, limit),
-    filtered: assignableLeads.length - promotableLeads.length,
-    deferred_by_limit: Math.max(0, promotableLeads.length - limit),
+    limit,
+    assignableLeads,
+    promotableLeads,
+    filteredLeads: assignableLeads.filter((lead) => !promotableSet.has(lead)),
+    selectedLeads: promotableLeads.slice(0, limit),
+  };
+}
+
+function selectPromotableSurfaceLeads(document, options = {}) {
+  return partitionLeadPromotion(document, options).selectedLeads;
+}
+
+function summarizeLeadPromotion(document, options = {}) {
+  const promotion = partitionLeadPromotion(document, options);
+  return {
+    assignable: promotion.assignableLeads.length,
+    promoted: promotion.selectedLeads.length,
+    filtered: promotion.filteredLeads.length,
+    deferred_by_limit: Math.max(0, promotion.promotableLeads.length - promotion.limit),
   };
 }
 
@@ -139,6 +148,7 @@ module.exports = {
   normalizePriority,
   normalizePromotionOptions,
   normalizeScore,
+  partitionLeadPromotion,
   selectPromotableSurfaceLeads,
   shouldPromoteLead,
   sortLeadsByScore,
