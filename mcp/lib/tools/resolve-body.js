@@ -38,15 +38,8 @@ const {
 } = require("../untrusted-envelope.js");
 
 const BODY_RESPONSE_MAX_BYTES = 1024 * 1024; // 1MB per X.7 Do step 1.
-const UNTRUSTED_BODY_PREFIXES = Object.freeze(new Set([
-  "http_record",
-  "repo_check",
-  "repo_command_run",
-  "evm_call",
-  "frontier_event",
-  "finding",
-  "evidence_pack",
-]));
+const TRUSTED_BODY_PREFIX_VALUES = Object.freeze([]);
+const TRUSTED_BODY_PREFIXES = new Set(TRUSTED_BODY_PREFIX_VALUES);
 
 function structuredError(code, message, details) {
   const err = new Error(`${code}: ${message}`);
@@ -62,7 +55,7 @@ function artifactRefPrefix(artifactRef) {
 
 function renderBodyForResponse(prefix, body) {
   if (body === "") return "";
-  if (!UNTRUSTED_BODY_PREFIXES.has(prefix)) return body;
+  if (TRUSTED_BODY_PREFIXES.has(prefix)) return body;
   return wrapUntrusted(body, { label: prefix }).fenced;
 }
 
@@ -194,4 +187,6 @@ module.exports = Object.freeze({
   // assert on the truncation boundary without reaching into the
   // resolver-tool internals.
   BODY_RESPONSE_MAX_BYTES,
+  TRUSTED_BODY_PREFIX_VALUES,
+  renderBodyForResponse,
 });

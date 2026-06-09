@@ -132,6 +132,16 @@ test("X-D12 closed prefix set matches the body-resolvers registry (a)", () => {
   }
 });
 
+test("bob_resolve_body defaults every non-empty resolver body to an untrusted fence", () => {
+  assert.deepEqual(
+    resolveBodyTool.TRUSTED_BODY_PREFIX_VALUES,
+    [],
+    "trusted body prefixes must be explicit opt-outs from default fencing",
+  );
+  const fenced = resolveBodyTool.renderBodyForResponse("future_resolver", "future body");
+  assert.equal(parseUntrustedFence(fenced, "future_resolver"), "future body");
+});
+
 test("frontier_event resolver round-trips bodies (c) + (d)", () => {
   withTempHome(() => {
     const domain = "example.com";

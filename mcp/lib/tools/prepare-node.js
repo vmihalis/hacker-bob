@@ -80,6 +80,7 @@ const {
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
+  ENVELOPE_NONCE_HEX_CHARS,
 } = require("../untrusted-envelope.js");
 const {
   TRANSITION_KIND_HUNTING_VOCAB,
@@ -214,9 +215,10 @@ function escapeRegExp(value) {
 }
 
 function normalizeUntrustedEnvelopeNoncesForHash(value) {
+  const noncePattern = `[0-9a-f]{${ENVELOPE_NONCE_HEX_CHARS}}`;
   return String(value)
-    .replace(new RegExp(`${escapeRegExp(OPEN_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${OPEN_SENTINEL} nonce=<nonce>`)
-    .replace(new RegExp(`${escapeRegExp(CLOSE_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${CLOSE_SENTINEL} nonce=<nonce>`);
+    .replace(new RegExp(`${escapeRegExp(OPEN_SENTINEL)} nonce=${noncePattern}`, "g"), `${OPEN_SENTINEL} nonce=<nonce>`)
+    .replace(new RegExp(`${escapeRegExp(CLOSE_SENTINEL)} nonce=${noncePattern}`, "g"), `${CLOSE_SENTINEL} nonce=<nonce>`);
 }
 
 function safeSurfaceRouteMap(targetDomain) {

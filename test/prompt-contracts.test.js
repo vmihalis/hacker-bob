@@ -775,11 +775,12 @@ test("Claude role MCP tool sets match the neutral role model", () => {
   }
 });
 
-test("Claude roles with bob_resolve_body carry untrusted marker discipline", () => {
+test("Claude roles that read untrusted artifacts carry marker discipline", () => {
+  const inlineReadRoles = new Set(["chain", "grader", "reporter"]);
   const checked = [];
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind !== "agent") continue;
-    if (!mcpToolNamesForRole(roleId).includes("bob_resolve_body")) continue;
+    if (!inlineReadRoles.has(roleId) && !mcpToolNamesForRole(roleId).includes("bob_resolve_body")) continue;
     checked.push(roleId);
     const document = readFile(spec.output_path);
     assert.match(document, /<<UNTRUSTED_DATA \.\.\.>>/, `${roleId} must name the opening untrusted marker`);
@@ -791,6 +792,9 @@ test("Claude roles with bob_resolve_body carry untrusted marker discipline", () 
   assert.ok(checked.includes("balanced-verifier"), "balanced-verifier must be covered by the resolver-body guard");
   assert.ok(checked.includes("final-verifier"), "final-verifier must be covered by the resolver-body guard");
   assert.ok(checked.includes("evidence"), "evidence-agent must be covered by the resolver-body guard");
+  assert.ok(checked.includes("chain"), "chain-builder must be covered by the inline-read guard");
+  assert.ok(checked.includes("grader"), "grader must be covered by the inline-read guard");
+  assert.ok(checked.includes("reporter"), "report-writer must be covered by the inline-read guard");
 });
 
 test("evaluator-agent ships the evaluator-shared + evaluator-web bundle, no Write", () => {

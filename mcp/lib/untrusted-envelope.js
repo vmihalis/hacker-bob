@@ -9,6 +9,7 @@
 const crypto = require("crypto");
 
 const ENVELOPE_NONCE_BYTES = 16;
+const ENVELOPE_NONCE_HEX_CHARS = ENVELOPE_NONCE_BYTES * 2;
 const OPEN_SENTINEL = "<<UNTRUSTED_DATA";
 const CLOSE_SENTINEL = "<<END_UNTRUSTED_DATA";
 const FENCE_OVERHEAD_CAP = 256;
@@ -48,12 +49,20 @@ function normalizeLabel(label) {
   return normalized || "untrusted";
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sentinelPattern(sentinel) {
+  return new RegExp(escapeRegExp(sentinel), "gi");
+}
+
 function neutralizeFenceForgery(bodyText, nonce) {
   let neutralized = bodyText
-    .split(OPEN_SENTINEL).join("&lt;&lt;UNTRUSTED_DATA")
-    .split(CLOSE_SENTINEL).join("&lt;&lt;END_UNTRUSTED_DATA");
+    .replace(sentinelPattern(OPEN_SENTINEL), "&lt;&lt;UNTRUSTED_DATA")
+    .replace(sentinelPattern(CLOSE_SENTINEL), "&lt;&lt;END_UNTRUSTED_DATA");
   if (nonce) {
-    neutralized = neutralized.split(nonce).join("[ENVELOPE_NONCE_NEUTRALIZED]");
+    neutralized = neutralized.replace(new RegExp(escapeRegExp(nonce), "gi"), "[ENVELOPE_NONCE_NEUTRALIZED]");
   }
   return neutralized;
 }
@@ -86,5 +95,6 @@ module.exports = {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   ENVELOPE_NONCE_BYTES,
+  ENVELOPE_NONCE_HEX_CHARS,
   FENCE_OVERHEAD_CAP,
 };
