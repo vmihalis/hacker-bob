@@ -86,6 +86,47 @@ function withTempHome(fn) {
   }
 }
 
+function withFixedDate(isoString, fn) {
+  const RealDate = Date;
+  const fixedTime = new RealDate(isoString).getTime();
+  function FixedDate(...args) {
+    if (!(this instanceof FixedDate)) {
+      return args.length === 0
+        ? new RealDate(fixedTime).toString()
+        : new RealDate(...args).toString();
+    }
+    return args.length === 0
+      ? new RealDate(fixedTime)
+      : new RealDate(...args);
+  }
+  Object.setPrototypeOf(FixedDate, RealDate);
+  FixedDate.prototype = RealDate.prototype;
+  FixedDate.now = () => fixedTime;
+  FixedDate.parse = RealDate.parse;
+  FixedDate.UTC = RealDate.UTC;
+  global.Date = FixedDate;
+  try {
+    return fn();
+  } finally {
+    global.Date = RealDate;
+  }
+}
+
+function withSequentialRandomBytes(fn) {
+  const originalRandomBytes = crypto.randomBytes;
+  let fillByte = 1;
+  crypto.randomBytes = (size) => {
+    const out = Buffer.alloc(size, fillByte);
+    fillByte = (fillByte % 255) + 1;
+    return out;
+  };
+  try {
+    return fn();
+  } finally {
+    crypto.randomBytes = originalRandomBytes;
+  }
+}
+
 // Helper: stand up a session-state shell so the materializer and downstream
 // tools see a domain that exists. The X.8 tools do NOT require a fully
 // initialized session (no scope check, no auth) so a minimal seed is enough.
@@ -343,6 +384,50 @@ test("prepare → finalize succeeds with a relational_value_match Contract; down
     const doc = materializeTaskGraph(domain, { write: false }).document;
     const node = doc.nodes.find((n) => n.node_id === nodeId);
     assert.equal(node.state, "finalized");
+  });
+});
+
+test("prepare_node keeps prep_token stable across equivalent briefs with fresh envelope nonces", () => {
+  const fixedMaterializedAt = "2026-05-31T00:03:00.000Z";
+  const domain = "x8-prep-token-nonce-stability.example.com";
+
+  function prepareFixture() {
+    seedSession(domain);
+    const nodeId = seedContractedNode(domain, "HP-nonce-stable");
+    const prep = JSON.parse(TOOL_HANDLERS.bob_prepare_node({
+      target_domain: domain,
+      node_id: nodeId,
+      ts: "2026-05-31T00:04:00.000Z",
+    }));
+    return {
+      nodeId,
+      prep,
+      briefJson: JSON.stringify(prep.brief),
+    };
+  }
+
+  withSequentialRandomBytes(() => {
+    const first = withTempHome(() => withFixedDate(fixedMaterializedAt, prepareFixture));
+    withTempHome(() => withFixedDate(fixedMaterializedAt, () => {
+      const second = prepareFixture();
+      assert.match(first.briefJson, /nonce=[0-9a-f]{32}/, "first brief should carry envelope nonces");
+      assert.match(second.briefJson, /nonce=[0-9a-f]{32}/, "second brief should carry envelope nonces");
+      assert.notEqual(first.briefJson, second.briefJson, "raw briefs should differ by fresh envelope nonces");
+      assert.equal(normalizeEnvelopeNonces(first.briefJson), normalizeEnvelopeNonces(second.briefJson));
+      assert.equal(first.prep.brief_hash, second.prep.brief_hash);
+      assert.equal(first.prep.prep_token, second.prep.prep_token);
+
+      const finalized = JSON.parse(TOOL_HANDLERS.bob_finalize_node({
+        target_domain: domain,
+        node_id: second.nodeId,
+        prep_token: second.prep.prep_token,
+        ts: "2026-05-31T00:05:00.000Z",
+        agent_output: {
+          tool_invocations: [{ tool: KNOWN_TOOL, output: { status: 200 } }],
+        },
+      }));
+      assert.equal(finalized.to_state, "finalized");
+    }));
   });
 });
 

@@ -57,7 +57,7 @@ function escapeRegExp(value) {
 
 function sentinelPattern(sentinel) {
   const marker = sentinel.startsWith("<<") ? sentinel.slice(2) : sentinel;
-  const ltToken = "(?:<|&lt;|&#60;|&#x3c;)";
+  const ltToken = "(?:<|&lt;|&#60;|&#x3c;|%3c)";
   return new RegExp(`${ltToken}${ltToken}${escapeRegExp(marker)}`, "gi");
 }
 
