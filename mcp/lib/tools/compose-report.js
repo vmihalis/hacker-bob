@@ -200,12 +200,22 @@ function validateProofBundleRef(domain, id) {
     if (!packs.some((pack) => pack && pack.finding_id === id)) return false;
     const bindingFields = ["verification_attempt_id", "verification_snapshot_hash", "final_verification_hash"];
     const hasBinding = bindingFields.some((field) => doc[field] != null);
-    if (!hasBinding) return true;
-    if (!bindingFields.every((field) => typeof doc[field] === "string" && doc[field].trim())) return false;
     const finalPaths = verificationRoundPaths(domain, "final");
-    if (!fs.existsSync(finalPaths.json)) return false;
-    const finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
-    return bindingFields.every((field) => finalRound && finalRound[field] === doc[field]);
+    let finalBinding = null;
+    if (fs.existsSync(finalPaths.json)) {
+      const finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
+      const finalHasBinding = bindingFields.some((field) => finalRound && finalRound[field] != null);
+      if ((finalRound && finalRound.version === 2) || finalHasBinding) {
+        if (!bindingFields.every((field) => typeof finalRound[field] === "string" && finalRound[field].trim())) {
+          return false;
+        }
+        finalBinding = Object.fromEntries(bindingFields.map((field) => [field, finalRound[field]]));
+      }
+    }
+    if (!hasBinding && !finalBinding) return true;
+    if (!hasBinding || !finalBinding) return false;
+    if (!bindingFields.every((field) => typeof doc[field] === "string" && doc[field].trim())) return false;
+    return bindingFields.every((field) => finalBinding[field] === doc[field]);
   } catch {
     return false;
   }

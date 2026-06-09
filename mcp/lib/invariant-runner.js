@@ -759,9 +759,20 @@ function readInvariantRuns({ target_domain, outcome_filter, template_id_filter, 
   };
 }
 
+function readInvariantRunCorpus({ target_domain }) {
+  const domain = assertSafeDomain(target_domain);
+  const filePath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(domain), { createDir: false });
+  const records = readJsonlRuns(filePath);
+  return {
+    runs: records.filter((run) => isPlainObject(run)),
+    total_in_corpus: records.length,
+  };
+}
+
 module.exports = {
   runInvariantForFinding,
   readInvariantRuns,
+  readInvariantRunCorpus,
   buildTestSource,
   deriveTestNamesFromTemplate,
   renameTestFunction,

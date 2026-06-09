@@ -127,8 +127,8 @@ function readRepoCommandRunRows(domain) {
 }
 
 function readInvariantRunRows(domain) {
-  const { readInvariantRuns } = require("./invariant-runner.js");
-  return readInvariantRuns({ target_domain: domain }).runs;
+  const { readInvariantRunCorpus } = require("./invariant-runner.js");
+  return readInvariantRunCorpus({ target_domain: domain }).runs;
 }
 
 function assertReplayRunFindingBinding(row, findingId, fieldName) {
@@ -245,7 +245,17 @@ function normalizeReplayCommand(value, row, fieldName) {
   return command;
 }
 
+function replayImageIdentity(imageTag, fieldName) {
+  const normalized = assertNonEmptyString(imageTag, fieldName);
+  const bobOssMatch = /^bob-oss-[^:]+:(.+)$/.exec(normalized);
+  if (bobOssMatch) {
+    return `bob-oss:${bobOssMatch[1]}`;
+  }
+  return normalized;
+}
+
 function stableRepoRunProjection(domain, row, fieldName, findingId) {
+  const imageTag = assertNonEmptyString(row.image_tag, `${fieldName}.image_tag`);
   const replayFindingId = assertReplayRunFindingBinding(row, findingId, fieldName);
   const projection = {
     run_id: assertRepoRunId(row.run_id, `${fieldName}.run_id`),
@@ -260,7 +270,8 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
     network_mode: row.network_mode,
     src_mount_mode: row.mount_mode,
     work_mount_mode: assertNonEmptyString(row.work_mount_mode, `${fieldName}.work_mount_mode`),
-    image_tag: assertNonEmptyString(row.image_tag, `${fieldName}.image_tag`),
+    image_tag: imageTag,
+    image_identity: replayImageIdentity(imageTag, `${fieldName}.image_tag`),
     stdout_hash: assertCapturedOutputHash(domain, row, fieldName, "stdout"),
     stderr_hash: assertCapturedOutputHash(domain, row, fieldName, "stderr"),
   };
@@ -297,6 +308,7 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
     replay_finding_id: runProjection.replay_finding_id,
     run_hash: runHash,
     image_tag: runProjection.image_tag,
+    image_identity: runProjection.image_identity,
     network_mode: runProjection.network_mode,
     src_mount_mode: runProjection.src_mount_mode,
     work_mount_mode: runProjection.work_mount_mode,
@@ -466,6 +478,9 @@ function proofBundleHashArtifact(artifact) {
   const normalized = {};
   for (const [key, value] of Object.entries(artifact)) {
     if (artifact.artifact_kind === "replay_script" && key === "run_hash") {
+      continue;
+    }
+    if (artifact.artifact_kind === "replay_script" && key === "image_tag") {
       continue;
     }
     normalized[key] = zeroTimestampFields(value);
