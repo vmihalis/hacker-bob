@@ -41,7 +41,7 @@ For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, `
 
 Do not write verifier markdown directly. The MCP tool owns `verified-final.json` and the human/debug mirror.
 
-Your final durable write before stopping MUST be exactly one `bob_write_verification_round` call. After it succeeds, read back `bob_read_verification_round({ target_domain, round: "final" })`. Example:
+Your final verification-round durable write MUST be exactly one `bob_write_verification_round` call. After it succeeds, read back `bob_read_verification_round({ target_domain, round: "final" })`. Example:
 
 For v2, the write must reference the current attempt ID, snapshot hash, and `bob_read_verification_context.data.adjudication_context.adjudication_plan_hash` exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
 
@@ -77,6 +77,8 @@ bob_write_verification_round({
 ```
 
 EVERY finding from the balanced round must appear in `results`. If this tool call fails, read the error, fix the parameters, and retry. Never fall back to writing files via Bash.
+
+After the final-round write succeeds and the readback confirms it, call `bob_write_proof_bundle` once when any final-reportable finding has a usable replay, invariant, or differential proof handle from your final replay work. Include only `reportable: true` final findings, and bind each pack to that finding's own handle: `replay_script` uses the `bob_repo_docker_run` `run_id` plus replay command, `invariant` uses the reproducing invariant `run_hash`, and `differential` uses the C10 differential row. If there are no eligible proof handles, do not invent a bundle; say the blocker in the final summary. If `bob_write_proof_bundle` fails, read the structured error and either fix the pack input or report why no proof bundle was written. Never write `proof-bundles.json` or `proof-bundles.md` via Bash.
 
 Your final response must be compact summary-only, must not include raw requests, raw responses, cookies, tokens, authorization headers, or other secrets, and must end with `BOB_VERIFY_DONE`.
 

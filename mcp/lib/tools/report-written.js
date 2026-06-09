@@ -29,6 +29,16 @@ const {
   tryResolveReportFinalizationHashes,
 } = require("../report-finalize.js");
 
+function artifactRefsForBundle(bundle) {
+  const refs = [
+    { kind: "markdown", path: "report.md", content_hash: bundle.report_content_hash },
+  ];
+  if (bundle.proof_bundle_hash) {
+    refs.push({ kind: "proof_bundle", path: "proof-bundles.json", content_hash: bundle.proof_bundle_hash });
+  }
+  return refs;
+}
+
 function handler(args) {
   const response = reportWritten(args);
   const bundle = tryResolveReportFinalizationHashes(args && args.target_domain);
@@ -45,12 +55,11 @@ function handler(args) {
       claim_freeze_hash: bundle.claim_freeze_hash,
       final_verification_hash: bundle.final_verification_hash,
       evidence_hash: bundle.evidence_hash,
+      proof_bundle_hash: bundle.proof_bundle_hash,
       grade_verdict_hash: bundle.grade_verdict_hash,
       report_content_hash: bundle.report_content_hash,
       claim_ids: bundle.claim_ids,
-      artifact_refs: [
-        { kind: "markdown", path: "report.md", content_hash: bundle.report_content_hash },
-      ],
+      artifact_refs: artifactRefsForBundle(bundle),
       report_path: "report.md",
     });
     try {
@@ -63,6 +72,7 @@ function handler(args) {
           claim_freeze_hash: bundle.claim_freeze_hash,
           final_verification_hash: bundle.final_verification_hash,
           evidence_hash: bundle.evidence_hash,
+          ...(bundle.proof_bundle_hash ? { proof_bundle_hash: bundle.proof_bundle_hash } : {}),
           grade_verdict_hash: bundle.grade_verdict_hash,
           report_content_hash: bundle.report_content_hash,
           report_size_bytes: bundle.report_size_bytes,

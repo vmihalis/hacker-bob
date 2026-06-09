@@ -24,6 +24,16 @@ const {
 } = require("../governance-context.js");
 const { wrapWriteTool } = require("./_write-base.js");
 
+function artifactRefsForBundle(bundle) {
+  const refs = [
+    { kind: "markdown", path: "report.md", content_hash: bundle.report_content_hash },
+  ];
+  if (bundle.proof_bundle_hash) {
+    refs.push({ kind: "proof_bundle", path: "proof-bundles.json", content_hash: bundle.proof_bundle_hash });
+  }
+  return refs;
+}
+
 function handler(args) {
   // Resolve the four upstream hashes + report content hash. Each missing
   // upstream raises a structured ToolError with a precise pointer so the
@@ -39,12 +49,11 @@ function handler(args) {
     claim_freeze_hash: bundle.claim_freeze_hash,
     final_verification_hash: bundle.final_verification_hash,
     evidence_hash: bundle.evidence_hash,
+    proof_bundle_hash: bundle.proof_bundle_hash,
     grade_verdict_hash: bundle.grade_verdict_hash,
     report_content_hash: bundle.report_content_hash,
     claim_ids: bundle.claim_ids,
-    artifact_refs: [
-      { kind: "markdown", path: "report.md", content_hash: bundle.report_content_hash },
-    ],
+    artifact_refs: artifactRefsForBundle(bundle),
     report_path: "report.md",
   });
 
@@ -61,6 +70,7 @@ function handler(args) {
         claim_freeze_hash: bundle.claim_freeze_hash,
         final_verification_hash: bundle.final_verification_hash,
         evidence_hash: bundle.evidence_hash,
+        ...(bundle.proof_bundle_hash ? { proof_bundle_hash: bundle.proof_bundle_hash } : {}),
         grade_verdict_hash: bundle.grade_verdict_hash,
         report_content_hash: bundle.report_content_hash,
         report_size_bytes: bundle.report_size_bytes,
@@ -98,6 +108,7 @@ function handler(args) {
     claim_freeze_hash: bundle.claim_freeze_hash,
     final_verification_hash: bundle.final_verification_hash,
     evidence_hash: bundle.evidence_hash,
+    ...(bundle.proof_bundle_hash ? { proof_bundle_hash: bundle.proof_bundle_hash } : {}),
     grade_verdict_hash: bundle.grade_verdict_hash,
     report_content_hash: bundle.report_content_hash,
     report_path: bundle.report_path,
@@ -111,8 +122,9 @@ module.exports = wrapWriteTool({
     "Finalize the canonical session report.md by appending a hash-bound " +
     "ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream " +
     "hashes (claim_freeze_hash, final_verification_hash, evidence_hash, " +
-    "grade_verdict_hash) plus the report.md content hash and refuses if any " +
-    "upstream artifact is missing. Append-only; subsequent calls produce a " +
+    "grade_verdict_hash) plus the report.md content hash, and when report.md " +
+    "cites proof_bundle refs it also binds proof-bundles.json. Refuses if any " +
+    "required upstream artifact is missing. Append-only; subsequent calls produce a " +
     "new row with the current report content hash so re-finalize after a " +
     "report.md edit is detectable in the ledger.",
   inputSchema: {

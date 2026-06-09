@@ -52,6 +52,9 @@ function normalizeReportSnapshot(input, { targetDomain = null, now = new Date() 
   const claimFreezeHash = normalizeHash(input.claim_freeze_hash, "claim_freeze_hash");
   const verificationHash = normalizeHash(input.final_verification_hash, "final_verification_hash");
   const evidenceHash = normalizeHash(input.evidence_hash || input.evidence_pack_hash, "evidence_hash");
+  const proofBundleHash = input.proof_bundle_hash == null
+    ? null
+    : normalizeHash(input.proof_bundle_hash, "proof_bundle_hash");
   const gradeVerdictHash = normalizeHash(input.grade_verdict_hash, "grade_verdict_hash");
   const base = {
     version: REPORT_SNAPSHOT_VERSION,
@@ -63,6 +66,7 @@ function normalizeReportSnapshot(input, { targetDomain = null, now = new Date() 
     evidence_hash: evidenceHash,
     grade_verdict_hash: gradeVerdictHash,
   };
+  if (proofBundleHash) base.proof_bundle_hash = proofBundleHash;
 
   const claimIds = normalizeOptionalTextArray(input.claim_ids, "claim_ids");
   const artifactRefs = normalizeReferenceArray(input.artifact_refs, "artifact_refs");

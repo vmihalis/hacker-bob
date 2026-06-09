@@ -31,6 +31,9 @@
 // an exact report.md file (a mutation invalidates the binding and a re-finalize
 // will produce a new snapshot row with a new report_content_hash).
 //
+// C14 adds an optional sixth hash: if the rendered report cites a
+// `proof_bundle:` evidence ref, finalization also binds proof-bundles.json.
+//
 // Invariant: a fresh report cannot be finalized unless all four upstream
 // hashes resolve. Each missing hash is surfaced as a structured ToolError so
 // callers see the precise upstream that is missing (no freeze / no final
@@ -42,6 +45,7 @@ const fs = require("fs");
 
 const {
   evidencePackPaths,
+  proofBundlePaths,
   reportMarkdownPath,
   verificationRoundPaths,
   gradeArtifactPaths,
@@ -205,6 +209,40 @@ function loadEvidencePackHash(domain) {
   return hashCanonicalJson(document.packs);
 }
 
+function reportContentCitesProofBundle(contentBuffer) {
+  return contentBuffer.toString("utf8").includes("proof_bundle:");
+}
+
+function loadProofBundleHash(domain) {
+  const paths = proofBundlePaths(domain);
+  if (!fs.existsSync(paths.json)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `proof bundles are not present at ${paths.json}; the report cites proof_bundle refs but no proof bundle artifact is available`,
+      { missing_artifact: "proof-bundles.json" },
+      { remediation: "call bob_write_proof_bundle({target_domain, packs: [...]}) for the cited final-reportable findings, then re-invoke bob_finalize_report" },
+    );
+  }
+  let document;
+  try {
+    document = loadJsonDocumentStrict(paths.json, "proof bundles JSON");
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `proof bundles at ${paths.json} could not be loaded: ${error.message || String(error)}`,
+      { missing_artifact: "proof-bundles.json" },
+    );
+  }
+  if (!document || !Array.isArray(document.packs)) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `proof bundles at ${paths.json} are malformed (no packs[] array); rewrite proof bundles before finalization`,
+      { missing_field: "packs" },
+    );
+  }
+  return hashCanonicalJson(document);
+}
+
 function loadGradeVerdictHash(domain) {
   const paths = gradeArtifactPaths(domain);
   if (!fs.existsSync(paths.json)) {
@@ -243,7 +281,10 @@ function resolveReportFinalizationHashes(targetDomain) {
   const evidenceHash = loadEvidencePackHash(domain);
   const gradeVerdictHash = loadGradeVerdictHash(domain);
   const reportContentHash = sha256Hex(reportFile.content_buffer);
-  return {
+  const proofBundleHash = reportContentCitesProofBundle(reportFile.content_buffer)
+    ? loadProofBundleHash(domain)
+    : null;
+  const bundle = {
     target_domain: domain,
     report_path: reportFile.report_path,
     report_size_bytes: reportFile.content_buffer.length,
@@ -255,6 +296,8 @@ function resolveReportFinalizationHashes(targetDomain) {
     grade_verdict_hash: gradeVerdictHash,
     report_content_hash: reportContentHash,
   };
+  if (proofBundleHash) bundle.proof_bundle_hash = proofBundleHash;
+  return bundle;
 }
 
 // Same as resolveReportFinalizationHashes but never throws: returns null when
@@ -275,7 +318,9 @@ module.exports = {
   loadEvidencePackHash,
   loadFinalVerificationHash,
   loadGradeVerdictHash,
+  loadProofBundleHash,
   readReportFileContent,
+  reportContentCitesProofBundle,
   resolveReportFinalizationHashes,
   sha256Hex,
   tryResolveReportFinalizationHashes,
