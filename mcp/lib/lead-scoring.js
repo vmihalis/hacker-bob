@@ -86,6 +86,25 @@ function selectPromotableSurfaceLeads(document, options = {}) {
   )).slice(0, limit);
 }
 
+function summarizeLeadPromotion(document, options = {}) {
+  const { limit, minScore, includeMedium } = normalizePromotionOptions(options);
+  const leads = Array.isArray(document && document.leads) ? document.leads : [];
+  const assignableLeads = leads.filter((lead) => (
+    lead.status !== "promoted" &&
+    !lead.promoted_surface_id &&
+    isAssignableSurfaceLead(lead)
+  ));
+  const promotableLeads = assignableLeads.filter(
+    (lead) => shouldPromoteLead(lead, { minScore, includeMedium }),
+  );
+  return {
+    assignable: assignableLeads.length,
+    promoted: Math.min(promotableLeads.length, limit),
+    filtered: assignableLeads.length - promotableLeads.length,
+    deferred_by_limit: Math.max(0, promotableLeads.length - limit),
+  };
+}
+
 function leadPathsEnvelope(domain) {
   return {
     leads_path: surfaceLeadsPath(domain),
@@ -123,4 +142,5 @@ module.exports = {
   selectPromotableSurfaceLeads,
   shouldPromoteLead,
   sortLeadsByScore,
+  summarizeLeadPromotion,
 };

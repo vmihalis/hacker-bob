@@ -203,6 +203,12 @@ function compactDashboardSession(row) {
     auth_status: row.auth_status || null,
     waves: row.waves || {},
     findings: row.findings || { total: 0, by_severity: {} },
+    lead_promotion: row.lead_promotion || {
+      promotions: 0,
+      leads_filtered: 0,
+      evaluator_runs_avoided: 0,
+      deferred_by_limit: 0,
+    },
     chain_attempts_count: row.chain_attempts_count || 0,
     technique_attempts: row.technique_attempts || { total: 0 },
     final_verification_count: row.final_verification_count || 0,
@@ -233,6 +239,7 @@ function buildDashboardTotals(sessions) {
     grades_present: 0,
     pending_handoffs_missing: 0,
     pending_handoffs_invalid: 0,
+    evaluator_runs_avoided: 0,
   };
   for (const session of sessions) {
     if (session.repo.is_repo) totals.repo_sessions += 1;
@@ -244,6 +251,7 @@ function buildDashboardTotals(sessions) {
     if (session.grade_verdict) totals.grades_present += 1;
     totals.pending_handoffs_missing += session.waves.pending_handoffs_missing || 0;
     totals.pending_handoffs_invalid += session.waves.pending_handoffs_invalid || 0;
+    totals.evaluator_runs_avoided += session.lead_promotion.evaluator_runs_avoided || 0;
   }
   return totals;
 }
@@ -489,7 +497,8 @@ function renderDashboardHtml(options) {
         stat("Sessions", snapshot.totals.sessions),
         stat("Findings", snapshot.totals.findings),
         stat("Reportable", snapshot.totals.final_reportable),
-        stat("Missing Handoffs", snapshot.totals.pending_handoffs_missing)
+        stat("Missing Handoffs", snapshot.totals.pending_handoffs_missing),
+        stat("Evaluator Runs Avoided", snapshot.totals.evaluator_runs_avoided)
       );
       clear(sessions);
       for (const session of snapshot.sessions) {
@@ -507,7 +516,12 @@ function renderDashboardHtml(options) {
         row.appendChild(healthCell);
         cell(row, session.findings ? session.findings.total : 0);
         cell(row, String(session.final_verification_count || 0) + " / " + String(session.final_reportable_count || 0));
-        cell(row, formatActivity(session.latest_activity_ts));
+        const activity = cell(row, formatActivity(session.latest_activity_ts));
+        const avoided = session.lead_promotion ? session.lead_promotion.evaluator_runs_avoided || 0 : 0;
+        const avoidedNode = document.createElement("div");
+        avoidedNode.className = "muted";
+        avoidedNode.textContent = String(avoided) + " evaluator runs avoided this session";
+        activity.appendChild(avoidedNode);
         sessions.appendChild(row);
       }
       if (!snapshot.sessions.length) {

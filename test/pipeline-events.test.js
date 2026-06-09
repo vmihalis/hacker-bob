@@ -6,6 +6,7 @@ const path = require("path");
 
 const {
   normalizePipelineEvent,
+  normalizePipelineEventForRead,
 } = require("../mcp/lib/pipeline-events.js");
 const {
   CROSS_SESSION_ANALYTICS_MAX_SESSIONS,
@@ -72,6 +73,43 @@ test("normalizePipelineEvent rejects secret-shaped operational reasons", () => {
     }),
     /appears to contain secrets/,
   );
+});
+
+test("normalizePipelineEvent accepts evaluator_run_avoided and coerces counts", () => {
+  const event = normalizePipelineEvent("example.com", "evaluator_run_avoided", {
+    source: "x".repeat(130),
+    counts: {
+      assignable: 4.9,
+      filtered: -2,
+      evaluator_runs_avoided: 1.8,
+      ignored: "not-a-number",
+    },
+  });
+  assert.equal(event.type, "evaluator_run_avoided");
+  assert.equal(event.source.length, 120);
+  assert.deepEqual(event.counts, {
+    assignable: 4,
+    filtered: 0,
+    evaluator_runs_avoided: 1,
+  });
+
+  const readEvent = normalizePipelineEventForRead({
+    version: 1,
+    bob_version: "test",
+    ts: "2026-01-01T00:00:00.000Z",
+    target_domain: "example.com",
+    type: "evaluator_run_avoided",
+    source: "test",
+    counts: {
+      deferred_by_limit: 2.9,
+      evaluator_runs_avoided: -3,
+    },
+  }, "example.com");
+  assert.equal(readEvent.type, "evaluator_run_avoided");
+  assert.deepEqual(readEvent.counts, {
+    deferred_by_limit: 2,
+    evaluator_runs_avoided: 0,
+  });
 });
 
 test("readPipelineEvents does not backfill over an existing malformed event log", () => {

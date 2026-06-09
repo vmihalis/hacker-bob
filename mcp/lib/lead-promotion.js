@@ -34,9 +34,12 @@ const {
   normalizePromotionOptions,
   selectPromotableSurfaceLeads,
   sortLeadsByScore,
+  summarizeLeadPromotion,
 } = require("./lead-scoring.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { loadQueuePolicy } = require("./queue-policy.js");
+const { safeAppendPipelineEventDirect } = require("./pipeline-events.js");
+const { safeGovernanceContextForDomain } = require("./governance-context.js");
 
 const PROMOTED_SURFACE_LEAD_LABEL = "promoted_surface_lead";
 
@@ -323,6 +326,14 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
   }
   const document = readSurfaceLeadsDocument(domain);
   const candidates = selectPromotableSurfaceLeads(document, options);
+  const summary = summarizeLeadPromotion(document, options);
+  safeAppendPipelineEventDirect(domain, "evaluator_run_avoided", {
+    source: options.source || "bob_promote_surface_leads",
+    counts: {
+      ...summary,
+      evaluator_runs_avoided: summary.filtered,
+    },
+  }, safeGovernanceContextForDomain(domain));
   if (candidates.length === 0) return buildPromotionEnvelope(domain, []);
   const { promoted_surface_ids: promotedSurfaceIds } = applyPromotionToFrontier(domain, candidates);
   const now = new Date().toISOString();

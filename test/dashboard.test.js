@@ -12,10 +12,14 @@ const {
 } = require("../mcp/lib/dashboard.js");
 const {
   repoInventoryPath,
+  pipelineEventsJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   initSession,
 } = require("../mcp/lib/session-state.js");
+const {
+  normalizePipelineEvent,
+} = require("../mcp/lib/pipeline-events.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -87,6 +91,14 @@ function seedRepoSession(domain, repoPath) {
   }, null, 2)}\n`);
 }
 
+function appendPipelineEvent(domain, type, fields) {
+  fs.appendFileSync(
+    pipelineEventsJsonlPath(domain),
+    `${JSON.stringify(normalizePipelineEvent(domain, type, fields))}\n`,
+    "utf8",
+  );
+}
+
 test("dashboard arg parser handles local server and JSON flags", () => {
   const parsed = parseDashboardArgs([
     "--repo-only",
@@ -151,6 +163,56 @@ test("dashboard snapshot totals use all matched sessions before display limit", 
     assert.equal(snapshot.analytics_bounds.sessions_displayed, 1);
     assert.equal(snapshot.totals.sessions, 2);
     assert.equal(snapshot.totals.repo_sessions, 2);
+  });
+});
+
+test("dashboard snapshot exposes lead promotion avoided-run telemetry", () => {
+  withTempHome(() => {
+    const domain = "lead-promotion-dashboard.example";
+    JSON.parse(initSession({
+      target_domain: domain,
+      target_url: `https://${domain}`,
+    }));
+    appendPipelineEvent(domain, "evaluator_run_avoided", {
+      source: "bob_promote_surface_leads",
+      counts: {
+        promoted: 2,
+        filtered: 3,
+        evaluator_runs_avoided: 3,
+        deferred_by_limit: 1,
+      },
+    });
+
+    const snapshot = buildDashboardSnapshot({ window_days: 30, limit: 10 });
+    const session = snapshot.sessions.find((item) => item.target_domain === domain);
+    assert.ok(session);
+    assert.deepEqual(session.lead_promotion, {
+      promotions: 2,
+      leads_filtered: 3,
+      evaluator_runs_avoided: 3,
+      deferred_by_limit: 1,
+    });
+    assert.equal(snapshot.totals.evaluator_runs_avoided, 3);
+  });
+});
+
+test("pipeline analytics reports zero lead promotion telemetry when no events exist", () => {
+  withTempHome(() => {
+    const domain = "lead-promotion-zero.example";
+    JSON.parse(initSession({
+      target_domain: domain,
+      target_url: `https://${domain}`,
+    }));
+
+    const snapshot = buildDashboardSnapshot({ window_days: 30, limit: 10 });
+    const session = snapshot.sessions.find((item) => item.target_domain === domain);
+    assert.ok(session);
+    assert.deepEqual(session.lead_promotion, {
+      promotions: 0,
+      leads_filtered: 0,
+      evaluator_runs_avoided: 0,
+      deferred_by_limit: 0,
+    });
   });
 });
 

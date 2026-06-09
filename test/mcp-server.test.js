@@ -2066,6 +2066,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "surface-index.json",
     "task-queue.json",
     "task-graph.json",
+    "pipeline-events.jsonl",
   ]);
   assert.deepEqual(TOOL_MANIFEST.bob_get_context_budget.role_bundles, ["evaluator-shared", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_get_context_budget.mutating, false);

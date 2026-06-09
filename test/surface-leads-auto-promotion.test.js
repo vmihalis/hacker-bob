@@ -40,8 +40,12 @@ const path = require("path");
 const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
 const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
 const {
+  previewSurfaceLeadPromotion,
   readSurfaceLeads,
 } = require("../mcp/lib/lead-promotion.js");
+const {
+  initSession,
+} = require("../mcp/lib/session-state.js");
 const { ToolError, ERROR_CODES } = require("../mcp/lib/envelope.js");
 const {
   STIGMERGIC_PRODUCERS,
@@ -56,6 +60,7 @@ const {
 const {
   sessionDir,
   attackSurfacePath,
+  pipelineEventsJsonlPath,
   queuePolicyPath,
   surfaceIndexPath,
 } = require("../mcp/lib/paths.js");
@@ -94,6 +99,24 @@ function makeLead(overrides = {}) {
     score: 80,
     ...overrides,
   };
+}
+
+function seedSession(domain) {
+  JSON.parse(initSession({
+    target_domain: domain,
+    target_url: `https://${domain}`,
+  }));
+}
+
+function readEvaluatorRunAvoidedEvents(domain) {
+  const filePath = pipelineEventsJsonlPath(domain);
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((event) => event.type === "evaluator_run_avoided");
 }
 
 // (a) ─────────────────────────────────────────────────────────────────────
@@ -339,6 +362,102 @@ test("bob_promote_surface_leads preserves assigned lead surfaces already in atta
 
     const projectionIds = currentSurfaces(domain).surfaces.map((surface) => surface.id).sort();
     assert.deepEqual(projectionIds, ["lead-admin-api", "lead-admin-api-2", "surface-baseline"]);
+  });
+});
+
+test("bob_promote_surface_leads emits evaluator_run_avoided counts for filtered assignable leads", () => {
+  withTempHome(() => {
+    const domain = "x7-promotion-counts.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "pass-high", hosts: ["pass-high.example.com"], score: 80 }),
+        makeLead({ title: "pass-score", hosts: ["pass-score.example.com"], score: 65 }),
+        makeLead({ title: "filtered-medium", hosts: ["filtered-medium.example.com"], score: 50 }),
+        makeLead({ title: "filtered-low", hosts: ["filtered-low.example.com"], score: 10 }),
+      ],
+    }));
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(promoted.promoted, 2);
+    const events = readEvaluatorRunAvoidedEvents(domain);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].source, "bob_promote_surface_leads");
+    assert.deepEqual(events[0].counts, {
+      assignable: 4,
+      promoted: 2,
+      filtered: 2,
+      deferred_by_limit: 0,
+      evaluator_runs_avoided: 2,
+    });
+    assert.equal(typeof events[0].nucleus_hash, "string");
+    assert.equal(typeof events[0].egress_identity_hash, "string");
+  });
+});
+
+test("bob_promote_surface_leads emits evaluator_run_avoided before all-filtered early return", () => {
+  withTempHome(() => {
+    const domain = "x7-all-filtered.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "low-a", hosts: ["low-a.example.com"], score: 10 }),
+        makeLead({ title: "low-b", hosts: ["low-b.example.com"], score: 20 }),
+      ],
+    }));
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(promoted.promoted, 0);
+    assert.deepEqual(promoted.promoted_surface_ids, []);
+    const events = readEvaluatorRunAvoidedEvents(domain);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].counts, {
+      assignable: 2,
+      promoted: 0,
+      filtered: 2,
+      deferred_by_limit: 0,
+      evaluator_runs_avoided: 2,
+    });
+  });
+});
+
+test("previewSurfaceLeadPromotion does not emit evaluator_run_avoided", () => {
+  withTempHome(() => {
+    const domain = "x7-preview-no-event.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "preview-pass", hosts: ["preview-pass.example.com"], score: 80 }),
+        makeLead({ title: "preview-filtered", hosts: ["preview-filtered.example.com"], score: 10 }),
+      ],
+    }));
+
+    const preview = previewSurfaceLeadPromotion(domain, {
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    });
+
+    assert.equal(preview.would_promote, 1);
+    assert.deepEqual(readEvaluatorRunAvoidedEvents(domain), []);
   });
 });
 

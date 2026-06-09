@@ -657,6 +657,23 @@ function analyzeSession(targetDomain, {
       latest_event: compactEvent(findingIndexFailures[findingIndexFailures.length - 1]),
     }));
   }
+  const leadPromotion = allEvents
+    .filter((event) => event.type === "evaluator_run_avoided")
+    .reduce((totals, event) => {
+      const counts = event.counts && typeof event.counts === "object" && !Array.isArray(event.counts)
+        ? event.counts
+        : {};
+      totals.promotions += counts.promoted || 0;
+      totals.leads_filtered += counts.filtered || 0;
+      totals.evaluator_runs_avoided += counts.evaluator_runs_avoided || 0;
+      totals.deferred_by_limit += counts.deferred_by_limit || 0;
+      return totals;
+    }, {
+      promotions: 0,
+      leads_filtered: 0,
+      evaluator_runs_avoided: 0,
+      deferred_by_limit: 0,
+    });
 
   const lifecycleState = artifacts.state.lifecycle_state || artifacts.state.phase;
   if (lifecycleAtLeast(lifecycleState, "GRADE") && !artifacts.verification.rounds.final.valid) {
@@ -852,6 +869,7 @@ function analyzeSession(targetDomain, {
       surface_count: artifacts.technique_pack_reads.surface_count,
       pack_count: artifacts.technique_pack_reads.pack_count,
     },
+    lead_promotion: leadPromotion,
     claim_freeze_duration_ms: computeClaimFreezeLifecycleDurationMs(allEvents),
     final_verification_count: artifacts.verification.final_results_count,
     final_reportable_count: artifacts.verification.final_reportable_count,
@@ -916,6 +934,7 @@ function buildFunnel(analyses) {
     final_reportable_total: 0,
     grade_total: 0,
     report_total: 0,
+    evaluator_runs_avoided_total: 0,
   };
 
   for (const analysis of analyses) {
@@ -927,6 +946,7 @@ function buildFunnel(analyses) {
     funnel.final_reportable_total += analysis.artifacts.verification.final_reportable_count;
     if (analysis.artifacts.grade.exists) funnel.grade_total += 1;
     if (analysis.artifacts.report.present) funnel.report_total += 1;
+    funnel.evaluator_runs_avoided_total += analysis.row.lead_promotion?.evaluator_runs_avoided || 0;
   }
 
   return funnel;
