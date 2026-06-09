@@ -123,7 +123,9 @@ function normaliseEntry(raw: unknown): import("./heuristic-dispatch.js").Impacte
       ? e["line_start"]
       : typeof e["start_line"] === "number"
         ? e["start_line"]
-        : 1;
+        : typeof e["line"] === "number"
+          ? e["line"]
+          : 1;
 
   const line_end =
     typeof e["line_end"] === "number"

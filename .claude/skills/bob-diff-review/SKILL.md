@@ -13,10 +13,6 @@ argument-hint: "--repo <abs-path> --diff-file <path> [--target-domain-override <
 allowed-tools:
   - Read
   - Write
-  - Bash(node *)
-  - Bash(find *)
-  - Bash(ls *)
-  - Bash(cat *)
   - Task
   - mcp__hacker-bob__bob_init_repo_session
   - mcp__hacker-bob__bob_repo_inventory
@@ -79,9 +75,9 @@ The runner environment MUST supply:
   environment and strips workflow inputs, GitHub tokens, `BOB_INSTALL_TOKEN`,
   proxy credentials, and unrelated operator secrets before invoking Claude.
 
-No credential value must appear in any log or output file. Confirm presence
-only, e.g.:
-`if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || [ -n "$ANTHROPIC_API_KEY" ]; then echo present; fi`.
+No credential value must appear in any log or output file. Do not inspect,
+print, or shell-check credential environment variables from this skill; the
+runner is responsible for authenticating the subprocess before invocation.
 
 ## Authentication
 

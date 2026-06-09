@@ -45,7 +45,9 @@ function normaliseEntry(raw) {
         ? e["line_start"]
         : typeof e["start_line"] === "number"
             ? e["start_line"]
-            : 1;
+            : typeof e["line"] === "number"
+                ? e["line"]
+                : 1;
     const line_end = typeof e["line_end"] === "number"
         ? e["line_end"]
         : typeof e["end_line"] === "number"

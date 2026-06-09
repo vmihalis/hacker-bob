@@ -33,6 +33,9 @@ const {
   diffImpactPath,
   isAuditGradedPath,
 } = require("../mcp/lib/paths.js");
+const {
+  acquireSessionLock,
+} = require("../mcp/lib/storage.js");
 
 function uniqueDomain(prefix = "bob-diff-impact-write-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -151,13 +154,13 @@ test("handler reports path_used B when no symbol index is available", () => {
   }
 });
 
-test("diff-impact.json impacted_entries have the required {file, surface_ids[]} fields and a line indicator", () => {
+test("diff-impact.json impacted_entries use the normalized PATH A dispatch schema", () => {
   const domain = uniqueDomain();
   try {
     const routes = buildSampleRoutes();
     buildSymbolSurfaceIndex({ target_domain: domain, route_records: routes, surfaces: SAMPLE_SURFACES });
 
-    summarizeDiffImpactTool.handler({
+    const result = summarizeDiffImpactTool.handler({
       target_domain: domain,
       unified_diff: SAMPLE_DIFF,
     });
@@ -169,16 +172,36 @@ test("diff-impact.json impacted_entries have the required {file, surface_ids[]} 
     assert.ok(artifact.impacted_entries.length > 0, "expected at least one impacted entry for auth/login.ts change");
     for (const entry of artifact.impacted_entries) {
       assert.ok(typeof entry.file === "string" && entry.file.length > 0, "entry.file must be a non-empty string");
-      // The MCP tool returns entries with a 'line' field (single line number).
-      // Orchestrator normalisation maps this to line_start/line_end. Either form is valid here.
-      const hasLineIndicator =
-        typeof entry.line === "number" ||
-        typeof entry.line_start === "number" ||
-        typeof entry.start_line === "number";
-      assert.ok(hasLineIndicator, "entry must have a line indicator (line, line_start, or start_line)");
+      assert.ok(typeof entry.line_start === "number" && entry.line_start >= 1, "entry.line_start must be a positive number");
+      assert.ok(typeof entry.line_end === "number" && entry.line_end >= entry.line_start, "entry.line_end must be a valid range end");
       assert.ok(Array.isArray(entry.surface_ids), "entry.surface_ids must be an array");
+      assert.ok(typeof entry.hunk_summary === "string" && entry.hunk_summary.length > 0, "entry.hunk_summary must be a non-empty string");
+      assert.equal("line" in entry, false, "raw symbol-index line field must not leak into the PATH A dispatch schema");
     }
+    assert.deepEqual(result.impacted_entries, artifact.impacted_entries);
   } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("handler acquires the session lock before writing diff-impact.json", () => {
+  const domain = uniqueDomain();
+  let release = null;
+  try {
+    const routes = buildSampleRoutes();
+    buildSymbolSurfaceIndex({ target_domain: domain, route_records: routes, surfaces: SAMPLE_SURFACES });
+    release = acquireSessionLock(domain);
+
+    assert.throws(
+      () => summarizeDiffImpactTool.handler({
+        target_domain: domain,
+        unified_diff: SAMPLE_DIFF,
+      }),
+      /Session lock busy/
+    );
+    assert.equal(fs.existsSync(diffImpactPath(domain)), false, "handler must not write while the session lock is held elsewhere");
+  } finally {
+    if (release) release();
     cleanupDomain(domain);
   }
 });

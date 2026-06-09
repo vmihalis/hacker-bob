@@ -146,6 +146,23 @@ test("normaliseDiffImpactResult handles start_line/end_line aliases", () => {
   assert.equal(entry.line_end, 8);
 });
 
+test("normaliseDiffImpactResult handles raw MCP line alias", () => {
+  const raw = {
+    impacted_entries: [
+      {
+        file: "src/auth/login.ts",
+        line: 12,
+        surface_ids: ["auth:login"],
+      },
+    ],
+  };
+  const result = normaliseDiffImpactResult(raw);
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("expected success");
+  assert.equal(result.impacted_entries[0].line_start, 12);
+  assert.equal(result.impacted_entries[0].line_end, 12);
+});
+
 test("normaliseDiffImpactResult handles path alias for file", () => {
   const raw = {
     impacted_entries: [
