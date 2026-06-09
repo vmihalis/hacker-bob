@@ -1,11 +1,10 @@
 name: Cache Bob Session
 description: >
-  Restore the Bob session directory for the target repository from cache.
-  The session path ~/hacker-bob-sessions/gh-<repository_id> is deterministic
-  across runs because target_domain is set to 'gh-<repository_id>'.
+  Restore the Bob repo-session directory for the checked-out repository from
+  cache. The session path is derived the same way as bob_init_repo_session:
+  ~/hacker-bob-sessions/repo-<safeName>-<sha8(realpath)>.
 
-  Cache key is the exact commit SHA so fresh PRs start with the base-branch
-  session as a warm start via restore-keys. After restore, checks for
+  Cache key is the exact commit SHA. After an exact restore, checks for
   symbol-surface-index.json and sets the cache-hit-symbol-index output so the
   bob-review workflow can skip the S3 surface-build phase (SKIP_SURFACE_BUILD).
 
@@ -23,9 +22,14 @@ inputs:
     required: true
   base_ref:
     description: >
-      The base branch ref (github.base_ref, e.g. 'main'). Used as the first
-      restore-key prefix so a PR always picks up the closest prior session
-      from its target branch before falling back to any session for the repo.
+      Reserved for future branch-keyed cache entries. Currently not used for
+      restore-keys because a stale symbol index is worse than rebuilding S3.
+    required: false
+    default: ''
+  repo_path:
+    description: >
+      Local repository path used to derive the repo-session target_domain.
+      Defaults to GITHUB_WORKSPACE.
     required: false
     default: ''
 
@@ -40,12 +44,11 @@ outputs:
       can be skipped. 'false' when the file is absent or the cache missed.
     value: ${{ steps.detect-symbol-index.outputs.cache_hit_symbol_index }}
   session_dir:
-    description: "Absolute path to the Bob session directory for this repository."
+    description: "Absolute path to the derived Bob repo-session directory."
     value: ${{ steps.set-session-dir.outputs.session_dir }}
   target_domain:
     description: >
-      The target_domain string to pass to bob_init_repo_session.
-      Always 'gh-' + repository_id.
+      The repo-session target_domain derived from the checkout realpath.
     value: ${{ steps.set-session-dir.outputs.target_domain }}
 
 runs:
@@ -67,16 +70,19 @@ runs:
 
     # ------------------------------------------------------------------
     # 1. Compute derived values used in subsequent steps.
-    #    session_dir  = ~/hacker-bob-sessions/gh-<repository_id>
-    #    target_domain = gh-<repository_id>
+    #    session_dir  = ~/hacker-bob-sessions/repo-<safeName>-<sha8(realpath)>
+    #    target_domain = repo-<safeName>-<sha8(realpath)>
     # ------------------------------------------------------------------
     - name: Set session dir and target_domain
       id: set-session-dir
       shell: bash
       run: |
-        REPO_ID="${{ inputs.repository_id }}"
-        SESSION_DIR="$HOME/hacker-bob-sessions/gh-${REPO_ID}"
-        TARGET_DOMAIN="gh-${REPO_ID}"
+        REPO_PATH="${{ inputs.repo_path }}"
+        if [[ -z "$REPO_PATH" ]]; then
+          REPO_PATH="$GITHUB_WORKSPACE"
+        fi
+        TARGET_DOMAIN="$(node -e 'const crypto = require("crypto"); const fs = require("fs"); const path = require("path"); const real = fs.realpathSync(process.argv[1]); const base = (path.basename(real).trim() || "repo"); const safe = (base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo"); const sha = crypto.createHash("sha256").update(real).digest("hex").slice(0, 8); process.stdout.write("repo-" + safe + "-" + sha);' "$REPO_PATH")"
+        SESSION_DIR="$HOME/hacker-bob-sessions/${TARGET_DOMAIN}"
         echo "session_dir=${SESSION_DIR}" >> "$GITHUB_OUTPUT"
         echo "target_domain=${TARGET_DOMAIN}" >> "$GITHUB_OUTPUT"
         echo "SESSION_DIR=${SESSION_DIR}" >> "$GITHUB_ENV"
@@ -90,32 +96,22 @@ runs:
     #    Primary key (exact SHA match — same commit, no work needed):
     #      <OS>-bob-session-<repository_id>-<sha>
     #
-    #    Restore-key 1 (base-branch prefix — closest warm start for PRs):
-    #      <OS>-bob-session-<repository_id>-<base_ref>
-    #      NOTE: base_ref is a branch name (e.g. "main"), not a SHA.
-    #      The key is only used as a prefix so any prior cache entry that
-    #      begins with this string will match.
-    #
-    #    Restore-key 2 (broadest fallback — any prior session for repo):
-    #      <OS>-bob-session-<repository_id>-
+    #    No restore-keys fallback: stale symbol indexes can suppress S3 and
+    #    route hunks to the wrong surfaces. Rebuild on cache miss.
     # ------------------------------------------------------------------
     - name: Restore Bob session cache
       id: cache-session
       uses: actions/cache@v4
       with:
-        path: ~/hacker-bob-sessions/gh-${{ inputs.repository_id }}
-        key: ${{ runner.os }}-bob-session-${{ inputs.repository_id }}-${{ inputs.sha }}
-        restore-keys: |
-          ${{ runner.os }}-bob-session-${{ inputs.repository_id }}-${{ inputs.base_ref }}
-          ${{ runner.os }}-bob-session-${{ inputs.repository_id }}-
+        path: ${{ steps.set-session-dir.outputs.session_dir }}
+        key: ${{ runner.os }}-bob-session-${{ steps.set-session-dir.outputs.target_domain }}-${{ inputs.sha }}
 
     # ------------------------------------------------------------------
     # 3. After cache restore, detect whether symbol-surface-index.json
     #    is present in the session directory.
     #
-    #    If the file exists, the S3 phase (route extraction + symbol index
-    #    build) can be skipped, saving significant runner time on PRs where
-    #    the codebase structure has not changed.
+    #    If the primary cache entry hit and the file exists, the S3 phase
+    #    (route extraction + symbol index build) can be skipped.
     #
     #    Output: cache_hit_symbol_index — 'true' or 'false' (string).
     #    The W1 workflow maps this to SKIP_SURFACE_BUILD env var.
@@ -123,11 +119,13 @@ runs:
     - name: Detect symbol surface index
       id: detect-symbol-index
       shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache-session.outputs.cache-hit }}
+        SESSION_DIR: ${{ steps.set-session-dir.outputs.session_dir }}
       run: |
-        SESSION_DIR="$HOME/hacker-bob-sessions/gh-${{ inputs.repository_id }}"
         INDEX_FILE="${SESSION_DIR}/symbol-surface-index.json"
 
-        if [[ -f "$INDEX_FILE" ]]; then
+        if [[ "$CACHE_HIT" == "true" && -f "$INDEX_FILE" ]]; then
           echo "cache_hit_symbol_index=true" >> "$GITHUB_OUTPUT"
           echo "symbol-surface-index.json found — S3 phase can be skipped."
           echo "Index size: $(wc -c < "$INDEX_FILE") bytes"
@@ -135,8 +133,8 @@ runs:
           echo "cache_hit_symbol_index=false" >> "$GITHUB_OUTPUT"
           echo "symbol-surface-index.json not found — S3 phase will run."
           if [[ -d "$SESSION_DIR" ]]; then
-            echo "Session directory exists (partial cache hit); contents:"
-            ls -la "$SESSION_DIR" || true
+            file_count="$(find "$SESSION_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+            echo "Session directory exists; contains ${file_count} top-level entries."
           else
             echo "Session directory does not exist (cold start)."
           fi

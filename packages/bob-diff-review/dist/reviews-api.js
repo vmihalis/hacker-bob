@@ -23,12 +23,20 @@ const EMPTY_BODY = "Bob diff review complete. No findings in impacted surfaces."
 function buildReviewBody(summary) {
     const { session_id, target_domain, finding_count, severity } = summary;
     const { critical, high, medium, low } = severity;
-    return [
+    const lines = [
         "## Bob Diff Review",
         `**Session:** ${session_id}`,
         `**Target:** ${target_domain}`,
         `**Findings:** ${finding_count} (${critical} critical, ${high} high, ${medium} medium, ${low} low)`,
-    ].join("\n");
+    ];
+    const prLevelComments = summary.pr_level_comments ?? [];
+    if (prLevelComments.length > 0) {
+        lines.push("", "### Unanchored Findings");
+        prLevelComments.forEach((body, index) => {
+            lines.push("", `#### Finding ${index + 1}`, body.trim());
+        });
+    }
+    return lines.join("\n");
 }
 /**
  * Sleep for `ms` milliseconds. Used by the exponential backoff loop.
@@ -119,10 +127,11 @@ function getStatusCode(err) {
  */
 async function submitPRReview(octokit, owner, repo, pull_number, comments, summary) {
     const reviewBody = buildReviewBody(summary);
+    const hasPrLevelFindings = (summary.pr_level_comments?.length ?? 0) > 0;
     // ------------------------------------------------------------------
     // Case 1: No findings — post a PR-level body-only review.
     // ------------------------------------------------------------------
-    if (comments.length === 0) {
+    if (comments.length === 0 && !hasPrLevelFindings) {
         console.log("[reviews-api] No findings — posting body-only review.");
         return createReviewWithBackoff(octokit, owner, repo, pull_number, EMPTY_BODY, []);
     }

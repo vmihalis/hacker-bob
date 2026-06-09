@@ -2,10 +2,11 @@ name: 'Bob Diff Review'
 description: >
   Run Hacker Bob's headless Claude-based diff review on an open pull request.
   Posts inline PR review comments and a Check Run summarising findings by
-  severity. Requires a BOB_INSTALL_TOKEN secret and at least one Anthropic
-  credential — either ANTHROPIC_OAUTH_TOKEN (recommended, from
+  severity. Requires at least one Anthropic credential — either
+  ANTHROPIC_OAUTH_TOKEN (recommended, from
   `claude setup-token`) or ANTHROPIC_API_KEY. When both are supplied, the
-  OAuth token takes precedence.
+  OAuth token takes precedence. BOB_INSTALL_TOKEN is optional, but required
+  when package or source checkout access needs an authenticated token.
 
 branding:
   color: 'orange'
@@ -70,9 +71,10 @@ inputs:
       read:packages and contents:read scopes. Used to authenticate npm
       against npm.pkg.github.com for @bobnetsec/* packages. Store as the
       org-level secret BOB_INSTALL_TOKEN and pass it from the caller workflow
-      via secrets.BOB_INSTALL_TOKEN. Required — package installation
-      will fail without this token.
-    required: true
+      via secrets.BOB_INSTALL_TOKEN when authenticated package or source
+      checkout access is needed. Optional for public/cached installs.
+    required: false
+    default: ''
 
   min-severity-for-failure:
     description: >

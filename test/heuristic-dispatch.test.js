@@ -100,6 +100,30 @@ test("parseDiffFiles extracts multiple files", () => {
   assert.ok(files.includes("src/utils/helpers.ts"), "should include helpers file");
 });
 
+test("parseDiffFiles emits one entry per hunk in the same file", () => {
+  const diff = `diff --git a/src/auth/login.ts b/src/auth/login.ts
+index aaaaaaa..bbbbbbb 100644
+--- a/src/auth/login.ts
++++ b/src/auth/login.ts
+@@ -10,2 +10,3 @@
+ line10
++line11_added
+@@ -80,2 +90,4 @@
+ line90
++line91_added
++line92_added
+`;
+  const result = parseDiffFiles(diff);
+  assert.equal(result.length, 2);
+  assert.deepEqual(
+    result.map((entry) => [entry.file, entry.line_start, entry.line_end]),
+    [
+      ["src/auth/login.ts", 10, 12],
+      ["src/auth/login.ts", 90, 93],
+    ]
+  );
+});
+
 test("parseDiffFiles returns empty array for empty string", () => {
   const result = parseDiffFiles("");
   assert.deepEqual(result, []);
@@ -341,4 +365,27 @@ index aaaaaaa..bbbbbbb 100644
   // Should have authentication only once (deduplicated).
   const authCount = sid.filter((s) => s === "heuristic:authentication").length;
   assert.equal(authCount, 1, "authentication should appear exactly once");
+});
+
+test("runPathB preserves later hunks as separate impacted entries", () => {
+  const diff = `diff --git a/routes/api.ts b/routes/api.ts
+index aaaaaaa..bbbbbbb 100644
+--- a/routes/api.ts
++++ b/routes/api.ts
+@@ -5,2 +5,3 @@
+ router.get('/users', listUsers);
++router.get('/users/search', searchUsers);
+@@ -50,2 +60,3 @@
+ router.post('/users', createUser);
++router.delete('/users/:id', deleteUser);
+`;
+  const result = runPathB(diff);
+  assert.equal(result.impacted_entries.length, 2);
+  assert.deepEqual(
+    result.impacted_entries.map((entry) => [entry.line_start, entry.line_end]),
+    [
+      [5, 7],
+      [60, 62],
+    ]
+  );
 });

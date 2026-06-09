@@ -32,6 +32,8 @@ export interface ReviewSummary {
     target_domain: string;
     finding_count: number;
     severity: SeverityBreakdown;
+    /** Finding bodies that could not be anchored to a diff position. */
+    pr_level_comments?: string[];
 }
 /**
  * Minimal Octokit interface for the Reviews API.

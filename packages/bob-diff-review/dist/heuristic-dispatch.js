@@ -144,8 +144,8 @@ function buildHunkSummary(filePath, surface_ids) {
  * Parse the unified diff text and extract per-file change metadata.
  *
  * This is a lightweight parser — it extracts `diff --git` / `--- ` / `+++ `
- * headers and the first `@@` hunk header per file to capture the line range.
- * Full hunk text parsing is not needed for PATH B.
+ * headers and every `@@` hunk header per file to capture the changed ranges.
+ * PATH B keeps one entry per hunk so later-hunk findings are not orphaned.
  *
  * @param diffText - Raw unified diff string (git diff output).
  * @returns Array of DiffFileEntry, one per changed file.
@@ -172,16 +172,17 @@ function parseDiffFiles(diffText) {
         if (!filePath || filePath === "/dev/null") {
             continue;
         }
-        // Extract line range from the first @@ header.
-        let line_start = 1;
-        let line_end = 1;
-        const hunkMatch = block.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/m);
-        if (hunkMatch) {
-            line_start = parseInt(hunkMatch[1], 10) || 1;
-            const count = parseInt(hunkMatch[2] ?? "1", 10);
-            line_end = Math.max(line_start, line_start + count - 1);
+        const hunkMatches = Array.from(block.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm));
+        if (hunkMatches.length === 0) {
+            entries.push({ file: filePath, line_start: 1, line_end: 1 });
+            continue;
         }
-        entries.push({ file: filePath, line_start, line_end });
+        for (const hunkMatch of hunkMatches) {
+            const line_start = Math.max(parseInt(hunkMatch[1], 10) || 1, 1);
+            const count = parseInt(hunkMatch[2] ?? "1", 10);
+            const line_end = Math.max(line_start, line_start + count - 1);
+            entries.push({ file: filePath, line_start, line_end });
+        }
     }
     return entries;
 }

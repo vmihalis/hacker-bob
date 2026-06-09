@@ -195,6 +195,31 @@ describe("submitPRReview: no-findings body-only review", () => {
     expect(callArgs.comments == null || callArgs.comments.length === 0).toBe(true);
     expect(callArgs.body).toContain("No findings");
   });
+
+  it("keeps unanchored finding bodies in the review body when no inline comments exist", async () => {
+    const createReviewFn = vi.fn().mockResolvedValue({
+      data: { id: 1, html_url: "https://github.com/test" },
+    });
+    const octokit = makeOctokit({ createReview: createReviewFn });
+
+    await submitPRReview(
+      octokit,
+      "owner",
+      "repo",
+      1,
+      [],
+      makeSummary({
+        finding_count: 1,
+        pr_level_comments: ["[high] Related-file issue\n\nEvidence from a file outside the diff."],
+      })
+    );
+
+    const callArgs = createReviewFn.mock.calls[0][0];
+    expect(callArgs.comments == null || callArgs.comments.length === 0).toBe(true);
+    expect(callArgs.body).toContain("Unanchored Findings");
+    expect(callArgs.body).toContain("Related-file issue");
+    expect(callArgs.body).not.toContain("No findings");
+  });
 });
 
 // ---------------------------------------------------------------------------

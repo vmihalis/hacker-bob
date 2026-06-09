@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const { parseUnifiedDiff } = require("../unified-diff-parser.js");
-const { summarizeImpactedSurfacesForDiff, readSymbolSurfaceIndex } = require("../symbol-surface-index.js");
+const { summarizeImpactedSurfacesForDiff } = require("../symbol-surface-index.js");
 const { assertSafeDomain, diffImpactPath, sessionDir } = require("../paths.js");
 
 function summarizeDiffImpactHandler(args) {
@@ -26,16 +26,12 @@ function summarizeDiffImpactHandler(args) {
     diff_files: diffFiles,
   });
 
-  // Determine path_used from symbol index presence.
-  const index = readSymbolSurfaceIndex(domain);
-  const pathUsed = index ? "A" : "B";
-
   // Build and persist diff-impact.json to the session directory via MCP
   // (satisfies criterion 4: diff-impact.json written to session dir via MCP).
   const artifact = {
     schema_version: 1,
     target_domain: domain,
-    path_used: pathUsed,
+    path_used: result.path_used,
     entry_count: result.impacted_entries.length,
     impacted_entries: result.impacted_entries,
     written_at: new Date().toISOString(),
@@ -48,6 +44,7 @@ function summarizeDiffImpactHandler(args) {
     schema_version: 1,
     target_domain: domain,
     parse_summary: parseSummary,
+    path_used: result.path_used,
     impacted_surface_ids: result.impacted_surface_ids,
     impacted_entries: result.impacted_entries,
     scanned_files: result.scanned_files,

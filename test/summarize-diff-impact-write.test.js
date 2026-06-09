@@ -12,7 +12,7 @@
  *       { schema_version, target_domain, path_used, entry_count, impacted_entries, written_at }
  *   - The file is overwritten on a second call (idempotent write)
  *   - diff_text alias is accepted in addition to unified_diff
- *   - diff-impact.json is NOT in AUDIT_GRADED_PATHS (it is a scratch artifact)
+ *   - diff-impact.json is audit-graded/MCP-owned so agents cannot Write it
  */
 
 const test = require("node:test");
@@ -125,10 +125,27 @@ test("diff-impact.json conforms to DiffImpactArtifact schema", () => {
       artifact.path_used === "A" || artifact.path_used === "B",
       "path_used must be 'A' or 'B'"
     );
+    assert.equal(artifact.path_used, "A");
     assert.ok(typeof artifact.entry_count === "number", "entry_count must be a number");
     assert.ok(Array.isArray(artifact.impacted_entries), "impacted_entries must be an array");
     assert.ok(typeof artifact.written_at === "string" && artifact.written_at.length > 0, "written_at must be a non-empty ISO string");
     assert.equal(artifact.entry_count, artifact.impacted_entries.length, "entry_count must equal impacted_entries.length");
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("handler reports path_used B when no symbol index is available", () => {
+  const domain = uniqueDomain();
+  try {
+    const result = summarizeDiffImpactTool.handler({
+      target_domain: domain,
+      unified_diff: SAMPLE_DIFF,
+    });
+
+    assert.equal(result.path_used, "B");
+    const artifact = JSON.parse(fs.readFileSync(diffImpactPath(domain), "utf8"));
+    assert.equal(artifact.path_used, "B");
   } finally {
     cleanupDomain(domain);
   }
@@ -237,16 +254,16 @@ test("handler writes diff-impact.json even when no surface index exists (empty e
 });
 
 // ---------------------------------------------------------------------------
-// diff-impact.json is NOT audit-graded (it is a scratch artifact)
+// diff-impact.json is MCP-owned and protected by the audit-graded write guard.
 // ---------------------------------------------------------------------------
 
-test("diff-impact.json is not in AUDIT_GRADED_PATHS (scratch artifact, agent-writable)", () => {
+test("diff-impact.json is in AUDIT_GRADED_PATHS (MCP-owned, agent write-blocked)", () => {
   const domain = uniqueDomain();
   const artifactPath = diffImpactPath(domain);
   assert.equal(
     isAuditGradedPath(artifactPath, domain),
-    false,
-    "diff-impact.json must not be audit-graded — it is a scratch artifact"
+    true,
+    "diff-impact.json must be audit-graded because only the MCP tool writes it"
   );
 });
 

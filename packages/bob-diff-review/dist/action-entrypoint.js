@@ -141,8 +141,8 @@ async function run() {
             "API key). When both are supplied, the OAuth token takes precedence.");
         return;
     }
-    // bob-install-token is used by the composite action shell steps for npm auth;
-    // we read it here to validate presence (the runner needs it available).
+    // bob-install-token is used by composite workflow steps for authenticated
+    // package/source access; this action only warns when it is absent.
     const bobInstallToken = core.getInput("bob-install-token") || core.getInput("bob_install_token");
     const minSeverityForFailure = core.getInput("min-severity-for-failure") || core.getInput("min_severity_for_failure") || "high";
     // Optional model override.  When provided (e.g. "claude-haiku-4-5") it is
@@ -412,6 +412,7 @@ async function run() {
                 low: finalBreakdown?.low ?? 0,
                 info: finalBreakdown?.info ?? 0,
             },
+            pr_level_comments: prLevelComments.map((c) => c.body),
         };
         // -----------------------------------------------------------------------
         // 4j. Submit the PR review (advisory COMMENT event — not APPROVE or

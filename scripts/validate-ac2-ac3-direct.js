@@ -115,7 +115,7 @@ const SQL_INJECTION_FINDING = {
   body: [
     "**[high] SQL Injection** — unsanitised query parameter",
     "",
-    "The `name` query parameter on line 20 is interpolated directly into the SQL",
+    "The `name` query parameter on line 21 is interpolated directly into the SQL",
     "query string without parameterisation. An attacker can supply `' OR '1'='1`",
     "to dump all users from the database.",
     "",

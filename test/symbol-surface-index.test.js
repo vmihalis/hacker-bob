@@ -124,6 +124,7 @@ test("summarizeImpactedSurfacesForDiff returns entries hit by any diff line rang
     assert.equal(impacted.impacted_entries.length, 2);
     assert.deepEqual(impacted.impacted_surface_ids, ["S-USERS"]);
     assert.equal(impacted.scanned_files, 1);
+    assert.equal(impacted.path_used, "A");
   } finally {
     cleanupDomain(domain);
   }
@@ -172,6 +173,7 @@ test("summarizeImpactedSurfacesForDiff returns empty when index is missing", () 
     });
     assert.deepEqual(result.impacted_entries, []);
     assert.equal(result.scanned_files, 0);
+    assert.equal(result.path_used, "B");
   } finally {
     cleanupDomain(domain);
   }

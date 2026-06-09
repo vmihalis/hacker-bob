@@ -313,9 +313,9 @@ function repoInventoryPath(domain) {
 }
 
 // Cycle O.S4 — diff-impact.json is written by bob_summarize_diff_impact after
-// a successful PATH A analysis. Records which files/line-ranges were touched by
-// the diff and which surface IDs they map to. This is a scratch artifact (not
-// audit-graded); agents MUST NOT write it directly via the Write tool.
+// diff impact analysis. Records which files/line-ranges were touched by the
+// diff and which surface IDs they map to. This is MCP-owned; agents MUST NOT
+// write it directly via the Write tool.
 function diffImpactPath(domain) {
   return path.join(sessionDir(domain), "diff-impact.json");
 }
@@ -406,6 +406,7 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   "report-snapshots.jsonl",
   "report-amendments.jsonl",
   "chain-attempts.jsonl",
+  "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
   "brutalist.md",

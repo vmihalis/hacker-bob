@@ -81,6 +81,7 @@ exports.validateJsonFile = validateJsonFile;
 exports.formatS6FailureJson = formatS6FailureJson;
 const fs = __importStar(require("node:fs"));
 const path = __importStar(require("node:path"));
+const os = __importStar(require("node:os"));
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -326,6 +327,23 @@ function serializeFindings(params) {
 // ---------------------------------------------------------------------------
 // File I/O
 // ---------------------------------------------------------------------------
+function pathContains(root, candidate) {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+function assertSafeOutputDir(outputDir) {
+    if (!path.isAbsolute(outputDir)) {
+        throw new Error("outputDir must be an absolute path");
+    }
+    const resolved = path.resolve(outputDir);
+    const roots = [process.env["RUNNER_TEMP"], os.tmpdir()]
+        .filter((value) => typeof value === "string" && value.length > 0)
+        .map((value) => path.resolve(value));
+    if (!roots.some((root) => pathContains(root, resolved))) {
+        throw new Error("outputDir must be under RUNNER_TEMP or the system temp directory");
+    }
+    return resolved;
+}
 /**
  * Write the DiffReviewFindings document to the output directory.
  *
@@ -339,10 +357,11 @@ function serializeFindings(params) {
  * @returns Absolute path to the written file.
  */
 function writeFindings(outputDir, findingsDoc) {
-    const outPath = path.join(outputDir, "diff-review-findings.json");
+    const safeOutputDir = assertSafeOutputDir(outputDir);
+    const outPath = path.join(safeOutputDir, "diff-review-findings.json");
     const tmpPath = outPath + ".tmp";
     const json = JSON.stringify(findingsDoc, null, 2);
-    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(safeOutputDir, { recursive: true });
     fs.writeFileSync(tmpPath, json, "utf8");
     fs.renameSync(tmpPath, outPath);
     return outPath;

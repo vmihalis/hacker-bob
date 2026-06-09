@@ -30069,8 +30069,8 @@ async function run() {
             "API key). When both are supplied, the OAuth token takes precedence.");
         return;
     }
-    // bob-install-token is used by the composite action shell steps for npm auth;
-    // we read it here to validate presence (the runner needs it available).
+    // bob-install-token is used by composite workflow steps for authenticated
+    // package/source access; this action only warns when it is absent.
     const bobInstallToken = core.getInput("bob-install-token") || core.getInput("bob_install_token");
     const minSeverityForFailure = core.getInput("min-severity-for-failure") || core.getInput("min_severity_for_failure") || "high";
     // Optional model override.  When provided (e.g. "claude-haiku-4-5") it is
@@ -30340,6 +30340,7 @@ async function run() {
                 low: finalBreakdown?.low ?? 0,
                 info: finalBreakdown?.info ?? 0,
             },
+            pr_level_comments: prLevelComments.map((c) => c.body),
         };
         // -----------------------------------------------------------------------
         // 4j. Submit the PR review (advisory COMMENT event — not APPROVE or
@@ -31692,6 +31693,7 @@ exports.validateJsonFile = validateJsonFile;
 exports.formatS6FailureJson = formatS6FailureJson;
 const fs = __importStar(__nccwpck_require__(3024));
 const path = __importStar(__nccwpck_require__(6760));
+const os = __importStar(__nccwpck_require__(8161));
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -31937,6 +31939,23 @@ function serializeFindings(params) {
 // ---------------------------------------------------------------------------
 // File I/O
 // ---------------------------------------------------------------------------
+function pathContains(root, candidate) {
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+function assertSafeOutputDir(outputDir) {
+    if (!path.isAbsolute(outputDir)) {
+        throw new Error("outputDir must be an absolute path");
+    }
+    const resolved = path.resolve(outputDir);
+    const roots = [process.env["RUNNER_TEMP"], os.tmpdir()]
+        .filter((value) => typeof value === "string" && value.length > 0)
+        .map((value) => path.resolve(value));
+    if (!roots.some((root) => pathContains(root, resolved))) {
+        throw new Error("outputDir must be under RUNNER_TEMP or the system temp directory");
+    }
+    return resolved;
+}
 /**
  * Write the DiffReviewFindings document to the output directory.
  *
@@ -31950,10 +31969,11 @@ function serializeFindings(params) {
  * @returns Absolute path to the written file.
  */
 function writeFindings(outputDir, findingsDoc) {
-    const outPath = path.join(outputDir, "diff-review-findings.json");
+    const safeOutputDir = assertSafeOutputDir(outputDir);
+    const outPath = path.join(safeOutputDir, "diff-review-findings.json");
     const tmpPath = outPath + ".tmp";
     const json = JSON.stringify(findingsDoc, null, 2);
-    fs.mkdirSync(outputDir, { recursive: true });
+    fs.mkdirSync(safeOutputDir, { recursive: true });
     fs.writeFileSync(tmpPath, json, "utf8");
     fs.renameSync(tmpPath, outPath);
     return outPath;
@@ -32278,12 +32298,20 @@ const EMPTY_BODY = "Bob diff review complete. No findings in impacted surfaces."
 function buildReviewBody(summary) {
     const { session_id, target_domain, finding_count, severity } = summary;
     const { critical, high, medium, low } = severity;
-    return [
+    const lines = [
         "## Bob Diff Review",
         `**Session:** ${session_id}`,
         `**Target:** ${target_domain}`,
         `**Findings:** ${finding_count} (${critical} critical, ${high} high, ${medium} medium, ${low} low)`,
-    ].join("\n");
+    ];
+    const prLevelComments = summary.pr_level_comments ?? [];
+    if (prLevelComments.length > 0) {
+        lines.push("", "### Unanchored Findings");
+        prLevelComments.forEach((body, index) => {
+            lines.push("", `#### Finding ${index + 1}`, body.trim());
+        });
+    }
+    return lines.join("\n");
 }
 /**
  * Sleep for `ms` milliseconds. Used by the exponential backoff loop.
@@ -32374,10 +32402,11 @@ function getStatusCode(err) {
  */
 async function submitPRReview(octokit, owner, repo, pull_number, comments, summary) {
     const reviewBody = buildReviewBody(summary);
+    const hasPrLevelFindings = (summary.pr_level_comments?.length ?? 0) > 0;
     // ------------------------------------------------------------------
     // Case 1: No findings — post a PR-level body-only review.
     // ------------------------------------------------------------------
-    if (comments.length === 0) {
+    if (comments.length === 0 && !hasPrLevelFindings) {
         console.log("[reviews-api] No findings — posting body-only review.");
         return createReviewWithBackoff(octokit, owner, repo, pull_number, EMPTY_BODY, []);
     }

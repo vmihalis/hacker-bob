@@ -41,6 +41,8 @@ export interface ReviewSummary {
   target_domain: string;
   finding_count: number;
   severity: SeverityBreakdown;
+  /** Finding bodies that could not be anchored to a diff position. */
+  pr_level_comments?: string[];
 }
 
 /**
@@ -86,12 +88,22 @@ const EMPTY_BODY =
 function buildReviewBody(summary: ReviewSummary): string {
   const { session_id, target_domain, finding_count, severity } = summary;
   const { critical, high, medium, low } = severity;
-  return [
+  const lines = [
     "## Bob Diff Review",
     `**Session:** ${session_id}`,
     `**Target:** ${target_domain}`,
     `**Findings:** ${finding_count} (${critical} critical, ${high} high, ${medium} medium, ${low} low)`,
-  ].join("\n");
+  ];
+
+  const prLevelComments = summary.pr_level_comments ?? [];
+  if (prLevelComments.length > 0) {
+    lines.push("", "### Unanchored Findings");
+    prLevelComments.forEach((body, index) => {
+      lines.push("", `#### Finding ${index + 1}`, body.trim());
+    });
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -215,11 +227,12 @@ export async function submitPRReview(
   summary: ReviewSummary
 ): Promise<string> {
   const reviewBody = buildReviewBody(summary);
+  const hasPrLevelFindings = (summary.pr_level_comments?.length ?? 0) > 0;
 
   // ------------------------------------------------------------------
   // Case 1: No findings — post a PR-level body-only review.
   // ------------------------------------------------------------------
-  if (comments.length === 0) {
+  if (comments.length === 0 && !hasPrLevelFindings) {
     console.log("[reviews-api] No findings — posting body-only review.");
     return createReviewWithBackoff(
       octokit,

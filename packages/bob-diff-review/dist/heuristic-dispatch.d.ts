@@ -112,8 +112,8 @@ export interface DiffFileEntry {
  * Parse the unified diff text and extract per-file change metadata.
  *
  * This is a lightweight parser — it extracts `diff --git` / `--- ` / `+++ `
- * headers and the first `@@` hunk header per file to capture the line range.
- * Full hunk text parsing is not needed for PATH B.
+ * headers and every `@@` hunk header per file to capture the changed ranges.
+ * PATH B keeps one entry per hunk so later-hunk findings are not orphaned.
  *
  * @param diffText - Raw unified diff string (git diff output).
  * @returns Array of DiffFileEntry, one per changed file.

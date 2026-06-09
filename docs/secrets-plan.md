@@ -1,23 +1,27 @@
-# Secrets Plan — ANTHROPIC_API_KEY and BOB_INSTALL_TOKEN
+# Secrets Plan — Anthropic and Bob Install Secrets
 
-This document defines the two secrets required to run the `bob-diff-review`
-GitHub Action, their storage scope, minimum permission scopes, rotation
-policy, and the injection pattern used inside the action.
+This document defines the secrets used to run the `bob-diff-review` GitHub
+Action, their storage scope, minimum permission scopes, rotation policy, and the
+injection pattern used inside the action.
 
 ---
 
 ## Secrets Overview
 
-| Secret name          | Storage scope | Type                           | Minimum permissions                   |
-|----------------------|---------------|--------------------------------|---------------------------------------|
-| `ANTHROPIC_API_KEY`  | Org-level     | Anthropic API key              | Sufficient credits; no extra scopes   |
-| `BOB_INSTALL_TOKEN`  | Org-level     | GitHub App installation token  | `read:packages`, `contents:read`      |
+| Secret name             | Storage scope | Type                           | Minimum permissions                   |
+|-------------------------|---------------|--------------------------------|---------------------------------------|
+| `ANTHROPIC_OAUTH_TOKEN` | Org-level     | Claude OAuth token             | Claude Code access for diff review    |
+| `ANTHROPIC_API_KEY`     | Org-level     | Anthropic API key fallback     | Sufficient credits; no extra scopes   |
+| `BOB_INSTALL_TOKEN`     | Org-level     | GitHub App installation token  | `read:packages`, `contents:read`      |
 
-Both secrets are stored at the **organization level** in GitHub
+These secrets are stored at the **organization level** in GitHub
 (`Settings → Secrets and variables → Actions → Organization secrets`) and are
 made available to all repositories in the `bobnetsec` organization that use
 the `bob-diff-review` action.  Neither secret is duplicated at the repo level;
-individual repos inherit them from the org.
+individual repos inherit them from the org. `ANTHROPIC_OAUTH_TOKEN` is the
+recommended Claude auth path; `ANTHROPIC_API_KEY` is the pay-per-use fallback.
+When both are configured, the runner injects only the OAuth token into the
+Claude subprocess.
 
 ---
 

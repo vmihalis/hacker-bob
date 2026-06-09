@@ -61,6 +61,7 @@ jobs:
         with:
           # Fetch enough history for the diff to be accurate.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check Bob Diff Review credentials
         id: bob-secrets
@@ -110,7 +111,11 @@ jobs:
       - name: Log review outputs
         if: always()
         shell: bash
+        env:
+          FINDINGS_COUNT: ${{ steps.bob-diff-review.outputs.findings_count }}
+          CRITICAL_COUNT: ${{ steps.bob-diff-review.outputs.critical_count }}
+          REVIEW_URL: ${{ steps.bob-diff-review.outputs.review_url }}
         run: |
-          echo "findings_count=${{ steps.bob-diff-review.outputs.findings_count }}"
-          echo "critical_count=${{ steps.bob-diff-review.outputs.critical_count }}"
-          echo "review_url=${{ steps.bob-diff-review.outputs.review_url }}"
+          echo "findings_count=${FINDINGS_COUNT}"
+          echo "critical_count=${CRITICAL_COUNT}"
+          echo "review_url=${REVIEW_URL}"

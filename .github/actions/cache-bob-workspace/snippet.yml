@@ -15,6 +15,15 @@
 #   Step 3 runs install.sh only on cache miss; skipped on cache hit.
 
 steps:
+  # -- Step 0: Validate BOB_VERSION is set -------------------------------
+  - name: Validate BOB_VERSION is set
+    shell: bash
+    run: |
+      if [[ -z "${{ vars.BOB_VERSION }}" ]]; then
+        echo "::error::vars.BOB_VERSION is empty or unset. Set it at the org or repo level."
+        exit 1
+      fi
+
   # ── Step 1: Restore Bob workspace cache ──────────────────────────────
   - name: Restore Bob workspace cache
     id: cache-bob

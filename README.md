@@ -189,10 +189,10 @@ plus a Check Run result on every PR.
      pull_request:
        types: [opened, synchronize, reopened]
 
-   jobs:
-     bob-review:
-       uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@main
-       secrets: inherit
+  jobs:
+    bob-review:
+      uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
+      secrets: inherit
    ```
 
    That is the complete file. `secrets: inherit` propagates the org-level
@@ -212,10 +212,11 @@ Example with `min-severity-for-failure` overridden:
 ```yaml
 jobs:
   bob-review:
-    uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@main
+    uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
     secrets: inherit
     with:
       min-severity-for-failure: critical
+      bob-workflows-ref: v1
 ```
 
 ### Viewing findings
@@ -238,8 +239,9 @@ check in setup. No additional guard is needed in the caller workflow.
 
 ### Versioning
 
-`@main` tracks the latest release and picks up fixes automatically. For
-production stability, pin to a release tag once your team is satisfied:
+Pin the reusable workflow to a release tag or full commit SHA. If you override
+`bob-workflows-ref`, set it to the same immutable ref so the workflow checks out
+the matching local action source:
 
 ```yaml
 uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1

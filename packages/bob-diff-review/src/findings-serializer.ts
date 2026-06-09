@@ -36,6 +36,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import type { ImpactedEntry } from "./heuristic-dispatch.js";
 
 // ---------------------------------------------------------------------------
@@ -497,6 +498,28 @@ export function serializeFindings(params: SerializeParams): SerializeResult {
 // File I/O
 // ---------------------------------------------------------------------------
 
+function pathContains(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertSafeOutputDir(outputDir: string): string {
+  if (!path.isAbsolute(outputDir)) {
+    throw new Error("outputDir must be an absolute path");
+  }
+
+  const resolved = path.resolve(outputDir);
+  const roots = [process.env["RUNNER_TEMP"], os.tmpdir()]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => path.resolve(value));
+
+  if (!roots.some((root) => pathContains(root, resolved))) {
+    throw new Error("outputDir must be under RUNNER_TEMP or the system temp directory");
+  }
+
+  return resolved;
+}
+
 /**
  * Write the DiffReviewFindings document to the output directory.
  *
@@ -513,11 +536,12 @@ export function writeFindings(
   outputDir: string,
   findingsDoc: DiffReviewFindings
 ): string {
-  const outPath = path.join(outputDir, "diff-review-findings.json");
+  const safeOutputDir = assertSafeOutputDir(outputDir);
+  const outPath = path.join(safeOutputDir, "diff-review-findings.json");
   const tmpPath = outPath + ".tmp";
   const json = JSON.stringify(findingsDoc, null, 2);
 
-  fs.mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(safeOutputDir, { recursive: true });
   fs.writeFileSync(tmpPath, json, "utf8");
   fs.renameSync(tmpPath, outPath);
 

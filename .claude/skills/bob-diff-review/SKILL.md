@@ -76,10 +76,9 @@ The runner environment MUST supply:
   already-authenticated `claude` subprocess, so the skill inherits whichever
   credential the runner chose (`CLAUDE_CODE_OAUTH_TOKEN` preferred, or
   `ANTHROPIC_API_KEY` fallback). The skill does not select auth itself.
-- `BOB_INSTALL_TOKEN` — GitHub App installation token or fine-grained PAT with
-  `read:packages` + `contents:read` scopes (org-level secret `BOB_INSTALL_TOKEN`,
-  mapped to `NODE_AUTH_TOKEN` for npm registry auth). Required for resolving
-  private `@bobnetsec/*` packages during the action run.
+- No GitHub or package-install tokens. `bob-runner.ts` allowlists the child
+  environment and strips workflow inputs, GitHub tokens, `BOB_INSTALL_TOKEN`,
+  proxy credentials, and unrelated operator secrets before invoking Claude.
 
 No credential value must appear in any log or output file. Confirm presence
 only, e.g.:
@@ -182,7 +181,7 @@ whether `symbol-surface-index.json` already exists in the session directory
 (`result.data.session_dir` from the S2 init result, restored from cache). If
 either condition holds, log exactly:
 
-```
+```text
 CACHE HIT: skipping index build
 ```
 
@@ -211,8 +210,9 @@ text. On success the tool writes `diff-impact.json` to the session directory
 surface_ids[], hunk_summary}` objects — as the authoritative surface dispatch
 list. Log `S4 PATH A: N impacted entries from symbol index`.
 
-**PATH B fallback:** If `bob_summarize_diff_impact` is unavailable or returns
-an error, activate PATH B heuristic dispatch. Log loudly:
+**PATH B fallback:** If `bob_summarize_diff_impact` is unavailable, returns an
+error, or returns `path_used: "B"` because no symbol index was available,
+activate PATH B heuristic dispatch. Log loudly:
 `PATH B: heuristic dispatch (no symbol index)`. Map changed file paths to
 surface IDs using the following pattern table:
 
@@ -297,13 +297,14 @@ prevents any output from being produced.
   path. Refuse any value that looks like `git@`, `git+`, `ssh://`, or a bare
   `owner/repo` slug.
 - Never write to Bob MCP-owned audit-graded artifacts (`report.md`, `chains.md`,
-  `evidence-packs.md`, `grade.md`, JSONL ledgers) via the Write tool. All
-  structured state flows through the MCP tools listed in `allowed-tools`.
+  `evidence-packs.md`, `grade.md`, `diff-impact.json`, JSONL ledgers) via the
+  Write tool. All structured state flows through the MCP tools listed in
+  `allowed-tools`.
 - Do not echo any Anthropic credential (`CLAUDE_CODE_OAUTH_TOKEN` or
-  `ANTHROPIC_API_KEY`) or `BOB_INSTALL_TOKEN` values in any log, output file, or
-  tool call argument. The runner injects exactly one Anthropic credential
-  (OAuth preferred, API key fallback); the skill inherits it via env and must
-  never read or surface its value.
+  `ANTHROPIC_API_KEY`) in any log, output file, or tool call argument. The
+  runner injects exactly one Anthropic credential (OAuth preferred, API key
+  fallback) and strips GitHub/package tokens; the skill inherits only the chosen
+  Anthropic credential and must never read or surface its value.
 - Exit non-zero only on unrecoverable errors. PATH B fallback and partial
   surface coverage are degraded but non-fatal outcomes; write whatever findings
   were produced and exit 0 with a warning summary.

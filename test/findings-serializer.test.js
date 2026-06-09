@@ -613,6 +613,20 @@ test("writeFindings creates output-dir if it does not exist", () => {
   }
 });
 
+test("writeFindings rejects relative traversal output-dir", () => {
+  const doc = {
+    session_id: "sess-001",
+    target_domain: "gh-abc123",
+    generated_at: "2026-06-07T00:00:00.000Z",
+    impacted_entries: [],
+    findings: [],
+  };
+  assert.throws(
+    () => writeFindings("../../outside", doc),
+    /outputDir must be an absolute path/
+  );
+});
+
 test("writeFindings result file is accessible (not inside session dir)", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-s6-access-"));
   try {
