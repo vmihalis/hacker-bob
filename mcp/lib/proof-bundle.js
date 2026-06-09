@@ -131,6 +131,29 @@ function readInvariantRunRows(domain) {
   return readInvariantRunCorpus({ target_domain: domain }).runs;
 }
 
+function assertReplayNetworkMode(row, fieldName) {
+  if (row.network_mode !== "none") {
+    throw new Error(`${fieldName} must reference a --network none repo docker run`);
+  }
+  return "none";
+}
+
+function normalizeReplayWorkMountMode(row, fieldName) {
+  if (row.work_mount_mode == null) {
+    return {
+      value: "read_write",
+      legacy_assumed: true,
+    };
+  }
+  if (row.work_mount_mode !== "read_write") {
+    throw new Error(`${fieldName} must reference a read-write /work repo docker run`);
+  }
+  return {
+    value: row.work_mount_mode,
+    legacy_assumed: false,
+  };
+}
+
 function assertReplayRunFindingBinding(row, findingId, fieldName) {
   const replayContext = isPlainObject(row.replay_context) ? row.replay_context : null;
   if (!replayContext || replayContext.finding_id == null) {
@@ -165,15 +188,11 @@ function readRepoCommandRunRow(rows, runId, fieldName, expectedFindingId = null)
   if (DISALLOWED_REPO_COMMAND_EXIT_CODES.includes(row.exit_code)) {
     throw new Error(`${fieldName} must not reference a Docker/runtime infrastructure failure exit code`);
   }
-  if (row.network_mode !== "none") {
-    throw new Error(`${fieldName} must reference a --network none repo docker run`);
-  }
+  assertReplayNetworkMode(row, fieldName);
   if (row.mount_mode !== "read_only") {
     throw new Error(`${fieldName} must reference a read-only /src repo docker run`);
   }
-  if (row.work_mount_mode !== "read_write") {
-    throw new Error(`${fieldName} must reference a read-write /work repo docker run`);
-  }
+  normalizeReplayWorkMountMode(row, fieldName);
   if (typeof row.image_tag !== "string" || !row.image_tag.trim()) {
     throw new Error(`${fieldName} must carry the O-D6 image_tag for replay`);
   }
@@ -256,6 +275,7 @@ function replayImageIdentity(imageTag, fieldName) {
 
 function stableRepoRunProjection(domain, row, fieldName, findingId) {
   const imageTag = assertNonEmptyString(row.image_tag, `${fieldName}.image_tag`);
+  const workMountMode = normalizeReplayWorkMountMode(row, `${fieldName}.work_mount_mode`);
   const replayFindingId = assertReplayRunFindingBinding(row, findingId, fieldName);
   const projection = {
     run_id: assertRepoRunId(row.run_id, `${fieldName}.run_id`),
@@ -267,14 +287,15 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
     command_hash: assertHex64(row.command_hash, `${fieldName}.command_hash`),
     replay_command_hash: assertHex64(row.replay_command_hash, `${fieldName}.replay_command_hash`),
     argv_hash: row.argv_hash == null ? null : assertHex64(row.argv_hash, `${fieldName}.argv_hash`),
-    network_mode: row.network_mode,
+    network_mode: assertReplayNetworkMode(row, `${fieldName}.network_mode`),
     src_mount_mode: row.mount_mode,
-    work_mount_mode: assertNonEmptyString(row.work_mount_mode, `${fieldName}.work_mount_mode`),
+    work_mount_mode: workMountMode.value,
     image_tag: imageTag,
     image_identity: replayImageIdentity(imageTag, `${fieldName}.image_tag`),
     stdout_hash: assertCapturedOutputHash(domain, row, fieldName, "stdout"),
     stderr_hash: assertCapturedOutputHash(domain, row, fieldName, "stderr"),
   };
+  if (workMountMode.legacy_assumed) projection.work_mount_mode_legacy_assumed = true;
   if (Number.isInteger(row.timeout_ms)) projection.timeout_ms = row.timeout_ms;
   if (Number.isInteger(row.stdout_size_bytes)) projection.stdout_size_bytes = row.stdout_size_bytes;
   else if (Number.isInteger(row.stdout_bytes)) projection.stdout_size_bytes = row.stdout_bytes;
@@ -317,6 +338,9 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
     stdout_hash: runProjection.stdout_hash,
     stderr_hash: runProjection.stderr_hash,
   };
+  if (runProjection.work_mount_mode_legacy_assumed) {
+    normalized.work_mount_mode_legacy_assumed = true;
+  }
   for (const key of [
     "exit_code",
     "signal",
@@ -477,6 +501,8 @@ function proofBundleHashArtifact(artifact) {
   if (!isPlainObject(artifact)) return zeroTimestampFields(artifact);
   const normalized = {};
   for (const [key, value] of Object.entries(artifact)) {
+    // replay run_hash and raw image_tag include target-scoped row identity; the
+    // bundle hash binds the target-independent replay fields directly.
     if (artifact.artifact_kind === "replay_script" && key === "run_hash") {
       continue;
     }
@@ -576,8 +602,7 @@ function normalizeProofBundlesDocument(document, {
   }
   const knownFindingIds = findingIdSet;
   const reportableIds = finalReportableIdSet;
-  const needsRepoRows = document.packs.some((pack) => isPlainObject(pack)
-    && (pack.bundle_kind === "replay_script" || pack.bundle_kind === "differential"));
+  const needsRepoRows = document.packs.some((pack) => isPlainObject(pack) && pack.bundle_kind === "replay_script");
   const needsInvariantRows = document.packs.some((pack) => isPlainObject(pack) && pack.bundle_kind === "invariant");
   const repoCommandRunRows = needsRepoRows ? readRepoCommandRunRows(domain) : null;
   const invariantRunRows = needsInvariantRows ? readInvariantRunRows(domain) : null;
@@ -652,6 +677,13 @@ function readFindingIdSet(domain) {
   return findingIdSetForVerificationContext({ domain });
 }
 
+function escapeMarkdownText(value) {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\r?\n/g, " ");
+}
+
 function renderProofBundlesMarkdown(document) {
   const lines = [
     "# Proof Bundles",
@@ -680,7 +712,7 @@ function renderProofBundlesMarkdown(document) {
       if (artifact.artifact_kind === "replay_script") {
         lines.push(`  - Replay Run: ${artifact.run_id}`);
         lines.push(`  - Run Hash: ${artifact.run_hash}`);
-        lines.push(`  - Image Tag: ${artifact.image_tag}`);
+        lines.push(`  - Image Tag: ${escapeMarkdownText(artifact.image_tag)}`);
         lines.push(`  - Network: ${artifact.network_mode}`);
         lines.push(`  - Mounts: /src ${artifact.src_mount_mode}; /work ${artifact.work_mount_mode}`);
       } else if (artifact.artifact_kind === "invariant") {

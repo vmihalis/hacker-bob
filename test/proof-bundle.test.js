@@ -225,12 +225,28 @@ test("bob_write_proof_bundle rejects replay artifacts missing a repo docker run_
   });
 });
 
-test("bob_write_proof_bundle rejects replay rows without a recorded /work mount mode", () => {
+test("bob_write_proof_bundle accepts legacy replay rows without recorded /work mount mode", () => {
   withTempHome(() => {
-    const domain = "proof-missing-work-mount.example.com";
+    const domain = "proof-legacy-work-mount.example.com";
     seedFinding(domain);
     seedFinalRound(domain, [reportableResult()]);
     appendRepoRunFixture(domain, "run-fixture", ["sh", "-lc", "./repro.sh"], { omit_work_mount_mode: true });
+
+    const written = JSON.parse(writeProofBundles({ target_domain: domain, packs: [replayBundle()] }));
+
+    assert.equal(written.bundles_count, 1);
+    const doc = JSON.parse(fs.readFileSync(proofBundlePaths(domain).json, "utf8"));
+    assert.equal(doc.packs[0].artifacts[0].work_mount_mode, "read_write");
+    assert.equal(doc.packs[0].artifacts[0].work_mount_mode_legacy_assumed, true);
+  });
+});
+
+test("bob_write_proof_bundle rejects replay rows with a non-read-write /work mount mode", () => {
+  withTempHome(() => {
+    const domain = "proof-wrong-work-mount.example.com";
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendRepoRunFixture(domain, "run-fixture", ["sh", "-lc", "./repro.sh"], { work_mount_mode: "read_only" });
 
     assert.throws(
       () => writeProofBundles({ target_domain: domain, packs: [replayBundle()] }),

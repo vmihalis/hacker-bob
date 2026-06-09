@@ -419,13 +419,12 @@ function handler(args) {
     : assertString(args.severity_summary, "severity_summary", { maxLength: SEVERITY_SUMMARY_MAX, minLength: 0 });
   const reproSteps = normalizeReproSteps(args.repro_steps_by_finding);
 
-  // Provenance enforcement (Y-P13c). Runs AFTER normalization so error messages
-  // can reference the structured section_id.
-  for (const section of sections) {
-    validateProvenance(domain, section);
-  }
-
   return withSessionLock(domain, () => {
+    // Provenance enforcement (Y-P13c). Runs under the session lock so
+    // cross-artifact proof/evidence binding checks share the render window.
+    for (const section of sections) {
+      validateProvenance(domain, section);
+    }
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
     const amendments = readAmendments(domain);
