@@ -51,6 +51,7 @@ const {
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
+  escapeRegExp,
 } = require("../mcp/lib/untrusted-envelope.js");
 
 function parseFencedBriefJson(value, label) {
@@ -68,10 +69,6 @@ function normalizeEnvelopeNonces(value) {
   return String(value)
     .replace(new RegExp(`${escapeRegExp(OPEN_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${OPEN_SENTINEL} nonce=<nonce>`)
     .replace(new RegExp(`${escapeRegExp(CLOSE_SENTINEL)} nonce=[0-9a-f]{32}`, "g"), `${CLOSE_SENTINEL} nonce=<nonce>`);
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function withTempHome(fn) {

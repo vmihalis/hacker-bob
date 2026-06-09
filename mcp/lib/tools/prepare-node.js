@@ -81,6 +81,7 @@ const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   ENVELOPE_NONCE_HEX_CHARS,
+  escapeRegExp,
 } = require("../untrusted-envelope.js");
 const {
   TRANSITION_KIND_HUNTING_VOCAB,
@@ -208,10 +209,6 @@ function structuredError(code, message, details) {
 
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeUntrustedEnvelopeNoncesForHash(value) {

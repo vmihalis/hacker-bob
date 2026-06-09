@@ -35,11 +35,11 @@ const {
 } = require("../body-resolvers/index.js");
 const {
   wrapUntrusted,
-  FENCE_OVERHEAD_CAP,
+  FENCE_OVERHEAD_BUDGET,
 } = require("../untrusted-envelope.js");
 
 const BODY_RESPONSE_MAX_BYTES = 1024 * 1024; // 1MB per X.7 Do step 1.
-const BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES = BODY_RESPONSE_MAX_BYTES - FENCE_OVERHEAD_CAP;
+const BODY_RESPONSE_UNTRUSTED_PAYLOAD_MAX_BYTES = BODY_RESPONSE_MAX_BYTES - FENCE_OVERHEAD_BUDGET;
 const TRUSTED_BODY_PREFIX_VALUES = Object.freeze([]);
 const TRUSTED_BODY_PREFIXES = new Set(TRUSTED_BODY_PREFIX_VALUES);
 

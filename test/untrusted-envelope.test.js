@@ -14,7 +14,10 @@ const {
   NEUTRALIZED_CLOSE_SENTINEL,
   ENVELOPE_NONCE_BYTES,
   ENVELOPE_NONCE_HEX_CHARS,
-  FENCE_OVERHEAD_CAP,
+  FENCE_OVERHEAD_CONTRACT,
+  FENCE_OVERHEAD_BUDGET,
+  ENVELOPE_LABEL_MAX_CHARS,
+  escapeRegExp,
 } = require("../mcp/lib/untrusted-envelope.js");
 
 const NONCE_PATTERN = `[0-9a-f]{${ENVELOPE_NONCE_HEX_CHARS}}`;
@@ -38,7 +41,7 @@ function occurrences(text, needle) {
 }
 
 function escapedPattern(value) {
-  return new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(escapeRegExp(value));
 }
 
 function withFixedRandomBytes(hex, fn) {
@@ -188,11 +191,12 @@ test("wrapUntrusted hashes input deterministically while nonce output changes", 
   assert.notEqual(first.text, second.text);
 });
 
-test("wrapUntrusted overhead stays within FENCE_OVERHEAD_CAP", () => {
+test("wrapUntrusted overhead stays within FENCE_OVERHEAD_CONTRACT", () => {
   const body = "test body";
-  const wrapped = wrapUntrusted(body, { label: "a".repeat(64) });
+  const wrapped = wrapUntrusted(body, { label: "a".repeat(ENVELOPE_LABEL_MAX_CHARS) });
   const overhead = wrapped.text.length - body.length;
-  assert.ok(overhead <= FENCE_OVERHEAD_CAP, `overhead ${overhead} exceeds ${FENCE_OVERHEAD_CAP}`);
+  assert.equal(overhead, FENCE_OVERHEAD_CONTRACT);
+  assert.ok(FENCE_OVERHEAD_BUDGET >= FENCE_OVERHEAD_CONTRACT);
 });
 
 test("system note stays bounded", () => {

@@ -23,6 +23,7 @@ const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   NEUTRALIZED_CLOSE_SENTINEL,
+  FENCE_OVERHEAD_BUDGET,
 } = require("../mcp/lib/untrusted-envelope.js");
 const {
   startWave,
@@ -181,6 +182,7 @@ function representativeRegistryContext() {
 }
 
 test("evaluator brief slice registry is explicit and budgeted per profile", () => {
+  assert.equal(UNTRUSTED_FENCE_OVERHEAD_CHARS, FENCE_OVERHEAD_BUDGET);
   assert.deepEqual(ASSIGNMENT_BRIEF_SLICE_REGISTRY.web.map((slice) => slice.key), [
     // Plane T cycle T.4 — `browser_workflow` leads the web brief so the
     // Patchright workflow stanza appears first under `browser_behavior_probe`.
