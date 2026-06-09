@@ -186,6 +186,24 @@ test("parseSarif preserves repo-relative paths that contain src directories", ()
   assert.equal(mounted.records[0].artifact_uri, "packages/api/src/index.js");
 });
 
+test("parseSarif strips query and fragment data from artifact URIs", () => {
+  const parsed = parseSarif(sarifDocument([
+    sarifResult({
+      ruleId: "QUERY",
+      uri: "src/config.js?token=artifactsecret#fragment",
+    }),
+    sarifResult({
+      ruleId: "ENCODED",
+      uri: "src/encoded.js%3Fapi_key%3Dartifactsecret%23fragment",
+      startLine: 2,
+    }),
+  ]));
+
+  assert.equal(parsed.records[0].artifact_uri, "src/config.js");
+  assert.equal(parsed.records[1].artifact_uri, "src/encoded.js");
+  assert.equal(JSON.stringify(parsed.records).includes("artifactsecret"), false);
+});
+
 test("parseSarif honors rule default severity and SARIF warning default", () => {
   const defaulted = sarifResult({ ruleId: "RULE-DEFAULT", level: "warning" });
   delete defaulted.ruleId;

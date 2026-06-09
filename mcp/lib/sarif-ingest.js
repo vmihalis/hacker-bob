@@ -70,6 +70,11 @@ function safeDecode(value) {
   }
 }
 
+function stripUriQueryAndFragment(value) {
+  const marker = value.search(/[?#]/);
+  return marker >= 0 ? value.slice(0, marker) : value;
+}
+
 function normalizeArtifactUri(rawUri) {
   if (typeof rawUri !== "string" || !rawUri.trim()) return null;
   let uri = rawUri.trim();
@@ -82,7 +87,7 @@ function normalizeArtifactUri(rawUri) {
       uri = uri.replace(/^file:\/+/, "/");
     }
   }
-  uri = safeDecode(uri).replace(/\\/g, "/");
+  uri = stripUriQueryAndFragment(safeDecode(uri)).replace(/\\/g, "/");
   uri = uri.replace(/^\/src\/+/, "");
   uri = uri.replace(/^\.\/+/, "");
   if (uri.startsWith("/")) return null;
