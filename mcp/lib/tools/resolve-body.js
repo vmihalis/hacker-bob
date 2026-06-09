@@ -33,14 +33,34 @@ const {
   RESOLVER_PREFIXES,
   resolveArtifactBody,
 } = require("../body-resolvers/index.js");
+const {
+  wrapUntrusted,
+} = require("../untrusted-envelope.js");
 
 const BODY_RESPONSE_MAX_BYTES = 1024 * 1024; // 1MB per X.7 Do step 1.
+const UNTRUSTED_BODY_PREFIXES = Object.freeze(new Set([
+  "http_record",
+  "repo_check",
+  "repo_command_run",
+  "evm_call",
+  "frontier_event",
+]));
 
 function structuredError(code, message, details) {
   const err = new Error(`${code}: ${message}`);
   err.code = code;
   if (details) err.details = details;
   return err;
+}
+
+function artifactRefPrefix(artifactRef) {
+  const idx = typeof artifactRef === "string" ? artifactRef.indexOf(":") : -1;
+  return idx > 0 ? artifactRef.slice(0, idx) : "";
+}
+
+function renderBodyForResponse(prefix, body) {
+  if (!UNTRUSTED_BODY_PREFIXES.has(prefix)) return body;
+  return wrapUntrusted(body, { label: prefix }).fenced;
 }
 
 function handler(args) {
@@ -89,13 +109,14 @@ function handler(args) {
 
   const fullBody = resolved.body;
   const totalSize = resolved.body_size_bytes;
+  const prefix = artifactRefPrefix(artifactRef);
   if (offsetRaw >= totalSize) {
     return JSON.stringify({
       version: 1,
       target_domain: domain,
       artifact_ref: artifactRef,
       found: true,
-      body: "",
+      body: renderBodyForResponse(prefix, ""),
       content_hash: resolved.content_hash,
       body_size_bytes: totalSize,
       offset: offsetRaw,
@@ -118,7 +139,7 @@ function handler(args) {
     target_domain: domain,
     artifact_ref: artifactRef,
     found: true,
-    body: outBuffer.toString("utf8"),
+    body: renderBodyForResponse(prefix, outBuffer.toString("utf8")),
     content_hash: resolved.content_hash,
     body_size_bytes: totalSize,
     offset: offsetRaw,

@@ -21,8 +21,8 @@
 //      affined pack ships in T.4; the unit-test layer pins the partition
 //      function directly using synthesized pack records.
 //
-// Determinism: all assertions hold across repeated calls — no clocks, no
-// random, no env-derived flakiness.
+// Determinism: all assertions hold across repeated calls after normalizing
+// per-render untrusted-content envelope nonces.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -74,6 +74,10 @@ function withTempHome(fn) {
 
 function uniqueDomain(prefix) {
   return `${prefix}-${crypto.randomBytes(4).toString("hex")}.example`;
+}
+
+function normalizeEnvelopeNonces(text) {
+  return String(text).replace(/nonce=[0-9a-f]{32}/g, "nonce=<nonce>");
 }
 
 function seedSessionState(domain) {
@@ -449,7 +453,11 @@ test("browser_behavior_probe brief is deterministic across repeated assembly", (
     const a = readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" });
     const b = readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" });
     const c = readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" });
-    assert.equal(a, b, "repeated brief reads must produce the same output (T-R8)");
-    assert.equal(b, c);
+    assert.equal(
+      normalizeEnvelopeNonces(a),
+      normalizeEnvelopeNonces(b),
+      "repeated brief reads must produce the same output aside from envelope nonces",
+    );
+    assert.equal(normalizeEnvelopeNonces(b), normalizeEnvelopeNonces(c));
   });
 });

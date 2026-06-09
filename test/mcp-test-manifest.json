@@ -32,6 +32,7 @@
   "test/surface-graph-builder.test.js",
   "test/surface-graph-slice-brief.test.js",
   "test/assignment-brief-size.test.js",
+  "test/untrusted-envelope.test.js",
   "test/determinism-ci.test.js",
   "test/chain-state-tree.test.js",
   "test/agent-runs.test.js",

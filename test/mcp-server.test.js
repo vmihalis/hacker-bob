@@ -223,6 +223,17 @@ const {
 // the call sites do not have to know about the renamed artifact.
 const findingsJsonlPath = (domain) => claimsJsonlPath(domain);
 const findingsMarkdownPath = (domain) => path.join(sessionDir(domain), "claims.md");
+
+function parseUntrustedBriefJsonSlice(brief, key) {
+  const value = brief[key];
+  const match = String(value).match(/^<<UNTRUSTED_DATA nonce=([0-9a-f]{32}) label=([^>\n]+)>>>\n([\s\S]*)\n<<END_UNTRUSTED_DATA nonce=\1>>>$/);
+  assert.ok(match, `${key} must be wrapped in an untrusted fence`);
+  assert.equal(match[2], key);
+  assert.equal(String(value).split(OPEN_SENTINEL).length - 1, 1);
+  assert.equal(String(value).split(CLOSE_SENTINEL).length - 1, 1);
+  return JSON.parse(match[3]);
+}
+
 const {
   normalizeGradeVerdictDocument,
   readGradeVerdict,
@@ -269,6 +280,10 @@ const {
   readAssignmentBrief,
   resolveEvaluatorKnowledge,
 } = require("../mcp/lib/assignment-brief.js");
+const {
+  OPEN_SENTINEL,
+  CLOSE_SENTINEL,
+} = require("../mcp/lib/untrusted-envelope.js");
 const {
   readCapabilityPlaybook,
 } = require("../mcp/lib/capability-playbooks.js");
@@ -16131,13 +16146,14 @@ test("bob_import_http_traffic validates, dedupes, stores session-local traffic, 
     assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeImport);
 
     const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
-    assert.equal(brief.traffic_summary.total, 1);
-    assert.equal(brief.traffic_summary.authenticated_count, 1);
-    assert.match(brief.traffic_summary.recent[0].url, /\/api\/me/);
+    const trafficSummary = parseUntrustedBriefJsonSlice(brief, "traffic_summary");
+    assert.equal(trafficSummary.total, 1);
+    assert.equal(trafficSummary.authenticated_count, 1);
+    assert.match(trafficSummary.recent[0].url, /\/api\/me/);
     assert.equal(brief.surface.priority, "HIGH");
     assert.ok(brief.ranking_summary.reasons.includes("imported_traffic"));
     assert.ok(brief.ranking_summary.reasons.includes("authenticated_observed_traffic"));
-    assert.doesNotMatch(JSON.stringify(brief.traffic_summary), /evil\.example\.net/);
+    assert.doesNotMatch(JSON.stringify(trafficSummary), /evil\.example\.net/);
     assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeImport);
   });
 });
@@ -16390,12 +16406,13 @@ test("bob_static_scan scans only imported artifacts and feeds bounded evaluator 
     assert.doesNotMatch(JSON.stringify(scan), /secret-static-token/);
 
     const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
-    assert.equal(brief.static_scan_hints.available, true);
-    assert.equal(brief.static_scan_hints.total_results, 1);
-    assert.ok(brief.static_scan_hints.findings.length > 0);
-    assert.ok(brief.static_scan_hints.findings.length <= 10);
-    assert.equal(brief.static_scan_hints.artifacts[0].artifact_id, "SA-1");
-    assert.doesNotMatch(JSON.stringify(brief.static_scan_hints), /secret-static-token|_isBlacklisted|evidence/);
+    const staticScanHints = parseUntrustedBriefJsonSlice(brief, "static_scan_hints");
+    assert.equal(staticScanHints.available, true);
+    assert.equal(staticScanHints.total_results, 1);
+    assert.ok(staticScanHints.findings.length > 0);
+    assert.ok(staticScanHints.findings.length <= 10);
+    assert.equal(staticScanHints.artifacts[0].artifact_id, "SA-1");
+    assert.doesNotMatch(JSON.stringify(staticScanHints), /secret-static-token|_isBlacklisted|evidence/);
   });
 });
 
@@ -16634,8 +16651,9 @@ test("bob_public_intel caps output, persists optional intel, handles API failure
       assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
 
       const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
-      assert.equal(brief.intel_hints.available, true);
-      assert.equal(brief.intel_hints.reports.length, 1);
+      const intelHints = parseUntrustedBriefJsonSlice(brief, "intel_hints");
+      assert.equal(intelHints.available, true);
+      assert.equal(intelHints.reports.length, 1);
       assert.ok(brief.ranking_summary.reasons.includes("disclosed_report_hints"));
       assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackSurfaceBeforeIntel);
 
