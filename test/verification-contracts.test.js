@@ -25,6 +25,7 @@ const {
   readSessionArtifactSummary,
 } = require("../mcp/lib/pipeline-session-artifacts.js");
 const {
+  artifactDivergence,
   buildVerificationAdjudication,
   prepareVerificationEntry,
   readVerificationContext,
@@ -236,6 +237,75 @@ test("computeAdjudicationPlanHash ignores volatile adjudication metadata", () =>
       adjudication_plan_hash: "new",
       built_at: "2026-05-16T00:00:00.000Z",
     }),
+  );
+});
+
+test("artifactDivergence is deterministic and only flags both-replayed artifact divergence", () => {
+  const replayed = (artifactHashes, overrides = {}) => v2VerificationResult("F-1", {
+    artifact_hashes: artifactHashes,
+    ...overrides,
+  });
+
+  assert.equal(
+    artifactDivergence(
+      replayed({ sqli_response: "1".repeat(64) }),
+      replayed({ xss_response: "2".repeat(64) }),
+    ),
+    "artifact_key_divergence",
+  );
+  assert.equal(
+    artifactDivergence(
+      replayed({ shared_response: "1".repeat(64) }),
+      replayed({ shared_response: "2".repeat(64) }),
+    ),
+    "artifact_hash_divergence",
+  );
+  assert.equal(
+    artifactDivergence(
+      replayed({ sqli_response: "1".repeat(64) }),
+      replayed(
+        { xss_response: "2".repeat(64) },
+        { confidence_reasons: ["agreement_not_replayed"] },
+      ),
+    ),
+    "none",
+  );
+  assert.equal(
+    artifactDivergence(
+      replayed({}),
+      replayed({ xss_response: "2".repeat(64) }),
+    ),
+    "none",
+  );
+  assert.equal(
+    artifactDivergence(
+      undefined,
+      replayed({ xss_response: "2".repeat(64) }),
+    ),
+    "none",
+  );
+  assert.equal(
+    artifactDivergence(
+      replayed(
+        { sqli_response: "1".repeat(64) },
+        { confidence_reasons: "fresh_replay_passed" },
+      ),
+      replayed({ xss_response: "2".repeat(64) }),
+    ),
+    "none",
+  );
+  assert.equal(
+    artifactDivergence(
+      replayed({
+        z_response: "1".repeat(64),
+        a_response: "2".repeat(64),
+      }),
+      replayed({
+        a_response: "2".repeat(64),
+        z_response: "1".repeat(64),
+      }),
+    ),
+    "none",
   );
 });
 

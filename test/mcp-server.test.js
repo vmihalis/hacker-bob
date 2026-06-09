@@ -3346,6 +3346,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     const adjudicationEvent = rows.find((row) => row.type === "verification_adjudication_built");
     assert.match(adjudicationEvent.adjudication_plan_hash, /^[a-f0-9]{64}$/);
     assert.equal(Object.hasOwn(adjudicationEvent, "plan_hash"), false);
+    assert.equal(adjudicationEvent.counts.reasoning_divergence, 0);
     const finalVerificationEvent = rows.find((row) => row.type === "verification_written" && row.status === "final");
     assert.equal(finalVerificationEvent.adjudication_plan_hash, adjudicationEvent.adjudication_plan_hash);
     assert.equal(Object.hasOwn(finalVerificationEvent, "plan_hash"), false);
@@ -12415,6 +12416,92 @@ test("verification v2 round and final hashes are stable across confidence_reason
   });
 });
 
+test("verification v2 adjudication flags reasoning divergence and binds it into the plan hash", () => {
+  withTempHome(() => {
+    const domain = "reasoning-divergence.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+
+    const writePair = (brutalistResult, balancedResult) => {
+      for (const [round, result] of [
+        ["brutalist", brutalistResult],
+        ["balanced", balancedResult],
+      ]) {
+        writeVerificationRound({
+          target_domain: domain,
+          round,
+          notes: null,
+          verification_attempt_id: context.current_attempt_id,
+          verification_snapshot_hash: context.snapshot_hash,
+          round_profile: round,
+          results: [result],
+        });
+      }
+      const response = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+      const document = JSON.parse(fs.readFileSync(verificationAdjudicationPath(domain), "utf8"));
+      return { response, document };
+    };
+
+    const divergent = writePair(
+      v2VerificationResult("F-1", {
+        artifact_hashes: { sqli_response: "1".repeat(64) },
+      }),
+      v2VerificationResult("F-1", {
+        artifact_hashes: { xss_response: "2".repeat(64) },
+      }),
+    );
+
+    assert.deepEqual(divergent.document.agreed.map((entry) => entry.finding_id), ["F-1"]);
+    assert.deepEqual(divergent.document.disagreements, []);
+    assert.deepEqual(divergent.document.reasoning_divergence, {
+      "F-1": "artifact_key_divergence",
+    });
+    assert.deepEqual(divergent.document.reasoning_divergence_ids, ["F-1"]);
+    assert.equal(divergent.document.counts.reasoning_divergence, 1);
+    assert.equal(divergent.document.replay_required_ids.includes("F-1"), true);
+    assert.equal(divergent.document.replay_reasons["F-1"].includes("reasoning_divergence"), true);
+    assert.equal(
+      divergent.response.adjudication_context.findings[0].reasoning_divergence,
+      "artifact_key_divergence",
+    );
+
+    const enumCleared = JSON.parse(JSON.stringify(divergent.document));
+    enumCleared.reasoning_divergence = {};
+    enumCleared.reasoning_divergence_ids = [];
+    enumCleared.counts.reasoning_divergence = 0;
+    assert.notEqual(
+      computeAdjudicationPlanHash(enumCleared),
+      divergent.document.adjudication_plan_hash,
+    );
+
+    const matching = writePair(
+      v2VerificationResult("F-1", {
+        artifact_hashes: { sqli_response: "1".repeat(64) },
+      }),
+      v2VerificationResult("F-1", {
+        artifact_hashes: { sqli_response: "1".repeat(64) },
+      }),
+    );
+
+    assert.notEqual(
+      matching.document.adjudication_plan_hash,
+      divergent.document.adjudication_plan_hash,
+    );
+    assert.deepEqual(matching.document.reasoning_divergence, {});
+    assert.deepEqual(matching.document.reasoning_divergence_ids, []);
+    assert.equal(matching.document.counts.reasoning_divergence, 0);
+    assert.equal(
+      matching.response.adjudication_context.findings[0].reasoning_divergence,
+      "none",
+    );
+
+    const adjudicationEvents = readJsonl(pipelineEventsJsonlPath(domain))
+      .filter((row) => row.type === "verification_adjudication_built");
+    assert.equal(adjudicationEvents.at(-2).counts.reasoning_divergence, 1);
+    assert.equal(adjudicationEvents.at(-1).counts.reasoning_divergence, 0);
+  });
+});
+
 test("verification v2 round results sort deterministically across multi-finding writes", () => {
   withTempHome(() => {
     const domain = "multi-finding.example.com";
@@ -12522,6 +12609,7 @@ test("verification v2 supports independent round order, deterministic adjudicati
       union_reportables: 1,
       replay_required: 1,
       qa_sampled: 0,
+      reasoning_divergence: 0,
     });
     const adjudicationDoc = JSON.parse(fs.readFileSync(verificationAdjudicationPath(domain), "utf8"));
     assert.equal(adjudicationDoc.adjudication_plan_hash, adjudication.adjudication_plan_hash);
@@ -12545,6 +12633,7 @@ test("verification v2 supports independent round order, deterministic adjudicati
     assert.deepEqual(verificationContext.adjudication_context.finding_ids, ["F-1"]);
     assert.equal(verificationContext.adjudication_context.findings[0].finding_id, "F-1");
     assert.equal(verificationContext.adjudication_context.findings[0].replay_required, true);
+    assert.equal(verificationContext.adjudication_context.findings[0].reasoning_divergence, "none");
     assert.equal(Object.hasOwn(verificationContext.adjudication_context.findings[0], "reasoning"), false);
     assert.doesNotMatch(JSON.stringify(verificationContext.adjudication_context), /curl|account_id|proof_of_concept|response_evidence/i);
 
