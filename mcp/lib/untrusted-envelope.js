@@ -57,8 +57,9 @@ function escapeRegExp(value) {
 
 function sentinelPattern(sentinel) {
   const marker = sentinel.startsWith("<<") ? sentinel.slice(2) : sentinel;
-  const ltToken = "(?:<|\\uff1c|\\u27e8|&lt;|&#60;|&#x3c;|%3c|%253c)";
-  return new RegExp(`${ltToken}${ltToken}${escapeRegExp(marker)}`, "gi");
+  const ltToken = "(?:<|\\uff1c|\\ufe64|\\u27e8|\\u276c|\\u276e|\\u3008|\\u2039|&lt;|&#60;|&#x3c;|%3c|%253c)";
+  const invisibleToken = "[\\u200b\\u200c\\u200d\\ufeff\\u034f\\u061c\\u180e\\u2060\\u2061-\\u2064\\u206a-\\u206f\\ufe00-\\ufe0f\\u0300-\\u036f]*";
+  return new RegExp(`${ltToken}${invisibleToken}${ltToken}${invisibleToken}${escapeRegExp(marker)}`, "gi");
 }
 
 function neutralizeFenceForgery(bodyText, nonce) {
