@@ -36,6 +36,7 @@
  *   npm install --save-dev @actions/core @actions/github
  */
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -135,6 +136,14 @@ interface FullOctokitLike {
 interface GithubLike {
   context: ContextLike;
   getOctokit(token: string): FullOctokitLike;
+}
+
+function deriveRepoTargetDomain(repoPath: string): string {
+  const real = fs.realpathSync(repoPath);
+  const base = path.basename(real).trim() || "repo";
+  const safe = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
+  const sha = crypto.createHash("sha256").update(real).digest("hex").slice(0, 8);
+  return `repo-${safe}-${sha}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,12 +395,12 @@ async function run(): Promise<void> {
 
     // -----------------------------------------------------------------------
     // 4e. Build the target domain override.
-    //     Bob scopes sessions by "target domain". For diff reviews we use a
-    //     GitHub repository identifier: "gh-<repository_id>".
-    //     This matches the format used by the cache-bob-session composite action.
+    //     Prefer the C2 cache action's BOB_TARGET_DOMAIN because it derives the
+    //     same repo-session slug as bob_init_repo_session. Local/test runs fall
+    //     back to the same realpath-derived repo-<safeName>-<sha8> algorithm.
     // -----------------------------------------------------------------------
-    const repositoryId = process.env["GITHUB_REPOSITORY_ID"] ?? `${owner}-${repo}`;
-    const targetDomainOverride = `gh-${repositoryId}`;
+    const targetDomainOverride =
+      process.env["BOB_TARGET_DOMAIN"] || deriveRepoTargetDomain(repoPath);
 
     // -----------------------------------------------------------------------
     // 4f. Run the Bob diff-review skill headlessly.
@@ -443,14 +452,13 @@ async function run(): Promise<void> {
     // this PR gets a C2 cache hit and SKIP_SURFACE_BUILD=true is set.
     //
     // The session directory matches the path used by the cache-bob-session
-    // composite action: ~/hacker-bob-sessions/gh-<repository_id> (without
-    // the per-PR suffix). This is the directory that actions/cache@v4 saves
-    // and restores, and where detect-symbol-index looks for the file.
+    // composite action. This is the directory that actions/cache@v4 saves and
+    // restores, and where detect-symbol-index looks for the file.
     if (isMockMode) {
       const cacheSessionDir = path.join(
         os.homedir(),
         "hacker-bob-sessions",
-        `gh-${repositoryId}`
+        targetDomainOverride
       );
       const symbolIndexPath = path.join(cacheSessionDir, "symbol-surface-index.json");
       if (!fs.existsSync(symbolIndexPath)) {

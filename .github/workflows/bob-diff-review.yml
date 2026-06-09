@@ -6,7 +6,7 @@
 # because composite actions cannot declare permissions themselves (the key is
 # only valid at the workflow job level in GitHub Actions).
 #
-# Required org-level secrets:
+# Required org-level configuration:
 #   ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token for the headless Claude runner
 #                           (RECOMMENDED; generate with `claude setup-token`).
 #   ANTHROPIC_API_KEY  — Anthropic API key (pay-per-use fallback) for the runner.
@@ -14,6 +14,7 @@
 #                        is required; OAuth wins when both are set.
 #   BOB_INSTALL_TOKEN  — GitHub App token or PAT (read:packages + contents:read)
 #                        used to pull @bobnetsec/* packages from GitHub Packages.
+#   BOB_VERSION        — Bob release tag used for the shared workspace cache.
 ###############################################################################
 
 name: Bob Diff Review
@@ -69,35 +70,73 @@ jobs:
         env:
           ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BOB_INSTALL_TOKEN: ${{ secrets.BOB_INSTALL_TOKEN }}
+          BOB_VERSION: ${{ vars.BOB_VERSION }}
         run: |
-          if [[ -n "$ANTHROPIC_OAUTH_TOKEN" || -n "$ANTHROPIC_API_KEY" ]]; then
+          missing=()
+          if [[ -z "$ANTHROPIC_OAUTH_TOKEN" && -z "$ANTHROPIC_API_KEY" ]]; then
+            missing+=("ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY")
+          fi
+          if [[ -z "$BOB_INSTALL_TOKEN" ]]; then
+            missing+=("BOB_INSTALL_TOKEN")
+          fi
+          if [[ -z "$BOB_VERSION" ]]; then
+            missing+=("BOB_VERSION")
+          fi
+          if [[ "${#missing[@]}" -eq 0 ]]; then
             echo "has_credentials=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_credentials=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping Bob Diff Review because no Anthropic credential secret is configured."
+            printf -v missing_csv '%s, ' "${missing[@]}"
+            missing_csv="${missing_csv%, }"
+            echo "::notice::Skipping Bob Diff Review because required configuration is missing: ${missing_csv}."
+          fi
+
+      - name: Checkout trusted Bob action source
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.base_ref }}
+          path: .bob-workflows-source
+          token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          persist-credentials: false
+
+      - name: Detect trusted Bob action source
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: bob-source
+        shell: bash
+        run: |
+          if [[ -f ".bob-workflows-source/.github/actions/cache-bob-workspace/action.yml" && \
+                -f ".bob-workflows-source/.github/actions/cache-bob-session/action.yml" && \
+                -f ".bob-workflows-source/packages/bob-diff-review/action.yml" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Bob Diff Review because the protected base ref does not contain the Bob action source yet."
           fi
 
       - name: Restore Bob workspace cache (C1)
-        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
         id: cache-bob-workspace
-        uses: ./.github/actions/cache-bob-workspace
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-workspace
         with:
-          bob_version: ${{ github.event.pull_request.head.sha }}
+          bob_version: ${{ vars.BOB_VERSION }}
           bob_install_token: ${{ secrets.BOB_INSTALL_TOKEN }}
 
       - name: Restore Bob session cache (C2)
-        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
         id: cache-bob-session
-        uses: ./.github/actions/cache-bob-session
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-session
         with:
           repository_id: ${{ github.repository_id }}
           sha: ${{ github.event.pull_request.head.sha }}
           base_ref: ${{ github.base_ref }}
 
       - name: Run Bob Diff Review
-        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
         id: bob-diff-review
-        uses: ./packages/bob-diff-review
+        uses: ./.bob-workflows-source/packages/bob-diff-review
         env:
           SKIP_SURFACE_BUILD: ${{ steps.cache-bob-session.outputs.cache-hit-symbol-index }}
         with:

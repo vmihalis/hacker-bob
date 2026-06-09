@@ -541,6 +541,10 @@ exit 0
           err.message.toLowerCase().includes("valid"),
           `message should mention JSON parse error, got: ${err.message}`
         );
+        assert.ok(
+          !err.message.includes("NOT VALID JSON"),
+          `message should not echo raw findings content, got: ${err.message}`
+        );
         return true;
       }
     );

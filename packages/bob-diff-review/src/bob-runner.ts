@@ -537,9 +537,9 @@ export async function runBobDiffReview(
   // The MCP repo-session authority requires the server-derived
   // `repo-<name>-<sha8>` slug and rejects any other value (normalization_failed),
   // so the skill must let bob_init_repo_session derive the session domain. The
-  // GitHub-context slug (targetDomainOverride, e.g. gh-<id>) is stamped into
-  // diff-review-findings.json by this runner after the skill returns — handing it
-  // to the skill only tempts it to feed the rejected slug to the MCP (PATH B).
+  // Runner-owned metadata (targetDomainOverride) is stamped into
+  // diff-review-findings.json after the skill returns; handing it to the skill
+  // only tempts it to feed a caller-provided slug to the MCP (PATH B).
   const skillPrompt = [
     `/bob-diff-review`,
     `--repo`, quoteSkillPromptValue(path.resolve(repo)),
@@ -755,12 +755,12 @@ export async function runBobDiffReview(
   try {
     parsed = JSON.parse(rawJson);
   } catch (parseErr: unknown) {
-    const errMsg =
-      parseErr instanceof Error ? parseErr.message : String(parseErr);
+    const errType =
+      parseErr instanceof Error ? parseErr.name || "SyntaxError" : "SyntaxError";
     throw new BobRunnerError({
       message:
-        `diff-review-findings.json at ${findingsPath} is not valid JSON: ${errMsg}. ` +
-        `File content (first 500 chars): ${rawJson.slice(0, 500)}`,
+        `diff-review-findings.json at ${findingsPath} is not valid JSON (${errType}). ` +
+        `Raw file content was not logged because findings may contain sensitive evidence.`,
       exitCode: 0,
       signal: null,
       stderr: stderrOutput,

@@ -26,7 +26,6 @@ allowed-tools:
   - mcp__hacker-bob__bob_build_surface_graph
   - mcp__hacker-bob__bob_promote_surface_leads
   - mcp__hacker-bob__bob_record_candidate_claim
-  - mcp__hacker-bob__bob_finalize_node
   - mcp__hacker-bob__bob_write_handoff
   - mcp__hacker-bob__bob_read_session_state
   - mcp__hacker-bob__bob_read_state_summary
@@ -275,14 +274,14 @@ the next dispatch cycle if additional evaluator waves are warranted.
       "line_end": <number>,
       "hunk_summary": "<string>",
       "description": "<string>",
-      "proof": "<string>"
+      "evidence": "<string>"
     }
   ]
 }
 ```
 
-4. Call `bob_finalize_node({ target_domain })` to close the session node and
-   mark the diff-review run complete in the Bob session ledger.
+4. Do not call `bob_finalize_node`; this flow is not TaskGraph-backed and never
+   receives a `node_id` or `prep_token`.
 5. Write the handoff record via `bob_write_handoff({ target_domain, ... })` so
    downstream action steps (resolver.ts, comment-poster) can read session
    metadata without re-initializing a Bob session.
@@ -308,6 +307,6 @@ prevents any output from being produced.
 - Exit non-zero only on unrecoverable errors. PATH B fallback and partial
   surface coverage are degraded but non-fatal outcomes; write whatever findings
   were produced and exit 0 with a warning summary.
-- `bob_finalize_node` and `bob_write_handoff` must be called even when zero
-  findings are produced so that the downstream resolver and comment-poster steps
-  can read a well-formed (empty) output.
+- `bob_write_handoff` must be called even when zero findings are produced so
+  that downstream diagnostics can read a well-formed empty handoff. Do not call
+  `bob_finalize_node` from this skill.

@@ -29998,6 +29998,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+const crypto = __importStar(__nccwpck_require__(7598));
 const fs = __importStar(__nccwpck_require__(3024));
 const os = __importStar(__nccwpck_require__(8161));
 const path = __importStar(__nccwpck_require__(6760));
@@ -30006,6 +30007,13 @@ const diff_js_1 = __nccwpck_require__(6729);
 const bob_runner_js_1 = __nccwpck_require__(7366);
 const resolver_js_1 = __nccwpck_require__(6164);
 const reviews_api_js_1 = __nccwpck_require__(316);
+function deriveRepoTargetDomain(repoPath) {
+    const real = fs.realpathSync(repoPath);
+    const base = path.basename(real).trim() || "repo";
+    const safe = base.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
+    const sha = crypto.createHash("sha256").update(real).digest("hex").slice(0, 8);
+    return `repo-${safe}-${sha}`;
+}
 // ---------------------------------------------------------------------------
 // Runtime shim loader
 //
@@ -30221,12 +30229,11 @@ async function run() {
         const repoPath = process.env["GITHUB_WORKSPACE"] ?? process.cwd();
         // -----------------------------------------------------------------------
         // 4e. Build the target domain override.
-        //     Bob scopes sessions by "target domain". For diff reviews we use a
-        //     GitHub repository identifier: "gh-<repository_id>".
-        //     This matches the format used by the cache-bob-session composite action.
+        //     Prefer the C2 cache action's BOB_TARGET_DOMAIN because it derives the
+        //     same repo-session slug as bob_init_repo_session. Local/test runs fall
+        //     back to the same realpath-derived repo-<safeName>-<sha8> algorithm.
         // -----------------------------------------------------------------------
-        const repositoryId = process.env["GITHUB_REPOSITORY_ID"] ?? `${owner}-${repo}`;
-        const targetDomainOverride = `gh-${repositoryId}`;
+        const targetDomainOverride = process.env["BOB_TARGET_DOMAIN"] || deriveRepoTargetDomain(repoPath);
         // -----------------------------------------------------------------------
         // 4f. Run the Bob diff-review skill headlessly.
         //     runBobDiffReview spawns claude CLI, streams output to the Actions
@@ -30271,11 +30278,10 @@ async function run() {
         // this PR gets a C2 cache hit and SKIP_SURFACE_BUILD=true is set.
         //
         // The session directory matches the path used by the cache-bob-session
-        // composite action: ~/hacker-bob-sessions/gh-<repository_id> (without
-        // the per-PR suffix). This is the directory that actions/cache@v4 saves
-        // and restores, and where detect-symbol-index looks for the file.
+        // composite action. This is the directory that actions/cache@v4 saves and
+        // restores, and where detect-symbol-index looks for the file.
         if (isMockMode) {
-            const cacheSessionDir = path.join(os.homedir(), "hacker-bob-sessions", `gh-${repositoryId}`);
+            const cacheSessionDir = path.join(os.homedir(), "hacker-bob-sessions", targetDomainOverride);
             const symbolIndexPath = path.join(cacheSessionDir, "symbol-surface-index.json");
             if (!fs.existsSync(symbolIndexPath)) {
                 try {
@@ -30897,9 +30903,9 @@ async function runBobDiffReview(params) {
     // The MCP repo-session authority requires the server-derived
     // `repo-<name>-<sha8>` slug and rejects any other value (normalization_failed),
     // so the skill must let bob_init_repo_session derive the session domain. The
-    // GitHub-context slug (targetDomainOverride, e.g. gh-<id>) is stamped into
-    // diff-review-findings.json by this runner after the skill returns — handing it
-    // to the skill only tempts it to feed the rejected slug to the MCP (PATH B).
+    // Runner-owned metadata (targetDomainOverride) is stamped into
+    // diff-review-findings.json after the skill returns; handing it to the skill
+    // only tempts it to feed a caller-provided slug to the MCP (PATH B).
     const skillPrompt = [
         `/bob-diff-review`,
         `--repo`, quoteSkillPromptValue(path.resolve(repo)),
@@ -31085,10 +31091,10 @@ async function runBobDiffReview(params) {
         parsed = JSON.parse(rawJson);
     }
     catch (parseErr) {
-        const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+        const errType = parseErr instanceof Error ? parseErr.name || "SyntaxError" : "SyntaxError";
         throw new BobRunnerError({
-            message: `diff-review-findings.json at ${findingsPath} is not valid JSON: ${errMsg}. ` +
-                `File content (first 500 chars): ${rawJson.slice(0, 500)}`,
+            message: `diff-review-findings.json at ${findingsPath} is not valid JSON (${errType}). ` +
+                `Raw file content was not logged because findings may contain sensitive evidence.`,
             exitCode: 0,
             signal: null,
             stderr: stderrOutput,
