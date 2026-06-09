@@ -244,6 +244,23 @@ describe("buildDiffPositionMap: edge cases", () => {
     expect(fileMap!.get(2)).toBe(3);
   });
 
+  it("strips optional +++ header metadata from file paths", () => {
+    const diff = [
+      "diff --git a/src/file with spaces.js b/src/file with spaces.js",
+      "index 000000..000001 100644",
+      "--- a/src/file with spaces.js\t2026-06-09 01:00:00 +0000",
+      "+++ b/src/file with spaces.js\t2026-06-09 01:00:00 +0000",
+      "@@ -1,1 +1,2 @@",
+      " existing line",
+      "+new line",
+    ].join("\n");
+
+    const posMap = buildDiffPositionMap(diff);
+    expect(posMap.has("src/file with spaces.js")).toBe(true);
+    expect(posMap.has("src/file with spaces.js\t2026-06-09 01:00:00 +0000")).toBe(false);
+    expect(posMap.get("src/file with spaces.js")!.get(2)).toBe(3);
+  });
+
   it("diff with two hunks correctly accumulates position across hunks", () => {
     // Hunk 1: lines 1-3. Hunk 2: lines 10-12.
     // The second @@ header continues the per-file position counter.

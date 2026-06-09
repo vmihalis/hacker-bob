@@ -251,6 +251,41 @@ describe("submitPRReview: retry on 429", () => {
 // ---------------------------------------------------------------------------
 
 describe("submitPRReview: 422 recovery path", () => {
+  it("does not log comment bodies when probing invalid positions", async () => {
+    const createReviewFn = vi.fn().mockImplementation(async (params: { comments?: unknown[] }) => {
+      if (params.comments && params.comments.length > 0) {
+        throw Object.assign(new Error("422 Unprocessable Entity"), { status: 422 });
+      }
+      return { data: { id: 2, html_url: "https://github.com/test/fallback" } };
+    });
+    const octokit = makeOctokit({ createReview: createReviewFn });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let logged = "";
+
+    try {
+      await submitPRReview(
+        octokit,
+        "owner",
+        "repo",
+        1,
+        [
+          makeComment({
+            position: 99999,
+            body: "[high] Sensitive finding\n\nrequest body: password=secret-token",
+          }),
+        ],
+        makeSummary()
+      );
+      logged = errorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(logged).toContain("path=src/routes/users.js position=99999");
+    expect(logged).not.toContain("Sensitive finding");
+    expect(logged).not.toContain("password=secret-token");
+  });
+
   it("falls back to body-only review when all positions are invalid (422 on all probes)", async () => {
     // Every createReview call throws 422 — simulates all positions being bad.
     // The 422 recovery path will probe each comment, find all invalid, and

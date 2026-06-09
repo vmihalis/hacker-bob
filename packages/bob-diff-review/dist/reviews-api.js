@@ -169,8 +169,7 @@ async function submitPRReview(octokit, owner, repo, pull_number, comments, summa
         const { valid: validComments, invalid: invalidComments } = await partitionCommentsByValidity(octokit, owner, repo, pull_number, ghComments);
         for (const comment of invalidComments) {
             console.error(`[reviews-api] Offending comment (bad diff position): ` +
-                `path=${comment.path} position=${comment.position} ` +
-                `body_preview="${comment.body.slice(0, 80)}…"`);
+                `path=${comment.path} position=${comment.position}`);
         }
         if (validComments.length > 0) {
             // Submit the remaining valid comments inline in a second review call.

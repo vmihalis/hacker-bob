@@ -302,8 +302,7 @@ export async function submitPRReview(
     for (const comment of invalidComments) {
       console.error(
         `[reviews-api] Offending comment (bad diff position): ` +
-          `path=${comment.path} position=${comment.position} ` +
-          `body_preview="${comment.body.slice(0, 80)}…"`
+          `path=${comment.path} position=${comment.position}`
       );
     }
 

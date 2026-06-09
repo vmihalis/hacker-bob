@@ -189,10 +189,15 @@ plus a Check Run result on every PR.
      pull_request:
        types: [opened, synchronize, reopened]
 
-  jobs:
-    bob-review:
-      uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
-      secrets: inherit
+   permissions:
+     pull-requests: write
+     checks: write
+     contents: read
+
+   jobs:
+     bob-review:
+       uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
+       secrets: inherit
    ```
 
    That is the complete file. `secrets: inherit` propagates the org-level

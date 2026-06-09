@@ -31474,6 +31474,9 @@ const PLUS_PLUS_HEADER_RE = /^\+\+\+ (?:b\/(.+)|\/dev\/null)\r?$/;
 // Matches "@@ -oldStart[,oldCount] +newStart[,newCount] @@" hunk headers.
 // The trailing optional function name context ("@@ … @@ funcName") is ignored.
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+function stripDiffHeaderMetadata(filePath) {
+    return filePath.replace(/\t.*$/, "");
+}
 /**
  * Parse a unified diff string and build a position map used by the GitHub
  * Reviews API.
@@ -31537,7 +31540,7 @@ function buildDiffPositionMap(unifiedDiff) {
                 // Only override if it differs — "diff --git" is usually correct.
                 // The +++ header is more reliable for renames with special chars.
                 // Re-key the in-progress map.
-                currentFile = overridePath;
+                currentFile = stripDiffHeaderMetadata(overridePath);
             }
             continue;
         }
@@ -32450,8 +32453,7 @@ async function submitPRReview(octokit, owner, repo, pull_number, comments, summa
         const { valid: validComments, invalid: invalidComments } = await partitionCommentsByValidity(octokit, owner, repo, pull_number, ghComments);
         for (const comment of invalidComments) {
             console.error(`[reviews-api] Offending comment (bad diff position): ` +
-                `path=${comment.path} position=${comment.position} ` +
-                `body_preview="${comment.body.slice(0, 80)}…"`);
+                `path=${comment.path} position=${comment.position}`);
         }
         if (validComments.length > 0) {
             // Submit the remaining valid comments inline in a second review call.

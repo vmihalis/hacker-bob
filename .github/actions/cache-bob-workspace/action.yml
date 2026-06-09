@@ -71,6 +71,7 @@ runs:
         ref: ${{ inputs.bob_version }}
         path: .bob-workspace-source/hacker-bob-src
         token: ${{ inputs.bob_install_token }}
+        persist-credentials: false
 
     - name: Check out hacker-bob source with workflow token
       if: steps.cache-bob.outputs.cache-hit != 'true' && inputs.bob_install_token == ''
@@ -79,6 +80,7 @@ runs:
         repository: vmihalis/hacker-bob
         ref: ${{ inputs.bob_version }}
         path: .bob-workspace-source/hacker-bob-src
+        persist-credentials: false
 
     - name: Install Bob into ~/bob-workspace
       if: steps.cache-bob.outputs.cache-hit != 'true'

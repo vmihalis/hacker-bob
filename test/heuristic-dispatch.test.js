@@ -89,6 +89,23 @@ index aaaaaaa..bbbbbbb 100644
   assert.equal(result[0].line_end, 13);
 });
 
+test("buildHeuristicImpactedEntries logs PATH B activation to stdout", () => {
+  const logs = [];
+  const warns = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  console.log = (...args) => logs.push(args.join(" "));
+  console.warn = (...args) => warns.push(args.join(" "));
+  try {
+    buildHeuristicImpactedEntries([{ file: "src/auth/login.ts", line_start: 10, line_end: 13 }]);
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+  assert.ok(logs.includes("PATH B: heuristic dispatch (no symbol index)"));
+  assert.equal(warns.includes("PATH B: heuristic dispatch (no symbol index)"), false);
+});
+
 test("parseDiffFiles extracts multiple files", () => {
   const result = parseDiffFiles(SIMPLE_MULTI_DIFF);
   assert.equal(result.length, 5);

@@ -60,6 +60,9 @@ const PLUS_PLUS_HEADER_RE = /^\+\+\+ (?:b\/(.+)|\/dev\/null)\r?$/;
 // Matches "@@ -oldStart[,oldCount] +newStart[,newCount] @@" hunk headers.
 // The trailing optional function name context ("@@ … @@ funcName") is ignored.
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+function stripDiffHeaderMetadata(filePath) {
+    return filePath.replace(/\t.*$/, "");
+}
 /**
  * Parse a unified diff string and build a position map used by the GitHub
  * Reviews API.
@@ -123,7 +126,7 @@ function buildDiffPositionMap(unifiedDiff) {
                 // Only override if it differs — "diff --git" is usually correct.
                 // The +++ header is more reliable for renames with special chars.
                 // Re-key the in-progress map.
-                currentFile = overridePath;
+                currentFile = stripDiffHeaderMetadata(overridePath);
             }
             continue;
         }

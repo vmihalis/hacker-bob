@@ -335,7 +335,7 @@ export function buildHeuristicImpactedEntries(
   // Log loudly to stdout so the activation is visible in CI logs.
   // The exact string must match the acceptance criterion; supplementary lines
   // may carry the [S4b] prefix.
-  console.warn(ACTIVATION_LOG);
+  console.log(ACTIVATION_LOG);
 
   const entries: ImpactedEntry[] = [];
   let unknownCount = 0;
