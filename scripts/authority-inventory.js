@@ -144,6 +144,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_read_session_state: "initialized_session_read",
   bob_read_session_summary: "initialized_session_read",
   bob_read_state_summary: "initialized_session_read",
+  bob_read_static_analysis_index: "initialized_session_read",
   bob_read_surface_leads: "initialized_session_read",
   bob_read_surface_routes: "initialized_session_read",
   bob_read_technique_pack: "mode_dependent_session",

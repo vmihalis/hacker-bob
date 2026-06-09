@@ -983,7 +983,9 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // IP7 SARIF ingest adds bob_ingest_sarif to the orchestrator bundle
   // (+1 generated allowed-tools line) while keeping ingestion host-side and
   // bounded.
-  assert.ok(lines <= 389, `bob-evaluate-runner skill is ${lines} lines (cap 389)`);
+  // I10 adds bob_read_static_analysis_index to the orchestrator bundle
+  // (+1 generated allowed-tools line) for bounded static-index reads.
+  assert.ok(lines <= 390, `bob-evaluate-runner skill is ${lines} lines (cap 390)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1215,7 +1217,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // IP7 adds bob_ingest_sarif to evaluator-shared. It reads already-captured
   // SARIF artifacts, returns a bounded summary, and writes lead seeds only;
   // budgets bump by +1 (SC 41→42, web 43→44) to match the registry surface.
-  const EVALUATOR_MCP_TOOL_BUDGET = 42;
+  // I10 adds bob_read_static_analysis_index to evaluator-shared. It is a
+  // bounded read-only query over scrubbed static-analysis-index.jsonl rows;
+  // budgets bump by +1 (SC 42→43, web 44→45).
+  const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind === "agent" && typeof spec.output_path === "string") {
@@ -1224,7 +1229,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 44 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 45 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

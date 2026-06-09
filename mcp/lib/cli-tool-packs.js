@@ -76,7 +76,7 @@ function normalizeCliToolPack(pack) {
   });
 }
 
-// Eight seed packs. Order is the registry order; selection re-sorts.
+// Seed packs. Order is the registry order; selection re-sorts.
 const SEED_PACKS = [
   {
     id: "ffuf",
@@ -208,10 +208,11 @@ const SEED_PACKS = [
     },
     narrative: "GraphQL recon — type/field enumeration, mutation discovery.",
   },
-  // ── Plane O Cycle O.6 — OSS surfacing CLI tool packs (5 initial seed) ────
-  // Per Reviewer B: 5 seeds (semgrep, trivy, cargo-audit, npm-audit,
-  // pip-audit). Deferred: codeql, bandit, gosec, syft, grype,
-  // radare2/binwalk/ghidra — added when operator demand justifies.
+  // ── Plane O Cycle O.6 / I10 — OSS surfacing CLI tool packs ───────────────
+  // Initial seeds: semgrep, trivy, cargo-audit, npm-audit, pip-audit.
+  // I10 adds the repo-gated CodeQL/Coccinelle source-analysis seeds.
+  // Deferred: bandit, gosec, syft, grype, radare2/binwalk/ghidra — added
+  // when operator demand justifies.
   //
   // `semgrep` and `trivy` apply to every OSS surface (surface.kind === "repo"
   // OR any observation present); the per-ecosystem audit tools fire on
@@ -229,6 +230,21 @@ const SEED_PACKS = [
     invocation_template: "trivy fs --format sarif --output /work/trivy.sarif --scanners vuln,secret,misconfig /src",
     applicable_when: ({ surface }) => Boolean(surface && surface.kind === "repo"),
     narrative: "Repo scanner — vulnerabilities, leaked secrets, misconfigurations in /src.",
+  },
+  {
+    id: "codeql",
+    install_check: "codeql version",
+    invocation_template:
+      "codeql database create /work/codeql-db --source-root=/src --language=<language> --command=<build-command> && codeql database analyze /work/codeql-db <query-suite> --format=sarif-latest --output=/work/codeql.sarif",
+    applicable_when: ({ surface }) => Boolean(surface && surface.kind === "repo"),
+    narrative: "CodeQL source analysis — emit SARIF from a local /src database when a build exists.",
+  },
+  {
+    id: "coccinelle",
+    install_check: "spatch --version",
+    invocation_template: "spatch --sp-file <semantic-patch> --dir /src --very-quiet --timeout 60",
+    applicable_when: ({ surface }) => Boolean(surface && surface.kind === "repo"),
+    narrative: "Coccinelle semantic patching — structural C/C++ source idiom checks over /src.",
   },
   {
     id: "cargo-audit",

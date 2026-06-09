@@ -63,6 +63,8 @@ test("CLI_TOOL_PACKS exposes the seed packs in kebab-case", () => {
     // O.6 OSS-surfacing packs.
     "semgrep",
     "trivy",
+    "codeql",
+    "coccinelle",
     "cargo-audit",
     "npm-audit",
     "pip-audit",

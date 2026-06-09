@@ -4,7 +4,7 @@
 //
 // Asserts:
 //   * STIGMERGIC_PRODUCERS is Object.freeze'd (closed list).
-//   * Exactly 8 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4.
+//   * Exactly 9 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4/I10.
 //   * Every entry carries the required keys (producer_id,
 //     mcp_tool_or_artifact, trace_shape_ref, registered_consumers).
 //   * registered_consumers[] is non-empty for every entry (every
@@ -38,6 +38,7 @@ const CANONICAL_PRODUCER_IDS = [
   "capability_friction_ledger",
   "repo_inventory_reachability_stamp",
   "oss_technique_pack_registry",
+  "static_analysis_index",
 ];
 
 test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
@@ -53,8 +54,8 @@ test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(PRODUCER_IDS), true);
 });
 
-test("STIGMERGIC_PRODUCERS contains exactly the 8 canonical Y-D19 + Plane-Delta S12/PR4 entries", () => {
-  assert.equal(STIGMERGIC_PRODUCERS.length, 8);
+test("STIGMERGIC_PRODUCERS contains exactly the 9 canonical Y-D19 + Plane-Delta S12/PR4/I10 entries", () => {
+  assert.equal(STIGMERGIC_PRODUCERS.length, 9);
   const actualIds = STIGMERGIC_PRODUCERS.map((p) => p.producer_id).sort();
   const expectedIds = [...CANONICAL_PRODUCER_IDS].sort();
   assert.deepEqual(

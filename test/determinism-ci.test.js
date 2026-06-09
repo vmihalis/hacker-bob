@@ -40,6 +40,7 @@ const {
   proofBundlePaths,
   repoCommandRunsJsonlPath,
   repoRunsDir,
+  statePath,
 } = require("../mcp/lib/paths.js");
 const {
   appendJsonlLine,
@@ -47,12 +48,23 @@ const {
 const {
   hashCanonicalJson,
 } = require("../mcp/lib/verification-contracts.js");
+const {
+  initSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  indexStaticResults,
+  readStaticAnalysisIndex,
+} = require("../mcp/lib/static-analysis-index.js");
 
 const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
+const FIXTURE_STATIC_ANALYSIS_SARIF = fs.readFileSync(
+  path.join(__dirname, "fixtures", "sarif", "codeql-codeflows.sarif"),
+  "utf8",
+);
 
 function uniqueDomain(prefix = "bob-determinism-ci") {
   const suffix = crypto.randomBytes(4).toString("hex");
-  return `${prefix}-${suffix}.local`;
+  return `${prefix}-${suffix}.example.com`;
 }
 
 function domainDir(domain) {
@@ -79,6 +91,11 @@ function writeAttackSurface(domain, surfaces) {
     path.join(dir, "attack_surface.json"),
     JSON.stringify({ surfaces }, null, 2),
   );
+}
+
+function ensureSession(domain) {
+  if (fs.existsSync(statePath(domain))) return;
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
 }
 
 const FIXTURE_OPENAPI = JSON.stringify({
@@ -273,7 +290,25 @@ function exerciseProofBundle(domain) {
   };
 }
 
+function exerciseStaticAnalysisIndex(domain) {
+  ensureSession(domain);
+  const runId = "det-ci-static-analysis";
+  appendRepoRunFixture(domain, runId, FIXTURE_STATIC_ANALYSIS_SARIF);
+  const stdoutPath = path.join(repoRunsDir(domain), `${runId}.stdout`);
+  indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+  });
+  const rows = readStaticAnalysisIndex(domain);
+  assert.equal(rows.length, 1);
+  return {
+    finding_hash: rows[0].finding_hash,
+  };
+}
+
 async function exerciseDeterministicPipelines(domain) {
+  ensureSession(domain);
   ingestSchemaDoc({
     target_domain: domain,
     raw_doc: FIXTURE_OPENAPI,
@@ -313,7 +348,8 @@ async function exerciseDeterministicPipelines(domain) {
 
   const c10 = exerciseDifferentialEvidence(domain);
   const proofBundle = exerciseProofBundle(domain);
-  return { docDelta, authDiff, c10, proofBundle };
+  const staticAnalysis = exerciseStaticAnalysisIndex(domain);
+  return { docDelta, authDiff, c10, proofBundle, staticAnalysis };
 }
 
 function readJsonl(filePath) {
@@ -383,11 +419,13 @@ test("determinism CI: every v2-style content-addressed artifact reproduces byte-
     assert.notEqual(runA.proofBundle.document_hash, runB.proofBundle.document_hash, "proof-bundles.json hash must include target_domain so cross-domain hashes diverge");
     assert.equal(runA.c10.differential_hash, runB.c10.differential_hash, "C10 differential hash must be target-domain independent");
     assert.equal(runA.proofBundle.bundle_hash, runB.proofBundle.bundle_hash, "C14 bundle_hash must be target-domain independent");
+    assert.equal(runA.staticAnalysis.finding_hash, runB.staticAnalysis.finding_hash, "I10 finding_hash must be target-domain independent");
     assert.ok(typeof runA.docDelta.results_hash === "string" && runA.docDelta.results_hash.length === 64);
     assert.ok(typeof runA.authDiff.results_hash === "string" && runA.authDiff.results_hash.length === 64);
     assert.ok(typeof runA.c10.differential_hash === "string" && runA.c10.differential_hash.length === 64);
     assert.ok(typeof runA.proofBundle.bundle_hash === "string" && runA.proofBundle.bundle_hash.length === 64);
     assert.ok(typeof runA.proofBundle.document_hash === "string" && runA.proofBundle.document_hash.length === 64);
+    assert.ok(typeof runA.staticAnalysis.finding_hash === "string" && runA.staticAnalysis.finding_hash.length === 64);
     // The disk-resident copy must match the in-memory result we got back.
     assert.equal(readDocDeltaResults(domainA).results_hash, runA.docDelta.results_hash);
     assert.equal(readAuthDifferentialResults(domainA).results_hash, runA.authDiff.results_hash);
@@ -412,6 +450,7 @@ test("determinism CI: re-running the same pipeline against the same target produ
     assert.equal(firstRun.c10.differential_hash, secondRun.c10.differential_hash, "C10 differential hash drifted on second pass against the same target");
     assert.equal(firstRun.proofBundle.bundle_hash, secondRun.proofBundle.bundle_hash, "C14 bundle_hash drifted on second pass against the same target");
     assert.equal(firstRun.proofBundle.document_hash, secondRun.proofBundle.document_hash, "proof-bundles.json hash drifted on second pass against the same target");
+    assert.equal(firstRun.staticAnalysis.finding_hash, secondRun.staticAnalysis.finding_hash, "I10 finding_hash drifted on second pass against the same target");
   } finally {
     cleanupDomain(domain);
   }

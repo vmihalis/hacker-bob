@@ -94,6 +94,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "assignment_brief_oss_technique_pack_renderer",
     ]),
   }),
+  Object.freeze({
+    producer_id: "static_analysis_index",
+    mcp_tool_or_artifact: "indexStaticResults / static-analysis-index.jsonl",
+    trace_shape_ref: "mcp/lib/static-analysis-index.js#indexStaticResults",
+    registered_consumers: Object.freeze([
+      "c11_static_analysis_brief_slice",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

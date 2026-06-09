@@ -133,6 +133,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "OSS brief composition consumes OSS_TECHNIQUE_PACKS and partitions them by task-lens affinity",
   }),
+  Object.freeze({
+    consumer_id: "c11_static_analysis_brief_slice",
+    source_location: Object.freeze({
+      file: "docs/plane-delta/detail/C11.md",
+      token_or_regex: "static_analysis_leads",
+    }),
+    producer_id: "static_analysis_index",
+    decision_boundary: "brief_composition",
+    rationale:
+      "C11 brief slice consumes I10 static-analysis-index rows as unverified lead seeds",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

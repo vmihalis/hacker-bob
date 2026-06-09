@@ -13,8 +13,9 @@
 //     dependency payload subsumes the would-be cve_signal_observed.
 //   - 7 OSS technique packs with hunting vocabulary in `summary` content +
 //     id alias map for typo / legacy-id recovery.
-//   - 5 OSS cli-tool packs (semgrep, trivy, cargo-audit, npm-audit, pip-audit).
-//     Deferred: codeql, bandit, gosec, syft, grype, radare2/binwalk/ghidra.
+//   - 7 OSS cli-tool packs (semgrep, trivy, codeql, coccinelle,
+//     cargo-audit, npm-audit, pip-audit).
+//     Deferred: bandit, gosec, syft, grype, radare2/binwalk/ghidra.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -460,7 +461,7 @@ test("dependency_observed.ecosystem='pypi' surfaces pip-audit pack", () => {
   assert.ok(ids.includes("pip-audit"), "pip-audit must surface when ecosystem === 'pypi'");
 });
 
-test("semgrep and trivy surface for every OSS repo surface (no observation required)", () => {
+test("repo-gated static analyzers surface for every OSS repo surface (no observation required)", () => {
   // Both are always-applicable OSS packs: `surface.kind === "repo"` is the
   // only predicate. Mailing it without any observations.
   const result = selectCliToolPacks({
@@ -470,6 +471,8 @@ test("semgrep and trivy surface for every OSS repo surface (no observation requi
   const ids = result.map((pack) => pack.id);
   assert.ok(ids.includes("semgrep"), "semgrep must surface for every OSS surface");
   assert.ok(ids.includes("trivy"), "trivy must surface for every OSS surface");
+  assert.ok(ids.includes("codeql"), "codeql must surface for every OSS surface");
+  assert.ok(ids.includes("coccinelle"), "coccinelle must surface for every OSS surface");
 });
 
 test("non-repo surfaces (web / smart_contract) do NOT surface the OSS packs", () => {
@@ -481,6 +484,8 @@ test("non-repo surfaces (web / smart_contract) do NOT surface the OSS packs", ()
     const ids = result.map((pack) => pack.id);
     assert.ok(!ids.includes("semgrep"), `semgrep must NOT surface on surface.kind=${kind}`);
     assert.ok(!ids.includes("trivy"), `trivy must NOT surface on surface.kind=${kind}`);
+    assert.ok(!ids.includes("codeql"), `codeql must NOT surface on surface.kind=${kind}`);
+    assert.ok(!ids.includes("coccinelle"), `coccinelle must NOT surface on surface.kind=${kind}`);
     // cargo-audit's predicate is observation-driven (not surface-driven), so it
     // still fires when the dependency_observed event names cargo. That is the
     // intentional shape — operators want the per-ecosystem audit even when
@@ -489,9 +494,9 @@ test("non-repo surfaces (web / smart_contract) do NOT surface the OSS packs", ()
   }
 });
 
-test("CLI_TOOL_PACKS includes the 5 OSS packs alongside the prior Plane T packs", () => {
+test("CLI_TOOL_PACKS includes the 7 OSS packs alongside the prior Plane T packs", () => {
   const ids = CLI_TOOL_PACKS.map((pack) => pack.id);
-  for (const ossId of ["semgrep", "trivy", "cargo-audit", "npm-audit", "pip-audit"]) {
+  for (const ossId of ["semgrep", "trivy", "codeql", "coccinelle", "cargo-audit", "npm-audit", "pip-audit"]) {
     assert.ok(ids.includes(ossId), `CLI_TOOL_PACKS must include ${ossId}`);
   }
   // Regression: the prior Plane T packs still ship.

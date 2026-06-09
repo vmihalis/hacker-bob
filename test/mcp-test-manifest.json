@@ -97,6 +97,7 @@
   "test/oss-blocked-harness.test.js",
   "test/oss-evidence-reference.test.js",
   "test/sarif-ingest.test.js",
+  "test/static-analysis-index.test.js",
   "test/orchestrator-oss-branch.test.js",
   "test/realization-oss-e2e-smoke.test.js",
   "test/task-graph-events.test.js",
