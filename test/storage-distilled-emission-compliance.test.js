@@ -42,6 +42,7 @@ const resolveBodyTool = require("../mcp/lib/tools/resolve-body.js");
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
+  NEUTRALIZED_CLOSE_SENTINEL,
 } = require("../mcp/lib/untrusted-envelope.js");
 const {
   appendFrontierEvent,
@@ -471,7 +472,8 @@ test("bob_resolve_body fences untrusted resolver output without changing raw met
     assert.equal(toolResult.truncated_at, null);
     assert.equal(occurrences(toolResult.body, CLOSE_SENTINEL), 1, "only the real envelope footer may contain the close marker");
     const fencedBody = parseUntrustedFence(toolResult.body, "repo_command_run");
-    assert.match(fencedBody, /&lt;&lt;END_UNTRUSTED_DATA/);
+    assert.doesNotMatch(fencedBody, /&lt;&lt;END_UNTRUSTED_DATA/i);
+    assert.ok(fencedBody.includes(NEUTRALIZED_CLOSE_SENTINEL));
 
     const emptyPage = JSON.parse(resolveBodyTool.handler({
       target_domain: domain,

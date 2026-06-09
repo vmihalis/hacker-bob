@@ -22,6 +22,7 @@ const {
 const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
+  NEUTRALIZED_CLOSE_SENTINEL,
 } = require("../mcp/lib/untrusted-envelope.js");
 const {
   startWave,
@@ -289,8 +290,9 @@ test("brief untrusted slices neutralize forged closing markers", () => {
   const extras = buildBriefExtrasFromRegistry(ASSIGNMENT_BRIEF_SLICE_REGISTRY.web, context);
   assert.equal(occurrences(extras.traffic_summary, CLOSE_SENTINEL), 1, "only the genuine footer may carry the close marker");
   const parsed = parseUntrustedFence(extras.traffic_summary);
-  assert.match(parsed.body, /&lt;&lt;END_UNTRUSTED_DATA/);
   assert.doesNotMatch(parsed.body, /<<END_UNTRUSTED_DATA/);
+  assert.doesNotMatch(parsed.body, /&lt;&lt;END_UNTRUSTED_DATA/i);
+  assert.ok(parsed.body.includes(NEUTRALIZED_CLOSE_SENTINEL));
 });
 
 function webOpenApiFixture() {
