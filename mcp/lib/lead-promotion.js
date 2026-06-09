@@ -340,22 +340,17 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
       promoted_at: now,
     };
   }
-  let newlyFiltered = 0;
+  const newlyFilteredIndexes = [];
   for (const lead of promotion.filteredLeads) {
     const index = document.leads.findIndex((item) => item.id === lead.id);
     if (index === -1 || document.leads[index].evaluator_run_avoided_recorded_at) continue;
-    document.leads[index] = {
-      ...document.leads[index],
-      evaluator_run_avoided_recorded_at: now,
-    };
-    newlyFiltered += 1;
+    newlyFilteredIndexes.push(index);
   }
+  const newlyFiltered = newlyFilteredIndexes.length;
   const deferredByLimit = Math.max(0, promotion.promotableLeads.length - promotion.limit);
-  if (candidates.length > 0 || newlyFiltered > 0) {
-    writeSurfaceLeadsDocument(domain, document);
-  }
-  if (promotedSurfaceIds.length > 0 || newlyFiltered > 0 || deferredByLimit > 0) {
-    safeAppendPipelineEventDirect(domain, "evaluator_run_avoided", {
+  let avoidedEvent = null;
+  if (newlyFiltered > 0 || deferredByLimit > 0) {
+    avoidedEvent = safeAppendPipelineEventDirect(domain, "evaluator_run_avoided", {
       source: options.source || "bob_promote_surface_leads",
       counts: {
         assignable: promotion.assignableLeads.length,
@@ -365,6 +360,17 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
         evaluator_runs_avoided: newlyFiltered,
       },
     }, safeGovernanceContextForDomain(domain));
+  }
+  if (avoidedEvent) {
+    for (const index of newlyFilteredIndexes) {
+      document.leads[index] = {
+        ...document.leads[index],
+        evaluator_run_avoided_recorded_at: now,
+      };
+    }
+  }
+  if (candidates.length > 0 || (avoidedEvent && newlyFiltered > 0)) {
+    writeSurfaceLeadsDocument(domain, document);
   }
   return buildPromotionEnvelope(domain, promotedSurfaceIds);
 }

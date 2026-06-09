@@ -80,6 +80,20 @@ function withTempHome(fn) {
   }
 }
 
+function withPipelineAnalyticsDisabled(fn) {
+  const previousValue = process.env.BOUNTY_PIPELINE_ANALYTICS;
+  process.env.BOUNTY_PIPELINE_ANALYTICS = "0";
+  try {
+    return fn();
+  } finally {
+    if (previousValue == null) {
+      delete process.env.BOUNTY_PIPELINE_ANALYTICS;
+    } else {
+      process.env.BOUNTY_PIPELINE_ANALYTICS = previousValue;
+    }
+  }
+}
+
 function ensureSessionDir(domain) {
   fs.mkdirSync(sessionDir(domain), { recursive: true });
 }
@@ -412,6 +426,31 @@ test("bob_promote_surface_leads emits evaluator_run_avoided counts for filtered 
   });
 });
 
+test("bob_promote_surface_leads does not emit evaluator_run_avoided for pure promotions", () => {
+  withTempHome(() => {
+    const domain = "x7-pure-promotion.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "high-a", hosts: ["high-a.example.com"], score: 90 }),
+        makeLead({ title: "high-b", hosts: ["high-b.example.com"], score: 80 }),
+      ],
+    }));
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(promoted.promoted, 2);
+    assert.deepEqual(readEvaluatorRunAvoidedEvents(domain), []);
+  });
+});
+
 test("bob_promote_surface_leads emits evaluator_run_avoided before all-filtered early return", () => {
   withTempHome(() => {
     const domain = "x7-all-filtered.example.com";
@@ -443,6 +482,48 @@ test("bob_promote_surface_leads emits evaluator_run_avoided before all-filtered 
       deferred_by_limit: 0,
       evaluator_runs_avoided: 2,
     });
+  });
+});
+
+test("bob_promote_surface_leads retries filtered telemetry when append is disabled", () => {
+  withTempHome(() => {
+    const domain = "x7-append-disabled.example.com";
+    seedSession(domain);
+    JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "test",
+      leads: [
+        makeLead({ title: "low-a", hosts: ["low-a.example.com"], score: 10 }),
+      ],
+    }));
+
+    withPipelineAnalyticsDisabled(() => {
+      const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+        target_domain: domain,
+        limit: 10,
+        min_score: 60,
+        include_medium: false,
+      }));
+      assert.equal(promoted.promoted, 0);
+    });
+
+    assert.deepEqual(readEvaluatorRunAvoidedEvents(domain), []);
+    const afterDisabled = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 10 }));
+    assert.equal(afterDisabled.leads[0].evaluator_run_avoided_recorded_at, null);
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 10,
+      min_score: 60,
+      include_medium: false,
+    }));
+
+    assert.equal(promoted.promoted, 0);
+    const events = readEvaluatorRunAvoidedEvents(domain);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].counts.evaluator_runs_avoided, 1);
+    const afterEnabled = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 10 }));
+    assert.equal(typeof afterEnabled.leads[0].evaluator_run_avoided_recorded_at, "string");
   });
 });
 
