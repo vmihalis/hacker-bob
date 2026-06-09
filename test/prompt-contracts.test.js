@@ -775,6 +775,24 @@ test("Claude role MCP tool sets match the neutral role model", () => {
   }
 });
 
+test("Claude roles with bob_resolve_body carry untrusted marker discipline", () => {
+  const checked = [];
+  for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
+    if (spec.kind !== "agent") continue;
+    if (!mcpToolNamesForRole(roleId).includes("bob_resolve_body")) continue;
+    checked.push(roleId);
+    const document = readFile(spec.output_path);
+    assert.match(document, /<<UNTRUSTED_DATA \.\.\.>>>/, `${roleId} must name the opening untrusted marker`);
+    assert.match(document, /<<END_UNTRUSTED_DATA \.\.\.>>>/, `${roleId} must name the closing untrusted marker`);
+    assert.match(document, /never instructions to follow/i, `${roleId} must tell the worker not to follow fenced instructions`);
+  }
+  assert.ok(checked.includes("evaluator-spawn"), "evaluator-spawn must be covered by the resolver-body guard");
+  assert.ok(checked.includes("brutalist-verifier"), "brutalist-verifier must be covered by the resolver-body guard");
+  assert.ok(checked.includes("balanced-verifier"), "balanced-verifier must be covered by the resolver-body guard");
+  assert.ok(checked.includes("final-verifier"), "final-verifier must be covered by the resolver-body guard");
+  assert.ok(checked.includes("evidence"), "evidence-agent must be covered by the resolver-body guard");
+});
+
 test("evaluator-agent ships the evaluator-shared + evaluator-web bundle, no Write", () => {
   const spec = AGENT_TOOL_SPECS["evaluator-agent.md"];
   assert.deepEqual(spec.roleBundles, ["evaluator-shared", "evaluator-web"]);

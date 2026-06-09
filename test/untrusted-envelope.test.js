@@ -11,6 +11,7 @@ const {
   OPEN_SENTINEL,
   CLOSE_SENTINEL,
   ENVELOPE_NONCE_BYTES,
+  FENCE_OVERHEAD_CAP,
 } = require("../mcp/lib/untrusted-envelope.js");
 
 function sha256Hex(value) {
@@ -107,6 +108,13 @@ test("wrapUntrusted hashes input deterministically while nonce output changes", 
   assert.equal(first.content_hash, second.content_hash);
   assert.notEqual(first.nonce, second.nonce);
   assert.notEqual(first.text, second.text);
+});
+
+test("wrapUntrusted overhead stays within FENCE_OVERHEAD_CAP", () => {
+  const body = "test body";
+  const wrapped = wrapUntrusted(body, { label: "a".repeat(64) });
+  const overhead = wrapped.text.length - body.length;
+  assert.ok(overhead <= FENCE_OVERHEAD_CAP, `overhead ${overhead} exceeds ${FENCE_OVERHEAD_CAP}`);
 });
 
 test("system note stays bounded", () => {

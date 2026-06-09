@@ -421,7 +421,11 @@ test("web evaluator brief stays within 30k with representative slice fixtures", 
       egress_profile: "default",
       block_internal_hosts: false,
     });
-    assert.ok(rawBrief.indexOf("\"untrusted_content_policy\"") < rawBrief.indexOf("\"run_context\""));
+    const untrustedPolicyIndex = rawBrief.indexOf("\"untrusted_content_policy\"");
+    const runContextIndex = rawBrief.indexOf("\"run_context\"");
+    assert.notEqual(untrustedPolicyIndex, -1, "web brief must carry untrusted_content_policy");
+    assert.notEqual(runContextIndex, -1, "web brief must carry run_context");
+    assert.ok(untrustedPolicyIndex < runContextIndex);
     const brief = assertBriefWithinBudget("web", {
       target_domain: domain,
       wave: "w1",

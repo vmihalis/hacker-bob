@@ -72,6 +72,7 @@ const AGENT_TOOL_SPECS = Object.freeze({
     extras: ["Bash"],
   },
   "evidence-agent.md": {
+    roleId: "evidence",
     roleBundles: ["evidence"],
     extras: [],
   },
