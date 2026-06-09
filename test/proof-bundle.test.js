@@ -87,7 +87,7 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
   fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), stderr);
   const replayCommandHash = sha256Hex(JSON.stringify(replayCommand));
-  appendJsonlLine(repoCommandRunsJsonlPath(domain), {
+  const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
@@ -97,6 +97,7 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
     argv_hash: sha256Hex(JSON.stringify(["run", "--network", "none"])),
     network_mode: options.network_mode || "none",
     mount_mode: options.mount_mode || "read_only",
+    work_mount_mode: options.work_mount_mode || "read_write",
     image_tag: options.image_tag || "bob-oss-fixture:stable",
     timeout_ms: 300000,
     exit_code: 1,
@@ -108,7 +109,9 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
     stderr_size_bytes: Buffer.byteLength(stderr),
     stdout_truncated: false,
     stderr_truncated: false,
-  });
+  };
+  if (options.omit_work_mount_mode) delete row.work_mount_mode;
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 
 function replayBundle(findingId = "F-1", runId = "run-fixture", replayCommand = ["sh", "-lc", "./repro.sh"]) {
@@ -197,6 +200,20 @@ test("bob_write_proof_bundle rejects replay artifacts missing a repo docker run_
         }],
       }),
       /run_id must be a non-empty string/,
+    );
+  });
+});
+
+test("bob_write_proof_bundle rejects replay rows without a recorded /work mount mode", () => {
+  withTempHome(() => {
+    const domain = "proof-missing-work-mount.example.com";
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    appendRepoRunFixture(domain, "run-fixture", ["sh", "-lc", "./repro.sh"], { omit_work_mount_mode: true });
+
+    assert.throws(
+      () => writeProofBundles({ target_domain: domain, packs: [replayBundle()] }),
+      /read-write \/work repo docker run/,
     );
   });
 });

@@ -158,6 +158,9 @@ function readRepoCommandRunRow(rows, runId, fieldName) {
   if (row.mount_mode !== "read_only") {
     throw new Error(`${fieldName} must reference a read-only /src repo docker run`);
   }
+  if (row.work_mount_mode !== "read_write") {
+    throw new Error(`${fieldName} must reference a read-write /work repo docker run`);
+  }
   if (typeof row.image_tag !== "string" || !row.image_tag.trim()) {
     throw new Error(`${fieldName} must carry the O-D6 image_tag for replay`);
   }
@@ -238,7 +241,7 @@ function stableRepoRunProjection(domain, row, fieldName) {
     argv_hash: row.argv_hash == null ? null : assertHex64(row.argv_hash, `${fieldName}.argv_hash`),
     network_mode: row.network_mode,
     src_mount_mode: row.mount_mode,
-    work_mount_mode: "read_write",
+    work_mount_mode: assertNonEmptyString(row.work_mount_mode, `${fieldName}.work_mount_mode`),
     image_tag: assertNonEmptyString(row.image_tag, `${fieldName}.image_tag`),
     stdout_hash: assertCapturedOutputHash(domain, row, fieldName, "stdout"),
     stderr_hash: assertCapturedOutputHash(domain, row, fieldName, "stderr"),

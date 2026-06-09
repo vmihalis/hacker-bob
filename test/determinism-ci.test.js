@@ -191,6 +191,7 @@ function appendRepoRunFixture(domain, runId, stdout, {
     argv_hash: sha256Hex(JSON.stringify(["run", "--network", "none"])),
     network_mode: "none",
     mount_mode: "read_only",
+    work_mount_mode: "read_write",
     image_tag: `bob-oss-${domain}:fixture`,
     exit_code: 0,
     timed_out: false,

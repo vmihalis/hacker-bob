@@ -831,6 +831,7 @@ const DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS = 30_000;
 const REPO_DOCKER_RUN_MAX_OUTPUT_BYTES = 16 * 1024 * 1024; // 16 MB per stream
 const REPO_DOCKER_RUN_MAX_COMMAND_TOKENS = 64;
 const REPO_DOCKER_RUN_MAX_TOKEN_LENGTH = 2048;
+const REPO_WORK_MOUNT_MODE = "read_write";
 // Plane X Cycle X.7 (X-P9 retrofit): stdout/stderr first-line previews
 // cap. 200 chars matches the http_record body_preview discipline; the
 // per-stream first line is captured at completion time so the JSONL
@@ -1659,6 +1660,7 @@ async function repoDockerRun({
       argv_hash: argvHash,
       network_mode: networkMode,
       mount_mode: normalizedMountMode,
+      work_mount_mode: REPO_WORK_MOUNT_MODE,
       image_tag: imageTag,
       timeout_ms: normalizedTimeoutMs,
       planned_at: startedAt,
@@ -1696,6 +1698,7 @@ async function repoDockerRun({
       image_tag: imageTag,
       network_mode: networkMode,
       mount_mode: normalizedMountMode,
+      work_mount_mode: REPO_WORK_MOUNT_MODE,
       command_hash: commandHash,
       replay_command_hash: replayCommandHash,
       argv_hash: argvHash,
@@ -1801,6 +1804,7 @@ async function repoDockerRun({
     argv_hash: argvHash,
     network_mode: networkMode,
     mount_mode: normalizedMountMode,
+    work_mount_mode: REPO_WORK_MOUNT_MODE,
     image_tag: imageTag,
     timeout_ms: normalizedTimeoutMs,
     started_at: startedAt,
@@ -1861,6 +1865,7 @@ async function repoDockerRun({
     image_tag: imageTag,
     network_mode: networkMode,
     mount_mode: normalizedMountMode,
+    work_mount_mode: REPO_WORK_MOUNT_MODE,
     command_hash: commandHash,
     replay_command_hash: replayCommandHash,
     argv_hash: argvHash,
