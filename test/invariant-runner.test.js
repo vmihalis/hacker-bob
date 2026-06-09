@@ -15,6 +15,8 @@ const {
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
 } = require("../mcp/lib/invariant-runner.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
@@ -408,6 +410,39 @@ test("runs for duplicate audit findings keep distinct final finding run_hashes",
     const corpus = readInvariantRuns({ target_domain: domain });
     assert.equal(corpus.total_in_corpus, 2);
     assert.deepEqual(new Set(corpus.runs.map((run) => run.finding_id)), new Set(["F-1", "F-2"]));
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("run_hash binds invariant outcome and Foundry result", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  try {
+    const slotValues = { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" };
+    const passed = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: slotValues,
+      harness_path: harness,
+      foundry_run: async () => ({ tests: [{ success: true }] }),
+    });
+    const failed = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: slotValues,
+      harness_path: harness,
+      foundry_run: async () => ({ tests: [{ success: false }] }),
+    });
+
+    assert.notEqual(passed.run_hash, failed.run_hash);
+    const corpus = readInvariantRuns({ target_domain: domain, limit: 10 });
+    assert.equal(corpus.total_in_corpus, 2);
+    for (const row of corpus.runs) {
+      assert.equal(row.foundry_result_hash, invariantFoundryResultHash(row.foundry_result));
+      assert.equal(row.run_hash, computeInvariantRunHash(row));
+    }
   } finally {
     cleanupDomain(domain);
     cleanupHarness(harness);

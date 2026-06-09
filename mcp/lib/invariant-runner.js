@@ -572,6 +572,36 @@ function classifyFoundryOutcome(rawResult) {
   return "unknown";
 }
 
+function invariantFoundryResultHash(foundryResult) {
+  return hashCanonicalJson(foundryResult == null ? null : foundryResult);
+}
+
+function computeInvariantRunHash({
+  finding_id,
+  finding_hash,
+  template_id,
+  slot_values,
+  contract_name,
+  function_name,
+  execution_context_hash,
+  outcome,
+  foundry_result,
+  dry_run,
+}) {
+  return hashCanonicalJson({
+    finding_id: parseFindingId(finding_id, "finding_id"),
+    finding_hash: finding_hash || null,
+    template_id,
+    slot_values: slot_values || null,
+    contract_name,
+    function_name,
+    execution_context_hash,
+    outcome: outcome || null,
+    foundry_result_hash: invariantFoundryResultHash(foundry_result),
+    dry_run: dry_run === true,
+  });
+}
+
 async function runInvariantForFinding({
   target_domain,
   finding,
@@ -664,7 +694,7 @@ async function runInvariantForFinding({
       }
     }
     outcome = classifyFoundryOutcome(foundryRawResult);
-    runHash = hashCanonicalJson({
+    runHash = computeInvariantRunHash({
       finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
@@ -672,9 +702,12 @@ async function runInvariantForFinding({
       contract_name,
       function_name,
       execution_context_hash: executionContextHash,
+      outcome,
+      foundry_result: foundryRawResult,
+      dry_run: false,
     });
   } else {
-    runHash = hashCanonicalJson({
+    runHash = computeInvariantRunHash({
       finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
@@ -682,6 +715,8 @@ async function runInvariantForFinding({
       contract_name,
       function_name,
       execution_context_hash: executionContextHash,
+      outcome,
+      foundry_result: null,
       dry_run: true,
     });
   }
@@ -706,6 +741,7 @@ async function runInvariantForFinding({
     match_test: match_test || null,
     test_path: writtenPath,
     outcome,
+    foundry_result_hash: invariantFoundryResultHash(foundryRawResult),
     foundry_result: foundryRawResult,
     dry_run: dry_run === true,
     run_id: typeof run_id === "string" && run_id.length > 0 ? run_id : null,
@@ -780,4 +816,6 @@ module.exports = {
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
 };

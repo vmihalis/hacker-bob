@@ -11,6 +11,10 @@ const {
   normalizeProofBundlesDocument,
   writeProofBundles,
 } = require("../mcp/lib/proof-bundle.js");
+const {
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
+} = require("../mcp/lib/invariant-runner.js");
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
@@ -128,22 +132,29 @@ function appendRepoRunFixture(domain, runId = "run-fixture", replayCommand = ["s
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
 }
 
-function appendInvariantRunFixture(domain, runHash, options = {}) {
+function appendInvariantRunFixture(domain, runHashSeed = "invariant-run-fixture", options = {}) {
+  const outcome = options.outcome || "test_passed";
+  const foundryResult = options.foundry_result || (outcome === "test_passed"
+    ? { tests: [{ success: true }] }
+    : { tests: [{ success: false }] });
   const row = {
-    run_hash: runHash,
     target_domain: domain,
     finding_id: options.finding_id || "F-1",
     finding_hash: options.finding_hash || "finding-hash-fixture",
     template_id: "reentrancy-basic",
     contract_name: "BobInvariantTest_fixture",
     function_name: "testBobInvariant_fixture",
-    execution_context_hash: sha256Hex("context"),
+    execution_context_hash: options.execution_context_hash || sha256Hex(String(runHashSeed || "context")),
     test_path: "/tmp/harness/test/bob-invariants/BobInvariantTest_fixture.t.sol",
-    outcome: options.outcome || "test_passed",
+    outcome,
+    foundry_result_hash: invariantFoundryResultHash(foundryResult),
+    foundry_result: foundryResult,
     dry_run: options.dry_run === true ? true : false,
   };
+  row.run_hash = options.force_run_hash || computeInvariantRunHash(row);
   if (options.omit_finding_id) delete row.finding_id;
   appendJsonlLine(invariantRunsJsonlPath(domain), row);
+  return row;
 }
 
 function replayBundle(findingId = "F-1", runId = "run-fixture", replayCommand = ["sh", "-lc", "./repro.sh"]) {
@@ -320,10 +331,9 @@ test("bob_write_proof_bundle rejects replay rows bound to another finding", () =
 test("bob_write_proof_bundle rejects non-reproducing invariant rows", () => {
   withTempHome(() => {
     const domain = "proof-invariant-outcome.example.com";
-    const runHash = sha256Hex("invariant-run");
     seedFinding(domain);
     seedFinalRound(domain, [reportableResult()]);
-    appendInvariantRunFixture(domain, runHash, { outcome: "test_failed" });
+    const row = appendInvariantRunFixture(domain, "invariant-run", { outcome: "test_failed" });
 
     assert.throws(
       () => writeProofBundles({
@@ -331,7 +341,7 @@ test("bob_write_proof_bundle rejects non-reproducing invariant rows", () => {
         packs: [{
           finding_id: "F-1",
           bundle_kind: "invariant",
-          artifacts: [{ run_hash: runHash }],
+          artifacts: [{ run_hash: row.run_hash }],
         }],
       }),
       /outcome test_passed/,
@@ -339,13 +349,17 @@ test("bob_write_proof_bundle rejects non-reproducing invariant rows", () => {
   });
 });
 
-test("bob_write_proof_bundle rejects legacy invariant rows without finding_id remediation", () => {
+test("bob_write_proof_bundle rejects invariant rows with unbound forged outcomes", () => {
   withTempHome(() => {
-    const domain = "proof-invariant-legacy-row.example.com";
-    const runHash = sha256Hex("legacy-invariant-run");
+    const domain = "proof-invariant-forged-outcome.example.com";
+    const legacyRunHash = sha256Hex("legacy-unbound-invariant-run");
     seedFinding(domain);
     seedFinalRound(domain, [reportableResult()]);
-    appendInvariantRunFixture(domain, runHash, { omit_finding_id: true });
+    appendInvariantRunFixture(domain, "forged-invariant-run", {
+      force_run_hash: legacyRunHash,
+      outcome: "test_passed",
+      foundry_result: { tests: [{ success: false }] },
+    });
 
     assert.throws(
       () => writeProofBundles({
@@ -353,7 +367,28 @@ test("bob_write_proof_bundle rejects legacy invariant rows without finding_id re
         packs: [{
           finding_id: "F-1",
           bundle_kind: "invariant",
-          artifacts: [{ run_hash: runHash }],
+          artifacts: [{ run_hash: legacyRunHash }],
+        }],
+      }),
+      /does not bind the invariant run outcome and Foundry result/,
+    );
+  });
+});
+
+test("bob_write_proof_bundle rejects legacy invariant rows without finding_id remediation", () => {
+  withTempHome(() => {
+    const domain = "proof-invariant-legacy-row.example.com";
+    seedFinding(domain);
+    seedFinalRound(domain, [reportableResult()]);
+    const row = appendInvariantRunFixture(domain, "legacy-invariant-run", { omit_finding_id: true });
+
+    assert.throws(
+      () => writeProofBundles({
+        target_domain: domain,
+        packs: [{
+          finding_id: "F-1",
+          bundle_kind: "invariant",
+          artifacts: [{ run_hash: row.run_hash }],
         }],
       }),
       /legacy invariant row without finding_id; re-run the invariant for proof bundle finding_id F-1/,
@@ -364,26 +399,25 @@ test("bob_write_proof_bundle rejects legacy invariant rows without finding_id re
 test("bob_write_proof_bundle finds invariant rows beyond the read-tool display cap", () => {
   withTempHome(() => {
     const domain = "proof-invariant-cap.example.com";
-    const targetRunHash = sha256Hex("invariant-run-target");
     seedFinding(domain);
     seedFinalRound(domain, [reportableResult()]);
     for (let i = 0; i < 55; i += 1) {
       appendInvariantRunFixture(domain, sha256Hex(`invariant-run-${i}`));
     }
-    appendInvariantRunFixture(domain, targetRunHash);
+    const targetRow = appendInvariantRunFixture(domain, "invariant-run-target");
 
     const written = JSON.parse(writeProofBundles({
       target_domain: domain,
       packs: [{
         finding_id: "F-1",
         bundle_kind: "invariant",
-        artifacts: [{ run_hash: targetRunHash }],
+        artifacts: [{ run_hash: targetRow.run_hash }],
       }],
     }));
 
     assert.equal(written.bundles_count, 1);
     const doc = JSON.parse(fs.readFileSync(proofBundlePaths(domain).json, "utf8"));
-    assert.equal(doc.packs[0].artifacts[0].run_hash, targetRunHash);
+    assert.equal(doc.packs[0].artifacts[0].run_hash, targetRow.run_hash);
     assert.equal(
       Object.hasOwn(doc.packs[0].artifacts[0], "test_path"),
       false,

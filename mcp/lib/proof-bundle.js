@@ -44,6 +44,11 @@ const {
   hashCanonicalJson,
   isPlainObject,
 } = require("./verification-contracts.js");
+const {
+  classifyFoundryOutcome,
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
+} = require("./invariant-runner.js");
 
 const PROOF_BUNDLES_VERSION = 1;
 const PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
@@ -398,6 +403,18 @@ function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
   }
   if (row.finding_id !== expectedFindingId) {
     throw new Error(`${fieldName} finding_id does not match proof bundle finding_id ${expectedFindingId}`);
+  }
+  const expectedFoundryResultHash = invariantFoundryResultHash(row.foundry_result);
+  if (row.foundry_result_hash != null && row.foundry_result_hash !== expectedFoundryResultHash) {
+    throw new Error(`${fieldName} foundry_result_hash does not match invariant run result payload`);
+  }
+  const expectedRunHash = computeInvariantRunHash(row);
+  if (expectedRunHash !== normalizedRunHash) {
+    throw new Error(`${fieldName} does not bind the invariant run outcome and Foundry result; re-run the invariant before writing proof bundles`);
+  }
+  const classifiedOutcome = classifyFoundryOutcome(row.foundry_result);
+  if (classifiedOutcome !== row.outcome) {
+    throw new Error(`${fieldName} outcome does not match invariant run Foundry result`);
   }
   if (row.outcome !== "test_passed") {
     throw new Error(`${fieldName} must reference a reproducing invariant run with outcome test_passed`);
