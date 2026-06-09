@@ -37,6 +37,7 @@ Restart your host CLI from the same project directory, then run the matching com
 | Claude Code | `/bob-evaluate target.com` |
 | Codex | `$bob-evaluate target.com` |
 | Kimi CLI | `/skill:bob-evaluate target.com` |
+| OpenCode | `/bob-evaluate target.com` |
 | Generic MCP host | Connect the generated `.mcp.json`, then follow `.hacker-bob/generic-mcp/hacker-bob.md`. |
 
 Run a status check before a full evaluate if you want to confirm the integration is loaded:
@@ -46,6 +47,7 @@ Run a status check before a full evaluate if you want to confirm the integration
 | Claude Code | `/bob-status` |
 | Codex | `$bob-status` |
 | Kimi CLI | `/skill:bob-status` |
+| OpenCode | `/bob-status` |
 | Shell | `hacker-bob doctor /path/to/your/project` |
 
 ## Safety
@@ -75,6 +77,7 @@ npx -y hacker-bob@latest install /path/to/your/project --adapter claude
 npx -y hacker-bob@latest install /path/to/your/project --adapter codex
 npx -y hacker-bob@latest install /path/to/your/project --adapter generic-mcp
 npx -y hacker-bob@latest install /path/to/your/project --adapter kimi
+npx -y hacker-bob@latest install /path/to/your/project --adapter opencode
 npx -y hacker-bob@latest install /path/to/your/project --adapter all
 ```
 
@@ -85,9 +88,10 @@ The installer is idempotent and preserves unrelated host configuration. It write
 | `claude` | `.claude/` commands, skills, agents, hooks, statusline setup, and MCP settings. |
 | `codex` | `$bob-*` skills in `~/.codex/skills`, a local `.codex/plugins/hacker-bob` plugin, `.agents/plugins/marketplace.json`, and Codex MCP activation metadata. |
 | `kimi` | `.kimi/skills`, `.kimi/mcp.json`, and `.kimi/bob` compatibility metadata. Relies on prompt-side enforcement; no PreToolUse hooks until `~/.kimi/config.toml` wiring lands. |
+| `opencode` | A project-root `opencode.json` MCP entry, per-role subagents under `.opencode/agents/bob-*.md` (orchestrator `mode: primary`, the rest `mode: subagent`, no pinned model — BYOK), `/bob-*` slash commands under `.opencode/commands/`, and `.opencode/bob` install metadata. The orchestrator dispatches subagents by `@bob-<role>` mention. |
 | `generic-mcp` | A root `.mcp.json` entry plus prompt guide files under `.hacker-bob/generic-mcp/`. |
 
-When `--adapter` is omitted, Bob chooses an adapter from prior install metadata, host environment markers, project files, and installed host CLIs. Claude is the final fallback.
+When `--adapter` is omitted, Bob chooses an adapter from prior install metadata, host environment markers, project files (`.claude/`, `.codex/plugins/`, `.kimi/`, `opencode.json`/`.opencode/`, `.mcp.json`), and installed host CLIs. Claude is the final fallback.
 
 The MCP server name is `hacker-bob`. You will see `hacker-bob` in `.mcp.json`, in `claude mcp list`, and as the prefix on tool names such as `mcp__hacker-bob__bob_*`. Existing v1.x installs are auto-migrated on the next install or update: the legacy `bountyagent` server key and `mcp__bountyagent__*` permission strings are rewritten to the canonical `hacker-bob` form while operator-managed sibling servers and custom permissions are preserved.
 

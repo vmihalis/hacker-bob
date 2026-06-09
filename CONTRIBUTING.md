@@ -38,7 +38,7 @@ npm run test:hooks
 ## Project layout
 
 - `adapters/` contains host-specific install, doctor, uninstall, render, and
-  config ownership for Claude, Codex, and generic MCP hosts.
+  config ownership for Claude, Codex, Kimi, OpenCode, and generic MCP hosts.
 - `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and
   `.claude/hooks/` are the generated Claude adapter surface.
 - `prompts/roles/` and `mcp/lib/role-model.js` define shared role contracts
@@ -86,6 +86,7 @@ For local end-to-end testing, use a dedicated throwaway workspace:
 ./dev-sync.sh /absolute/path/to/test-workspace
 ./dev-sync.sh /absolute/path/to/test-workspace --adapter codex
 ./dev-sync.sh /absolute/path/to/test-workspace --adapter generic-mcp
+./dev-sync.sh /absolute/path/to/test-workspace --adapter opencode
 ```
 
 Restart the selected host in that workspace after syncing. Do not use a

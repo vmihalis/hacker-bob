@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Adapters
+
+- New `opencode` host adapter for [OpenCode](https://opencode.ai), a first-class peer to the Claude/Codex/Kimi adapters that renders Bob's shared role model into native OpenCode subagents. `--adapter opencode` merges Bob's MCP server into a project-root `opencode.json` (`mcp` key, local stdio shape) while preserving every other operator-configured key and server, renders each Bob role to a subagent under `.opencode/agents/bob-*.md` (orchestrator `mode: primary`, the rest `mode: subagent`, no pinned model — BYOK), installs `/bob-*` slash commands under `.opencode/commands/`, and records install metadata under `.opencode/bob/`. The orchestrator dispatches the per-role subagents by `@bob-<role>` mention (OpenCode's `task` tool cannot target custom subagents yet); evaluator waves run sequentially and rely on the MCP wave-merge barrier for correctness. Subagent prompts are drift-guarded against the shared role model via `check:opencode` (wired into `test:prompts`). Auto-detection recognizes `opencode.json`/`.opencode/` project artifacts and the `opencode` CLI on PATH; `doctor` and `uninstall` are wired for the new surface, and `--adapter all` now includes it.
+
 ## [2.0.1] - 2026-06-08
 
 First npm publication of the v2 line. `v2.0.0` was tagged but never released to npm; the registry `latest` remained on the v1.3.x maintenance line. `2.0.1` publishes the accumulated v2.0.x work on top of the [2.0.0] topology.

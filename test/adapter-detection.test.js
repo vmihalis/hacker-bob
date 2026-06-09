@@ -167,6 +167,44 @@ test("detection layer 2: .claude/ wins over .mcp.json (claude is the host, mcp i
   }
 });
 
+test("detection layer 2: opencode.json project artifact resolves to opencode", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.writeFileSync(path.join(workspace, "opencode.json"), "{}", "utf8");
+    const result = detectAdapterId(workspace, { env: {}, commandExists: never });
+    assert.equal(result.id, "opencode");
+    assert.equal(result.layer, "project");
+    assert.equal(result.reason, "project_opencode_config");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detection layer 2: .opencode/ project artifact resolves to opencode", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.mkdirSync(path.join(workspace, ".opencode"), { recursive: true });
+    const result = detectAdapterId(workspace, { env: {}, commandExists: never });
+    assert.equal(result.id, "opencode");
+    assert.equal(result.layer, "project");
+    assert.equal(result.reason, "project_opencode_config");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detection layer 2: opencode.json wins over .mcp.json (opencode is the host)", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.writeFileSync(path.join(workspace, "opencode.json"), "{}", "utf8");
+    fs.writeFileSync(path.join(workspace, ".mcp.json"), "{}", "utf8");
+    const result = detectAdapterId(workspace, { env: {}, commandExists: never });
+    assert.equal(result.id, "opencode");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("detection layer 3: claude on PATH alone resolves to claude", () => {
   const result = detectAdapterId(null, {
     env: {},
@@ -195,6 +233,16 @@ test("detection layer 3: kimi on PATH alone resolves to kimi", () => {
   assert.equal(result.id, "kimi");
   assert.equal(result.layer, "cli");
   assert.equal(result.reason, "cli_on_path_kimi");
+});
+
+test("detection layer 3: opencode on PATH alone resolves to opencode", () => {
+  const result = detectAdapterId(null, {
+    env: {},
+    commandExists: only("opencode"),
+  });
+  assert.equal(result.id, "opencode");
+  assert.equal(result.layer, "cli");
+  assert.equal(result.reason, "cli_on_path_opencode");
 });
 
 test("detection layer 3: both CLIs on PATH falls through to fallback", () => {

@@ -67,6 +67,11 @@ const {
   renderKimiSkill,
 } = require("../scripts/lib/kimi-role-renderer.js");
 const {
+  OPENCODE_ROLE_SPECS,
+  renderOpencodeRole,
+  opencodeRoleOutputPath,
+} = require("../scripts/lib/opencode-role-renderer.js");
+const {
   CODEX_ROLE_SPECS,
 } = require("../adapters/codex/role-specs.js");
 const {
@@ -703,6 +708,29 @@ test("Kimi skills render exactly from the shared role model", () => {
   }
 });
 
+test("OpenCode subagents render exactly from the shared role model", () => {
+  for (const roleId of Object.keys(OPENCODE_ROLE_SPECS)) {
+    const relativePath = path.relative(ROOT, opencodeRoleOutputPath(roleId));
+    assert.equal(
+      readFile(relativePath),
+      renderOpencodeRole(roleId),
+      `${relativePath} drifted from ${roleId}`,
+    );
+  }
+});
+
+test("OpenCode subagents pin no model (BYOK) and the orchestrator is the only primary", () => {
+  let primaries = 0;
+  for (const [roleId, spec] of Object.entries(OPENCODE_ROLE_SPECS)) {
+    const relativePath = path.relative(ROOT, opencodeRoleOutputPath(roleId));
+    const frontmatter = parseFrontmatter(readFile(relativePath), relativePath);
+    assert.equal(frontmatter.model, undefined, `${relativePath} must not pin a model (BYOK)`);
+    assert.ok(["primary", "subagent"].includes(frontmatter.mode), `${relativePath} has invalid mode ${frontmatter.mode}`);
+    if (frontmatter.mode === "primary") primaries += 1;
+  }
+  assert.equal(primaries, 1, "exactly one OpenCode subagent (bob-orchestrator) is mode: primary");
+});
+
 test("Kimi and Codex orchestrators embed the identical worker-contract role set, including the generic evaluator-spawn shell", () => {
   // The kimi-connector regression dropped the generic TaskGraph evaluator
   // shell from the Kimi appendix while the file-drift check still passed
@@ -799,6 +827,9 @@ test("no rendered artifact leaks an unsubstituted {{...}} placeholder", () => {
     // from the renderer specs so newly added skills are guarded automatically.
     ...Object.values(CODEX_SKILL_SPECS).map((spec) => spec.output_path),
     ...Object.values(KIMI_SKILL_SPECS).map((spec) => spec.output_path),
+    // All 18 OpenCode subagents (orchestrator + per-role), derived from the
+    // renderer specs so new roles are guarded automatically.
+    ...Object.keys(OPENCODE_ROLE_SPECS).map((roleId) => path.relative(ROOT, opencodeRoleOutputPath(roleId))),
   ];
   for (const relativePath of generatedFiles) {
     const matches = readFile(relativePath).match(/\{\{[A-Z][A-Z0-9_]+\}\}/g) || [];
@@ -811,7 +842,7 @@ test("no rendered artifact leaks an unsubstituted {{...}} placeholder", () => {
 // =============================================================================
 
 test("adapter registry exposes the shared lifecycle surface", () => {
-  assert.deepEqual(Object.keys(ADAPTERS).sort(), ["claude", "codex", "generic-mcp", "kimi"].sort());
+  assert.deepEqual(Object.keys(ADAPTERS).sort(), ["claude", "codex", "generic-mcp", "kimi", "opencode"].sort());
   for (const id of Object.keys(ADAPTERS)) {
     const adapter = getAdapter(id);
     assert.equal(adapter.id, id);
@@ -1276,6 +1307,7 @@ test("chain-specific identifiers are not duplicated across registry consumers", 
     "mcp/lib/tool-registry.js",
     "scripts/lib/claude-role-renderer.js",
     "scripts/lib/codex-role-renderer.js",
+    "scripts/lib/opencode-role-renderer.js",
     "adapters/codex/role-specs.js",
   ];
   for (const consumer of consumers) {
@@ -1590,6 +1622,7 @@ test("renderers do not inline per-chain workflow strings (pack.spawn is the only
   const renderers = [
     "scripts/lib/claude-role-renderer.js",
     "scripts/lib/codex-role-renderer.js",
+    "scripts/lib/opencode-role-renderer.js",
   ];
   const forbiddenFragments = [
     "bob_evm_fetch_source -> read sources",
@@ -1656,7 +1689,7 @@ test("installer and dev-sync ship the Claude command + skill set with no legacy 
 
 test("dev-sync accepts adapters and gates Claude-specific sync paths", () => {
   const devSync = readFile("dev-sync.sh");
-  assert.match(devSync, /--adapter claude\|codex\|generic-mcp\|kimi\|all/);
+  assert.match(devSync, /--adapter claude\|codex\|generic-mcp\|kimi\|opencode\|all/);
   assert.match(devSync, /ADAPTER="claude"/);
   assert.match(devSync, /if adapter_includes "claude"; then\s+sync_claude_adapter/s);
 });

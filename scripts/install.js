@@ -88,6 +88,12 @@ function detectInstalledAdapterIds(targetAbs) {
   if (fs.existsSync(path.join(targetAbs, BOB_RESOURCE_DIR, "generic-mcp", "hacker-bob.md"))) {
     ids.push("generic-mcp");
   }
+  if (
+    fs.existsSync(path.join(targetAbs, ".opencode", "bob", "VERSION")) ||
+    fs.existsSync(path.join(targetAbs, ".opencode", "agents", "bob-orchestrator.md"))
+  ) {
+    ids.push("opencode");
+  }
   return normalizeAdapterIdList(ids);
 }
 
@@ -331,7 +337,7 @@ function defaultLogResolution(resolution) {
   const noun = resolution.ids.length > 1 ? "adapters" : "adapter";
   process.stderr.write(
     `hacker-bob: auto-selected ${noun} ${resolution.ids.join(", ")} (reason: ${resolution.reason})\n` +
-    `  Override with --adapter <claude|codex|generic-mcp|all>\n`,
+    `  Override with --adapter <claude|codex|generic-mcp|kimi|opencode|all>\n`,
   );
 }
 
@@ -448,6 +454,18 @@ function installProject(projectDir, options = {}) {
         targetAbs,
         readJsonIfExists,
         serverPath,
+      });
+    } else if (adapterId === "opencode") {
+      adapterResults[adapterId] = adapter.install({
+        sourceRoot,
+        targetAbs,
+        serverPath,
+        commitSha,
+        installedAt,
+        installerSource,
+        manifest,
+        packageName,
+        readJsonIfExists,
       });
     } else {
       adapterResults[adapterId] = adapter.install({

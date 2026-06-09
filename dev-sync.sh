@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./dev-sync.sh /absolute/path/to/test-workspace [--adapter claude|codex|generic-mcp|kimi|all] [--no-health-check]
+Usage: ./dev-sync.sh /absolute/path/to/test-workspace [--adapter claude|codex|generic-mcp|kimi|opencode|all] [--no-health-check]
 
 Sync the current repo into a local host-adapter test workspace.
 
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$ADAPTER" in
-  claude|codex|generic-mcp|kimi|all) ;;
+  claude|codex|generic-mcp|kimi|opencode|all) ;;
   *)
     usage
     exit 1
@@ -206,6 +206,10 @@ elif adapter_includes "kimi"; then
   echo "  1. Launch Kimi CLI in $TARGET_ABS with:"
   echo "     kimi --mcp-config-file .kimi/mcp.json"
   echo "  2. Smoke test with /skill:bob-status"
+elif adapter_includes "opencode"; then
+  echo "  1. Restart OpenCode in $TARGET_ABS"
+  echo "  2. Confirm opencode.json registers the hacker-bob MCP server"
+  echo "  3. Smoke test with the /bob-status slash command"
 else
   echo "  1. Configure your MCP host to use $TARGET_ABS/mcp/server.js"
   echo "  2. Read $BOB_DIR/generic-mcp/hacker-bob.md"
