@@ -175,10 +175,10 @@ function fingerprintForResult(result, dedupeMaterial) {
     const entries = Object.keys(result.partialFingerprints)
       .sort()
       .map((key) => [
-        truncateText(key, FINGERPRINT_MAX_CHARS),
-        truncateText(result.partialFingerprints[key], FINGERPRINT_MAX_CHARS),
+        truncateText(redactSarifText(key) || "", FINGERPRINT_MAX_CHARS),
+        truncateText(redactSarifText(result.partialFingerprints[key]) || "", FINGERPRINT_MAX_CHARS),
       ]);
-    if (entries.length > 0) return truncateText(JSON.stringify(entries), FINGERPRINT_MAX_CHARS);
+    if (entries.length > 0) return shortSha256(JSON.stringify(["sarif-partial-fingerprints", entries]));
   }
   return shortSha256(JSON.stringify(["sarif-fingerprint", ...dedupeMaterial]));
 }

@@ -63,8 +63,9 @@ function sarifResult({
   uri = "src/main.js",
   startLine = 1,
   snippet = "fixture();",
+  partialFingerprints = null,
 } = {}) {
-  return {
+  const result = {
     ruleId,
     level,
     message: { text: message },
@@ -81,6 +82,8 @@ function sarifResult({
       },
     ],
   };
+  if (partialFingerprints) result.partialFingerprints = partialFingerprints;
+  return result;
 }
 
 function sarifDocument(results, { toolName = "semgrep", version = "1.0.0" } = {}) {
@@ -334,6 +337,10 @@ test("ingestSarif redacts secrets before persistence and dedupes by result_sha25
       snippet: "const url = \"https://example.com/download?api_key=supersecret\";",
       uri: "/src/config.js",
       startLine: 12,
+      partialFingerprints: {
+        "fingerprint-token": "AKIA9999999999999999",
+        url: "https://example.com/path?token=fingerprintsecret",
+      },
     }),
   ], { toolName: "trivy", version: "0.52.2" }));
 
@@ -346,7 +353,9 @@ test("ingestSarif redacts secrets before persistence and dedupes by result_sha25
 
   const rawJsonl = fs.readFileSync(staticAnalysisResultsJsonlPath(domain), "utf8");
   assert.equal(rawJsonl.includes("AKIA1234567890ABCDEF"), false);
+  assert.equal(rawJsonl.includes("AKIA9999999999999999"), false);
   assert.equal(rawJsonl.includes("supersecret"), false);
+  assert.equal(rawJsonl.includes("fingerprintsecret"), false);
   assert.match(rawJsonl, /REDACTED_AWS_ACCESS_KEY/);
   assert.match(rawJsonl, /REDACTED/);
 
@@ -355,6 +364,7 @@ test("ingestSarif redacts secrets before persistence and dedupes by result_sha25
   assert.equal(records[0].source_run_id, runId);
   assert.match(records[0].message, /REDACTED_AWS_ACCESS_KEY/);
   assert.match(records[0].snippet, /REDACTED/);
+  assert.match(records[0].fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(isAuditGradedPath(staticAnalysisResultsJsonlPath(domain), domain), false);
 
   const second = JSON.parse(ingestSarif({ target_domain: domain, run_id: runId }));
