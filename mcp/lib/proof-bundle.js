@@ -492,8 +492,14 @@ function normalizeProofBundlesDocument(document, {
     }
   }
 
-  const knownFindingIds = findingIdSet || new Set(document.packs.map((pack) => parseFindingId(pack.finding_id)));
-  const reportableIds = finalReportableIdSet || knownFindingIds;
+  if (!(findingIdSet instanceof Set)) {
+    throw new Error("findingIdSet is required for proof bundle normalization");
+  }
+  if (!(finalReportableIdSet instanceof Set)) {
+    throw new Error("finalReportableIdSet is required for proof bundle normalization");
+  }
+  const knownFindingIds = findingIdSet;
+  const reportableIds = finalReportableIdSet;
   const needsRepoRows = document.packs.some((pack) => isPlainObject(pack)
     && (pack.bundle_kind === "replay_script" || pack.bundle_kind === "differential"));
   const needsInvariantRows = document.packs.some((pack) => isPlainObject(pack) && pack.bundle_kind === "invariant");

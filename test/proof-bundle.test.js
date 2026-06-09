@@ -159,6 +159,28 @@ test("bob_write_proof_bundle rejects bundles for non-reportable final findings",
   });
 });
 
+test("ProofBundle normalizer requires explicit finding and final reportable sets", () => {
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "proof-normalizer-contract.example.com",
+      packs: [replayBundle()],
+    }),
+    /findingIdSet is required for proof bundle normalization/,
+  );
+
+  assert.throws(
+    () => normalizeProofBundlesDocument({
+      version: 1,
+      target_domain: "proof-normalizer-contract.example.com",
+      packs: [replayBundle()],
+    }, {
+      findingIdSet: new Set(["F-1"]),
+    }),
+    /finalReportableIdSet is required for proof bundle normalization/,
+  );
+});
+
 test("bob_write_proof_bundle rejects replay artifacts missing a repo docker run_id", () => {
   withTempHome(() => {
     const domain = "proof-missing-run.example.com";
