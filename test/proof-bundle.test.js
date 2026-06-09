@@ -566,6 +566,42 @@ test("ProofBundle bundle_hash changes when the replay image identity changes", (
   });
 });
 
+test("ProofBundle image_identity only strips the current target-domain image prefix", () => {
+  withTempHome(() => {
+    const replayCommand = ["sh", "-lc", "./repro.sh"];
+    const documents = [];
+    for (const [domain, imageTag] of [
+      ["proof-image-scope-a.example.com", "bob-oss-external-a.example.com:dddddddddddddddd"],
+      ["proof-image-scope-b.example.com", "bob-oss-external-b.example.com:dddddddddddddddd"],
+    ]) {
+      appendRepoRunFixture(domain, "run-fixture", replayCommand, { image_tag: imageTag });
+      documents.push(normalizeProofBundlesDocument({
+        version: 1,
+        target_domain: domain,
+        packs: [replayBundle("F-1", "run-fixture", replayCommand)],
+      }, {
+        expectedDomain: domain,
+        findingIdSet: new Set(["F-1"]),
+        finalReportableIdSet: new Set(["F-1"]),
+      }));
+    }
+
+    assert.equal(
+      documents[0].packs[0].artifacts[0].image_identity,
+      "bob-oss-external-a.example.com:dddddddddddddddd",
+    );
+    assert.equal(
+      documents[1].packs[0].artifacts[0].image_identity,
+      "bob-oss-external-b.example.com:dddddddddddddddd",
+    );
+    assert.notEqual(
+      documents[0].packs[0].bundle_hash,
+      documents[1].packs[0].bundle_hash,
+      "non-target bob-oss image prefixes must remain hash-distinct",
+    );
+  });
+});
+
 test("ProofBundle bundle_hash is stable across different repo run_id handles", () => {
   withTempHome(() => {
     const replayCommand = ["sh", "-lc", "./repro.sh"];

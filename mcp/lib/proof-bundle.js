@@ -279,11 +279,11 @@ function normalizeReplayCommand(value, row, fieldName) {
   return command;
 }
 
-function replayImageIdentity(imageTag, fieldName) {
+function replayImageIdentity(imageTag, domain, fieldName) {
   const normalized = assertNonEmptyString(imageTag, fieldName);
-  const bobOssMatch = /^bob-oss-[^:]+:(.+)$/.exec(normalized);
-  if (bobOssMatch) {
-    return `bob-oss:${bobOssMatch[1]}`;
+  const targetScopedPrefix = `bob-oss-${domain}:`;
+  if (normalized.startsWith(targetScopedPrefix)) {
+    return `bob-oss:${normalized.slice(targetScopedPrefix.length)}`;
   }
   return normalized;
 }
@@ -306,7 +306,7 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
     src_mount_mode: row.mount_mode,
     work_mount_mode: workMountMode.value,
     image_tag: imageTag,
-    image_identity: replayImageIdentity(imageTag, `${fieldName}.image_tag`),
+    image_identity: replayImageIdentity(imageTag, domain, `${fieldName}.image_tag`),
     stdout_hash: assertCapturedOutputHash(domain, row, fieldName, "stdout"),
     stderr_hash: assertCapturedOutputHash(domain, row, fieldName, "stderr"),
   };
