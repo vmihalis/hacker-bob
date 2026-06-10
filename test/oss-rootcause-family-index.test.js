@@ -182,6 +182,11 @@ test("suggestFamiliesForSurface sets unmatched_lens for unsupported lenses", () 
   assert.equal(result.family_count, 0);
   assert.deepEqual(result.suggestions, []);
   assert.equal(result.unmatched_lens, true);
+  assert.deepEqual(result.summary_limits, {
+    item_max_chars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+    limit: 0,
+    returned: 0,
+  });
 });
 
 test("suggestFamiliesForSurface rejects malformed surface input", () => {

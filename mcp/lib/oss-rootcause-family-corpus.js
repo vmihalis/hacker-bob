@@ -318,6 +318,11 @@ function suggestFamiliesForSurface(surface, options) {
       family_count: 0,
       suggestions: [],
       unmatched_lens: true,
+      summary_limits: {
+        item_max_chars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+        limit: 0,
+        returned: 0,
+      },
     };
   }
   const limit = options && Number.isInteger(options.limit) && options.limit > 0

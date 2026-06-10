@@ -52,6 +52,7 @@ const {
 const {
   OSS_TECHNIQUE_PACKS,
   OSS_TECHNIQUE_PACK_ID_ALIASES,
+  TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   findOssTechniquePack,
   resolveOssTechniquePackId,
 } = require("../mcp/lib/technique-packs.js");
@@ -601,6 +602,46 @@ test("OSS brief technique_packs slice names root-cause families for native-code 
   assert.ok(familyNames.includes("validate_vs_consume"));
   assert.ok(familyNames.includes("crypto_ordering"));
   assert.equal(extras.technique_packs.root_cause_family_limits.unmatched_lens, false);
+});
+
+test("OSS brief omits native root-cause families for non-native surfaces", () => {
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain: "repo-oss-family-ci",
+    surface: {
+      id: "repo:workflow:ci",
+      title: ".github/workflows/test.yml",
+      surface_type: "oss_ci_cd",
+      file_path: ".github/workflows/test.yml",
+      language: "yaml",
+      bug_class_hints: ["pull_request_target", "github_token"],
+    },
+    assignment: {
+      surface_id: "repo:workflow:ci",
+      task_lens: "code_surface_scout",
+    },
+    routeMetadata: {
+      capability_pack: "oss_ci_cd",
+      capability_pack_version: 1,
+      evaluator_agent: "evaluator-agent",
+      brief_profile: "oss",
+      context_budget: {
+        candidate_pack_limit: 5,
+        full_pack_read_limit: 2,
+        attempt_log_required: true,
+      },
+    },
+  });
+
+  assert.ok(extras.technique_packs.selected.some((pack) => pack.id === "oss_ci_cd"));
+  assert.deepEqual(extras.technique_packs.root_cause_families, []);
+  assert.deepEqual(extras.technique_packs.root_cause_family_limits, {
+    lens: "code_surface_scout",
+    family_count: 0,
+    unmatched_lens: false,
+    item_max_chars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+    limit: 0,
+    returned: 0,
+  });
 });
 
 // ── Technique-pack id alias resolves ────────────────────────────────────────
