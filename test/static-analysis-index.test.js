@@ -169,6 +169,75 @@ test("indexStaticResults dedupes by stable finding_hash and preserves CodeQL met
   assert.equal(queried[0].finding_hash, firstHash);
 }));
 
+test("indexStaticResults re-scores duplicate static leads when reachability appears later", () => withTempHome(() => {
+  const domain = "static-index-late-reachability.example.com";
+  const runId = "run-codeql";
+  initDomain(domain);
+  const stdoutPath = writeRunStdout(domain, runId, fixture("codeql-codeflows.sarif"));
+
+  const first = indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+    surface_id: "RS-1",
+  });
+  assert.equal(first.indexed_results, 1);
+  assert.equal(first.static_analysis_leads.mapped_leads, 1);
+  assert.equal(readSurfaceLeadsDocument(domain).leads[0].confidence, "medium");
+
+  fs.writeFileSync(repoInventoryPath(domain), `${JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    reachability: {
+      surface_ceilings: [
+        {
+          id: "RS-1",
+          file_path: "routes/download.js",
+          attack_vector: "network",
+          network_reachable: true,
+          severity_ceiling: "critical",
+        },
+      ],
+    },
+  })}\n`);
+
+  const second = indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+    surface_id: "RS-1",
+  });
+  assert.equal(second.indexed_results, 0);
+  assert.equal(second.duplicate_results, 1);
+  assert.equal(second.static_analysis_leads.mapped_leads, 1);
+  assert.equal(second.static_analysis_leads.recorded, 0);
+
+  const leadsAfterRescore = readSurfaceLeadsDocument(domain).leads;
+  assert.equal(leadsAfterRescore.length, 1);
+  assert.equal(leadsAfterRescore[0].confidence, "high");
+  assert.ok(leadsAfterRescore[0].high_value_flows.includes("attack_vector=network"));
+  assert.ok(leadsAfterRescore[0].high_value_flows.includes("network_reachable=true"));
+  assert.ok(leadsAfterRescore[0].high_value_flows.includes("severity_ceiling=critical"));
+  assert.equal(
+    readFrontierEvents(domain).filter((event) => event.kind === "frontier.enqueued").length,
+    2,
+    "late reachability re-score should emit a single merge event",
+  );
+
+  const third = indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+    surface_id: "RS-1",
+  });
+  assert.equal(third.static_analysis_leads.mapped_leads, 0);
+  assert.equal(
+    readFrontierEvents(domain).filter((event) => event.kind === "frontier.enqueued").length,
+    2,
+    "unchanged duplicate rows must not append another frontier.enqueued event",
+  );
+}));
+
 test("indexStaticResults scores static leads from persisted repo-inventory reachability", () => withTempHome(() => {
   const domain = "static-index-inventory-reachability.example.com";
   const runId = "run-codeql";

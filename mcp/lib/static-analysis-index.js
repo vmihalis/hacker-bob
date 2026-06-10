@@ -26,6 +26,7 @@ const {
 } = require("./sarif-ingest.js");
 const {
   normalizeSurfaceLead,
+  readSurfaceLeadsDocument,
   SURFACE_LEAD_ITEM_MAX_CHARS,
 } = require("./lead-intake.js");
 const {
@@ -716,6 +717,76 @@ function reachabilityIndexForStaticLeadRecording(domain, args) {
   return readRepoInventoryReachability(domain);
 }
 
+function reachabilityIndexHasEntries(index) {
+  if (index instanceof Map) return index.size > 0;
+  if (!isObject(index)) return false;
+  if (
+    Object.prototype.hasOwnProperty.call(index, "attack_vector")
+    || Object.prototype.hasOwnProperty.call(index, "network_reachable")
+    || Object.prototype.hasOwnProperty.call(index, "severity_ceiling")
+  ) {
+    return true;
+  }
+  if (Array.isArray(index.surface_ceilings) && index.surface_ceilings.length > 0) return true;
+  if (isObject(index.perSurface) && Object.keys(index.perSurface).length > 0) return true;
+  if (index.perSurface instanceof Map && index.perSurface.size > 0) return true;
+  return isObject(index.reachability) && reachabilityIndexHasEntries(index.reachability);
+}
+
+function staticLeadKeyForIndexRecord(row) {
+  if (!isObject(row)) return null;
+  const location = isObject(row.location) ? row.location : {};
+  const file = normalizeRepoPath(location.path || row.file || row.artifact_uri);
+  const line = Number.isInteger(location.line)
+    ? location.line
+    : (Number.isInteger(row.start_line) ? row.start_line : null);
+  if (!file || !Number.isInteger(line) || line < 1) return null;
+  try {
+    return normalizeSurfaceLead({
+      title: row.rule_id || "static-analysis",
+      source: "bob_static_scan",
+      status: "new",
+      promote: false,
+      surface_type: "oss_static_sink",
+      endpoints: [`${file}:${line}`],
+      rationale:
+        "Static analysis lead is an unverified source-audit hypothesis; evaluator must trace source to sink and replay before any finding.",
+    }).key;
+  } catch {
+    return null;
+  }
+}
+
+function staticLeadHasReachabilityHints(lead) {
+  if (!isObject(lead) || !Array.isArray(lead.high_value_flows)) return false;
+  return lead.high_value_flows.some((flow) => (
+    typeof flow === "string"
+    && (
+      flow.startsWith("attack_vector=")
+      || flow.startsWith("network_reachable=")
+      || flow.startsWith("severity_ceiling=")
+    )
+  ));
+}
+
+function duplicateRowsNeedingReachabilityRescore(domain, candidateRows, newCandidateRows, reachabilityIndex) {
+  if (!reachabilityIndexHasEntries(reachabilityIndex)) return [];
+  const newHashes = new Set(newCandidateRows.map((row) => row.finding_hash));
+  let document;
+  try {
+    document = readSurfaceLeadsDocument(domain);
+  } catch {
+    return [];
+  }
+  const leadsByKey = new Map((Array.isArray(document.leads) ? document.leads : []).map((lead) => [lead.key, lead]));
+  return candidateRows.filter((row) => {
+    if (newHashes.has(row.finding_hash)) return false;
+    const key = staticLeadKeyForIndexRecord(row);
+    const existing = key ? leadsByKey.get(key) : null;
+    return existing != null && !staticLeadHasReachabilityHints(existing);
+  });
+}
+
 function indexStaticResults(domainRaw, args = {}) {
   const domain = assertNonEmptyString(domainRaw, "target_domain");
   readSessionStateStrict(domain);
@@ -818,15 +889,20 @@ function indexStaticResults(domainRaw, args = {}) {
     responseRecords = candidateRows.sort(compareIndexRecords)
       .slice(0, STATIC_ANALYSIS_INDEX_SUMMARY_RECORD_LIMIT)
       .map(compactRecordForResponse);
+    const reachabilityIndex = reachabilityIndexForStaticLeadRecording(domain, args);
+    const leadRowsForRecording = [
+      ...newCandidateRows,
+      ...duplicateRowsNeedingReachabilityRescore(domain, candidateRows, newCandidateRows, reachabilityIndex),
+    ];
     if (
-      newCandidateRows.length > 0
+      leadRowsForRecording.length > 0
       && args.record_static_leads !== false
       && staticAnalysisLeadRecorder
     ) {
       staticAnalysisLeads = staticAnalysisLeadRecorder(
         domain,
-        newCandidateRows,
-        reachabilityIndexForStaticLeadRecording(domain, args),
+        leadRowsForRecording,
+        reachabilityIndex,
         args.family_index || {},
         {
           source: "bob_static_scan",
