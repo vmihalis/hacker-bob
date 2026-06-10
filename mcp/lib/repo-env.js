@@ -1617,7 +1617,7 @@ function parseFuzzStatsText(text) {
       if (execPerS != null) stats.exec_per_s = execPerS;
       if (corpusSize != null) stats.corpus_size = corpusSize;
     }
-    const crashSeen = /(?:==\d+==ERROR:\s*(?:AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer)|ERROR:\s*libFuzzer:|Test unit written to|artifact_prefix=.*crash|DEDUP_TOKEN:)/i.test(text);
+    const crashSeen = /(?:==\d+==ERROR:\s*(?:AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer)|ERROR:\s*libFuzzer:|Test unit written to|crash-[0-9a-f]{8,}|DEDUP_TOKEN:)/i.test(text);
     if (sawLibFuzzerProgress || crashSeen) {
       stats.crashes = crashSeen ? 1 : 0;
     }

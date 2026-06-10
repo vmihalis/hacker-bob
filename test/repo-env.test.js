@@ -480,6 +480,19 @@ test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () =
       corpus_size: 1,
       crashes: 1,
     });
+
+    fs.writeFileSync(
+      stdoutPath,
+      "#2 DONE cov: 2 ft: 3 corp: 1/1b exec/s: 4\nartifact_prefix='/work/out/crash-archive/'\n",
+      "utf8",
+    );
+    assert.deepEqual(parseFuzzStats(stdoutPath), {
+      cov: 2,
+      ft: 3,
+      exec_per_s: 4,
+      corpus_size: 1,
+      crashes: 0,
+    });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
