@@ -60,6 +60,7 @@ const {
   sessionDir,
 } = require("../mcp/lib/paths.js");
 const {
+  promoteSurfaceLeadsForWave,
   recordStaticAnalysisLeads,
 } = require("../mcp/lib/lead-promotion.js");
 const {
@@ -407,6 +408,55 @@ test("OSS static_analysis_leads avoids unrelated unbound lead broadcast", () => 
     /src\/other\.c:7/,
     "unbound leads must remain renderable for unidentified/global OSS surfaces",
   );
+}));
+
+test("OSS static_analysis_leads renders for promoted static-sink assignments", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-promoted");
+  ensureSessionDir(domain);
+
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(7, {
+      surface_id: "RS-1",
+      location: {
+        path: "src/server.c",
+        line: 77,
+        end_line: 77,
+      },
+      file: "src/server.c",
+      start_line: 77,
+    })],
+    {
+      "RS-1": {
+        attack_vector: "network",
+        network_reachable: true,
+        severity_ceiling: "critical",
+      },
+    },
+    new Map([["CWE-120", "validate_vs_consume"]]),
+    { task_lens: "taint_trace" },
+  );
+  const promotion = promoteSurfaceLeadsForWave(domain, { limit: 1 });
+  assert.equal(promotion.promoted_surface_ids.length, 1);
+  const lead = readSurfaceLeadsDocument(domain).leads[0];
+  assert.equal(lead.promoted_surface_id, promotion.promoted_surface_ids[0]);
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: lead.promoted_surface_id,
+      surface_type: "oss_static_sink",
+      endpoints: lead.endpoints,
+      file_path: "src/server.c",
+    },
+    assignment: {
+      surface_id: lead.promoted_surface_id,
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.match(extras.static_analysis_leads, /src\/server\.c:77/);
+  assert.match(extras.static_analysis_leads, /AV=network/);
 }));
 
 test("recordStaticAnalysisLeads scrubs direct findings before surface-lead persistence", () => withTempHome(() => {

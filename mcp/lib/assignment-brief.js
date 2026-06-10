@@ -1414,10 +1414,11 @@ function endpointMatchesSurface(endpoint, surfaceObj) {
 
 function staticLeadAppliesToSurface(lead, surfaceObj) {
   if (!lead || lead.source !== "bob_static_scan" || lead.surface_type !== "oss_static_sink") return false;
-  if (lead.source_surface_id && surfaceObj && lead.source_surface_id !== surfaceObj.id) return false;
   if (lead.source_surface_id && surfaceObj && lead.source_surface_id === surfaceObj.id) return true;
+  if (lead.promoted_surface_id && surfaceObj && lead.promoted_surface_id === surfaceObj.id) return true;
   const endpoints = Array.isArray(lead.endpoints) ? lead.endpoints : [];
   if (endpoints.some((endpoint) => endpointMatchesSurface(endpoint, surfaceObj))) return true;
+  if (lead.source_surface_id && surfaceObj && lead.source_surface_id !== surfaceObj.id) return false;
   return !lead.source_surface_id && (!surfaceObj || !surfaceObj.id);
 }
 

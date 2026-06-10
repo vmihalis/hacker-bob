@@ -14,6 +14,7 @@ const {
 } = require("./validation.js");
 const {
   sessionDir,
+  repoInventoryPath,
   staticAnalysisIndexPath,
 } = require("./paths.js");
 const {
@@ -699,6 +700,22 @@ function compactRecordForResponse(record) {
   };
 }
 
+function readRepoInventoryReachability(domain) {
+  try {
+    const filePath = repoInventoryPath(domain);
+    if (!fs.existsSync(filePath)) return {};
+    const inventory = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return isObject(inventory.reachability) ? inventory.reachability : {};
+  } catch {
+    return {};
+  }
+}
+
+function reachabilityIndexForStaticLeadRecording(domain, args) {
+  if (args && args.reachability_index != null) return args.reachability_index;
+  return readRepoInventoryReachability(domain);
+}
+
 function indexStaticResults(domainRaw, args = {}) {
   const domain = assertNonEmptyString(domainRaw, "target_domain");
   readSessionStateStrict(domain);
@@ -773,6 +790,7 @@ function indexStaticResults(domainRaw, args = {}) {
   let totalRecords = 0;
   let responseRecords = [];
   let staticAnalysisLeads = null;
+  let newCandidateRows = [];
 
   withSessionLock(domain, () => {
     const existing = readStaticAnalysisIndex(domain);
@@ -780,8 +798,12 @@ function indexStaticResults(domainRaw, args = {}) {
     const seenInput = new Set();
     for (const row of candidateRows) {
       const old = byHash.get(row.finding_hash);
-      if (seenInput.has(row.finding_hash) || old) duplicateResults += 1;
-      if (!seenInput.has(row.finding_hash) && !old) indexedResults += 1;
+      const isDuplicate = seenInput.has(row.finding_hash) || old;
+      if (isDuplicate) duplicateResults += 1;
+      if (!isDuplicate) {
+        indexedResults += 1;
+        newCandidateRows.push(row);
+      }
       seenInput.add(row.finding_hash);
       byHash.set(row.finding_hash, {
         ...(old || {}),
@@ -797,14 +819,14 @@ function indexStaticResults(domainRaw, args = {}) {
       .slice(0, STATIC_ANALYSIS_INDEX_SUMMARY_RECORD_LIMIT)
       .map(compactRecordForResponse);
     if (
-      candidateRows.length > 0
+      newCandidateRows.length > 0
       && args.record_static_leads !== false
       && staticAnalysisLeadRecorder
     ) {
       staticAnalysisLeads = staticAnalysisLeadRecorder(
         domain,
-        candidateRows,
-        args.reachability_index || {},
+        newCandidateRows,
+        reachabilityIndexForStaticLeadRecording(domain, args),
         args.family_index || {},
         {
           source: "bob_static_scan",
