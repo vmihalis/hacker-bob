@@ -45,6 +45,55 @@ function evidenceScore(lead) {
   return Math.min(100, score);
 }
 
+function staticLeadEvidenceInput(lead) {
+  const arrayField = (field) => (Array.isArray(lead && lead[field]) ? lead[field] : []);
+  return {
+    hosts: arrayField("hosts"),
+    endpoints: arrayField("endpoints"),
+    interesting_params: arrayField("interesting_params"),
+    nuclei_hits: arrayField("nuclei_hits"),
+    bug_class_hints: arrayField("bug_class_hints"),
+    evidence: arrayField("evidence"),
+  };
+}
+
+function reachabilitySummary(reachability = {}) {
+  const attackVector = typeof reachability.attack_vector === "string"
+    ? reachability.attack_vector
+    : "unknown";
+  const networkReachable = typeof reachability.network_reachable === "boolean"
+    ? String(reachability.network_reachable)
+    : "unknown";
+  const severityCeiling = typeof reachability.severity_ceiling === "string"
+    ? reachability.severity_ceiling
+    : "unknown";
+  return `attack_vector=${attackVector}; network_reachable=${networkReachable}; severity_ceiling=${severityCeiling}`;
+}
+
+function scoreStaticLeadWithReachability(lead, reachability = {}) {
+  const baseScore = evidenceScore(staticLeadEvidenceInput(lead || {}));
+  const networkReachable = reachability
+    && reachability.network_reachable === true
+    && reachability.attack_vector === "network";
+  const score = networkReachable
+    ? Math.max(baseScore, 72)
+    : Math.min(Math.max(baseScore, 45), 59);
+  const rationale = lead && typeof lead.rationale === "string" && lead.rationale.trim()
+    ? lead.rationale
+    : (
+      networkReachable
+        ? `Static analysis lead is network-reachable (${reachabilitySummary(reachability)}); trace source to sink and replay before finding promotion.`
+        : `Static analysis lead is capped but retained (${reachabilitySummary(reachability)}); record as a lower-priority hypothesis until live replay proves impact.`
+    );
+  return {
+    ...lead,
+    score,
+    confidence: confidenceFromScore(score),
+    priority: normalizePriority(lead && lead.priority, score),
+    rationale,
+  };
+}
+
 function confidenceFromScore(score) {
   if (score >= 70) return "high";
   if (score >= 40) return "medium";
@@ -151,6 +200,7 @@ module.exports = {
   partitionLeadPromotion,
   selectPromotableSurfaceLeads,
   shouldPromoteLead,
+  scoreStaticLeadWithReachability,
   sortLeadsByScore,
   summarizeLeadPromotion,
 };

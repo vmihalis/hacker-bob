@@ -1541,6 +1541,7 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     "mcp/lib/lead-promotion.js:promoteSurfaceLeadsForWave",
   ].sort());
   assert.deepEqual(runtimeCallSummaries("recordSurfaceLeadsInternal"), [
+    "mcp/lib/lead-promotion.js:recordStaticAnalysisLeads",
     "mcp/lib/lead-promotion.js:recordSurfaceLeads",
     "mcp/lib/lead-promotion.js:recordSurfaceLeadsForWaveHandoff",
   ].sort());
@@ -1548,6 +1549,7 @@ test("session-state store write callers keep explicit lock boundaries", () => {
     "mcp/lib/waves/wave-assignment-store.js:writeWaveHandoff",
   ]);
   assertCallsInsideSessionLock(promotionSource, "recordSurfaceLeads", "recordSurfaceLeadsInternal");
+  assertCallsInsideSessionLock(promotionSource, "recordStaticAnalysisLeads", "recordSurfaceLeadsInternal");
   assertCallsInsideSessionLock(promotionSource, "recordSurfaceLeadsForWaveHandoff", "recordSurfaceLeadsInternal");
   assertCallsInsideSessionLock(waveAssignmentStoreSource, "writeWaveHandoff", "recordSurfaceLeadsForWaveHandoff");
   // Cycle D.3 removed lead-promotion's runtime use of update_state; the

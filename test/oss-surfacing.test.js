@@ -60,6 +60,9 @@ const {
   sessionDir,
 } = require("../mcp/lib/paths.js");
 const {
+  recordStaticAnalysisLeads,
+} = require("../mcp/lib/lead-promotion.js");
+const {
   CAPABILITY_PACKS,
 } = require("../mcp/lib/capability-packs.js");
 
@@ -191,6 +194,7 @@ test("OSS_BRIEF_SLICE_REGISTRY carries the required slice keys per O-D8", () => 
     "governance",
     "goal_orientation",
     "code_surface_pack",
+    "static_analysis_leads",
     "technique_packs",
     "cli_tools",
     "recap_and_handoff",
@@ -200,6 +204,11 @@ test("OSS_BRIEF_SLICE_REGISTRY carries the required slice keys per O-D8", () => 
   }
   // repo_workflow must LEAD the registry (per spec: "leads the brief").
   assert.equal(keys[0], "repo_workflow", "repo_workflow must be the first slice");
+  assert.ok(
+    keys.indexOf("static_analysis_leads") > keys.indexOf("code_surface_pack")
+      && keys.indexOf("static_analysis_leads") < keys.indexOf("technique_packs"),
+    "static_analysis_leads must sit after code_surface_pack and before technique_packs",
+  );
 });
 
 test("repo_workflow slice fires under each OSS lens and is empty under non-OSS lenses", () => {
@@ -217,6 +226,110 @@ test("repo_workflow slice fires under each OSS lens and is empty under non-OSS l
     assert.equal(text, "", `repo_workflow must be empty under lens=${String(lens)}`);
   }
 });
+
+function ossRouteMetadata() {
+  return {
+    capability_pack: "oss_native_code",
+    capability_pack_version: 1,
+    evaluator_agent: "evaluator-agent",
+    brief_profile: "oss",
+    context_budget: {
+      candidate_pack_limit: 5,
+      full_pack_read_limit: 2,
+      attempt_log_required: true,
+    },
+  };
+}
+
+function ossStaticFinding(index) {
+  return {
+    target_domain: "repo-static-brief.example",
+    indexed_at: "2026-06-10T00:00:00.000Z",
+    finding_hash: `${String(index).padStart(2, "0")}${"b".repeat(62)}`,
+    tool: "semgrep",
+    rule_id: `cpp.static-sink-${index}`,
+    severity: "error",
+    location: {
+      path: "src/server.c",
+      line: index + 1,
+      end_line: index + 1,
+    },
+    file: "src/server.c",
+    start_line: index + 1,
+    message: "length_field reaches copy_or_index_op before bound_check_site",
+    cwe: ["CWE-120"],
+    tags: ["copy_or_index_op", "bound_check_site"],
+    dataflow_steps: 2,
+    surface_id: "RS-1",
+  };
+}
+
+test("OSS static_analysis_leads slice renders recorded static leads and drops when empty", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-brief");
+  ensureSessionDir(domain);
+  const surface = {
+    id: "RS-1",
+    title: "src/server.c",
+    surface_type: "oss_native_code",
+    file_path: "src/server.c",
+    language: "c",
+    bug_class_hints: ["length_field", "bound_check_site"],
+  };
+  const assignment = {
+    surface_id: "RS-1",
+    task_lens: "taint_trace",
+  };
+
+  const emptyExtras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface,
+    assignment,
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(emptyExtras, "static_analysis_leads"),
+    false,
+    "empty static_analysis_leads slice must be dropped",
+  );
+
+  const findings = Array.from({ length: 12 }, (_, index) => ossStaticFinding(index));
+  const reachabilityIndex = new Map([
+    ["RS-1", {
+      attack_vector: "network",
+      network_reachable: true,
+      severity_ceiling: "critical",
+    }],
+  ]);
+  const familyIndex = new Map([
+    ["CWE-120", "validate_vs_consume"],
+  ]);
+  const recorded = recordStaticAnalysisLeads(
+    domain,
+    findings,
+    reachabilityIndex,
+    familyIndex,
+    { task_lens: "taint_trace" },
+  );
+  assert.equal(recorded.mapped_leads, 12);
+  assert.equal(recorded.skipped_findings, 0);
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface,
+    assignment,
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.equal(typeof extras.static_analysis_leads, "string");
+  assert.ok(extras.static_analysis_leads.length <= 4096);
+  assert.match(extras.static_analysis_leads, /src\/server\.c:1/);
+  assert.match(extras.static_analysis_leads, /family=validate_vs_consume/);
+  assert.match(extras.static_analysis_leads, /AV=network/);
+  assert.match(extras.static_analysis_leads, /network_reachable=true/);
+  assert.ok(
+    (extras.static_analysis_leads.match(/^- /gm) || []).length <= 10,
+    "static_analysis_leads must cap rendered leads at top 10",
+  );
+}));
 
 test("REPO_WORKFLOW_TEXT names the repo-bound tools and SUPPRESSES the curl-shaped HTTP playbook", () => {
   // The stanza must name each repo-bound MCP tool the evaluator should call.

@@ -33,8 +33,21 @@ const {
   isAssignableSurfaceLead,
   normalizePromotionOptions,
   partitionLeadPromotion,
+  scoreStaticLeadWithReachability,
   sortLeadsByScore,
 } = require("./lead-scoring.js");
+const {
+  STATIC_LEAD_SOURCE,
+  staticFindingToSurfaceLead,
+} = require("./static-lead-mapping.js");
+const {
+  queryStaticAnalysisIndex,
+  readStaticAnalysisIndex,
+} = require("./static-analysis-index.js");
+const {
+  OSS_ROOTCAUSE_FAMILIES,
+  suggestFamiliesForSurface,
+} = require("./oss-rootcause-family-corpus.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { loadQueuePolicy } = require("./queue-policy.js");
 const { safeAppendPipelineEventDirect } = require("./pipeline-events.js");
@@ -394,6 +407,238 @@ function recordSurfaceLeadsForWaveHandoff(domain, leads, context = {}) {
   return withSessionLock(domain, () => recordSurfaceLeadsInternal(domain, leads, context));
 }
 
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function findingFile(finding) {
+  const location = isPlainObject(finding && finding.location) ? finding.location : {};
+  return typeof location.path === "string"
+    ? location.path
+    : (typeof (finding && finding.file) === "string" ? finding.file : null);
+}
+
+function findingLine(finding) {
+  const location = isPlainObject(finding && finding.location) ? finding.location : {};
+  return Number.isInteger(location.line)
+    ? location.line
+    : (Number.isInteger(finding && finding.start_line) ? finding.start_line : null);
+}
+
+function arrayStrings(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .filter((item) => item != null)
+    .map((item) => String(item))
+    .filter((item) => item.length > 0);
+}
+
+function candidateFindingKeys(finding) {
+  const file = findingFile(finding);
+  const line = findingLine(finding);
+  return [
+    finding && finding.finding_hash,
+    finding && finding.source_result_sha256,
+    finding && finding.surface_id,
+    file,
+    file && Number.isInteger(line) ? `${file}:${line}` : null,
+    finding && finding.rule_id,
+    ...arrayStrings(finding && finding.cwe),
+  ].filter((key) => typeof key === "string" && key.length > 0);
+}
+
+function directReachability(value) {
+  if (!isPlainObject(value)) return null;
+  if (
+    typeof value.attack_vector === "string"
+    || typeof value.severity_ceiling === "string"
+    || typeof value.network_reachable === "boolean"
+  ) {
+    return {
+      ...(typeof value.attack_vector === "string" ? { attack_vector: value.attack_vector } : {}),
+      ...(typeof value.severity_ceiling === "string" ? { severity_ceiling: value.severity_ceiling } : {}),
+      ...(typeof value.network_reachable === "boolean" ? { network_reachable: value.network_reachable } : {}),
+    };
+  }
+  return null;
+}
+
+function reachabilityValueAt(index, keys) {
+  if (!index) return null;
+  if (typeof index.get === "function") {
+    for (const key of keys) {
+      const value = directReachability(index.get(key));
+      if (value) return value;
+    }
+  }
+  if (isPlainObject(index)) {
+    for (const key of keys) {
+      const value = directReachability(index[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function reachabilityEntriesFromIndex(index) {
+  const entries = [];
+  const pushEntry = (key, value) => {
+    const reachability = directReachability(value);
+    if (reachability) entries.push({ key, reachability });
+  };
+  const scanRecord = (record) => {
+    if (!isPlainObject(record)) return;
+    const key = record.id || record.surface_id || record.file_path || record.file;
+    pushEntry(key, record);
+  };
+  if (index && typeof index.forEach === "function") {
+    index.forEach((value, key) => pushEntry(key, value));
+  }
+  if (isPlainObject(index)) {
+    if (isPlainObject(index.perSurface)) {
+      for (const [key, value] of Object.entries(index.perSurface)) pushEntry(key, value);
+    } else if (index.perSurface && typeof index.perSurface.forEach === "function") {
+      index.perSurface.forEach((value, key) => pushEntry(key, value));
+    }
+    const reachability = isPlainObject(index.reachability) ? index.reachability : index;
+    if (Array.isArray(reachability.surface_ceilings)) {
+      reachability.surface_ceilings.forEach(scanRecord);
+    }
+  }
+  return entries;
+}
+
+function fileMatchesReachabilityKey(file, key) {
+  if (typeof file !== "string" || typeof key !== "string" || !file || !key) return false;
+  return file === key || file.startsWith(`${key}/`) || key.startsWith(`${file}/`);
+}
+
+function reachabilityForFinding(finding, reachabilityIndex) {
+  const direct = directReachability(reachabilityIndex);
+  if (direct) return direct;
+  const keys = candidateFindingKeys(finding);
+  const keyed = reachabilityValueAt(reachabilityIndex, keys);
+  if (keyed) return keyed;
+  const file = findingFile(finding);
+  for (const entry of reachabilityEntriesFromIndex(reachabilityIndex)) {
+    if (keys.includes(entry.key) || fileMatchesReachabilityKey(file, entry.key)) {
+      return entry.reachability;
+    }
+  }
+  return {};
+}
+
+function staticFindingsForRecord(domain, findings, context = {}) {
+  if (Array.isArray(findings)) return findings;
+  if (context.query_static_analysis_index === true) {
+    return queryStaticAnalysisIndex(domain, {
+      top_k: context.top_k,
+      min_severity: context.min_severity,
+      rule_id: context.rule_id,
+      surface_id: context.surface_id,
+    });
+  }
+  return readStaticAnalysisIndex(domain);
+}
+
+const OSS_ROOTCAUSE_FAMILY_LABELS = new Set(OSS_ROOTCAUSE_FAMILIES.map((family) => family.family));
+
+function familyFromIndexValue(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (isPlainObject(value) && typeof value.family === "string" && value.family.trim()) return value.family.trim();
+  if (Array.isArray(value) && value.length > 0) return familyFromIndexValue(value[0]);
+  return null;
+}
+
+function familyFromIndex(finding, familyIndex) {
+  const keys = candidateFindingKeys(finding);
+  if (familyIndex && typeof familyIndex.get === "function") {
+    for (const key of keys) {
+      const family = familyFromIndexValue(familyIndex.get(key));
+      if (family) return family;
+    }
+  }
+  if (isPlainObject(familyIndex)) {
+    for (const key of keys) {
+      const family = familyFromIndexValue(familyIndex[key]);
+      if (family) return family;
+    }
+  }
+  return null;
+}
+
+function familyFromCorpus(finding, context = {}) {
+  const file = findingFile(finding);
+  const surface = {
+    id: finding && finding.surface_id,
+    title: finding && finding.rule_id,
+    surface_type: "oss_static_sink",
+    file_path: file,
+    endpoints: file && Number.isInteger(findingLine(finding)) ? [`${file}:${findingLine(finding)}`] : [],
+    bug_class_hints: [
+      finding && finding.rule_id,
+      ...arrayStrings(finding && finding.cwe),
+      ...arrayStrings(finding && finding.tags),
+    ],
+    evidence: [finding && finding.message].filter(Boolean),
+    task_lens: context.task_lens || "taint_trace",
+  };
+  try {
+    const result = suggestFamiliesForSurface(surface, {
+      lens: context.task_lens || "taint_trace",
+      limit: 3,
+    });
+    const matched = (result.suggestions || []).find((suggestion) => (
+      OSS_ROOTCAUSE_FAMILY_LABELS.has(suggestion.family)
+      && Array.isArray(suggestion.matched_signature)
+      && suggestion.matched_signature.length > 0
+    ));
+    return matched ? matched.family : null;
+  } catch {
+    return null;
+  }
+}
+
+function familyForFinding(finding, familyIndex, context = {}) {
+  return familyFromIndex(finding, familyIndex)
+    || familyFromCorpus(finding, context)
+    || null;
+}
+
+function recordStaticAnalysisLeads(domainRaw, findings, reachabilityIndex = {}, familyIndex = {}, context = {}) {
+  const domain = assertNonEmptyString(domainRaw, "target_domain");
+  const inputFindings = staticFindingsForRecord(domain, findings, context);
+  const leads = [];
+  const warnings = [];
+  for (let i = 0; i < inputFindings.length; i += 1) {
+    const finding = inputFindings[i];
+    try {
+      const reachability = reachabilityForFinding(finding, reachabilityIndex);
+      const family = familyForFinding(finding, familyIndex, context);
+      const lead = staticFindingToSurfaceLead(finding, reachability, family);
+      if (!lead) {
+        warnings.push(`skipped static finding at index ${i}: missing file or line`);
+        continue;
+      }
+      leads.push(scoreStaticLeadWithReachability(lead, reachability));
+    } catch (error) {
+      warnings.push(`skipped static finding at index ${i}: ${error.message || String(error)}`);
+    }
+  }
+  return withSessionLock(domain, () => ({
+    version: 1,
+    target_domain: domain,
+    input_findings: inputFindings.length,
+    mapped_leads: leads.length,
+    skipped_findings: warnings.length,
+    warnings,
+    ...recordSurfaceLeadsInternal(domain, leads, {
+      ...context,
+      source: STATIC_LEAD_SOURCE,
+    }),
+  }));
+}
+
 function readSurfaceLeads(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const limit = args.limit == null ? 50 : assertInteger(args.limit, "limit", { min: 1, max: 200 });
@@ -433,5 +678,6 @@ module.exports = {
   promoteSurfaceLeadsForWave,
   readSurfaceLeads,
   recordSurfaceLeads,
+  recordStaticAnalysisLeads,
   recordSurfaceLeadsForWaveHandoff,
 };
