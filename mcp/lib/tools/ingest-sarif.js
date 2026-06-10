@@ -6,7 +6,8 @@ module.exports = Object.freeze({
   name: "bob_ingest_sarif",
   description:
     "Ingest already-captured SARIF from a completed repo docker run stdout or a /work SARIF artifact. " +
-    "Normalizes redacted, content-addressed lead seeds into static-analysis-results.jsonl; never runs docker, " +
+    "Normalizes redacted, content-addressed lead seeds into static-analysis-results.jsonl, indexes them, " +
+    "and records unverified static-analysis surface leads; never runs docker, " +
     "never returns raw SARIF, and never records findings or suppresses hunting.",
   inputSchema: {
     type: "object",
@@ -38,6 +39,11 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["static-analysis-results.jsonl"],
+  session_artifacts_written: [
+    "static-analysis-results.jsonl",
+    "static-analysis-index.jsonl",
+    "surface-leads.json",
+    "frontier-events.jsonl",
+  ],
   ingestSarif,
 });

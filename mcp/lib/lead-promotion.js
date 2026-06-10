@@ -413,6 +413,9 @@ function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
+const REACHABILITY_ATTACK_VECTORS = new Set(["local", "network"]);
+const REACHABILITY_SEVERITY_CEILINGS = new Set(["none", "low", "medium", "high", "critical"]);
+
 function findingFile(finding) {
   const location = isPlainObject(finding && finding.location) ? finding.location : {};
   return typeof location.path === "string"
@@ -435,39 +438,58 @@ function arrayStrings(value) {
     .filter((item) => item.length > 0);
 }
 
-function candidateFindingKeys(finding) {
+function candidateFindingKeys(finding, { includeRuleClass = false } = {}) {
   const file = findingFile(finding);
   const line = findingLine(finding);
-  return [
+  const keys = [
     finding && finding.finding_hash,
     finding && finding.source_result_sha256,
     finding && finding.surface_id,
     file,
     file && Number.isInteger(line) ? `${file}:${line}` : null,
-    finding && finding.rule_id,
-    ...arrayStrings(finding && finding.cwe),
-  ].filter((key) => typeof key === "string" && key.length > 0);
+  ];
+  if (includeRuleClass) {
+    keys.push(
+      finding && finding.rule_id,
+      ...arrayStrings(finding && finding.cwe),
+    );
+  }
+  return keys.filter((key) => typeof key === "string" && key.length > 0);
+}
+
+function candidateFamilyKeys(finding) {
+  return candidateFindingKeys(finding, { includeRuleClass: true });
+}
+
+function normalizedReachabilityString(value, allowed) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : null;
 }
 
 function directReachability(value) {
   if (!isPlainObject(value)) return null;
-  if (
-    typeof value.attack_vector === "string"
-    || typeof value.severity_ceiling === "string"
-    || typeof value.network_reachable === "boolean"
-  ) {
-    return {
-      ...(typeof value.attack_vector === "string" ? { attack_vector: value.attack_vector } : {}),
-      ...(typeof value.severity_ceiling === "string" ? { severity_ceiling: value.severity_ceiling } : {}),
-      ...(typeof value.network_reachable === "boolean" ? { network_reachable: value.network_reachable } : {}),
-    };
+  const reachability = {};
+  if (Object.prototype.hasOwnProperty.call(value, "attack_vector")) {
+    const attackVector = normalizedReachabilityString(value.attack_vector, REACHABILITY_ATTACK_VECTORS);
+    if (!attackVector) return null;
+    reachability.attack_vector = attackVector;
   }
-  return null;
+  if (Object.prototype.hasOwnProperty.call(value, "severity_ceiling")) {
+    const severityCeiling = normalizedReachabilityString(value.severity_ceiling, REACHABILITY_SEVERITY_CEILINGS);
+    if (!severityCeiling) return null;
+    reachability.severity_ceiling = severityCeiling;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "network_reachable")) {
+    if (typeof value.network_reachable !== "boolean") return null;
+    reachability.network_reachable = value.network_reachable;
+  }
+  return Object.keys(reachability).length > 0 ? reachability : null;
 }
 
 function reachabilityValueAt(index, keys) {
   if (!index) return null;
-  if (typeof index.get === "function") {
+  if (index instanceof Map) {
     for (const key of keys) {
       const value = directReachability(index.get(key));
       if (value) return value;
@@ -493,13 +515,13 @@ function reachabilityEntriesFromIndex(index) {
     const key = record.id || record.surface_id || record.file_path || record.file;
     pushEntry(key, record);
   };
-  if (index && typeof index.forEach === "function") {
+  if (index instanceof Map) {
     index.forEach((value, key) => pushEntry(key, value));
   }
   if (isPlainObject(index)) {
     if (isPlainObject(index.perSurface)) {
       for (const [key, value] of Object.entries(index.perSurface)) pushEntry(key, value);
-    } else if (index.perSurface && typeof index.perSurface.forEach === "function") {
+    } else if (index.perSurface instanceof Map) {
       index.perSurface.forEach((value, key) => pushEntry(key, value));
     }
     const reachability = isPlainObject(index.reachability) ? index.reachability : index;
@@ -516,8 +538,6 @@ function fileMatchesReachabilityKey(file, key) {
 }
 
 function reachabilityForFinding(finding, reachabilityIndex) {
-  const direct = directReachability(reachabilityIndex);
-  if (direct) return direct;
   const keys = candidateFindingKeys(finding);
   const keyed = reachabilityValueAt(reachabilityIndex, keys);
   if (keyed) return keyed;
@@ -561,7 +581,7 @@ function familyFromIndexValue(value) {
 }
 
 function familyFromIndex(finding, familyIndex) {
-  const keys = candidateFindingKeys(finding);
+  const keys = candidateFamilyKeys(finding);
   if (familyIndex && typeof familyIndex.get === "function") {
     for (const key of keys) {
       const family = familyFromIndexValue(familyIndex.get(key));

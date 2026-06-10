@@ -1372,8 +1372,6 @@ const STATIC_ANALYSIS_LEAD_LINE_MAX_CHARS = 300;
 function staticLeadField(lead, fieldName) {
   const haystack = [
     ...(Array.isArray(lead.high_value_flows) ? lead.high_value_flows : []),
-    ...(Array.isArray(lead.evidence) ? lead.evidence : []),
-    lead.rationale,
   ].filter(Boolean).join("\n");
   const prefix = `${fieldName}=`;
   for (const part of haystack.split(/[;\s,]+/)) {

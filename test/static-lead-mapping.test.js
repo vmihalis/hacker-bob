@@ -70,3 +70,29 @@ test("staticFindingToSurfaceLead falls back to CWE and skips malformed locations
   });
   assert.equal(staticFindingToSurfaceLead(malformed, {}, null), null);
 });
+
+test("staticFindingToSurfaceLead rejects host-absolute and traversing paths", () => {
+  assert.equal(staticFindingToSurfaceLead(staticFinding({
+    location: {
+      path: "/Users/operator/project/src/server.c",
+      line: 42,
+    },
+    file: "/Users/operator/project/src/server.c",
+  }), {}, null), null);
+
+  assert.equal(staticFindingToSurfaceLead(staticFinding({
+    location: {
+      path: "C:/Users/operator/project/src/server.c",
+      line: 42,
+    },
+    file: "C:/Users/operator/project/src/server.c",
+  }), {}, null), null);
+
+  assert.equal(staticFindingToSurfaceLead(staticFinding({
+    location: {
+      path: "../src/server.c",
+      line: 42,
+    },
+    file: "../src/server.c",
+  }), {}, null), null);
+});

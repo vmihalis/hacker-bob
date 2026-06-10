@@ -20,6 +20,7 @@ const {
   parseSarif,
   normalizeSarifResult,
   readStaticAnalysisResultsFromJsonl,
+  registerStaticAnalysisIndexer,
   MAX_SARIF_BYTES,
 } = require("./sarif-ingest.js");
 const {
@@ -76,10 +77,17 @@ function truncateText(value, maxChars = STATIC_ANALYSIS_INDEX_MESSAGE_MAX_CHARS)
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
+function neutralizeRedactedSensitiveAssignments(value) {
+  return String(value).replace(
+    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|passwd|credential|session|sid|jwt|auth|authorization)(\s*[:=]\s*)REDACTED\b/gi,
+    "$1$2<redacted>",
+  );
+}
+
 function scrubText(value, fieldName) {
   if (value == null) return null;
   const staticRedacted = redactStaticArtifactContent(String(value)).content;
-  const redacted = redactTextSensitiveValues(staticRedacted);
+  const redacted = neutralizeRedactedSensitiveAssignments(redactTextSensitiveValues(staticRedacted));
   const truncated = truncateText(redacted);
   validateNoSensitiveMaterial(truncated, fieldName, {
     maxTextChars: STATIC_ANALYSIS_INDEX_MESSAGE_MAX_CHARS,
@@ -115,6 +123,7 @@ function normalizeRepoPath(value) {
   uri = uri.replace(/^file:\/\/+/, "/");
   uri = uri.replace(/^\/src\/+/, "");
   uri = uri.replace(/^\.\/+/, "");
+  if (/^[A-Za-z]:\//.test(uri)) return null;
   if (uri.startsWith("/")) return null;
   const normalized = path.posix.normalize(uri);
   if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) return null;
@@ -718,6 +727,11 @@ function indexStaticResults(domainRaw, args = {}) {
         warning_count: 0,
         warnings: [],
         index_path: "static-analysis-index.jsonl",
+        static_analysis_leads: {
+          mapped_leads: 0,
+          recorded: 0,
+          skipped_findings: 0,
+        },
         doctrine: "lead_seed_only_no_findings_or_skips",
       };
     }
@@ -902,6 +916,8 @@ function mapSarifResultToSurfaceLead(rowRaw) {
       `Static analysis rule ${row.rule_id} surfaced an unverified repo location; live verification is required before promotion.`,
   });
 }
+
+registerStaticAnalysisIndexer(indexStaticResults);
 
 module.exports = {
   STATIC_ANALYSIS_INDEX_DEFAULT_TOP_K,

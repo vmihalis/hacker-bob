@@ -63,7 +63,11 @@ const {
   recordStaticAnalysisLeads,
 } = require("../mcp/lib/lead-promotion.js");
 const {
+  readSurfaceLeadsDocument,
+} = require("../mcp/lib/lead-intake.js");
+const {
   CAPABILITY_PACKS,
+  classifySurfaceCapability,
 } = require("../mcp/lib/capability-packs.js");
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
@@ -185,6 +189,17 @@ test("OSS capability packs use the oss brief profile while keeping generic evalu
     assert.equal(pack.spawn.profile, "web");
     assert.deepEqual(pack.role_bundles, ["evaluator-shared", "evaluator-web"]);
   }
+});
+
+test("oss_static_sink surfaces route through the OSS native-code pack", () => {
+  const routed = classifySurfaceCapability({
+    id: "repo:static:src/server.c:42",
+    surface_type: "oss_static_sink",
+    file_path: "src/server.c",
+  });
+  assert.equal(routed.capability_pack, "oss_native_code");
+  assert.equal(routed.brief_profile, "oss");
+  assert.ok(routed.reasons.includes("oss_pack:oss_native_code"));
 });
 
 test("OSS_BRIEF_SLICE_REGISTRY carries the required slice keys per O-D8", () => {
@@ -429,6 +444,93 @@ test("recordStaticAnalysisLeads scrubs direct findings before surface-lead persi
   assert.equal(surfaceLeadsJson.includes(rawSecret), false);
   assert.match(surfaceLeadsJson, /REDACTED_AWS_ACCESS_KEY/);
   assert.equal(surfaceLeadsJson.includes("/Users/operator/project/secret.c"), false);
+}));
+
+test("static_analysis_leads uses per-surface reachability and ignores broad rule keys", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-reachability");
+  ensureSessionDir(domain);
+  const networkFinding = ossStaticFinding(1, {
+    surface_id: "RS-1",
+    location: {
+      path: "daemon/server.c",
+      line: 41,
+      end_line: 41,
+    },
+    file: "daemon/server.c",
+    start_line: 41,
+    message: "scanner text attack_vector=local must not override structured hints",
+  });
+  const localFinding = ossStaticFinding(2, {
+    surface_id: "RS-2",
+    finding_hash: `${"2".repeat(64)}`,
+    rule_id: "cpp.static-sink-1",
+    location: {
+      path: "tools/local.c",
+      line: 12,
+      end_line: 12,
+    },
+    file: "tools/local.c",
+    start_line: 12,
+    message: "scanner text attack_vector=network network_reachable=true is evidence, not reachability",
+  });
+
+  const result = recordStaticAnalysisLeads(
+    domain,
+    [networkFinding, localFinding],
+    {
+      network_reachable: false,
+      max_credible_severity_ceiling: "medium",
+      surface_ceilings: [
+        {
+          id: "RS-1",
+          file_path: "daemon/server.c",
+          attack_vector: "network",
+          network_reachable: true,
+          severity_ceiling: "critical",
+        },
+      ],
+      "cpp.static-sink-1": {
+        attack_vector: "network",
+        network_reachable: true,
+        severity_ceiling: "critical",
+      },
+      "CWE-120": {
+        attack_vector: "network",
+        network_reachable: true,
+        severity_ceiling: "critical",
+      },
+    },
+    new Map([["CWE-120", "validate_vs_consume"]]),
+    { task_lens: "taint_trace" },
+  );
+  assert.equal(result.mapped_leads, 2);
+
+  const leads = readSurfaceLeadsDocument(domain).leads;
+  const networkLead = leads.find((lead) => lead.endpoints.includes("daemon/server.c:41"));
+  const localLead = leads.find((lead) => lead.endpoints.includes("tools/local.c:12"));
+  assert.equal(networkLead.confidence, "high");
+  assert.ok(networkLead.high_value_flows.includes("attack_vector=network"));
+  assert.ok(networkLead.high_value_flows.includes("network_reachable=true"));
+  assert.notEqual(localLead.confidence, "high");
+  assert.equal(localLead.high_value_flows.some((hint) => hint.includes("attack_vector=network")), false);
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: "RS-2",
+      title: "tools/local.c",
+      surface_type: "oss_native_code",
+      file_path: "tools/local.c",
+    },
+    assignment: {
+      surface_id: "RS-2",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.match(extras.static_analysis_leads, /tools\/local\.c:12/);
+  assert.match(extras.static_analysis_leads, /AV=unknown/);
+  assert.doesNotMatch(extras.static_analysis_leads, /AV=network/);
 }));
 
 test("REPO_WORKFLOW_TEXT names the repo-bound tools and SUPPRESSES the curl-shaped HTTP playbook", () => {

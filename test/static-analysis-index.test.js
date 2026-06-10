@@ -14,6 +14,7 @@ const {
   queryStaticAnalysisIndex,
   readStaticAnalysisIndex,
   readStaticAnalysisIndexTool,
+  registerStaticAnalysisLeadRecorder,
 } = require("../mcp/lib/static-analysis-index.js");
 const {
   isAuditGradedPath,
@@ -29,6 +30,10 @@ const {
 } = require("../mcp/lib/session-state.js");
 
 require("../mcp/lib/lead-promotion.js");
+
+test.after(() => {
+  registerStaticAnalysisLeadRecorder(null);
+});
 
 function fixture(name) {
   return fs.readFileSync(path.join(__dirname, "fixtures", "sarif", name), "utf8");
@@ -206,6 +211,11 @@ test("indexStaticResults treats dry-run rows without stdout_path as no-op", () =
   });
   assert.equal(response.normalized_results, 0);
   assert.equal(response.indexed_results, 0);
+  assert.deepEqual(response.static_analysis_leads, {
+    mapped_leads: 0,
+    recorded: 0,
+    skipped_findings: 0,
+  });
   assert.equal(readStaticAnalysisIndex(domain).length, 0);
 }));
 

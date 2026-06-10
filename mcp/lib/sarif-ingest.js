@@ -40,6 +40,12 @@ const SUMMARY_RECORD_LIMIT = 5;
 const SUMMARY_WARNING_LIMIT = 10;
 const SAFE_RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+let staticAnalysisIndexer = null;
+
+function registerStaticAnalysisIndexer(indexer) {
+  staticAnalysisIndexer = typeof indexer === "function" ? indexer : null;
+}
+
 function isObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
@@ -466,6 +472,13 @@ function compactRecordForResponse(record) {
   };
 }
 
+function indexSourcePathForStaticAnalysis(source) {
+  if (source.source_kind === "work_artifact" && source.display_path.startsWith("/work/")) {
+    return `repo-work/${source.display_path.slice("/work/".length)}`;
+  }
+  return source.display_path;
+}
+
 function readSarifSourceUtf8(source) {
   let fd = null;
   try {
@@ -527,6 +540,15 @@ function ingestSarif(args = {}) {
     }
   });
 
+  let indexResponse = null;
+  if (parsed.records.length > 0 && staticAnalysisIndexer) {
+    indexResponse = staticAnalysisIndexer(domain, {
+      run_id: source.source_run_id,
+      stdout_path: indexSourcePathForStaticAnalysis(source),
+      tool: toolName,
+    });
+  }
+
   return JSON.stringify({
     version: 1,
     target_domain: domain,
@@ -544,6 +566,15 @@ function ingestSarif(args = {}) {
     warning_count: parsed.warnings.length,
     warnings: parsed.warnings.slice(0, SUMMARY_WARNING_LIMIT),
     results_path: "static-analysis-results.jsonl",
+    ...(indexResponse ? {
+      index_path: "static-analysis-index.jsonl",
+      static_analysis_index: {
+        indexed_results: indexResponse.indexed_results,
+        duplicate_results: indexResponse.duplicate_results,
+        total_records: indexResponse.total_records,
+        static_analysis_leads: indexResponse.static_analysis_leads,
+      },
+    } : {}),
     records: ingested.slice(0, SUMMARY_RECORD_LIMIT).map(compactRecordForResponse),
     records_omitted: Math.max(0, ingested.length - SUMMARY_RECORD_LIMIT),
     doctrine: "lead_seed_only_no_findings_or_skips",
@@ -558,5 +589,6 @@ module.exports = {
   normalizeStaticAnalysisResultRecord,
   parseSarif,
   readStaticAnalysisResultsFromJsonl,
+  registerStaticAnalysisIndexer,
   resolveSarifSourcePath,
 };
