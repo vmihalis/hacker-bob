@@ -151,7 +151,9 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
 ]);
 
 const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
-const NATIVE_LIBFUZZER_DEFINITION_GREP = "'^[[:space:]]*(extern[[:space:]]+\"C\"[[:space:]]+)?(int|auto)[[:space:]]+LLVMFuzzerTestOneInput[[:space:]]*\\('";
+const NATIVE_LIBFUZZER_DEFINITION_PERL = shellQuote(
+  "s{/\\*.*?\\*/}{}gs; s{//[^\\n]*}{}g; s/\"(?:\\\\.|[^\"\\\\])*\"/\"\"/gs; s/'(?:\\\\.|[^'\\\\])*'/''/gs; exit(/\\b(?:extern\\s+(?:\"C\"|\"\"|'C'|'')\\s+)?(?:int|auto)\\s+LLVMFuzzerTestOneInput\\s*\\([^;{}]*\\)\\s*(?:\\{|try\\b)/s ? 0 : 1)",
+);
 const FUZZ_STATS_NULL = Object.freeze({
   cov: null,
   ft: null,
@@ -280,12 +282,12 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "cp -a /src/. /work/repo/",
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
-    `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; grep -rEIl ${NATIVE_LIBFUZZER_DEFINITION_GREP} . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do grep -EIq ${NATIVE_LIBFUZZER_DEFINITION_GREP} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
+    `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do perl -0ne ${NATIVE_LIBFUZZER_DEFINITION_PERL} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
     "test -n \"$HARNESS\"",
     "CC=clang-18",
     "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
     ...seedSetup,
-    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -- \"$HARNESS\" -o /work/out/h",
+    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -o /work/out/h -- \"$HARNESS\"",
     `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }
@@ -296,6 +298,9 @@ function boundedNativeFuzzRecipe(seedEntry) {
   if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     effectiveSeedEntry = null;
     recipe = cNativeFuzzRecipe(null);
+  }
+  if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    throw new Error(`native fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
   }
   return { seedEntry: effectiveSeedEntry, recipe };
 }

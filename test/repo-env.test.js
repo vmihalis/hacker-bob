@@ -252,12 +252,13 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
   assert.match(fuzz.command[2], /find \. -type f/);
   assert.match(fuzz.command[2], /\*_fuzzer\.c/);
-  assert.match(fuzz.command[2], /grep -rEIl '\^\[\[:space:\]\]\*/);
-  assert.match(fuzz.command[2], /grep -EIq '\^\[\[:space:\]\]\*/);
+  assert.match(fuzz.command[2], /perl -0ne/);
+  assert.match(fuzz.command[2], /find \. -type f .*'\*\.cpp'/);
+  assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput\\s\*/);
   assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
-  assert.match(fuzz.command[2], /-- "\$HARNESS" -o \/work\/out\/h/);
+  assert.match(fuzz.command[2], /-o \/work\/out\/h -- "\$HARNESS"/);
   assert.match(fuzz.command[2], /-Iinclude/);
   assert.match(fuzz.command[2], /-max_total_time=240/);
   assert.ok(fuzz.command[2].length <= 2048, "native fuzz recipe token must stay within docker-run limit");
