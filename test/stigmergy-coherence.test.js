@@ -124,11 +124,10 @@ test("fixture drift (iv): consumer points at non-existent source file produces c
   assert.equal(violations[0].kind, "consumer_source_file_missing");
 });
 
-test("FP-rate budget: ≤2% on curated 6-pair corpus (canonical manifest)", () => {
-  // The curated corpus IS the live manifest of 6 producer×consumer pairs.
-  // 6 pairs × 3 assertion kinds = 18 mechanical assertions. The FP-rate
-  // budget Y-P14c is ≤2%, i.e. ≤0.36 violations expected on the real
-  // tree. Empirically: 0.
+test("FP-rate budget: ≤2% on the live canonical manifest", () => {
+  // The curated corpus IS the live manifest of producer/consumer pairs.
+  // The FP-rate budget Y-P14c is ≤2%; empirically the real tree has 0
+  // violations.
   const violations = runCoherenceCheck({
     producers: STIGMERGIC_PRODUCERS,
     consumers: STIGMERGIC_CONSUMERS,

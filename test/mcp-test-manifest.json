@@ -40,6 +40,7 @@
   "test/capability-eval-harness.test.js",
   "test/audit-report-parser.test.js",
   "test/invariant-template-corpus.test.js",
+  "test/oss-rootcause-family-index.test.js",
   "test/invariant-runner.test.js",
   "test/route-extractor.test.js",
   "test/symbol-surface-index.test.js",

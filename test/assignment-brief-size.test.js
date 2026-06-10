@@ -512,3 +512,51 @@ test("smart-contract evaluator brief stays within 30k with representative slice 
     assert.ok(surfaceGraphSlice.related_endpoints.length > 0);
   });
 });
+
+test("OSS evaluator brief keeps root-cause family technique_packs within its 8192-char slice cap", () => {
+  withTempHome(() => {
+    const domain = uniqueDomain("brief-oss");
+    const surfaceId = "repo:module:src-parser.c";
+    seedSessionState(domain);
+    seedAttackSurface(domain, [{
+      id: surfaceId,
+      surface_type: "oss_native_code",
+      title: "src/parser.c",
+      description: "C parser reachable from a network/file entry point with length-prefixed records.",
+      file_path: "src/parser.c",
+      language: "c",
+      native_source: true,
+      endpoints: ["src/parser.c"],
+      bug_class_hints: ["length_field", "consuming_op", "bound_check_site"],
+      high_value_flows: ["length-prefixed parser"],
+      evidence: ["record length reaches parser state transition"],
+    }]);
+    JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{
+        agent: "a1",
+        surface_id: surfaceId,
+        task_lens: "fuzz_run",
+      }],
+    }));
+
+    const brief = assertBriefWithinBudget("oss", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+    });
+    assert.equal(brief.run_context.brief_profile, "oss");
+    assert.ok(brief.technique_packs.root_cause_families.length > 0);
+    const families = brief.technique_packs.root_cause_families.map((family) => family.family);
+    assert.ok(families.includes("validate_vs_consume"));
+    assert.ok(families.includes("crypto_ordering"));
+    const techniquePacksBudget = ASSIGNMENT_BRIEF_SLICE_REGISTRY.oss
+      .find((slice) => slice.key === "technique_packs").budget_chars;
+    assert.equal(techniquePacksBudget, 8192);
+    assert.ok(
+      JSON.stringify(brief.technique_packs).length <= techniquePacksBudget,
+      "OSS technique_packs slice must stay within its 8192-char cap",
+    );
+  });
+});

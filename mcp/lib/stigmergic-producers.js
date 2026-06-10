@@ -95,6 +95,15 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
     ]),
   }),
   Object.freeze({
+    producer_id: "oss_rootcause_family_corpus",
+    mcp_tool_or_artifact: "OSS_ROOTCAUSE_FAMILIES",
+    trace_shape_ref:
+      "mcp/lib/oss-rootcause-family-corpus.js#suggestFamiliesForSurface",
+    registered_consumers: Object.freeze([
+      "assignment_brief_oss_rootcause_family_renderer",
+    ]),
+  }),
+  Object.freeze({
     producer_id: "static_analysis_index",
     mcp_tool_or_artifact: "indexStaticResults / static-analysis-index.jsonl",
     trace_shape_ref: "mcp/lib/static-analysis-index.js#indexStaticResults",

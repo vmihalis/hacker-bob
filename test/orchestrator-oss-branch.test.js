@@ -446,6 +446,9 @@ test("OSS brief extras partition technique packs by task lens and keep CLI packs
   assert.ok(extras.technique_packs.selected.some((pack) => pack.id === "oss_native_code"));
   assert.ok(extras.technique_packs.other_applicable.some((pack) => pack.id === "oss_ci_cd"));
   assert.equal(extras.technique_packs.selection_limits.selected_count, extras.technique_packs.selected.length);
+  assert.ok(extras.technique_packs.root_cause_families.length > 0);
+  assert.ok(extras.technique_packs.root_cause_families.some((family) => family.family === "validate_vs_consume"));
+  assert.ok(extras.technique_packs.root_cause_families.some((family) => family.family === "crypto_ordering"));
   assert.match(extras.cli_tools, /semgrep|trivy/);
 });
 
@@ -501,6 +504,8 @@ test("readAssignmentBrief accepts routed OSS brief_profile and emits OSS techniq
   assert.ok(fuzzCommand, "brief must expose a fuzz recommendation when seed corpus exists");
   assert.equal(fuzzCommand.seed_path, "fuzz/corpus");
   assert.ok(brief.technique_packs.selected.some((pack) => pack.id === "oss_native_code"));
+  assert.ok(brief.technique_packs.root_cause_families.some((family) => family.family === "validate_vs_consume"));
+  assert.ok(brief.technique_packs.root_cause_families.some((family) => family.family === "crypto_ordering"));
   assert.ok(!String(JSON.stringify(brief)).includes("Unsupported brief profile"));
 }));
 

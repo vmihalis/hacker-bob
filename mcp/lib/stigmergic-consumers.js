@@ -134,6 +134,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
       "OSS brief composition consumes OSS_TECHNIQUE_PACKS and partitions them by task-lens affinity",
   }),
   Object.freeze({
+    consumer_id: "assignment_brief_oss_rootcause_family_renderer",
+    source_location: Object.freeze({
+      file: "mcp/lib/assignment-brief.js",
+      token_or_regex: "suggestFamiliesForSurface",
+    }),
+    producer_id: "oss_rootcause_family_corpus",
+    decision_boundary: "brief_composition",
+    rationale:
+      "OSS brief composition consumes OSS_ROOTCAUSE_FAMILIES as bounded root_cause_families inside technique_packs",
+  }),
+  Object.freeze({
     consumer_id: "c11_static_analysis_brief_slice",
     source_location: Object.freeze({
       file: "docs/plane-delta/detail/C11.md",

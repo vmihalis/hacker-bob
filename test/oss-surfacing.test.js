@@ -34,6 +34,7 @@ const {
   OSS_BRIEF_SLICE_REGISTRY,
   OSS_LENSES,
   REPO_WORKFLOW_TEXT,
+  buildBriefExtrasForProfile,
   briefSliceRegistryForProfile,
   isOssLens,
 } = require("../mcp/lib/assignment-brief.js");
@@ -565,6 +566,41 @@ test("OSS technique-pack content carries the spec-required hunting vocabulary pe
   assert.match(pack("oss_ci_cd").summary, /pull_request_target|github_token/i);
   assert.match(pack("oss_secrets_config").summary, /committed|weak crypto|debug flag|\.env/i);
   assert.match(pack("oss_docs_behavior").summary, /docs claim|rate.?limit/i);
+});
+
+test("OSS brief technique_packs slice names root-cause families for native-code lenses", () => {
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain: "repo-oss-family-slice",
+    surface: {
+      id: "repo:module:src-parser.c",
+      title: "src/parser.c",
+      surface_type: "oss_native_code",
+      file_path: "src/parser.c",
+      language: "c",
+      bug_class_hints: ["length_field", "bound_check_site"],
+    },
+    assignment: {
+      surface_id: "repo:module:src-parser.c",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: {
+      capability_pack: "oss_native_code",
+      capability_pack_version: 1,
+      evaluator_agent: "evaluator-agent",
+      brief_profile: "oss",
+      context_budget: {
+        candidate_pack_limit: 5,
+        full_pack_read_limit: 2,
+        attempt_log_required: true,
+      },
+    },
+  });
+
+  assert.ok(extras.technique_packs.root_cause_families.length > 0);
+  const familyNames = extras.technique_packs.root_cause_families.map((family) => family.family);
+  assert.ok(familyNames.includes("validate_vs_consume"));
+  assert.ok(familyNames.includes("crypto_ordering"));
+  assert.equal(extras.technique_packs.root_cause_family_limits.unmatched_lens, false);
 });
 
 // ── Technique-pack id alias resolves ────────────────────────────────────────

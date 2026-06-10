@@ -86,6 +86,9 @@ const {
   selectTechniquePacksForSurface,
 } = require("./technique-packs.js");
 const {
+  suggestFamiliesForSurface,
+} = require("./oss-rootcause-family-corpus.js");
+const {
   CLI_TOOL_PACKS,
   fillInvocationPlaceholders,
   observationList,
@@ -374,6 +377,8 @@ function ossTechniquePackForBrief(pack, { summary = true } = {}) {
   return brief;
 }
 
+const OSS_ROOTCAUSE_FAMILY_BRIEF_LIMIT = 10;
+
 function partitionOssTechniquePacksByLens(packs, taskLens) {
   const packList = Array.isArray(packs) ? packs : [];
   if (!isOssLens(taskLens)) {
@@ -398,14 +403,31 @@ function partitionOssTechniquePacksByLens(packs, taskLens) {
   };
 }
 
-function buildOssTechniquePacksSlice(taskLens) {
+function buildOssTechniquePacksSlice(taskLens, surface) {
   const partitioned = partitionOssTechniquePacksByLens(OSS_TECHNIQUE_PACKS, taskLens);
+  const familySurface = surface && typeof surface === "object" && !Array.isArray(surface)
+    ? { ...surface, task_lens: taskLens }
+    : { task_lens: taskLens };
+  const rootCauseFamilies = suggestFamiliesForSurface(familySurface, {
+    lens: taskLens,
+    limit: OSS_ROOTCAUSE_FAMILY_BRIEF_LIMIT,
+  });
+  const renderedFamilies = rootCauseFamilies.suggestions;
   return {
     selected: partitioned.selected,
     other_applicable: partitioned.other_applicable,
+    root_cause_families: renderedFamilies,
+    root_cause_family_limits: {
+      lens: rootCauseFamilies.lens,
+      family_count: rootCauseFamilies.family_count,
+      unmatched_lens: rootCauseFamilies.unmatched_lens,
+      ...(rootCauseFamilies.summary_limits || {}),
+    },
     selection_limits: {
       selected_chars: JSON.stringify(partitioned.selected).length,
       selected_count: partitioned.selected.length,
+      root_cause_family_chars: JSON.stringify(renderedFamilies).length,
+      root_cause_family_count: renderedFamilies.length,
     },
     lens_partitioned: isOssLens(taskLens),
   };
@@ -1318,7 +1340,7 @@ function buildOssBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
       },
     },
     repoEnvRecommendations: buildRepoEnvRecommendationsForBrief(domain),
-    ossTechniquePacks: buildOssTechniquePacksSlice(taskLens),
+    ossTechniquePacks: buildOssTechniquePacksSlice(taskLens, slimSurface.surface),
     cliToolSurfaceFingerprint,
     cliToolTaskLens: taskLens,
     cliToolObservations,
