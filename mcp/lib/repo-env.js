@@ -279,12 +279,12 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "cp -a /src/. /work/repo/",
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
-    "HARNESS=$(grep -rIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort | head -1)",
+    "HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; grep -rIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do grep -Iq 'LLVMFuzzerTestOneInput' -- \"$f\" && { printf '%s\\n' \"$f\"; break; }; done)",
     "test -n \"$HARNESS\"",
     "CC=clang-18",
     "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
     ...seedSetup,
-    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib \"$HARNESS\" -o /work/out/h",
+    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -- \"$HARNESS\" -o /work/out/h",
     `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }

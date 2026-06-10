@@ -772,7 +772,9 @@ function capStringValue(value, maxChars) {
 
 const REPO_ENV_RECOMMENDED_COMMAND_LIMIT = 8;
 const REPO_ENV_COMMAND_ARG_LIMIT = 12;
-const REPO_ENV_COMMAND_ARG_MAX_CHARS = 400;
+// Match bob_repo_docker_run's per-token limit so briefed command arrays stay
+// executable instead of silently clipping long `sh -lc` recipes.
+const REPO_ENV_COMMAND_ARG_MAX_CHARS = 2048;
 const REPO_ENV_STRING_MAX_CHARS = 240;
 const REPO_ENV_SEED_CORPUS_LIMIT = 8;
 const REPO_ENV_SEED_SAMPLE_LIMIT = 8;

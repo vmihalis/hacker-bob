@@ -250,11 +250,13 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.equal(fuzz.id, "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "fuzz/corpus");
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
+  assert.match(fuzz.command[2], /find \. -type f/);
+  assert.match(fuzz.command[2], /\*_fuzzer\.c/);
   assert.match(fuzz.command[2], /grep -rIl 'LLVMFuzzerTestOneInput'/);
   assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
-  assert.doesNotMatch(fuzz.command[2], /\*_fuzzer/);
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
+  assert.match(fuzz.command[2], /-- "\$HARNESS" -o \/work\/out\/h/);
   assert.match(fuzz.command[2], /-Iinclude/);
   assert.match(fuzz.command[2], /-max_total_time=240/);
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
