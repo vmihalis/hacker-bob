@@ -252,6 +252,7 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
   assert.match(fuzz.command[2], /grep -rIl 'LLVMFuzzerTestOneInput'/);
   assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
+  assert.doesNotMatch(fuzz.command[2], /\*_fuzzer/);
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
   assert.match(fuzz.command[2], /-Iinclude/);
@@ -431,6 +432,11 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
     nativeFuzzShape: true,
     allowNetwork: true,
   });
+  assert.match(
+    withFuzz,
+    /apt-get install -y --no-install-recommends [^\n]*\bclang clang-18\b/,
+    "C images must keep the unversioned clang wrapper while pinning clang-18 for the fuzz recipe",
+  );
   for (const pkg of NATIVE_FUZZ_EXTRA_APT_PACKAGES) {
     assert.match(withFuzz, new RegExp(`\\b${pkg.replace(/[-]/g, "\\-")}\\b`),
       `native fuzz package ${pkg} missing`);

@@ -270,6 +270,20 @@ test("buildRepoInventory detects native fuzz shape from fuzzer markers", () => {
   });
 });
 
+test("buildRepoInventory detects native fuzz shape from build-file fuzz toggles", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "option(WITH_FUZZERS \"build fuzzers\" ON)\n");
+    write(repoRoot, "src/parser.c", "int parse(const unsigned char *data, unsigned long size){return size > 0 && data[0];}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, true);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, true);
+  });
+});
+
 test("buildRepoInventory does not set native fuzz shape for fuzzing assets without a harness", () => {
   withTempHome(() => {
     const repoRoot = makeTempRepoDir();

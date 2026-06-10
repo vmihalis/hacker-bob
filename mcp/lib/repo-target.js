@@ -849,6 +849,7 @@ const NFS_XDR_SIGNALS = Object.freeze([
 const NATIVE_FUZZER_SOURCE_RE = /(^|\/)[^/]*_fuzzer\.(?:c|cc|cpp|cxx)$/i;
 const NATIVE_FUZZ_SIGNALS = Object.freeze([
   /\bLLVMFuzzerTestOneInput\b/,
+  /\b(?:WITH_FUZZERS|ENABLE_FUZZERS|BUILD_FUZZERS)\b/,
 ]);
 const NATIVE_FUZZ_PROBE_LIMIT = 256;
 

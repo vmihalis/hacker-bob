@@ -127,6 +127,7 @@ const C_DEFAULT_APT_PACKAGES = Object.freeze([
   "build-essential",
   "cmake",
   "ninja-build",
+  "clang",
   "clang-18",
   "gdb",
   "valgrind",
@@ -277,7 +278,6 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
     "HARNESS=$(grep -rIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort | head -1)",
-    "if [ -z \"$HARNESS\" ]; then HARNESS=$(find . \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -type f | sort | head -1); fi",
     "test -n \"$HARNESS\"",
     "CC=clang-18",
     "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
@@ -1380,14 +1380,14 @@ function appendTailBuffer(current, chunk, maxBytes) {
   const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk || "");
   if (maxBytes <= 0 || data.length === 0) return current;
   if (data.length >= maxBytes) {
-    return data.subarray(data.length - maxBytes);
+    return Buffer.from(data.subarray(data.length - maxBytes));
   }
   if (!current || current.length === 0) {
     return Buffer.from(data);
   }
   const combined = Buffer.concat([current, data]);
   if (combined.length <= maxBytes) return combined;
-  return combined.subarray(combined.length - maxBytes);
+  return Buffer.from(combined.subarray(combined.length - maxBytes));
 }
 
 function defaultDockerRuntime() {
