@@ -2,12 +2,12 @@
 
 const {
   mapSarifResultToSurfaceLead,
+  normalizeRepoPath,
 } = require("./static-analysis-index.js");
 
 const STATIC_LEAD_SOURCE = "bob_static_scan";
 const STATIC_LEAD_SURFACE_TYPE = "oss_static_sink";
 const STATIC_LEAD_TEXT_MAX_CHARS = 500;
-const STATIC_LEAD_PATH_MAX_CHARS = 260;
 
 function isObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -17,25 +17,6 @@ function compactText(value, maxChars = STATIC_LEAD_TEXT_MAX_CHARS) {
   const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
   if (!text) return "";
   return text.length > maxChars ? text.slice(0, maxChars) : text;
-}
-
-function normalizeRepoPath(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  let uri = value.trim().replace(/\\/g, "/");
-  uri = uri.replace(/[?#].*$/, "");
-  uri = uri.replace(/^file:\/\/+/, "/");
-  uri = uri.replace(/^\/src\/+/, "");
-  uri = uri.replace(/^\.\/+/, "");
-  if (/^[A-Za-z]:\//.test(uri)) return null;
-  if (uri.startsWith("/")) return null;
-  const parts = [];
-  for (const segment of uri.split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") return null;
-    parts.push(segment);
-  }
-  const normalized = parts.join("/");
-  return normalized ? compactText(normalized, STATIC_LEAD_PATH_MAX_CHARS) : null;
 }
 
 function locationForFinding(finding) {

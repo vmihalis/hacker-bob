@@ -1408,7 +1408,6 @@ function endpointMatchesSurface(endpoint, surfaceObj) {
     value === endpoint
     || value === file
     || file.startsWith(`${value}/`)
-    || value.startsWith(`${file}/`)
   ));
 }
 
@@ -1416,9 +1415,9 @@ function staticLeadAppliesToSurface(lead, surfaceObj) {
   if (!lead || lead.source !== "bob_static_scan" || lead.surface_type !== "oss_static_sink") return false;
   if (lead.source_surface_id && surfaceObj && lead.source_surface_id === surfaceObj.id) return true;
   if (lead.promoted_surface_id && surfaceObj && lead.promoted_surface_id === surfaceObj.id) return true;
+  if (lead.source_surface_id && surfaceObj && lead.source_surface_id !== surfaceObj.id) return false;
   const endpoints = Array.isArray(lead.endpoints) ? lead.endpoints : [];
   if (endpoints.some((endpoint) => endpointMatchesSurface(endpoint, surfaceObj))) return true;
-  if (lead.source_surface_id && surfaceObj && lead.source_surface_id !== surfaceObj.id) return false;
   return !lead.source_surface_id && (!surfaceObj || !surfaceObj.id);
 }
 
@@ -1451,14 +1450,21 @@ function capStaticAnalysisLeadSlice(lines) {
   return kept.join("\n");
 }
 
+function staticLeadBriefValue(value) {
+  return String(value == null ? "" : value)
+    .replace(/[|\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function renderStaticAnalysisLead(lead) {
-  const endpoint = staticLeadEndpoint(lead);
+  const endpoint = staticLeadBriefValue(staticLeadEndpoint(lead)) || "unknown:0";
   const family = Array.isArray(lead.bug_class_hints) && lead.bug_class_hints.length > 0
-    ? lead.bug_class_hints[0]
+    ? staticLeadBriefValue(lead.bug_class_hints[0]) || "static_analysis"
     : "static_analysis";
-  const attackVector = staticLeadField(lead, "attack_vector") || "unknown";
-  const networkReachable = staticLeadField(lead, "network_reachable") || "unknown";
-  const severityCeiling = staticLeadField(lead, "severity_ceiling") || "unknown";
+  const attackVector = staticLeadBriefValue(staticLeadField(lead, "attack_vector")) || "unknown";
+  const networkReachable = staticLeadBriefValue(staticLeadField(lead, "network_reachable")) || "unknown";
+  const severityCeiling = staticLeadBriefValue(staticLeadField(lead, "severity_ceiling")) || "unknown";
   const recommendation = attackVector === "network" && networkReachable === "true"
     ? "trace source->sink, prioritize write/UAF/RCE, prove with non-dry-run bob_repo_docker_run"
     : "trace source->sink, keep capped until replay proves impact";

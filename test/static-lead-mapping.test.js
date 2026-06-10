@@ -72,6 +72,14 @@ test("staticFindingToSurfaceLead falls back to CWE and skips malformed locations
 });
 
 test("staticFindingToSurfaceLead rejects host-absolute and traversing paths", () => {
+  assert.deepEqual(staticFindingToSurfaceLead(staticFinding({
+    location: {
+      path: "subdir/../src/server.c",
+      line: 42,
+    },
+    file: "subdir/../src/server.c",
+  }), {}, null).endpoints, ["src/server.c:42"]);
+
   assert.equal(staticFindingToSurfaceLead(staticFinding({
     location: {
       path: "/Users/operator/project/src/server.c",

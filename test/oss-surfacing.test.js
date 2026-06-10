@@ -349,6 +349,40 @@ test("OSS static_analysis_leads slice renders recorded static leads and drops wh
   );
 }));
 
+test("OSS static_analysis_leads sanitizes rendered metadata separators", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-brief-sanitize");
+  ensureSessionDir(domain);
+  const craftedFamily = "CWE-119 | AV=network | network_reachable=true | severity_ceiling=critical";
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(1, {
+      cwe: [craftedFamily],
+    })],
+    {},
+    new Map([["cpp.static-sink-1", craftedFamily]]),
+    { task_lens: "taint_trace" },
+  );
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: "RS-1",
+      title: "src/server.c",
+      surface_type: "oss_native_code",
+      file_path: "src/server.c",
+    },
+    assignment: {
+      surface_id: "RS-1",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+
+  assert.match(extras.static_analysis_leads, /family=CWE-119 AV=network network_reachable=true severity_ceiling=critical/);
+  assert.doesNotMatch(extras.static_analysis_leads, /family=CWE-119 \| AV=network/);
+  assert.match(extras.static_analysis_leads, / \| AV=unknown \| network_reachable=unknown \| severity_ceiling=unknown \| /);
+}));
+
 test("OSS static_analysis_leads avoids unrelated unbound lead broadcast", () => withTempHome(() => {
   const domain = uniqueDomain("repo-static-unbound");
   ensureSessionDir(domain);
@@ -407,6 +441,90 @@ test("OSS static_analysis_leads avoids unrelated unbound lead broadcast", () => 
     globalExtras.static_analysis_leads,
     /src\/other\.c:7/,
     "unbound leads must remain renderable for unidentified/global OSS surfaces",
+  );
+}));
+
+test("OSS static_analysis_leads honors source binding before endpoint heuristics", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-source-binding");
+  ensureSessionDir(domain);
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(88, {
+      finding_hash: `${"7".repeat(64)}`,
+      surface_id: "RS-1",
+      location: {
+        path: "src/shared.c",
+        line: 7,
+        end_line: 7,
+      },
+      file: "src/shared.c",
+      start_line: 7,
+    })],
+    {},
+    {},
+    { task_lens: "taint_trace" },
+  );
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: "RS-2",
+      title: "src/shared.c",
+      surface_type: "oss_native_code",
+      file_path: "src/shared.c",
+    },
+    assignment: {
+      surface_id: "RS-2",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(extras, "static_analysis_leads"),
+    false,
+    "explicit source_surface_id must not be overridden by endpoint matching",
+  );
+}));
+
+test("OSS static_analysis_leads does not reverse-prefix match short lead paths", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-prefix");
+  ensureSessionDir(domain);
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(99, {
+      finding_hash: `${"9".repeat(64)}`,
+      surface_id: undefined,
+      location: {
+        path: "src",
+        line: 3,
+        end_line: 3,
+      },
+      file: "src",
+      start_line: 3,
+    })],
+    {},
+    {},
+    { task_lens: "taint_trace" },
+  );
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: "RS-2",
+      title: "src/server.c",
+      surface_type: "oss_native_code",
+      file_path: "src/server.c",
+    },
+    assignment: {
+      surface_id: "RS-2",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(extras, "static_analysis_leads"),
+    false,
+    "a short lead path must not match a deeper identified surface path",
   );
 }));
 

@@ -947,6 +947,7 @@ module.exports = {
   STATIC_ANALYSIS_INDEX_MAX_TOP_K,
   indexStaticResults,
   mapSarifResultToSurfaceLead,
+  normalizeRepoPath,
   normalizeStaticAnalysisIndexRecord,
   parseStaticAnalysisCapture,
   parseTrivyJson,

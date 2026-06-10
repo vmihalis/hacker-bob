@@ -209,6 +209,45 @@ test("indexStaticResults scores static leads from persisted repo-inventory reach
   assert.ok(leads[0].high_value_flows.includes("severity_ceiling=critical"));
 }));
 
+test("indexStaticResults matches persisted reachability by file_path without surface_id", () => withTempHome(() => {
+  const domain = "static-index-inventory-filepath.example.com";
+  const runId = "run-codeql";
+  initDomain(domain);
+  fs.writeFileSync(repoInventoryPath(domain), `${JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    reachability: {
+      network_reachable: true,
+      max_credible_severity_ceiling: "critical",
+      surface_ceilings: [
+        {
+          id: "RS-inventory",
+          file_path: "routes/download.js",
+          attack_vector: "network",
+          network_reachable: true,
+          severity_ceiling: "critical",
+        },
+      ],
+    },
+  })}\n`);
+  const stdoutPath = writeRunStdout(domain, runId, fixture("codeql-codeflows.sarif"));
+
+  const response = indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+  });
+  assert.equal(response.indexed_results, 1);
+  assert.equal(response.static_analysis_leads.mapped_leads, 1);
+
+  const leads = readSurfaceLeadsDocument(domain).leads;
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0].confidence, "high");
+  assert.ok(leads[0].high_value_flows.includes("attack_vector=network"));
+  assert.ok(leads[0].high_value_flows.includes("network_reachable=true"));
+  assert.ok(leads[0].high_value_flows.includes("severity_ceiling=critical"));
+}));
+
 test("indexStaticResults persists only scrubbed Trivy secret rows", () => withTempHome(() => {
   const domain = "static-index-trivy.example.com";
   const runId = "run-trivy";

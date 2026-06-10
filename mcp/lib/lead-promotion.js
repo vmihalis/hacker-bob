@@ -512,8 +512,12 @@ function reachabilityEntriesFromIndex(index) {
   };
   const scanRecord = (record) => {
     if (!isPlainObject(record)) return;
-    const key = record.id || record.surface_id || record.file_path || record.file;
-    pushEntry(key, record);
+    [
+      record.id,
+      record.surface_id,
+      record.file_path,
+      record.file,
+    ].forEach((key) => pushEntry(key, record));
   };
   if (index instanceof Map) {
     index.forEach((value, key) => pushEntry(key, value));
