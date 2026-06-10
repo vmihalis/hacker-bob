@@ -127,7 +127,7 @@ const C_DEFAULT_APT_PACKAGES = Object.freeze([
   "build-essential",
   "cmake",
   "ninja-build",
-  "clang",
+  "clang-18",
   "gdb",
   "valgrind",
 ]);
@@ -231,21 +231,35 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
+function normalizeRepoRelativePath(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /^[A-Za-z]:[\\/]/.test(trimmed)) return null;
+  const normalized = path.posix.normalize(trimmed.replace(/\\/g, "/"));
+  if (!normalized || normalized === "." || path.posix.isAbsolute(normalized)) return null;
+  if (normalized === ".." || normalized.startsWith("../")) return null;
+  return normalized;
+}
+
 function firstSeedCorpusRel(seedCorpus) {
   if (!Array.isArray(seedCorpus)) return null;
   for (const entry of seedCorpus) {
-    if (entry && typeof entry.rel_path === "string" && entry.rel_path.trim()) {
-      return entry.rel_path.trim();
+    const safeRel = normalizeRepoRelativePath(entry && entry.rel_path);
+    if (safeRel) {
+      return safeRel;
     }
   }
   return null;
 }
 
 function cNativeFuzzRecipe(seedRel) {
+  const seedShellPath = seedRel ? `./${seedRel}` : null;
   const seedSetup = seedRel
     ? [
-        `SEED=${shellQuote(seedRel)}`,
-        "if [ -d \"$SEED\" ]; then cp -a \"$SEED\"/. /work/out/corpus/; elif [ -f \"$SEED\" ]; then cp \"$SEED\" /work/out/corpus/seed; fi",
+        `SEED=${shellQuote(seedShellPath)}`,
+        "SEED_REAL=$(realpath -m -- \"$SEED\")",
+        "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo \"seed corpus path escapes staged repo\" >&2; exit 2 ;; esac",
+        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
       ]
     : [":"];
   return [
@@ -258,10 +272,10 @@ function cNativeFuzzRecipe(seedRel) {
     "HARNESS=$(grep -RIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort | head -1)",
     "if [ -z \"$HARNESS\" ]; then HARNESS=$(find . \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -type f | sort | head -1); fi",
     "test -n \"$HARNESS\"",
-    "CC=clang",
-    "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++ ;; esac",
+    "CC=clang-18",
+    "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
     ...seedSetup,
-    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. \"$HARNESS\" -o /work/out/h",
+    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib \"$HARNESS\" -o /work/out/h",
     `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }
@@ -407,7 +421,7 @@ function recommendedCommandsFor(language, { nfsXdrShape = false, seedCorpus = []
         command: [
           "sh",
           "-lc",
-          `cp -a /src/. /work/repo/ && cd /work/repo && find ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
+          `cp -a /src/. /work/repo/ && cd /work/repo && find -- ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
         ],
         role: "fuzz",
       });
@@ -1543,10 +1557,13 @@ function integerToken(line, re) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function parseFuzzStats(stdoutPath) {
+function parseFuzzStats(stdoutPath, stderrPath = null) {
   const stats = { ...FUZZ_STATS_NULL };
   try {
-    const text = readTailText(stdoutPath, FUZZ_STATS_PROBE_BYTES);
+    const text = [
+      readTailText(stdoutPath, FUZZ_STATS_PROBE_BYTES),
+      stderrPath ? readTailText(stderrPath, FUZZ_STATS_PROBE_BYTES) : "",
+    ].filter(Boolean).join("\n");
     if (!text) return stats;
     const lines = text.split(/\r?\n/);
     let sawLibFuzzerProgress = false;
@@ -1925,7 +1942,7 @@ async function repoDockerRun({
   const stderrHash = hashFile(stderrPath);
   const stdoutFirstLine = readFirstLine(stdoutPath, REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS);
   const stderrFirstLine = readFirstLine(stderrPath, REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS);
-  const fuzzStats = parseFuzzStats(stdoutPath);
+  const fuzzStats = parseFuzzStats(stdoutPath, stderrPath);
   const completedAt = new Date().toISOString();
 
   const liveRow = {

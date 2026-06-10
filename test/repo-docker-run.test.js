@@ -998,8 +998,8 @@ test("repoDockerRun records fuzz_stats as observational scalars outside command_
       run: async ({ stdoutPath, stderrPath }) => {
         runCount += 1;
         const cov = runCount === 1 ? 11 : 29;
-        fs.writeFileSync(stdoutPath, `#${runCount} NEW cov: ${cov} ft: ${cov + 1} corp: ${runCount}/16b exec/s: 77\n`);
-        fs.writeFileSync(stderrPath, "");
+        fs.writeFileSync(stdoutPath, "build stdout\n");
+        fs.writeFileSync(stderrPath, `#${runCount} NEW cov: ${cov} ft: ${cov + 1} corp: ${runCount}/16b exec/s: 77\n`);
         return {
           exit_code: 0,
           signal: null,

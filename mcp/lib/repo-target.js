@@ -846,12 +846,11 @@ const NFS_XDR_SIGNALS = Object.freeze([
   /rpc\/xdr\.h/i,
   /\bxdr_/i,
 ]);
-const NATIVE_FUZZING_DIR_RE = /(^|\/)fuzzing(?:\/|$)/i;
 const NATIVE_FUZZER_SOURCE_RE = /(^|\/)[^/]*_fuzzer\.(?:c|cc|cpp|cxx)$/i;
 const NATIVE_FUZZ_SIGNALS = Object.freeze([
-  /\bWITH_FUZZERS\b/,
   /\bLLVMFuzzerTestOneInput\b/,
 ]);
+const NATIVE_FUZZ_PROBE_LIMIT = 256;
 
 const RESIDUAL_TARGET_LIMIT = 20;
 const RESIDUAL_SOURCE_LINE_LIMIT = 12;
@@ -1074,11 +1073,13 @@ function isNativeFuzzProbeCandidate(rel) {
 
 function detectNativeFuzzShape(rootPath, files) {
   for (const file of files) {
-    if (NATIVE_FUZZING_DIR_RE.test(file)) return true;
     if (NATIVE_FUZZER_SOURCE_RE.test(file)) return true;
   }
+  let probes = 0;
   for (const file of files) {
     if (!isNativeFuzzProbeCandidate(file)) continue;
+    if (probes >= NATIVE_FUZZ_PROBE_LIMIT) break;
+    probes += 1;
     const probe = safeReadProbe(rootPath, file);
     if (!probe) continue;
     for (const re of NATIVE_FUZZ_SIGNALS) {

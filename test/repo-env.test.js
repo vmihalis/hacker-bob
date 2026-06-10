@@ -236,7 +236,7 @@ test("recommendedCommandsFor c emits one fuzz seed command when seed corpus is p
   assert.equal(fuzzCommands[0].id, "fuzz_seed_probe");
   assert.equal(fuzzCommands[0].seed_path, "fuzz/corpus");
   assert.match(fuzzCommands[0].description, /fuzz\/corpus/);
-  assert.match(fuzzCommands[0].command[2], /find 'fuzz\/corpus'/);
+  assert.match(fuzzCommands[0].command[2], /find -- 'fuzz\/corpus'/);
 });
 
 test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when native fuzz shape is present", () => {
@@ -250,9 +250,39 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.equal(fuzz.id, "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "fuzz/corpus");
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
+  assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
+  assert.match(fuzz.command[2], /-Iinclude/);
   assert.match(fuzz.command[2], /-max_total_time=300/);
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
+});
+
+test("recommendedCommandsFor c ignores unsafe seed corpus paths before shell emission", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [
+      { rel_path: "/tmp/outside" },
+      { rel_path: "../outside" },
+      { rel_path: "safe corpus" },
+    ],
+  });
+  const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
+  assert.equal(fuzz.seed_path, "safe corpus");
+  assert.doesNotMatch(fuzz.command[2], /\/tmp\/outside|\.\.\/outside/);
+  assert.match(fuzz.command[2], /SEED='\.\/safe corpus'/);
+  assert.match(fuzz.command[2], /realpath -m -- "\$SEED"/);
+  assert.match(fuzz.command[2], /cp -a -- "\$SEED_REAL"\/\./);
+});
+
+test("recommendedCommandsFor c guards dash-prefixed seed corpus paths", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: "-corpus" }],
+  });
+  const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
+  assert.equal(fuzz.seed_path, "-corpus");
+  assert.match(fuzz.command[2], /SEED='\.\/-corpus'/);
+  assert.match(fuzz.command[2], /cp -a --/);
 });
 
 test("every recommended_commands[].role is in RECOMMENDED_COMMAND_ROLES", () => {
@@ -424,6 +454,29 @@ test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () =
       ft: 2,
       exec_per_s: 3,
       corpus_size: 1,
+      crashes: 1,
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseFuzzStats reads libFuzzer progress and crashes from stderr", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-fuzz-stats-stderr-"));
+  try {
+    const stdoutPath = path.join(dir, "run.stdout");
+    const stderrPath = path.join(dir, "run.stderr");
+    fs.writeFileSync(stdoutPath, "build output\n", "utf8");
+    fs.writeFileSync(
+      stderrPath,
+      "#77 NEW cov: 31 ft: 44 corp: 5/512b exec/s: 900 rss: 40Mb\nERROR: libFuzzer: deadly signal\n",
+      "utf8",
+    );
+    assert.deepEqual(parseFuzzStats(stdoutPath, stderrPath), {
+      cov: 31,
+      ft: 44,
+      exec_per_s: 900,
+      corpus_size: 5,
       crashes: 1,
     });
   } finally {

@@ -270,6 +270,39 @@ test("buildRepoInventory detects native fuzz shape from fuzzer markers", () => {
   });
 });
 
+test("buildRepoInventory does not set native fuzz shape for fuzzing assets without a harness", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(seedsonly C)\n");
+    write(repoRoot, "src/parser.c", "int parse(const unsigned char *data, unsigned long size){return size > 0 && data[0];}\n");
+    write(repoRoot, "fuzzing/README.md", "seed notes only\n");
+    write(repoRoot, "fuzzing/corpus/minimal.bin", "AAAA");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, false);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, false);
+  });
+});
+
+test("buildRepoInventory caps native fuzz content probes", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(capped C)\n");
+    for (let index = 0; index < 300; index += 1) {
+      const marker = index === 299
+        ? "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return 0;}\n"
+        : "int helper(void){return 0;}\n";
+      write(repoRoot, `src/file${String(index).padStart(3, "0")}.c`, marker);
+    }
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, false);
+  });
+});
+
 test("buildRepoInventory throws structured error when not bound to a repo session", () => {
   withTempHome(() => {
     assert.throws(
