@@ -285,7 +285,12 @@ test("recommendedCommandsFor c unpacks OSS-Fuzz zip seed corpora before fuzzing"
   const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "parser_seed_corpus.zip");
   assert.match(fuzz.command[2], /SEED_IS_ZIP=1/);
-  assert.match(fuzz.command[2], /unzip -qq -o -- "\$SEED_REAL" -d \/work\/out\/corpus/);
+  assert.match(fuzz.command[2], /ZIP_MAX_BYTES=16777216/);
+  assert.match(fuzz.command[2], /ZIP_MAX_FILES=4096/);
+  assert.match(fuzz.command[2], /unzip -Z -1 "\$SEED_REAL" > "\$ZIP_LIST"/);
+  assert.match(fuzz.command[2], /test "\$ZIP_TOTAL" -le "\$ZIP_MAX_BYTES"/);
+  assert.match(fuzz.command[2], /unzip -qq -o -j -- "\$SEED_REAL" -d \/work\/out\/corpus/);
+  assert.match(fuzz.command[2], /\(\^\|\\\/\)\\\.\\\.\(\$\|\\\/\)/);
 });
 
 test("recommendedCommandsFor c guards dash-prefixed seed corpus paths", () => {

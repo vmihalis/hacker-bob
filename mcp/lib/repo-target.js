@@ -847,10 +847,7 @@ const NFS_XDR_SIGNALS = Object.freeze([
   /\bxdr_/i,
 ]);
 const NATIVE_FUZZER_SOURCE_RE = /(^|\/)[^/]*_fuzzer\.(?:c|cc|cpp|cxx)$/i;
-const NATIVE_FUZZ_SIGNALS = Object.freeze([
-  /\bLLVMFuzzerTestOneInput\b/,
-  /\b(?:WITH_FUZZERS|ENABLE_FUZZERS|BUILD_FUZZERS)\b/,
-]);
+const NATIVE_LIBFUZZER_ENTRY_RE = /\bLLVMFuzzerTestOneInput\b/;
 const NATIVE_FUZZ_PROBE_LIMIT = 256;
 
 const RESIDUAL_TARGET_LIMIT = 20;
@@ -1067,15 +1064,13 @@ function detectNfsXdrShape(rootPath, files) {
 function isNativeFuzzProbeCandidate(rel) {
   const base = path.basename(rel);
   const ext = path.extname(rel).toLowerCase();
-  return NATIVE_BUILD_NAMES.has(base)
+  return NATIVE_FUZZER_SOURCE_RE.test(rel)
+    || NATIVE_BUILD_NAMES.has(base)
     || NATIVE_SOURCE_EXTENSIONS.has(ext)
     || /\.(?:cmake|mk|m4)$/i.test(rel);
 }
 
 function detectNativeFuzzShape(rootPath, files) {
-  for (const file of files) {
-    if (NATIVE_FUZZER_SOURCE_RE.test(file)) return true;
-  }
   let probes = 0;
   for (const file of files) {
     if (!isNativeFuzzProbeCandidate(file)) continue;
@@ -1083,9 +1078,7 @@ function detectNativeFuzzShape(rootPath, files) {
     probes += 1;
     const probe = safeReadProbe(rootPath, file);
     if (!probe) continue;
-    for (const re of NATIVE_FUZZ_SIGNALS) {
-      if (re.test(probe)) return true;
-    }
+    if (NATIVE_LIBFUZZER_ENTRY_RE.test(probe)) return true;
   }
   return false;
 }

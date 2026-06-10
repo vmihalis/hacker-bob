@@ -250,7 +250,7 @@ function firstSeedCorpus(seedCorpus) {
     if (safeRel) {
       return {
         rel_path: safeRel,
-        has_zip: entry && entry.has_zip === true || /\.zip$/i.test(safeRel),
+        has_zip: (entry && entry.has_zip === true) || /\.zip$/i.test(safeRel),
       };
     }
   }
@@ -267,7 +267,9 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
         "SEED_REAL=$(realpath -m -- \"$SEED\")",
         "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo \"seed corpus path escapes staged repo\" >&2; exit 2 ;; esac",
         `SEED_IS_ZIP=${seedIsZip ? "1" : "0"}`,
-        "if [ \"$SEED_IS_ZIP\" = 1 ] && [ -f \"$SEED_REAL\" ]; then unzip -qq -o -- \"$SEED_REAL\" -d /work/out/corpus; elif [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+        "ZIP_MAX_BYTES=16777216",
+        "ZIP_MAX_FILES=4096",
+        "if [ \"$SEED_IS_ZIP\" = 1 ] && [ -f \"$SEED_REAL\" ]; then ZIP_LIST=/work/out/zip-entries.txt; unzip -Z -1 \"$SEED_REAL\" > \"$ZIP_LIST\"; ZIP_COUNT=$(wc -l < \"$ZIP_LIST\" | tr -d ' '); test \"$ZIP_COUNT\" -le \"$ZIP_MAX_FILES\"; awk '($0 ~ /(^|\\/)\\.\\.($|\\/)/ || $0 ~ /^\\//) { bad=1 } END { exit bad ? 1 : 0 }' \"$ZIP_LIST\"; ZIP_TOTAL=$(unzip -l -- \"$SEED_REAL\" | awk 'BEGIN{dash=0} /^---------/{dash += 1; next} dash == 2 && $1 ~ /^[0-9]+$/ { print $1; exit }'); test -n \"$ZIP_TOTAL\"; test \"$ZIP_TOTAL\" -le \"$ZIP_MAX_BYTES\"; unzip -qq -o -j -- \"$SEED_REAL\" -d /work/out/corpus; elif [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
       ]
     : [":"];
   return [

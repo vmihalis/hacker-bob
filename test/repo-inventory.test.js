@@ -270,7 +270,7 @@ test("buildRepoInventory detects native fuzz shape from fuzzer markers", () => {
   });
 });
 
-test("buildRepoInventory detects native fuzz shape from build-file fuzz toggles", () => {
+test("buildRepoInventory does not enable native fuzz shape from build toggles without libFuzzer entrypoint", () => {
   withTempHome(() => {
     const repoRoot = makeTempRepoDir();
     write(repoRoot, "CMakeLists.txt", "option(WITH_FUZZERS \"build fuzzers\" ON)\n");
@@ -278,9 +278,23 @@ test("buildRepoInventory detects native fuzz shape from build-file fuzz toggles"
     const init = initRepoSession({ repo_path: repoRoot });
 
     const result = buildRepoInventory({ target_domain: init.target_domain });
-    assert.equal(result.native_fuzz_shape, true);
+    assert.equal(result.native_fuzz_shape, false);
     const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
-    assert.equal(inventory.native_fuzz_shape, true);
+    assert.equal(inventory.native_fuzz_shape, false);
+  });
+});
+
+test("buildRepoInventory does not enable native fuzz shape from fuzzer filename without libFuzzer entrypoint", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(aflshape C)\n");
+    write(repoRoot, "fuzzing/parser_fuzzer.cc", "int main(int argc, char **argv){return argc > 1 && argv[0] != 0;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, false);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, false);
   });
 });
 
