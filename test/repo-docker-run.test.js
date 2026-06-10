@@ -1048,6 +1048,58 @@ test("repoDockerRun records fuzz_stats as observational scalars outside command_
   });
 });
 
+test("repoDockerRun prefers live tail text for fuzz_stats when capture is truncated", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(
+          stdoutPath,
+          "#1 INITED cov: 1 ft: 2 corp: 1/8b exec/s: 3\n",
+          "utf8",
+        );
+        fs.writeFileSync(stderrPath, "", "utf8");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 10,
+          timed_out: false,
+          stdout_bytes: REPO_DOCKER_RUN_MAX_OUTPUT_BYTES + 1024,
+          stderr_bytes: 0,
+          stdout_truncated: true,
+          stderr_truncated: false,
+          stdout_tail_text: "#900 NEW cov: 90 ft: 91 corp: 7/512b exec/s: 123\n",
+          stderr_tail_text: "ERROR: libFuzzer: deadly signal\n",
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["sh", "-lc", "fuzz"],
+      dry_run: false,
+      runtime,
+    });
+
+    assert.deepEqual(result.fuzz_stats, {
+      cov: 90,
+      ft: 91,
+      exec_per_s: 123,
+      corpus_size: 7,
+      crashes: 1,
+    });
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].stdout_truncated, true);
+    assert.deepEqual(rows[0].fuzz_stats, result.fuzz_stats);
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "stdout_tail_text"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "stderr_tail_text"), false);
+  });
+});
+
 test("repoDockerRun image_tag mismatch is rejected with O-D6 structured error", async () => {
   await withTempHome(async () => {
     const repoRoot = makeTempRepoDir();

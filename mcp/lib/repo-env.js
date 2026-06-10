@@ -1353,10 +1353,25 @@ function buildDockerRunArgv({
 // returns {exit_code, signal, duration_ms, timed_out, stdout_bytes,
 //          stderr_bytes, stdout_truncated, stderr_truncated}.
 //
-// Stdout/stderr are streamed to disk (capped at 16 MB each) — never
-// held in process memory. Tests inject a stub so they can assert the
-// constructed argv and synthesize an exit code without actually
-// invoking docker.
+// Stdout/stderr are streamed to disk (capped at 16 MB each). A separate
+// bounded tail is retained only for scalar parsers such as fuzz_stats so
+// completion-state telemetry is not stale when the capture file truncates.
+// Tests inject a stub so they can assert the constructed argv and synthesize
+// an exit code without actually invoking docker.
+function appendTailBuffer(current, chunk, maxBytes) {
+  const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk || "");
+  if (maxBytes <= 0 || data.length === 0) return current;
+  if (data.length >= maxBytes) {
+    return data.subarray(data.length - maxBytes);
+  }
+  if (!current || current.length === 0) {
+    return Buffer.from(data);
+  }
+  const combined = Buffer.concat([current, data]);
+  if (combined.length <= maxBytes) return combined;
+  return combined.subarray(combined.length - maxBytes);
+}
+
 function defaultDockerRuntime() {
   return {
     async run({ command, args, timeoutMs, stdoutPath, stderrPath }) {
@@ -1375,6 +1390,8 @@ function defaultDockerRuntime() {
         let stderrBytes = 0;
         let stdoutTruncated = false;
         let stderrTruncated = false;
+        let stdoutTail = Buffer.alloc(0);
+        let stderrTail = Buffer.alloc(0);
         let timedOut = false;
         const startedAt = Date.now();
         const timer = setTimeout(() => {
@@ -1385,6 +1402,7 @@ function defaultDockerRuntime() {
           }, 5000);
         }, timeoutMs);
         child.stdout.on("data", (chunk) => {
+          stdoutTail = appendTailBuffer(stdoutTail, chunk, FUZZ_STATS_PROBE_BYTES);
           const remaining = REPO_DOCKER_RUN_MAX_OUTPUT_BYTES - stdoutBytes;
           if (remaining > 0) {
             const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
@@ -1396,6 +1414,7 @@ function defaultDockerRuntime() {
           if (stdoutBytes > REPO_DOCKER_RUN_MAX_OUTPUT_BYTES) stdoutTruncated = true;
         });
         child.stderr.on("data", (chunk) => {
+          stderrTail = appendTailBuffer(stderrTail, chunk, FUZZ_STATS_PROBE_BYTES);
           const remaining = REPO_DOCKER_RUN_MAX_OUTPUT_BYTES - stderrBytes;
           if (remaining > 0) {
             const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
@@ -1425,6 +1444,8 @@ function defaultDockerRuntime() {
             stderr_bytes: stderrBytes,
             stdout_truncated: stdoutTruncated,
             stderr_truncated: stderrTruncated,
+            stdout_tail_text: stdoutTail.toString("utf8"),
+            stderr_tail_text: stderrTail.toString("utf8"),
           });
         });
       });
@@ -1557,13 +1578,9 @@ function integerToken(line, re) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function parseFuzzStats(stdoutPath, stderrPath = null) {
+function parseFuzzStatsText(text) {
   const stats = { ...FUZZ_STATS_NULL };
   try {
-    const text = [
-      readTailText(stdoutPath, FUZZ_STATS_PROBE_BYTES),
-      stderrPath ? readTailText(stderrPath, FUZZ_STATS_PROBE_BYTES) : "",
-    ].filter(Boolean).join("\n");
     if (!text) return stats;
     const lines = text.split(/\r?\n/);
     let sawLibFuzzerProgress = false;
@@ -1588,6 +1605,32 @@ function parseFuzzStats(stdoutPath, stderrPath = null) {
   } catch {
     return { ...FUZZ_STATS_NULL };
   }
+}
+
+function parseFuzzStats(stdoutPath, stderrPath = null) {
+  try {
+    return parseFuzzStatsText([
+      readTailText(stdoutPath, FUZZ_STATS_PROBE_BYTES),
+      stderrPath ? readTailText(stderrPath, FUZZ_STATS_PROBE_BYTES) : "",
+    ].filter(Boolean).join("\n"));
+  } catch {
+    return { ...FUZZ_STATS_NULL };
+  }
+}
+
+function boundedTailText(value) {
+  if (typeof value !== "string") return null;
+  if (value.length <= FUZZ_STATS_PROBE_BYTES) return value;
+  return value.slice(value.length - FUZZ_STATS_PROBE_BYTES);
+}
+
+function parseFuzzStatsFromRun(runResult, stdoutPath, stderrPath) {
+  const stdoutTail = boundedTailText(runResult && runResult.stdout_tail_text);
+  const stderrTail = boundedTailText(runResult && runResult.stderr_tail_text);
+  if (stdoutTail != null || stderrTail != null) {
+    return parseFuzzStatsText([stdoutTail || "", stderrTail || ""].filter(Boolean).join("\n"));
+  }
+  return parseFuzzStats(stdoutPath, stderrPath);
 }
 
 // Normalize replay_context. Operators pass {wave, agent, surface_id?, ...}
@@ -1942,7 +1985,7 @@ async function repoDockerRun({
   const stderrHash = hashFile(stderrPath);
   const stdoutFirstLine = readFirstLine(stdoutPath, REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS);
   const stderrFirstLine = readFirstLine(stderrPath, REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS);
-  const fuzzStats = parseFuzzStats(stdoutPath, stderrPath);
+  const fuzzStats = parseFuzzStatsFromRun(runResult, stdoutPath, stderrPath);
   const completedAt = new Date().toISOString();
 
   const liveRow = {
