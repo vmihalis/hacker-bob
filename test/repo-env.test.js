@@ -36,11 +36,14 @@ const {
   buildImageTag,
   detectLanguageProfile,
   recommendedCommandsFor,
+  parseFuzzStats,
   assertNoEnvSecretLeak,
   dockerfileBobPath,
   repoEnvJsonPath,
+  loadNativeFuzzShape,
   C_DEFAULT_APT_PACKAGES,
   NFS_EXTRA_APT_PACKAGES,
+  NATIVE_FUZZ_EXTRA_APT_PACKAGES,
   ENV_SECRET_LEAK_RE,
   RECOMMENDED_COMMAND_ROLES,
 } = require("../mcp/lib/repo-env.js");
@@ -236,6 +239,22 @@ test("recommendedCommandsFor c emits one fuzz seed command when seed corpus is p
   assert.match(fuzzCommands[0].command[2], /find 'fuzz\/corpus'/);
 });
 
+test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when native fuzz shape is present", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
+  });
+  const fuzzCommands = commands.filter((command) => command.role === "fuzz");
+  assert.equal(fuzzCommands.length, 1);
+  const fuzz = fuzzCommands[0];
+  assert.equal(fuzz.id, "fuzz_asan_ubsan");
+  assert.equal(fuzz.seed_path, "fuzz/corpus");
+  assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
+  assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
+  assert.match(fuzz.command[2], /-max_total_time=300/);
+  assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
+});
+
 test("every recommended_commands[].role is in RECOMMENDED_COMMAND_ROLES", () => {
   for (const lang of ["node", "python", "go", "rust", "ruby", "php", "java", "c"]) {
     const commands = recommendedCommandsFor(lang);
@@ -347,6 +366,102 @@ test("buildDockerfileBob emits NFS extras when nfsXdrShape true (and allow_netwo
   for (const pkg of C_DEFAULT_APT_PACKAGES) {
     assert.match(content, new RegExp(`\\b${pkg.replace(/[-]/g, "\\-")}\\b`),
       `default C package ${pkg} missing`);
+  }
+});
+
+test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape true", () => {
+  const withoutFuzz = buildDockerfileBob({
+    language: "c",
+    baseImage: "ubuntu:24.04",
+    targetDomain: "repo-fixture-no-fuzz",
+    nfsXdrShape: false,
+    nativeFuzzShape: false,
+    allowNetwork: true,
+  });
+  assert.doesNotMatch(withoutFuzz, /\blibclang-rt-18-dev\b/);
+
+  const withFuzz = buildDockerfileBob({
+    language: "c",
+    baseImage: "ubuntu:24.04",
+    targetDomain: "repo-fixture-with-fuzz",
+    nfsXdrShape: false,
+    nativeFuzzShape: true,
+    allowNetwork: true,
+  });
+  for (const pkg of NATIVE_FUZZ_EXTRA_APT_PACKAGES) {
+    assert.match(withFuzz, new RegExp(`\\b${pkg.replace(/[-]/g, "\\-")}\\b`),
+      `native fuzz package ${pkg} missing`);
+  }
+});
+
+test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-fuzz-stats-"));
+  try {
+    const stdoutPath = path.join(dir, "run.stdout");
+    fs.writeFileSync(
+      stdoutPath,
+      [
+        "#12 INITED cov: 4 ft: 5 corp: 1/2b exec/s: 10 rss: 30Mb",
+        "#99 NEW cov: 10 ft: 20 corp: 3/128b lim: 4096 exec/s: 123 rss: 31Mb",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.deepEqual(parseFuzzStats(stdoutPath), {
+      cov: 10,
+      ft: 20,
+      exec_per_s: 123,
+      corpus_size: 3,
+      crashes: 0,
+    });
+
+    fs.writeFileSync(
+      stdoutPath,
+      "#1 INITED cov: 1 ft: 2 corp: 1/1b exec/s: 3\n==123==ERROR: AddressSanitizer: heap-buffer-overflow\n",
+      "utf8",
+    );
+    assert.deepEqual(parseFuzzStats(stdoutPath), {
+      cov: 1,
+      ft: 2,
+      exec_per_s: 3,
+      corpus_size: 1,
+      crashes: 1,
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseFuzzStats never throws on empty malformed or non-libFuzzer stdout", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-fuzz-stats-empty-"));
+  try {
+    for (const [name, content] of [
+      ["empty", ""],
+      ["malformed", "#ABC cov: nope ft: nope exec/s: nope"],
+      ["partial", "#12 NEW cov: 7"],
+      ["afl", "cycles done : 1\npaths total : 8\n"],
+    ]) {
+      const stdoutPath = path.join(dir, `${name}.stdout`);
+      fs.writeFileSync(stdoutPath, content, "utf8");
+      let stats;
+      assert.doesNotThrow(() => {
+        stats = parseFuzzStats(stdoutPath);
+      });
+      for (const field of ["cov", "ft", "exec_per_s", "corpus_size", "crashes"]) {
+        assert.ok(
+          stats[field] == null || Number.isInteger(stats[field]),
+          `${name}.${field} must be integer-or-null`,
+        );
+      }
+    }
+    assert.deepEqual(parseFuzzStats(path.join(dir, "missing.stdout")), {
+      cov: null,
+      ft: null,
+      exec_per_s: null,
+      corpus_size: null,
+      crashes: null,
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -616,6 +731,29 @@ test("prepareRepoEnv reads nfs_xdr_shape from repo-inventory.json when present",
     assert.equal(repoEnv.detection.nfs_xdr_shape, true);
     // The C compose recipe surfaces the NFS note in its description.
     assert.match(repoEnv.recommended_commands[0].description, /NFS\/XDR/);
+  });
+});
+
+test("prepareRepoEnv reads native_fuzz_shape from repo-inventory.json and emits real fuzz command", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(fuzz CXX)\n");
+    write(repoRoot, "fuzzing/native_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return size > 0 && data[0] == 0xff;}\n");
+    write(repoRoot, "fuzz/corpus/minimal.bin", "AAAA");
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    assert.equal(loadNativeFuzzShape(init.target_domain), true);
+    const result = await prepareRepoEnv({ target_domain: init.target_domain });
+    assert.equal(result.language, "c");
+    assert.equal(result.native_fuzz_shape, true);
+
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.detection.native_fuzz_shape, true);
+    const fuzzCommands = repoEnv.recommended_commands.filter((command) => command.role === "fuzz");
+    assert.equal(fuzzCommands.length, 1);
+    assert.equal(fuzzCommands[0].id, "fuzz_asan_ubsan");
+    assert.match(fuzzCommands[0].command[2], /-fsanitize=address,undefined,fuzzer/);
   });
 });
 

@@ -846,6 +846,12 @@ const NFS_XDR_SIGNALS = Object.freeze([
   /rpc\/xdr\.h/i,
   /\bxdr_/i,
 ]);
+const NATIVE_FUZZING_DIR_RE = /(^|\/)fuzzing(?:\/|$)/i;
+const NATIVE_FUZZER_SOURCE_RE = /(^|\/)[^/]*_fuzzer\.(?:c|cc|cpp|cxx)$/i;
+const NATIVE_FUZZ_SIGNALS = Object.freeze([
+  /\bWITH_FUZZERS\b/,
+  /\bLLVMFuzzerTestOneInput\b/,
+]);
 
 const RESIDUAL_TARGET_LIMIT = 20;
 const RESIDUAL_SOURCE_LINE_LIMIT = 12;
@@ -1054,6 +1060,30 @@ function detectNfsXdrShape(rootPath, files) {
   for (const file of files) {
     if (/libnfs\.h$/i.test(file)) return true;
     if (/(^|\/)rpc\/xdr\.h$/i.test(file)) return true;
+  }
+  return false;
+}
+
+function isNativeFuzzProbeCandidate(rel) {
+  const base = path.basename(rel);
+  const ext = path.extname(rel).toLowerCase();
+  return NATIVE_BUILD_NAMES.has(base)
+    || NATIVE_SOURCE_EXTENSIONS.has(ext)
+    || /\.(?:cmake|mk|m4)$/i.test(rel);
+}
+
+function detectNativeFuzzShape(rootPath, files) {
+  for (const file of files) {
+    if (NATIVE_FUZZING_DIR_RE.test(file)) return true;
+    if (NATIVE_FUZZER_SOURCE_RE.test(file)) return true;
+  }
+  for (const file of files) {
+    if (!isNativeFuzzProbeCandidate(file)) continue;
+    const probe = safeReadProbe(rootPath, file);
+    if (!probe) continue;
+    for (const re of NATIVE_FUZZ_SIGNALS) {
+      if (re.test(probe)) return true;
+    }
   }
   return false;
 }
@@ -1298,6 +1328,7 @@ function buildInventoryProjection(domain, repoRoot, files) {
   }
 
   const nfsShape = detectNfsXdrShape(repoRoot, files);
+  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files);
   const residualHuntTargets = detectResidualHuntTargets(repoRoot, files, modules);
   const seedCorpus = buildSeedCorpusSummary(seedCorpusEntries);
   const seedCorpusCount = seedCorpusEntries.size;
@@ -1313,6 +1344,7 @@ function buildInventoryProjection(domain, repoRoot, files) {
     nativeSourceCount,
     nativeBuildCount,
     nfsShape,
+    nativeFuzzShape,
     residualHuntTargets,
     seedCorpus,
     seedCorpusCount,
@@ -1548,6 +1580,7 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
       },
       languages: projection.languageCounts,
       nfs_xdr_shape: projection.nfsShape,
+      native_fuzz_shape: projection.nativeFuzzShape,
       residual_hunt_targets: inventoryResidualHuntTargets,
       seed_corpus: inventorySeedCorpus,
       seed_corpus_hash: inventorySeedCorpusHash,
@@ -1575,6 +1608,7 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
       counts: inventory.counts,
       inventory_hash: inventory.inventory_hash,
       nfs_xdr_shape: projection.nfsShape,
+      native_fuzz_shape: projection.nativeFuzzShape,
       residual_hunt_targets: inventoryResidualHuntTargets,
       seed_corpus: inventory.seed_corpus,
       seed_corpus_hash: inventory.seed_corpus_hash,

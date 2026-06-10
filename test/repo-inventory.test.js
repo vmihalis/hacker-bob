@@ -81,6 +81,7 @@ test("buildRepoInventory enumerates polyglot fixture and writes deterministic ha
     assert.ok(result.counts.ci_pipelines >= 1, "ci.yml should be detected");
     assert.ok(result.counts.configs >= 2, "Dockerfile + .env.example expected");
     assert.equal(result.nfs_xdr_shape, false);
+    assert.equal(result.native_fuzz_shape, false);
 
     const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
     assert.equal(inventory.inventory_hash, result.inventory_hash);
@@ -251,6 +252,21 @@ test("buildRepoInventory detects NFS/XDR shape from header references", () => {
     assert.equal(result.nfs_xdr_shape, true);
     const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
     assert.equal(inventory.nfs_xdr_shape, true);
+  });
+});
+
+test("buildRepoInventory detects native fuzz shape from fuzzer markers", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "option(WITH_FUZZERS \"build fuzzers\" ON)\n");
+    write(repoRoot, "src/parser.c", "int parse(const unsigned char *data, unsigned long size){return size > 0 && data[0];}\n");
+    write(repoRoot, "fuzzing/parser_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return parse(data, size);}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, true);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, true);
   });
 });
 

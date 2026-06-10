@@ -986,6 +986,68 @@ test("repoDockerRun records exit code, duration, network mode, mount modes, imag
   });
 });
 
+test("repoDockerRun records fuzz_stats as observational scalars outside command_hash", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+    let runCount = 0;
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        runCount += 1;
+        const cov = runCount === 1 ? 11 : 29;
+        fs.writeFileSync(stdoutPath, `#${runCount} NEW cov: ${cov} ft: ${cov + 1} corp: ${runCount}/16b exec/s: 77\n`);
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 10,
+          timed_out: false,
+          stdout_bytes: 64,
+          stderr_bytes: 0,
+        };
+      },
+    };
+
+    const command = ["sh", "-lc", "fuzz"];
+    const first = await repoDockerRun({
+      target_domain: init.target_domain,
+      command,
+      dry_run: false,
+      runtime,
+    });
+    const second = await repoDockerRun({
+      target_domain: init.target_domain,
+      command,
+      dry_run: false,
+      runtime,
+    });
+
+    assert.equal(first.command_hash, second.command_hash);
+    assert.deepEqual(first.fuzz_stats, {
+      cov: 11,
+      ft: 12,
+      exec_per_s: 77,
+      corpus_size: 1,
+      crashes: 0,
+    });
+    assert.deepEqual(second.fuzz_stats, {
+      cov: 29,
+      ft: 30,
+      exec_per_s: 77,
+      corpus_size: 2,
+      crashes: 0,
+    });
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].command_hash, rows[1].command_hash);
+    assert.notDeepEqual(rows[0].fuzz_stats, rows[1].fuzz_stats);
+    validateNoSensitiveMaterial(rows[0], "repo_command_runs");
+    validateNoSensitiveMaterial(rows[1], "repo_command_runs");
+  });
+});
+
 test("repoDockerRun image_tag mismatch is rejected with O-D6 structured error", async () => {
   await withTempHome(async () => {
     const repoRoot = makeTempRepoDir();
