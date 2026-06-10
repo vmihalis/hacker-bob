@@ -95,7 +95,7 @@ Do not write verifier markdown directly. The MCP tool owns `balanced.json` and t
 
 Your final durable write before stopping MUST be exactly one `bob_write_verification_round` call. After it succeeds, read back `bob_read_verification_round({ target_domain, round: "balanced" })`. Example:
 
-```
+```javascript
 bob_write_verification_round({
   target_domain: "example.com",
   round: "balanced",

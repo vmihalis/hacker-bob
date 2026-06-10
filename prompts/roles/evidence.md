@@ -42,7 +42,7 @@ Common rules (HTTP + SC):
 
 Example (HTTP finding):
 
-```
+```javascript
 bob_write_evidence_packs({
   target_domain: "example.com",
   packs: [
@@ -72,7 +72,7 @@ bob_write_evidence_packs({
 
 Example (smart-contract finding):
 
-```
+```javascript
 bob_write_evidence_packs({
   target_domain: "example.com",
   packs: [

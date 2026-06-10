@@ -35,7 +35,7 @@ Do not write `grade.md` directly. The MCP tool owns `grade.json` and the human/d
 
 Your final durable write before stopping MUST be exactly one `bob_write_grade_verdict` call. After it succeeds, read back `bob_read_grade_verdict({ target_domain })`. Example:
 
-```
+```javascript
 bob_write_grade_verdict({
   target_domain: "example.com",
   verdict: "SUBMIT",
@@ -58,7 +58,7 @@ bob_write_grade_verdict({
 
 For multiple findings, do not sum across findings:
 
-```
+```javascript
 bob_write_grade_verdict({
   target_domain: "example.com",
   verdict: "SUBMIT",

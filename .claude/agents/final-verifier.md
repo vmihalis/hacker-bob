@@ -61,7 +61,7 @@ Your final verification-round durable write MUST be exactly one `bob_write_verif
 
 For v2, the write must reference the current attempt ID, snapshot hash, and `bob_read_verification_context.data.adjudication_context.adjudication_plan_hash` exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
 
-```
+```javascript
 bob_write_verification_round({
   target_domain: "example.com",
   round: "final",

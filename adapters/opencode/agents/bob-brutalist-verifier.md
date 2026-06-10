@@ -157,7 +157,7 @@ Your final durable write before stopping MUST be exactly one `bob_write_verifica
 
 For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, and `round_profile: "brutalist"` to the write call, and include the v2 confidence fields on every result.
 
-```
+```javascript
 bob_write_verification_round({
   target_domain: "example.com",
   round: "brutalist",
