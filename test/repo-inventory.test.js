@@ -298,6 +298,34 @@ test("buildRepoInventory does not enable native fuzz shape from fuzzer filename 
   });
 });
 
+test("buildRepoInventory ignores commented libFuzzer entrypoint mentions", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", "{\"scripts\":{\"test\":\"node --test\"}}\n");
+    write(repoRoot, "src/native.c", "// int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return 0;}\nint helper(void){return 0;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, false);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, false);
+  });
+});
+
+test("buildRepoInventory ignores build-file libFuzzer snippets without a source definition", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "set(FUZZ_SNIPPET \"int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return 0;}\")\n");
+    write(repoRoot, "src/parser.c", "int parse(const unsigned char *data, unsigned long size){return size > 0 && data[0];}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, false);
+    const inventory = JSON.parse(fs.readFileSync(repoInventoryPath(init.target_domain), "utf8"));
+    assert.equal(inventory.native_fuzz_shape, false);
+  });
+});
+
 test("buildRepoInventory does not set native fuzz shape for fuzzing assets without a harness", () => {
   withTempHome(() => {
     const repoRoot = makeTempRepoDir();

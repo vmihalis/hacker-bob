@@ -151,6 +151,7 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
 ]);
 
 const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
+const NATIVE_LIBFUZZER_DEFINITION_GREP = "'^[[:space:]]*(extern[[:space:]]+\"C\"[[:space:]]+)?(int|auto)[[:space:]]+LLVMFuzzerTestOneInput[[:space:]]*\\('";
 const FUZZ_STATS_NULL = Object.freeze({
   cov: null,
   ft: null,
@@ -279,7 +280,7 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "cp -a /src/. /work/repo/",
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
-    "HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; grep -rIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do grep -Iq 'LLVMFuzzerTestOneInput' -- \"$f\" && { printf '%s\\n' \"$f\"; break; }; done)",
+    `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; grep -rEIl ${NATIVE_LIBFUZZER_DEFINITION_GREP} . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do grep -EIq ${NATIVE_LIBFUZZER_DEFINITION_GREP} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
     "test -n \"$HARNESS\"",
     "CC=clang-18",
     "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
@@ -287,6 +288,16 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -- \"$HARNESS\" -o /work/out/h",
     `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
+}
+
+function boundedNativeFuzzRecipe(seedEntry) {
+  let effectiveSeedEntry = seedEntry;
+  let recipe = cNativeFuzzRecipe(effectiveSeedEntry);
+  if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    effectiveSeedEntry = null;
+    recipe = cNativeFuzzRecipe(null);
+  }
+  return { seedEntry: effectiveSeedEntry, recipe };
 }
 
 function recommendedCommandsFor(
@@ -416,17 +427,19 @@ function recommendedCommandsFor(
       });
     }
     const seedEntry = firstSeedCorpus(seedCorpus);
-    const seedRel = seedEntry && seedEntry.rel_path;
     if (nativeFuzzShape) {
+      const { seedEntry: effectiveSeedEntry, recipe } = boundedNativeFuzzRecipe(seedEntry);
+      const seedRel = effectiveSeedEntry && effectiveSeedEntry.rel_path;
       const fuzzCommand = {
         id: "fuzz_asan_ubsan",
         description: "Stage /src into /work/repo, verify a native libFuzzer harness, build it with ASAN+UBSAN+libFuzzer, and run the seeded corpus.",
-        command: ["sh", "-lc", cNativeFuzzRecipe(seedEntry)],
+        command: ["sh", "-lc", recipe],
         role: "fuzz",
       };
       if (seedRel) fuzzCommand.seed_path = seedRel;
       commands.push(fuzzCommand);
-    } else if (seedRel) {
+    } else if (seedEntry) {
+      const seedRel = seedEntry.rel_path;
       const quotedSeedRel = shellQuote(seedRel);
       commands.push({
         id: "fuzz_seed_probe",

@@ -252,13 +252,15 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
   assert.match(fuzz.command[2], /find \. -type f/);
   assert.match(fuzz.command[2], /\*_fuzzer\.c/);
-  assert.match(fuzz.command[2], /grep -rIl 'LLVMFuzzerTestOneInput'/);
+  assert.match(fuzz.command[2], /grep -rEIl '\^\[\[:space:\]\]\*/);
+  assert.match(fuzz.command[2], /grep -EIq '\^\[\[:space:\]\]\*/);
   assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
   assert.match(fuzz.command[2], /-- "\$HARNESS" -o \/work\/out\/h/);
   assert.match(fuzz.command[2], /-Iinclude/);
   assert.match(fuzz.command[2], /-max_total_time=240/);
+  assert.ok(fuzz.command[2].length <= 2048, "native fuzz recipe token must stay within docker-run limit");
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
 });
 
@@ -316,6 +318,17 @@ test("recommendedCommandsFor c guards dash-prefixed seed corpus paths", () => {
   assert.equal(fuzz.seed_path, "-corpus");
   assert.match(fuzz.command[2], /SEED='\.\/-corpus'/);
   assert.match(fuzz.command[2], /cp -a --/);
+});
+
+test("recommendedCommandsFor c drops overlong seed setup to keep native fuzz recipe executable", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: `${"deep/".repeat(40)}corpus` }],
+  });
+  const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
+  assert.equal(fuzz.seed_path, undefined);
+  assert.ok(fuzz.command[2].length <= 2048, "native fuzz recipe token must stay within docker-run limit");
+  assert.doesNotMatch(fuzz.command[2], /SEED=/);
 });
 
 test("every recommended_commands[].role is in RECOMMENDED_COMMAND_ROLES", () => {

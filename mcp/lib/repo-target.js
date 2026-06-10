@@ -847,7 +847,8 @@ const NFS_XDR_SIGNALS = Object.freeze([
   /\bxdr_/i,
 ]);
 const NATIVE_FUZZER_SOURCE_RE = /(^|\/)[^/]*_fuzzer\.(?:c|cc|cpp|cxx)$/i;
-const NATIVE_LIBFUZZER_ENTRY_RE = /\bLLVMFuzzerTestOneInput\b/;
+const NATIVE_FUZZ_COMPILE_EXTENSIONS = Object.freeze(new Set([".c", ".cc", ".cpp", ".cxx"]));
+const NATIVE_LIBFUZZER_DEFINITION_RE = /\b(?:extern\s+(?:"C"|""|'C'|'')\s+)?(?:int|auto)\s+LLVMFuzzerTestOneInput\s*\([^;{}]*\)\s*(?:\{|try\b)/;
 const NATIVE_FUZZ_PROBE_LIMIT = 256;
 
 const RESIDUAL_TARGET_LIMIT = 20;
@@ -1070,13 +1071,30 @@ function isNativeFuzzProbeCandidate(rel) {
     || /\.(?:cmake|mk|m4)$/i.test(rel);
 }
 
+function isNativeFuzzCompileSource(rel) {
+  return NATIVE_FUZZ_COMPILE_EXTENSIONS.has(path.extname(rel).toLowerCase());
+}
+
+function stripNativeFuzzProbeNoise(text) {
+  return String(text || "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/"(?:\\.|[^"\\])*"/g, '""')
+    .replace(/'(?:\\.|[^'\\])*'/g, "''");
+}
+
+function hasNativeLibFuzzerDefinition(text) {
+  return NATIVE_LIBFUZZER_DEFINITION_RE.test(stripNativeFuzzProbeNoise(text));
+}
+
 function detectNativeFuzzShape(rootPath, files) {
   let probes = 0;
   const probeFile = (file) => {
+    if (!isNativeFuzzCompileSource(file)) return false;
     if (probes >= NATIVE_FUZZ_PROBE_LIMIT) return false;
     probes += 1;
     const probe = safeReadProbe(rootPath, file);
-    return Boolean(probe && NATIVE_LIBFUZZER_ENTRY_RE.test(probe));
+    return Boolean(probe && hasNativeLibFuzzerDefinition(probe));
   };
   for (const file of files) {
     if (!NATIVE_FUZZER_SOURCE_RE.test(file)) continue;
