@@ -193,12 +193,14 @@ function checkCanonicalPack(rootPackage) {
     }
   }
 
-  // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
+  // Pack-size budget raised to 3.2 MB. The 3.1 MB kimi adapter family
   // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
-  // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
+  // packages/hacker-bob-kimi/*) was absorbed from PR #58 alongside the existing
   // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
   // Raised again to 3.2 MB for the CVSS v3.1 + CWE annotation surfaces, now
-  // measured against the lean tarball (mcp/node_modules excluded from the pack).
+  // measured against the lean tarball (mcp/node_modules excluded from the pack);
+  // the opencode adapter family (adapters/opencode/* per-role subagents) is
+  // absorbed within that ceiling.
   // Mirrors the test/package.test.js ceiling.
   if (canonical.size < 3200000) {
     pass(`canonical pack size ${canonical.size} bytes is under 3.2 MB`);
