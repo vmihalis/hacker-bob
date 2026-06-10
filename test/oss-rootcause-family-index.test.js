@@ -151,6 +151,19 @@ test("suggestFamiliesForSurface emits bounded brief suggestions when lens is sup
   }
 });
 
+test("truncated family brief strings carry an observable marker while staying bounded", () => {
+  const result = suggestFamiliesForSurface({
+    task_lens: "taint_trace",
+  }, {
+    limit: 10,
+  });
+  const truncated = result.suggestions.filter((suggestion) => suggestion.brief.endsWith("..."));
+  assert.ok(truncated.length > 0, "fixture corpus should exercise brief truncation");
+  for (const suggestion of truncated) {
+    assert.ok(suggestion.brief.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS);
+  }
+});
+
 test("suggestFamiliesForSurface ranks signature matches before applying the limit", () => {
   const result = suggestFamiliesForSurface({
     task_lens: "taint_trace",

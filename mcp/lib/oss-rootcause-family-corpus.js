@@ -282,7 +282,8 @@ function matchedSignatureTerms(family, surfaceText) {
 function capBriefString(value, maxChars = TECHNIQUE_SUMMARY_ITEM_MAX_CHARS) {
   const text = String(value);
   if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars);
+  if (maxChars <= 3) return text.slice(0, maxChars);
+  return `${text.slice(0, maxChars - 3)}...`;
 }
 
 function witnessBrief(witness, additionalCount = 0) {
