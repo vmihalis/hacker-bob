@@ -150,7 +150,7 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
   "zlib1g-dev",
 ]);
 
-const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 300;
+const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
 const FUZZ_STATS_NULL = Object.freeze({
   cov: null,
   ft: null,

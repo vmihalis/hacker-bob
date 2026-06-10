@@ -256,7 +256,7 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
   assert.match(fuzz.command[2], /-Iinclude/);
-  assert.match(fuzz.command[2], /-max_total_time=300/);
+  assert.match(fuzz.command[2], /-max_total_time=240/);
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
 });
 

@@ -331,6 +331,21 @@ test("buildRepoInventory caps native fuzz content probes", () => {
   });
 });
 
+test("buildRepoInventory checks explicit fuzzer files before generic probe cap", () => {
+  withTempHome(() => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(prioritized C)\n");
+    for (let index = 0; index < 300; index += 1) {
+      write(repoRoot, `aaa/file${String(index).padStart(3, "0")}.c`, "int helper(void){return 0;}\n");
+    }
+    write(repoRoot, "zzz/parser_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return size > 0 && data[0];}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    const result = buildRepoInventory({ target_domain: init.target_domain });
+    assert.equal(result.native_fuzz_shape, true);
+  });
+});
+
 test("buildRepoInventory throws structured error when not bound to a repo session", () => {
   withTempHome(() => {
     assert.throws(

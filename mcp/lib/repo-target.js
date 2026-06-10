@@ -1072,13 +1072,22 @@ function isNativeFuzzProbeCandidate(rel) {
 
 function detectNativeFuzzShape(rootPath, files) {
   let probes = 0;
-  for (const file of files) {
-    if (!isNativeFuzzProbeCandidate(file)) continue;
-    if (probes >= NATIVE_FUZZ_PROBE_LIMIT) break;
+  const probeFile = (file) => {
+    if (probes >= NATIVE_FUZZ_PROBE_LIMIT) return false;
     probes += 1;
     const probe = safeReadProbe(rootPath, file);
-    if (!probe) continue;
-    if (NATIVE_LIBFUZZER_ENTRY_RE.test(probe)) return true;
+    return Boolean(probe && NATIVE_LIBFUZZER_ENTRY_RE.test(probe));
+  };
+  for (const file of files) {
+    if (!NATIVE_FUZZER_SOURCE_RE.test(file)) continue;
+    if (probeFile(file)) return true;
+    if (probes >= NATIVE_FUZZ_PROBE_LIMIT) return false;
+  }
+  for (const file of files) {
+    if (NATIVE_FUZZER_SOURCE_RE.test(file)) continue;
+    if (!isNativeFuzzProbeCandidate(file)) continue;
+    if (probeFile(file)) return true;
+    if (probes >= NATIVE_FUZZ_PROBE_LIMIT) break;
   }
   return false;
 }
