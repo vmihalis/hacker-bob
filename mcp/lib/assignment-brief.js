@@ -421,7 +421,9 @@ function buildOssTechniquePacksSlice(taskLens, surface) {
       lens: rootCauseFamilies.lens,
       family_count: rootCauseFamilies.family_count,
       unmatched_lens: rootCauseFamilies.unmatched_lens,
-      ...(rootCauseFamilies.summary_limits || {}),
+      item_max_chars: rootCauseFamilies.summary_limits?.item_max_chars,
+      limit: rootCauseFamilies.summary_limits?.limit,
+      returned: rootCauseFamilies.summary_limits?.returned,
     },
     selection_limits: {
       selected_chars: JSON.stringify(partitioned.selected).length,
