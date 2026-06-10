@@ -54,6 +54,33 @@ function normalizeOptionalString(value, fieldName, { maxChars = 240 } = {}) {
   return normalized.length > maxChars ? normalized.slice(0, maxChars) : normalized;
 }
 
+function normalizeReachabilityMeta(value) {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("reachability_meta must be an object");
+  }
+  const meta = {};
+  if (value.attack_vector != null) {
+    meta.attack_vector = normalizeOptionalString(value.attack_vector, "reachability_meta.attack_vector", { maxChars: 40 });
+  }
+  if (value.network_reachable != null) {
+    meta.network_reachable = assertBoolean(value.network_reachable, "reachability_meta.network_reachable");
+  }
+  if (value.severity_ceiling != null) {
+    meta.severity_ceiling = normalizeOptionalString(value.severity_ceiling, "reachability_meta.severity_ceiling", { maxChars: 40 });
+  }
+  return Object.keys(meta).length > 0 ? meta : null;
+}
+
+function mergeReachabilityMeta(existing, incoming) {
+  if (!existing && !incoming) return null;
+  const merged = {
+    ...(existing || {}),
+    ...(incoming || {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
 function leadDedupeKey(lead) {
   const source = [
     lead.title || "",
@@ -95,6 +122,7 @@ function normalizeSurfaceLead(input, context = {}) {
     // time. The Y.7 silent_lead_threshold_drop scanner reads this field
     // alongside the queue-policy toggle to compute `rationale_required_but_missing`.
     rationale: normalizeOptionalString(input.rationale, "rationale", { maxChars: 512 }),
+    reachability_meta: normalizeReachabilityMeta(input.reachability_meta),
     ...arrays,
   };
   const score = normalizeScore(input.score == null ? evidenceScore(initial) : input.score);
@@ -140,6 +168,7 @@ function mergeSurfaceLead(existing, incoming) {
     // earlier producer-side reasoning is not overwritten by a later
     // re-record that omitted the field.
     rationale: existing.rationale || incoming.rationale,
+    reachability_meta: mergeReachabilityMeta(existing.reachability_meta, incoming.reachability_meta),
     confidence: LEAD_CONFIDENCE_VALUES.indexOf(incoming.confidence) < LEAD_CONFIDENCE_VALUES.indexOf(existing.confidence)
       ? incoming.confidence
       : existing.confidence,

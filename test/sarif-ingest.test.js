@@ -24,6 +24,9 @@ const {
   initSession,
 } = require("../mcp/lib/session-state.js");
 const {
+  initRepoSession,
+} = require("../mcp/lib/repo-target.js");
+const {
   readSurfaceLeadsDocument,
 } = require("../mcp/lib/lead-intake.js");
 
@@ -48,6 +51,12 @@ function withTempHome(fn) {
 
 function initDomain(domain) {
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+}
+
+function initRepoDomain(domain, home) {
+  const repoRoot = fs.mkdtempSync(path.join(home, "repo-"));
+  initRepoSession({ repo_path: repoRoot, target_domain: domain });
+  return repoRoot;
 }
 
 function writeRunStdout(domain, runId, content) {
@@ -349,10 +358,10 @@ test("parseSarif bounds untrusted scalar fields before emitting records", () => 
   assert.equal(record.snippet.length, 500);
 });
 
-test("ingestSarif redacts secrets before persistence and dedupes by result_sha256", () => withTempHome(() => {
+test("ingestSarif redacts secrets before persistence and dedupes by result_sha256", () => withTempHome((home) => {
   const domain = "sarif-redact.example.com";
   const runId = "run-redact";
-  initDomain(domain);
+  initRepoDomain(domain, home);
   writeRunStdout(domain, runId, sarifDocument([
     sarifResult({
       ruleId: "SECRET-RULE",
@@ -407,6 +416,28 @@ test("ingestSarif redacts secrets before persistence and dedupes by result_sha25
   assert.equal(second.duplicate_results, 1);
   assert.equal(second.static_analysis_index.duplicate_results, 1);
   assert.equal(readStaticAnalysisResultsFromJsonl(domain).length, 1);
+}));
+
+test("ingestSarif indexes but does not record OSS leads for non-repo sessions", () => withTempHome(() => {
+  const domain = "sarif-url-session.example.com";
+  const runId = "run-url";
+  initDomain(domain);
+  writeRunStdout(domain, runId, sarifDocument([
+    sarifResult({
+      ruleId: "URL-SESSION-RULE",
+      level: "error",
+      message: "bounded static lead seed",
+      uri: "/src/config.js",
+      startLine: 12,
+    }),
+  ], { toolName: "semgrep" }));
+
+  const response = JSON.parse(ingestSarif({ target_domain: domain, run_id: runId }));
+  assert.equal(response.ingested_results, 1);
+  assert.equal(response.static_analysis_index.indexed_results, 1);
+  assert.equal(response.static_analysis_index.static_analysis_leads.mapped_leads, 0);
+  assert.equal(response.static_analysis_index.static_analysis_leads.recorded, 0);
+  assert.equal(readSurfaceLeadsDocument(domain).leads.length, 0);
 }));
 
 test("ingestSarif reads explicit SARIF artifacts only under repo-work", () => withTempHome(() => {

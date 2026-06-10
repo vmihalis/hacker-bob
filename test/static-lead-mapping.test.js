@@ -51,6 +51,11 @@ test("staticFindingToSurfaceLead deterministically maps I10 rows into C11 lead s
   assert.equal(first.title, "cpp.unbounded-copy");
   assert.deepEqual(first.endpoints, ["src/server.c:42"]);
   assert.deepEqual(first.bug_class_hints, ["validate_vs_consume"]);
+  assert.deepEqual(first.reachability_meta, {
+    attack_vector: "network",
+    network_reachable: true,
+    severity_ceiling: "critical",
+  });
   assert.ok(first.high_value_flows.includes("attack_vector=network"));
   assert.ok(first.high_value_flows.includes("network_reachable=true"));
   assert.ok(first.high_value_flows.includes("severity_ceiling=critical"));

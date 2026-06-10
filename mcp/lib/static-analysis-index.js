@@ -758,7 +758,9 @@ function staticLeadKeyForIndexRecord(row) {
 }
 
 function staticLeadHasReachabilityHints(lead) {
-  if (!isObject(lead) || !Array.isArray(lead.high_value_flows)) return false;
+  if (!isObject(lead)) return false;
+  if (isObject(lead.reachability_meta) && Object.keys(lead.reachability_meta).length > 0) return true;
+  if (!Array.isArray(lead.high_value_flows)) return false;
   return lead.high_value_flows.some((flow) => (
     typeof flow === "string"
     && (
@@ -769,8 +771,140 @@ function staticLeadHasReachabilityHints(lead) {
   ));
 }
 
-function duplicateRowsNeedingReachabilityRescore(domain, candidateRows, newCandidateRows, reachabilityIndex) {
-  if (!reachabilityIndexHasEntries(reachabilityIndex)) return [];
+const STATIC_INDEX_REACHABILITY_ATTACK_VECTORS = new Set(["local", "network"]);
+const STATIC_INDEX_REACHABILITY_SEVERITY_CEILINGS = new Set(["none", "low", "medium", "high", "critical"]);
+
+function normalizedReachabilityString(value, allowed) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : null;
+}
+
+function directReachability(value) {
+  if (!isObject(value)) return null;
+  const reachability = {};
+  if (Object.prototype.hasOwnProperty.call(value, "attack_vector")) {
+    const attackVector = normalizedReachabilityString(value.attack_vector, STATIC_INDEX_REACHABILITY_ATTACK_VECTORS);
+    if (!attackVector) return null;
+    reachability.attack_vector = attackVector;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "network_reachable")) {
+    if (typeof value.network_reachable !== "boolean") return null;
+    reachability.network_reachable = value.network_reachable;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "severity_ceiling")) {
+    const severityCeiling = normalizedReachabilityString(value.severity_ceiling, STATIC_INDEX_REACHABILITY_SEVERITY_CEILINGS);
+    if (!severityCeiling) return null;
+    reachability.severity_ceiling = severityCeiling;
+  }
+  return Object.keys(reachability).length > 0 ? reachability : null;
+}
+
+function indexRecordFile(row) {
+  const location = isObject(row && row.location) ? row.location : {};
+  return typeof location.path === "string"
+    ? location.path
+    : (typeof (row && row.file) === "string" ? row.file : null);
+}
+
+function indexRecordLine(row) {
+  const location = isObject(row && row.location) ? row.location : {};
+  return Number.isInteger(location.line)
+    ? location.line
+    : (Number.isInteger(row && row.start_line) ? row.start_line : null);
+}
+
+function candidateReachabilityKeysForIndexRecord(row) {
+  const file = indexRecordFile(row);
+  const line = indexRecordLine(row);
+  return [
+    row && row.finding_hash,
+    row && row.source_result_sha256,
+    row && row.surface_id,
+    file,
+    file && Number.isInteger(line) ? `${file}:${line}` : null,
+  ].filter((key) => typeof key === "string" && key.length > 0);
+}
+
+function reachabilityValueAt(index, keys) {
+  if (!index) return null;
+  if (index instanceof Map) {
+    for (const key of keys) {
+      const value = directReachability(index.get(key));
+      if (value) return value;
+    }
+  }
+  if (isObject(index)) {
+    for (const key of keys) {
+      const value = directReachability(index[key]);
+      if (value) return value;
+    }
+    if (index.perSurface instanceof Map) {
+      for (const key of keys) {
+        const value = directReachability(index.perSurface.get(key));
+        if (value) return value;
+      }
+    } else if (isObject(index.perSurface)) {
+      for (const key of keys) {
+        const value = directReachability(index.perSurface[key]);
+        if (value) return value;
+      }
+    }
+  }
+  return null;
+}
+
+function reachabilityEntriesFromIndex(index) {
+  const entries = [];
+  const pushEntry = (key, value) => {
+    const reachability = directReachability(value);
+    if (reachability) entries.push({ key, reachability });
+  };
+  const scanRecord = (record) => {
+    if (!isObject(record)) return;
+    [
+      record.id,
+      record.surface_id,
+      record.file_path,
+      record.file,
+    ].forEach((key) => pushEntry(key, record));
+  };
+  if (index instanceof Map) {
+    index.forEach((value, key) => pushEntry(key, value));
+  }
+  if (isObject(index)) {
+    if (index.perSurface instanceof Map) {
+      index.perSurface.forEach((value, key) => pushEntry(key, value));
+    } else if (isObject(index.perSurface)) {
+      for (const [key, value] of Object.entries(index.perSurface)) pushEntry(key, value);
+    }
+    const reachability = isObject(index.reachability) ? index.reachability : index;
+    if (Array.isArray(reachability.surface_ceilings)) {
+      reachability.surface_ceilings.forEach(scanRecord);
+    }
+  }
+  return entries;
+}
+
+function fileMatchesReachabilityKey(file, key) {
+  if (typeof file !== "string" || typeof key !== "string" || !file || !key) return false;
+  return file === key || file.startsWith(`${key}/`) || key.startsWith(`${file}/`);
+}
+
+function reachabilityForIndexRecord(row, reachabilityIndex) {
+  const keys = candidateReachabilityKeysForIndexRecord(row);
+  const keyed = reachabilityValueAt(reachabilityIndex, keys);
+  if (keyed) return keyed;
+  const file = indexRecordFile(row);
+  for (const entry of reachabilityEntriesFromIndex(reachabilityIndex)) {
+    if (keys.includes(entry.key) || fileMatchesReachabilityKey(file, entry.key)) {
+      return entry.reachability;
+    }
+  }
+  return null;
+}
+
+function duplicateRowsNeedingStaticLeadRecording(domain, candidateRows, newCandidateRows, reachabilityIndex) {
   const newHashes = new Set(newCandidateRows.map((row) => row.finding_hash));
   let document;
   try {
@@ -783,13 +917,16 @@ function duplicateRowsNeedingReachabilityRescore(domain, candidateRows, newCandi
     if (newHashes.has(row.finding_hash)) return false;
     const key = staticLeadKeyForIndexRecord(row);
     const existing = key ? leadsByKey.get(key) : null;
-    return existing != null && !staticLeadHasReachabilityHints(existing);
+    if (!existing) return key != null;
+    return !staticLeadHasReachabilityHints(existing)
+      && reachabilityForIndexRecord(row, reachabilityIndex) != null;
   });
 }
 
 function indexStaticResults(domainRaw, args = {}) {
   const domain = assertNonEmptyString(domainRaw, "target_domain");
-  readSessionStateStrict(domain);
+  const session = readSessionStateStrict(domain).state;
+  const shouldRecordStaticLeads = session.target_repo != null && args.record_static_leads !== false;
   const runId = normalizeOptionalText(args.run_id, "run_id");
   const tool = normalizeOptionalText(args.tool, "tool");
   const surfaceId = normalizeOptionalText(args.surface_id, "surface_id");
@@ -892,11 +1029,11 @@ function indexStaticResults(domainRaw, args = {}) {
     const reachabilityIndex = reachabilityIndexForStaticLeadRecording(domain, args);
     const leadRowsForRecording = [
       ...newCandidateRows,
-      ...duplicateRowsNeedingReachabilityRescore(domain, candidateRows, newCandidateRows, reachabilityIndex),
+      ...duplicateRowsNeedingStaticLeadRecording(domain, candidateRows, newCandidateRows, reachabilityIndex),
     ];
     if (
       leadRowsForRecording.length > 0
-      && args.record_static_leads !== false
+      && shouldRecordStaticLeads
       && staticAnalysisLeadRecorder
     ) {
       staticAnalysisLeads = staticAnalysisLeadRecorder(

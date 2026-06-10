@@ -62,6 +62,21 @@ function reachabilityFlowHints(reachability) {
   ].filter(Boolean);
 }
 
+function reachabilityMeta(reachability) {
+  if (!isObject(reachability)) return null;
+  const meta = {};
+  if (typeof reachability.attack_vector === "string" && reachability.attack_vector.trim()) {
+    meta.attack_vector = compactText(reachability.attack_vector, 40);
+  }
+  if (typeof reachability.network_reachable === "boolean") {
+    meta.network_reachable = reachability.network_reachable;
+  }
+  if (typeof reachability.severity_ceiling === "string" && reachability.severity_ceiling.trim()) {
+    meta.severity_ceiling = compactText(reachability.severity_ceiling, 40);
+  }
+  return Object.keys(meta).length > 0 ? meta : null;
+}
+
 function normalizeViaI10(finding) {
   try {
     return mapSarifResultToSurfaceLead(finding);
@@ -91,6 +106,7 @@ function staticFindingToSurfaceLead(sarifFinding, reachability = {}, family = nu
     surface_type: STATIC_LEAD_SURFACE_TYPE,
     endpoints: [endpoint],
     bug_class_hints: [familyLabel],
+    reachability_meta: reachabilityMeta(reachability),
     high_value_flows: reachabilityFlowHints(reachability),
     evidence: [evidence],
     rationale:

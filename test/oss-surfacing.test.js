@@ -701,6 +701,61 @@ test("static_analysis_leads uses per-surface reachability and ignores broad rule
   assert.doesNotMatch(extras.static_analysis_leads, /AV=network/);
 }));
 
+test("static_analysis_leads renders structured reachability metadata before legacy flow strings", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-structured-reachability");
+  ensureSessionDir(domain);
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(1, {
+      surface_id: "RS-1",
+      location: {
+        path: "daemon/server.c",
+        line: 41,
+        end_line: 41,
+      },
+      file: "daemon/server.c",
+      start_line: 41,
+    })],
+    {
+      "RS-1": {
+        attack_vector: "network",
+        network_reachable: true,
+        severity_ceiling: "critical",
+      },
+    },
+    new Map([["CWE-120", "validate_vs_consume"]]),
+    { task_lens: "taint_trace" },
+  );
+
+  const document = readSurfaceLeadsDocument(domain);
+  const lead = document.leads[0];
+  lead.high_value_flows = ["attack_vector=local", "network_reachable=false", "severity_ceiling=low"];
+  fs.writeFileSync(
+    path.join(sessionDir(domain), "surface-leads.json"),
+    `${JSON.stringify({ version: 1, leads: [lead] }, null, 2)}\n`,
+  );
+
+  const extras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      id: "RS-1",
+      title: "daemon/server.c",
+      surface_type: "oss_native_code",
+      file_path: "daemon/server.c",
+    },
+    assignment: {
+      surface_id: "RS-1",
+      task_lens: "taint_trace",
+    },
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.match(extras.static_analysis_leads, /daemon\/server\.c:41/);
+  assert.match(extras.static_analysis_leads, /AV=network/);
+  assert.match(extras.static_analysis_leads, /network_reachable=true/);
+  assert.match(extras.static_analysis_leads, /severity_ceiling=critical/);
+  assert.doesNotMatch(extras.static_analysis_leads, /AV=local/);
+}));
+
 test("REPO_WORKFLOW_TEXT names the repo-bound tools and SUPPRESSES the curl-shaped HTTP playbook", () => {
   // The stanza must name each repo-bound MCP tool the evaluator should call.
   assert.match(REPO_WORKFLOW_TEXT, /bob_repo_inventory/);

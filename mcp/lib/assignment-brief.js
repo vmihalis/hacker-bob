@@ -1370,12 +1370,15 @@ const STATIC_ANALYSIS_LEAD_SLICE_MAX_CHARS = 4096;
 const STATIC_ANALYSIS_LEAD_LINE_MAX_CHARS = 300;
 
 function staticLeadField(lead, fieldName) {
-  const haystack = [
-    ...(Array.isArray(lead.high_value_flows) ? lead.high_value_flows : []),
-  ].filter(Boolean).join("\n");
+  const meta = lead && typeof lead.reachability_meta === "object" && !Array.isArray(lead.reachability_meta)
+    ? lead.reachability_meta
+    : null;
+  if (meta && Object.prototype.hasOwnProperty.call(meta, fieldName)) {
+    return String(meta[fieldName]) || null;
+  }
   const prefix = `${fieldName}=`;
-  for (const part of haystack.split(/[;\s,]+/)) {
-    if (part.startsWith(prefix)) return part.slice(prefix.length) || null;
+  for (const flow of (Array.isArray(lead.high_value_flows) ? lead.high_value_flows : [])) {
+    if (typeof flow === "string" && flow.startsWith(prefix)) return flow.slice(prefix.length) || null;
   }
   return null;
 }
