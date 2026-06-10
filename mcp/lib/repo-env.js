@@ -145,6 +145,7 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
   "autoconf",
   "automake",
   "libtool",
+  "unzip",
   "zlib1g-dev",
 ]);
 
@@ -241,25 +242,31 @@ function normalizeRepoRelativePath(raw) {
   return normalized;
 }
 
-function firstSeedCorpusRel(seedCorpus) {
+function firstSeedCorpus(seedCorpus) {
   if (!Array.isArray(seedCorpus)) return null;
   for (const entry of seedCorpus) {
     const safeRel = normalizeRepoRelativePath(entry && entry.rel_path);
     if (safeRel) {
-      return safeRel;
+      return {
+        rel_path: safeRel,
+        has_zip: entry && entry.has_zip === true || /\.zip$/i.test(safeRel),
+      };
     }
   }
   return null;
 }
 
-function cNativeFuzzRecipe(seedRel) {
+function cNativeFuzzRecipe(seedCorpusEntry) {
+  const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
+  const seedIsZip = seedCorpusEntry && seedCorpusEntry.has_zip === true;
   const seedShellPath = seedRel ? `./${seedRel}` : null;
   const seedSetup = seedRel
     ? [
         `SEED=${shellQuote(seedShellPath)}`,
         "SEED_REAL=$(realpath -m -- \"$SEED\")",
         "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo \"seed corpus path escapes staged repo\" >&2; exit 2 ;; esac",
-        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+        `SEED_IS_ZIP=${seedIsZip ? "1" : "0"}`,
+        "if [ \"$SEED_IS_ZIP\" = 1 ] && [ -f \"$SEED_REAL\" ]; then unzip -qq -o -- \"$SEED_REAL\" -d /work/out/corpus; elif [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
       ]
     : [":"];
   return [
@@ -269,7 +276,7 @@ function cNativeFuzzRecipe(seedRel) {
     "cp -a /src/. /work/repo/",
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
-    "HARNESS=$(grep -RIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort | head -1)",
+    "HARNESS=$(grep -rIl 'LLVMFuzzerTestOneInput' . --include='*.c' --include='*.cc' --include='*.cpp' --include='*.cxx' 2>/dev/null | sort | head -1)",
     "if [ -z \"$HARNESS\" ]; then HARNESS=$(find . \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -type f | sort | head -1); fi",
     "test -n \"$HARNESS\"",
     "CC=clang-18",
@@ -402,12 +409,13 @@ function recommendedCommandsFor(language, { nfsXdrShape = false, seedCorpus = []
         role: "compose",
       },
     ];
-    const seedRel = firstSeedCorpusRel(seedCorpus);
+    const seedEntry = firstSeedCorpus(seedCorpus);
+    const seedRel = seedEntry && seedEntry.rel_path;
     if (nativeFuzzShape) {
       const fuzzCommand = {
         id: "fuzz_asan_ubsan",
         description: "Stage /src into /work/repo, verify a native libFuzzer harness, build it with ASAN+UBSAN+libFuzzer, and run the seeded corpus.",
-        command: ["sh", "-lc", cNativeFuzzRecipe(seedRel)],
+        command: ["sh", "-lc", cNativeFuzzRecipe(seedEntry)],
         role: "fuzz",
       };
       if (seedRel) fuzzCommand.seed_path = seedRel;
@@ -429,6 +437,15 @@ function recommendedCommandsFor(language, { nfsXdrShape = false, seedCorpus = []
     return commands;
   }
   return [];
+}
+
+function detectionProfileForRepoEnv(detection, nativeFuzzShape) {
+  if (!nativeFuzzShape || !detection || detection.language === "c") return detection;
+  return {
+    language: "c",
+    base_image: C_BASE_IMAGE,
+    marker: "native_fuzz_shape",
+  };
 }
 
 // Compose the generated Dockerfile.bob. Plane O reasons:
@@ -718,14 +735,15 @@ async function prepareRepoEnv({
     : assertInteger(timeoutMsOverride, "timeout_ms", { min: 1000, max: MAX_DOCKER_BUILD_TIMEOUT_MS });
 
   const detection = detectLanguageProfile(repoRoot);
-  const baseImage = baseImageOverride
-    ? assertNonEmptyString(baseImageOverride, "base_image")
-    : detection.base_image;
   const nfsXdrShape = loadNfsXdrShape(domain);
   const seedCorpus = loadSeedCorpus(domain);
   const seedCorpusCount = loadSeedCorpusCount(domain);
   const nativeFuzzShape = loadNativeFuzzShape(domain);
-  const recommendedCommands = recommendedCommandsFor(detection.language, { nfsXdrShape, seedCorpus, nativeFuzzShape });
+  const envDetection = detectionProfileForRepoEnv(detection, nativeFuzzShape);
+  const baseImage = baseImageOverride
+    ? assertNonEmptyString(baseImageOverride, "base_image")
+    : envDetection.base_image;
+  const recommendedCommands = recommendedCommandsFor(envDetection.language, { nfsXdrShape, seedCorpus, nativeFuzzShape });
   for (const command of recommendedCommands) {
     assertEnumValue(command.role, RECOMMENDED_COMMAND_ROLES, `recommended_commands[${command.id}].role`);
   }
@@ -768,7 +786,7 @@ async function prepareRepoEnv({
     : null;
 
   const dockerfileContent = buildDockerfileBob({
-    language: detection.language,
+    language: envDetection.language,
     baseImage,
     targetDomain: domain,
     nfsXdrShape,
@@ -782,7 +800,7 @@ async function prepareRepoEnv({
     targetDomain: domain,
     repoSession,
     repoRoot,
-    detection,
+    detection: envDetection,
     recommendedCommands,
     imageTag,
     baseImage,
@@ -858,7 +876,7 @@ async function prepareRepoEnv({
     repo_env_path: repoEnvPath,
     image_tag: imageTag,
     base_image: baseImage,
-    language: detection.language,
+    language: envDetection.language,
     nfs_xdr_shape: nfsXdrShape,
     native_fuzz_shape: nativeFuzzShape,
     seed_corpus: seedCorpus,

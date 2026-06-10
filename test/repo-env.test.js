@@ -250,6 +250,8 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.equal(fuzz.id, "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "fuzz/corpus");
   assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
+  assert.match(fuzz.command[2], /grep -rIl 'LLVMFuzzerTestOneInput'/);
+  assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
   assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
   assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
   assert.match(fuzz.command[2], /-Iinclude/);
@@ -272,6 +274,17 @@ test("recommendedCommandsFor c ignores unsafe seed corpus paths before shell emi
   assert.match(fuzz.command[2], /SEED='\.\/safe corpus'/);
   assert.match(fuzz.command[2], /realpath -m -- "\$SEED"/);
   assert.match(fuzz.command[2], /cp -a -- "\$SEED_REAL"\/\./);
+});
+
+test("recommendedCommandsFor c unpacks OSS-Fuzz zip seed corpora before fuzzing", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: "parser_seed_corpus.zip", has_zip: true }],
+  });
+  const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
+  assert.equal(fuzz.seed_path, "parser_seed_corpus.zip");
+  assert.match(fuzz.command[2], /SEED_IS_ZIP=1/);
+  assert.match(fuzz.command[2], /unzip -qq -o -- "\$SEED_REAL" -d \/work\/out\/corpus/);
 });
 
 test("recommendedCommandsFor c guards dash-prefixed seed corpus paths", () => {
@@ -807,6 +820,31 @@ test("prepareRepoEnv reads native_fuzz_shape from repo-inventory.json and emits 
     assert.equal(fuzzCommands.length, 1);
     assert.equal(fuzzCommands[0].id, "fuzz_asan_ubsan");
     assert.match(fuzzCommands[0].command[2], /-fsanitize=address,undefined,fuzzer/);
+  });
+});
+
+test("prepareRepoEnv promotes polyglot native fuzz repos to the C fuzz profile", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", "{\"scripts\":{\"test\":\"node --test\"}}\n");
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(polyglot_fuzz CXX)\n");
+    write(repoRoot, "fuzzing/native_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return size > 0 && data[0] == 0xff;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    assert.equal(detectLanguageProfile(repoRoot).language, "node");
+    assert.equal(loadNativeFuzzShape(init.target_domain), true);
+    const result = await prepareRepoEnv({ target_domain: init.target_domain });
+    assert.equal(result.language, "c");
+    assert.equal(result.base_image, "ubuntu:24.04");
+    assert.equal(result.native_fuzz_shape, true);
+
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.detection.language, "c");
+    assert.equal(repoEnv.detection.marker, "native_fuzz_shape");
+    assert.ok(repoEnv.recommended_commands.some((command) => command.id === "fuzz_asan_ubsan"));
+    const dockerfile = fs.readFileSync(dockerfileBobPath(init.target_domain), "utf8");
+    assert.match(dockerfile, /\blibclang-rt-18-dev\b/);
   });
 });
 
