@@ -289,7 +289,10 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
   ].join(" && ");
 }
 
-function recommendedCommandsFor(language, { nfsXdrShape = false, seedCorpus = [], nativeFuzzShape = false } = {}) {
+function recommendedCommandsFor(
+  language,
+  { nfsXdrShape = false, seedCorpus = [], nativeFuzzShape = false, nativeFuzzOnly = false } = {},
+) {
   if (language === "node") {
     return [
       {
@@ -403,14 +406,15 @@ function recommendedCommandsFor(language, { nfsXdrShape = false, seedCorpus = []
     const staging =
       "cp -a /src/. /work/repo/ && cd /work/repo && cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure";
     const sanitizerNote = nfsXdrShape ? " (NFS/XDR shape detected — preload libtirpc/libssl/libkrb5)" : "";
-    const commands = [
-      {
+    const commands = [];
+    if (!nativeFuzzOnly) {
+      commands.push({
         id: "build_and_test",
         description: `Stage /src into /work/repo, build with cmake, run ctest.${sanitizerNote}`,
         command: ["sh", "-lc", staging],
         role: "compose",
-      },
-    ];
+      });
+    }
     const seedEntry = firstSeedCorpus(seedCorpus);
     const seedRel = seedEntry && seedEntry.rel_path;
     if (nativeFuzzShape) {
@@ -741,11 +745,17 @@ async function prepareRepoEnv({
   const seedCorpus = loadSeedCorpus(domain);
   const seedCorpusCount = loadSeedCorpusCount(domain);
   const nativeFuzzShape = loadNativeFuzzShape(domain);
+  const nativeFuzzOnly = Boolean(nativeFuzzShape && detection && detection.language !== "c");
   const envDetection = detectionProfileForRepoEnv(detection, nativeFuzzShape);
   const baseImage = baseImageOverride
     ? assertNonEmptyString(baseImageOverride, "base_image")
     : envDetection.base_image;
-  const recommendedCommands = recommendedCommandsFor(envDetection.language, { nfsXdrShape, seedCorpus, nativeFuzzShape });
+  const recommendedCommands = recommendedCommandsFor(envDetection.language, {
+    nfsXdrShape,
+    seedCorpus,
+    nativeFuzzShape,
+    nativeFuzzOnly,
+  });
   for (const command of recommendedCommands) {
     assertEnumValue(command.role, RECOMMENDED_COMMAND_ROLES, `recommended_commands[${command.id}].role`);
   }

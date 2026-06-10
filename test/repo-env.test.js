@@ -262,6 +262,18 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
 });
 
+test("recommendedCommandsFor c can emit only the native fuzz recipe for promoted polyglot repos", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    nativeFuzzOnly: true,
+  });
+  assert.equal(commands.some((command) => command.id === "build_and_test"), false);
+  assert.deepEqual(
+    commands.map((command) => command.id),
+    ["fuzz_asan_ubsan"],
+  );
+});
+
 test("recommendedCommandsFor c ignores unsafe seed corpus paths before shell emission", () => {
   const commands = recommendedCommandsFor("c", {
     nativeFuzzShape: true,
@@ -869,6 +881,7 @@ test("prepareRepoEnv promotes polyglot native fuzz repos to the C fuzz profile",
     assert.equal(repoEnv.detection.language, "c");
     assert.equal(repoEnv.detection.marker, "native_fuzz_shape");
     assert.ok(repoEnv.recommended_commands.some((command) => command.id === "fuzz_asan_ubsan"));
+    assert.equal(repoEnv.recommended_commands.some((command) => command.id === "build_and_test"), false);
     const dockerfile = fs.readFileSync(dockerfileBobPath(init.target_domain), "utf8");
     assert.match(dockerfile, /\blibclang-rt-18-dev\b/);
   });
