@@ -57,6 +57,12 @@ const TAG_MAX_CHARS = 120;
 const CWE_MAX_CHARS = 40;
 const SEVERITY_RANK = Object.freeze({ error: 0, warning: 1, note: 2 });
 
+let staticAnalysisLeadRecorder = null;
+
+function registerStaticAnalysisLeadRecorder(recorder) {
+  staticAnalysisLeadRecorder = typeof recorder === "function" ? recorder : null;
+}
+
 function isObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
@@ -497,10 +503,12 @@ function normalizeStaticAnalysisIndexRecord(record, lineNumber = null) {
     const tool = normalizeTool(assertNonEmptyString(record.tool, "tool"));
     const ruleId = normalizeRuleId(assertNonEmptyString(record.rule_id, "rule_id"));
     const location = isObject(record.location) ? record.location : {};
-    const artifactUri = truncateText(assertNonEmptyString(
+    const rawArtifactUri = assertNonEmptyString(
       location.path || record.file || record.artifact_uri,
       "location.path",
-    ), PATH_MAX_CHARS);
+    );
+    const artifactUri = normalizeRepoPath(rawArtifactUri);
+    if (!artifactUri) throw new Error("location.path must be repo-relative");
     const startLine = assertInteger(location.line || record.start_line, "location.line", { min: 1 });
     const message = scrubText(record.message || "", "static_analysis_index.message") || "";
     const metadata = normalizeMetadata(record);
@@ -553,7 +561,8 @@ function indexRecordFromNormalizedResult(domain, result, ctx = {}) {
   );
   const tool = normalizeTool(ctx.tool || result.tool_name);
   const ruleId = normalizeRuleId(result.rule_id);
-  const artifactUri = truncateText(assertNonEmptyString(result.artifact_uri, "artifact_uri"), PATH_MAX_CHARS);
+  const artifactUri = normalizeRepoPath(assertNonEmptyString(result.artifact_uri, "artifact_uri"));
+  if (!artifactUri) throw new Error("artifact_uri must be repo-relative");
   const startLine = assertInteger(result.start_line, "start_line", { min: 1 });
   const message = scrubText(result.message || "", "static_analysis_index.message") || "";
   const row = {
@@ -749,6 +758,7 @@ function indexStaticResults(domainRaw, args = {}) {
   let duplicateResults = 0;
   let totalRecords = 0;
   let responseRecords = [];
+  let staticAnalysisLeads = null;
 
   withSessionLock(domain, () => {
     const existing = readStaticAnalysisIndex(domain);
@@ -772,6 +782,23 @@ function indexStaticResults(domainRaw, args = {}) {
     responseRecords = candidateRows.sort(compareIndexRecords)
       .slice(0, STATIC_ANALYSIS_INDEX_SUMMARY_RECORD_LIMIT)
       .map(compactRecordForResponse);
+    if (
+      candidateRows.length > 0
+      && args.record_static_leads !== false
+      && staticAnalysisLeadRecorder
+    ) {
+      staticAnalysisLeads = staticAnalysisLeadRecorder(
+        domain,
+        candidateRows,
+        args.reachability_index || {},
+        args.family_index || {},
+        {
+          source: "bob_static_scan",
+          task_lens: args.task_lens,
+          surface_id: surfaceId,
+        },
+      );
+    }
   });
 
   return {
@@ -790,6 +817,16 @@ function indexStaticResults(domainRaw, args = {}) {
     warning_count: parsed ? parsed.warnings.length : 0,
     warnings: parsed ? parsed.warnings.slice(0, STATIC_ANALYSIS_INDEX_WARNING_LIMIT) : [],
     index_path: "static-analysis-index.jsonl",
+    static_analysis_leads: staticAnalysisLeads == null ? {
+      mapped_leads: 0,
+      recorded: 0,
+      skipped_findings: 0,
+    } : {
+      mapped_leads: staticAnalysisLeads.mapped_leads,
+      recorded: staticAnalysisLeads.recorded,
+      skipped_findings: staticAnalysisLeads.skipped_findings,
+      warnings: staticAnalysisLeads.warnings,
+    },
     records: responseRecords,
     records_omitted: Math.max(0, candidateRows.length - responseRecords.length),
     doctrine: "lead_seed_only_no_findings_or_skips",
@@ -878,4 +915,5 @@ module.exports = {
   queryStaticAnalysisIndex,
   readStaticAnalysisIndex,
   readStaticAnalysisIndexTool,
+  registerStaticAnalysisLeadRecorder,
 };

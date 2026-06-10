@@ -41,8 +41,10 @@ const {
   staticFindingToSurfaceLead,
 } = require("./static-lead-mapping.js");
 const {
+  normalizeStaticAnalysisIndexRecord,
   queryStaticAnalysisIndex,
   readStaticAnalysisIndex,
+  registerStaticAnalysisLeadRecorder,
 } = require("./static-analysis-index.js");
 const {
   OSS_ROOTCAUSE_FAMILIES,
@@ -541,6 +543,14 @@ function staticFindingsForRecord(domain, findings, context = {}) {
   return readStaticAnalysisIndex(domain);
 }
 
+function normalizeStaticFindingForRecord(domain, finding) {
+  return normalizeStaticAnalysisIndexRecord({
+    ...finding,
+    target_domain: finding && finding.target_domain ? finding.target_domain : domain,
+    indexed_at: finding && finding.indexed_at ? finding.indexed_at : new Date(0).toISOString(),
+  });
+}
+
 const OSS_ROOTCAUSE_FAMILY_LABELS = new Set(OSS_ROOTCAUSE_FAMILIES.map((family) => family.family));
 
 function familyFromIndexValue(value) {
@@ -611,8 +621,9 @@ function recordStaticAnalysisLeads(domainRaw, findings, reachabilityIndex = {}, 
   const leads = [];
   const warnings = [];
   for (let i = 0; i < inputFindings.length; i += 1) {
-    const finding = inputFindings[i];
+    const rawFinding = inputFindings[i];
     try {
+      const finding = normalizeStaticFindingForRecord(domain, rawFinding);
       const reachability = reachabilityForFinding(finding, reachabilityIndex);
       const family = familyForFinding(finding, familyIndex, context);
       const lead = staticFindingToSurfaceLead(finding, reachability, family);
@@ -656,6 +667,8 @@ function readSurfaceLeads(args) {
     leads,
   });
 }
+
+registerStaticAnalysisLeadRecorder(recordStaticAnalysisLeads);
 
 function promoteSurfaceLeads(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");

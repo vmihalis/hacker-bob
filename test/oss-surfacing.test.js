@@ -241,7 +241,7 @@ function ossRouteMetadata() {
   };
 }
 
-function ossStaticFinding(index) {
+function ossStaticFinding(index, overrides = {}) {
   return {
     target_domain: "repo-static-brief.example",
     indexed_at: "2026-06-10T00:00:00.000Z",
@@ -261,6 +261,7 @@ function ossStaticFinding(index) {
     tags: ["copy_or_index_op", "bound_check_site"],
     dataflow_steps: 2,
     surface_id: "RS-1",
+    ...overrides,
   };
 }
 
@@ -320,6 +321,7 @@ test("OSS static_analysis_leads slice renders recorded static leads and drops wh
     routeMetadata: ossRouteMetadata(),
   });
   assert.equal(typeof extras.static_analysis_leads, "string");
+  assert.match(extras.static_analysis_leads, /<<UNTRUSTED_DATA nonce=[0-9a-f]{32} label=static_analysis_leads>>/);
   assert.ok(extras.static_analysis_leads.length <= 4096);
   assert.match(extras.static_analysis_leads, /src\/server\.c:1/);
   assert.match(extras.static_analysis_leads, /family=validate_vs_consume/);
@@ -329,6 +331,104 @@ test("OSS static_analysis_leads slice renders recorded static leads and drops wh
     (extras.static_analysis_leads.match(/^- /gm) || []).length <= 10,
     "static_analysis_leads must cap rendered leads at top 10",
   );
+}));
+
+test("OSS static_analysis_leads avoids unrelated unbound lead broadcast", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-unbound");
+  ensureSessionDir(domain);
+  const assignedSurface = {
+    id: "RS-1",
+    title: "src/server.c",
+    surface_type: "oss_native_code",
+    file_path: "src/server.c",
+  };
+  const assignment = {
+    surface_id: "RS-1",
+    task_lens: "taint_trace",
+  };
+
+  recordStaticAnalysisLeads(
+    domain,
+    [ossStaticFinding(88, {
+      finding_hash: `${"8".repeat(64)}`,
+      surface_id: undefined,
+      location: {
+        path: "src/other.c",
+        line: 7,
+        end_line: 7,
+      },
+      file: "src/other.c",
+      start_line: 7,
+    })],
+    {},
+    {},
+    { task_lens: "taint_trace" },
+  );
+
+  const assignedExtras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: assignedSurface,
+    assignment,
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(assignedExtras, "static_analysis_leads"),
+    false,
+    "unbound leads from unrelated files must not spill into an identified surface brief",
+  );
+
+  const globalExtras = buildBriefExtrasForProfile("oss", {
+    domain,
+    surface: {
+      title: "unidentified repo surface",
+      surface_type: "oss_native_code",
+      file_path: "src/server.c",
+    },
+    assignment,
+    routeMetadata: ossRouteMetadata(),
+  });
+  assert.match(
+    globalExtras.static_analysis_leads,
+    /src\/other\.c:7/,
+    "unbound leads must remain renderable for unidentified/global OSS surfaces",
+  );
+}));
+
+test("recordStaticAnalysisLeads scrubs direct findings before surface-lead persistence", () => withTempHome(() => {
+  const domain = uniqueDomain("repo-static-direct-scrub");
+  ensureSessionDir(domain);
+  const rawSecret = "AKIA1234567890ABCDEF";
+  const result = recordStaticAnalysisLeads(
+    domain,
+    [
+      ossStaticFinding(1, {
+        finding_hash: `${"1".repeat(64)}`,
+        message: `secret literal ${rawSecret} reaches sink`,
+      }),
+      ossStaticFinding(2, {
+        finding_hash: `${"2".repeat(64)}`,
+        location: {
+          path: "/Users/operator/project/secret.c",
+          line: 2,
+          end_line: 2,
+        },
+        file: "/Users/operator/project/secret.c",
+        start_line: 2,
+      }),
+    ],
+    {},
+    {},
+    { task_lens: "taint_trace" },
+  );
+  assert.equal(result.input_findings, 2);
+  assert.equal(result.mapped_leads, 1);
+  assert.equal(result.skipped_findings, 1);
+  assert.match(result.warnings[0], /repo-relative/);
+
+  const surfaceLeadsJson = fs.readFileSync(path.join(sessionDir(domain), "surface-leads.json"), "utf8");
+  assert.equal(surfaceLeadsJson.includes(rawSecret), false);
+  assert.match(surfaceLeadsJson, /REDACTED_AWS_ACCESS_KEY/);
+  assert.equal(surfaceLeadsJson.includes("/Users/operator/project/secret.c"), false);
 }));
 
 test("REPO_WORKFLOW_TEXT names the repo-bound tools and SUPPRESSES the curl-shaped HTTP playbook", () => {

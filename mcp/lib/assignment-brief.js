@@ -542,7 +542,12 @@ const OSS_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("governance", 1024, (context) => context.governance),
   briefSliceEntry("goal_orientation", 1024, (context) => context.goalOrientation),
   briefSliceEntry("code_surface_pack", 4096, (context) => context.codeSurfacePack),
-  briefSliceEntry("static_analysis_leads", 4096, (context) => context.staticAnalysisLeads),
+  briefSliceEntry(
+    "static_analysis_leads",
+    4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS,
+    (context) => context.staticAnalysisLeads,
+    true,
+  ),
   briefSliceEntry("repo_env_recommendations", 4096, (context) => context.repoEnvRecommendations),
   briefSliceEntry("technique_packs", 8192, (context) => context.ossTechniquePacks),
   briefSliceEntry("cli_tools", 2048, (context) => renderAvailableCliToolsSectionSync({
@@ -1370,8 +1375,11 @@ function staticLeadField(lead, fieldName) {
     ...(Array.isArray(lead.evidence) ? lead.evidence : []),
     lead.rationale,
   ].filter(Boolean).join("\n");
-  const match = haystack.match(new RegExp(`${fieldName}=([^;\\s,]+)`));
-  return match ? match[1] : null;
+  const prefix = `${fieldName}=`;
+  for (const part of haystack.split(/[;\s,]+/)) {
+    if (part.startsWith(prefix)) return part.slice(prefix.length) || null;
+  }
+  return null;
 }
 
 function staticLeadEndpoint(lead) {
@@ -1412,7 +1420,7 @@ function staticLeadAppliesToSurface(lead, surfaceObj) {
   if (lead.source_surface_id && surfaceObj && lead.source_surface_id === surfaceObj.id) return true;
   const endpoints = Array.isArray(lead.endpoints) ? lead.endpoints : [];
   if (endpoints.some((endpoint) => endpointMatchesSurface(endpoint, surfaceObj))) return true;
-  return !lead.source_surface_id;
+  return !lead.source_surface_id && (!surfaceObj || !surfaceObj.id);
 }
 
 function staticLeadTimestamp(lead) {

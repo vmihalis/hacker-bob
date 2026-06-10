@@ -22,10 +22,13 @@ const {
 } = require("../mcp/lib/paths.js");
 const {
   normalizeSurfaceLead,
+  readSurfaceLeadsDocument,
 } = require("../mcp/lib/lead-intake.js");
 const {
   initSession,
 } = require("../mcp/lib/session-state.js");
+
+require("../mcp/lib/lead-promotion.js");
 
 function fixture(name) {
   return fs.readFileSync(path.join(__dirname, "fixtures", "sarif", name), "utf8");
@@ -97,9 +100,18 @@ test("indexStaticResults dedupes by stable finding_hash and preserves CodeQL met
     stdout_path: stdoutPath,
     tool: "codeql",
     surface_id: "RS-1",
+    reachability_index: {
+      "RS-1": {
+        attack_vector: "network",
+        network_reachable: true,
+        severity_ceiling: "critical",
+      },
+    },
   });
   assert.equal(first.indexed_results, 1);
   assert.equal(first.duplicate_results, 0);
+  assert.equal(first.static_analysis_leads.mapped_leads, 1);
+  assert.equal(first.static_analysis_leads.recorded, 1);
 
   const rowsAfterFirst = readStaticAnalysisIndex(domain);
   assert.equal(rowsAfterFirst.length, 1);
@@ -112,6 +124,11 @@ test("indexStaticResults dedupes by stable finding_hash and preserves CodeQL met
   assert.ok(hasCwe22(rowsAfterFirst[0]));
   assert.equal(rowsAfterFirst[0].surface_id, "RS-1");
   assert.equal(isAuditGradedPath(staticAnalysisIndexPath(domain), domain), false);
+  const leadsAfterFirst = readSurfaceLeadsDocument(domain).leads;
+  assert.equal(leadsAfterFirst.length, 1);
+  assert.equal(leadsAfterFirst[0].source, "bob_static_scan");
+  assert.equal(leadsAfterFirst[0].surface_type, "oss_static_sink");
+  assert.deepEqual(leadsAfterFirst[0].endpoints, ["routes/download.js:88"]);
 
   const second = indexStaticResults(domain, {
     run_id: runId,
