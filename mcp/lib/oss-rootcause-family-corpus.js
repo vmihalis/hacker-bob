@@ -323,18 +323,28 @@ function suggestFamiliesForSurface(surface, options) {
     ? Math.min(options.limit, 25)
     : families.length;
   const surfaceText = surfaceSignalText(surface);
-  const suggestions = families.slice(0, limit).map((family) => {
-    const matchedSignature = matchedSignatureTerms(family, surfaceText);
-    return {
-      family_id: family.id,
-      family: family.family,
-      name: family.name,
-      matched_signature: matchedSignature,
-      witness: witnessBrief(family.witness, (family.additional_witnesses || []).length),
-      brief: familyBrief(family),
-      ...(family.fixture_only === true ? { fixture_only: true } : {}),
-    };
-  });
+  const suggestions = families
+    .map((family, index) => ({
+      family,
+      index,
+      matchedSignature: matchedSignatureTerms(family, surfaceText),
+    }))
+    .sort((left, right) => (
+      right.matchedSignature.length - left.matchedSignature.length
+        || left.index - right.index
+    ))
+    .slice(0, limit)
+    .map(({ family, matchedSignature }) => {
+      return {
+        family_id: family.id,
+        family: family.family,
+        name: family.name,
+        matched_signature: matchedSignature,
+        witness: witnessBrief(family.witness, (family.additional_witnesses || []).length),
+        brief: familyBrief(family),
+        ...(family.fixture_only === true ? { fixture_only: true } : {}),
+      };
+    });
   return {
     lens,
     family_count: families.length,

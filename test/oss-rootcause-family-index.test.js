@@ -151,6 +151,18 @@ test("suggestFamiliesForSurface emits bounded brief suggestions when lens is sup
   }
 });
 
+test("suggestFamiliesForSurface ranks signature matches before applying the limit", () => {
+  const result = suggestFamiliesForSurface({
+    task_lens: "taint_trace",
+    bug_class_hints: ["entry_to_consumer_path"],
+  }, {
+    limit: 1,
+  });
+  assert.equal(result.suggestions.length, 1);
+  assert.equal(result.suggestions[0].family, "validate_vs_consume");
+  assert.deepEqual(result.suggestions[0].matched_signature, ["entry_to_consumer_path"]);
+});
+
 test("suggestFamiliesForSurface sets unmatched_lens for unsupported lenses", () => {
   const result = suggestFamiliesForSurface({ task_lens: "not_a_real_lens" });
   assert.equal(result.lens, "not_a_real_lens");
