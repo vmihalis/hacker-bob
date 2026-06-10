@@ -68,26 +68,30 @@ test("opencode install writes the OpenCode-shaped MCP entry and command/subagent
   }
 });
 
-test("opencode renders the @mention spawn seam (not task/Agent) and routes /bob-evaluate to bob-orchestrator", () => {
+test("opencode renders the task-tool spawn seam (not @mention/Agent) and routes /bob-evaluate to bob-orchestrator", () => {
   const workspace = makeWorkspace();
   try {
     installInto(workspace);
 
     const orchestrator = fs.readFileSync(path.join(workspace, ".opencode", "agents", "bob-orchestrator.md"), "utf8");
-    // The orchestrator spawns named subagents by @mention.
-    assert.match(orchestrator, /@bob-brutalist-verifier/);
-    assert.match(orchestrator, /@bob-evaluator-agent/);
-    // OpenCode's task tool cannot target custom subagents, so neither the Claude
-    // Agent(subagent_type:) form nor a task(subagent_type: "bob-...") launch may
-    // leak into the rendered spawn seam.
+    // The orchestrator dispatches named subagents through the task tool —
+    // OpenCode's @mention path is manual operator invocation only and a
+    // literal @bob-* assistant message would never spawn a sub-session.
+    assert.match(orchestrator, /task\(subagent_type: "bob-brutalist-verifier"/);
+    assert.match(orchestrator, /task\(subagent_type: "bob-grader"/);
+    assert.match(orchestrator, /task\(subagent_type: "bob-\[assignment\.evaluator_agent\]"/);
+    // Neither the Claude Agent(subagent_type:) form nor a concrete @bob-<role>
+    // mention dispatch may leak into the rendered spawn seam. The only allowed
+    // @bob reference is the generic `@bob-<role>` manual-path note.
     assert.doesNotMatch(orchestrator, /Agent\(subagent_type:/);
-    assert.doesNotMatch(orchestrator, /task\(subagent_type:\s*"bob-/);
+    assert.doesNotMatch(orchestrator, /@bob-[a-z]/);
     // No leftover spawn placeholders.
     assert.doesNotMatch(orchestrator, /\{\{[A-Z0-9_]+\}\}/);
 
-    // Orchestrator frontmatter: mode: primary, BYOK (no model line).
+    // Orchestrator frontmatter: mode: primary, task enabled, BYOK (no model line).
     const ofm = orchestrator.match(/^---\n([\s\S]*?)\n---\n/)[1];
     assert.match(ofm, /^mode: primary$/m);
+    assert.match(ofm, /^  task: true$/m);
     assert.doesNotMatch(ofm, /^model:/m);
 
     // A subagent carries mode: subagent and no model.
@@ -105,6 +109,42 @@ test("opencode renders the @mention spawn seam (not task/Agent) and routes /bob-
     assert.match(egressCmd, /mcp\/lib\/egress-cli\.js/);
     const updateCmd = fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-update.md"), "utf8");
     assert.match(updateCmd, /mcp\/lib\/update-check\.js/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode subagent frontmatter gates MCP tools to each role's registry bundle", () => {
+  const workspace = makeWorkspace();
+  try {
+    installInto(workspace);
+
+    const frontmatterOf = (agentFile) => {
+      const document = fs.readFileSync(path.join(workspace, ".opencode", "agents", agentFile), "utf8");
+      return document.match(/^---\n([\s\S]*?)\n---\n/)[1];
+    };
+
+    // Every agent denies the whole hacker-bob server, then re-allows exactly
+    // its role bundle (specific keys beat the glob — OpenCode's Wildcard.all
+    // gives the longest matching pattern precedence).
+    const grader = frontmatterOf("bob-grader.md");
+    assert.match(grader, /^  "hacker-bob_\*": false$/m);
+    assert.match(grader, /^  hacker-bob_bob_write_grade_verdict: true$/m);
+    // Out-of-role mutators must NOT be re-allowed for the grader: lifecycle
+    // advancement and report finalization stay orchestrator/reporter-only.
+    assert.doesNotMatch(grader, /hacker-bob_bob_advance_session/);
+    assert.doesNotMatch(grader, /hacker-bob_bob_finalize_report/);
+    assert.doesNotMatch(grader, /hacker-bob_bob_write_wave_handoff/);
+
+    // The external @brutalist/mcp server is open only for the brutalist verifier.
+    assert.match(frontmatterOf("bob-brutalist-verifier.md"), /^  "brutalist_\*": true$/m);
+    assert.match(grader, /^  "brutalist_\*": false$/m);
+    assert.match(frontmatterOf("bob-orchestrator.md"), /^  "brutalist_\*": false$/m);
+
+    // The orchestrator never writes evaluator handoffs.
+    const orchestrator = frontmatterOf("bob-orchestrator.md");
+    assert.match(orchestrator, /^  "hacker-bob_\*": false$/m);
+    assert.doesNotMatch(orchestrator, /hacker-bob_bob_write_wave_handoff/);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -130,6 +170,31 @@ test("opencode install preserves operator-configured opencode.json keys and serv
     assert.deepEqual(cfg.mcp["my-own-server"].command, ["node", "myserver.js"]);
     assert.ok(cfg.mcp["hacker-bob"], "bob server entry should be merged in");
     assert.ok(cfg.mcp.brutalist, "brutalist server entry should be merged in");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode install never overwrites an operator-owned brutalist MCP server", () => {
+  const workspace = makeWorkspace();
+  try {
+    const operatorBrutalist = { type: "local", command: ["node", "my-own-brutalist.js"], enabled: true };
+    fs.writeFileSync(path.join(workspace, "opencode.json"), `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      mcp: { brutalist: operatorBrutalist },
+    }, null, 2)}\n`, "utf8");
+
+    installInto(workspace);
+
+    const cfg = readJson(path.join(workspace, "opencode.json"));
+    assert.deepEqual(cfg.mcp.brutalist, operatorBrutalist, "operator brutalist entry must be preserved");
+    assert.ok(cfg.mcp["hacker-bob"], "bob server entry should still be merged in");
+
+    // Uninstall must also leave the foreign brutalist entry alone.
+    opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    const after = readJson(path.join(workspace, "opencode.json"));
+    assert.deepEqual(after.mcp.brutalist, operatorBrutalist, "operator brutalist entry must survive uninstall");
+    assert.ok(!after.mcp["hacker-bob"], "bob server entry should be removed");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -197,6 +262,36 @@ test("opencode uninstall removes a Bob-only opencode.json entirely", () => {
     assert.ok(!fs.existsSync(path.join(workspace, "opencode.json")), "Bob-only opencode.json should be removed");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode uninstall refuses to rewrite a symlinked opencode.json", () => {
+  const workspace = makeWorkspace();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bob-opencode-outside-"));
+  try {
+    // A config symlinked to a file outside the install target must never be
+    // followed: rewriting through it would modify an arbitrary user-owned file.
+    const realConfig = path.join(outside, "user-config.json");
+    fs.writeFileSync(realConfig, `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      theme: "tokyonight",
+      mcp: {
+        "hacker-bob": { type: "local", command: ["node", path.join(workspace, "mcp", "server.js")], enabled: true },
+      },
+    }, null, 2)}\n`, "utf8");
+    const before = fs.readFileSync(realConfig, "utf8");
+    fs.symlinkSync(realConfig, path.join(workspace, "opencode.json"));
+
+    const result = opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    assert.ok(
+      result.skipped.some((s) => s.path === "opencode.json" && /symlink/.test(s.reason)),
+      `expected a symlink skip entry, got ${JSON.stringify(result.skipped)}`,
+    );
+    assert.equal(fs.readFileSync(realConfig, "utf8"), before, "symlink target must not be rewritten");
+    assert.ok(fs.existsSync(realConfig), "symlink target must not be removed");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   }
 });
 

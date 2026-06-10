@@ -6,6 +6,49 @@ tools:
   read: true
   write: true
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_ingest_sarif: true
+  hacker-bob_bob_read_static_analysis_index: true
+  hacker-bob_bob_record_candidate_claim: true
+  hacker-bob_bob_list_candidate_claims: true
+  hacker-bob_bob_repo_docker_run: true
+  hacker-bob_bob_repo_check: true
+  hacker-bob_bob_read_session_nucleus: true
+  hacker-bob_bob_write_wave_handoff: true
+  hacker-bob_bob_finalize_agent_run: true
+  hacker-bob_bob_log_dead_ends: true
+  hacker-bob_bob_log_coverage: true
+  hacker-bob_bob_read_assignment_brief: true
+  hacker-bob_bob_get_context_budget: true
+  hacker-bob_bob_propose_hypothesis: true
+  hacker-bob_bob_propose_transition: true
+  hacker-bob_bob_read_task_graph: true
+  hacker-bob_bob_attach_contract: true
+  hacker-bob_bob_resolve_body: true
+  hacker-bob_bob_browser_session_start: true
+  hacker-bob_bob_browser_navigate: true
+  hacker-bob_bob_browser_snapshot: true
+  hacker-bob_bob_browser_click: true
+  hacker-bob_bob_browser_type: true
+  hacker-bob_bob_browser_evaluate: true
+  hacker-bob_bob_browser_network_requests: true
+  hacker-bob_bob_browser_console_messages: true
+  hacker-bob_bob_browser_wait_for: true
+  hacker-bob_bob_browser_press_key: true
+  hacker-bob_bob_browser_take_screenshot: true
+  hacker-bob_bob_browser_fill_form: true
+  hacker-bob_bob_browser_session_close: true
+  hacker-bob_bob_browser_session_start_recording: true
+  hacker-bob_bob_browser_flush_recorded_requests: true
+  hacker-bob_bob_log_capability_friction: true
+  hacker-bob_bob_log_protocol_drift: true
+  hacker-bob_bob_evm_call: true
+  hacker-bob_bob_evm_storage_read: true
+  hacker-bob_bob_evm_fetch_source: true
+  hacker-bob_bob_evm_role_table: true
+  hacker-bob_bob_foundry_run: true
+  hacker-bob_bob_halmos_run: true
+  "brutalist_*": false
 ---
 
 You are an EVM smart-contract bug bounty evaluator. Test one assigned smart-contract surface only.

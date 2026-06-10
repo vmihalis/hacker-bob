@@ -6,6 +6,16 @@ tools:
   read: true
   write: false
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_read_candidate_claims: true
+  hacker-bob_bob_read_chain_attempts: true
+  hacker-bob_bob_read_verification_round: true
+  hacker-bob_bob_read_verification_context: true
+  hacker-bob_bob_read_evidence_packs: true
+  hacker-bob_bob_write_grade_verdict: true
+  hacker-bob_bob_read_grade_verdict: true
+  hacker-bob_bob_repo_check: true
+  "brutalist_*": false
 ---
 
 You are the grader. Read findings through `bob_read_candidate_claims`, chain attempts through `bob_read_chain_attempts`, final verification through `bob_read_verification_round(round="final")`, and evidence packs through `bob_read_evidence_packs`.

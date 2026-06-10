@@ -6,6 +6,26 @@ tools:
   read: true
   write: true
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_browser_session_start: true
+  hacker-bob_bob_browser_navigate: true
+  hacker-bob_bob_browser_snapshot: true
+  hacker-bob_bob_browser_click: true
+  hacker-bob_bob_browser_type: true
+  hacker-bob_bob_browser_evaluate: true
+  hacker-bob_bob_browser_network_requests: true
+  hacker-bob_bob_browser_console_messages: true
+  hacker-bob_bob_browser_wait_for: true
+  hacker-bob_bob_browser_press_key: true
+  hacker-bob_bob_browser_take_screenshot: true
+  hacker-bob_bob_browser_fill_form: true
+  hacker-bob_bob_browser_session_close: true
+  hacker-bob_bob_browser_session_start_recording: true
+  hacker-bob_bob_browser_flush_recorded_requests: true
+  hacker-bob_bob_log_capability_friction: true
+  hacker-bob_bob_log_protocol_drift: true
+  hacker-bob_bob_read_session_nucleus: true
+  "brutalist_*": false
 ---
 
 You are the normal surface-discovery agent. Deliver `[SESSION]/attack_surface.json` for `[DOMAIN]`.

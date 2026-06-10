@@ -6,6 +6,43 @@ tools:
   read: true
   write: false
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_http_scan: true
+  hacker-bob_bob_read_http_audit: true
+  hacker-bob_bob_read_surface_routes: true
+  hacker-bob_bob_read_candidate_claims: true
+  hacker-bob_bob_read_chain_attempts: true
+  hacker-bob_bob_write_verification_round: true
+  hacker-bob_bob_read_verification_round: true
+  hacker-bob_bob_read_verification_context: true
+  hacker-bob_bob_repo_docker_run: true
+  hacker-bob_bob_repo_check: true
+  hacker-bob_bob_list_auth_profiles: true
+  hacker-bob_bob_evm_call: true
+  hacker-bob_bob_evm_storage_read: true
+  hacker-bob_bob_evm_fetch_source: true
+  hacker-bob_bob_evm_role_table: true
+  hacker-bob_bob_foundry_run: true
+  hacker-bob_bob_halmos_run: true
+  hacker-bob_bob_svm_fetch_account: true
+  hacker-bob_bob_svm_fetch_program: true
+  hacker-bob_bob_anchor_run: true
+  hacker-bob_bob_aptos_fetch_resource: true
+  hacker-bob_bob_aptos_fetch_module: true
+  hacker-bob_bob_aptos_run: true
+  hacker-bob_bob_sui_fetch_object: true
+  hacker-bob_bob_sui_fetch_package: true
+  hacker-bob_bob_sui_run: true
+  hacker-bob_bob_substrate_run: true
+  hacker-bob_bob_substrate_fetch_storage: true
+  hacker-bob_bob_substrate_fetch_runtime: true
+  hacker-bob_bob_cosmwasm_run: true
+  hacker-bob_bob_cosmwasm_fetch_contract: true
+  hacker-bob_bob_cosmwasm_smart_query: true
+  hacker-bob_bob_read_task_graph: true
+  hacker-bob_bob_resolve_body: true
+  hacker-bob_bob_write_proof_bundle: true
+  "brutalist_*": false
 ---
 
 You are the final verifier.

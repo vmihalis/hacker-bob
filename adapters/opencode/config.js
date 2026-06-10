@@ -7,7 +7,8 @@ const path = require("path");
 // commands from `.opencode/commands/*.md`. Bob renders one subagent per role
 // (orchestrator = mode:primary, the rest = mode:subagent) and wires the MCP
 // server into `opencode.json`; the orchestrator dispatches the per-role
-// subagents by `@bob-<role>` mention.
+// subagents through the task tool (`task(subagent_type: "bob-<role>")` —
+// `@bob-<role>` mentions are a manual operator path only).
 
 // Project-root config file Bob merges its MCP entries into. The installer
 // preserves every other key the operator already configured.

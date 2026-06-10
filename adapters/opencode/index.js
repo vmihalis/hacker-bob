@@ -28,7 +28,8 @@ function agentSpecList() {
   return Object.values(OPENCODE_ROLE_SPECS);
 }
 
-// Install-target-relative `.opencode/agents/bob-*.md` paths (the @mention targets).
+// Install-target-relative `.opencode/agents/bob-*.md` paths (the task-tool
+// `subagent_type` targets).
 function agentTargetFiles() {
   return agentSpecList().map((spec) => path.join(AGENTS_DIR, `${spec.name}.md`));
 }
@@ -82,6 +83,17 @@ function brutalistMcpEntry() {
   return { type: "local", command: [...BRUTALIST_COMMAND], enabled: true };
 }
 
+// A `brutalist` entry is Bob-managed only when its command is exactly Bob's
+// expected spawn command. Anything else is an operator-owned server that
+// happens to share the key: install must not overwrite it and uninstall must
+// not remove it.
+function isBobBrutalistEntry(entry) {
+  return isPlainObject(entry)
+    && Array.isArray(entry.command)
+    && entry.command.length === BRUTALIST_COMMAND.length
+    && entry.command.every((token, index) => token === BRUTALIST_COMMAND[index]);
+}
+
 function mergeConfig({ serverPath }) {
   return {
     mcp: {
@@ -118,10 +130,10 @@ function renderEvaluateCommand(spec) {
     "```",
     "",
     "You are the `bob-orchestrator` agent. Treat `$ARGUMENTS` as the target/resume",
-    "input, drive the six-state lifecycle, and dispatch the per-role `@bob-*`",
-    "subagents by mention. The project-local `hacker-bob` MCP server is the source",
-    "of truth for all durable session state; honor every guardrail in your agent",
-    "contract.",
+    "input, drive the six-state lifecycle, and dispatch the per-role Bob subagents",
+    "through the `task` tool (`task(subagent_type: \"bob-<role>\", ...)`). The",
+    "project-local `hacker-bob` MCP server is the source of truth for all durable",
+    "session state; honor every guardrail in your agent contract.",
     "",
   ].join("\n");
 }
@@ -272,10 +284,16 @@ function managedDirs() {
 function mergeOpencodeConfig(existing, serverPath) {
   const base = isPlainObject(existing) ? { ...existing } : {};
   if (!base.$schema) base.$schema = CONFIG_SCHEMA;
-  base.mcp = {
-    ...(isPlainObject(base.mcp) ? base.mcp : {}),
-    ...mergeConfig({ serverPath }).mcp,
-  };
+  const mcp = isPlainObject(base.mcp) ? { ...base.mcp } : {};
+  // The hacker-bob key is Bob-owned and always re-asserted. The optional
+  // brutalist key is only written when absent: an existing entry is either
+  // already Bob's (rewrite would be a no-op apart from clobbering an operator
+  // enabled/disabled toggle) or an operator-owned server we must preserve.
+  mcp["hacker-bob"] = bobMcpEntry(serverPath);
+  if (!("brutalist" in mcp)) {
+    mcp.brutalist = brutalistMcpEntry();
+  }
+  base.mcp = mcp;
   return base;
 }
 
@@ -306,7 +324,8 @@ function install({
 
   // 2. Copy the committed per-role subagent files into .opencode/agents/.
   // These are pre-rendered from the shared role model (copy-only, like the
-  // Codex/Kimi skills); the orchestrator dispatches them via @bob-<role>.
+  // Codex/Kimi skills); the orchestrator dispatches them via the task tool
+  // (subagent_type: "bob-<role>").
   let agents = 0;
   for (const spec of agentSpecList()) {
     safeFs.copyFile(
@@ -372,7 +391,7 @@ function doctor({ targetAbs }) {
         addCheck(checks, "error", "opencode_config", `${CONFIG_FILE} is missing the Bob-managed hacker-bob MCP entry`);
       }
       const brutalistEntry = cfg.mcp && cfg.mcp.brutalist;
-      if (brutalistEntry && Array.isArray(brutalistEntry.command) && brutalistEntry.command[0] === BRUTALIST_COMMAND[0]) {
+      if (isBobBrutalistEntry(brutalistEntry)) {
         addCheck(checks, "ok", "opencode_brutalist_optional", `${CONFIG_FILE} registers the optional @brutalist/mcp server`);
       } else {
         addCheck(checks, "info", "opencode_brutalist_optional", `${CONFIG_FILE} does not register @brutalist/mcp — brutalist verifier will fall back gracefully`);
@@ -466,7 +485,21 @@ function doctor({ targetAbs }) {
 
 function removeMcpConfig(targetAbs, result) {
   const configPath = path.join(targetAbs, CONFIG_FILE);
-  if (!fileExists(configPath)) return;
+  // lstat (not stat) so a symlinked config is detected instead of followed:
+  // rewriting through a symlink would modify an arbitrary user-owned file
+  // outside the install target. Install rejects symlinks via
+  // createSafeInstallFs; uninstall must hold the same line.
+  let stat;
+  try {
+    stat = fs.lstatSync(configPath);
+  } catch {
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    result.skipped.push({ type: "config", path: CONFIG_FILE, reason: "refusing to follow symlinked config file" });
+    return;
+  }
+  if (!stat.isFile()) return;
   let cfg;
   try {
     cfg = readJson(configPath);
@@ -482,8 +515,7 @@ function removeMcpConfig(targetAbs, result) {
   }
   const nextMcp = { ...cfg.mcp };
   delete nextMcp["hacker-bob"];
-  const brutalist = nextMcp.brutalist;
-  if (brutalist && Array.isArray(brutalist.command) && brutalist.command[0] === BRUTALIST_COMMAND[0]) {
+  if (isBobBrutalistEntry(nextMcp.brutalist)) {
     delete nextMcp.brutalist;
   }
   const next = { ...cfg };
@@ -556,6 +588,7 @@ module.exports = {
   doctor,
   id,
   install,
+  isBobBrutalistEntry,
   managedDirs,
   managedFiles,
   mergeConfig,

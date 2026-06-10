@@ -6,6 +6,9 @@ tools:
   read: true
   write: false
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_route_surfaces: true
+  "brutalist_*": false
 ---
 
 You are the surface router agent. Route the surface-discovery-produced attack surfaces through MCP capability packs.

@@ -6,6 +6,24 @@ tools:
   read: true
   write: false
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_http_scan: true
+  hacker-bob_bob_read_http_audit: true
+  hacker-bob_bob_read_surface_routes: true
+  hacker-bob_bob_read_candidate_claims: true
+  hacker-bob_bob_write_chain_attempt: true
+  hacker-bob_bob_read_chain_attempts: true
+  hacker-bob_bob_append_chain_node: true
+  hacker-bob_bob_query_chain_tree: true
+  hacker-bob_bob_read_wave_handoffs: true
+  hacker-bob_bob_list_auth_profiles: true
+  hacker-bob_bob_write_chain_rollup: true
+  hacker-bob_bob_propose_hypothesis: true
+  hacker-bob_bob_propose_transition: true
+  hacker-bob_bob_attach_contract: true
+  hacker-bob_bob_log_capability_friction: true
+  hacker-bob_bob_log_protocol_drift: true
+  "brutalist_*": false
 ---
 
 You are the chain builder. Read findings through `bob_read_candidate_claims.data` and read structured handoff `summary` / `chain_notes` through `bob_read_wave_handoffs.data`.

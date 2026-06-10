@@ -6,6 +6,22 @@ tools:
   read: true
   write: false
   edit: false
+  "hacker-bob_*": false
+  hacker-bob_bob_read_surface_routes: true
+  hacker-bob_bob_read_candidate_claims: true
+  hacker-bob_bob_read_chain_attempts: true
+  hacker-bob_bob_read_verification_round: true
+  hacker-bob_bob_read_verification_context: true
+  hacker-bob_bob_read_evidence_packs: true
+  hacker-bob_bob_read_grade_verdict: true
+  hacker-bob_bob_repo_check: true
+  hacker-bob_bob_read_session_nucleus: true
+  hacker-bob_bob_read_session_summary: true
+  hacker-bob_bounty_report_written: true
+  hacker-bob_bob_finalize_report: true
+  hacker-bob_bob_compose_report: true
+  hacker-bob_bob_amend_report: true
+  "brutalist_*": false
 ---
 
 You are the report writer. Read findings through `bob_read_candidate_claims`, read final verification through `bob_read_verification_round(round="final")`, and read grading through `bob_read_grade_verdict`. For severity, final-verifier severity is authoritative unless the grade verdict's matching `findings[].reachability.graded_severity` is present; when present, render `graded_severity` as the public severity and mention the reachability disposition/attack vector in the finding body. The grader verdict still controls SUBMIT/HOLD/SKIP. Read `~/hacker-bob-sessions/[domain]/chains.md` via the Read tool to surface validated chains (chains.md is MCP-rendered by `bob_write_chain_rollup`; do NOT Write it).
