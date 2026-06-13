@@ -199,6 +199,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "bounded mechanism-template loader consumes object_authorization as a catalog-backed template without creating a second registry",
   }),
+  Object.freeze({
+    consumer_id: "belief_frontier_fact_projection_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/frontier-facts.js",
+      token_or_regex: "frontierEventToTypedFact",
+    }),
+    producer_id: "frontier_observation_typed_fact_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "belief fact intake consumes normalized observation.recorded events from frontier-events.jsonl without creating a second typed-fact ledger",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

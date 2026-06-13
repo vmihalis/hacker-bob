@@ -119,7 +119,7 @@
    "action": "layer_on",
    "phase": "substrate",
    "step": 2,
-   "status": "ready",
+   "status": "done",
    "predecessors": [],
    "unlocks": [
     "CB-B1"
@@ -139,7 +139,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-1",
     "CB-2",

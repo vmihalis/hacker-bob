@@ -138,6 +138,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "mechanism_template_loader_object_authorization",
     ]),
   }),
+  Object.freeze({
+    producer_id: "frontier_observation_typed_fact_projection",
+    mcp_tool_or_artifact: "frontier-events.jsonl observation.recorded",
+    trace_shape_ref: "mcp/lib/belief/frontier-facts.js#queryFrontierTypedFacts",
+    registered_consumers: Object.freeze([
+      "belief_frontier_fact_projection_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(
