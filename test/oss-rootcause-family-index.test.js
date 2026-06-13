@@ -40,6 +40,7 @@ test("SUPPORTED_FAMILIES covers the OSS root-cause families, including the two a
     "double_free_use_after_free",
     "crypto_ordering",
     "validate_vs_consume",
+    "object_authorization",
   ]) {
     assert.ok(SUPPORTED_FAMILIES.includes(family), `${family} present`);
   }
@@ -109,6 +110,14 @@ test("crypto_ordering is explicitly fixture-only until Bob has a portfolio witne
   assert.equal(record.fixture_only, true);
   assert.match(record.portfolio_status, /zero crypto-ordering findings/);
   assert.match(record.witness.impact, /padding-oracle|plaintext/i);
+});
+
+test("object_authorization carries principal/object/policy/effect source-sink signature", () => {
+  const record = OSS_ROOTCAUSE_FAMILIES.find((family) => family.family === "object_authorization");
+  assert.ok(record, "object_authorization record must exist");
+  assert.deepEqual(record.lens_affinity, ["behavior_probe"]);
+  assert.deepEqual(record.source_sink_signature, ["principal", "object_selector", "policy_gate", "effect"]);
+  assert.equal(record.witness.cve_or_commit, "CWE-639");
 });
 
 test("family witness rows avoid credentials and operator personal identifiers", () => {

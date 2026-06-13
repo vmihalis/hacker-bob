@@ -97,7 +97,7 @@
    "action": "merge",
    "phase": "substrate",
    "step": 2,
-   "status": "ready",
+   "status": "done",
    "predecessors": [],
    "unlocks": [
     "CB-B1"
@@ -109,7 +109,9 @@
     "engineering": "Validates under the bounded-warning loader; malformed record skipped not thrown; mechanism id resolves to a catalog family.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "Resolved during CB-2 review: object_authorization initially shared all three native-code OSS lens affinities and displaced validate_vs_consume from the capped root-cause brief slice; narrowed the new family to behavior_probe so the corpus record does not compete with native-code families."
+   ]
   },
   {
    "id": "CB-3",

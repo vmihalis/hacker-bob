@@ -545,6 +545,7 @@ progress-log promotion).
 | 2026-06-13 | `CB-S1` | `done` | `node --test test/belief-authority.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-S1-authority: PASS` |
 | 2026-06-13 | `CB-S2` | `done` | `node --test test/belief-authority.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-S2-provenance-secret-safety: PASS` |
 | 2026-06-13 | `CB-1` | `done` | `node --test test/surface-graph.test.js test/surface-graph-builder.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-1-mechanism-projection: PASS`; `verify-CB-1-no-mechanism-graph-store-in-runtime: PASS` |
+| 2026-06-13 | `CB-2` | `done` | `node --test test/invariant-template-corpus.test.js test/oss-rootcause-family-index.test.js test/cwe-catalog.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-2-object-authorization-template: PASS` |
 
 ## Completion gates and metrics
 

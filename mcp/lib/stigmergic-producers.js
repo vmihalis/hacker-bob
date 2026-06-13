@@ -128,6 +128,16 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "surface_graph_mechanism_query_mode",
     ]),
   }),
+  Object.freeze({
+    producer_id: "object_authorization_mechanism_template",
+    mcp_tool_or_artifact:
+      "OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE / MECHANISM_TEMPLATES",
+    trace_shape_ref:
+      "mcp/lib/invariant-template-corpus.js#OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE",
+    registered_consumers: Object.freeze([
+      "mechanism_template_loader_object_authorization",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

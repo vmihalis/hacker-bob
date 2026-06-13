@@ -188,6 +188,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "mechanism query mode consumes principal/credential/policy_gate/effect/intervention edges from surface-graph.jsonl without creating a second graph store",
   }),
+  Object.freeze({
+    consumer_id: "mechanism_template_loader_object_authorization",
+    source_location: Object.freeze({
+      file: "mcp/lib/invariant-template-corpus.js",
+      token_or_regex: "getMechanismTemplate",
+    }),
+    producer_id: "object_authorization_mechanism_template",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "bounded mechanism-template loader consumes object_authorization as a catalog-backed template without creating a second registry",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(
