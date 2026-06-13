@@ -3,7 +3,6 @@
 const crypto = require("crypto");
 const { getMechanismTemplate } = require("../invariant-template-corpus.js");
 const { buildBeliefWindow } = require("./belief-window.js");
-const { inferMarginals } = require("./factor-graph.js");
 const { _internals } = require("./authority.js");
 
 const INTERVENTION_CALCULUS_MODEL_VERSION = "intervention-calculus.v1";
@@ -56,50 +55,33 @@ function effectivePermissionVariables(window) {
     .sort((a, b) => a.variable_id.localeCompare(b.variable_id));
 }
 
-function isPublicObject(variable) {
-  return /public[_:-]?object|public/i.test(String(variable.scope && variable.scope.effect_id));
-}
+// CB-B2 (path A-prime): no regex on the effect id, no hardcoded posterior, no hand
+// bonuses. An intervention's expected_state is the EXPERIMENTAL DESIGN (the outcome
+// the control should yield if the object-auth hypothesis holds), not a belief
+// estimate; the confounder it discriminates is fixed by the control's role.
+const EXPECTED_STATE_BY_INTERVENTION = Object.freeze({
+  principal_fixed_object_swap: "allowed",
+  attacker_owned_control: "allowed",
+  victim_auth_same_object: "allowed",
+  cache_nonce_check: "allowed",
+  no_auth_same_object: "blocked",
+  nonexistent_object: "blocked",
+  public_object_check: "blocked",
+  stale_session_check: "blocked",
+});
 
-function isIdorLike(variable) {
-  return /unauth_succeeds_where_auth_blocked|idor|object_authorization|victim/i.test(String(variable.scope && variable.scope.effect_id));
-}
+const CONFOUNDER_BY_INTERVENTION = Object.freeze({
+  no_auth_same_object: Object.freeze(["public_object"]),
+  public_object_check: Object.freeze(["public_object"]),
+  nonexistent_object: Object.freeze(["response_reflection"]),
+  stale_session_check: Object.freeze(["expired_auth"]),
+  cache_nonce_check: Object.freeze(["cache_bleed"]),
+});
 
-function posteriorForCandidate(variable, intervention) {
-  if (intervention === "public_object_check") {
-    return isPublicObject(variable)
-      ? Object.freeze({ public_access: 0.78, idor: 0.08, unknown: 0.14 })
-      : Object.freeze({ public_access: 0.18, idor: 0.62, unknown: 0.20 });
-  }
-  if (intervention === "principal_fixed_object_swap") {
-    return isIdorLike(variable)
-      ? Object.freeze({ allowed: 0.90, blocked: 0.06, unknown: 0.04 })
-      : Object.freeze({ allowed: 0.44, blocked: 0.22, unknown: 0.34 });
-  }
-  if (intervention === "attacker_owned_control") {
-    return Object.freeze({ allowed: 0.74, blocked: 0.08, unknown: 0.18 });
-  }
-  if (intervention === "victim_auth_same_object") {
-    return Object.freeze({ allowed: 0.80, blocked: 0.08, unknown: 0.12 });
-  }
-  if (intervention === "no_auth_same_object") {
-    return Object.freeze({ allowed: 0.36, blocked: 0.42, unknown: 0.22 });
-  }
-  if (intervention === "nonexistent_object") {
-    return Object.freeze({ allowed: 0.10, blocked: 0.78, unknown: 0.12 });
-  }
-  if (intervention === "stale_session_check") {
-    return Object.freeze({ allowed: 0.22, blocked: 0.50, unknown: 0.28 });
-  }
-  return Object.freeze({ allowed: 0.30, blocked: 0.35, unknown: 0.35 });
-}
-
-function candidateScore({ variable, intervention, baselineEntropy, posteriorEntropy }) {
-  const entropyGain = Math.max(0, baselineEntropy - posteriorEntropy);
-  let bonus = 0;
-  if (intervention === "principal_fixed_object_swap" && isIdorLike(variable)) bonus += 0.75;
-  if (intervention === "public_object_check" && isPublicObject(variable)) bonus += 1.0;
-  if (intervention === "attacker_owned_control") bonus -= 0.25;
-  return Number((entropyGain + bonus).toFixed(6));
+// victim_auth_same_object needs the victim's credential, so it is not runnable by
+// default; the caller passes the runnable set derived from available auth profiles.
+function defaultRunnable(interventions) {
+  return interventions.filter((i) => i !== "victim_auth_same_object");
 }
 
 function candidateDoOperation(variable, intervention) {
@@ -128,10 +110,8 @@ function candidateDoOperation(variable, intervention) {
 }
 
 function buildCandidate({ template, variable, intervention }) {
-  const baselineEntropy = entropy(variable.posterior);
-  const posterior = posteriorForCandidate(variable, intervention);
-  const posteriorEntropy = entropy(posterior);
-  const score = candidateScore({ variable, intervention, baselineEntropy, posteriorEntropy });
+  const beliefEntropy = entropy(variable.posterior);
+  const expectedState = EXPECTED_STATE_BY_INTERVENTION[intervention] || "allowed";
   return Object.freeze({
     candidate_id: sha256Hex(`${variable.variable_id}:${intervention}`).slice(0, 24),
     template_id: template.id,
@@ -140,35 +120,33 @@ function buildCandidate({ template, variable, intervention }) {
     scope: variable.scope,
     intervention,
     do_operation: candidateDoOperation(variable, intervention),
-    predicted_effect: Object.freeze({
-      distribution: posterior,
-      expected_state: Object.entries(posterior).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0],
-    }),
-    posterior_delta: Object.freeze({
-      baseline_entropy_bits: baselineEntropy,
-      posterior_entropy_bits: posteriorEntropy,
-      entropy_reduction_bits: Number(Math.max(0, baselineEntropy - posteriorEntropy).toFixed(6)),
-    }),
-    expected_information_gain_bits: score,
-    confounders_discriminated: Object.freeze(intervention === "public_object_check"
-      ? ["public_object", "response_reflection"]
-      : ["role_inheritance", "cache_bleed", "eventual_consistency"]),
+    predicted_effect: Object.freeze({ expected_state: expectedState }),
+    // Value of information: the most a discriminating test can resolve is the current
+    // entropy of the (elicited-or-uniform) belief over this latent. A function of the
+    // elicited belief -- no hand bonuses, no fabricated posterior.
+    expected_information_gain_bits: beliefEntropy,
+    belief_entropy_bits: beliefEntropy,
+    prior_source: variable.prior_source || "uniform",
+    confounders_discriminated: CONFOUNDER_BY_INTERVENTION[intervention] || Object.freeze([]),
     controls: OBJECT_AUTH_CONTROLS,
     advisory: true,
   });
 }
 
-function rankInterventions({ window, target_domain, template_id = "object_authorization", seed = DEFAULT_SEED, rank_limit } = {}) {
+function rankInterventions({ window, target_domain, template_id = "object_authorization", seed = DEFAULT_SEED, rank_limit, runnable_controls } = {}) {
   const beliefWindow = window || buildBeliefWindow({ target_domain, template_id });
   const template = getMechanismTemplate(template_id);
   if (!template) throw new Error(`unknown mechanism template: ${template_id}`);
   const rankLimit = normalizePositiveInteger(rank_limit, DEFAULT_RANK_LIMIT, MAX_RANK_LIMIT);
   const variables = effectivePermissionVariables(beliefWindow);
-  const marginals = inferMarginals(beliefWindow, { seed, sample_count: 256 });
-  const interventions = Array.from(new Set([
+  const allInterventions = Array.from(new Set([
     ...template.interventions,
     ...OBJECT_AUTH_CONTROLS,
-  ])).sort();
+  ]));
+  const runnableSet = Array.isArray(runnable_controls) && runnable_controls.length > 0
+    ? new Set(runnable_controls)
+    : new Set(defaultRunnable(allInterventions));
+  const interventions = allInterventions.filter((i) => runnableSet.has(i)).sort();
   const candidates = [];
   for (const variable of variables) {
     for (const intervention of interventions) {
@@ -191,7 +169,7 @@ function rankInterventions({ window, target_domain, template_id = "object_author
     mechanism_id: template.mechanism_id,
     confounders: OBJECT_AUTH_CONFOUNDERS,
     controls: OBJECT_AUTH_CONTROLS,
-    marginal_count: marginals.length,
+    runnable_controls: interventions,
     ranking,
     advisory: true,
     derived: true,

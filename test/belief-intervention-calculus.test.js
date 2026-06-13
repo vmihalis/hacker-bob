@@ -9,6 +9,8 @@ const path = require("path");
 const { appendEdges } = require("../mcp/lib/surface-graph.js");
 const { sessionDir } = require("../mcp/lib/paths.js");
 const { rankInterventions } = require("../mcp/lib/belief/intervention-calculus.js");
+const { buildBeliefWindow } = require("../mcp/lib/belief/belief-window.js");
+const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
 const queryInterventionCalculusTool = require("../mcp/lib/tools/query-intervention-calculus.js");
 
 function withTempHome(fn) {
@@ -58,25 +60,58 @@ test("intervention calculus is deterministic and advisory read-only", () => {
   });
 });
 
-test("IDOR fixture ranks victim-object selector swap above attacker-owned control", () => {
+test("CB-B2: VoI is the elicited belief's entropy (no hand bonus); it drops when the agent gets confident", () => {
   withTempHome(() => {
-    const domain = "intervention-calculus-idor.example.com";
+    const domain = "intervention-calculus-voi.example.com";
     seedGraph(domain, "effect:unauth_succeeds_where_auth_blocked:victim");
-    const result = rankInterventions({ target_domain: domain, seed: "idor", rank_limit: 10 });
-    const swapIndex = result.ranking.findIndex((entry) => entry.intervention === "principal_fixed_object_swap");
-    const controlIndex = result.ranking.findIndex((entry) => entry.intervention === "attacker_owned_control");
-    assert.ok(swapIndex >= 0);
-    assert.ok(controlIndex >= 0);
-    assert.ok(swapIndex < controlIndex);
+
+    // uniform belief: every candidate for the latent shares the SAME VoI (no bonus
+    // distinguishes principal_fixed_object_swap or public_object_check anymore)
+    const before = rankInterventions({ target_domain: domain, seed: "voi", rank_limit: 25 });
+    const epBefore = before.ranking.filter((c) => c.variable_id === before.ranking[0].variable_id);
+    const voiValues = new Set(epBefore.map((c) => c.expected_information_gain_bits));
+    assert.equal(voiValues.size, 1, "no hand bonus: all candidates for a latent share VoI");
+    const uniformVoi = before.ranking[0].expected_information_gain_bits;
+    assert.ok(uniformVoi > 1.5, "uniform belief over 3 states ~ log2(3)");
+
+    // the host agent elicits a confident belief for that latent -> less to learn -> VoI drops
+    const w = buildBeliefWindow({ target_domain: domain });
+    const ep = w.variables.find((v) => v.type === "effective_permission");
+    elicitBeliefTool.handler({
+      target_domain: domain,
+      latent_id: ep.variable_id,
+      latent_type: "effective_permission",
+      states: ["allowed", "blocked", "unknown"],
+      distribution: { allowed: 0.8, blocked: 0.15, unknown: 0.05 },
+      evidence_refs: ["auth-differential-results.json#req-7"],
+      rationale: "attacker-auth reaches the victim object",
+    });
+    const after = rankInterventions({ target_domain: domain, seed: "voi", rank_limit: 25 });
+    const confidentVoi = after.ranking.find((c) => c.variable_id === ep.variable_id).expected_information_gain_bits;
+    assert.ok(confidentVoi < uniformVoi, "a confident elicited belief lowers value-of-information");
   });
 });
 
-test("public-object fixture ranks public_object_check first", () => {
+test("CB-B2: ranking is runnable-only -- victim_auth_same_object excluded by default, included when supplied", () => {
   withTempHome(() => {
-    const domain = "intervention-calculus-public.example.com";
-    seedGraph(domain, "effect:public_object_read");
-    const result = rankInterventions({ target_domain: domain, seed: "public", rank_limit: 10 });
-    assert.equal(result.ranking[0].intervention, "public_object_check");
-    assert.ok(result.ranking[0].confounders_discriminated.includes("public_object"));
+    const domain = "intervention-calculus-runnable.example.com";
+    seedGraph(domain, "effect:unauth_succeeds_where_auth_blocked:victim");
+
+    const def = rankInterventions({ target_domain: domain, seed: "run", rank_limit: 50 });
+    assert.ok(!def.ranking.some((c) => c.intervention === "victim_auth_same_object"),
+      "victim_auth_same_object needs victim creds; not runnable by default");
+    assert.ok(def.runnable_controls.includes("no_auth_same_object"));
+
+    const withVictim = rankInterventions({
+      target_domain: domain,
+      seed: "run",
+      rank_limit: 50,
+      runnable_controls: ["principal_fixed_object_swap", "no_auth_same_object", "victim_auth_same_object"],
+    });
+    assert.ok(withVictim.ranking.some((c) => c.intervention === "victim_auth_same_object"));
+
+    // confounder discrimination is a deterministic map, not a regex
+    const publicCheck = def.ranking.find((c) => c.intervention === "public_object_check");
+    assert.ok(publicCheck.confounders_discriminated.includes("public_object"));
   });
 });

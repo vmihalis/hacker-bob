@@ -223,7 +223,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 6,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B1",
     "CB-B4",
@@ -240,7 +240,8 @@
     "field": null
    },
    "findings": [
-    "[path-a-prime] hand-bonus ranking (intervention-calculus.js:96-103); reopened -> VoI over elicited belief, rank RUNNABLE controls only; on actuatable surfaces run the free control instead. Blocked on CB-B7."
+    "[path-a-prime] hand-bonus ranking (intervention-calculus.js:96-103); reopened -> VoI over elicited belief, rank RUNNABLE controls only; on actuatable surfaces run the free control instead. Blocked on CB-B7.",
+    "[CB-B2] DONE (path A-prime). Removed posteriorForCandidate (hardcoded), candidateScore hand bonuses (+0.75/+1.0/-0.25), isIdorLike/isPublicObject regexes, and the discarded inferMarginals call. VoI = entropy of the elicited-or-uniform belief (drops on a confident elicitation; no bonus); ranking is runnable-only (victim_auth excluded by default). Two tautological bonus-pinned tests rewritten. Belief suite 41/41; check:syntax clean."
    ],
    "reopened_by": "path-a-prime"
   },
