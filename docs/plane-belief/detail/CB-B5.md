@@ -34,11 +34,30 @@ grades, and never schedules work.
 - Stigmergy pair: producer `belief_calibrated_factor_model` consumed by
   `belief_model_info_reader`.
 
+## Path A-prime revision
+
+- REMOVED the fake trainer: `trainWeights = (mean_pos - mean_neg) * 2` (no loss, no
+  gradient, no calibration), the logistic `scoreExample`, `featureStats`,
+  `evaluateModel`, and the `calibrated_logistic_factors` misnomer.
+- REPLACED with a real monotonic **recalibration** (`mcp/lib/belief/recalibration.js`,
+  isotonic / pool-adjacent-violators): the raw predictor is the transparent
+  deterministic `handScore`; the map recalibrates it against pooled cross-session
+  outcomes. Output is `recalibration_map` + a report with `brier_raw`,
+  `brier_recalibrated`, `brier_improvement`. Recalibrating ONE estimator is the
+  honest, data-efficient operation -- not a from-scratch fit.
+- Data-starvation is honest: below `MIN_RECALIBRATION_SAMPLES` (20) the map is
+  IDENTITY with `needs_more_data=true` (no overfit). Per-engagement labels are
+  single-digit, so the map is pooled CROSS-SESSION and shipped gated
+  (`default_enablement_ready=false`). Unit-tested: an overconfident estimator (says
+  0.9, right ~50%) recalibrates below 0.7 and lowers Brier; the map is monotonic.
+
 ## Findings
 
-- Default enablement is deferred. Learned weights stay
-  `default_enablement_ready=false` until held-out equal-budget lift review beats
-  the hand-weight baseline.
+- Default enablement is deferred. The recalibration stays
+  `default_enablement_ready=false` until held-out equal-budget lift review; with
+  too few pooled labels it is an identity map (`needs_more_data`).
+- Belief suite 51/51; full `test:mcp` 2447 pass / 0 fail; stigmergy/agent-tools/skill
+  coherent.
 
 ## Review Evidence
 

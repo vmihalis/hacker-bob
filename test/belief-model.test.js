@@ -127,8 +127,12 @@ test("belief model trainer writes inspectable advisory metadata from sanitized l
     assert.equal(model.training_summary.example_count, 2);
     assert.equal(model.calibration_report.held_out, true);
     assert.equal(model.calibration_report.example_count, 2);
-    assert.equal(typeof model.calibration_report.brier_lift_over_hand, "number");
+    assert.equal(typeof model.calibration_report.brier_improvement, "number");
     assert.ok(Array.isArray(model.calibration_report.reliability_curve));
+    assert.equal(model.raw_predictor, "hand_score");
+    // honest data-starvation: 2 pooled labels cannot fit a recalibration -> identity map
+    assert.equal(model.recalibration_map.kind, "identity");
+    assert.equal(model.calibration_report.needs_more_data, true);
     assert.equal(model.advisory, true);
     assert.equal(model.claim_authority, false);
     assert.equal(model.dispatch_authority, false);

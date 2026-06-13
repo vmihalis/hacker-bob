@@ -373,7 +373,7 @@
    "action": "build_new+layer_on_labels",
    "phase": "engine",
    "step": 9,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-C2",
     "CB-D1"
@@ -393,7 +393,8 @@
      "severity": "deferred_field_gate",
      "summary": "Offline calibrated factor trainer and model-info reader are implemented over sanitized claim/verification/grade exports; default enablement remains false pending held-out equal-budget lift review."
     },
-    "[path-a-prime] (mean_pos-mean_neg)*2 trainer, weights unused (model.js:176); reopened -> pooled CROSS-SESSION recalibration map, shipped gated; per-engagement labels unfittable. Blocked on CB-D1 labels."
+    "[path-a-prime] (mean_pos-mean_neg)*2 trainer, weights unused (model.js:176); reopened -> pooled CROSS-SESSION recalibration map, shipped gated; per-engagement labels unfittable. Blocked on CB-D1 labels.",
+    "[CB-B5] DONE (path A-prime). Removed the (mean_pos-mean_neg)*2 fake trainer, logistic scoreExample, featureStats, evaluateModel, and the calibrated_logistic_factors misnomer. Replaced with isotonic RECALIBRATION (recalibration.js) of the deterministic handScore against pooled cross-session outcomes; output is recalibration_map + brier_raw/recalibrated/improvement. Below 20 pooled labels -> identity map + needs_more_data (no overfit); shipped gated (default_enablement_ready=false). Unit-tested: overconfident 0.9 -> <0.7, Brier improves, monotonic. Belief 51/51; test:mcp 2447/0."
    ],
    "reopened_by": "path-a-prime"
   }
@@ -426,6 +427,7 @@
   "added": [
    "CB-D1",
    "CB-B7"
-  ]
+  ],
+  "completed": "path-a-prime realized 2026-06-13: all nodes done"
  }
 }

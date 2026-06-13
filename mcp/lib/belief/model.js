@@ -18,6 +18,11 @@ const {
 const {
   readCandidateClaims,
 } = require("../claims.js");
+const {
+  fitIsotonicRecalibration,
+  applyRecalibration,
+  recalibrationReport,
+} = require("./recalibration.js");
 
 const BELIEF_MODEL_VERSION = "belief-calibrated-factors.v1";
 const FEATURE_NAMES = Object.freeze([
@@ -163,34 +168,10 @@ function collectExamples(domains) {
   return domains.flatMap((domain) => examplesForDomain(domain));
 }
 
-function featureStats(examples, feature) {
-  const positives = examples.filter((item) => item.label === 1);
-  const negatives = examples.filter((item) => item.label === 0);
-  const mean = (items) => {
-    if (items.length === 0) return 0;
-    return items.reduce((sum, item) => sum + (Number(item.features[feature]) || 0), 0) / items.length;
-  };
-  return { pos: mean(positives), neg: mean(negatives) };
-}
-
-function trainWeights(examples) {
-  const positives = examples.filter((item) => item.label === 1).length;
-  const baseRate = examples.length > 0 ? positives / examples.length : 0.5;
-  const weights = { bias: Number(logit(baseRate).toFixed(6)) };
-  for (const feature of FEATURE_NAMES.filter((name) => name !== "bias")) {
-    const stats = featureStats(examples, feature);
-    weights[feature] = Number(((stats.pos - stats.neg) * 2).toFixed(6));
-  }
-  return weights;
-}
-
-function scoreExample(example, weights) {
-  let z = weights.bias || 0;
-  for (const feature of FEATURE_NAMES.filter((name) => name !== "bias")) {
-    z += (weights[feature] || 0) * (Number(example.features[feature]) || 0);
-  }
-  return sigmoid(z);
-}
+// CB-B5 (path A-prime): the (mean_pos-mean_neg)*2 weight "trainer" and the logistic
+// scorer are removed. The raw predictor is the transparent deterministic handScore;
+// CB-B5 RECALIBRATES it against pooled outcomes (recalibration.js), which is the
+// honest, data-efficient operation -- not a from-scratch fit.
 
 function handScore(example) {
   let score = 0.2;
@@ -203,15 +184,6 @@ function handScore(example) {
   score -= 0.14 * example.features.missing_control;
   score -= 0.14 * example.features.unruled_confounder;
   return Math.max(0.001, Math.min(0.999, score));
-}
-
-function brier(examples, scorer) {
-  if (examples.length === 0) return null;
-  const total = examples.reduce((sum, example) => {
-    const p = scorer(example);
-    return sum + ((p - example.label) ** 2);
-  }, 0);
-  return Number((total / examples.length).toFixed(6));
 }
 
 function precisionAtK(examples, scorer, k = 5) {
@@ -246,25 +218,6 @@ function reliabilityCurve(examples, scorer) {
   }));
 }
 
-function evaluateModel(examples, weights) {
-  const modelBrier = brier(examples, (example) => scoreExample(example, weights));
-  const handBrier = brier(examples, handScore);
-  const modelPrecision = precisionAtK(examples, (example) => scoreExample(example, weights));
-  const handPrecision = precisionAtK(examples, handScore);
-  return {
-    example_count: examples.length,
-    positives: examples.filter((item) => item.label === 1).length,
-    negatives: examples.filter((item) => item.label === 0).length,
-    brier_model: modelBrier,
-    brier_hand_weights: handBrier,
-    brier_lift_over_hand: modelBrier == null || handBrier == null ? null : Number((handBrier - modelBrier).toFixed(6)),
-    precision_at_5_model: modelPrecision,
-    precision_at_5_hand_weights: handPrecision,
-    precision_at_5_lift_over_hand: modelPrecision == null || handPrecision == null ? null : Number((modelPrecision - handPrecision).toFixed(6)),
-    reliability_curve: reliabilityCurve(examples, (example) => scoreExample(example, weights)),
-  };
-}
-
 function trainBeliefModel({
   target_domain,
   training_domains,
@@ -284,18 +237,25 @@ function trainBeliefModel({
   if (trainingExamples.length === 0) {
     throw new Error("no labeled training examples found in supplied training_domains");
   }
-  const weights = trainWeights(trainingExamples);
+  // Raw predictor: the transparent deterministic handScore. CB-B5 recalibrates it
+  // against pooled cross-session outcomes (isotonic). With too few labels the map is
+  // identity (no overfit) and needs_more_data is set.
+  const trainingSamples = trainingExamples.map((ex) => ({ score: handScore(ex), label: ex.label }));
+  const recalibrationMap = fitIsotonicRecalibration(trainingSamples);
   const holdoutExamples = holdoutDomains.length > 0 ? collectExamples(holdoutDomains) : [];
   const evalExamples = holdoutExamples.length > 0 ? holdoutExamples : trainingExamples;
-  const evaluation = evaluateModel(evalExamples, weights);
+  const evalSamples = evalExamples.map((ex) => ({ score: handScore(ex), label: ex.label }));
+  const report = recalibrationReport(evalSamples, recalibrationMap);
+  const calibratedScorer = (ex) => applyRecalibration(recalibrationMap, handScore(ex));
   const body = {
     model_version: BELIEF_MODEL_VERSION,
-    model_id: normalizedModelId || `BM-${hashCanonicalJson({ trainingDomains, holdoutDomains, weights }).slice(0, 24)}`,
+    model_id: normalizedModelId || `BM-${hashCanonicalJson({ trainingDomains, holdoutDomains, recalibrationMap }).slice(0, 24)}`,
     target_domain: targetDomain,
     training_domains: trainingDomains,
     holdout_domains: holdoutDomains,
     feature_names: FEATURE_NAMES,
-    calibrated_logistic_factors: weights,
+    raw_predictor: "hand_score",
+    recalibration_map: recalibrationMap,
     training_summary: {
       example_count: trainingExamples.length,
       positives: trainingExamples.filter((item) => item.label === 1).length,
@@ -303,7 +263,13 @@ function trainBeliefModel({
     },
     calibration_report: {
       held_out: holdoutExamples.length > 0,
-      ...evaluation,
+      example_count: evalExamples.length,
+      brier_raw: report.brier_raw,
+      brier_recalibrated: report.brier_recalibrated,
+      brier_improvement: report.brier_improvement,
+      needs_more_data: report.needs_more_data,
+      precision_at_5: precisionAtK(evalExamples, calibratedScorer),
+      reliability_curve: reliabilityCurve(evalExamples, calibratedScorer),
     },
     label_source: "verification_round_and_grade_outcomes",
     sanitized: true,
@@ -320,7 +286,9 @@ function trainBeliefModel({
     grade_authority: false,
     dispatch_authority: false,
     default_enablement_ready: false,
-    default_enablement_reason: "requires held-out equal-budget lift review before default use",
+    default_enablement_reason: report.needs_more_data
+      ? `insufficient pooled labels to recalibrate (have ${recalibrationMap.sample_count}, need ${recalibrationMap.min_samples}); identity map until more cross-session outcomes accrue`
+      : "requires held-out equal-budget lift review before default use",
   };
   const document = {
     ...body,
@@ -363,6 +331,5 @@ module.exports = {
     handScore,
     labelFor,
     normalizeOptionalModelId,
-    scoreExample,
   },
 };
