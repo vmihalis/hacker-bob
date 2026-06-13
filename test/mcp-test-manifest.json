@@ -158,5 +158,6 @@
   "test/claim-secret-evidence-bypass.test.js",
   "test/lifecycle-state-drift.test.js",
   "test/evidence-gate-lifecycle.test.js",
-  "test/belief-differential-tester.test.js"
+  "test/belief-differential-tester.test.js",
+  "test/belief-elicitation.test.js"
 ]

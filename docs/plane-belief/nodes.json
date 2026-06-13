@@ -139,7 +139,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-1",
     "CB-2",
@@ -293,7 +293,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "in_progress",
+   "status": "done",
    "predecessors": [],
    "unlocks": [
     "CB-B1",
@@ -308,7 +308,8 @@
     "field": null
    },
    "findings": [
-    "[CB-B7] role guard DONE (authority.js normalizeSignal: llm_inferred cannot be role:evidence, default or explicit; mirrors residual_anomaly gate). belief-authority test +1 case, 6/6 pass; check:syntax clean. REMAINING, blocked on a user decision: the live LLM elicitation step (which model, prompt/state contract, loop placement), record-don't-recall wiring, and the evidence-sensitivity gate validated against a REAL agent (token spend + eval methodology). These commit Bob to runtime LLM calls and an eval budget -- a material architecture decision."
+    "[CB-B7] role guard DONE (authority.js normalizeSignal: llm_inferred cannot be role:evidence, default or explicit; mirrors residual_anomaly gate). belief-authority test +1 case, 6/6 pass; check:syntax clean. REMAINING, blocked on a user decision: the live LLM elicitation step (which model, prompt/state contract, loop placement), record-don't-recall wiring, and the evidence-sensitivity gate validated against a REAL agent (token spend + eval methodology). These commit Bob to runtime LLM calls and an eval budget -- a material architecture decision.",
+    "[CB-B7] DONE. Elicitation primitive: bob_elicit_belief tool (host agent records belief during its turn) + normalizeElicitation validator + evidenceSensitivity gate + the role guard. Engineering PASS: 9 elicitation/tool tests, 6 authority, mcp-server 458/458, syntax/agent-tools/skill/stigmergy clean, adversarial verify PASS (honesty rail closed; gate fails a constant on relevant evidence; advisory-only; reaches no claim/grade). NOTE: evidenceSensitivity is an eval harness (validates the agent's sensitivity across a before/after battery), not a per-call guard -- by design, elicitation is non-binding scratch. Field gate DEFERRED: real-agent sensitivity needs live sessions; the enforcing logic is built+tested."
    ]
   },
   {
