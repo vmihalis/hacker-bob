@@ -1,0 +1,323 @@
+{
+ "graph": "Bob Causal Belief Hypergraph (codename Plane-B)",
+ "version": "v1 (2026-06-13)",
+ "source_doc": "docs/causal-belief-hypergraph.md",
+ "tracking": "STATUS BOARD: unlike plane-delta (proposal-only topology), this register carries live per-node status + findings[] so /goal has one source of truth for completion and emergent work.",
+ "status_values": [
+  "blocked",
+  "ready",
+  "in_progress",
+  "in_review",
+  "done"
+ ],
+ "ready_rule": "A node is `ready` iff every predecessor is `done`. Recompute before each cycle.",
+ "vocabulary": {
+  "S": "substrate/authority",
+  "I": "projection/index",
+  "IP": "ingestion path",
+  "B": "belief inference engine (net-new)",
+  "C": "coupling",
+  "action": "extend_existing|merge|layer_on|build_new",
+  "status": "blocked|ready|in_progress|in_review|done"
+ },
+ "tiers": {
+  "substrate": "layer-on / reuse",
+  "engine": "net-new, first-class",
+  "coupling": "advisory, single-authority"
+ },
+ "nodes": [
+  {
+   "id": "CB-S1",
+   "kind": "S",
+   "action": "extend_existing",
+   "phase": "substrate",
+   "step": 1,
+   "status": "done",
+   "predecessors": [],
+   "unlocks": [
+    "CB-1"
+   ],
+   "intent": "Belief outputs are advisory, derived, recomputable scratch; belief tools cannot mutate the claim/governance plane.",
+   "anchor": "mcp/lib/role-model.js read-only pattern; mcp/lib/paths.js AUDIT_GRADED_PATHS",
+   "do": "Classify the mechanism projection + belief signal as derived scratch; mark belief read/query tools network_access:false, mutating:false.",
+   "review": {
+    "engineering": "Role-bundle test: belief tools cannot write claim/verification/grade/report/governance artifacts. Add a runtime-denial test (current suite proves grants, not denials).",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-S2",
+   "kind": "S",
+   "action": "extend_existing",
+   "phase": "substrate",
+   "step": 1,
+   "status": "ready",
+   "predecessors": [],
+   "unlocks": [
+    "CB-1"
+   ],
+   "intent": "Provenance closed-enum + secret-safety by construction; residual_anomaly is a diagnostic class barred from evidence/prior.",
+   "anchor": "mcp/lib/sensitive-material.js validateNoSensitiveMaterial; mcp/redaction.js redactTextSensitiveValues; claims.js:84 EVIDENCE_REFERENCE_KIND_VALUES",
+   "do": "Add the frozen provenance enum (incl. residual_anomaly); thread redactTextSensitiveValues before validateNoSensitiveMaterial in the belief writer.",
+   "review": {
+    "engineering": "Belief artifacts carry names/keys/hashes only; canonical hashing stable across runs; residual_anomaly cannot enter the belief window as evidence or prior.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-1",
+   "kind": "I",
+   "action": "extend_existing",
+   "phase": "substrate",
+   "step": 1,
+   "status": "blocked",
+   "predecessors": [
+    "CB-S1",
+    "CB-S2"
+   ],
+   "unlocks": [
+    "CB-B1"
+   ],
+   "intent": "Typed mechanism view as a projection over surface-graph (principal/credential/policy_gate/effect/intervention), not a new store.",
+   "anchor": "mcp/lib/surface-graph.js NODE_TYPES/EDGE_TYPES; surface-graph-builder.js; fed by auth-differential.js, evm-role-table.js, symbol-surface-index.js, chain-state-tree.js",
+   "do": "Add principal/credential/policy_gate/effect/intervention node+edge types; one builder source projecting auth-differential rows, evm-role matrices, schema claimed_auth, chain outcomes; expose a bounded bob_query mode over surface-graph.jsonl.",
+   "review": {
+    "engineering": "Same ledgers -> same projection hash; IDOR fixture yields principal->effect via policy_gate; public-object fixture does not; reuses edge_hash, no second store.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-2",
+   "kind": "I",
+   "action": "merge",
+   "phase": "substrate",
+   "step": 2,
+   "status": "ready",
+   "predecessors": [],
+   "unlocks": [
+    "CB-B1"
+   ],
+   "intent": "object_authorization as a template record in existing corpora, not a new registry.",
+   "anchor": "mcp/lib/invariant-template-corpus.js; oss-rootcause-family-corpus.js; contracts.js witness DSL; cwe-catalog.js (CWE-284/862/863)",
+   "do": "Add object_authorization template (required_entities/interventions/positive_controls/negative_controls/confounders/evidence_predicate) via the technique-packs.js loader pattern; mechanism id from cwe-catalog.",
+   "review": {
+    "engineering": "Validates under the bounded-warning loader; malformed record skipped not thrown; mechanism id resolves to a catalog family.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-3",
+   "kind": "IP",
+   "action": "layer_on",
+   "phase": "substrate",
+   "step": 2,
+   "status": "ready",
+   "predecessors": [],
+   "unlocks": [
+    "CB-B1"
+   ],
+   "intent": "Reuse the frontier-events observation ledger for typed-fact intake; no second extractor tier.",
+   "anchor": "mcp/lib/frontier-events.js observation.recorded; frontier-materializer.js; http-records.js, schema-contracts-store.js; capability-observations.js",
+   "do": "Read the typed facts the frontier-events ledger already emits; add any genuinely new derived fact via the capability-observations.js pattern.",
+   "review": {
+    "engineering": "No second typed-fact ledger; new facts use the existing producer/consumer registration.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B1",
+   "kind": "B",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 3,
+   "status": "blocked",
+   "predecessors": [
+    "CB-1",
+    "CB-2",
+    "CB-3"
+   ],
+   "unlocks": [
+    "CB-B4",
+    "CB-B2"
+   ],
+   "intent": "Calibrated belief state over latent mechanism variables (effective_permission, object_ownership, request_equivalence, gate_effectiveness).",
+   "anchor": "NEW mcp/lib/belief/belief-window.js (reads CB-1 projection + auth-differential + schema)",
+   "do": "Define the belief window schema, latent variables, factor bindings, provenance, content-addressed window hash; hard caps on variables/factors/size; refuse oversized with belief_window_too_large.",
+   "review": {
+    "engineering": "Same evidence -> same posterior; IDOR fixture yields high effective_permission mass on the attacker-victim pair, public-object fixture does not; no claim recorded from belief alone.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B4",
+   "kind": "B",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 4,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B1"
+   ],
+   "unlocks": [
+    "CB-B6",
+    "CB-B2"
+   ],
+   "intent": "Factor-graph sampler (the inference algorithm) + composition search over registry templates (O(K^2) pairs, O(K^d) chains).",
+   "anchor": "NEW mcp/lib/belief/factor-graph.js (pure-JS deterministic sampler first; optional THRML/JAX backend later)",
+   "do": "Marginal inference + information-gain estimation over the belief window; composition search over multiple instantiated templates within the prior; seeded determinism; persist belief-samples scratch (model version, window hash, seed, sample count, marginals).",
+   "review": {
+    "engineering": "Identical seed+window reproduce marginals; sampler advisory (cannot record claims or schedule); ranks frontier leaves/interventions, never the authoritative order.",
+    "field": "Equal-budget A/B: sampler-ranked selection beats info-gain-only before any default enablement."
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B6",
+   "kind": "B",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 5,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B4"
+   ],
+   "unlocks": [
+    "CB-C1"
+   ],
+   "intent": "Residual anomaly surfacing: residual = -log p(evidence | all_templates, seed, window); the reachable, deterministic form of class-level novelty.",
+   "anchor": "NEW mcp/lib/belief/residual.js (derives residual from CB-B4 marginals)",
+   "do": "Expose residual as a deterministic residual_anomaly diagnostic; two non-gating sinks (scheduler priority hint via CB-C1 + human router with a per-factor mispredict decomposition); LLM inverted to a downstream NL hypothesis that earns trust only through the one gate.",
+   "review": {
+    "engineering": "Residual is a pure function of seed/window/evidence/registry and replays; high-recall low-precision -> routes to a human, never adjudicates; no promotion path; nothing minted as a class.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B2",
+   "kind": "B",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 6,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B1",
+    "CB-B4"
+   ],
+   "unlocks": [
+    "CB-B3"
+   ],
+   "intent": "Counterfactual intervention calculus: do-operations, predicted effect, expected-information-gain ranking.",
+   "anchor": "NEW mcp/lib/belief/intervention-calculus.js",
+   "do": "do-operator over the belief window; predicted-effect; per-control posterior deltas; information-gain ranking of candidate interventions; confounders as explicit latent alternatives the calculus must discriminate.",
+   "review": {
+    "engineering": "Deterministic given window+seed; IDOR fixture ranks the victim-object swap above re-running an attacker-owned control; public-object fixture ranks public_object_check first.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B3",
+   "kind": "B",
+   "action": "build_new+layer_on_dispatch",
+   "phase": "engine",
+   "step": 6,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B2"
+   ],
+   "unlocks": [
+    "CB-C2",
+    "CB-C1"
+   ],
+   "intent": "Active experiment loop: instantiate window -> rank by info gain -> dispatch via propose_hypothesis -> observe -> Bayesian update -> repeat/conclude.",
+   "anchor": "NEW mcp/lib/belief/experiment-loop.js; dispatches through bob_propose_hypothesis / the TaskGraph materializer",
+   "do": "Advisory planner emitting propose_hypothesis Contracts (production_paths=intervention, relational_value_match=control) and consuming observed outcomes; bound loop iterations per hypothesis; full provenance on each belief update; never spawn its own dispatcher or record its own claims.",
+   "review": {
+    "engineering": "Loop uses MCP writers only; single-spawner topology preserved.",
+    "field": "Equal-budget A/B vs evaluator baseline: valid-claim rate, FP rate, controls-run completeness, time-to-first verified object-auth claim."
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-C2",
+   "kind": "C",
+   "action": "extend_existing",
+   "phase": "coupling",
+   "step": 7,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B3"
+   ],
+   "unlocks": [
+    "CB-B5"
+   ],
+   "intent": "Causal support on claims + confounder verifier signals folded into the verification hash.",
+   "anchor": "record-candidate-claim + claims.js evidence_refs[]; evidence.js C10 differential; proof-bundle.js; verification v2 + confidence_reasons[] + computeAdjudicationPlanHash",
+   "do": "Add confounders_ruled_out[] to the claim payload; bind mechanism_id (OSS-FAM/CWE), hypothesis (hypothesis_statement), intervention/expected_effect/controls_run[] via existing evidence_refs[]; add unruled_confounder/missing_control to confidence_reasons[] folded into the adjudication hash; drop state_sensitive/intervention_replayed (already ship).",
+   "review": {
+    "engineering": "No new writer/artifact; no fourth evidence_refs[] home; v2->v3 bump only if a stored field is added; backward compatible.",
+    "field": null
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-C1",
+   "kind": "C",
+   "action": "layer_on",
+   "phase": "coupling",
+   "step": 8,
+   "status": "blocked",
+   "predecessors": [
+    "CB-B3",
+    "CB-B6"
+   ],
+   "unlocks": [
+    "field-AB"
+   ],
+   "intent": "Belief becomes the intelligence behind the one scheduler/gate; residual is a priority hint.",
+   "anchor": "lead-scoring.js score+rationale -> ranking.js priorityFromScore -> wave-planner.js:50 compareSurfaces; queue-policy -> SchedulerDecision hash",
+   "do": "Feed belief-derived score + score_reasons through the existing score-to-priority bridge; residual priority hint re-ranks within existing caps; one gate, one band, one queue_policy_hash; disableable per session.",
+   "review": {
+    "engineering": "No second scheduler authority; queue_policy_hash replay (X4 determinism CI) holds; belief-assisted mode disableable per session.",
+    "field": "Equal-budget A/B: current scheduler vs belief-assisted."
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B5",
+   "kind": "B",
+   "action": "build_new+layer_on_labels",
+   "phase": "engine",
+   "step": 9,
+   "status": "blocked",
+   "predecessors": [
+    "CB-C2"
+   ],
+   "unlocks": [
+    "default-enablement"
+   ],
+   "intent": "Learned calibrated factor weights over typed belief features; labels from verification/claim outcomes (the I13/C13 line).",
+   "anchor": "NEW offline trainer over sanitized session exports; bob_read_belief_model_info; labels from verification-round/grade outcomes",
+   "do": "Offline trainer; calibrated logistic/GBT factors exported as versioned inspectable tables; calibration report (reliability curve, Brier, precision@K, lift over hand weights); exclude raw secrets and report bodies from training.",
+   "review": {
+    "engineering": "Learned weights beat hand weights on held-out sessions under equal budget; uncalibrated cannot ship as default; labels are not poisoned by any induced template (none exist by doctrine).",
+    "field": "Held-out equal-budget lift over hand weights."
+   },
+   "findings": []
+  }
+ ],
+ "excluded_by_doctrine": [
+  {
+   "id": "CB-rej-1",
+   "title": "machine template-induction (LLM-proposed class self-validated + promoted to the registry)",
+   "reason": "Dominated (brutalist-validated): instance != class validation; the falsifying negative controls are the unexecutable victim-auth interventions on n=1; promotion launders llm_inferred into verified_intervention authority; it poisons CB-B5 labels; info-gain is blind to a latent not yet in the window. Class invention stays a human-reviewed registry change."
+  }
+ ]
+}

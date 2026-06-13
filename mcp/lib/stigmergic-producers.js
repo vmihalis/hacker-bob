@@ -112,6 +112,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "c11_static_analysis_brief_slice",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_scratch_signals",
+    mcp_tool_or_artifact: "belief-scratch/belief-signals.jsonl",
+    trace_shape_ref: "mcp/lib/belief/authority.js#writeBeliefSignalScratch",
+    registered_consumers: Object.freeze([
+      "belief_signal_read_query_tools",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

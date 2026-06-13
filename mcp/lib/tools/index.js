@@ -117,6 +117,8 @@ const TOOL_MODULES = Object.freeze([
   require("./promote-surface-leads.js"),
   require("./build-surface-graph.js"),
   require("./query-surface-graph.js"),
+  require("./read-belief-signals.js"),
+  require("./query-belief-signals.js"),
   require("./append-frontier-event.js"),
   // Plane X Cycle X.1 — TaskGraph proposal tools. The wrapper-backed
   // appendXxx helpers live in mcp/lib/task-graph-events.js; these tool

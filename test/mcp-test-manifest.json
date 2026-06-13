@@ -117,6 +117,7 @@
   "test/emit-runtime-drift.test.js",
   "test/write-base.test.js",
   "test/audit-graded-paths.test.js",
+  "test/belief-authority.test.js",
   "test/compose-report.test.js",
   "test/proof-bundle.test.js",
   "test/amend-report.test.js",

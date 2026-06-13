@@ -38,6 +38,12 @@ const MODULE_GUARD_TESTS = Object.freeze([
       "test/stigmergy-coherence.test.js",
     ]),
   }),
+  Object.freeze({
+    module: "mcp/lib/belief/authority.js",
+    guards: Object.freeze([
+      "test/belief-authority.test.js",
+    ]),
+  }),
 ]);
 
 function readManifest() {

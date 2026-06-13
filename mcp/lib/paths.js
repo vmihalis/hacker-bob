@@ -221,6 +221,14 @@ function surfaceGraphJsonlPath(domain) {
   return path.join(sessionDir(domain), "surface-graph.jsonl");
 }
 
+function beliefScratchDir(domain) {
+  return path.join(sessionDir(domain), "belief-scratch");
+}
+
+function beliefSignalsJsonlPath(domain) {
+  return path.join(beliefScratchDir(domain), "belief-signals.jsonl");
+}
+
 function chainTreeJsonlPath(domain) {
   return path.join(sessionDir(domain), "chain-tree.jsonl");
 }
@@ -524,6 +532,8 @@ module.exports = {
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
+  beliefScratchDir,
+  beliefSignalsJsonlPath,
   bobSpecPath,
   chainAttemptsJsonlPath,
   chainsMarkdownPath,
