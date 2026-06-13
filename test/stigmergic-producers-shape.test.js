@@ -51,6 +51,7 @@ const CANONICAL_PRODUCER_IDS = [
   "belief_experiment_hypothesis_proposals",
   "claim_causal_support_payload",
   "belief_scheduler_priority_hints",
+  "belief_calibrated_factor_model",
 ];
 
 test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
@@ -66,8 +67,8 @@ test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(PRODUCER_IDS), true);
 });
 
-test("STIGMERGIC_PRODUCERS contains exactly the 21 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1 entries", () => {
-  assert.equal(STIGMERGIC_PRODUCERS.length, 21);
+test("STIGMERGIC_PRODUCERS contains exactly the 22 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1/CB-B5 entries", () => {
+  assert.equal(STIGMERGIC_PRODUCERS.length, 22);
   const actualIds = STIGMERGIC_PRODUCERS.map((p) => p.producer_id).sort();
   const expectedIds = [...CANONICAL_PRODUCER_IDS].sort();
   assert.deepEqual(

@@ -398,6 +398,13 @@ report (reliability curve, Brier, precision@K, lift over hand weights);
 under equal budget; uncalibrated models cannot ship as default; training excludes
 raw secrets and report evidence bodies.
 
+**REALIZED.** `bob_train_belief_model` trains an offline, inspectable calibrated
+factor table from explicit local training domains and writes
+`belief-scratch/belief-model-info.json`; `bob_read_belief_model_info` reads that
+metadata only. The learned model is advisory (`claim_authority=false`,
+`dispatch_authority=false`) and `default_enablement_ready=false` until held-out
+equal-budget lift review passes.
+
 ### CB-B6 -- Residual anomaly surfacing
 
 **ACTION.** `build_new` signal; both sinks are `layer_on` existing channels.

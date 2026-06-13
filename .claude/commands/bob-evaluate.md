@@ -84,6 +84,8 @@ allowed-tools:
   - mcp__hacker-bob__bob_run_belief_residual
   - mcp__hacker-bob__bob_query_intervention_calculus
   - mcp__hacker-bob__bob_plan_belief_experiment
+  - mcp__hacker-bob__bob_train_belief_model
+  - mcp__hacker-bob__bob_read_belief_model_info
   - mcp__hacker-bob__bob_append_frontier_event
   - mcp__hacker-bob__bob_propose_hypothesis
   - mcp__hacker-bob__bob_propose_transition

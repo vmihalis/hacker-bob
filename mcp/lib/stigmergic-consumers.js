@@ -289,6 +289,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "wave planning consumes opt-in belief priority hints through the existing ranking and queue-policy path without a second scheduler authority",
   }),
+  Object.freeze({
+    consumer_id: "belief_model_info_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/read-belief-model-info.js",
+      token_or_regex: "readBeliefModelInfo",
+    }),
+    producer_id: "belief_calibrated_factor_model",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "model-info reads consume inspectable calibrated factor metadata as advisory calibration evidence, never claim, grade, or dispatch authority",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

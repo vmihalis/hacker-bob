@@ -86,6 +86,12 @@ const MODULE_GUARD_TESTS = Object.freeze([
       "test/wave-planner.test.js",
     ]),
   }),
+  Object.freeze({
+    module: "mcp/lib/belief/model.js",
+    guards: Object.freeze([
+      "test/belief-model.test.js",
+    ]),
+  }),
 ]);
 
 function readManifest() {

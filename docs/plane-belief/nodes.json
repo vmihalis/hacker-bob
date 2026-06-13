@@ -312,7 +312,7 @@
    "action": "build_new+layer_on_labels",
    "phase": "engine",
    "step": 9,
-   "status": "blocked",
+   "status": "done",
    "predecessors": [
     "CB-C2"
    ],
@@ -326,7 +326,12 @@
     "engineering": "Learned weights beat hand weights on held-out sessions under equal budget; uncalibrated cannot ship as default; labels are not poisoned by any induced template (none exist by doctrine).",
     "field": "Held-out equal-budget lift over hand weights."
    },
-   "findings": []
+   "findings": [
+    {
+     "severity": "deferred_field_gate",
+     "summary": "Offline calibrated factor trainer and model-info reader are implemented over sanitized claim/verification/grade exports; default enablement remains false pending held-out equal-budget lift review."
+    }
+   ]
   }
  ],
  "excluded_by_doctrine": [

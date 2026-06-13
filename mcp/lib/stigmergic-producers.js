@@ -202,6 +202,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "wave_planner_belief_priority_bridge",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_calibrated_factor_model",
+    mcp_tool_or_artifact: "belief-scratch/belief-model-info.json",
+    trace_shape_ref: "mcp/lib/belief/model.js#trainBeliefModel",
+    registered_consumers: Object.freeze([
+      "belief_model_info_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(
