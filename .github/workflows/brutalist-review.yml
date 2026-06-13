@@ -56,9 +56,9 @@ jobs:
         id: brutalist-review
         # Advisory reviewer only; CI remains the hard merge gate.
         continue-on-error: true
-        # Pinned to the immutable v1.14.7 commit SHA, not the mutable tag — this
+        # Pinned to the immutable v1.15.0 commit SHA, not the mutable tag — this
         # action receives credentials below, so it must not move.
-        uses: ejmockler/brutalist-mcp/packages/github-action@15cedc8159a54662fa741395746d4aa0e161a3b4 # v1.14.7
+        uses: ejmockler/brutalist-mcp/packages/github-action@93b4ec30bf6987970432d7d53662aa28d390a9b0 # v1.15.0
         env:
           BRUTALIST_TIMEOUT: "600000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
