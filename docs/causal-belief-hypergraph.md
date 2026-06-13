@@ -553,6 +553,7 @@ progress-log promotion).
 | 2026-06-13 | `CB-B2` | `done` | `node --test test/belief-intervention-calculus.test.js test/belief-window.test.js test/belief-factor-graph.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B2-intervention-calculus: PASS` |
 | 2026-06-13 | `CB-B3` | `done` | `node --test test/belief-experiment-loop.test.js test/belief-intervention-calculus.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B3-active-experiment-loop: PASS` |
 | 2026-06-13 | `CB-C2` | `done` | `node --test test/verification-contracts.test.js test/stigmergic-producers-shape.test.js test/stigmergic-consumers-shape.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-C2-causal-support-verification: PASS` |
+| 2026-06-13 | `CB-C1` | `done` | `node --test test/wave-planner.test.js test/belief-intervention-calculus.test.js test/scheduler-decisions.test.js test/scheduler-decisions-wiring.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-C1-belief-scheduler-gate: PASS` |
 
 ## Completion gates and metrics
 

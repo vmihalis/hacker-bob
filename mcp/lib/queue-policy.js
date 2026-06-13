@@ -70,6 +70,13 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   // leads. Default FALSE preserves Y.2-shipped surface-leads recording
   // behavior; operator opt-in via bob_set_queue_policy.
   lead_rationale_required_when_below_threshold: false,
+  // CB-C1 — opt-in belief-assisted scheduler scoring. When enabled, the wave
+  // planner reads advisory belief rankings and residual priority hints, then
+  // feeds their score through the existing priority/ranking path. Default false
+  // preserves the current scheduler and makes the mode disableable per session.
+  belief_assisted_priority_enabled: false,
+  belief_assisted_priority_seed: "belief-scheduler-priority",
+  belief_assisted_priority_rank_limit: 25,
   // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that the
   // listed partial surfaces are acknowledged and may pass the
   // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate. Each entry is a
@@ -266,6 +273,25 @@ function normalizeQueuePolicy(input = {}) {
         : assertBoolean(
           input.lead_rationale_required_when_below_threshold,
           "lead_rationale_required_when_below_threshold",
+        ),
+    belief_assisted_priority_enabled:
+      input.belief_assisted_priority_enabled == null
+        ? DEFAULT_QUEUE_POLICY.belief_assisted_priority_enabled
+        : assertBoolean(
+          input.belief_assisted_priority_enabled,
+          "belief_assisted_priority_enabled",
+        ),
+    belief_assisted_priority_seed:
+      input.belief_assisted_priority_seed == null
+        ? DEFAULT_QUEUE_POLICY.belief_assisted_priority_seed
+        : assertNonEmptyString(input.belief_assisted_priority_seed, "belief_assisted_priority_seed"),
+    belief_assisted_priority_rank_limit:
+      input.belief_assisted_priority_rank_limit == null
+        ? DEFAULT_QUEUE_POLICY.belief_assisted_priority_rank_limit
+        : normalizePositiveInteger(
+          input.belief_assisted_priority_rank_limit,
+          "belief_assisted_priority_rank_limit",
+          { max: 100 },
         ),
     partial_surface_advance_acknowledgements:
       normalizePartialSurfaceAcknowledgements(input.partial_surface_advance_acknowledgements),

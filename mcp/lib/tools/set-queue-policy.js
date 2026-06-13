@@ -81,6 +81,9 @@ module.exports = Object.freeze({
           },
           subdomain_enum_circuit_breaker_threshold: { type: "integer" },
           lead_rationale_required_when_below_threshold: { type: "boolean" },
+          belief_assisted_priority_enabled: { type: "boolean" },
+          belief_assisted_priority_seed: { type: "string" },
+          belief_assisted_priority_rank_limit: { type: "integer" },
           // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that
           // listed partial surfaces are acknowledged for the
           // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate.

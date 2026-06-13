@@ -194,6 +194,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "verification_adjudication_causal_reason_reader",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_scheduler_priority_hints",
+    mcp_tool_or_artifact: "planNextWave belief_assisted_priority metadata",
+    trace_shape_ref: "mcp/lib/belief/scheduler-priority.js#applyBeliefSchedulerPriority",
+    registered_consumers: Object.freeze([
+      "wave_planner_belief_priority_bridge",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

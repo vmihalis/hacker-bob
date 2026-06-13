@@ -32,6 +32,7 @@ const DECISION_BOUNDARY_VALUES = Object.freeze([
   "grade_time_reconciliation",
   "validator_invocation",
   "verification_adjudication",
+  "scheduler_selection",
 ]);
 
 const STIGMERGIC_CONSUMERS = Object.freeze([
@@ -276,6 +277,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     decision_boundary: "verification_adjudication",
     rationale:
       "verification adjudication consumes causal-support verifier signals as closed confidence reasons folded into the adjudication plan hash",
+  }),
+  Object.freeze({
+    consumer_id: "wave_planner_belief_priority_bridge",
+    source_location: Object.freeze({
+      file: "mcp/lib/wave-planner.js",
+      token_or_regex: "belief_assisted_priority",
+    }),
+    producer_id: "belief_scheduler_priority_hints",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "wave planning consumes opt-in belief priority hints through the existing ranking and queue-policy path without a second scheduler authority",
   }),
 ]);
 

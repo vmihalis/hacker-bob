@@ -13,6 +13,9 @@ const {
   loadQueuePolicy,
   normalizeQueuePolicy,
 } = require("./queue-policy.js");
+const {
+  applyBeliefSchedulerPriority,
+} = require("./belief/scheduler-priority.js");
 
 function surfaceIdOf(value) {
   if (value == null) return null;
@@ -331,7 +334,16 @@ function planNextWave({
   }
 
   const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet };
-  const openSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
+  const rawOpenSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
+  const beliefPriority = applyBeliefSchedulerPriority({
+    target_domain: normalizedState.target,
+    surfaces: rawOpenSurfaces,
+    enabled: policy.belief_assisted_priority_enabled,
+    seed: policy.belief_assisted_priority_seed,
+    rank_limit: policy.belief_assisted_priority_rank_limit,
+  });
+  const openSurfaces = beliefPriority.surfaces;
+  const plannedSurfaceById = normalizeSurfaces(openSurfaces);
 
   const hasTaskQueueRows = Array.isArray(taskQueueTasks) && taskQueueTasks.length > 0;
 
@@ -345,7 +357,7 @@ function planNextWave({
       {
         name: "task_queue",
         overflow_to_max: true,
-        surfaces: surfacesForIds(orderedIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(orderedIds, plannedSurfaceById, normalizedState, policy, openOptions),
       },
     ];
     if (nextWave > 1) {
@@ -354,7 +366,7 @@ function planNextWave({
         overflow_to_max: true,
         surfaces: surfacesForIds(
           openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
-          surfaceById,
+          plannedSurfaceById,
           normalizedState,
           policy,
           openOptions,
@@ -363,7 +375,7 @@ function planNextWave({
       bucketSpecs.splice(1, 0, {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(leadSurfaceIds, plannedSurfaceById, normalizedState, policy, openOptions),
       });
     }
   } else if (nextWave === 1) {
@@ -375,7 +387,7 @@ function planNextWave({
         overflow_to_max: true,
         surfaces: surfacesForIds(
           openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
-          surfaceById,
+          plannedSurfaceById,
           normalizedState,
           policy,
           openOptions,
@@ -384,7 +396,7 @@ function planNextWave({
       {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
+        surfaces: surfacesForIds(leadSurfaceIds, plannedSurfaceById, normalizedState, policy, openOptions),
       },
       ...priorityBuckets(openSurfaces, normalizedState, policy, openOptions),
     ];
@@ -410,6 +422,7 @@ function planNextWave({
       name: bucket.name,
       surface_ids: bucket.surface_ids,
     })),
+    belief_assisted_priority: beliefPriority.metadata,
     candidate_surface_ids: candidateSurfaces.map((surface) => surface.id),
     assignments,
   };

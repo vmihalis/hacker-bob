@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   isOpenForAssignment,
   planNextWave,
@@ -7,12 +10,38 @@ const {
 const {
   DEFAULT_QUEUE_POLICY,
 } = require("../mcp/lib/queue-policy.js");
+const {
+  appendEdges,
+} = require("../mcp/lib/surface-graph.js");
+const {
+  sessionDir,
+} = require("../mcp/lib/paths.js");
+
+function withTempHome(fn) {
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-wave-planner-"));
+  process.env.HOME = home;
+  try {
+    return fn(home);
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
 
 function surface(id, priority, score = 0) {
   return {
     id,
     priority,
     ranking: { version: 1, score, priority, reasons: [] },
+  };
+}
+
+function describedSurface(id, priority, score, text) {
+  return {
+    ...surface(id, priority, score),
+    evidence: [text],
+    bug_class_hints: [text],
   };
 }
 
@@ -198,6 +227,66 @@ test("planNextWave Test J: max_concurrent_evaluators caps within-wave fan-out (b
     queuePolicy: { ...DEFAULT_QUEUE_POLICY, max_concurrent_evaluators: 2 },
   });
   assert.equal(leakProof.assignments.length, 2);
+});
+
+test("belief-assisted priority is policy-gated and re-ranks through existing priority bridge", () => {
+  withTempHome(() => {
+    const domain = "belief-assisted-wave.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    appendEdges({
+      target_domain: domain,
+      edges: [
+        {
+          source: { type: "principal", id: "principal:attacker" },
+          target: { type: "policy_gate", id: "policy_gate:owner" },
+          edge_type: "tests_gate",
+        },
+        {
+          source: { type: "policy_gate", id: "policy_gate:owner" },
+          target: { type: "effect", id: "effect:unauth_succeeds_where_auth_blocked:victim" },
+          edge_type: "permits_effect",
+        },
+      ],
+    });
+    const state = { target: domain, evaluation_wave: 0, pending_wave: null };
+    const surfaces = [
+      describedSurface("surface:generic", "MEDIUM", 80, "generic admin dashboard"),
+      describedSurface("surface:idor", "MEDIUM", 10, "idor victim object unauth succeeds where auth blocked"),
+    ];
+
+    const disabled = planNextWave({
+      state,
+      surfaces,
+      exploredSurfaceIds: [],
+      terminallyBlockedSurfaceIds: [],
+      leadSurfaceIds: [],
+      queuePolicy: {
+        ...DEFAULT_QUEUE_POLICY,
+        standard_wave_target: 1,
+        standard_wave_max: 1,
+      },
+    });
+    assert.equal(disabled.belief_assisted_priority.enabled, false);
+    assert.deepEqual(disabled.assignments, [planned("a1", "surface:generic")]);
+
+    const enabled = planNextWave({
+      state,
+      surfaces,
+      exploredSurfaceIds: [],
+      terminallyBlockedSurfaceIds: [],
+      leadSurfaceIds: [],
+      queuePolicy: {
+        ...DEFAULT_QUEUE_POLICY,
+        standard_wave_target: 1,
+        standard_wave_max: 1,
+        belief_assisted_priority_enabled: true,
+      },
+    });
+    assert.equal(enabled.belief_assisted_priority.enabled, true);
+    assert.equal(enabled.belief_assisted_priority.applied, true);
+    assert.equal(enabled.belief_assisted_priority.hint_count, 1);
+    assert.deepEqual(enabled.assignments, [planned("a1", "surface:idor")]);
+  });
 });
 
 test("planNextWave returns pending-wave settle before selecting candidates", () => {

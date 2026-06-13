@@ -137,6 +137,7 @@ function buildCandidate({ template, variable, intervention }) {
     template_id: template.id,
     mechanism_id: template.mechanism_id,
     variable_id: variable.variable_id,
+    scope: variable.scope,
     intervention,
     do_operation: candidateDoOperation(variable, intervention),
     predicted_effect: Object.freeze({

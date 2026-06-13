@@ -80,6 +80,12 @@ const MODULE_GUARD_TESTS = Object.freeze([
       "test/belief-experiment-loop.test.js",
     ]),
   }),
+  Object.freeze({
+    module: "mcp/lib/belief/scheduler-priority.js",
+    guards: Object.freeze([
+      "test/wave-planner.test.js",
+    ]),
+  }),
 ]);
 
 function readManifest() {

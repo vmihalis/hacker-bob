@@ -284,7 +284,7 @@
    "action": "layer_on",
    "phase": "coupling",
    "step": 8,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B3",
     "CB-B6"
@@ -299,7 +299,12 @@
     "engineering": "No second scheduler authority; queue_policy_hash replay (X4 determinism CI) holds; belief-assisted mode disableable per session.",
     "field": "Equal-budget A/B: current scheduler vs belief-assisted."
    },
-   "findings": []
+   "findings": [
+    {
+     "severity": "deferred_field_gate",
+     "summary": "Belief-assisted scheduler priority is implemented as an opt-in queue-policy mode; equal-budget A/B is required before default enablement."
+    }
+   ]
   },
   {
    "id": "CB-B5",
