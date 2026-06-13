@@ -14,6 +14,8 @@ const {
 } = require("../mcp/lib/belief/residual.js");
 const { queryBeliefSignals } = require("../mcp/lib/belief/authority.js");
 const runBeliefResidualTool = require("../mcp/lib/tools/run-belief-residual.js");
+const { buildBeliefWindow } = require("../mcp/lib/belief/belief-window.js");
+const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -62,15 +64,31 @@ test("residual diagnostic is deterministic for seed, window, evidence, and regis
   });
 });
 
-test("public-object uncertainty produces a higher residual than IDOR-like high-confidence evidence", () => {
+test("residual tracks the elicited belief's confidence, not a regex on the effect id", () => {
   withTempHome(() => {
-    const publicDomain = "belief-residual-public.example.com";
-    const idorDomain = "belief-residual-idor.example.com";
-    seedGraph(publicDomain, "effect:public_object_read");
-    seedGraph(idorDomain, "effect:unauth_succeeds_where_auth_blocked:victim");
-    const publicResidual = buildResidualDiagnostic({ target_domain: publicDomain, seed: "compare", sample_count: 512 });
-    const idorResidual = buildResidualDiagnostic({ target_domain: idorDomain, seed: "compare", sample_count: 512 });
-    assert.ok(publicResidual.residual_score > idorResidual.residual_score);
+    // SAME effect id in both domains -> any residual difference comes from the
+    // elicited belief, not a regex (the regex used to fabricate the difference).
+    const uniformDomain = "belief-residual-uniform.example.com";
+    const elicitedDomain = "belief-residual-elicited.example.com";
+    seedGraph(uniformDomain, "effect:unauth_succeeds_where_auth_blocked:victim");
+    seedGraph(elicitedDomain, "effect:unauth_succeeds_where_auth_blocked:victim");
+
+    // host agent elicits a confident (low-entropy) belief in one domain only
+    const w = buildBeliefWindow({ target_domain: elicitedDomain });
+    const ep = w.variables.find((v) => v.type === "effective_permission");
+    elicitBeliefTool.handler({
+      target_domain: elicitedDomain,
+      latent_id: ep.variable_id,
+      latent_type: "effective_permission",
+      states: ["allowed", "blocked", "unknown"],
+      distribution: { allowed: 0.94, blocked: 0.04, unknown: 0.02 },
+      evidence_refs: ["auth-differential-results.json#req-7"],
+      rationale: "attacker-auth confidently reaches the victim object",
+    });
+
+    const uniformResidual = buildResidualDiagnostic({ target_domain: uniformDomain, seed: "compare", sample_count: 512 });
+    const elicitedResidual = buildResidualDiagnostic({ target_domain: elicitedDomain, seed: "compare", sample_count: 512 });
+    assert.ok(uniformResidual.residual_score > elicitedResidual.residual_score);
   });
 });
 

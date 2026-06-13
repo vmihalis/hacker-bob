@@ -10,6 +10,9 @@ const {
 const {
   queryFrontierTypedFacts,
 } = require("./frontier-facts.js");
+const {
+  queryBeliefSignals,
+} = require("./authority.js");
 
 const BELIEF_WINDOW_MODEL_VERSION = "belief-window.v1";
 const DEFAULT_VARIABLE_LIMIT = 64;
@@ -66,35 +69,63 @@ function nodeKey(node) {
   return `${node.type}:${node.id}`;
 }
 
-function idorLikeEffect(effectId) {
-  return /unauth_succeeds_where_auth_blocked|idor|object_authorization|victim/i.test(String(effectId || ""));
+// CB-B1: latent priors are the host agent's elicited belief (CB-B7) if it cited one
+// for this exact latent, else an honest uniform over the declared states. No regex,
+// no hardcoded guess -- the prior is evidence-derived or maximally uncertain.
+const CANONICAL_STATES = Object.freeze({
+  effective_permission: Object.freeze(["allowed", "blocked", "unknown"]),
+  object_ownership: Object.freeze(["owned", "not_owned", "unknown"]),
+  request_equivalence: Object.freeze(["equivalent", "distinct", "unknown"]),
+  gate_effectiveness: Object.freeze(["effective", "ineffective", "unknown"]),
+});
+
+function uniformPrior(states) {
+  const mass = Number((1 / states.length).toFixed(6));
+  const dist = {};
+  for (const state of states) dist[state] = mass;
+  return Object.freeze(dist);
 }
 
-function publicObjectEffect(effectId) {
-  return /public[_:-]?object|public/i.test(String(effectId || ""));
+// Index host-agent elicited priors by latent_id (== the window variable_id).
+function elicitedPriorIndex(targetDomain) {
+  const index = new Map();
+  let signals = [];
+  try {
+    signals = (queryBeliefSignals({ target_domain: targetDomain, provenance: "llm_inferred", role: "prior" }) || {}).signals || [];
+  } catch {
+    signals = [];
+  }
+  for (const signal of signals) {
+    const payload = signal && signal.payload;
+    if (payload && typeof payload.latent_id === "string" && payload.distribution && typeof payload.distribution === "object") {
+      index.set(payload.latent_id, payload.distribution);
+    }
+  }
+  return index;
 }
 
-function posteriorForEffectivePermission({ principalEdge, effectEdge }) {
-  const effectId = effectEdge.target.id;
-  if (idorLikeEffect(effectId)) {
-    return Object.freeze({ allowed: 0.88, blocked: 0.07, unknown: 0.05 });
+function priorForLatent(type, scope, elicitedIndex) {
+  const states = CANONICAL_STATES[type];
+  const variableId = stableId("BV", { type, scope });
+  const elicited = elicitedIndex && elicitedIndex.get(variableId);
+  if (elicited && typeof elicited === "object"
+    && Object.keys(elicited).length === states.length
+    && states.every((s) => typeof elicited[s] === "number")) {
+    const dist = {};
+    for (const state of states) dist[state] = elicited[state];
+    return { distribution: Object.freeze(dist), source: "elicited" };
   }
-  if (publicObjectEffect(effectId)) {
-    return Object.freeze({ allowed: 0.52, blocked: 0.18, unknown: 0.30 });
-  }
-  if (effectEdge.edge_type === "blocks_effect") {
-    return Object.freeze({ allowed: 0.10, blocked: 0.78, unknown: 0.12 });
-  }
-  return Object.freeze({ allowed: 0.42, blocked: 0.28, unknown: 0.30 });
+  return { distribution: uniformPrior(states), source: "uniform" };
 }
 
-function makeVariable(type, scope, posterior, evidenceRefs) {
+function makeVariable(type, scope, posterior, evidenceRefs, priorSource = "uniform") {
   return Object.freeze({
     variable_id: stableId("BV", { type, scope }),
     type,
     states: Object.freeze(Object.keys(posterior)),
     scope: Object.freeze(scope),
     posterior,
+    prior_source: priorSource,
     evidence_refs: Object.freeze(Array.from(new Set(evidenceRefs)).sort()),
   });
 }
@@ -124,38 +155,32 @@ function policyEffectEdges(edges) {
   ));
 }
 
-function objectOwnershipVariables(facts) {
+function objectOwnershipVariables(facts, elicitedIndex) {
   const variables = [];
   for (const fact of facts) {
     const payload = fact.payload || {};
     const principal = payload.principal || payload.owner || payload.owner_id;
     const object = payload.object || payload.object_id || payload.object_selector;
     if (!principal || !object) continue;
-    variables.push(makeVariable(
-      "object_ownership",
-      { principal: String(principal), object: String(object), source_event_id: fact.source_event_id },
-      Object.freeze({ owned: 0.70, not_owned: 0.15, unknown: 0.15 }),
-      [fact.artifact_ref],
-    ));
+    const scope = { principal: String(principal), object: String(object), source_event_id: fact.source_event_id };
+    const prior = priorForLatent("object_ownership", scope, elicitedIndex);
+    variables.push(makeVariable("object_ownership", scope, prior.distribution, [fact.artifact_ref], prior.source));
   }
   return variables;
 }
 
-function requestEquivalenceVariables(facts) {
+function requestEquivalenceVariables(facts, elicitedIndex) {
   const variables = [];
   for (const fact of facts) {
     const payload = fact.payload || {};
     if (!payload.endpoint && !payload.path && !payload.method) continue;
-    variables.push(makeVariable(
-      "request_equivalence",
-      {
-        endpoint: String(payload.endpoint || payload.path || "unknown"),
-        method: String(payload.method || "UNKNOWN"),
-        source_event_id: fact.source_event_id,
-      },
-      Object.freeze({ equivalent: 0.55, distinct: 0.20, unknown: 0.25 }),
-      [fact.artifact_ref],
-    ));
+    const scope = {
+      endpoint: String(payload.endpoint || payload.path || "unknown"),
+      method: String(payload.method || "UNKNOWN"),
+      source_event_id: fact.source_event_id,
+    };
+    const prior = priorForLatent("request_equivalence", scope, elicitedIndex);
+    variables.push(makeVariable("request_equivalence", scope, prior.distribution, [fact.artifact_ref], prior.source));
   }
   return variables;
 }
@@ -181,6 +206,7 @@ function buildBeliefWindow({
   const typedFacts = sortedFacts(queryFrontierTypedFacts({ target_domain, limit: factLimit }).facts);
   const variables = [];
   const factors = [];
+  const elicitedIndex = elicitedPriorIndex(target_domain);
 
   const policyToEffects = new Map();
   for (const edge of policyEffectEdges(edges)) {
@@ -196,44 +222,36 @@ function buildBeliefWindow({
         `surface_graph:${principalEdge.edge_hash}`,
         `surface_graph:${effectEdge.edge_hash}`,
       ];
-      const variable = makeVariable(
-        "effective_permission",
-        {
-          principal_id: principalEdge.source.id,
-          policy_gate_id: principalEdge.target.id,
-          effect_id: effectEdge.target.id,
-        },
-        posteriorForEffectivePermission({ principalEdge, effectEdge }),
-        evidenceRefs,
-      );
+      const epScope = {
+        principal_id: principalEdge.source.id,
+        policy_gate_id: principalEdge.target.id,
+        effect_id: effectEdge.target.id,
+      };
+      const epPrior = priorForLatent("effective_permission", epScope, elicitedIndex);
+      const variable = makeVariable("effective_permission", epScope, epPrior.distribution, evidenceRefs, epPrior.source);
       variables.push(variable);
       factors.push(makeFactor(
         "principal_policy_effect_path",
         [variable.variable_id],
         "surface_graph",
         evidenceRefs,
-        idorLikeEffect(effectEdge.target.id) ? 0.88 : 0.45,
+        0.5,
       ));
     }
   }
 
-  variables.push(...objectOwnershipVariables(typedFacts));
-  variables.push(...requestEquivalenceVariables(typedFacts));
+  variables.push(...objectOwnershipVariables(typedFacts, elicitedIndex));
+  variables.push(...requestEquivalenceVariables(typedFacts, elicitedIndex));
 
   for (const edge of edges.filter((item) => item.edge_type === "requires" || item.edge_type === "blocks_effect" || item.edge_type === "permits_effect")) {
     const artifact = `surface_graph:${edge.edge_hash}`;
-    const variable = makeVariable(
-      "gate_effectiveness",
-      {
-        source_id: edge.source.id,
-        target_id: edge.target.id,
-        edge_type: edge.edge_type,
-      },
-      edge.edge_type === "blocks_effect"
-        ? Object.freeze({ effective: 0.78, ineffective: 0.10, unknown: 0.12 })
-        : Object.freeze({ effective: 0.60, ineffective: 0.15, unknown: 0.25 }),
-      [artifact],
-    );
+    const geScope = {
+      source_id: edge.source.id,
+      target_id: edge.target.id,
+      edge_type: edge.edge_type,
+    };
+    const gePrior = priorForLatent("gate_effectiveness", geScope, elicitedIndex);
+    const variable = makeVariable("gate_effectiveness", geScope, gePrior.distribution, [artifact], gePrior.source);
     variables.push(variable);
   }
 

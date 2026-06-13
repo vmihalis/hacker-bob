@@ -19,6 +19,7 @@ const {
   buildBeliefWindow,
 } = require("../mcp/lib/belief/belief-window.js");
 const queryBeliefWindowTool = require("../mcp/lib/tools/query-belief-window.js");
+const elicitBeliefTool = require("../mcp/lib/tools/elicit-belief.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -56,47 +57,52 @@ function seedObjectAuthGraph(domain, effectId) {
   });
 }
 
-test("belief window is deterministic and high-confidence for IDOR-like effective permission", () => {
+test("CB-B1: absent an elicitation the effective_permission prior is honest uniform, not a regex guess", () => {
   withTempHome(() => {
     const domain = "belief-window-idor.example.com";
     ensureSession(domain);
+    // an effect id that the old regex would have scored 0.88 'allowed'
     seedObjectAuthGraph(domain, "effect:unauth_succeeds_where_auth_blocked:victim-object");
-    appendFrontierEvent({
-      target_domain: domain,
-      kind: "observation.recorded",
-      ts: "2026-06-13T00:00:00.000Z",
-      surface_id: "surface:billing",
-      payload: {
-        observation_kind: "schema_field",
-        endpoint: "/billing/{object_id}",
-        object_id: "invoice-123",
-        owner: "victim",
-      },
-    });
 
     const first = buildBeliefWindow({ target_domain: domain });
     const second = buildBeliefWindow({ target_domain: domain });
-    assert.equal(first.window_hash, second.window_hash);
+    assert.equal(first.window_hash, second.window_hash); // deterministic
     assert.equal(first.advisory, true);
-    assert.equal(first.derived, true);
-    assert.equal(first.writes_artifacts, false);
     const effective = first.variables.find((variable) => variable.type === "effective_permission");
     assert.ok(effective, "effective_permission variable must be present");
-    assert.ok(effective.posterior.allowed >= 0.85);
-    assert.equal(first.evidence_summary.mechanism_edge_count, 2);
-    assert.equal(first.evidence_summary.typed_fact_count, 1);
+    // the regex used to fabricate 0.88 from the effect id; now it is uniform
+    assert.equal(effective.prior_source, "uniform");
+    assert.ok(Math.abs(effective.posterior.allowed - 1 / 3) < 0.01);
+    assert.ok(effective.posterior.allowed < 0.85, "must NOT fabricate confidence from the effect id");
   });
 });
 
-test("belief window does not overstate public-object fixtures", () => {
+test("CB-B1: the window reflects an elicited belief and its hash moves when the agent elicits", () => {
   withTempHome(() => {
-    const domain = "belief-window-public-object.example.com";
+    const domain = "belief-window-elicited.example.com";
     ensureSession(domain);
-    seedObjectAuthGraph(domain, "effect:public_object_read");
-    const window = buildBeliefWindow({ target_domain: domain });
-    const effective = window.variables.find((variable) => variable.type === "effective_permission");
-    assert.ok(effective);
-    assert.ok(effective.posterior.allowed < 0.70);
+    seedObjectAuthGraph(domain, "effect:unauth_succeeds_where_auth_blocked:victim-object");
+
+    const w0 = buildBeliefWindow({ target_domain: domain });
+    const ep0 = w0.variables.find((v) => v.type === "effective_permission");
+    assert.equal(ep0.prior_source, "uniform");
+
+    // the host agent elicits a belief for this exact latent (latent_id == variable_id)
+    elicitBeliefTool.handler({
+      target_domain: domain,
+      latent_id: ep0.variable_id,
+      latent_type: "effective_permission",
+      states: ["allowed", "blocked", "unknown"],
+      distribution: { allowed: 0.8, blocked: 0.15, unknown: 0.05 },
+      evidence_refs: ["auth-differential-results.json#req-7"],
+      rationale: "attacker-auth reaches the victim object id; unauth blocked",
+    });
+
+    const w1 = buildBeliefWindow({ target_domain: domain });
+    const ep1 = w1.variables.find((v) => v.type === "effective_permission");
+    assert.equal(ep1.prior_source, "elicited");
+    assert.equal(ep1.posterior.allowed, 0.8); // reflects the elicited belief, not a constant
+    assert.notEqual(w1.window_hash, w0.window_hash); // belief moved with evidence
   });
 });
 

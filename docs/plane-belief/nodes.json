@@ -139,7 +139,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-1",
     "CB-2",
@@ -158,7 +158,8 @@
     "field": null
    },
    "findings": [
-    "[path-a-prime] regex priors are evidence-invariant (belief-window.js:77-89); reopened under path-a' -> agent-elicited distribution recorded scratch, role-guarded. Blocked on CB-B7."
+    "[path-a-prime] regex priors are evidence-invariant (belief-window.js:77-89); reopened under path-a' -> agent-elicited distribution recorded scratch, role-guarded. Blocked on CB-B7.",
+    "[CB-B1] DONE (path A-prime rework). Regex removed: posteriorForEffectivePermission + idorLikeEffect/publicObjectEffect + object_ownership/request_equivalence/gate_effectiveness hardcoded constants + regex-keyed factor weight all gone. Prior is now elicited (host-agent belief, CB-B7) or honest uniform; each variable records prior_source. Belief suite 40/40; behavioral gate proves uniform-absent / elicited-when-present / window_hash moves with evidence; 2 tautological regex-pinned tests rewritten. check:syntax clean."
    ],
    "reopened_by": "path-a-prime"
   },
@@ -168,7 +169,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B1",
     "CB-B7"
