@@ -547,6 +547,7 @@ progress-log promotion).
 | 2026-06-13 | `CB-1` | `done` | `node --test test/surface-graph.test.js test/surface-graph-builder.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-1-mechanism-projection: PASS`; `verify-CB-1-no-mechanism-graph-store-in-runtime: PASS` |
 | 2026-06-13 | `CB-2` | `done` | `node --test test/invariant-template-corpus.test.js test/oss-rootcause-family-index.test.js test/cwe-catalog.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-2-object-authorization-template: PASS` |
 | 2026-06-13 | `CB-3` | `done` | `node --test test/belief-frontier-facts.test.js test/frontier-observation-ledger.test.js test/frontier-projections.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-3-frontier-typed-facts: PASS` |
+| 2026-06-13 | `CB-B1` | `done` | `node --test test/belief-window.test.js test/belief-frontier-facts.test.js test/surface-graph.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B1-belief-window: PASS` |
 
 ## Completion gates and metrics
 

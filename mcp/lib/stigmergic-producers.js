@@ -146,6 +146,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_frontier_fact_projection_reader",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_window_projection",
+    mcp_tool_or_artifact: "bob_query_belief_window",
+    trace_shape_ref: "mcp/lib/belief/belief-window.js#buildBeliefWindow",
+    registered_consumers: Object.freeze([
+      "belief_window_query_tool",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

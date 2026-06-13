@@ -139,7 +139,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-1",
     "CB-2",
@@ -164,7 +164,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B1"
    ],

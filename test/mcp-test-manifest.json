@@ -118,6 +118,7 @@
   "test/write-base.test.js",
   "test/audit-graded-paths.test.js",
   "test/belief-authority.test.js",
+  "test/belief-window.test.js",
   "test/belief-frontier-facts.test.js",
   "test/compose-report.test.js",
   "test/proof-bundle.test.js",

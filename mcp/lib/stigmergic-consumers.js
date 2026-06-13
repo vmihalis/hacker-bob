@@ -210,6 +210,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "belief fact intake consumes normalized observation.recorded events from frontier-events.jsonl without creating a second typed-fact ledger",
   }),
+  Object.freeze({
+    consumer_id: "belief_window_query_tool",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-belief-window.js",
+      token_or_regex: "buildBeliefWindow",
+    }),
+    producer_id: "belief_window_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "read-only belief-window query consumes the bounded window projection without claim, verification, grade, or report authority",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

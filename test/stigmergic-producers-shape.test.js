@@ -4,7 +4,7 @@
 //
 // Asserts:
 //   * STIGMERGIC_PRODUCERS is Object.freeze'd (closed list).
-//   * Exactly 14 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3.
+//   * Exactly 15 canonical producer entries per Y-D19 rev 4.1 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1.
 //   * Every entry carries the required keys (producer_id,
 //     mcp_tool_or_artifact, trace_shape_ref, registered_consumers).
 //   * registered_consumers[] is non-empty for every entry (every
@@ -44,6 +44,7 @@ const CANONICAL_PRODUCER_IDS = [
   "mechanism_surface_graph_projection",
   "object_authorization_mechanism_template",
   "frontier_observation_typed_fact_projection",
+  "belief_window_projection",
 ];
 
 test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
@@ -59,8 +60,8 @@ test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(PRODUCER_IDS), true);
 });
 
-test("STIGMERGIC_PRODUCERS contains exactly the 14 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3 entries", () => {
-  assert.equal(STIGMERGIC_PRODUCERS.length, 14);
+test("STIGMERGIC_PRODUCERS contains exactly the 15 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1 entries", () => {
+  assert.equal(STIGMERGIC_PRODUCERS.length, 15);
   const actualIds = STIGMERGIC_PRODUCERS.map((p) => p.producer_id).sort();
   const expectedIds = [...CANONICAL_PRODUCER_IDS].sort();
   assert.deepEqual(
