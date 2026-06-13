@@ -120,6 +120,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_signal_read_query_tools",
     ]),
   }),
+  Object.freeze({
+    producer_id: "mechanism_surface_graph_projection",
+    mcp_tool_or_artifact: "bob_build_surface_graph / surface-graph.jsonl",
+    trace_shape_ref: "mcp/lib/surface-graph-builder.js#edgesFromAuthDifferentialResults",
+    registered_consumers: Object.freeze([
+      "surface_graph_mechanism_query_mode",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

@@ -217,6 +217,10 @@ function authDifferentialResultsPath(domain) {
   return path.join(sessionDir(domain), "auth-differential-results.json");
 }
 
+function evmRoleTableResultsPath(domain) {
+  return path.join(sessionDir(domain), "evm-role-table-results.json");
+}
+
 function surfaceGraphJsonlPath(domain) {
   return path.join(sessionDir(domain), "surface-graph.jsonl");
 }
@@ -570,6 +574,7 @@ module.exports = {
   handoffSigningKeyPath,
   auditReportsJsonlPath,
   authDifferentialResultsPath,
+  evmRoleTableResultsPath,
   agentRunsJsonlPath,
   diffImpactPath,
   chainTreeJsonlPath,

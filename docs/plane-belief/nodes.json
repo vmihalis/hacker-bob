@@ -72,7 +72,7 @@
    "action": "extend_existing",
    "phase": "substrate",
    "step": 1,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-S1",
     "CB-S2"
@@ -87,7 +87,9 @@
     "engineering": "Same ledgers -> same projection hash; IDOR fixture yields principal->effect via policy_gate; public-object fixture does not; reuses edge_hash, no second store.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "Resolved during CB-1 review: evm-role matrices had no graph-builder source artifact path; added optional evm-role-table-results.json projection via evmRoleTableResultsPath(), still folded into surface-graph.jsonl only."
+   ]
   },
   {
    "id": "CB-2",

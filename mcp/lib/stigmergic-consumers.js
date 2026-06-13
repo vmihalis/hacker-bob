@@ -177,6 +177,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "belief query tooling consumes only advisory scratch signals and does not become claim or verification authority",
   }),
+  Object.freeze({
+    consumer_id: "surface_graph_mechanism_query_mode",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-surface-graph.js",
+      token_or_regex: "queryMechanismView",
+    }),
+    producer_id: "mechanism_surface_graph_projection",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "mechanism query mode consumes principal/credential/policy_gate/effect/intervention edges from surface-graph.jsonl without creating a second graph store",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

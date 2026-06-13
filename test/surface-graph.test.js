@@ -10,8 +10,10 @@ const crypto = require("node:crypto");
 const {
   appendEdges,
   queryEdges,
+  queryMechanismView,
   neighbors,
   normalizeEdge,
+  EDGE_TYPES,
   NODE_TYPES,
 } = require("../mcp/lib/surface-graph.js");
 
@@ -191,6 +193,50 @@ test("neighbors rejects unscoped node lookups", () => {
 test("NODE_TYPES includes emitted surface and tech node kinds", () => {
   assert.ok(NODE_TYPES.includes("surface"));
   assert.ok(NODE_TYPES.includes("tech"));
+});
+
+test("NODE_TYPES and EDGE_TYPES include CB-1 mechanism projection vocabulary", () => {
+  for (const nodeType of ["principal", "credential", "policy_gate", "effect", "intervention"]) {
+    assert.ok(NODE_TYPES.includes(nodeType), `missing ${nodeType}`);
+  }
+  for (const edgeType of ["uses_credential", "requires", "tests_gate", "produces_effect", "permits_effect", "blocks_effect", "observes_effect"]) {
+    assert.ok(EDGE_TYPES.includes(edgeType), `missing ${edgeType}`);
+  }
+});
+
+test("queryMechanismView returns bounded mechanism edges from surface-graph.jsonl only", () => {
+  const domain = uniqueDomain();
+  try {
+    appendEdges({
+      target_domain: domain,
+      edges: [
+        jsToApi("a.js", "/api/users"),
+        {
+          source: { type: "principal", id: "principal:unauthenticated" },
+          target: { type: "policy_gate", id: "policy_gate:auth-diff:/api/users" },
+          edge_type: "tests_gate",
+          source_artifact: "auth-differential-results.json",
+        },
+        {
+          source: { type: "policy_gate", id: "policy_gate:auth-diff:/api/users" },
+          target: { type: "effect", id: "effect:/api/users:unauth_succeeds_where_auth_blocked" },
+          edge_type: "permits_effect",
+          source_artifact: "auth-differential-results.json",
+        },
+      ],
+    });
+    const result = queryMechanismView({
+      target_domain: domain,
+      principal_id: "principal:unauthenticated",
+      limit: 1,
+    });
+    assert.equal(result.edges.length, 1);
+    assert.equal(result.total_mechanism_edges, 2);
+    assert.equal(result.total_in_graph, 3);
+    assert.ok(result.node_types.includes("policy_gate"));
+  } finally {
+    cleanupDomain(domain);
+  }
 });
 
 test("on-disk surface-graph.jsonl is sorted by edge_hash for replay determinism", () => {
