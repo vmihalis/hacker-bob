@@ -271,7 +271,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "ready",
+   "status": "done",
    "predecessors": [],
    "unlocks": [
     "CB-B5"
@@ -283,7 +283,9 @@
     "engineering": "verdict flips when a control flips (not when an irrelevant field flips); labels recorded through the one claim plane; replayable from the proof bundle.",
     "field": "equal-budget A/B: object_auth_valid_claim_rate / missing_control_rate vs baseline."
    },
-   "findings": []
+   "findings": [
+    "[CB-D1] DONE. Engineering PASS: 9/9 behavioral tests incl. decisive-flip + irrelevant-invariance gates; check:syntax clean; adversarial verify PASS (verdict is a genuine fn of inputs, CB-C2 payload round-trips, reuses hashCanonicalJson/OBJECT_AUTH_CONTROLS, advisory-only). Field A/B DEFERRED: needs authorized-target runs; logic fully exercised offline."
+   ]
   },
   {
    "id": "CB-B7",
@@ -365,7 +367,7 @@
    "action": "build_new+layer_on_labels",
    "phase": "engine",
    "step": 9,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-C2",
     "CB-D1"
