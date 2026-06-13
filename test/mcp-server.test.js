@@ -516,6 +516,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_query_belief_signals",
   "bob_query_belief_window",
   "bob_run_belief_sampler",
+  "bob_run_belief_residual",
   "bob_append_frontier_event",
   "bob_propose_hypothesis",
   "bob_propose_transition",
@@ -1974,6 +1975,9 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
     ],
     "CB-B4_factor_graph_sampler": [
       "bob_run_belief_sampler",
+    ],
+    "CB-B6_residual_anomaly": [
+      "bob_run_belief_residual",
     ],
     // Plane Y Cycle Y.2 — capability friction + protocol drift voluntary
     // emission tools plus the orchestrator-facing runtime drift telemetry

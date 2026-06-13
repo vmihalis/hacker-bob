@@ -11,7 +11,6 @@ The first non-flag token of `$ARGUMENTS` selects the target axis:
 - It is a **URL** when it starts with `http://` or `https://`. Web mode is in force; call `bob_init_session({ target_url, ... })` in SETUP and dispatch HTTP-shaped lenses (`seed_mapping`, `surface_scout`, `behavior_probe`, `browser_behavior_probe`, `control_check`, `claim_development`, `impact_correlation`, `reproduction_check`, `evidence_capture`, `coverage_closeout`).
 - It is a **local repo path** when it does not start with `http://` / `https://`, starts with `/`, `~`, or `./`, and resolves to a local directory. OSS repo mode is in force; call `bob_init_repo_session({ repo_path, ... })` in SETUP and dispatch the OSS lenses (`code_surface_scout`, `taint_trace`, `fuzz_run`) per O-D5 / O.6.
 - Refuse remote paths (anything that looks like `git@host:owner/repo.git`, `git+https://...`, `ssh://...`, a `host:` prefix, or a bare GitHub `owner/repo` slug). Per O-P1, this entry point never performs a `git clone`. Tell the operator to check out the repo locally and re-invoke `/skill:bob-evaluate <local-path>`.
-
 Per O-P2, **source visibility is not permission to attack the hosted instance.** Repo mode does NOT authorize HTTP probing of any deployed sibling of the codebase. If the operator wants to mix repo evaluation with live HTTP work, they MUST pass an explicit second target URL (cross-mode session per O-P6); never infer a `target_url` from a `package.json`, README, or repo metadata.
 
 ## Flags

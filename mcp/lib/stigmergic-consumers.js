@@ -232,6 +232,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "belief sample readers consume only advisory scratch marginals and rankings, never scheduler or claim authority",
   }),
+  Object.freeze({
+    consumer_id: "belief_residual_diagnostic_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/residual.js",
+      token_or_regex: "buildResidualDiagnostic",
+    }),
+    producer_id: "belief_residual_anomaly_diagnostic",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "residual anomaly diagnostics are consumed as non-gating human/scheduler hints and cannot become evidence, claims, or template authority",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

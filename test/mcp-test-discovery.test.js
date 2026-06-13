@@ -62,6 +62,12 @@ const MODULE_GUARD_TESTS = Object.freeze([
       "test/belief-factor-graph.test.js",
     ]),
   }),
+  Object.freeze({
+    module: "mcp/lib/belief/residual.js",
+    guards: Object.freeze([
+      "test/belief-residual.test.js",
+    ]),
+  }),
 ]);
 
 function readManifest() {

@@ -49,6 +49,7 @@ const CANONICAL_CONSUMER_IDS = [
   "belief_frontier_fact_projection_reader",
   "belief_window_query_tool",
   "belief_sample_scratch_reader",
+  "belief_residual_diagnostic_reader",
 ];
 
 test("STIGMERGIC_CONSUMERS is Object.freeze'd and elements are frozen", () => {
@@ -69,8 +70,8 @@ test("STIGMERGIC_CONSUMERS is Object.freeze'd and elements are frozen", () => {
   assert.equal(Object.isFrozen(DECISION_BOUNDARY_VALUES), true);
 });
 
-test("STIGMERGIC_CONSUMERS contains exactly the 18 canonical Y-D19/Plane-Delta + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4 entries", () => {
-  assert.equal(STIGMERGIC_CONSUMERS.length, 18);
+test("STIGMERGIC_CONSUMERS contains exactly the 19 canonical Y-D19/Plane-Delta + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6 entries", () => {
+  assert.equal(STIGMERGIC_CONSUMERS.length, 19);
   const actualIds = STIGMERGIC_CONSUMERS.map((c) => c.consumer_id).sort();
   const expectedIds = [...CANONICAL_CONSUMER_IDS].sort();
   assert.deepEqual(

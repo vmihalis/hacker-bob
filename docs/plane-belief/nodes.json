@@ -192,7 +192,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 5,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B4"
    ],

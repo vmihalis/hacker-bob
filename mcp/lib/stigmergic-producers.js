@@ -162,6 +162,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_sample_scratch_reader",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_residual_anomaly_diagnostic",
+    mcp_tool_or_artifact: "belief-scratch/belief-signals.jsonl residual_anomaly",
+    trace_shape_ref: "mcp/lib/belief/residual.js#runBeliefResidual",
+    registered_consumers: Object.freeze([
+      "belief_residual_diagnostic_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(
