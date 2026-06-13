@@ -1720,7 +1720,7 @@ Each v1 `results` entry must include:
 
 For v2, the round must cover exactly the snapshot finding IDs and every `results` entry must also include:
 - `confidence`: `high|medium|low`
-- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`
+- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`, `unruled_confounder`, `missing_control`
 - `state_sensitive`: boolean; set true when target state, auth state, chain state, or fresh replay timing could change the result
 - `artifact_hashes`: object of bounded replay/audit artifact hashes when available, otherwise `{}`
 
@@ -1730,6 +1730,7 @@ Suggested v2 confidence mapping:
 - Tooling/RPC blocked: include `tooling_blocked`, usually deny/fail closed unless local policy says otherwise.
 - Roast disagreement: include `roast_disagreement`.
 - Manual inference without replay: include `manual_inference`.
+- Missing required controls or live confounders: include `missing_control` or `unruled_confounder`.
 
 Do not write verifier markdown directly. The MCP tool owns `brutalist.json` and the human/debug mirror.
 
@@ -1955,7 +1956,7 @@ For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny
 
 Your `results` array MUST include EVERY finding from the balanced round — not just the ones you re-tested. Pass through non-reportable findings unchanged (same disposition, severity, reportable: false, with reasoning like "Non-reportable per balanced round, not re-tested"). Only update findings you actually re-ran. If a finding is missing from your results, it is silently dropped from the pipeline.
 
-For v2, preserve monotonic `state_sensitive`: if any prior round or `bob_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
+For v2, preserve monotonic `state_sensitive`: if any prior round or `bob_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason, including `missing_control` or `unruled_confounder`.
 
 Write results only through `bob_write_verification_round` with `round="final"`.
 

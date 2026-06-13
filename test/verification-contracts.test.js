@@ -11,6 +11,10 @@ const {
 const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const recordFinding = recordCandidateClaimTool.handler;
 const {
+  normalizeCandidateClaim,
+  readCandidateClaims,
+} = require("../mcp/lib/claims.js");
+const {
   readGradeVerdict,
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
@@ -18,6 +22,7 @@ const {
   gradeArtifactPaths,
   sessionDir,
   statePath,
+  verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
@@ -245,6 +250,54 @@ test("computeAdjudicationPlanHash ignores volatile adjudication metadata", () =>
       built_at: "2026-05-16T00:00:00.000Z",
     }),
   );
+});
+
+test("candidate claim causal support is persisted and folded into claim_hash", () => {
+  withTempHome(() => {
+    const domain = "claim-causal-support.example.com";
+    const result = JSON.parse(recordFinding(findingInput(domain, {
+      created_at: "2026-06-13T00:00:00.000Z",
+      mechanism_id: "CWE-639",
+      hypothesis_statement: "A low-privilege tenant can read another tenant's billing object.",
+      intervention: "Swap the billing profile id while preserving attacker credentials.",
+      expected_effect: "The victim billing metadata is returned to the attacker profile.",
+      controls_run: [{
+        control: "Attacker-owned billing profile returns only attacker metadata.",
+        expected_effect: "No cross-tenant fields appear.",
+        observed_effect: "Only attacker billing fields returned.",
+        evidence_ref: "finding:F-1",
+      }],
+      confounders_ruled_out: ["public object", "cache-only replay"],
+    })));
+
+    const [claim] = readCandidateClaims(domain);
+    assert.equal(result.claim_id, claim.claim_id);
+    assert.deepEqual(claim.payload.causal_support, {
+      mechanism_id: "CWE-639",
+      hypothesis_statement: "A low-privilege tenant can read another tenant's billing object.",
+      intervention: "Swap the billing profile id while preserving attacker credentials.",
+      expected_effect: "The victim billing metadata is returned to the attacker profile.",
+      controls_run: [{
+        control: "Attacker-owned billing profile returns only attacker metadata.",
+        expected_effect: "No cross-tenant fields appear.",
+        observed_effect: "Only attacker billing fields returned.",
+        evidence_ref: "finding:F-1",
+      }],
+      confounders_ruled_out: ["public object", "cache-only replay"],
+    });
+
+    const withoutSupport = {
+      ...claim,
+      payload: { ...claim.payload },
+    };
+    delete withoutSupport.claim_hash;
+    delete withoutSupport.payload.causal_support;
+    const recomputedWithoutSupport = normalizeCandidateClaim(withoutSupport, {
+      targetDomain: domain,
+      now: null,
+    });
+    assert.notEqual(claim.claim_hash, recomputedWithoutSupport.claim_hash);
+  });
 });
 
 test("artifactDivergence is deterministic and only flags both-replayed artifact divergence", () => {
@@ -487,6 +540,60 @@ test("verification adjudication and grade writers use the session lock before mu
     } finally {
       release();
     }
+  });
+});
+
+test("confounder confidence reasons are accepted and folded into adjudication hash", () => {
+  withTempHome(() => {
+    const domain = "verification-causal-reasons.example.com";
+    seedFinding(domain);
+    const entry = prepareVerificationEntry(domain, {
+      phase: "CHAIN",
+      verification_schema_version: null,
+      verification_attempt_id: null,
+      verification_snapshot_hash: null,
+    }, { now: new Date("2026-06-13T00:00:00.000Z") });
+    writeVerifyState(domain, entry.state_fields);
+
+    const writeRounds = (brutalistReasons, balancedReasons) => {
+      writeVerificationRound({
+        target_domain: domain,
+        round: "brutalist",
+        notes: "causal reason brutalist",
+        verification_attempt_id: entry.state_fields.verification_attempt_id,
+        verification_snapshot_hash: entry.state_fields.verification_snapshot_hash,
+        round_profile: "brutalist",
+        results: [v2VerificationResult("F-1", {
+          confidence_reasons: brutalistReasons,
+        })],
+      });
+      writeVerificationRound({
+        target_domain: domain,
+        round: "balanced",
+        notes: "causal reason balanced",
+        verification_attempt_id: entry.state_fields.verification_attempt_id,
+        verification_snapshot_hash: entry.state_fields.verification_snapshot_hash,
+        round_profile: "balanced",
+        results: [v2VerificationResult("F-1", {
+          confidence_reasons: balancedReasons,
+        })],
+      });
+    };
+
+    writeRounds(
+      ["fresh_replay_passed", "missing_control"],
+      ["fresh_replay_passed", "unruled_confounder"],
+    );
+    const causal = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+    const causalDocument = JSON.parse(fs.readFileSync(verificationAdjudicationPath(domain), "utf8"));
+    assert.equal(causal.adjudication_plan_hash, causalDocument.adjudication_plan_hash);
+    assert.deepEqual(causalDocument.replay_reasons["F-1"].filter((reason) => (
+      reason === "missing_control" || reason === "unruled_confounder"
+    )), ["missing_control", "unruled_confounder"]);
+
+    writeRounds(["fresh_replay_passed"], ["fresh_replay_passed"]);
+    const withoutCausalSignals = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+    assert.notEqual(causal.adjudication_plan_hash, withoutCausalSignals.adjudication_plan_hash);
   });
 });
 

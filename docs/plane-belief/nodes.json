@@ -260,7 +260,7 @@
    "action": "extend_existing",
    "phase": "coupling",
    "step": 7,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B3"
    ],
@@ -274,7 +274,9 @@
     "engineering": "No new writer/artifact; no fourth evidence_refs[] home; v2->v3 bump only if a stored field is added; backward compatible.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "Resolved during CB-C2 review: verifier causal signals are closed confidence_reasons values and replay reasons inside the existing adjudication document; no new evidence_refs[] home or verifier artifact was introduced."
+   ]
   },
   {
    "id": "CB-C1",

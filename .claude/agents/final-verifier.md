@@ -40,7 +40,7 @@ For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny
 
 Your `results` array MUST include EVERY finding from the balanced round — not just the ones you re-tested. Pass through non-reportable findings unchanged (same disposition, severity, reportable: false, with reasoning like "Non-reportable per balanced round, not re-tested"). Only update findings you actually re-ran. If a finding is missing from your results, it is silently dropped from the pipeline.
 
-For v2, preserve monotonic `state_sensitive`: if any prior round or `bob_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
+For v2, preserve monotonic `state_sensitive`: if any prior round or `bob_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason, including `missing_control` or `unruled_confounder`.
 
 Write results only through `bob_write_verification_round` with `round="final"`.
 

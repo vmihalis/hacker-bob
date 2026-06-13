@@ -31,6 +31,7 @@ const DECISION_BOUNDARY_VALUES = Object.freeze([
   "claim_recording",
   "grade_time_reconciliation",
   "validator_invocation",
+  "verification_adjudication",
 ]);
 
 const STIGMERGIC_CONSUMERS = Object.freeze([
@@ -264,6 +265,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     decision_boundary: "validator_invocation",
     rationale:
       "experiment-loop proposals flow through the existing hypothesis-proposal writer and remain bounded advisory planning inputs",
+  }),
+  Object.freeze({
+    consumer_id: "verification_adjudication_causal_reason_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/verification.js",
+      token_or_regex: "replayReasonsForResult",
+    }),
+    producer_id: "claim_causal_support_payload",
+    decision_boundary: "verification_adjudication",
+    rationale:
+      "verification adjudication consumes causal-support verifier signals as closed confidence reasons folded into the adjudication plan hash",
   }),
 ]);
 

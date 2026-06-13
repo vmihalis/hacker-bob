@@ -342,6 +342,80 @@ function deriveAttackClass(finding) {
   return null;
 }
 
+function normalizeBoundedText(value, fieldName, { maxLength = 2000, required = false } = {}) {
+  if (value == null) {
+    if (required) throw new Error(`${fieldName} is required`);
+    return null;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${fieldName} must be at most ${maxLength} chars`);
+  }
+  return value;
+}
+
+function normalizeCausalSupport(args) {
+  const hasAny = [
+    "mechanism_id",
+    "hypothesis_statement",
+    "intervention",
+    "expected_effect",
+    "controls_run",
+    "confounders_ruled_out",
+  ].some((key) => args && args[key] != null);
+  if (!hasAny) return null;
+
+  const support = {};
+  const mechanismId = normalizeBoundedText(args.mechanism_id, "mechanism_id", { maxLength: 160 });
+  if (mechanismId) support.mechanism_id = mechanismId;
+  const hypothesis = normalizeBoundedText(args.hypothesis_statement, "hypothesis_statement", { maxLength: 2000 });
+  if (hypothesis) support.hypothesis_statement = hypothesis;
+  const intervention = normalizeBoundedText(args.intervention, "intervention", { maxLength: 1000 });
+  if (intervention) support.intervention = intervention;
+  const expectedEffect = normalizeBoundedText(args.expected_effect, "expected_effect", { maxLength: 1000 });
+  if (expectedEffect) support.expected_effect = expectedEffect;
+
+  if (args.controls_run != null) {
+    if (!Array.isArray(args.controls_run)) throw new Error("controls_run must be an array");
+    if (args.controls_run.length > 20) throw new Error("controls_run must contain at most 20 entries");
+    support.controls_run = args.controls_run.map((entry, index) => {
+      if (typeof entry === "string") {
+        return { control: normalizeBoundedText(entry, `controls_run[${index}]`, { maxLength: 1000, required: true }) };
+      }
+      if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(`controls_run[${index}] must be a string or object`);
+      }
+      const normalized = {
+        control: normalizeBoundedText(entry.control, `controls_run[${index}].control`, {
+          maxLength: 1000,
+          required: true,
+        }),
+      };
+      for (const key of ["expected_effect", "observed_effect", "evidence_ref"]) {
+        const value = normalizeBoundedText(entry[key], `controls_run[${index}].${key}`, { maxLength: 1000 });
+        if (value) normalized[key] = value;
+      }
+      return normalized;
+    });
+  }
+
+  if (args.confounders_ruled_out != null) {
+    if (!Array.isArray(args.confounders_ruled_out)) {
+      throw new Error("confounders_ruled_out must be an array");
+    }
+    if (args.confounders_ruled_out.length > 20) {
+      throw new Error("confounders_ruled_out must contain at most 20 entries");
+    }
+    support.confounders_ruled_out = args.confounders_ruled_out.map((entry, index) => (
+      normalizeBoundedText(entry, `confounders_ruled_out[${index}]`, { maxLength: 500, required: true })
+    ));
+  }
+
+  return Object.keys(support).length > 0 ? support : null;
+}
+
 function severityForClaim(severity) {
   if (severity === "info") return "informational";
   return severity;
@@ -373,6 +447,8 @@ function buildSecretEvidenceBypassRows(secretBypass) {
 
 function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretBypass = new Map()) {
   const payload = {};
+  const causalSupport = normalizeCausalSupport(args || {});
+  if (causalSupport) payload.causal_support = causalSupport;
   const subjectId = deriveSubjectId(finding);
   if (subjectId) payload.subject_id = subjectId;
   const attackClass = deriveAttackClass(finding);
@@ -690,6 +766,74 @@ module.exports = Object.freeze({
       },
       "auth_profile": {
         "type": "string"
+      },
+      "mechanism_id": {
+        "type": "string",
+        "maxLength": 160,
+        "description": "Optional causal-support mechanism identifier bound into the CandidateClaim payload, for example a CWE id or OSS-FAM id. This is advisory support, not a claim writer override."
+      },
+      "hypothesis_statement": {
+        "type": "string",
+        "maxLength": 2000,
+        "description": "Optional hypothesis statement from the belief or evaluator path, persisted under payload.causal_support and folded into claim_hash."
+      },
+      "intervention": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "Optional intervention that should explain the claim's causal support; cite supporting artifacts through the existing evidence_refs[] path rather than a second evidence home."
+      },
+      "expected_effect": {
+        "type": "string",
+        "maxLength": 1000,
+        "description": "Optional expected effect for the intervention, persisted under payload.causal_support and folded into claim_hash."
+      },
+      "controls_run": {
+        "type": "array",
+        "maxItems": 20,
+        "description": "Optional controls already run for this claim. Entries may be strings or objects with control plus optional expected_effect, observed_effect, and evidence_ref metadata; raw evidence still belongs in evidence_refs[].",
+        "items": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            {
+              "type": "object",
+              "properties": {
+                "control": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "expected_effect": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "observed_effect": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "evidence_ref": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              },
+              "required": ["control"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "confounders_ruled_out": {
+        "type": "array",
+        "maxItems": 20,
+        "description": "Optional causal confounders ruled out by the evaluator or belief-proposed experiment; persisted under payload.causal_support and folded into claim_hash.",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
       },
       "surface_id": {
         "type": "string"

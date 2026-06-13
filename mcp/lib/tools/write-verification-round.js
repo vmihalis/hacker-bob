@@ -110,7 +110,9 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "unruled_confounder",
+                  "missing_control"
                 ]
               }
             },
@@ -138,7 +140,9 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "unruled_confounder",
+                  "missing_control"
                 ]
               }
             },
@@ -154,7 +158,9 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "unruled_confounder",
+                  "missing_control"
                 ]
               }
             }
@@ -188,4 +194,3 @@ module.exports = wrapWriteTool({
   sensitive_output: false,
   session_artifacts_written: ["brutalist.json","balanced.json","verified-final.json","verification-manifest.json"],
 });
-

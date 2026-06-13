@@ -67,6 +67,8 @@ const VERIFICATION_CONFIDENCE_REASON_VALUES = [
   "roast_disagreement",
   "disambiguation_failed",
   "agreement_not_replayed",
+  "unruled_confounder",
+  "missing_control",
 ];
 const VERIFICATION_REASONING_DIVERGENCE_VALUES = [
   "none",

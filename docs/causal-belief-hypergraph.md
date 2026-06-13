@@ -552,6 +552,7 @@ progress-log promotion).
 | 2026-06-13 | `CB-B6` | `done` | `node --test test/belief-residual.test.js test/belief-factor-graph.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B6-residual-anomaly: PASS` |
 | 2026-06-13 | `CB-B2` | `done` | `node --test test/belief-intervention-calculus.test.js test/belief-window.test.js test/belief-factor-graph.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B2-intervention-calculus: PASS` |
 | 2026-06-13 | `CB-B3` | `done` | `node --test test/belief-experiment-loop.test.js test/belief-intervention-calculus.test.js test/mcp-test-discovery.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-B3-active-experiment-loop: PASS` |
+| 2026-06-13 | `CB-C2` | `done` | `node --test test/verification-contracts.test.js test/stigmergic-producers-shape.test.js test/stigmergic-consumers-shape.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-C2-causal-support-verification: PASS` |
 
 ## Completion gates and metrics
 
