@@ -154,6 +154,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_window_query_tool",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_factor_graph_samples",
+    mcp_tool_or_artifact: "belief-scratch/belief-samples.jsonl",
+    trace_shape_ref: "mcp/lib/belief/factor-graph.js#runBeliefSampler",
+    registered_consumers: Object.freeze([
+      "belief_sample_scratch_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

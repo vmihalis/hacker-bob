@@ -233,6 +233,10 @@ function beliefSignalsJsonlPath(domain) {
   return path.join(beliefScratchDir(domain), "belief-signals.jsonl");
 }
 
+function beliefSamplesJsonlPath(domain) {
+  return path.join(beliefScratchDir(domain), "belief-samples.jsonl");
+}
+
 function chainTreeJsonlPath(domain) {
   return path.join(sessionDir(domain), "chain-tree.jsonl");
 }
@@ -537,6 +541,7 @@ module.exports = {
   assertStaticArtifactId,
   attackSurfacePath,
   beliefScratchDir,
+  beliefSamplesJsonlPath,
   beliefSignalsJsonlPath,
   bobSpecPath,
   chainAttemptsJsonlPath,

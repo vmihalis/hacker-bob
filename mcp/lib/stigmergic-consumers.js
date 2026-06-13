@@ -221,6 +221,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "read-only belief-window query consumes the bounded window projection without claim, verification, grade, or report authority",
   }),
+  Object.freeze({
+    consumer_id: "belief_sample_scratch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/belief/factor-graph.js",
+      token_or_regex: "readBeliefSamples",
+    }),
+    producer_id: "belief_factor_graph_samples",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "belief sample readers consume only advisory scratch marginals and rankings, never scheduler or claim authority",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

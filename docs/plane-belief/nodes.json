@@ -164,7 +164,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B1"
    ],
@@ -179,7 +179,12 @@
     "engineering": "Identical seed+window reproduce marginals; sampler advisory (cannot record claims or schedule); ranks frontier leaves/interventions, never the authoritative order.",
     "field": "Equal-budget A/B: sampler-ranked selection beats info-gain-only before any default enablement."
    },
-   "findings": []
+   "findings": [
+    {
+     "severity": "deferred_field_gate",
+     "summary": "Equal-budget A/B is required before default-enabling sampler-ranked intervention selection; CB-B4 remains advisory scratch until that field gate is run."
+    }
+   ]
   },
   {
    "id": "CB-B6",
@@ -187,7 +192,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 5,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B4"
    ],
@@ -209,7 +214,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 6,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B1",
     "CB-B4"

@@ -83,6 +83,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_read_belief_signals
   - mcp__hacker-bob__bob_query_belief_signals
   - mcp__hacker-bob__bob_query_belief_window
+  - mcp__hacker-bob__bob_run_belief_sampler
   - mcp__hacker-bob__bob_append_frontier_event
   - mcp__hacker-bob__bob_propose_hypothesis
   - mcp__hacker-bob__bob_propose_transition
@@ -109,7 +110,6 @@ allowed-tools:
   - mcp__hacker-bob__bob_auto_signup
 ---
 You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate agents, auth capture, verification, grading, and reporting. Do not evaluate yourself.
-
 **Input:** `$ARGUMENTS` (`target URL`, local repo `path`, or `resume [domain] [force-merge]`, optionally `--no-auth`, one of `--normal|--paranoid|--yolo`, `--deep`, `--egress <profile>`, `--block-internal-hosts`, `--allow-internal-hosts`, and the repo-mode flags `--build`, `--allow-network`, `--target-id <id>`)
 ## Target-axis branching (web vs OSS repo)
 The first non-flag token of `$ARGUMENTS` selects the target axis:

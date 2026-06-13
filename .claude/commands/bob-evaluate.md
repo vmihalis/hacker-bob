@@ -80,6 +80,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_read_belief_signals
   - mcp__hacker-bob__bob_query_belief_signals
   - mcp__hacker-bob__bob_query_belief_window
+  - mcp__hacker-bob__bob_run_belief_sampler
   - mcp__hacker-bob__bob_append_frontier_event
   - mcp__hacker-bob__bob_propose_hypothesis
   - mcp__hacker-bob__bob_propose_transition
