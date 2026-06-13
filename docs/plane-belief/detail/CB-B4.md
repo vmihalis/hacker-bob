@@ -29,11 +29,25 @@ becomes authoritative ordering.
 - Stigmergy pair: producer `belief_factor_graph_samples` consumed by
   `belief_sample_scratch_reader`.
 
+## Path A-prime revision
+
+- DEMOTED from deliverable to **A/B hypothesis**: true n-ary message-passing /
+  sum-product over independently-sourced potentials is NOT built. The roast showed
+  that sum-product over a single estimator's self-supplied joint manufactures the
+  appearance of inference. The sampler stays an advisory marginal-over-priors.
+- After CB-B1, `inferMarginals` samples `variable.posterior`, which is now the
+  host-agent's elicited prior (or honest uniform) -- NOT the regex constant. So the
+  sampler now echoes the real belief. Behavioral test (CB-B4 case in
+  `test/belief-factor-graph.test.js`): a confident elicitation drives the marginal's
+  `allowed` mass above 0.7; absent one it stays below 0.5 (uniform). This is the
+  CB-B1 -> CB-B4 link and the proof the sampler is no longer a constant.
+
 ## Findings
 
-- Field A/B is deferred. The sampler remains advisory scratch until an
+- Field A/B is deferred (rationale). The sampler remains advisory scratch until an
   equal-budget field run shows sampler-ranked selection beats the
-  information-gain heuristic-only path.
+  information-gain heuristic-only path. True factor coupling is gated behind that
+  same A/B as an explicit hypothesis, not a committed deliverable.
 
 ## Review Evidence
 

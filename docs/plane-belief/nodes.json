@@ -169,7 +169,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B1",
     "CB-B7"
@@ -190,7 +190,8 @@
      "severity": "deferred_field_gate",
      "summary": "Equal-budget A/B is required before default-enabling sampler-ranked intervention selection; CB-B4 remains advisory scratch until that field gate is run."
     },
-    "[path-a-prime] sum-product over self-supplied potentials is ceremony (roast); DEMOTED from deliverable to A/B hypothesis, gated behind CB-B7 proving evidence-sensitivity."
+    "[path-a-prime] sum-product over self-supplied potentials is ceremony (roast); DEMOTED from deliverable to A/B hypothesis, gated behind CB-B7 proving evidence-sensitivity.",
+    "[CB-B4] DONE (path A-prime). DEMOTED to A/B hypothesis: true n-ary message-passing NOT built (sum-product over a self-supplied joint is ceremony). Sampler stays advisory marginal-over-priors; post-CB-B1 it samples the elicited-or-uniform prior (not the regex). Behavioral test: confident elicitation -> allowed marginal >0.7, none -> <0.5. Field A/B + true coupling deferred with rationale. factor-graph suite 4/4."
    ],
    "reopened_by": "path-a-prime"
   },
@@ -222,7 +223,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 6,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B1",
     "CB-B4",
