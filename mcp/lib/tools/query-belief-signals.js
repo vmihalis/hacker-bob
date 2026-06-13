@@ -1,7 +1,9 @@
 "use strict";
 
 const {
+  BELIEF_PROVENANCE_VALUES,
   BELIEF_SIGNAL_KIND_VALUES,
+  BELIEF_SIGNAL_ROLE_VALUES,
   queryBeliefSignals,
 } = require("../belief/authority.js");
 
@@ -16,6 +18,8 @@ module.exports = Object.freeze({
       target_domain: { type: "string" },
       kind: { type: "string", enum: BELIEF_SIGNAL_KIND_VALUES },
       source: { type: "string" },
+      provenance: { type: "string", enum: BELIEF_PROVENANCE_VALUES },
+      role: { type: "string", enum: BELIEF_SIGNAL_ROLE_VALUES },
       limit: { type: "integer", minimum: 1, maximum: 1000 },
     },
     required: ["target_domain"],

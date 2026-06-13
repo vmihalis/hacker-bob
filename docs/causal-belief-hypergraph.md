@@ -543,6 +543,7 @@ progress-log promotion).
 | Date | Node | Status | Review evidence |
 | --- | --- | --- | --- |
 | 2026-06-13 | `CB-S1` | `done` | `node --test test/belief-authority.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-S1-authority: PASS` |
+| 2026-06-13 | `CB-S2` | `done` | `node --test test/belief-authority.test.js`; `npm run check:syntax`; `npm run check:stigmergy-coherence`; `npm run test:mcp`; `npm run test:prompts`; `verify-CB-S2-provenance-secret-safety: PASS` |
 
 ## Completion gates and metrics
 

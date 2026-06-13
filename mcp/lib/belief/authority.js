@@ -4,6 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const {
+  redactTextSensitiveValues,
+  validateNoSensitiveMaterial,
+} = require("../sensitive-material.js");
+const {
   beliefScratchDir,
   beliefSignalsJsonlPath,
   isAuditGradedPath,
@@ -15,11 +19,46 @@ const BELIEF_SIGNAL_KIND_VALUES = Object.freeze([
   "belief_signal",
 ]);
 
+const BELIEF_PROVENANCE_VALUES = Object.freeze([
+  "observed_http",
+  "observed_traffic",
+  "declared_schema",
+  "static_code",
+  "surface_graph",
+  "claim_ledger",
+  "verification_result",
+  "operator_asserted",
+  "llm_inferred",
+  "learned_prior",
+  "verified_intervention",
+  "residual_anomaly",
+]);
+
+const BELIEF_SIGNAL_ROLE_VALUES = Object.freeze([
+  "evidence",
+  "prior",
+  "diagnostic",
+]);
+
 function assertBeliefSignalKind(kind) {
   if (!BELIEF_SIGNAL_KIND_VALUES.includes(kind)) {
     throw new Error(`invalid belief signal kind: ${kind}`);
   }
   return kind;
+}
+
+function assertBeliefProvenance(provenance) {
+  if (!BELIEF_PROVENANCE_VALUES.includes(provenance)) {
+    throw new Error(`invalid belief provenance: ${provenance}`);
+  }
+  return provenance;
+}
+
+function assertBeliefSignalRole(role) {
+  if (!BELIEF_SIGNAL_ROLE_VALUES.includes(role)) {
+    throw new Error(`invalid belief signal role: ${role}`);
+  }
+  return role;
 }
 
 function normalizeTargetDomain(targetDomain) {
@@ -49,6 +88,21 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function redactStringLeaves(value) {
+  if (typeof value === "string") {
+    return redactTextSensitiveValues(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactStringLeaves);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, redactStringLeaves(child)]),
+    );
+  }
+  return value;
+}
+
 function assertBeliefScratchWritePath({ target_domain, file_path }) {
   const targetDomain = normalizeTargetDomain(target_domain);
   if (typeof file_path !== "string" || !file_path.trim()) {
@@ -69,17 +123,32 @@ function assertBeliefScratchWritePath({ target_domain, file_path }) {
   return resolved;
 }
 
-function normalizeSignal({ kind, source, payload }) {
+function normalizeSignal({ kind, source, provenance, artifact_ref, role = "evidence", payload }) {
   assertBeliefSignalKind(kind);
+  assertBeliefProvenance(provenance);
+  assertBeliefSignalRole(role);
+  if (provenance === "residual_anomaly" && role !== "diagnostic") {
+    throw new Error("residual_anomaly is diagnostic-only and cannot enter the belief window as evidence or prior");
+  }
   if (typeof source !== "string" || !source.trim()) {
     throw new Error("source is required");
   }
+  if (typeof artifact_ref !== "string" || !artifact_ref.trim()) {
+    throw new Error("artifact_ref is required");
+  }
   assertPlainObject(payload, "payload");
+  const redactedPayload = redactStringLeaves(payload);
+  const redactedSource = redactTextSensitiveValues(source.trim());
+  const redactedArtifactRef = redactTextSensitiveValues(artifact_ref.trim());
   const body = {
     kind,
-    source: source.trim(),
-    payload,
+    source: redactedSource,
+    provenance,
+    artifact_ref: redactedArtifactRef,
+    role,
+    payload: redactedPayload,
   };
+  validateNoSensitiveMaterial(body, "belief_signal");
   return Object.freeze({
     ...body,
     advisory: true,
@@ -94,13 +163,13 @@ function appendJsonl(filePath, record) {
   fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`);
 }
 
-function writeBeliefSignalScratch({ target_domain, kind, source, payload }) {
+function writeBeliefSignalScratch({ target_domain, kind, source, provenance, artifact_ref, role, payload }) {
   const targetDomain = normalizeTargetDomain(target_domain);
   const filePath = assertBeliefScratchWritePath({
     target_domain: targetDomain,
     file_path: beliefSignalsJsonlPath(targetDomain),
   });
-  const signal = normalizeSignal({ kind, source, payload });
+  const signal = normalizeSignal({ kind, source, provenance, artifact_ref, role, payload });
   appendJsonl(filePath, signal);
   return {
     target_domain: targetDomain,
@@ -131,21 +200,26 @@ function readBeliefSignals({ target_domain, limit = 100 } = {}) {
   };
 }
 
-function queryBeliefSignals({ target_domain, kind, source, limit } = {}) {
+function queryBeliefSignals({ target_domain, kind, source, provenance, role, limit } = {}) {
   const read = readBeliefSignals({ target_domain, limit });
   return {
     ...read,
     signals: read.signals.filter((signal) => {
       if (kind && signal.kind !== kind) return false;
       if (source && signal.source !== source) return false;
+      if (provenance && signal.provenance !== provenance) return false;
+      if (role && signal.role !== role) return false;
       return true;
     }),
   };
 }
 
 module.exports = {
+  BELIEF_PROVENANCE_VALUES,
   BELIEF_SIGNAL_KIND_VALUES,
+  BELIEF_SIGNAL_ROLE_VALUES,
   assertBeliefScratchWritePath,
+  assertBeliefProvenance,
   queryBeliefSignals,
   readBeliefSignals,
   writeBeliefSignalScratch,

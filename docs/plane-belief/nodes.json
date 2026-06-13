@@ -52,7 +52,7 @@
    "action": "extend_existing",
    "phase": "substrate",
    "step": 1,
-   "status": "ready",
+   "status": "done",
    "predecessors": [],
    "unlocks": [
     "CB-1"
@@ -72,7 +72,7 @@
    "action": "extend_existing",
    "phase": "substrate",
    "step": 1,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-S1",
     "CB-S2"

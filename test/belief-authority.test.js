@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 
 const {
+  BELIEF_PROVENANCE_VALUES,
   assertBeliefScratchWritePath,
   queryBeliefSignals,
   readBeliefSignals,
@@ -77,6 +78,8 @@ test("belief signals are advisory derived scratch with stable content hashes", (
       target_domain: domain,
       kind: "mechanism_projection",
       source: "CB-S1-test",
+      provenance: "surface_graph",
+      artifact_ref: "surface-graph.jsonl#edge:abc",
       payload: {
         projection_hash: "sha256:abc",
         surface_graph_hash: "sha256:def",
@@ -86,6 +89,8 @@ test("belief signals are advisory derived scratch with stable content hashes", (
       target_domain: domain,
       kind: "mechanism_projection",
       source: "CB-S1-test",
+      provenance: "surface_graph",
+      artifact_ref: "surface-graph.jsonl#edge:abc",
       payload: {
         surface_graph_hash: "sha256:def",
         projection_hash: "sha256:abc",
@@ -108,8 +113,106 @@ test("belief signals are advisory derived scratch with stable content hashes", (
       target_domain: domain,
       kind: "mechanism_projection",
       source: "CB-S1-test",
+      provenance: "surface_graph",
+      role: "evidence",
     });
     assert.equal(queried.signals.length, 2);
+  });
+});
+
+test("belief provenance is closed and residual_anomaly is diagnostic-only", () => {
+  assert.deepEqual(BELIEF_PROVENANCE_VALUES, [
+    "observed_http",
+    "observed_traffic",
+    "declared_schema",
+    "static_code",
+    "surface_graph",
+    "claim_ledger",
+    "verification_result",
+    "operator_asserted",
+    "llm_inferred",
+    "learned_prior",
+    "verified_intervention",
+    "residual_anomaly",
+  ]);
+
+  withTempHome(() => {
+    const domain = "belief.example";
+    assert.throws(
+      () => writeBeliefSignalScratch({
+        target_domain: domain,
+        kind: "belief_signal",
+        source: "CB-S2-test",
+        provenance: "machine_invented_class",
+        artifact_ref: "belief-window:test",
+        payload: { mechanism_id: "object_authorization" },
+      }),
+      /invalid belief provenance/,
+    );
+    assert.throws(
+      () => writeBeliefSignalScratch({
+        target_domain: domain,
+        kind: "belief_signal",
+        source: "CB-S2-test",
+        provenance: "residual_anomaly",
+        artifact_ref: "belief-window:test",
+        role: "evidence",
+        payload: { residual_hash: "sha256:abc" },
+      }),
+      /diagnostic-only/,
+    );
+
+    writeBeliefSignalScratch({
+      target_domain: domain,
+      kind: "belief_signal",
+      source: "CB-S2-test",
+      provenance: "residual_anomaly",
+      artifact_ref: "belief-window:test",
+      role: "diagnostic",
+      payload: { residual_hash: "sha256:abc" },
+    });
+    const queried = queryBeliefSignals({
+      target_domain: domain,
+      provenance: "residual_anomaly",
+      role: "diagnostic",
+    });
+    assert.equal(queried.signals.length, 1);
+  });
+});
+
+test("belief writer redacts string leaves before secret validation and rejects secret-shaped fields", () => {
+  withTempHome(() => {
+    const domain = "belief.example";
+    assert.throws(
+      () => writeBeliefSignalScratch({
+        target_domain: domain,
+        kind: "belief_signal",
+        source: "CB-S2-test",
+        provenance: "observed_http",
+        artifact_ref: "http-audit:abc",
+        payload: {
+          endpoint: "/api/me",
+          authorization_header: "Bearer should-not-land",
+        },
+      }),
+      /secrets|auth headers|cookies|tokens/,
+    );
+
+    writeBeliefSignalScratch({
+      target_domain: domain,
+      kind: "belief_signal",
+      source: "CB-S2-test",
+      provenance: "observed_http",
+      artifact_ref: "http-audit:abc",
+      payload: {
+        endpoint_name: "GET /api/me",
+        auth_header_hash: "sha256:abc",
+        cookie_name: "session",
+      },
+    });
+    const read = readBeliefSignals({ target_domain: domain });
+    assert.equal(read.signals.length, 1);
+    assert.equal(read.signals[0].payload.cookie_name, "session");
   });
 });
 
