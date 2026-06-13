@@ -180,6 +180,51 @@ test("belief provenance is closed and residual_anomaly is diagnostic-only", () =
   });
 });
 
+test("CB-B7: llm_inferred belief is advisory and cannot enter the window as evidence", () => {
+  withTempHome(() => {
+    const domain = "belief.example";
+    // default role is "evidence" -> an llm_inferred signal must NOT silently land as evidence
+    assert.throws(
+      () => writeBeliefSignalScratch({
+        target_domain: domain,
+        kind: "belief_signal",
+        source: "CB-B7-test",
+        provenance: "llm_inferred",
+        artifact_ref: "belief-window:test",
+        payload: { latent: "effective_permission", distribution: { allowed: 0.7, blocked: 0.2, unknown: 0.1 } },
+      }),
+      /advisory and cannot enter the belief window as evidence/,
+    );
+    assert.throws(
+      () => writeBeliefSignalScratch({
+        target_domain: domain,
+        kind: "belief_signal",
+        source: "CB-B7-test",
+        provenance: "llm_inferred",
+        artifact_ref: "belief-window:test",
+        role: "evidence",
+        payload: { latent: "effective_permission" },
+      }),
+      /advisory and cannot enter the belief window as evidence/,
+    );
+
+    // role:prior is the honest home for an elicited belief
+    writeBeliefSignalScratch({
+      target_domain: domain,
+      kind: "belief_signal",
+      source: "CB-B7-test",
+      provenance: "llm_inferred",
+      artifact_ref: "belief-window:test",
+      role: "prior",
+      payload: { latent: "effective_permission", distribution: { allowed: 0.7, blocked: 0.2, unknown: 0.1 } },
+    });
+    const queried = queryBeliefSignals({ target_domain: domain, provenance: "llm_inferred", role: "prior" });
+    assert.equal(queried.signals.length, 1);
+    assert.equal(queried.signals[0].role, "prior");
+    assert.equal(queried.signals[0].provenance, "llm_inferred");
+  });
+});
+
 test("belief writer redacts string leaves before secret validation and rejects secret-shaped fields", () => {
   withTempHome(() => {
     const domain = "belief.example";

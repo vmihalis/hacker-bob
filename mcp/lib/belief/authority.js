@@ -130,6 +130,12 @@ function normalizeSignal({ kind, source, provenance, artifact_ref, role = "evide
   if (provenance === "residual_anomaly" && role !== "diagnostic") {
     throw new Error("residual_anomaly is diagnostic-only and cannot enter the belief window as evidence or prior");
   }
+  // CB-B7: an agent-elicited belief is advisory. It may be a prior or a diagnostic,
+  // never evidence -- the honesty rail that keeps llm_inferred from masquerading as a
+  // verified_intervention-grade fact.
+  if (provenance === "llm_inferred" && role === "evidence") {
+    throw new Error("llm_inferred is advisory and cannot enter the belief window as evidence; use role 'prior' or 'diagnostic'");
+  }
   if (typeof source !== "string" || !source.trim()) {
     throw new Error("source is required");
   }

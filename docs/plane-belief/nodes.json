@@ -293,7 +293,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "ready",
+   "status": "in_progress",
    "predecessors": [],
    "unlocks": [
     "CB-B1",
@@ -307,7 +307,9 @@
     "engineering": "FALSIFIABLE GATE: flip one cited evidence_ref -> posterior moves toward the right state past a preregistered threshold; flip an irrelevant field -> stays below. Belief invariant to evidence = regex with a model_id. llm_inferred cannot be written role:evidence.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "[CB-B7] role guard DONE (authority.js normalizeSignal: llm_inferred cannot be role:evidence, default or explicit; mirrors residual_anomaly gate). belief-authority test +1 case, 6/6 pass; check:syntax clean. REMAINING, blocked on a user decision: the live LLM elicitation step (which model, prompt/state contract, loop placement), record-don't-recall wiring, and the evidence-sensitivity gate validated against a REAL agent (token spend + eval methodology). These commit Bob to runtime LLM calls and an eval budget -- a material architecture decision."
+   ]
   },
   {
    "id": "CB-C2",
