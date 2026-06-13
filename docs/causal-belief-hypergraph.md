@@ -20,6 +20,19 @@ typed facts -> belief over latent mechanism variables -> max-information interve
 The first mechanism is **object authorization** because it is high-yield,
 cross-stack, and already richly observable in Bob's evidence.
 
+## Revision: path A-prime (2026-06-13)
+
+The first realization of the inference engine (`CB-B*`) shipped **degenerate** --
+evidence-invariant regex priors, hand-bonus ranking, a sampler that ignores its
+factors, a trainer whose weights are never used (one audit workflow + three
+brutalist roasts, code-verified). The corrected direction, **path A-prime**, is:
+the LLM agent is the estimator, and the engine is the typed, calibrated, replayable,
+provenance-disciplined scaffold around its judgment. Primary value is the
+deterministic differential tester (run runnable controls for hard labels, nearly
+free); the agent-elicited belief is a secondary advisory routing prior, confined to
+scratch and role-guarded, never the audit ledger. Full spec and the falsifiable
+acceptance gate: `detail/PATH-A-PRIME.md`. Node deltas: `nodes.json` `revision`.
+
 ## The central principle: reuse the substrate, build the engine
 
 A supersession audit found that ~80 percent of a naive "belief plane" already

@@ -139,11 +139,12 @@
    "action": "build_new",
    "phase": "engine",
    "step": 3,
-   "status": "done",
+   "status": "blocked",
    "predecessors": [
     "CB-1",
     "CB-2",
-    "CB-3"
+    "CB-3",
+    "CB-B7"
    ],
    "unlocks": [
     "CB-B4",
@@ -156,7 +157,10 @@
     "engineering": "Same evidence -> same posterior; IDOR fixture yields high effective_permission mass on the attacker-victim pair, public-object fixture does not; no claim recorded from belief alone.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "[path-a-prime] regex priors are evidence-invariant (belief-window.js:77-89); reopened under path-a' -> agent-elicited distribution recorded scratch, role-guarded. Blocked on CB-B7."
+   ],
+   "reopened_by": "path-a-prime"
   },
   {
    "id": "CB-B4",
@@ -164,9 +168,10 @@
    "action": "build_new",
    "phase": "engine",
    "step": 4,
-   "status": "done",
+   "status": "blocked",
    "predecessors": [
-    "CB-B1"
+    "CB-B1",
+    "CB-B7"
    ],
    "unlocks": [
     "CB-B6",
@@ -183,8 +188,10 @@
     {
      "severity": "deferred_field_gate",
      "summary": "Equal-budget A/B is required before default-enabling sampler-ranked intervention selection; CB-B4 remains advisory scratch until that field gate is run."
-    }
-   ]
+    },
+    "[path-a-prime] sum-product over self-supplied potentials is ceremony (roast); DEMOTED from deliverable to A/B hypothesis, gated behind CB-B7 proving evidence-sensitivity."
+   ],
+   "reopened_by": "path-a-prime"
   },
   {
    "id": "CB-B6",
@@ -214,10 +221,11 @@
    "action": "build_new",
    "phase": "engine",
    "step": 6,
-   "status": "done",
+   "status": "blocked",
    "predecessors": [
     "CB-B1",
-    "CB-B4"
+    "CB-B4",
+    "CB-B7"
    ],
    "unlocks": [
     "CB-B3"
@@ -229,7 +237,10 @@
     "engineering": "Deterministic given window+seed; IDOR fixture ranks the victim-object swap above re-running an attacker-owned control; public-object fixture ranks public_object_check first.",
     "field": null
    },
-   "findings": []
+   "findings": [
+    "[path-a-prime] hand-bonus ranking (intervention-calculus.js:96-103); reopened -> VoI over elicited belief, rank RUNNABLE controls only; on actuatable surfaces run the free control instead. Blocked on CB-B7."
+   ],
+   "reopened_by": "path-a-prime"
   },
   {
    "id": "CB-B3",
@@ -251,6 +262,48 @@
    "review": {
     "engineering": "Loop uses MCP writers only; single-spawner topology preserved.",
     "field": "Equal-budget A/B vs evaluator baseline: valid-claim rate, FP rate, controls-run completeness, time-to-first verified object-auth claim."
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-D1",
+   "kind": "D",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 3,
+   "status": "ready",
+   "predecessors": [],
+   "unlocks": [
+    "CB-B5"
+   ],
+   "intent": "Deterministic differential tester (PRIMARY value): where a control is runnable, run it -- hard confirmed/denied label, zero tokens. The object-auth selector swap is a pure HTTP auth-differential pair.",
+   "anchor": "reuse auth-differential.js (detectUnauthSuccessWhileAuthBlocked) + OBJECT_AUTH_CONTROLS + suggestedContractForCandidate + CB-C2 controls_run[]/confounders_ruled_out[]",
+   "do": "Close CB-B3's loop with an OBSERVE step: run the runnable controls, AND-over-controls = the confirmed/denied verdict, record via CB-C2. The deterministic verdict IS the update.",
+   "review": {
+    "engineering": "verdict flips when a control flips (not when an irrelevant field flips); labels recorded through the one claim plane; replayable from the proof bundle.",
+    "field": "equal-budget A/B: object_auth_valid_claim_rate / missing_control_rate vs baseline."
+   },
+   "findings": []
+  },
+  {
+   "id": "CB-B7",
+   "kind": "B",
+   "action": "build_new",
+   "phase": "engine",
+   "step": 4,
+   "status": "ready",
+   "predecessors": [],
+   "unlocks": [
+    "CB-B1",
+    "CB-B2",
+    "CB-B4"
+   ],
+   "intent": "Evidence-conditioned elicitation primitive (SECONDARY advisory routing prior): the agent emits a distribution over ONE latent's states + rationale + cited evidence_refs, recorded scratch as llm_inferred/role:prior. Plus the missing honesty guard.",
+   "anchor": "writeBeliefSignalScratch + authority.js normalizeSignal (add llm_inferred role guard, mirror residual_anomaly gate :130); NOT frontier-events ledger",
+   "do": "1) elicit one latent's distribution + evidence_refs, lazy + cached by window_hash+refs; 2) extend normalizeSignal so llm_inferred cannot be role:evidence or source severity/grade; 3) ship the evidence-sensitivity gate as the acceptance test.",
+   "review": {
+    "engineering": "FALSIFIABLE GATE: flip one cited evidence_ref -> posterior moves toward the right state past a preregistered threshold; flip an irrelevant field -> stays below. Belief invariant to evidence = regex with a model_id. llm_inferred cannot be written role:evidence.",
+    "field": null
    },
    "findings": []
   },
@@ -312,9 +365,10 @@
    "action": "build_new+layer_on_labels",
    "phase": "engine",
    "step": 9,
-   "status": "done",
+   "status": "blocked",
    "predecessors": [
-    "CB-C2"
+    "CB-C2",
+    "CB-D1"
    ],
    "unlocks": [
     "default-enablement"
@@ -330,8 +384,10 @@
     {
      "severity": "deferred_field_gate",
      "summary": "Offline calibrated factor trainer and model-info reader are implemented over sanitized claim/verification/grade exports; default enablement remains false pending held-out equal-budget lift review."
-    }
-   ]
+    },
+    "[path-a-prime] (mean_pos-mean_neg)*2 trainer, weights unused (model.js:176); reopened -> pooled CROSS-SESSION recalibration map, shipped gated; per-engagement labels unfittable. Blocked on CB-D1 labels."
+   ],
+   "reopened_by": "path-a-prime"
   }
  ],
  "excluded_by_doctrine": [
@@ -340,5 +396,28 @@
    "title": "machine template-induction (LLM-proposed class self-validated + promoted to the registry)",
    "reason": "Dominated (brutalist-validated): instance != class validation; the falsifying negative controls are the unexecutable victim-auth interventions on n=1; promotion launders llm_inferred into verified_intervention authority; it poisons CB-B5 labels; info-gain is blind to a latent not yet in the window. Class invention stays a human-reviewed registry change."
   }
- ]
+ ],
+ "revision": {
+  "id": "path-a-prime",
+  "date": "2026-06-13",
+  "why": "The CB-B* inference nodes shipped degenerate (1 audit workflow + 3 brutalist roasts, code-verified): evidence-invariant regex priors, hand-bonus ranking, a sampler that ignores its factors, a trainer whose weights are never used.",
+  "reframe": "LLM-as-estimator. The agent is the estimator; the engine is the typed, calibrated, replayable, provenance-disciplined scaffold. See detail/PATH-A-PRIME.md.",
+  "decisions": [
+   "Primary value is the deterministic differential tester (CB-D1): run runnable controls for hard labels; nearly free.",
+   "Secondary is one evidence-conditioned elicitation primitive (CB-B7), confined to advisory SCRATCH (writeBeliefSignalScratch), tagged llm_inferred, with a role guard; never the frontier-events ledger (which defaults unknown kinds to operator_asserted = laundering).",
+   "Factor-graph sum-product (CB-B4) demoted from deliverable to A/B hypothesis.",
+   "Calibration (CB-B5) is pooled cross-session only, shipped gated.",
+   "Belief-assisted scheduler priority stays gated off until an external-label loop-breaker exists (confirmation-loop guard)."
+  ],
+  "reopened": [
+   "CB-B1",
+   "CB-B2",
+   "CB-B4",
+   "CB-B5"
+  ],
+  "added": [
+   "CB-D1",
+   "CB-B7"
+  ]
+ }
 }
