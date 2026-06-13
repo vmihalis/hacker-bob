@@ -237,7 +237,7 @@
    "action": "build_new+layer_on_dispatch",
    "phase": "engine",
    "step": 6,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B2"
    ],
@@ -260,7 +260,7 @@
    "action": "extend_existing",
    "phase": "coupling",
    "step": 7,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B3"
    ],
@@ -282,7 +282,7 @@
    "action": "layer_on",
    "phase": "coupling",
    "step": 8,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B3",
     "CB-B6"

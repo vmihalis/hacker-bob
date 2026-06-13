@@ -122,6 +122,7 @@
   "test/belief-factor-graph.test.js",
   "test/belief-residual.test.js",
   "test/belief-intervention-calculus.test.js",
+  "test/belief-experiment-loop.test.js",
   "test/belief-frontier-facts.test.js",
   "test/compose-report.test.js",
   "test/proof-bundle.test.js",

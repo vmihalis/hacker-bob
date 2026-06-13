@@ -254,6 +254,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "intervention calculus rankings are advisory do-operation candidates and never scheduler dispatch or claim authority",
   }),
+  Object.freeze({
+    consumer_id: "belief_experiment_loop_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/plan-belief-experiment.js",
+      token_or_regex: "planBeliefExperiment",
+    }),
+    producer_id: "belief_experiment_hypothesis_proposals",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "experiment-loop proposals flow through the existing hypothesis-proposal writer and remain bounded advisory planning inputs",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

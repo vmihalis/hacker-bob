@@ -178,6 +178,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_intervention_query_tool",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_experiment_hypothesis_proposals",
+    mcp_tool_or_artifact: "frontier-events.jsonl hypothesis_proposed",
+    trace_shape_ref: "mcp/lib/belief/experiment-loop.js#planBeliefExperiment",
+    registered_consumers: Object.freeze([
+      "belief_experiment_loop_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(
