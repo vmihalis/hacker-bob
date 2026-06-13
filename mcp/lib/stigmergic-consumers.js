@@ -243,6 +243,17 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "residual anomaly diagnostics are consumed as non-gating human/scheduler hints and cannot become evidence, claims, or template authority",
   }),
+  Object.freeze({
+    consumer_id: "belief_intervention_query_tool",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/query-intervention-calculus.js",
+      token_or_regex: "rankInterventions",
+    }),
+    producer_id: "belief_intervention_calculus_ranking",
+    decision_boundary: "validator_invocation",
+    rationale:
+      "intervention calculus rankings are advisory do-operation candidates and never scheduler dispatch or claim authority",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

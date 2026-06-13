@@ -122,6 +122,7 @@ const TOOL_MODULES = Object.freeze([
   require("./query-belief-window.js"),
   require("./run-belief-sampler.js"),
   require("./run-belief-residual.js"),
+  require("./query-intervention-calculus.js"),
   require("./append-frontier-event.js"),
   // Plane X Cycle X.1 — TaskGraph proposal tools. The wrapper-backed
   // appendXxx helpers live in mcp/lib/task-graph-events.js; these tool

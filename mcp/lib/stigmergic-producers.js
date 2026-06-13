@@ -170,6 +170,14 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_residual_diagnostic_reader",
     ]),
   }),
+  Object.freeze({
+    producer_id: "belief_intervention_calculus_ranking",
+    mcp_tool_or_artifact: "bob_query_intervention_calculus",
+    trace_shape_ref: "mcp/lib/belief/intervention-calculus.js#rankInterventions",
+    registered_consumers: Object.freeze([
+      "belief_intervention_query_tool",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

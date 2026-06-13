@@ -214,7 +214,7 @@
    "action": "build_new",
    "phase": "engine",
    "step": 6,
-   "status": "ready",
+   "status": "done",
    "predecessors": [
     "CB-B1",
     "CB-B4"
@@ -237,7 +237,7 @@
    "action": "build_new+layer_on_dispatch",
    "phase": "engine",
    "step": 6,
-   "status": "blocked",
+   "status": "ready",
    "predecessors": [
     "CB-B2"
    ],
