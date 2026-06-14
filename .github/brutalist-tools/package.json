@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.162",
+    "@anthropic-ai/claude-code": "2.1.177",
     "@brutalist/mcp": "1.15.0",
-    "@openai/codex": "0.136.0"
+    "@openai/codex": "0.139.0"
   },
   "overrides": {
     "@modelcontextprotocol/sdk": "1.29.0"
