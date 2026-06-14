@@ -32,6 +32,8 @@ const {
 } = require("../finding-contracts.js");
 const {
   appendCandidateClaim,
+  normalizeEvidenceReferenceShape,
+  normalizeExploitOutcome,
   readCandidateClaims,
 } = require("../claims.js");
 const { appendFrontierEvent } = require("../frontier-events.js");
@@ -371,6 +373,22 @@ function buildSecretEvidenceBypassRows(secretBypass) {
   return rows;
 }
 
+function normalizeExploitRunEvidenceRefs(rawRefs) {
+  if (rawRefs == null) return [];
+  if (!Array.isArray(rawRefs)) {
+    throw new Error("evidence_refs must be an array when provided");
+  }
+  return rawRefs.map((ref, index) => {
+    if (ref == null || typeof ref !== "object" || Array.isArray(ref)) {
+      throw new Error(`evidence_refs[${index}] must be an object`);
+    }
+    if (ref.kind !== "exploit_run") {
+      throw new Error(`evidence_refs[${index}].kind must be exploit_run`);
+    }
+    return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
+  });
+}
+
 function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretBypass = new Map()) {
   const payload = {};
   const subjectId = deriveSubjectId(finding);
@@ -444,6 +462,13 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     payload.secret_evidence_bypass = secretBypassRows;
   }
 
+  const evidenceRefs = [{
+    kind: "finding",
+    finding_id: finding.id,
+    content_hash: findingContentHash,
+  }];
+  evidenceRefs.push(...normalizeExploitRunEvidenceRefs(args.evidence_refs));
+
   const claim = {
     target_domain: finding.target_domain,
     title: finding.title,
@@ -455,12 +480,10 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     created_at: typeof args.created_at === "string" && args.created_at.trim()
       ? args.created_at
       : new Date().toISOString(),
-    evidence_refs: [{
-      kind: "finding",
-      finding_id: finding.id,
-      content_hash: findingContentHash,
-    }],
+    evidence_refs: evidenceRefs,
   };
+  const exploitOutcome = normalizeExploitOutcome(args.exploit_outcome);
+  if (exploitOutcome) claim.exploit_outcome = exploitOutcome;
   if (typeof finding.surface_id === "string" && finding.surface_id.trim()) {
     claim.surface_ids = [finding.surface_id];
   }
@@ -690,6 +713,57 @@ module.exports = Object.freeze({
       },
       "auth_profile": {
         "type": "string"
+      },
+      "exploit_outcome": {
+        "type": "object",
+        "description": "Optional safe exploit outcome. outcome=\"exploited_safely\" requires safe_oracle.kind and at least one evidence_refs[] item with kind=\"exploit_run\" backed by a MAC-signed offensive-runs.jsonl row.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"]
+          },
+          "safe_oracle": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "out_of_band_interaction",
+                  "reflected_canary",
+                  "differential_response",
+                  "benign_state_change",
+                  "blind_boolean_timing",
+                  "benign_command_marker"
+                ]
+              }
+            },
+            "required": ["kind"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["outcome"],
+        "additionalProperties": false
+      },
+      "evidence_refs": {
+        "type": "array",
+        "description": "Optional exploit proof references. bob_record_candidate_claim only accepts kind=\"exploit_run\" here; it always adds the finding ref itself.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "enum": ["exploit_run"] },
+            "run_id": { "type": "string" },
+            "tool_id": { "type": "string" },
+            "target": { "type": "string" },
+            "offensive_outcome": { "type": "string", "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"] },
+            "command_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "exit_code": { "type": ["integer", "null"] },
+            "stdout_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "stderr_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "source_run_id": { "type": "string" }
+          },
+          "required": ["kind", "run_id", "tool_id", "target", "offensive_outcome", "command_hash", "exit_code", "stdout_hash", "stderr_hash"],
+          "additionalProperties": false
+        }
       },
       "surface_id": {
         "type": "string"

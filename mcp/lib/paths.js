@@ -351,6 +351,13 @@ function offensiveRunsJsonlPath(domain) {
   return path.join(sessionDir(domain), "offensive-runs.jsonl");
 }
 
+// Raw request/response capture files for bob_http_confirm. These are
+// read-guarded because they can contain target bytes and synthetic proof
+// material; rows in offensive-runs.jsonl carry only paths and hashes.
+function offensiveRunsDir(domain) {
+  return path.join(sessionDir(domain), "offensive-runs");
+}
+
 // Cycle O.4: repo-runs/<run_id>.{stdout,stderr} are the bounded (16 MB
 // each) capture files for each docker run. Lives under sessionDir so
 // session-read-guard.sh can extend BLOCKED_DIRS to it in cycle O.7.
@@ -546,6 +553,7 @@ module.exports = {
   pipelineEventsJsonlPath,
   proofBundlePaths,
   publicIntelPath,
+  offensiveRunsDir,
   offensiveRunsJsonlPath,
   queuePolicyPath,
   reportMarkdownPath,

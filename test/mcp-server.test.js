@@ -397,6 +397,7 @@ const {
 
 const EXPECTED_TOOL_NAMES = [
   "bob_http_scan",
+  "bob_http_confirm",
   "bob_read_http_audit",
   "bob_start_next_wave",
   "bob_start_wave",
@@ -2012,6 +2013,10 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(byName.get("bob_http_scan").inputSchema.properties.url.type, "string");
   assert.equal(byName.get("bob_http_scan").inputSchema.properties.egress_profile.type, "string");
   assert.deepEqual(byName.get("bob_http_scan").inputSchema.required, ["method", "url", "target_domain"]);
+  assert.equal(byName.get("bob_http_confirm").inputSchema.properties.surface_id.type, "string");
+  assert.equal(Object.hasOwn(byName.get("bob_http_confirm").inputSchema.properties, "finding_id"), false);
+  assert.equal(Object.hasOwn(byName.get("bob_http_confirm").inputSchema.properties, "severity"), false);
+  assert.deepEqual(byName.get("bob_http_confirm").inputSchema.required, ["target_domain", "surface_id", "oracle_kind", "path_template"]);
   assert.equal(TOOL_MANIFEST.bob_read_http_audit.mutating, false);
   assert.equal(byName.get("bob_write_chain_attempt").inputSchema.properties.outcome.enum.includes("inconclusive"), true);
   assert.deepEqual(TOOL_MANIFEST.bob_write_chain_attempt.role_bundles, ["chain"]);
@@ -2054,6 +2059,11 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bob_http_scan.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_scan.scope_url_fields, []);
+  assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.role_bundles, ["verifier", "evaluator-web", "evidence"]);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.mutating, false);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.network_access, true);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.scope_required, true);
+  assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.session_artifacts_written, ["offensive-runs.jsonl", "offensive-runs/"]);
   assert.deepEqual(TOOL_MANIFEST.bob_run_doc_delta.scope_url_fields, ["base_url"]);
   assert.deepEqual(TOOL_MANIFEST.bob_run_auth_differential.scope_url_fields, ["base_url"]);
   assert.deepEqual(TOOL_MANIFEST.bob_signup_detect.scope_url_fields, ["target_url"]);

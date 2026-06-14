@@ -90,6 +90,7 @@ BLOCKED_DIRS = {
     # in-container scratch space (`repo-work/`), and S14 materialized
     # control checkouts (`repo-checkouts/`) must stay opaque to agents.
     "repo-runs",
+    "offensive-runs",
     "repo-work",
     "repo-checkouts",
 }

@@ -45,6 +45,7 @@ const {
   verifyOffensiveRunRowMac,
 } = require("./offensive-row-mac.js");
 const {
+  SEVERITY_VALUES,
   OFFENSIVE_OUTCOME_VALUES,
   SAFE_ORACLE_KINDS,
 } = require("./constants.js");
@@ -747,6 +748,14 @@ function readOffensiveRunRecords(domain) {
 
 const O_P4_DISALLOWED_REPO_COMMAND_EXIT_CODES = Object.freeze([125, 126, 127]);
 const OFFENSIVE_RUN_DISALLOWED_EXIT_CODES = Object.freeze([125, 126, 127]);
+const CLAIM_EXPLOIT_SEVERITY_RANK = Object.freeze(
+  Object.fromEntries(SEVERITY_VALUES.map((severity, index) => [severity, SEVERITY_VALUES.length - index])),
+);
+
+function exploitSeverityRank(severity) {
+  const normalized = severity === "informational" ? "info" : severity;
+  return (typeof normalized === "string" && CLAIM_EXPLOIT_SEVERITY_RANK[normalized.toLowerCase()]) || 0;
+}
 
 function repoCommandRunRowSatisfiesEvidence(row, ref) {
   // The cross-check (additive to the evidence_ref shape gate): the row must
@@ -871,7 +880,7 @@ function assertNotStaticOnlyNativeHighSeverity(claim) {
   }
 }
 
-function assertExploitedClaimHasProof(claim) {
+function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
   const evidenceRefs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
   const exploitRunRefs = evidenceRefs.filter((ref) => ref && ref.kind === "exploit_run");
   // PR #108 review (Codex round-6 P1): exploit_run refs are proof-of-exploitation
@@ -914,17 +923,56 @@ function assertExploitedClaimHasProof(claim) {
   // freeze on the coattails of one valid ref, smuggling off-scope offensive
   // evidence. (Stricter than the O-P4 repo_command_run gate by design: offensive
   // target URLs are scope-sensitive in a way native-code run ids are not.)
-  const allBacked = exploitRunRefs.every((ref) => (
-    runRows.some((row) => offensiveRunRowSatisfiesEvidence(row, ref, claim.target_domain, signingKey))
-  ));
-  if (!allBacked) {
+  const backedRows = [];
+  for (const ref of exploitRunRefs) {
+    const row = runRows.find((candidate) => (
+      offensiveRunRowSatisfiesEvidence(candidate, ref, claim.target_domain, signingKey)
+    ));
+    if (!row) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "exploited_safely claims require every exploit_run evidence_ref to be backed by a matching in-scope, non-dry-run offensive-runs.jsonl row.",
+        {
+          code: "exploit_proof_unbacked_exploit_run_evidence",
+          outcome: claim.exploit_outcome.outcome,
+          disallowed_offensive_run_exit_codes: OFFENSIVE_RUN_DISALLOWED_EXIT_CODES,
+        },
+      );
+    }
+    backedRows.push(row);
+  }
+
+  const claimRunIds = new Set(exploitRunRefs.map((ref) => ref.run_id));
+  for (const existing of existingClaims) {
+    if (!existing || existing.claim_id === claim.claim_id) continue;
+    const existingRefs = Array.isArray(existing.evidence_refs) ? existing.evidence_refs : [];
+    for (const ref of existingRefs) {
+      if (!ref || ref.kind !== "exploit_run") continue;
+      if (!claimRunIds.has(ref.run_id)) continue;
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "exploit_run run_id is already consumed by a previously recorded claim; run a fresh confirmer for each finding.",
+        {
+          code: "exploit_run_run_id_already_consumed",
+          run_id: ref.run_id,
+          existing_claim_id: existing.claim_id || null,
+        },
+      );
+    }
+  }
+
+  const maxDemonstratedRank = backedRows.reduce((maxRank, row) => (
+    Math.max(maxRank, exploitSeverityRank(row.demonstrated_severity))
+  ), 0);
+  const claimRank = exploitSeverityRank(claim.severity);
+  if (claimRank > maxDemonstratedRank) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "exploited_safely claims require every exploit_run evidence_ref to be backed by a matching in-scope, non-dry-run offensive-runs.jsonl row.",
+      "exploited_safely claim severity exceeds the maximum demonstrated_severity of its cited offensive run rows.",
       {
-        code: "exploit_proof_unbacked_exploit_run_evidence",
-        outcome: claim.exploit_outcome.outcome,
-        disallowed_offensive_run_exit_codes: OFFENSIVE_RUN_DISALLOWED_EXIT_CODES,
+        code: "exploit_proof_severity_exceeds_demonstrated",
+        claim_severity: claim.severity,
+        max_demonstrated_rank: maxDemonstratedRank,
       },
     );
   }
@@ -932,13 +980,14 @@ function assertExploitedClaimHasProof(claim) {
 
 function appendCandidateClaim(input, options = {}) {
   const claim = normalizeCandidateClaim(input, options);
-  // O-P4 validator runs before the JSONL append so a rejected claim leaves
-  // claims.jsonl untouched. Wave-handoff / blocked-harness consistency is the
-  // sibling gate on the handoff path; the claim path owns the native-code
-  // severity gate.
-  assertNotStaticOnlyNativeHighSeverity(claim);
-  assertExploitedClaimHasProof(claim);
   return withSessionLock(claim.target_domain, () => {
+    // O-P4 and exploit-proof validators run before the JSONL append so a
+    // rejected claim leaves claims.jsonl untouched. The exploit gate reads
+    // existing claims while this same session lock is held, making run_id
+    // single-use a real row->claim binding rather than a best-effort scan.
+    const existingClaims = readCandidateClaims(claim.target_domain);
+    assertNotStaticOnlyNativeHighSeverity(claim);
+    assertExploitedClaimHasProof(claim, { existingClaims });
     appendJsonlLine(claimsJsonlPath(claim.target_domain), claim, {
       maxRecords: options.maxRecords == null ? CLAIMS_MAX_RECORDS : options.maxRecords,
     });
@@ -974,6 +1023,7 @@ module.exports = {
   generatedClaimId,
   normalizeCandidateClaim,
   normalizeEvidenceReferenceShape,
+  normalizeExploitOutcome,
   readCandidateClaims,
   readOffensiveRunRecords,
   offensiveRunRowSatisfiesEvidence,

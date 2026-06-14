@@ -94,6 +94,7 @@ function buildOffensiveRunRow(domain, overrides = {}) {
     exit_code: ref.exit_code,
     stdout_hash: ref.stdout_hash,
     stderr_hash: ref.stderr_hash,
+    demonstrated_severity: "low",
     ...overrides,
   };
   // The runner records the same canonical (redacted) target the claim ref carries
@@ -305,7 +306,7 @@ test("persisted exploited claims remain readable after the proof ledger is gone"
   assert.equal(readBack.exploit_outcome.outcome, "exploited_safely");
 }));
 
-test("exploit proof gate is severity-agnostic", () => {
+test("exploit proof gate applies before severity ceiling and allows informational claims on a low row", () => {
   withTempHome(() => {
     const domain = "offensive-low-reject.example";
     const error = mustThrow(() => appendCandidateClaim(exploitedClaim(domain, {
@@ -324,6 +325,48 @@ test("exploit proof gate is severity-agnostic", () => {
     assert.equal(claim.severity, "informational");
   });
 });
+
+test("exploited_safely run_id is single-use across persisted claims", () => withTempHome(() => {
+  const domain = "offensive-run-single-use.example";
+  appendOffensiveRunRow(domain);
+  const createdAt = "2026-06-01T00:00:00.000Z";
+
+  const first = appendCandidateClaim(exploitedClaim(domain, {
+    title: "First finding backed by the run",
+    summary: "The first claim consumes the confirmer run.",
+    created_at: createdAt,
+  }));
+  assert.equal(first.exploit_outcome.outcome, "exploited_safely");
+
+  const repeatedSameClaim = appendCandidateClaim(exploitedClaim(domain, {
+    title: "First finding backed by the run",
+    summary: "The first claim consumes the confirmer run.",
+    created_at: createdAt,
+  }));
+  assert.equal(repeatedSameClaim.claim_id, first.claim_id);
+
+  const error = mustThrow(() => appendCandidateClaim(exploitedClaim(domain, {
+    title: "Second finding attempts to reuse the run",
+    summary: "A different claim id cannot consume an already-used run_id.",
+  })));
+  assertInvalidArgumentsCode(error, "exploit_run_run_id_already_consumed");
+}));
+
+test("exploited_safely claim severity cannot exceed demonstrated_severity", () => withTempHome(() => {
+  const domain = "offensive-severity-ceiling.example";
+  appendOffensiveRunRow(domain, { demonstrated_severity: "low" });
+
+  const error = mustThrow(() => appendCandidateClaim(exploitedClaim(domain, {
+    severity: "critical",
+  })));
+  assertInvalidArgumentsCode(error, "exploit_proof_severity_exceeds_demonstrated");
+
+  const lowClaim = appendCandidateClaim(exploitedClaim(domain, {
+    title: "Low severity claim stays within the demonstrated ceiling",
+    severity: "low",
+  }));
+  assert.equal(lowClaim.severity, "low");
+}));
 
 test("exploit_run canonicalizes targets to origin+path (strips secrets value-blind)", () => {
   const cases = [

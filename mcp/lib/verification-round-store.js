@@ -81,6 +81,29 @@ function toRoundSeverity(claimSeverity) {
   return claimSeverity === "informational" ? "info" : claimSeverity;
 }
 
+const VERIFY_SEVERITY_BY_RANK = Object.freeze({
+  1: "info",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "critical",
+});
+
+function severityForVerifyRank(rank) {
+  return VERIFY_SEVERITY_BY_RANK[rank] || null;
+}
+
+function rowAttemptFreshForState(row, sessionState) {
+  return row.verification_attempt_id == null
+    || (
+      row.verification_attempt_id === sessionState.verification_attempt_id
+      && (
+        row.verification_snapshot_hash == null
+        || row.verification_snapshot_hash === sessionState.verification_snapshot_hash
+      )
+    );
+}
+
 // The three v2 result fields that can carry confidence reasons. An unvalidated
 // `exploit_replay_confirmed` proof claim must be stripped from all of them.
 const REASON_ARRAY_FIELDS = Object.freeze([
@@ -114,6 +137,7 @@ const REASON_ARRAY_FIELDS = Object.freeze([
 // untouched by this guard.)
 function clampResultSeveritiesInPlace(domain, results) {
   let nucleus;
+  let sessionState;
   try {
     // Derive web-scope from the VALIDATED session state (the write tool authority
     // validates state.json before this handler), NOT from session-nucleus.json.
@@ -121,7 +145,8 @@ function clampResultSeveritiesInPlace(domain, results) {
     // or semantically-drifted nucleus (target_url removed / swapped for
     // target_repo) silently disable the guard on a session whose state still
     // authorizes a web target. State is the trustworthy scope authority here.
-    nucleus = sessionNucleusFromState(readSessionStateStrict(domain).state);
+    sessionState = readSessionStateStrict(domain).state;
+    nucleus = sessionNucleusFromState(sessionState);
   } catch (error) {
     // Distinguish "no state file yet" (a partially-seeded / pre-state session:
     // pass through, nothing to guard) from a state file that EXISTS but is
@@ -155,6 +180,26 @@ function clampResultSeveritiesInPlace(domain, results) {
   }
   if (!freeze || !Array.isArray(freeze.claims)) return [];
 
+  const exploitRunClaimIds = new Map();
+  for (const claim of freeze.claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+    const claimKey = typeof claim.claim_id === "string" && claim.claim_id
+      ? claim.claim_id
+      : JSON.stringify(refs.filter((ref) => ref && ref.kind === "finding"));
+    for (const ref of refs) {
+      if (!ref || ref.kind !== "exploit_run" || typeof ref.run_id !== "string") continue;
+      const set = exploitRunClaimIds.get(ref.run_id) || new Set();
+      set.add(claimKey);
+      exploitRunClaimIds.set(ref.run_id, set);
+    }
+  }
+  const duplicateExploitRunIds = new Set(
+    Array.from(exploitRunClaimIds.entries())
+      .filter(([, claimIds]) => claimIds.size > 1)
+      .map(([runId]) => runId),
+  );
+
   const byFinding = new Map();
   for (const claim of freeze.claims) {
     if (!claim || typeof claim !== "object") continue;
@@ -164,14 +209,16 @@ function clampResultSeveritiesInPlace(domain, results) {
       .filter((ref) => ref && ref.kind === "finding" && typeof ref.finding_id === "string")
       .map((ref) => ref.finding_id);
     // Bind exploit_run refs to a finding ONLY when the claim references exactly
-    // one finding. A multi-finding claim carrying an exploit row would otherwise
-    // let a row demonstrated for one finding stand as proof for a sibling
-    // (cross-finding spillover); refuse to propagate it. The remaining
-    // per-finding row->impact binding (which run proves which severity) is a hard
-    // requirement of the future offensive-runner PR; the allow-path is dormant
-    // until then.
+    // one finding. Cross-finding row binding is server-enforced at record time
+    // via run_id single-use. As a defense-in-depth backstop, if a forged/corrupt
+    // freeze contains the same run_id on multiple claims, drop it from all.
     const exploitRunRefs = findingIds.length === 1
-      ? refs.filter((ref) => ref && ref.kind === "exploit_run")
+      ? refs.filter((ref) => (
+        ref
+        && ref.kind === "exploit_run"
+        && typeof ref.run_id === "string"
+        && !duplicateExploitRunIds.has(ref.run_id)
+      ))
       : [];
     for (const findingId of findingIds) {
       const current = byFinding.get(findingId)
@@ -196,33 +243,37 @@ function clampResultSeveritiesInPlace(domain, results) {
     let provenRise = false;
 
     const base = byFinding.get(result.finding_id);
+    let maxDemonstratedRank = 0;
+    if (base && base.exploitRunRefs.length > 0) {
+      if (runRows === null) runRows = readOffensiveRunRecords(domain);
+      if (runRows.length > 0) {
+        if (signingKey === null) signingKey = readHandoffSigningKey(domain);
+        for (const ref of base.exploitRunRefs) {
+          for (const row of runRows) {
+            if (
+              offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
+              && rowAttemptFreshForState(row, sessionState)
+            ) {
+              maxDemonstratedRank = Math.max(maxDemonstratedRank, verifySeverityRank(row.demonstrated_severity));
+            }
+          }
+        }
+      }
+    }
     if (base && base.maxRank > 0 && verifySeverityRank(result.severity) > base.maxRank) {
       // A rise above the frozen baseline. The exploit-backed allow-path requires
       // proof bound to the ASSERTED severity, not merely that some exploit row
       // exists. A matching, MAC-signed row must carry a `demonstrated_severity`
       // (the impact tier the safe exploit actually demonstrated, MAC-covered so
       // it can't be forged) that meets or exceeds `result.severity` — a
-      // low-severity row (e.g. a reflected canary) can never unlock a critical
-      // rise. No producer writes `demonstrated_severity` yet (the offensive
-      // runner is a future PR), so `verifySeverityRank(undefined)` is 0 and this
-      // never passes today: the branch is dormant and every unproven rise clamps.
-      // The runner PR must (a) write `demonstrated_severity` as a valid
-      // SEVERITY_VALUES member before signing — an unrecognized value ranks 0 and
-      // silently never unlocks (fail-safe but unobservable), (b) anchor each row
-      // to the current verification window (replay freshness), and (c) bind the
-      // row to the specific finding it proves — before relying on this path.
+      // low-severity row (e.g. PR3's read-only synthetic-id confirmer) can never
+      // unlock a critical rise. The allow-path is now live for rows produced by
+      // trusted MCP code, with run_id single-use enforced at record time and
+      // stale non-null verification attempts rejected here. Null attempts are
+      // evaluate-time rows and fall back to the freeze's content-hash binding.
       const assertedRank = verifySeverityRank(result.severity);
       if (hasExploitReplaySignal && base.exploitRunRefs.length > 0) {
-        if (runRows === null) runRows = readOffensiveRunRecords(domain);
-        if (runRows.length > 0) {
-          if (signingKey === null) signingKey = readHandoffSigningKey(domain);
-          provenRise = base.exploitRunRefs.some((ref) => (
-            runRows.some((row) => (
-              offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
-              && verifySeverityRank(row.demonstrated_severity) >= assertedRank
-            ))
-          ));
-        }
+        provenRise = maxDemonstratedRank >= assertedRank;
       }
       if (!provenRise) {
         const from = result.severity;
@@ -231,6 +282,15 @@ function clampResultSeveritiesInPlace(domain, results) {
           result.severity = to;
           clamps.push({ finding_id: result.finding_id, from, to });
         }
+      }
+    }
+
+    if (maxDemonstratedRank > 0 && verifySeverityRank(result.severity) > maxDemonstratedRank) {
+      const from = result.severity;
+      const to = severityForVerifyRank(maxDemonstratedRank);
+      if (to && to !== from) {
+        result.severity = to;
+        clamps.push({ finding_id: result.finding_id, from, to });
       }
     }
 

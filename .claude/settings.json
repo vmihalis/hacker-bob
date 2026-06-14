@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__hacker-bob__bob_http_scan",
+      "mcp__hacker-bob__bob_http_confirm",
       "mcp__hacker-bob__bob_read_http_audit",
       "mcp__hacker-bob__bob_read_surface_routes",
       "mcp__hacker-bob__bob_import_static_artifact",

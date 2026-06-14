@@ -13,6 +13,7 @@ const {
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
+  normalizeCandidateClaim,
 } = require("../mcp/lib/claims.js");
 const {
   VERIFICATION_CONFIDENCE_REASON_VALUES,
@@ -21,6 +22,7 @@ const {
   ensureHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
 const {
+  claimsJsonlPath,
   offensiveRunsJsonlPath,
   sessionNucleusPath,
   statePath,
@@ -134,6 +136,14 @@ function writeOffensiveRunRows(domain, rows) {
   const filePath = offensiveRunsJsonlPath(domain);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+}
+
+function appendRawClaim(domain, claimInput) {
+  const claim = normalizeCandidateClaim({ target_domain: domain, ...claimInput });
+  const filePath = claimsJsonlPath(domain);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, `${JSON.stringify(claim)}\n`, "utf8");
+  return claim;
 }
 
 function signedOffensiveRow(domain, ref = exploitRef(domain), overrides = {}) {
@@ -301,6 +311,108 @@ test("web v2 exploit proof plus exploit_replay_confirmed allows a severity rise"
   assert.equal(persistedSeverity(domain), "critical");
 }));
 
+test("web v2 low demonstrated row without finding_id unlocks only an info to low rise", () => withTempHome(() => {
+  const domain = "severity-rise-low-confirm.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  const row = seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "low" });
+  assert.equal(row.finding_id, undefined);
+  appendFrozenFindingClaim(domain, {
+    severity: "informational",
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: {
+      outcome: "exploited_safely",
+      safe_oracle: { kind: "differential_response" },
+    },
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", {
+      severity: "low",
+      confidence_reasons: ["exploit_replay_confirmed"],
+    }),
+  ]);
+
+  const document = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+  assert.equal(document.results[0].severity, "low");
+  assert.ok(document.results[0].confidence_reasons.includes("exploit_replay_confirmed"));
+}));
+
+test("web v2 exploit proof is bound by the frozen finding's cited run_id", () => withTempHome(() => {
+  const domain = "severity-rise-per-finding-run.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "low" });
+  appendFrozenFindingClaim(domain, {
+    findingId: "F-1",
+    severity: "informational",
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: {
+      outcome: "exploited_safely",
+      safe_oracle: { kind: "differential_response" },
+    },
+  });
+  appendFrozenFindingClaim(domain, {
+    findingId: "F-2",
+    severity: "informational",
+    evidenceRefs: [findingRef("F-2")],
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", {
+      severity: "low",
+      confidence_reasons: ["exploit_replay_confirmed"],
+    }),
+    v2VerificationResult("F-2", {
+      severity: "low",
+      confidence_reasons: ["exploit_replay_confirmed"],
+    }),
+  ]);
+
+  const document = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+  const f1 = document.results.find((result) => result.finding_id === "F-1");
+  const f2 = document.results.find((result) => result.finding_id === "F-2");
+  assert.equal(f1.severity, "low");
+  assert.ok(f1.confidence_reasons.includes("exploit_replay_confirmed"));
+  assert.equal(f2.severity, "info");
+  assert.ok(!f2.confidence_reasons.includes("exploit_replay_confirmed"));
+}));
+
+test("duplicate frozen run_id references are dropped from every claim as defense in depth", () => withTempHome(() => {
+  const domain = "severity-rise-duplicate-run-drop.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "low" });
+  appendRawClaim(domain, {
+    title: "Forged first frozen claim",
+    summary: "Bypasses the record gate for a duplicate-run verification fixture.",
+    severity: "informational",
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+  });
+  appendRawClaim(domain, {
+    title: "Forged second frozen claim",
+    summary: "Cites the same run id from a different claim.",
+    severity: "informational",
+    evidence_refs: [findingRef("F-2"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "low", confidence_reasons: ["exploit_replay_confirmed"] }),
+    v2VerificationResult("F-2", { severity: "low", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+
+  assert.equal(persistedSeverity(domain, "brutalist", "F-1"), "info");
+  assert.equal(persistedSeverity(domain, "brutalist", "F-2"), "info");
+}));
+
 test("web v2 severity rises require both the confidence reason and a satisfying exploit row", () => withTempHome(() => {
   const domainWithRow = "severity-rise-row-no-reason.example";
   initWebSession(domainWithRow);
@@ -433,6 +545,60 @@ test("an exploit row that demonstrates a lower severity does not unlock a higher
   assert.equal(persistedSeverity(domain), "low", "low-impact row cannot prove a critical rise");
 }));
 
+test("stale non-null verification attempt rows do not unlock verify-time rises", () => withTempHome(() => {
+  const domain = "severity-rise-stale-attempt.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, {
+    demonstrated_severity: "low",
+    verification_attempt_id: "verify-old-attempt",
+    verification_snapshot_hash: "0".repeat(64),
+  });
+  appendFrozenFindingClaim(domain, {
+    severity: "informational",
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", {
+      severity: "low",
+      confidence_reasons: ["exploit_replay_confirmed"],
+    }),
+  ]);
+
+  const document = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+  assert.equal(document.results[0].severity, "info");
+  assert.ok(!document.results[0].confidence_reasons.includes("exploit_replay_confirmed"));
+}));
+
+test("verify-time demonstrated_severity ceiling applies even when there is no severity rise", () => withTempHome(() => {
+  const domain = "severity-rise-no-rise-ceiling.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical" });
+  appendFrozenFindingClaim(domain, {
+    severity: "medium",
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+  });
+  freezeClaims(domain);
+  writeOffensiveRunRows(domain, [signedOffensiveRow(domain, ref, { demonstrated_severity: "low" })]);
+  const context = enterVerifyV2(domain);
+
+  const response = writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", {
+      severity: "medium",
+      confidence_reasons: ["fresh_replay_passed"],
+    }),
+  ]);
+
+  assert.equal(persistedSeverity(domain), "low");
+  assert.deepEqual(response.severity_clamps, [{ finding_id: "F-1", from: "medium", to: "low" }]);
+}));
+
 test("exploit_replay_confirmed is stripped from a result that did not back a validated rise", () => withTempHome(() => {
   const domain = "severity-rise-strip-reason.example";
   initWebSession(domain);
@@ -538,7 +704,7 @@ test("web equality, lowering, info/informational, null severity, and no-freeze p
   assert.equal(writeV1Round(legacyDomain, verificationResult("F-1", { severity: "critical" })), "critical");
 }));
 
-test("corrupt offensive ledger fails only when a proof-checked rise reads it", () => withTempHome(() => {
+test("corrupt offensive ledger fails closed for exploit-backed ceiling checks", () => withTempHome(() => {
   const domain = "severity-rise-corrupt-ledger.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
@@ -555,18 +721,10 @@ test("corrupt offensive ledger fails only when a proof-checked rise reads it", (
   const context = enterVerifyV2(domain);
 
   fs.writeFileSync(offensiveRunsJsonlPath(domain), "{not-json}\n", "utf8");
-  writeV2Round(domain, context, "brutalist", [
-    v2VerificationResult("F-1", {
-      severity: "low",
-      confidence_reasons: ["exploit_replay_confirmed"],
-    }),
-  ]);
-  assert.equal(persistedSeverity(domain), "low");
-
   assert.throws(
     () => writeV2Round(domain, context, "brutalist", [
       v2VerificationResult("F-1", {
-        severity: "critical",
+        severity: "low",
         confidence_reasons: ["exploit_replay_confirmed"],
       }),
     ]),
