@@ -839,6 +839,30 @@ function writeEvidencePacks(args) {
   }
 
   return withSessionLock(domain, () => {
+    // Fail-closed trust gate: refuse to write an evidence pack for a
+    // trust-degraded (unsigned) finding. Inert for signed/unmarked findings
+    // because degradedReportableFindingIds is empty for them.
+    const { degradedReportableFindingIds } = require("./tools/record-candidate-claim.js");
+    const degraded = degradedReportableFindingIds(domain);
+    if (degraded.size > 0) {
+      const offending = [];
+      for (const pack of args.packs) {
+        if (pack && typeof pack.finding_id === "string" && degraded.has(pack.finding_id)) {
+          offending.push(pack.finding_id);
+        }
+      }
+      if (offending.length > 0) {
+        throw new ToolError(
+          ERROR_CODES.STATE_CONFLICT,
+          `Refusing to write an evidence pack for trust-degraded (unsigned) finding(s): ${offending.join(", ")}`,
+          { degraded_finding_ids: offending },
+          {
+            remediation:
+              "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker, or drop their evidence pack(s), before writing evidence-packs.json.",
+          },
+        );
+      }
+    }
     const findingIdSet = readFindingIdSet(domain);
     const finalRound = loadFinalVerification(domain, findingIdSet, "evidence collection");
     const verificationBinding = finalRound.version === 2

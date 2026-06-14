@@ -55,6 +55,7 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
+const { ensureHandoffSigningKey } = require("./handoff-signing-key.js");
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
@@ -265,6 +266,11 @@ function initSession(args) {
       blockInternalHostsPolicy: sessionNucleus.scope_policy,
     });
     writeSessionStateDocument(domain, {}, state);
+    // Provision the handoff signing key at session creation so every later path
+    // (wave assignment, handoff validation, the SubagentStop attestation hook)
+    // finds it. Idempotent: creates it exclusively-atomically if absent, reads
+    // it otherwise. Wave assignment still ensures it lazily as a safety net.
+    ensureHandoffSigningKey(domain);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
       source: "bob_init_session",

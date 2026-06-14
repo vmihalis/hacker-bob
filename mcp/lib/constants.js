@@ -5,6 +5,10 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+// Trust-degradation marker for a finding whose source could not be
+// signature-verified. An absent (or unparseable, tolerantly dropped) marker is
+// read as signature-verified; the marker is never auto-materialized.
+const SIGNATURE_VERIFICATION_STATUS_VALUES = ["signed", "unsigned"];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -184,6 +188,7 @@ module.exports = {
   SESSION_LOCK_STALE_MS,
   SESSION_PUBLIC_STATE_FIELDS,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
   STATIC_ARTIFACT_ID_RE,
   STATIC_ARTIFACT_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_MAX_CHARS,

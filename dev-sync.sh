@@ -93,13 +93,11 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
-  cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
-  rm -rf "$TARGET_ABS/mcp/lib/tools"
-  mkdir -p "$TARGET_ABS/mcp/lib/tools"
-  cp "$SCRIPT_DIR/mcp/lib/tools/"*.js "$TARGET_ABS/mcp/lib/tools/"
-  rm -rf "$TARGET_ABS/mcp/lib/waves"
-  mkdir -p "$TARGET_ABS/mcp/lib/waves"
-  cp "$SCRIPT_DIR/mcp/lib/waves/"*.js "$TARGET_ABS/mcp/lib/waves/"
+  # Mirror the entire dev mcp/lib tree so every split-module subdir lands
+  # (tools/, waves/, body-resolvers/, belief/, future). A per-subdir copy list
+  # silently drops new dirs and crashes server.js with "Cannot find module".
+  rm -rf "$TARGET_ABS/mcp/lib"
+  cp -R "$SCRIPT_DIR/mcp/lib" "$TARGET_ABS/mcp/lib"
   chmod +x "$TARGET_ABS/mcp/server.js"
 }
 

@@ -56,6 +56,7 @@ const {
   readSessionStateStrict,
   writeSessionStateDocument,
 } = require("./session-state-store.js");
+const { ensureHandoffSigningKey } = require("./handoff-signing-key.js");
 const {
   readSessionNucleus,
 } = require("./governance-store.js");
@@ -580,6 +581,10 @@ function initRepoSession({
           },
         );
       }
+      // Resuming an existing session also provisions the key if absent, so a
+      // session created before init provisioned it gains one on resume
+      // (idempotent: reads the existing key when present, never rotates).
+      ensureHandoffSigningKey(domain);
       return {
         created: false,
         session_dir: dir,
@@ -643,6 +648,10 @@ function initRepoSession({
       repoHash,
     });
     writeSessionStateDocument(domain, {}, state);
+    // Provision the handoff signing key at session creation so every later path
+    // finds it (idempotent; wave assignment still ensures it lazily as a safety
+    // net).
+    ensureHandoffSigningKey(domain);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
       source: "bob_init_repo_session",

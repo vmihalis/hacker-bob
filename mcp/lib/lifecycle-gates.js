@@ -146,6 +146,44 @@ function gateGradeToReport(context) {
 // wave-<N>-merge-snapshot.json.
 function gateOpenFrontierToClaimFreeze(context) {
   const blockers = [];
+
+  // Recorded chain work must yield a terminal structured chain attempt before
+  // CLAIM_FREEZE. Evaluated before the partial-surface gate and accumulated
+  // into the same blockers[] so a drained-but-unchained frontier still refuses;
+  // every return path below carries any chain-work blocker already pushed here.
+  let chainEvaluation;
+  try {
+    chainEvaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "chain_work_terminal",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (!chainEvaluation.satisfied) {
+    blockers.push({
+      code: "chain_work_terminal_required",
+      blocked_by: "chain_work_terminal_required",
+      findings: chainEvaluation.findings_total,
+      handoff_chain_notes: chainEvaluation.chain_notes_count,
+      chain_attempts_terminal: chainEvaluation.terminal_total,
+      message:
+        "OPEN_FRONTIER -> CLAIM_FREEZE blocked: chain work is recorded "
+        + `(${chainEvaluation.findings_total} finding(s), ${chainEvaluation.chain_notes_count} handoff chain-note(s)) `
+        + "but no terminal structured chain attempt exists",
+      remediation:
+        "record terminal CHAIN-phase outcomes via bob_write_chain_attempt "
+        + "(confirmed / denied / blocked / inconclusive / not_applicable) for the recorded chain work, "
+        + "then retry the transition",
+    });
+  }
+
   let evaluation;
   try {
     evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(

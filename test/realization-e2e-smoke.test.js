@@ -58,6 +58,7 @@ const advanceSessionTool = require("../mcp/lib/tools/advance-session.js");
 const recordSurfaceLeadsTool = require("../mcp/lib/tools/record-surface-leads.js");
 const promoteSurfaceLeadsTool = require("../mcp/lib/tools/promote-surface-leads.js");
 const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { writeChainAttempt } = require("../mcp/lib/chain-attempts.js");
 const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
@@ -242,6 +243,19 @@ function driveRealizationFlow(domain) {
   assert.equal(claimBResponse.recorded, true);
   const findingIds = [claimAResponse.finding_id, claimBResponse.finding_id];
   assert.equal(findingIds.length, 2);
+
+  // Recorded chain work (two findings) must reach a terminal structured chain
+  // attempt before CLAIM_FREEZE. The two findings are independent surfaces with
+  // no credible cross-surface pivot, so the terminal outcome is not_applicable.
+  JSON.parse(writeChainAttempt({
+    target_domain: domain,
+    finding_ids: findingIds,
+    surface_ids: [],
+    hypothesis: "The two recorded findings compose into no credible cross-surface pivot.",
+    steps: ["Relate the CORS read and the mass-assignment write; they share no principal or object pivot."],
+    outcome: "not_applicable",
+    evidence_summary: "Terminal chain outcome for the recorded chain work.",
+  }));
 
   // Step 7 — bob_advance_session(CLAIM_FREEZE), then materialize claim-freeze
   // explicitly. The lifecycle nucleus advances to CLAIM_FREEZE but does not

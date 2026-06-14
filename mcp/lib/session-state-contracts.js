@@ -68,6 +68,12 @@ const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
   VERIFY: "VERIFY",
   GRADE: "GRADE",
   REPORT: "REPORT",
+  // RECON/HUNT are accepted as aliases of SURFACE_DISCOVERY/EVALUATE on the
+  // read backfill path, resolving to the same lifecycle states so a session
+  // persisted under those phase names stays readable rather than failing closed
+  // on the legacy-phase fallback.
+  RECON: "SETUP",
+  HUNT: "OPEN_FRONTIER",
 });
 
 function deriveLegacyPhaseFromLifecycleState(lifecycleState) {

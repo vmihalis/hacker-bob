@@ -357,6 +357,28 @@ function writeGradeVerdict(args) {
   });
 
   const finalReportableSeveritySet = requireFinalReportableSeveritySet(domain, findingIdSet);
+  // Fail-closed trust gate: refuse to bind a trust-degraded (unsigned) finding
+  // into the grade verdict at all. Any finding bound into grade.json (seenIds)
+  // can drive total_score and the SUBMIT verdict regardless of its reportable
+  // severity, so the gate keys on the actually-bound set, not the narrower
+  // reportable-severity set. Inert for signed/unmarked findings because
+  // degradedReportableFindingIds is empty for them.
+  const { degradedReportableFindingIds } = require("./tools/record-candidate-claim.js");
+  const degraded = degradedReportableFindingIds(domain);
+  if (degraded.size > 0) {
+    const offending = [...seenIds].filter((id) => degraded.has(id));
+    if (offending.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `Refusing to grade trust-degraded (unsigned) finding(s): ${offending.join(", ")}`,
+        { degraded_finding_ids: offending },
+        {
+          remediation:
+            "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker, or exclude the finding(s) from the grade verdict, before writing it.",
+        },
+      );
+    }
+  }
   const missingReachability = missingReachabilityStampsForReportableFindings(domain);
   if (missingReachability.missing.length > 0) {
     const prefix = missingReachability.inventory_absent === true

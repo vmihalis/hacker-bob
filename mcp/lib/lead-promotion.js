@@ -17,6 +17,7 @@ const {
   assertNonEmptyString,
 } = require("./validation.js");
 const { surfaceLeadsPath } = require("./paths.js");
+const { hashCanonicalJson } = require("./verification-contracts.js");
 const { withSessionLock } = require("./storage.js");
 const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
@@ -148,26 +149,20 @@ function warnExternalProducerMissingRationale(domain, normalizedLeads) {
   }
 }
 
-function slugify(value) {
-  const slug = String(value || "lead")
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 54);
-  return slug || "lead";
-}
-
-function uniqueSurfaceId(lead, existingIds) {
-  const base = `lead-${slugify(lead.title || (lead.hosts && lead.hosts[0]) || (lead.endpoints && lead.endpoints[0]) || lead.id)}`;
-  let candidate = base;
-  let suffix = 2;
-  while (existingIds.has(candidate)) {
-    candidate = `${base}-${suffix}`;
-    suffix += 1;
-  }
-  existingIds.add(candidate);
-  return candidate;
+function uniqueSurfaceId(lead) {
+  // The surface_id is a deterministic function of the lead's identity
+  // (key/title/host/endpoint), so re-promoting the same lead across waves
+  // yields the same id — the materializer folds the repeated surface.observed
+  // by id onto one surface — rather than a parallel duplicate. The id width
+  // (128 bits) keeps an identity collision (which would silently fold two
+  // distinct surfaces into one) operationally negligible.
+  const identity = {
+    key: lead.key || lead.id || null,
+    title: lead.title || null,
+    host: (lead.hosts && lead.hosts[0]) || null,
+    endpoint: (lead.endpoints && lead.endpoints[0]) || null,
+  };
+  return `lead-${hashCanonicalJson(identity).slice(0, 32)}`;
 }
 
 function emitPromotedSurfaceObserved(domain, lead, surfaceId) {
@@ -200,23 +195,9 @@ function applyPromotionToFrontier(domain, candidates) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return { promoted_surface_ids: [] };
   }
-  // Allocate unique surface_ids based on the existing materialized surfaces
-  // so re-promotion across waves does not collide. The materialized view is
-  // accessed via frontier-projections.currentSurfaces to avoid a direct
-  // dependency on the materializer module from the producer path.
-  const { currentSurfaces } = require("./frontier-projections.js");
-  let knownSurfaceIds;
-  try {
-    const projection = currentSurfaces(domain);
-    knownSurfaceIds = new Set((projection.surfaces || [])
-      .map((surface) => String(surface.id || ""))
-      .filter(Boolean));
-  } catch {
-    knownSurfaceIds = new Set();
-  }
   const promotedSurfaceIds = [];
   for (const lead of candidates) {
-    const surfaceId = uniqueSurfaceId(lead, knownSurfaceIds);
+    const surfaceId = uniqueSurfaceId(lead);
     emitPromotedSurfaceObserved(domain, lead, surfaceId);
     promotedSurfaceIds.push(surfaceId);
   }
@@ -717,4 +698,5 @@ module.exports = {
   recordSurfaceLeads,
   recordStaticAnalysisLeads,
   recordSurfaceLeadsForWaveHandoff,
+  _internals: { uniqueSurfaceId },
 };

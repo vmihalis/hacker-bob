@@ -28,6 +28,14 @@ const {
 const {
   appendCandidateClaim,
 } = require("../mcp/lib/claims.js");
+const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const {
+  writeChainAttempt,
+} = require("../mcp/lib/chain-attempts.js");
+const {
+  waveMergeSnapshotPath,
+  waveHandoffsSnapshotDir,
+} = require("../mcp/lib/wave-handoff-store.js");
 const {
   buildClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
@@ -165,6 +173,58 @@ function lifecycleAdvancedEvents(domain) {
 
 function lifecycleOverrideEvents(domain) {
   return readSessionEvents(domain).filter((event) => event.kind === "governance.lifecycle.override");
+}
+
+// Record two reportable candidate claims through the canonical producer so the
+// session-artifact summary projects findings.total >= 2 — the signal that
+// recorded chain work must yield a terminal structured chain attempt before
+// CLAIM_FREEZE.
+function recordChainWorkFindings(domain) {
+  for (const index of [1, 2]) {
+    JSON.parse(recordCandidateClaimTool.handler({
+      target_domain: domain,
+      title: `IDOR exposes record ${index}`,
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: `https://${domain}/api/records/${index}`,
+      description: `Changing record ${index} identifier returns another tenant payload.`,
+      proof_of_concept: `GET /api/records/${index} as the attacker tenant returns private fields.`,
+      response_evidence: `Response leaked tenant identifier and email for record ${index}.`,
+      impact: `Cross-tenant record ${index} disclosure.`,
+      validated: true,
+      auth_profile: `attacker-${index}`,
+      surface_id: `surface:record-${index}`,
+      cvss_inputs: {
+        attack_vector: "network",
+        privileges_required: "low",
+        confidentiality: "high",
+      },
+    }));
+  }
+}
+
+// Write a terminal structured chain attempt (not_applicable is terminal) with
+// no finding/surface references so the seed stays self-contained.
+function recordTerminalChainAttempt(domain) {
+  JSON.parse(writeChainAttempt({
+    target_domain: domain,
+    finding_ids: [],
+    surface_ids: [],
+    hypothesis: "Recorded chain work resolves to no credible cross-surface pivot.",
+    steps: ["Replay the recorded leads; none pivot into a higher-severity outcome."],
+    outcome: "not_applicable",
+    evidence_summary: "Terminal chain outcome for the recorded chain work.",
+  }));
+}
+
+// Persist a merged-wave snapshot carrying an undrained partial surface so the
+// partial_surfaces_drained precondition reports it as remaining.
+function seedUndrainedPartialSurface(domain, surfaceId) {
+  fs.mkdirSync(waveHandoffsSnapshotDir(domain), { recursive: true });
+  fs.writeFileSync(waveMergeSnapshotPath(domain, 1), JSON.stringify({
+    wave_number: 1,
+    partial_surface_ids: [surfaceId],
+  }));
 }
 
 const TOPOLOGY_ONLY_FORCEABLE_GATES = Object.freeze(new Map([
@@ -608,5 +668,81 @@ test("bob_advance_session honors D3 bidirectional edges (CLAIM_FREEZE <-> OPEN_F
       ["REPORT", "OPEN_FRONTIER"],
     ]);
     assert.ok(fs.existsSync(sessionEventsJsonlPath(domain)));
+  });
+});
+
+test("OPEN_FRONTIER -> CLAIM_FREEZE blocks recorded chain work with no terminal chain attempt even when partial surfaces are drained", () => {
+  withTempHome(() => {
+    const domain = "chain-work-blocked.example.com";
+    bootstrapDomain(domain);
+    recordChainWorkFindings(domain);
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "OPEN_FRONTIER",
+      to_state: "CLAIM_FREEZE",
+    });
+
+    const codes = evaluation.blockers.map((blocker) => blocker.code);
+    assert.ok(codes.includes("chain_work_terminal_required"), `expected chain_work_terminal_required, got ${codes.join(", ")}`);
+    assert.ok(!codes.includes("partial_surfaces_remaining"), "drained frontier must not raise partial_surfaces_remaining");
+    const chainBlocker = evaluation.blockers.find((blocker) => blocker.code === "chain_work_terminal_required");
+    assert.equal(chainBlocker.findings, 2);
+    assert.equal(chainBlocker.chain_attempts_terminal, 0);
+  });
+});
+
+test("OPEN_FRONTIER -> CLAIM_FREEZE allows recorded chain work once a terminal chain attempt exists", () => {
+  withTempHome(() => {
+    const domain = "chain-work-allowed.example.com";
+    bootstrapDomain(domain);
+    recordChainWorkFindings(domain);
+    recordTerminalChainAttempt(domain);
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "OPEN_FRONTIER",
+      to_state: "CLAIM_FREEZE",
+    });
+
+    const codes = evaluation.blockers.map((blocker) => blocker.code);
+    assert.ok(!codes.includes("chain_work_terminal_required"), `terminal chain attempt must clear the chain gate, got ${codes.join(", ")}`);
+    assert.deepEqual(evaluation.blockers, []);
+  });
+});
+
+test("OPEN_FRONTIER -> CLAIM_FREEZE accumulates chain-work and partial-surface blockers together", () => {
+  withTempHome(() => {
+    const domain = "chain-work-and-partials.example.com";
+    bootstrapDomain(domain);
+    recordChainWorkFindings(domain);
+    seedUndrainedPartialSurface(domain, "surface-partial-open");
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "OPEN_FRONTIER",
+      to_state: "CLAIM_FREEZE",
+    });
+
+    const codes = evaluation.blockers.map((blocker) => blocker.code);
+    assert.ok(codes.includes("chain_work_terminal_required"), `expected chain_work_terminal_required, got ${codes.join(", ")}`);
+    assert.ok(codes.includes("partial_surfaces_remaining"), `expected partial_surfaces_remaining, got ${codes.join(", ")}`);
+    const partialBlocker = evaluation.blockers.find((blocker) => blocker.code === "partial_surfaces_remaining");
+    assert.deepEqual(partialBlocker.surfaces, ["surface-partial-open"]);
+  });
+});
+
+test("OPEN_FRONTIER -> CLAIM_FREEZE is unblocked with no chain work and no partial surfaces", () => {
+  withTempHome(() => {
+    const domain = "chain-work-clean.example.com";
+    bootstrapDomain(domain);
+
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: "OPEN_FRONTIER",
+      to_state: "CLAIM_FREEZE",
+    });
+
+    assert.deepEqual(evaluation.blockers, []);
   });
 });

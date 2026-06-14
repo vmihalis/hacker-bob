@@ -363,7 +363,9 @@ test("bob_promote_surface_leads preserves assigned lead surfaces already in atta
     }));
 
     assert.equal(promoted.promoted, 1);
-    assert.deepEqual(promoted.promoted_surface_ids, ["lead-admin-api-2"]);
+    const newLeadId = promoted.promoted_surface_ids[0];
+    assert.ok(newLeadId.startsWith("lead-"), `expected a lead-* id, got ${newLeadId}`);
+    assert.notEqual(newLeadId, "lead-admin-api", "a distinct lead must not collide with the pre-assigned surface");
     assert.equal(
       fs.readFileSync(attackPath, "utf8"),
       attackBeforePromotion,
@@ -371,12 +373,26 @@ test("bob_promote_surface_leads preserves assigned lead surfaces already in atta
     );
 
     const surfaceIndex = JSON.parse(fs.readFileSync(surfaceIndexPath(domain), "utf8"));
-    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === "lead-admin-api-2"),
+    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === newLeadId),
       "newly promoted lead must materialize into surface-index.json");
 
     const projectionIds = currentSurfaces(domain).surfaces.map((surface) => surface.id).sort();
-    assert.deepEqual(projectionIds, ["lead-admin-api", "lead-admin-api-2", "surface-baseline"]);
+    assert.deepEqual(projectionIds, ["lead-admin-api", newLeadId, "surface-baseline"].sort());
   });
+});
+
+test("uniqueSurfaceId is a deterministic function of lead identity (re-promotion stable, distinct leads distinct)", () => {
+  const { _internals } = require("../mcp/lib/lead-promotion.js");
+  const lead = { id: "L1", key: "k1", title: "Admin API", hosts: ["https://a.example.com"], endpoints: ["/api/admin"] };
+  const id1 = _internals.uniqueSurfaceId(lead);
+  // The same lead must mint the same id on a later wave so re-promotion folds
+  // onto one surface instead of a duplicate.
+  const id2 = _internals.uniqueSurfaceId(lead);
+  assert.equal(id2, id1);
+  assert.ok(id1.startsWith("lead-"), `expected a lead-* id, got ${id1}`);
+  // A genuinely different lead (different host/endpoint) gets a different id.
+  const other = { id: "L2", key: "k2", title: "Admin API", hosts: ["https://b.example.com"], endpoints: ["/api/other"] };
+  assert.notEqual(_internals.uniqueSurfaceId(other), id1);
 });
 
 test("bob_promote_surface_leads emits evaluator_run_avoided counts for filtered assignable leads", () => {

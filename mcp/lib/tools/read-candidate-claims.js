@@ -19,11 +19,17 @@ function withDerivedCvss(finding) {
 
 function readCandidateClaimsTool(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  return JSON.stringify({
-    version: 1,
-    target_domain: domain,
-    findings: findingPayloadsFromClaims(domain).map(withDerivedCvss),
-  });
+  const findings = findingPayloadsFromClaims(domain).map(withDerivedCvss);
+  const result = { version: 1, target_domain: domain, findings };
+  // Surface how many findings carry the trust-degradation marker so a reader
+  // can see that some findings came from a source that could not be
+  // signature-verified. Present only when non-zero so an all-signed response
+  // stays byte-stable; the marker itself rides on each degraded finding.
+  const degradedCount = findings.filter(
+    (finding) => finding && finding.signature_verification_status === "unsigned",
+  ).length;
+  if (degradedCount > 0) result.degraded_count = degradedCount;
+  return JSON.stringify(result);
 }
 
 module.exports = Object.freeze({

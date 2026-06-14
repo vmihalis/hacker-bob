@@ -698,6 +698,34 @@ function findingPayloadsFromClaims(domain) {
     .filter((entry) => entry != null);
 }
 
+// Trust-degradation projection. Returns the set of finding ids whose
+// signature_verification_status === "unsigned" marker is present on
+// payload.finding (re-normalized by findingPayloadsFromClaims). The three audit
+// writers (compose-report, write-evidence-packs, write-grade-verdict) fail
+// closed on any finding in this set so a degraded finding can never be laundered
+// into an audit-graded artifact. Single source of truth — no writer recomputes
+// the marker.
+//
+// PREVENTIVE CONTROL: this set is empty for every current session because no
+// production path sets the marker — a finding sourced from an unverifiable
+// handoff cannot reach claims.jsonl, since a forged/unsigned/absent handoff is
+// rejected upstream by the handoff-provenance invariant. The gate is therefore a
+// reserved guardrail that activates only if a finding is ever introduced from a
+// source whose signature could not be verified.
+function degradedReportableFindingIds(domain) {
+  const degraded = new Set();
+  for (const finding of findingPayloadsFromClaims(domain)) {
+    if (
+      finding &&
+      typeof finding.id === "string" &&
+      finding.signature_verification_status === "unsigned"
+    ) {
+      degraded.add(finding.id);
+    }
+  }
+  return degraded;
+}
+
 module.exports = Object.freeze({
   name: "bob_record_candidate_claim",
   aliases: ["bob_record_finding", "bounty_record_finding"],
@@ -978,6 +1006,7 @@ module.exports = Object.freeze({
   sensitive_output: false,
   session_artifacts_written: ["claims.jsonl","frontier-events.jsonl"],
   findingPayloadsFromClaims,
+  degradedReportableFindingIds,
   computeFindingDedupeKey,
   CLAIM_TEXT_LIMITS,
   SECRET_DETECTION_BYPASS_FIELDS,

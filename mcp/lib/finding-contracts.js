@@ -10,6 +10,7 @@ const {
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
   SURFACE_TYPE_VALUES,
@@ -455,6 +456,20 @@ function summarizeFindings(findings) {
 
 const CWE_REQUIRED_SEVERITIES = Object.freeze(["critical", "high", "medium"]);
 
+// Trust-degradation marker on a finding, present only when the finding's source
+// could not be signature-verified. Absent => signature-verified; the marker is
+// never auto-materialized, so signed findings stay byte-identical and the
+// claim-freeze hash of existing findings is unchanged. Strict on the write path
+// (throws on an invalid enum); tolerant on read-back projection (an unparseable
+// legacy value degrades to absent rather than dropping the whole finding).
+function normalizeSignatureVerificationStatus(value, { strict = false } = {}) {
+  if (value == null) return null;
+  if (strict) {
+    return assertEnumValue(value, SIGNATURE_VERIFICATION_STATUS_VALUES, "signature_verification_status");
+  }
+  return SIGNATURE_VERIFICATION_STATUS_VALUES.includes(value) ? value : null;
+}
+
 function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
     throw new Error(lineNumber == null
@@ -549,6 +564,26 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
         );
       }
       finding.cvss_inputs = { ...(finding.cvss_inputs || {}), attack_vector: derivedAv };
+    }
+    // Trust-degradation marker. Excluded from computeFindingDedupeKey so adding
+    // it never reshuffles finding ids; strict on write, tolerant on read-back.
+    // Deliberately not part of the agent-facing claim-tool input (so an agent
+    // cannot self-declare signature status): it is set only by a producer that
+    // persists a finding from a source it could not signature-verify, by writing
+    // it onto payload.finding directly. RESERVED: no such production producer
+    // exists today (the intended wave-merge producer was superseded), so the
+    // fail-closed audit-writer gates that read this marker are inert until a
+    // producer is added; this read path re-normalizes the marker when present.
+    const signatureStatus = normalizeSignatureVerificationStatus(
+      record.signature_verification_status,
+      { strict: requireCwe },
+    );
+    if (signatureStatus) {
+      finding.signature_verification_status = signatureStatus;
+      const signatureReason = normalizeOptionalText(record.signature_error_reason, "signature_error_reason");
+      if (signatureReason) finding.signature_error_reason = signatureReason;
+      const markedAt = normalizeOptionalText(record.degradation_marked_at, "degradation_marked_at");
+      if (markedAt) finding.degradation_marked_at = markedAt;
     }
     if (finding.surface_type === "smart_contract" && !finding.sc_evidence) {
       throw new Error("smart-contract findings must include sc_evidence");
@@ -656,6 +691,7 @@ module.exports = {
   normalizeBech32Address,
   normalizeFindingRecord,
   normalizeReachabilityAssertion,
+  normalizeSignatureVerificationStatus,
   findingSupportsReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,

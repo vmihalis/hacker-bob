@@ -48,7 +48,7 @@ const {
 } = require("../storage.js");
 const { deriveCvss31 } = require("../cvss31.js");
 const { SEVERITY_VALUES } = require("../constants.js");
-const { findingPayloadsFromClaims } = require("./record-candidate-claim.js");
+const { findingPayloadsFromClaims, degradedReportableFindingIds } = require("./record-candidate-claim.js");
 
 const SECTION_KINDS = Object.freeze([
   "impact",
@@ -204,6 +204,37 @@ function findingSetsFromFinalRound(finalRound) {
     if (result.reportable === true) finalReportableIdSet.add(result.finding_id);
   }
   return { findingIdSet, finalReportableIdSet };
+}
+
+// Fail-closed trust gate: refuse to bind a trust-degraded (unsigned) finding
+// into report.md. Resolves the final-reportable finding-id set from the final
+// verification round and throws if any of those findings carry the
+// signature_verification_status === "unsigned" marker. Inert for signed/unmarked
+// findings because degradedReportableFindingIds is empty for them.
+function assertNoDegradedReportableFindings(domain) {
+  const finalPaths = verificationRoundPaths(domain, "final");
+  if (!fs.existsSync(finalPaths.json)) return;
+  let finalRound;
+  try {
+    finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
+  } catch {
+    return;
+  }
+  const { finalReportableIdSet } = findingSetsFromFinalRound(finalRound);
+  if (finalReportableIdSet.size === 0) return;
+  const degraded = degradedReportableFindingIds(domain);
+  if (degraded.size === 0) return;
+  const offending = [...finalReportableIdSet].filter((id) => degraded.has(id));
+  if (offending.length === 0) return;
+  throw new ToolError(
+    ERROR_CODES.STATE_CONFLICT,
+    `Refusing to bind trust-degraded (unsigned) finding(s) into report.md: ${offending.join(", ")}`,
+    { degraded_finding_ids: offending },
+    {
+      remediation:
+        "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker, or exclude the finding(s) from the final reportable set, before composing report.md.",
+    },
+  );
 }
 
 function validateProofBundleRef(domain, id) {
@@ -569,6 +600,9 @@ function handler(args) {
     for (const section of sections) {
       validateProvenance(domain, section);
     }
+    // Fail closed before any audit-graded write: a trust-degraded (unsigned)
+    // final-reportable finding must never be laundered into report.md.
+    assertNoDegradedReportableFindings(domain);
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
     const amendments = readAmendments(domain);
