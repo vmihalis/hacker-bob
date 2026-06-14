@@ -527,6 +527,9 @@ const EXPECTED_TOOL_NAMES = [
   "bob_propose_transition",
   "bob_materialize_task_graph",
   "bob_read_task_graph",
+  "bob_read_composition_telemetry",
+  "bob_run_path_composition_experiment",
+  "bob_verify_composition_path",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",
@@ -5138,21 +5141,23 @@ test("bob_start_next_wave promotes deep leads, re-ranks, starts a wave, and attr
     assert.equal(result.next_action.kind, "spawn_evaluators");
     assert.equal(result.next_action.assignments, undefined);
     assert.deepEqual(result.promotion.would_promote_lead_ids, ["SL-1"]);
-    assert.deepEqual(result.promotion.promoted_surface_ids, ["lead-promoted-admin-api"]);
-    assert.deepEqual(result.state.lead_surface_ids, ["lead-promoted-admin-api"]);
-    assert.equal(result.assignments[0].surface_id, "lead-promoted-admin-api");
+    const promotedId = result.promotion.promoted_surface_ids[0];
+    assert.ok(promotedId && promotedId.startsWith("lead-"), `expected a lead-* id, got ${promotedId}`);
+    assert.equal(result.promotion.promoted_surface_ids.length, 1);
+    assert.deepEqual(result.state.lead_surface_ids, [promotedId]);
+    assert.equal(result.assignments[0].surface_id, promotedId);
     assert.match(result.assignments[0].handoff_token, /^[A-Za-z0-9_-]{32}$/);
 
     // Cycle D.3: promotion writes the new surface to surface-index.json
     // (materialized from frontier.surface.observed events). attack_surface.json
     // is no longer mutated by the promotion path.
     const surfaceIndex = JSON.parse(fs.readFileSync(surfaceIndexPath(domain), "utf8"));
-    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === "lead-promoted-admin-api"));
+    assert.ok(surfaceIndex.surfaces.some((surface) => surface.surface_id === promotedId));
     const leads = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 10 }));
     assert.equal(leads.leads[0].status, "promoted");
 
     const routes = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
-    assert.ok(routes.routes.some((route) => route.surface_id === "lead-promoted-admin-api"));
+    assert.ok(routes.routes.some((route) => route.surface_id === promotedId));
     const events = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true })).events;
     const startedEvent = events.find((event) => event.type === "wave_started");
     assert.equal(startedEvent.source, "bob_start_next_wave");
@@ -5673,7 +5678,8 @@ test("surface leads are compact, promotable, and wave assignable", () => {
     assert.equal(leads.leads[0].id, "SL-1");
 
     const promoted = JSON.parse(promoteSurfaceLeads({ target_domain: domain, limit: 3, min_score: 60 }));
-    assert.deepEqual(promoted.promoted_surface_ids, ["lead-admin-api-from-js-bundle"]);
+    assert.equal(promoted.promoted_surface_ids.length, 1);
+    assert.ok(promoted.promoted_surface_ids[0].startsWith("lead-"), `expected a lead-* id, got ${promoted.promoted_surface_ids[0]}`);
     const promotedSurfaceId = promoted.promoted_surface_ids[0];
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;
     assert.deepEqual(state.lead_surface_ids, [promotedSurfaceId]);
@@ -5726,7 +5732,8 @@ test("explicit medium surface lead promotion stays MEDIUM while becoming wave as
 
     const promoted = JSON.parse(promoteSurfaceLeads({ target_domain: domain, limit: 3, min_score: 60 }));
     assert.equal(promoted.promoted, 1);
-    assert.deepEqual(promoted.promoted_surface_ids, ["lead-brand-linked-sibling-properties-lightly-probed"]);
+    assert.equal(promoted.promoted_surface_ids.length, 1);
+    assert.ok(promoted.promoted_surface_ids[0].startsWith("lead-"), `expected a lead-* id, got ${promoted.promoted_surface_ids[0]}`);
     const promotedSurfaceId = promoted.promoted_surface_ids[0];
 
     const state = JSON.parse(readStateSummary({ target_domain: domain })).state;

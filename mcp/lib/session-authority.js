@@ -100,6 +100,23 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // only at the role-bundle layer; Y.3 added a server-internal caller
   // bundle for _write-base.js auto-emit on INVALID_ARGUMENTS retry success.
   bob_emit_runtime_drift: "initialized_session_mutation",
+  // Belief plane (CB-*) + composition experiment/verifier — orchestrator-only,
+  // session-scoped: reads classify as initialized_session_read, writers as
+  // initialized_session_mutation, the network-capable live verifier as
+  // scoped_http_network (mirrors bob_run_auth_differential).
+  bob_elicit_belief: "initialized_session_mutation",
+  bob_plan_belief_experiment: "initialized_session_mutation",
+  bob_query_belief_signals: "initialized_session_read",
+  bob_query_belief_window: "initialized_session_read",
+  bob_query_intervention_calculus: "initialized_session_read",
+  bob_read_belief_model_info: "initialized_session_read",
+  bob_read_belief_signals: "initialized_session_read",
+  bob_run_belief_residual: "initialized_session_mutation",
+  bob_run_belief_sampler: "initialized_session_mutation",
+  bob_train_belief_model: "initialized_session_mutation",
+  bob_read_composition_telemetry: "initialized_session_read",
+  bob_run_path_composition_experiment: "initialized_session_mutation",
+  bob_verify_composition_path: "scoped_http_network",
   bob_merge_wave_handoffs: "initialized_session_read",
   bob_promote_surface_leads: "initialized_session_mutation",
   bob_propose_friction_promotion: "initialized_session_mutation",

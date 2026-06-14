@@ -1100,7 +1100,16 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // bounded.
   // I10 adds bob_read_static_analysis_index to the orchestrator bundle
   // (+1 generated allowed-tools line) for bounded static-index reads.
-  assert.ok(lines <= 390, `bob-evaluate-runner skill is ${lines} lines (cap 390)`);
+  // The belief-model surface adds bob_elicit_belief to the orchestrator
+  // bundle (+1 generated allowed-tools line).
+  // The chain-work lifecycle gate adds the `chain_work_terminal` @precondition
+  // directive to the OPEN_FRONTIER state block so the scheduler-coherence check
+  // sees the runtime gate the prompt advertises (+1 directive line).
+  // The composition-experiment surface adds bob_run_path_composition_experiment
+  // and bob_read_composition_telemetry to the orchestrator bundle (+2 generated
+  // allowed-tools lines). The SC1 live verifier adds bob_verify_composition_path
+  // (+1 generated allowed-tools line).
+  assert.ok(lines <= 395, `bob-evaluate-runner skill is ${lines} lines (cap 395)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,

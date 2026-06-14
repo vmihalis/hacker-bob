@@ -685,3 +685,51 @@ test("claim.candidate.linked events emit a claim node + claim_links edge from su
     assert.equal(edge.to_node_id, claimNodeId("F-42"));
   });
 });
+
+test("summarizeTaskGraph reports composition telemetry and marks a composed graph composed=true", () => {
+  withTempHome(() => {
+    const domain = "composition-composed.example.com";
+    seedFourKindFixture(domain);
+    const summary = summarizeTaskGraph(domain);
+    assert.ok(summary.composition, "composition section present");
+    assert.equal(summary.composition.surfaces, 2);
+    assert.equal(summary.composition.hypotheses, 1);
+    assert.equal(summary.composition.transitions, 1);
+    assert.equal(summary.composition.claims, 1);
+    assert.equal(summary.composition.composed, true);
+    assert.equal(summary.composition.hypotheses_per_surface, 0.5);
+    assert.equal(summary.composition.transitions_per_hypothesis, 1);
+  });
+});
+
+test("a wide-and-flat graph (surfaces only) reports composed=false with zero composition rates", () => {
+  withTempHome(() => {
+    const domain = "composition-wide-flat.example.com";
+    for (let i = 1; i <= 3; i += 1) {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "surface.observed",
+        ts: `2026-05-31T01:00:0${i}.000Z`,
+        surface_id: `surface:s${i}`,
+        payload: { title: `S${i}`, surface_type: "web" },
+      });
+    }
+    const summary = summarizeTaskGraph(domain);
+    assert.equal(summary.composition.surfaces, 3);
+    assert.equal(summary.composition.hypotheses, 0);
+    assert.equal(summary.composition.transitions, 0);
+    assert.equal(summary.composition.composed, false);
+    assert.equal(summary.composition.hypotheses_per_surface, 0);
+    assert.equal(summary.composition.transitions_per_hypothesis, 0);
+  });
+});
+
+test("composition telemetry is summary-only and is never persisted into the hash-bound graph document", () => {
+  withTempHome(() => {
+    const domain = "composition-not-persisted.example.com";
+    seedFourKindFixture(domain);
+    materializeTaskGraph(domain, { write: true });
+    const persisted = JSON.parse(fs.readFileSync(taskGraphPath(domain), "utf8"));
+    assert.equal("composition" in persisted, false, "composition must not enter the hash-bound document");
+  });
+});

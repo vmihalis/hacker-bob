@@ -558,6 +558,28 @@ function summarizeTaskGraph(targetDomain, options = {}) {
   });
   crossStackTransitions.sort((a, b) => a.node_id.localeCompare(b.node_id));
 
+  // Composition telemetry: how far the graph moved past flat surface
+  // enumeration. A graph that never proposes a hypothesis or a transition has
+  // composed === false (the failure mode this measures); the per-node rates
+  // quantify the hypothesis and transition layers. Summary-only: derived from
+  // the read-only counts, never written into the hash-bound graph document.
+  const compositionSurfaces = kindCounts.surface || 0;
+  const compositionHypotheses = kindCounts.hypothesis || 0;
+  const compositionTransitions = kindCounts.transition || 0;
+  const ratio = (numerator, denominator) => (denominator > 0
+    ? Math.round((numerator / denominator) * 1000) / 1000
+    : 0);
+  const composition = {
+    surfaces: compositionSurfaces,
+    hypotheses: compositionHypotheses,
+    transitions: compositionTransitions,
+    claims: kindCounts.claim || 0,
+    edges: document.edge_count,
+    hypotheses_per_surface: ratio(compositionHypotheses, compositionSurfaces),
+    transitions_per_hypothesis: ratio(compositionTransitions, compositionHypotheses),
+    composed: compositionHypotheses > 0 || compositionTransitions > 0,
+  };
+
   return {
     version: 1,
     target_domain: document.target_domain,
@@ -568,6 +590,7 @@ function summarizeTaskGraph(targetDomain, options = {}) {
     hashes: document.hashes,
     state_counts: stateCounts,
     kind_counts: kindCounts,
+    composition,
     ready_nodes: readyNodes.slice(0, SUMMARY_TOP_N),
     open_hypotheses: openHypotheses.slice(0, SUMMARY_TOP_N),
     recent_finalizations: recentFinalizations.slice(0, SUMMARY_TOP_N),

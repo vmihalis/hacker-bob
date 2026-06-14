@@ -99,6 +99,22 @@ const TRANSITION_KIND_VALUES = Object.freeze([
 const TRANSITION_TRUST_ASSUMPTION_MAX_CHARS = 512;
 const HYPOTHESIS_STATEMENT_MAX_CHARS = 512;
 
+// Composition-experiment vocabulary. A path-composition experiment confirms a
+// composed cross-surface path only when EVERY leaf is bound to a replayable
+// frontier event. The result is binary: `pass` (every leaf resolved to a real
+// validated observation) or `fail` (at least one leaf was refused because its
+// evidence_ref did not bind to a real event). There is no third "partial"
+// outcome — an unbound leaf means the path cannot be confirmed at all.
+const COMPOSITION_EXPERIMENT_RESULT_KINDS = Object.freeze(["pass", "fail"]);
+
+// Every leaf's `evidence_ref` must be a `frontier_event:<event_id>` binding.
+// The text after the colon is the frontier event_id the harness resolves
+// against readFrontierEvents(domain); a bare string that merely "looks like"
+// evidence (an opaque hash, a URL, a free-form note) does not match and so
+// cannot bind a leaf. The id charset mirrors normalizeId's accepted shape so a
+// ref that passes this pattern can be looked up verbatim.
+const EVIDENCE_BINDING_REF_PATTERN = /^frontier_event:[A-Za-z0-9_-]+$/;
+
 // Node identifiers in the TaskGraph plane carry a `TG-` prefix. The
 // pre-flight sweep noted that mcp/lib/surface-graph.js uses generic
 // `node_id` strings for an unrelated surface-adjacency graph; the prefix
@@ -476,7 +492,9 @@ function readHypothesisProposals(targetDomain) {
 }
 
 module.exports = {
+  COMPOSITION_EXPERIMENT_RESULT_KINDS,
   DEFAULT_STALE_DISPATCH_MS,
+  EVIDENCE_BINDING_REF_PATTERN,
   HYPOTHESIS_STATEMENT_MAX_CHARS,
   NODE_STATE_TRANSITIONS,
   NODE_STATE_VALUES,

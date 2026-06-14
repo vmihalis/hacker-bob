@@ -117,6 +117,18 @@ function frontierEventsJsonlPath(domain) {
   return path.join(sessionDir(domain), "frontier-events.jsonl");
 }
 
+function compositionResultsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "composition-results.jsonl");
+}
+
+// SC1 confirm-half live-verifier ledger. Written ONLY by
+// bob_verify_composition_path (composition-live-verifier.js) and audit-graded
+// below so agents cannot Write-forge a verified_pass — SC1 is graded on this
+// ledger's verified_pass count, never on a forgeable frontier event.
+function compositionVerifiedJsonlPath(domain) {
+  return path.join(sessionDir(domain), "composition-verified.jsonl");
+}
+
 function sessionNucleusPath(domain) {
   return path.join(sessionDir(domain), "session-nucleus.json");
 }
@@ -444,6 +456,9 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   "report-snapshots.jsonl",
   "report-amendments.jsonl",
   "chain-attempts.jsonl",
+  // SC1 confirm-half: the live-verifier's verified_pass ledger. MCP-write-only so
+  // a verified_pass cannot be hand-forged via the Write tool; SC1 grades on it.
+  "composition-verified.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -591,6 +606,8 @@ module.exports = {
   claimClustersJsonlPath,
   claimFreezePath,
   claimsJsonlPath,
+  compositionResultsJsonlPath,
+  compositionVerifiedJsonlPath,
   docDeltaResultsPath,
   frontierEventsJsonlPath,
   invariantRunsJsonlPath,

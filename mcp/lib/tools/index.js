@@ -139,6 +139,20 @@ const TOOL_MODULES = Object.freeze([
   // force-flush + the read surface for X.5 / X.8 / X.11 callers.
   require("./materialize-task-graph.js"),
   require("./read-task-graph.js"),
+  // Evidence-bound path-composition experiment + composition telemetry.
+  // Both orchestrator-only. The experiment confirms a composed cross-surface
+  // path ONLY when every ordered leaf binds to a replayable frontier event
+  // (frontier_event:<event_id>); an unbound leaf refuses the path. The
+  // telemetry tool reads summarizeTaskGraph(domain).composition — how far the
+  // graph moved past flat surface enumeration. Backed by
+  // mcp/lib/composition-experiment-harness.js + the X.2 materializer.
+  require("./read-composition-telemetry.js"),
+  require("./run-path-composition-experiment.js"),
+  // SC1 confirm-half: live re-execution of composition guard leaves. Mints a
+  // verified_pass (object-auth/HTTP K=1) only when the offline-shaped flip
+  // reproduces on live re-execution; writes the audit-graded
+  // composition-verified.jsonl ledger SC1 grades on.
+  require("./verify-composition-path.js"),
   // Plane X Cycle X.4 — Contract schema + attach with pre-dispatch
   // satisfiability check. Backed by mcp/lib/contracts.js (the X-D4 7-witness
   // schema + the X-D11 satisfiability gate). The attach tool emits

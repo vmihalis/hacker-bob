@@ -31,6 +31,7 @@ const {
   HANDOFF_ANALYTICS_MAX_FILES,
   WAVE_READINESS_MAX_ASSIGNMENT_FILES,
   readSessionArtifactSummary,
+  chainWorkRequired,
 } = require("./pipeline-session-artifacts.js");
 const PIPELINE_ANALYTICS_VERSION = 1;
 const PIPELINE_EVENT_READ_MAX_BYTES = 16 * 1024 * 1024;
@@ -763,10 +764,9 @@ function analyzeSession(targetDomain, {
     }));
   }
 
-  const chainWorkRequired = artifacts.findings.total >= 2 || artifacts.chain_handoffs.chain_notes_count > 0;
   if (
     lifecycleAtLeast(lifecycleState, "CLAIM_FREEZE") &&
-    chainWorkRequired &&
+    chainWorkRequired(artifacts) &&
     artifacts.chain_attempts.terminal_total === 0
   ) {
     issues.push(issue("chain_phase_no_attempts", "blocked", "CLAIM_FREEZE lifecycle requires terminal structured chain attempts when chain work is recorded.", {
@@ -900,6 +900,17 @@ function analyzeSession(targetDomain, {
     },
   };
 
+  // Composition telemetry (summary-only, derived from the read-only task-graph
+  // summary; never persisted). Defensive: a missing or pressure-refused graph
+  // must not break session analytics.
+  let composition = null;
+  try {
+    const { summarizeTaskGraph } = require("./task-graph-materializer.js");
+    composition = summarizeTaskGraph(targetDomain).composition || null;
+  } catch {
+    composition = null;
+  }
+
   return {
     target_domain: targetDomain,
     row,
@@ -909,6 +920,7 @@ function analyzeSession(targetDomain, {
     issues,
     tool_health: toolHealth,
     evaluator_health: evaluatorHealth,
+    composition,
   };
 }
 
@@ -1113,6 +1125,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
       next_actions: buildNextActions(bottlenecks, options.limit),
       tool_health: analysis.tool_health,
       evaluator_health: analysis.evaluator_health,
+      composition: analysis.composition,
       event_log: {
         enabled: analysis.event_read.enabled,
         path: analysis.event_read.events_path,
