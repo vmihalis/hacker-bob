@@ -46,9 +46,15 @@ def main(argv=None):
     ap.add_argument("--ledger", required=True)
     ap.add_argument("--out", default=None)
     ap.add_argument("--pretty", action="store_true")
+    ap.add_argument("--billing-usd", type=float, default=None,
+                    help="Actual billed USD for this run window (Anthropic console). "
+                         "Enables the §7.3/§8 ±5%% reconciliation gate; omit and the "
+                         "dollar figure stays labeled reconciliation-pending.")
     a = ap.parse_args(argv)
 
-    rows = [r for r in load(a.ledger) if r.get("status") == "complete"]
+    all_rows = load(a.ledger)
+    total_candidates = len(all_rows)
+    rows = [r for r in all_rows if r.get("status") == "complete"]
     n_trials = len(rows)
     hits = sum(1 for r in rows if r.get("recall") == "hit")
     p, lo, hi = wilson(hits, n_trials)
@@ -76,6 +82,36 @@ def main(argv=None):
              if isinstance(r.get("per_trial_precision"), (int, float))]
     costs = [r["cost_usd"] for r in rows if isinstance(r.get("cost_usd"), (int, float))]
 
+    # §5.4 build-success + invalid-trial rates — first-class RESULTS, never filters.
+    build_ok = sum(1 for r in all_rows if r.get("build_failed") is False)
+    build_failed = sum(1 for r in all_rows if r.get("build_failed") is True)
+    build_known = build_ok + build_failed
+    build_success_rate = round(build_ok / build_known, 4) if build_known else None
+    invalid_trials = sum(1 for r in all_rows
+                         if r.get("invalid") is True or r.get("status") != "complete")
+    invalid_rate = round(invalid_trials / total_candidates, 4) if total_candidates else None
+    # Conservative recall: invalid/incomplete trials count as MISSES (no survivorship).
+    cons_p, cons_lo, cons_hi = wilson(hits, total_candidates)
+    cons_rp, _, _ = wilson(repro_hits, total_candidates)
+
+    # §7.3/§8 run-level cost reconciliation gate (±5% of operator-supplied billing).
+    reconstructed_usd = round(sum(costs), 4) if costs else None
+    cost_reconciliation = {
+        "reconstructed_usd": reconstructed_usd,
+        "billing_usd": a.billing_usd,
+        "tolerance": 0.05,
+        "reconciled": False,
+        "status": "no_billing_input",
+        "delta_pct": None,
+    }
+    if a.billing_usd and a.billing_usd > 0 and reconstructed_usd is not None:
+        delta = abs(reconstructed_usd - a.billing_usd) / a.billing_usd
+        cost_reconciliation["delta_pct"] = round(delta * 100, 2)
+        cost_reconciliation["reconciled"] = delta <= 0.05
+        cost_reconciliation["status"] = "within_tolerance" if delta <= 0.05 else "exceeds_tolerance"
+    cost_label = ("reconciled (within ±5% of billing)" if cost_reconciliation["reconciled"]
+                  else "derived externally — reconciliation pending")
+
     summary = {
         "complete_trials": n_trials,
         "distinct_cases": len(cases),
@@ -98,6 +134,22 @@ def main(argv=None):
         "cost_total_usd": round(sum(costs), 2) if costs else None,
         "cost_mean_usd": round(statistics.mean(costs), 2) if costs else None,
         "cost_median_usd": round(statistics.median(costs), 2) if costs else None,
+        # §5.4 first-class denominators (no survivorship).
+        "total_candidate_trials": total_candidates,
+        "invalid_trials": invalid_trials,
+        "invalid_trial_rate": invalid_rate,
+        "build_success_rate": build_success_rate,
+        "build_success_fraction": (f"{build_ok}/{build_known}" if build_known else None),
+        "single_trial_recall_all_candidates": round(cons_p, 4),
+        "single_trial_recall_all_candidates_ci95": [round(cons_lo, 4), round(cons_hi, 4)],
+        "single_trial_recall_all_candidates_fraction": f"{hits}/{total_candidates}",
+        "single_trial_recall_reproduction_all_candidates": round(cons_rp, 4),
+        "recall_framing_note": ("'_all_candidates' counts invalid/incomplete trials as misses "
+                                "(conservative, no survivorship); the non-suffixed recall is over "
+                                "complete trials only. Both are reported per §5.4."),
+        # §7.3/§8 cost gate.
+        "cost_reconciliation": cost_reconciliation,
+        "cost_label": cost_label,
     }
 
     md = ["# bob-oss benchmark — results", "",
@@ -119,8 +171,18 @@ def main(argv=None):
           f"({summary['pass_at_k_fraction']})",
           f"- **Mean per-trial precision:** {summary['mean_per_trial_precision']}",
           f"- **Distinct cases / complete trials:** {summary['distinct_cases']} / {summary['complete_trials']}",
+          f"- **Recall over ALL candidate trials (conservative, no survivorship):** "
+          f"{summary['single_trial_recall_all_candidates']} "
+          f"({summary['single_trial_recall_all_candidates_fraction']}) — invalid/incomplete "
+          f"trials counted as misses. Invalid-trial rate: {summary['invalid_trial_rate']} "
+          f"({summary['invalid_trials']}/{summary['total_candidate_trials']}).",
+          f"- **Build-success rate (bob-oss ASAN harness):** {summary['build_success_rate']} "
+          f"({summary['build_success_fraction']}) — first-class result, not a filter.",
           f"- **Cost:** total ${summary['cost_total_usd']} | mean ${summary['cost_mean_usd']}/run "
-          f"| median ${summary['cost_median_usd']}/run (API-equivalent)", "",
+          f"| median ${summary['cost_median_usd']}/run — {summary['cost_label']}"
+          + (f" (reconstructed ${summary['cost_reconciliation']['reconstructed_usd']} vs billed "
+             f"${summary['cost_reconciliation']['billing_usd']}, Δ{summary['cost_reconciliation']['delta_pct']}%)"
+             if summary['cost_reconciliation']['billing_usd'] is not None else ""), "",
           "## Per-case", "",
           "| case | project | trials | hits | pass@1 | pass@k |",
           "|------|---------|-------:|-----:|-------:|:------:|"]

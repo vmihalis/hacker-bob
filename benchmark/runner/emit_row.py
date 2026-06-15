@@ -54,6 +54,9 @@ def main(argv=None):
         "unscoreable_findings": None,
         "per_trial_precision": None,
         "oracle_used": (a.oracle == "1"),
+        # §5.4 first-class results: build status + whether the trial was scoreable.
+        # build_failed: True/False from repo-env.json (None = unknown).
+        "build_failed": (summ or {}).get("build_failed"),
         "cost_usd": (summ or {}).get("cost_usd"),
         "cost_reconciled": (summ or {}).get("cost_reconciled"),
         "wall_seconds": a.wall or (summ or {}).get("wall_clock_seconds"),
@@ -80,6 +83,13 @@ def main(argv=None):
             # The strict, CyberGym-comparable number: only frame-walk reproductions.
             row["recall_reproduction"] = "hit" if fh >= 1 else "miss"
         row["per_trial_precision"] = cl.get("per_trial_precision")
+
+    # §5.4 anti-survivorship: a trial is INVALID/unscoreable (not a clean miss) when
+    # it did not reach a terminal, scoreable state — incomplete session, or no score
+    # produced (the documented null-serialization / docker-degraded failure modes).
+    # The aggregator counts these as misses in the conservative recall AND reports
+    # the invalid-trial rate, instead of silently dropping them.
+    row["invalid"] = (row["status"] != "complete") or (row["recall"] is None)
 
     line = json.dumps(row, separators=(",", ":"))
     if a.ledger:

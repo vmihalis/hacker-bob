@@ -693,6 +693,9 @@ def main(argv=None):
         "cost_usd": run_obj["cost"].get("usd"),
         "cost_reconciled": run_obj["cost"].get("reconciled"),
         "wall_clock_seconds": run_obj.get("wall_clock_seconds"),
+        # §5.4: build status is a first-class result, not a denominator filter.
+        # True/False from repo-env.json docker_build; None when status is unknown.
+        "build_failed": (run_obj.get("limits_hit") or {}).get("build_failed"),
     }
     sys.stdout.write(json.dumps(summary, indent=2 if args.pretty else None,
                                 separators=None if args.pretty else (",", ":")))
