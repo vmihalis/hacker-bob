@@ -302,25 +302,38 @@ test("bob_http_confirm is negative-only: a resource-shaped synthetic response is
   });
 })));
 
-test("bob_http_confirm rejects a recorded endpoint whose id segment hides an encoded separator", () => withTempHome(() => {
-  // A recorded endpoint like /api/accounts/known%252Fdelete (double-encoded)
-  // matches the `{id}` template via `[^/]+` raw, but a server that decodes before
-  // routing reaches a sub-resource/action path — the unauth baseline GET must NOT
-  // fire against it. The reject is layer-independent (handles %2F, %252F, …).
-  const domain = "confirm-encsep.example.test";
-  const surfaceId = "surface:accounts";
-  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known%252Fdelete`);
-
-  return executeTool("bob_http_confirm", {
-    target_domain: domain,
-    surface_id: surfaceId,
-    oracle_kind: "differential_response",
-    path_template: "/api/accounts/{id}",
-  }).then((envelope) => {
-    assert.equal(envelope.ok, false);
-    assert.match(envelope.error.message, /path shape does not match/);
-  });
+test("bob_http_confirm rejects recorded endpoints whose id segment hides an action route", () => withTempHome(async () => {
+  // The unauth baseline GET hits the REAL recorded id, so an id segment that can
+  // route to a sub-resource/action must be rejected — whether it hides a path
+  // separator (encoded at ANY depth, incl. split-hex %25%32%46) or carries
+  // action/matrix punctuation (: ; ,), literal or escaped. These live in the
+  // surface record, so normalizePathTemplate never sees them.
+  const maliciousIds = [
+    "known%2Fdelete",       // single-encoded separator
+    "known%252Fdelete",     // double-encoded
+    "known%2525252Fdelete", // deep-encoded
+    "known%25%32%46delete", // split-hex encoding of %2F
+    "known%5Cdelete",       // encoded backslash
+    "known:capture",        // matrix/action colon
+    "known;delete",         // matrix semicolon
+    "known%3Acapture",      // percent-escaped colon
+  ];
+  let i = 0;
+  for (const idSeg of maliciousIds) {
+    i += 1;
+    const domain = `confirm-encsep-${i}.example.test`;
+    const surfaceId = "surface:accounts";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+    seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/${idSeg}`);
+    const envelope = await executeTool("bob_http_confirm", {
+      target_domain: domain,
+      surface_id: surfaceId,
+      oracle_kind: "differential_response",
+      path_template: "/api/accounts/{id}",
+    });
+    assert.equal(envelope.ok, false, `${idSeg} should be rejected`);
+    assert.match(envelope.error.message, /path shape does not match/, `${idSeg} reject message`);
+  }
 }));
 
 test("a hand-written signed low row supports claim→freeze→verify (info→low)", () => withTempHome(() => {
@@ -375,6 +388,24 @@ test("recording exploited_safely without a confirmer row is rejected", () => wit
     }),
     (error) => error && error.details && error.details.code === "exploit_proof_unbacked_exploit_run_evidence",
   );
+}));
+
+test("malformed exploit_outcome surfaces as INVALID_ARGUMENTS, not INTERNAL_ERROR", () => withTempHome(async () => {
+  // exploit_outcome:{outcome:"exploited_safely"} without safe_oracle passes the
+  // JSON schema but fails normalizeExploitOutcome; it must be a caller-facing
+  // INVALID_ARGUMENTS (wrapped ToolError), not a swallowed-as-server-fault Error.
+  const domain = "confirm-badoutcome.example.test";
+  const surfaceId = "surface:accounts";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known`);
+  const envelope = await executeTool("bob_record_candidate_claim", {
+    target_domain: domain, surface_id: surfaceId, title: "t", severity: "info",
+    endpoint: "/api/accounts/{id}", description: "d", proof_of_concept: "p",
+    response_evidence: "r", impact: "i", validated: true,
+    exploit_outcome: { outcome: "exploited_safely" },
+  });
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.code, "INVALID_ARGUMENTS");
 }));
 
 test("bob_http_confirm schema rejects raw URL, body, severity, finding_id, and unsafe methods", () => withTempHome(async () => {
@@ -525,6 +556,14 @@ test("normalizePathTemplate requires {id} to be the final path segment (structur
   // same-segment action / matrix suffixes after {id} (no literal slash) are rejected too
   for (const tmpl of ["/api/payments/{id}:capture", "/api/accounts/{id};delete", "/api/users/{id},merge", "/api/users/{id}-summary"]) {
     assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
+  }
+  // a verb-shaped dot suffix is NOT an inert extension and is rejected; only known
+  // data-format extensions (.json/.xml/...) pass
+  for (const tmpl of ["/api/payments/{id}.capture", "/api/accounts/{id}.delete", "/api/servers/{id}.restart"]) {
+    assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
+  }
+  for (const tmpl of ["/api/accounts/{id}.json", "/api/accounts/{id}.xml", "/api/accounts/{id}.csv"]) {
+    assert.doesNotThrow(() => normalizePathTemplate(tmpl), `${tmpl} should be accepted`);
   }
   // a query string is rejected (baseline/target must be query-symmetric)
   assert.throws(() => normalizePathTemplate("/api/accounts/{id}?fields=all"), /query string/);

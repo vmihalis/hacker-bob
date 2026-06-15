@@ -389,7 +389,15 @@ function normalizeExploitRunEvidenceRefs(rawRefs) {
     if (ref.kind !== "exploit_run") {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be exploit_run`, { code: "evidence_ref_kind_invalid" });
     }
-    return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
+    // normalizeEvidenceReferenceShape does the DEEP shape checks (e.g. absolute
+    // target URL); it throws a bare Error, which would surface as INTERNAL_ERROR.
+    // Rethrow as INVALID_ARGUMENTS so malformed caller input is a client fault.
+    try {
+      return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || `evidence_refs[${index}] is invalid`, { code: "evidence_ref_invalid_shape" });
+    }
   });
 }
 
@@ -486,7 +494,15 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
       : new Date().toISOString(),
     evidence_refs: evidenceRefs,
   };
-  const exploitOutcome = normalizeExploitOutcome(args.exploit_outcome);
+  // normalizeExploitOutcome throws a bare Error (e.g. exploited_safely without
+  // safe_oracle); rethrow as INVALID_ARGUMENTS so it is not surfaced as a fault.
+  let exploitOutcome;
+  try {
+    exploitOutcome = normalizeExploitOutcome(args.exploit_outcome);
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || "exploit_outcome is invalid", { code: "exploit_outcome_invalid" });
+  }
   if (exploitOutcome) claim.exploit_outcome = exploitOutcome;
   if (typeof finding.surface_id === "string" && finding.surface_id.trim()) {
     claim.surface_ids = [finding.surface_id];

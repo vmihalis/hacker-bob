@@ -62,6 +62,11 @@ const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch
 // etc. (`(25)*` absorbs each extra `%25` layer). Layer-count-independent, so it
 // does not depend on how many times decodePathSegments iterates.
 const ENCODED_SEPARATOR_RE = /%(?:25)*(?:2f|5c)/i;
+// The ONLY suffix allowed after {id}: an inert data/serialization file extension.
+// Deliberately a closed allowlist (NOT `\.\w+`) so a verb-shaped dot suffix like
+// `{id}.capture` / `{id}.delete` — which routes to an action on the real id — is
+// rejected, while `{id}.json` / `{id}.xml` direct reads pass.
+const INERT_EXTENSION_RE = /^\.(?:json|xml|csv|tsv|txt|yaml|yml|html?|pdf|md|ndjson|geojson)$/i;
 
 // Recursively percent-decode each path segment until stable (defeats double /
 // multi encoding like %2564elete) so the deny-list sees the real verb.
@@ -186,8 +191,8 @@ function normalizePathTemplate(rawTemplate) {
   // prevent. A verb denylist can never enumerate that surface; an allowlist closes
   // it structurally. (Consequence: PR3's oracle confirms only DIRECT resource
   // reads; a sub-resource read oracle that synthesizes its own baseline is deferred.)
-  if (afterSlot !== "" && !/^\.[a-z0-9]+$/i.test(afterSlot)) {
-    rejectInvalidArguments("path_template {id} must terminate the final path segment (optionally followed by a file extension); bob_http_confirm confirms only direct resource reads, so nothing else may follow {id}");
+  if (afterSlot !== "" && !INERT_EXTENSION_RE.test(afterSlot)) {
+    rejectInvalidArguments("path_template {id} must terminate the final path segment (optionally followed by an inert file extension like .json); bob_http_confirm confirms only direct resource reads, so nothing else may follow {id}");
   }
   return template;
 }
@@ -196,17 +201,32 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// The recorded baseline id segment must be a CLEAN single resource id. The unauth
+// baseline GET hits this REAL recorded id, so anything that can route to a
+// sub-resource/action must be rejected, whether it lives in the surface record
+// (which normalizePathTemplate never sees) or is supplied raw:
+//  - a path separator, literal OR encoded at any depth (%2F, %252F, %25%32%46),
+//  - action/matrix punctuation (: ; ,), literal OR percent-escaped (%3A…).
+// Decode each segment to a FIXED POINT so multi-layer / split-hex encodings are
+// seen, and fail closed on a remnant escape that 8 passes could not resolve.
+function capturedIdSegmentIsSafe(idSegment) {
+  if (!idSegment || idSegment.includes("/") || idSegment.includes("\\")) return false;
+  if (/[:;,]/.test(idSegment)) return false;
+  if (ENCODED_SEPARATOR_RE.test(idSegment)) return false;
+  const decoded = decodePathSegments(idSegment);
+  if (decoded.includes("/") || decoded.includes("\\")) return false;
+  if (/[:;,]/.test(decoded)) return false;
+  if (/%[0-9a-f]{2}/i.test(decoded)) return false;
+  return true;
+}
+
 function pathTemplateMatchesEndpoint(templatePathname, endpointPathname) {
   const parts = templatePathname.split("{id}");
   if (parts.length !== 2) return false;
-  const pattern = new RegExp(`^${escapeRegExp(parts[0])}[^/]+${escapeRegExp(parts[1])}$`);
-  if (!pattern.test(endpointPathname)) return false;
-  // `[^/]+` rejects a LITERAL separator in the id segment, but an ENCODED one
-  // (/api/payments/known%2Fcapture, or any %252F… depth) passes raw and, on servers
-  // that decode before routing, would make the unauth baseline GET hit a
-  // sub-resource/action on the real recorded id. Reject any encoded separator.
-  if (ENCODED_SEPARATOR_RE.test(endpointPathname)) return false;
-  return true;
+  const pattern = new RegExp(`^${escapeRegExp(parts[0])}([^/]+)${escapeRegExp(parts[1])}$`);
+  const match = pattern.exec(endpointPathname);
+  if (!match) return false;
+  return capturedIdSegmentIsSafe(match[1]);
 }
 
 function originFromState(domain, state) {
