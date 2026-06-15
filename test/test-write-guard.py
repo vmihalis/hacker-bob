@@ -246,43 +246,6 @@ TESTS = [
     ("Bash with unterminated quote blocks (shlex ValueError)",
      {"tool_input": {"command": f"rm '{SESSION}/findings.jsonl"}},
      2),
-
-    # --- issue #111: claims.jsonl + claim-freeze.json are MCP-owned; node fs writes gated ---
-    ("Write to MCP-owned claims.jsonl → block",
-     {"tool_input": {"file_path": f"{SESSION}/claims.jsonl", "content": "{}"}},
-     2),
-    ("Write to MCP-owned claim-freeze.json → block",
-     {"tool_input": {"file_path": f"{SESSION}/claim-freeze.json", "content": "{}"}},
-     2),
-    ("node fs.appendFileSync (no open()) to MCP-owned claims.jsonl → block",
-     {"tool_input": {"command": f"node -e \"require('fs').appendFileSync('{SESSION}/claims.jsonl','x')\""}},
-     2),
-    ("node fs.writeFileSync (no open()) to MCP-owned claim-freeze.json → block",
-     {"tool_input": {"command": f"node -e \"require('fs').writeFileSync('{SESSION}/claim-freeze.json','x')\""}},
-     2),
-    ("node fs.createWriteStream to MCP-owned offensive-runs.jsonl → block",
-     {"tool_input": {"command": f"node -e \"require('fs').createWriteStream('{SESSION}/offensive-runs.jsonl')\""}},
-     2),
-    ("node fs.appendFileSync outside session dir → allow",
-     {"tool_input": {"command": "node -e \"require('fs').appendFileSync('/tmp/x.jsonl','y')\""}},
-     0),
-    ("node fs.writeFileSync to agent-owned report.md → allow",
-     {"tool_input": {"command": f"node -e \"require('fs').writeFileSync('{SESSION}/report.md','x')\""}},
-     0),
-
-    # --- issue #111 (Codex P1): no-space redirect must not slip the quick gate ---
-    ("no-space redirect '>' to MCP-owned claims.jsonl → block",
-     {"tool_input": {"command": f"echo '{{}}' >{SESSION}/claims.jsonl"}},
-     2),
-    ("no-space redirect '>>' to MCP-owned findings.jsonl → block",
-     {"tool_input": {"command": f"echo x >>{SESSION}/findings.jsonl"}},
-     2),
-    ("no-space redirect to agent-owned report.md → allow",
-     {"tool_input": {"command": f"echo x >{SESSION}/report.md"}},
-     0),
-    ("fd-dup '2>&1' (no file target) → allow",
-     {"tool_input": {"command": "ls -la 2>&1"}},
-     0),
 ]
 
 

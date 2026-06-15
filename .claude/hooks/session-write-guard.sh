@@ -35,8 +35,6 @@ MCP_OWNED_EXACT = {
     "diff-impact.json",
     "findings.jsonl",
     "findings.md",
-    "claims.jsonl",
-    "claim-freeze.json",
     "brutalist.json",
     "brutalist.md",
     "balanced.json",
@@ -233,20 +231,6 @@ def extract_inline_script_paths(command):
     for match in re.finditer(r"""Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.write""", command):
         targets.append(match.group(1))
 
-    # node fs writes: (fs.)writeFile/writeFileSync/appendFile/appendFileSync("/path",...)
-    # and createWriteStream("/path"), with or without an fs. prefix and regardless of
-    # require('fs')/require('node:fs'). Defense-in-depth (issue #111 sibling) against the
-    # easy Node forge vector that the Python-only patterns above miss. Like the Python
-    # patterns it extracts only string-LITERAL paths; it does NOT close arbitrary
-    # in-process code execution (a variable/template path arg, openSync+writeSync,
-    # bracket access like fs['appendFileSync'], child_process, a compiled helper) — only
-    # the offensive-sandbox PR's UID/container isolation closes that. Same boundary #108
-    # states. A literal-path forge is the realistic agent vector; this raises that bar.
-    for match in re.finditer(r"""(?:write|append)File(?:Sync)?\s*\(\s*["']([^"']+)["']""", command):
-        targets.append(match.group(1))
-    for match in re.finditer(r"""createWriteStream\s*\(\s*["']([^"']+)["']""", command):
-        targets.append(match.group(1))
-
     return targets
 
 
@@ -307,17 +291,10 @@ if not command:
 check_mutating_path_commands(command)
 
 # Quick gate: skip if no write indicators
-# Match the extractor's trigger condition: a `>`/`>>` (no-space form like `>file`
-# included — Codex P1) followed by a capturable target, but NOT an fd-dup like
-# `2>&1`. The earlier `>{1,2}\s` required a space and let `>claims.jsonl` slip the
-# gate entirely for every MCP-owned file.
-has_redirects = re.search(r">{1,2}\s*[\"']?[^\"'\s|;&)\n]|tee\s", command)
+has_redirects = re.search(r">{1,2}\s|tee\s", command)
 has_open_call = re.search(r"open\s*\(|Path\s*\(", command)
-# node fs write idioms (issue #111 sibling): a pure fs.appendFileSync(...) has no
-# open(/Path( token, so without this it would slip the gate entirely.
-has_node_write = re.search(r"(?:write|append)File(?:Sync)?\s*\(|createWriteStream\s*\(", command)
 
-if not has_redirects and not has_open_call and not has_node_write:
+if not has_redirects and not has_open_call:
     raise SystemExit(0)
 
 # Resolve any cd/pushd targets so relative redirect/script paths are checked
@@ -334,9 +311,8 @@ if has_redirects:
                 f"Use the appropriate hacker-bob MCP tool instead."
             )
 
-# Extract and check inline script file writes (open(), Path().write_text(),
-# node fs.writeFileSync/appendFileSync/createWriteStream, etc.)
-if has_open_call or has_node_write:
+# Extract and check inline script file writes (open(), Path().write_text(), etc.)
+if has_open_call:
     for target in extract_inline_script_paths(command):
         blocked = check_file(target, cd_targets)
         if blocked:

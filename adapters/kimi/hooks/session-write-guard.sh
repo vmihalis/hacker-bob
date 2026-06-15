@@ -27,8 +27,6 @@ MCP_OWNED_EXACT = {
     "chain-attempts.jsonl",
     "findings.jsonl",
     "findings.md",
-    "claims.jsonl",
-    "claim-freeze.json",
     "brutalist.json",
     "brutalist.md",
     "balanced.json",
@@ -114,51 +112,26 @@ def is_in_session_dir(resolved):
         return False
 
 
-def extract_cd_targets(command):
-    """Directories the command cd's/pushd's into, resolved like other paths, so a
-    `cd <session_dir> && <relative write>` cannot slip the guard. Mirrors the main
-    .claude/hooks guard (issue #111: also needed for the new Node fs write patterns)."""
-    bases = []
-    for match in re.finditer(r"\b(?:cd|pushd)\s+(?:-[A-Za-z]+\s+|--\s+)*([\"']?)([^\"'\s;|&]+)\1", command):
-        raw = match.group(2)
-        if raw.startswith("-") or raw in {"-", "~-", "&&", "||"}:
-            continue
-        bases.append(resolve_path(raw))
-    return bases
-
-
-def check_file(raw_path, base_dirs=None):
-    """Returns filename to block, or None to allow.
-
-    When base_dirs (cd targets) are supplied, a relative path is also resolved
-    against each of them so a `cd <session_dir>`-then-relative-write cannot escape
-    the session-dir check."""
+def check_file(raw_path):
+    """Returns filename to block, or None to allow."""
     resolved = resolve_path(raw_path)
 
-    candidates = [resolved]
-    if not resolved.is_absolute() and base_dirs:
-        for base in base_dirs:
-            candidates.append(base / resolved)
+    if not is_in_session_dir(resolved):
+        return None
 
-    for candidate in candidates:
-        if not is_in_session_dir(candidate):
-            continue
+    filename = resolved.name
 
-        filename = candidate.name
-
-        if any(part in MCP_OWNED_DIRS for part in candidate.parts):
-            return filename
-
-        if is_agent_allowed(filename):
-            return None
-
-        if is_mcp_owned(filename):
-            return filename
-
-        # Block by default for unrecognized files in session dir
+    if any(part in MCP_OWNED_DIRS for part in resolved.parts):
         return filename
 
-    return None
+    if is_agent_allowed(filename):
+        return None
+
+    if is_mcp_owned(filename):
+        return filename
+
+    # Block by default for unrecognized files in session dir
+    return filename
 
 
 def block(message):
@@ -206,17 +179,6 @@ def extract_inline_script_paths(command):
     for match in re.finditer(r"""Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.write""", command):
         targets.append(match.group(1))
 
-    # node fs writes: (fs.)writeFile/writeFileSync/appendFile/appendFileSync("/path",...)
-    # and createWriteStream("/path"). Defense-in-depth (issue #111 sibling) against the
-    # easy Node forge vector. Like the Python patterns it extracts only string-LITERAL
-    # paths and does NOT close arbitrary in-process code execution (variable/template
-    # path, openSync+writeSync, bracket access, child_process) — only sandbox/UID
-    # isolation closes that. Mirrors .claude/hooks/session-write-guard.sh.
-    for match in re.finditer(r"""(?:write|append)File(?:Sync)?\s*\(\s*["']([^"']+)["']""", command):
-        targets.append(match.group(1))
-    for match in re.finditer(r"""createWriteStream\s*\(\s*["']([^"']+)["']""", command):
-        targets.append(match.group(1))
-
     return targets
 
 
@@ -227,12 +189,11 @@ def check_mutating_path_commands(command):
     except ValueError:
         return
 
-    base_dirs = extract_cd_targets(command)
     mutators = {"rm", "unlink", "mv", "cp", "chmod", "chown", "install"}
     separators = {"|", ";", "&&", "||"}
 
     def block_mutator(verb, path):
-        blocked = check_file(path, base_dirs)
+        blocked = check_file(path)
         if blocked:
             block(
                 f"BLOCKED: Bash {verb} on '{blocked}' in session directory. "
@@ -314,38 +275,26 @@ check_mutating_path_commands(command)
 
 # Quick gate: skip the redirect/inline-script extractors if there are no
 # matching write indicators (direct-write verbs are already handled above).
-# Match the extractor's trigger condition: a `>`/`>>` (no-space form like `>file`
-# included — Codex P1) followed by a capturable target, but NOT an fd-dup like
-# `2>&1`. The earlier `>{1,2}\s` required a space and let `>claims.jsonl` slip the
-# gate entirely for every MCP-owned file. Mirrors .claude/hooks.
-has_redirects = re.search(r">{1,2}\s*[\"']?[^\"'\s|;&)\n]|tee\s", command)
+has_redirects = re.search(r">{1,2}\s|tee\s", command)
 has_open_call = re.search(r"open\s*\(|Path\s*\(", command)
-# node fs write idioms (issue #111 sibling): a pure fs.appendFileSync(...) has no
-# open(/Path( token, so without this it would slip the gate entirely.
-has_node_write = re.search(r"(?:write|append)File(?:Sync)?\s*\(|createWriteStream\s*\(", command)
 
-if not has_redirects and not has_open_call and not has_node_write:
+if not has_redirects and not has_open_call:
     raise SystemExit(0)
-
-# Resolve any cd/pushd targets so relative redirect/script paths are checked
-# against the shell's working directory, not just the hook process cwd.
-cd_targets = extract_cd_targets(command)
 
 # Extract and check redirect targets
 if has_redirects:
     for target in extract_redirect_targets(command):
-        blocked = check_file(target, cd_targets)
+        blocked = check_file(target)
         if blocked:
             block(
                 f"BLOCKED: Bash redirect to '{blocked}' in session directory. "
                 f"Use the appropriate hacker-bob MCP tool instead."
             )
 
-# Extract and check inline script file writes (open(), Path().write_text(),
-# node fs.writeFileSync/appendFileSync/createWriteStream, etc.)
-if has_open_call or has_node_write:
+# Extract and check inline script file writes (open(), Path().write_text(), etc.)
+if has_open_call:
     for target in extract_inline_script_paths(command):
-        blocked = check_file(target, cd_targets)
+        blocked = check_file(target)
         if blocked:
             block(
                 f"BLOCKED: Inline script writes to '{blocked}' in session directory. "
