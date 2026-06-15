@@ -55,7 +55,10 @@ const HEADER_SUBSET = Object.freeze({
 // a verb-named collection BEFORE the id (`/delete/{id}`). It must NOT include
 // ambiguous nouns (order/charge/transfer/block/run) or it would wrongly reject
 // legitimate single-resource reads like /api/order/{id}.
-const STATE_CHANGE_PATH_SEGMENT_RE = /(?:^|\/)(?:delete|logout|remove|destroy|deactivate|disable|revoke|reset|unsubscribe|terminate|purge|wipe)(?:\/|$)/i;
+// The verb may be followed by `/`, end-of-path, OR a format/matrix suffix
+// (`.json`, `;v=1`) that many routers strip before dispatch — so /api/delete.json/{id}
+// and /api/reset;v=1/{id} are caught too.
+const STATE_CHANGE_PATH_SEGMENT_RE = /(?:^|\/)(?:delete|logout|remove|destroy|deactivate|disable|revoke|reset|unsubscribe|terminate|purge|wipe)(?:[./;,]|\/|$)/i;
 const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch|put|post|submit|send|transfer|refund|reset|revoke|disable|enable|drop|truncate|mutation)$/i;
 
 // An encoded path separator at ANY encoding depth: %2F / %5C, %252F, %2525252F,
@@ -67,6 +70,12 @@ const ENCODED_SEPARATOR_RE = /%(?:25)*(?:2f|5c)/i;
 // `{id}.capture` / `{id}.delete` — which routes to an action on the real id — is
 // rejected, while `{id}.json` / `{id}.xml` direct reads pass.
 const INERT_EXTENSION_RE = /^\.(?:json|xml|csv|tsv|txt|yaml|yml|html?|pdf|md|ndjson|geojson)$/i;
+// Pre-fetch URL validation hardcodes blockInternalHosts:false ON PURPOSE — these
+// are domain-scope/URL-shape range checks; the session's real SSRF policy
+// (block_internal_hosts) is enforced at FETCH time in safeFetch. The named
+// constant signals the `false` is intentional, not a dropped policy, so a future
+// refactor of the validation layer can't silently strip SSRF enforcement.
+const SCOPE_VALIDATION_OPTS = Object.freeze({ blockInternalHosts: false });
 
 // Recursively percent-decode each path segment until stable (defeats double /
 // multi encoding like %2564elete) so the deny-list sees the real verb.
@@ -139,7 +148,10 @@ function assertReadOnlyPath(url) {
       rejectInvalidArguments("GraphQL mutation-shaped query is not allowed for bob_http_confirm");
     }
   }
-  if (/\bmutation\b/i.test(pathAndQuery)) {
+  // Check the raw AND the recursively-decoded path so an encoded `mutation`
+  // segment (e.g. /api/%6Dutation/{id}) that routers decode before dispatch is
+  // also rejected, not just the literal form.
+  if (/\bmutation\b/i.test(pathAndQuery) || /\bmutation\b/i.test(decodedPath)) {
     rejectInvalidArguments("mutation-shaped path or query is not allowed for bob_http_confirm");
   }
 }
@@ -240,7 +252,7 @@ function originFromState(domain, state) {
   } catch {
     rejectInvalidArguments("session target_url is not a valid URL");
   }
-  assertSafeRequestUrl(parsed.toString(), domain, { blockInternalHosts: false });
+  assertSafeRequestUrl(parsed.toString(), domain, SCOPE_VALIDATION_OPTS);
   return parsed.origin;
 }
 
@@ -320,7 +332,7 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state }) {
         continue;
       }
       try {
-        assertSafeRequestUrl(candidate.toString(), domain, { blockInternalHosts: false });
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
       } catch {
         continue;
       }
@@ -353,7 +365,7 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
   const syntheticId = syntheticResourceId();
   const resolvedTemplate = pathTemplate.replace("{id}", encodeURIComponent(syntheticId));
   const targetUrl = new URL(resolvedTemplate, baselineUrl.origin);
-  assertSafeRequestUrl(targetUrl.toString(), domain, { blockInternalHosts: false });
+  assertSafeRequestUrl(targetUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
   assertReadOnlyPath(targetUrl.toString());
   if (targetUrl.origin !== baselineUrl.origin) {
     rejectInvalidArguments("path_template must resolve under the surface endpoint origin");
@@ -604,7 +616,15 @@ function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, st
       error: error || null,
       duration_ms: startedAt ? Date.now() - startedAt : null,
     });
-  } catch {}
+  } catch (auditError) {
+    // A swallowed audit-write failure makes this probe invisible to the circuit
+    // breaker / request budget — a control-plane gap. We still must not let an
+    // audit failure abort the confirm, but surface it to stderr so it is
+    // detectable outside the control plane.
+    try {
+      process.stderr.write(`bob_http_confirm: http-audit write failed: ${auditError && auditError.message ? auditError.message : String(auditError)}\n`);
+    } catch {}
+  }
 }
 
 async function httpConfirm(args = {}) {
