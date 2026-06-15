@@ -246,6 +246,29 @@ TESTS = [
     ("Bash with unterminated quote blocks (shlex ValueError)",
      {"tool_input": {"command": f"rm '{SESSION}/findings.jsonl"}},
      2),
+
+    # --- issue #111: claims.jsonl + claim-freeze.json are MCP-owned; node fs writes gated ---
+    ("Write to MCP-owned claims.jsonl → block",
+     {"tool_input": {"file_path": f"{SESSION}/claims.jsonl", "content": "{}"}},
+     2),
+    ("Write to MCP-owned claim-freeze.json → block",
+     {"tool_input": {"file_path": f"{SESSION}/claim-freeze.json", "content": "{}"}},
+     2),
+    ("node fs.appendFileSync (no open()) to MCP-owned claims.jsonl → block",
+     {"tool_input": {"command": f"node -e \"require('fs').appendFileSync('{SESSION}/claims.jsonl','x')\""}},
+     2),
+    ("node fs.writeFileSync (no open()) to MCP-owned claim-freeze.json → block",
+     {"tool_input": {"command": f"node -e \"require('fs').writeFileSync('{SESSION}/claim-freeze.json','x')\""}},
+     2),
+    ("node fs.createWriteStream to MCP-owned offensive-runs.jsonl → block",
+     {"tool_input": {"command": f"node -e \"require('fs').createWriteStream('{SESSION}/offensive-runs.jsonl')\""}},
+     2),
+    ("node fs.appendFileSync outside session dir → allow",
+     {"tool_input": {"command": "node -e \"require('fs').appendFileSync('/tmp/x.jsonl','y')\""}},
+     0),
+    ("node fs.writeFileSync to agent-owned report.md → allow",
+     {"tool_input": {"command": f"node -e \"require('fs').writeFileSync('{SESSION}/report.md','x')\""}},
+     0),
 ]
 
 

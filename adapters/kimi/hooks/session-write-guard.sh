@@ -27,6 +27,8 @@ MCP_OWNED_EXACT = {
     "chain-attempts.jsonl",
     "findings.jsonl",
     "findings.md",
+    "claims.jsonl",
+    "claim-freeze.json",
     "brutalist.json",
     "brutalist.md",
     "balanced.json",
@@ -179,6 +181,15 @@ def extract_inline_script_paths(command):
     for match in re.finditer(r"""Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.write""", command):
         targets.append(match.group(1))
 
+    # node fs writes: (fs.)writeFile/writeFileSync/appendFile/appendFileSync("/path",...)
+    # and createWriteStream("/path"). Defense-in-depth (issue #111 sibling) against the
+    # easy Node forge vector the Python-only patterns above miss; does NOT close arbitrary
+    # in-process code execution (only sandbox/UID isolation does). Mirrors .claude/hooks.
+    for match in re.finditer(r"""(?:write|append)File(?:Sync)?\s*\(\s*["']([^"']+)["']""", command):
+        targets.append(match.group(1))
+    for match in re.finditer(r"""createWriteStream\s*\(\s*["']([^"']+)["']""", command):
+        targets.append(match.group(1))
+
     return targets
 
 
@@ -277,8 +288,11 @@ check_mutating_path_commands(command)
 # matching write indicators (direct-write verbs are already handled above).
 has_redirects = re.search(r">{1,2}\s|tee\s", command)
 has_open_call = re.search(r"open\s*\(|Path\s*\(", command)
+# node fs write idioms (issue #111 sibling): a pure fs.appendFileSync(...) has no
+# open(/Path( token, so without this it would slip the gate entirely.
+has_node_write = re.search(r"(?:write|append)File(?:Sync)?\s*\(|createWriteStream\s*\(", command)
 
-if not has_redirects and not has_open_call:
+if not has_redirects and not has_open_call and not has_node_write:
     raise SystemExit(0)
 
 # Extract and check redirect targets
@@ -291,8 +305,9 @@ if has_redirects:
                 f"Use the appropriate hacker-bob MCP tool instead."
             )
 
-# Extract and check inline script file writes (open(), Path().write_text(), etc.)
-if has_open_call:
+# Extract and check inline script file writes (open(), Path().write_text(),
+# node fs.writeFileSync/appendFileSync/createWriteStream, etc.)
+if has_open_call or has_node_write:
     for target in extract_inline_script_paths(command):
         blocked = check_file(target)
         if blocked:
