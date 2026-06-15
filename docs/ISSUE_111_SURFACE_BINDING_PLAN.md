@@ -2,7 +2,8 @@
      Research 4/6 lenses (surface_id-semantics + producer-it-gates rate-limited, compensated by red-team);
      3 candidate designs; 24 red-team attempts (19 vectors flagged); 2 critiques; final synthesis.
      Design robustness scores: A=2, B=1, C=2. Chosen spine: strict single-surface equality (refinement of A).
-     This is a DESIGN doc, not yet implemented. See GitHub issue #111. -->
+     Implemented by this PR (claims.js record gate + verification-round-store.js verify mirror + tests);
+     this doc is the design rationale + producer-PR acceptance criteria. See GitHub issue #111. -->
 
 I have verified every load-bearing claim against source (claims.js gate + stale comment 964-975, the MAC payload, the normalize/trim path, record-candidate-claim:508, the verify mirror's per-claim loop at 204 with refs at 215-230, paths.js audit-graded list, both test files, the confirmer's already-surface-matched flow, and `normalizeStringArray` trim/dedup). Here is the final build-ready plan.
 
@@ -268,7 +269,7 @@ All use already-imported symbols (`withTempHome`, `initWebSession`, `exploitRef`
 
 Run from the repo root:
 
-```
+```bash
 node --check mcp/lib/claims.js
 node --check mcp/lib/verification-round-store.js
 node --check test/severity-rise-guard.test.js
