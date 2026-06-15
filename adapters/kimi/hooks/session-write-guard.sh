@@ -314,7 +314,11 @@ check_mutating_path_commands(command)
 
 # Quick gate: skip the redirect/inline-script extractors if there are no
 # matching write indicators (direct-write verbs are already handled above).
-has_redirects = re.search(r">{1,2}\s|tee\s", command)
+# Match the extractor's trigger condition: a `>`/`>>` (no-space form like `>file`
+# included — Codex P1) followed by a capturable target, but NOT an fd-dup like
+# `2>&1`. The earlier `>{1,2}\s` required a space and let `>claims.jsonl` slip the
+# gate entirely for every MCP-owned file. Mirrors .claude/hooks.
+has_redirects = re.search(r">{1,2}\s*[\"']?[^\"'\s|;&)\n]|tee\s", command)
 has_open_call = re.search(r"open\s*\(|Path\s*\(", command)
 # node fs write idioms (issue #111 sibling): a pure fs.appendFileSync(...) has no
 # open(/Path( token, so without this it would slip the gate entirely.

@@ -269,6 +269,20 @@ TESTS = [
     ("node fs.writeFileSync to agent-owned report.md → allow",
      {"tool_input": {"command": f"node -e \"require('fs').writeFileSync('{SESSION}/report.md','x')\""}},
      0),
+
+    # --- issue #111 (Codex P1): no-space redirect must not slip the quick gate ---
+    ("no-space redirect '>' to MCP-owned claims.jsonl → block",
+     {"tool_input": {"command": f"echo '{{}}' >{SESSION}/claims.jsonl"}},
+     2),
+    ("no-space redirect '>>' to MCP-owned findings.jsonl → block",
+     {"tool_input": {"command": f"echo x >>{SESSION}/findings.jsonl"}},
+     2),
+    ("no-space redirect to agent-owned report.md → allow",
+     {"tool_input": {"command": f"echo x >{SESSION}/report.md"}},
+     0),
+    ("fd-dup '2>&1' (no file target) → allow",
+     {"tool_input": {"command": "ls -la 2>&1"}},
+     0),
 ]
 
 
