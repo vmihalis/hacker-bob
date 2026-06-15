@@ -68,7 +68,7 @@ The producer must set `row.surface_id` **before** calling `signOffensiveRunRow` 
 
 ## 3. The record-time gate — `mcp/lib/claims.js`
 
-**File:** `/Users/memehalis/sec/hacker-bob/mcp/lib/claims.js`
+**File:** `mcp/lib/claims.js`
 
 **Location:** inside `assertExploitedClaimHasProof(claim, { existingClaims = [] } = {})` (line 883), **after** the `run_id` single-use loop (ends 962) and **before** the `maxDemonstratedRank` reduce (976). This block **replaces the stale comment at 964-975.** `claim` and `backedRows` are in scope; `ToolError` + `ERROR_CODES` are already imported. **No signature change. No change to `offensiveRunRowSatisfiesEvidence`** (exported at claims.js, reused by verification-round-store.js:254; must keep its signature).
 
@@ -161,7 +161,7 @@ Issue requirement (1) ("wire the claim's surface through") is **structurally alr
 
 ## 5. Verify-time mirror — `mcp/lib/verification-round-store.js`
 
-**File:** `/Users/memehalis/sec/hacker-bob/mcp/lib/verification-round-store.js`
+**File:** `mcp/lib/verification-round-store.js`
 
 The verify-time severity-rise guard (`clampResultSeveritiesInPlace`) recomputes `maxDemonstratedRank` using the **same surface-blind** `offensiveRunRowSatisfiesEvidence` (line 254) to gate `provenRise` (275-277). Patching only record-time leaves a cross-surface rise validatable at verify against a forged/corrupt freeze. We mirror the record gate here, binding **per-ref to the owning claim's single surface**.
 
@@ -266,7 +266,7 @@ All use already-imported symbols (`withTempHome`, `initWebSession`, `exploitRef`
 
 ## 8. Verification commands
 
-Run from `/Users/memehalis/sec/hacker-bob`:
+Run from the repo root:
 
 ```
 node --check mcp/lib/claims.js
@@ -345,7 +345,7 @@ The two research lenses that were rate-limited in the main run (`surface_id-sema
 
 ### New blocking, *tested* producer ACs (fold into §6 before the producer PR opens)
 
-- **AC-5 — attacker-provisioned identities (safety/policy, highest priority).** Both test identities **and** the differential target object id MUST be attacker-provisioned via `bob_auto_signup` + `bob_temp_email` — never an id/PII harvested from real traffic. Otherwise a "successful IDOR" row's `stdout_hash` MAC-binds **real victim bytes**, violating the `/Users/memehalis/sec/CLAUDE.md` hard rule and the `feedback_no_pii_harvest_confirmation` memory. This is a *policy* obligation, not just a soundness one — the difference between a safe producer and a PII-harvesting one.
+- **AC-5 — attacker-provisioned identities (safety/policy, highest priority).** Both test identities **and** the differential target object id MUST be attacker-provisioned via `bob_auto_signup` + `bob_temp_email` — never an id/PII harvested from real traffic. Otherwise a "successful IDOR" row's `stdout_hash` MAC-binds **real victim bytes**, violating the operator hard rule (the `sec/CLAUDE.md` project rules) and the `feedback_no_pii_harvest_confirmation` memory. This is a *policy* obligation, not just a soundness one — the difference between a safe producer and a PII-harvesting one.
 - **AC-6 — oracle soundness (three-way differential).** A row may be minted ONLY when: `B-as-A` content `==` `A-as-A` content, `!=` `B-as-B` content, **and** `anon-as-A` is challenged (401/403). A bare resource-shaped 200 is exactly the `synthetic_id_resource_shape_not_provable` false positive the negative-only confirmer (`offensive-confirmer.js:541-574`) was built to reject; without AC-6 the producer reintroduces the unsound positive PR #110 deliberately removed.
 
 ### Tightening of an existing AC
