@@ -236,10 +236,12 @@ def extract_inline_script_paths(command):
     # node fs writes: (fs.)writeFile/writeFileSync/appendFile/appendFileSync("/path",...)
     # and createWriteStream("/path"), with or without an fs. prefix and regardless of
     # require('fs')/require('node:fs'). Defense-in-depth (issue #111 sibling) against the
-    # easy Node forge vector that the Python-only patterns above miss. It does NOT close
-    # arbitrary in-process code execution (openSync+writeSync, bracket access like
-    # fs['appendFileSync'], child_process, a compiled helper) — only the offensive-sandbox
-    # PR's UID/container isolation closes that. Same boundary #108 states.
+    # easy Node forge vector that the Python-only patterns above miss. Like the Python
+    # patterns it extracts only string-LITERAL paths; it does NOT close arbitrary
+    # in-process code execution (a variable/template path arg, openSync+writeSync,
+    # bracket access like fs['appendFileSync'], child_process, a compiled helper) — only
+    # the offensive-sandbox PR's UID/container isolation closes that. Same boundary #108
+    # states. A literal-path forge is the realistic agent vector; this raises that bar.
     for match in re.finditer(r"""(?:write|append)File(?:Sync)?\s*\(\s*["']([^"']+)["']""", command):
         targets.append(match.group(1))
     for match in re.finditer(r"""createWriteStream\s*\(\s*["']([^"']+)["']""", command):

@@ -999,7 +999,12 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
       },
     );
   }
-  const claimSurfaceId = claimSurfaceIds[0]; // already trimmed by normalizeOptionalTextArray
+  // Structural, not implicit (brutalist r1): normalizeOptionalTextArray already
+  // trimmed and dropped empties (so the length===1 check above guarantees a
+  // non-empty entry), but trim here too so the equality below does not silently
+  // depend on that upstream invariant — symmetric with the row-side trim and the
+  // verify mirror.
+  const claimSurfaceId = claimSurfaceIds[0].trim();
   for (const row of backedRows) {
     // (2) FAIL-CLOSED on a surfaceless row. row.surface_id is MAC-covered, so a producer
     //     that forgets to stamp it is a loud reject, not silent laundering. Trim before
