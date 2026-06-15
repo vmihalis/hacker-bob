@@ -34,6 +34,9 @@ const {
   verifyOffensiveRunRowMac,
 } = require("../mcp/lib/offensive-row-mac.js");
 const {
+  readHttpAuditRecordsFromJsonl,
+} = require("../mcp/lib/http-records.js");
+const {
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
 const {
@@ -290,8 +293,34 @@ test("bob_http_confirm is negative-only: a resource-shaped synthetic response is
     assert.match(requests[1].url, /^\/api\/accounts\/bob-synthetic-nonexistent-/);
     // and NO signed offensive-runs row was written
     assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+    // BUT both probes ARE recorded in http-audit.jsonl (circuit-breaker visibility) —
+    // a successful probe writes scope_decision:"allowed" (a null would make
+    // normalizeHttpAuditRecord throw, silently dropping the record).
+    const audit = readHttpAuditRecordsFromJsonl(domain).filter((r) => r.surface_id === surfaceId);
+    assert.equal(audit.length, 2);
+    assert.equal(audit.every((r) => r.scope_decision === "allowed"), true);
   });
 })));
+
+test("bob_http_confirm rejects a recorded endpoint whose id segment hides an encoded separator", () => withTempHome(() => {
+  // A recorded endpoint like /api/accounts/known%2Fdelete matches the `{id}`
+  // template via `[^/]+` raw, but decodes to a sub-resource/action path — the
+  // unauth baseline GET must NOT be allowed to fire against it.
+  const domain = "confirm-encsep.example.test";
+  const surfaceId = "surface:accounts";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known%2Fdelete`);
+
+  return executeTool("bob_http_confirm", {
+    target_domain: domain,
+    surface_id: surfaceId,
+    oracle_kind: "differential_response",
+    path_template: "/api/accounts/{id}",
+  }).then((envelope) => {
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.error.message, /path shape does not match/);
+  });
+}));
 
 test("a hand-written signed low row supports claim→freeze→verify (info→low)", () => withTempHome(() => {
   // The #108 proof contract end-to-end, exercised with a SEEDED signed row (the

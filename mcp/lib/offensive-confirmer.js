@@ -45,13 +45,6 @@ const HEADER_SUBSET = Object.freeze({
   accept: "application/json, text/plain;q=0.9, */*;q=0.1",
   "user-agent": "HackerBob-readonly-confirmer/1",
 });
-const METHOD_OVERRIDE_HEADERS = Object.freeze([
-  "x-http-method-override",
-  "x-method-override",
-  "x-http-method",
-  "x-method",
-  "_method",
-]);
 // The REAL safety boundary against "confirm emits a state-changing GET against
 // the real recorded id" is STRUCTURAL: {id} must be the final path segment
 // (normalizePathTemplate), so no action segment (`/{id}/capture`, `/{id}/transfer`)
@@ -108,16 +101,6 @@ function assertNoForbiddenInputs(args) {
   for (const field of ["url", "body", "headers", "severity", "demonstrated_severity", "finding_id", "resource_id", "id"]) {
     if (Object.prototype.hasOwnProperty.call(args || {}, field)) {
       rejectInvalidArguments(`bob_http_confirm does not accept ${field}; the request is derived server-side from surface_id and path_template`);
-    }
-  }
-}
-
-function assertAllowedRequestHeaders(headers) {
-  const allowed = new Set(Object.keys(HEADER_SUBSET));
-  for (const name of Object.keys(headers || {})) {
-    const lower = name.toLowerCase();
-    if (!allowed.has(lower) || METHOD_OVERRIDE_HEADERS.includes(lower)) {
-      rejectInvalidArguments(`request header ${name} is not allowed for bob_http_confirm`);
     }
   }
 }
@@ -204,8 +187,13 @@ function escapeRegExp(value) {
 function pathTemplateMatchesEndpoint(templatePathname, endpointPathname) {
   const parts = templatePathname.split("{id}");
   if (parts.length !== 2) return false;
-  const pattern = `^${escapeRegExp(parts[0])}[^/]+${escapeRegExp(parts[1])}$`;
-  return new RegExp(pattern).test(endpointPathname);
+  const pattern = new RegExp(`^${escapeRegExp(parts[0])}[^/]+${escapeRegExp(parts[1])}$`);
+  // Match the raw AND the percent-decoded pathname. An encoded separator in the
+  // id segment (e.g. /api/payments/known%2Fcapture) passes `[^/]+` raw but decodes
+  // to an extra path segment; on servers that decode before routing, the unauth
+  // baseline GET would hit a sub-resource/action on the real recorded id. Requiring
+  // the decoded form to also match a single id segment rejects that.
+  return pattern.test(endpointPathname) && pattern.test(decodePathSegments(endpointPathname));
 }
 
 function originFromState(domain, state) {
@@ -574,7 +562,12 @@ function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, st
       tool: TOOL_ID,
       egress_profile: egressProfile || null,
       status: status == null ? null : status,
-      scope_decision: scopeDecision || null,
+      // normalizeHttpAuditRecord REQUIRES a non-empty scope_decision; a null here
+      // throws and is swallowed by the catch below, dropping the record entirely
+      // (and with it the circuit-breaker/budget visibility). Default a normal
+      // probe to "allowed" and a non-scope transport failure to "request_error",
+      // matching bob_http_scan's audit convention.
+      scope_decision: scopeDecision || (error ? "request_error" : "allowed"),
       error: error || null,
       duration_ms: startedAt ? Date.now() - startedAt : null,
     });
@@ -598,8 +591,9 @@ async function httpConfirm(args = {}) {
     pathTemplate,
     state,
   });
+  // Headers are server-controlled (the immutable HEADER_SUBSET); assertNoForbiddenInputs
+  // already blocks any caller-supplied `headers` arg, so no allowlist check is needed.
   const headers = { ...HEADER_SUBSET };
-  assertAllowedRequestHeaders(headers);
 
   // Use the session's BOUND egress profile (not a hardcoded "default"), so a
   // session initialized with a regional/proxy profile can use the confirmer
