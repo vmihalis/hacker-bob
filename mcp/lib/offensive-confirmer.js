@@ -221,6 +221,14 @@ function escapeRegExp(value) {
 //  - action/matrix punctuation (: ; ,), literal OR percent-escaped (%3A…).
 // Decode each segment to a FIXED POINT so multi-layer / split-hex encodings are
 // seen, and fail closed on a remnant escape that 8 passes could not resolve.
+// KNOWN RESIDUAL: a dot-action suffix in a RECORDED id (e.g. /payments/pay_123.capture
+// captured via template /payments/{id}) is NOT rejected here, because real ids
+// legitimately contain dots (user.name, 1.2.3, file.bin) and there is no rule that
+// separates an action suffix from a dotted id without false-rejecting legit reads.
+// Accepted as a conservative-scope limitation: the unreached cases require the
+// surface record to already contain an action-shaped path, and the request is a
+// read-only GET the scanner would also issue. The template side ({id}.capture) IS
+// closed by the inert-extension allowlist in normalizePathTemplate.
 function capturedIdSegmentIsSafe(idSegment) {
   if (!idSegment || idSegment.includes("/") || idSegment.includes("\\")) return false;
   if (/[:;,]/.test(idSegment)) return false;
@@ -340,6 +348,11 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state }) {
         // Drop any query the recorded endpoint carried: the target is built from
         // the (query-free) template, so a baseline query would make the
         // differential turn on query params rather than the id/auth gate.
+        // KNOWN RESIDUAL (safe false-negative): a query-ROUTED endpoint
+        // (/api/items?format=json, /report?type=summary) whose required param is
+        // dropped may 400/404 on the baseline, so classifyDifferential returns
+        // baseline_not_auth_challenge instead of testing the gate. The confirmer
+        // simply does not cover query-routed endpoints; it never mis-confirms one.
         candidate.search = "";
         return candidate;
       }

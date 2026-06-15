@@ -971,7 +971,8 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
   // row exists to launder, and the claim's surface does not yet flow to this gate
   // (record-candidate-claim passes a singular surface_id, not surface_ids[]). The
   // finding/surface binding lands with the signed-row producer PR, which gives
-  // rows a real surface and wires the claim's surface through to here.
+  // rows a real surface and wires the claim's surface through to here. Tracked +
+  // gated for that PR in https://github.com/vmihalis/hacker-bob/issues/111.
   const maxDemonstratedRank = backedRows.reduce((maxRank, row) => (
     Math.max(maxRank, exploitSeverityRank(row.demonstrated_severity))
   ), 0);

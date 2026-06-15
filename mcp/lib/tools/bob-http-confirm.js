@@ -10,7 +10,7 @@ const { REPLAY_CONTEXT_SCHEMA } = require("./replay-context-schema.js");
 module.exports = Object.freeze({
   name: "bob_http_confirm",
   description:
-    "Trusted read-only confirmer for a routed surface. It mints a synthetic resource id and runs a same-endpoint unauth differential with read-only method/header/path allowlists that shrink, not eliminate, GET-side-effect risk, then reports the differential outcome as a diagnostic. It is NEGATIVE-ONLY: a resource-shaped response to a non-existent synthetic id is a catch-all / server-variance signal, not a sound per-object exposure, so this tool never mints a signed offensive-runs row. The sound signed-row producer (a real second-identity IDOR oracle) is a follow-up.",
+    "Trusted read-only confirmer for a routed surface. It mints a synthetic resource id and runs a same-endpoint unauth differential with read-only method/header/path allowlists that shrink, not eliminate, GET-side-effect risk, then reports the differential outcome as a diagnostic. It is NEGATIVE-ONLY: a resource-shaped response to a non-existent synthetic id is a catch-all / server-variance signal, not a sound per-object exposure, so this tool never mints a signed offensive-runs row. The sound signed-row producer (a real second-identity IDOR oracle) is a follow-up. Coverage is intentionally narrow: it confirms only DIRECT resource reads by id, and does not cover query-routed endpoints (the recorded query is dropped for baseline/target symmetry).",
   inputSchema: {
     type: "object",
     properties: {
