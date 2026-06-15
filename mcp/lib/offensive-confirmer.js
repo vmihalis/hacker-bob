@@ -1,19 +1,10 @@
 "use strict";
 
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
-const {
-  OFFENSIVE_OUTCOME_VALUES,
-  SEVERITY_VALUES,
-} = require("./constants.js");
 const {
   ERROR_CODES,
   ToolError,
 } = require("./envelope.js");
-const {
-  ensureHandoffSigningKey,
-} = require("./handoff-signing-key.js");
 const {
   blockInternalHostsPolicyFields,
 } = require("./session-state-contracts.js");
@@ -36,31 +27,10 @@ const {
   assertSafeRequestUrl,
   safeFetch,
 } = require("./safe-fetch.js");
-const {
-  canonicalizeExploitTarget,
-} = require("./claims.js");
-const {
-  offensiveRunsDir,
-  offensiveRunsJsonlPath,
-  sessionDir,
-} = require("./paths.js");
 const { redactUrlSensitiveValues } = require("../redaction.js");
 const {
   appendHttpAuditRecord,
 } = require("./http-records.js");
-const {
-  signOffensiveRunRow,
-} = require("./offensive-row-mac.js");
-const {
-  appendJsonlLine,
-  withSessionLock,
-} = require("./storage.js");
-const {
-  validateNoSensitiveMaterial,
-} = require("./sensitive-material.js");
-const {
-  hashCanonicalJson,
-} = require("./verification-contracts.js");
 const {
   assertEnumValue,
   assertNonEmptyString,
@@ -68,14 +38,9 @@ const {
 } = require("./validation.js");
 
 const TOOL_ID = "bob_http_confirm";
-const OFFENSIVE_CONFIRM_VERSION = 1;
 const READ_ONLY_METHODS = Object.freeze(["GET", "HEAD", "OPTIONS"]);
 const ORACLE_KIND_VALUES = Object.freeze(["differential_response"]);
-const DEMONSTRATED_SEVERITY_BY_ORACLE = Object.freeze({
-  differential_response: "low",
-});
 const DEFAULT_TIMEOUT_MS = 10_000;
-const EMPTY_HASH = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 const HEADER_SUBSET = Object.freeze({
   accept: "application/json, text/plain;q=0.9, */*;q=0.1",
   "user-agent": "HackerBob-readonly-confirmer/1",
@@ -122,16 +87,6 @@ function decodePathSegments(pathname) {
     .join("/");
 }
 
-function sha256Buffer(buffer) {
-  return crypto.createHash("sha256").update(buffer).digest("hex");
-}
-
-function generateOffensiveRunId() {
-  const stamp = Date.now().toString(16).padStart(12, "0");
-  const noise = crypto.randomBytes(4).toString("hex");
-  return `oconf-${stamp}-${noise}`;
-}
-
 function syntheticResourceId() {
   return `bob-synthetic-nonexistent-${crypto.randomUUID()}`;
 }
@@ -155,10 +110,6 @@ function assertNoForbiddenInputs(args) {
       rejectInvalidArguments(`bob_http_confirm does not accept ${field}; the request is derived server-side from surface_id and path_template`);
     }
   }
-}
-
-function sortedHeaderSubset(headers) {
-  return Object.fromEntries(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function assertAllowedRequestHeaders(headers) {
@@ -373,19 +324,18 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
     state,
   });
 
+  assertReadOnlyPath(baselineUrl.toString());
+  if (!pathTemplateMatchesEndpoint(pathTemplate.split("?")[0], baselineUrl.pathname)) {
+    rejectInvalidArguments("path_template path shape does not match the surface's recorded endpoint path");
+  }
+
   const syntheticId = syntheticResourceId();
-  const encodedSyntheticId = encodeURIComponent(syntheticId);
-  const resolvedTemplate = pathTemplate.replace("{id}", encodedSyntheticId);
+  const resolvedTemplate = pathTemplate.replace("{id}", encodeURIComponent(syntheticId));
   const targetUrl = new URL(resolvedTemplate, baselineUrl.origin);
   assertSafeRequestUrl(targetUrl.toString(), domain, { blockInternalHosts: false });
   assertReadOnlyPath(targetUrl.toString());
-  assertReadOnlyPath(baselineUrl.toString());
-
   if (targetUrl.origin !== baselineUrl.origin) {
     rejectInvalidArguments("path_template must resolve under the surface endpoint origin");
-  }
-  if (!pathTemplateMatchesEndpoint(pathTemplate.split("?")[0], baselineUrl.pathname)) {
-    rejectInvalidArguments("path_template path shape does not match the surface's recorded endpoint path");
   }
 
   return {
@@ -394,26 +344,7 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
     synthetic_id: syntheticId,
     baseline_url: baselineUrl.toString(),
     target_url: targetUrl.toString(),
-    canonical_target: canonicalizeExploitTarget(targetUrl.toString()),
   };
-}
-
-// Response headers can carry credentials (Set-Cookie, auth tokens). The .poc.json
-// capture dir is read-guarded, but redact them anyway so the on-disk artifact
-// never holds live secrets.
-const SENSITIVE_RESPONSE_HEADERS = new Set([
-  "set-cookie", "set-cookie2", "authorization", "proxy-authorization",
-  "x-auth-token", "x-api-key", "x-csrf-token", "x-amz-security-token",
-]);
-
-function responseHeadersObject(headers) {
-  const out = {};
-  if (headers && typeof headers.forEach === "function") {
-    headers.forEach((value, key) => {
-      out[key] = SENSITIVE_RESPONSE_HEADERS.has(String(key).toLowerCase()) ? "[redacted]" : value;
-    });
-  }
-  return out;
 }
 
 function isAuthChallenge(response) {
@@ -436,7 +367,7 @@ function responseLooksLikeLoginPage(response) {
 }
 
 // Soft-404 / "no such resource" markers: a 200 carrying these is an existence
-// oracle, not a leaked resource — must NOT mint a proof row.
+// oracle, not a leaked resource — must NOT classify as resource-shaped.
 const NON_RESOURCE_TEXT_RE = /not[ _-]?found|no such (?:record|resource|user|object|item|account|entity|row)|does(?:n['’]?t| not) exist|invalid (?:id|identifier|resource)|unknown (?:id|identifier|resource)|"(?:exists|found|present)"\s*:\s*false/i;
 // Keys that, alone, mark a response as an error/status envelope rather than a
 // resource. (Deliberately excludes "ok"/"id"/"data-payload" keys.)
@@ -506,11 +437,12 @@ function jsonIsGenuineResource(parsed) {
   return payloadKeys.length > 0;
 }
 
-// Affirmative resource-shape check (fixes the false-positive class: soft-404 /
-// generic-200 JSON, empty collections, and SPA/app-shell HTML). We only mint a
-// signed "exploited_safely" row when the target genuinely returned resource-like
-// content — never on "not 401/403" alone, and never on HEAD/OPTIONS (no body to
-// inspect). Ambiguous/unparseable bodies fail CLOSED (no row).
+// Affirmative resource-shape check (rejects the false-positive class: soft-404 /
+// generic-200 JSON, empty collections, and SPA/app-shell HTML). Returns true only
+// when the target genuinely returned resource-like content — never on "not
+// 401/403" alone, and never on HEAD/OPTIONS (no body to inspect). Ambiguous /
+// unparseable bodies fail CLOSED (return false). Used purely as a diagnostic by
+// the negative-only classifyDifferential; it never gates a signed row.
 function isResourceShapedResponse(response) {
   if (!response || response.status < 200 || response.status >= 300) return false;
   if (isLoginRedirect(response)) return false;
@@ -560,194 +492,39 @@ function isResourceShapedResponse(response) {
   return false;
 }
 
-function classifyDifferential({ baselineResponse, targetResponse, method }) {
+// Read-only differential REPORTER (negative-only). It classifies what the
+// same-endpoint unauth differential observed but NEVER mints a signed row.
+// Rationale: a resource-shaped 200 on a `bob-synthetic-nonexistent-<uuid>` id is,
+// by construction, a catch-all / server-variance signal — NOT proof that one
+// specific object's data leaked (a deterministic per-object store 404s an unknown
+// id; only non-determinism could make two equivalent synthetic ids differ, and
+// that is not an authorization exposure). Soundly proving missing object-auth
+// needs a real second-identity IDOR oracle, which is a follow-up. Until then this
+// confirmer only DISPROVES leads and surfaces diagnostics — it has no positive
+// (write_row) path, so the un-fakeable offensive-runs ledger never signs noise.
+function classifyDifferential({ baselineResponse, targetResponse }) {
   if (!isAuthChallenge(baselineResponse)) {
-    return {
-      outcome: "blocked_by_infra",
-      exploited: false,
-      reason: "baseline_not_auth_challenge",
-      write_row: false,
-    };
+    return { outcome: "blocked_by_infra", exploited: false, reason: "baseline_not_auth_challenge" };
   }
   if (isAuthChallenge(targetResponse)) {
-    return {
-      outcome: "blocked_by_defense",
-      exploited: false,
-      reason: "target_auth_challenge",
-      write_row: false,
-    };
+    return { outcome: "blocked_by_defense", exploited: false, reason: "target_auth_challenge" };
   }
   if (targetResponse && targetResponse.status === 404) {
-    return {
-      outcome: "blocked_by_defense",
-      exploited: false,
-      reason: "target_not_found_secure_response",
-      write_row: false,
-    };
+    return { outcome: "blocked_by_defense", exploited: false, reason: "target_not_found_secure_response" };
   }
   if (isLoginRedirect(targetResponse)) {
-    return {
-      outcome: "blocked_by_defense",
-      exploited: false,
-      reason: "target_login_redirect",
-      write_row: false,
-    };
+    return { outcome: "blocked_by_defense", exploited: false, reason: "target_login_redirect" };
   }
   if (targetResponse && [429, 503].includes(targetResponse.status)) {
-    return {
-      outcome: "blocked_by_defense",
-      exploited: false,
-      reason: "target_waf_or_rate_limit",
-      write_row: false,
-    };
+    return { outcome: "blocked_by_defense", exploited: false, reason: "target_waf_or_rate_limit" };
   }
   if (isResourceShapedResponse(targetResponse)) {
-    return {
-      outcome: "exploited_safely",
-      exploited: true,
-      reason: "baseline_auth_challenge_target_resource_shaped",
-      write_row: true,
-    };
+    // Resource-shaped 200 on a synthetic non-existent id == catch-all / variance,
+    // not a sound per-object exposure. Reported as a diagnostic negative; minting
+    // a signed row here is exactly the unsound positive this tool must not make.
+    return { outcome: "blocked_by_infra", exploited: false, reason: "synthetic_id_resource_shape_not_provable" };
   }
-  return {
-    outcome: "blocked_by_infra",
-    exploited: false,
-    reason: "target_response_not_resource_shaped",
-    write_row: false,
-  };
-}
-
-function requestDescriptor({ method, url, headers }) {
-  return {
-    method,
-    url_full_with_query_and_synthetic_id: url,
-    sorted_header_subset: sortedHeaderSubset(headers),
-    body: null,
-  };
-}
-
-function captureRequestBytes({ runId, method, targetUrl, baselineUrl, headers, syntheticId, oracleKind }) {
-  return Buffer.from(`${JSON.stringify({
-    version: 1,
-    run_id: runId,
-    oracle_kind: oracleKind,
-    synthetic_id: syntheticId,
-    baseline_request: {
-      method,
-      url: baselineUrl,
-      headers: sortedHeaderSubset(headers),
-      body: null,
-    },
-    target_request: {
-      method,
-      url: targetUrl,
-      headers: sortedHeaderSubset(headers),
-      body: null,
-    },
-    note: "bob_http_confirm uses read-only method/header/path allowlists that shrink, not eliminate, GET-side-effect risk.",
-  }, null, 2)}\n`, "utf8");
-}
-
-function capturePocBytes({ baselineResponse, targetResponse, classification }) {
-  return Buffer.from(`${JSON.stringify({
-    version: 1,
-    oracle: "differential_response",
-    classification,
-    baseline_response: {
-      status: baselineResponse.status,
-      headers: responseHeadersObject(baselineResponse.headers),
-      body_sha256: sha256Buffer(baselineResponse.bodyBytes || Buffer.alloc(0)),
-      body_bytes: baselineResponse.bodyByteLength || 0,
-      body_truncated: baselineResponse.bodyTruncated === true,
-    },
-    target_response: {
-      status: targetResponse.status,
-      headers: responseHeadersObject(targetResponse.headers),
-      body_sha256: sha256Buffer(targetResponse.bodyBytes || Buffer.alloc(0)),
-      body_bytes: targetResponse.bodyByteLength || 0,
-      body_truncated: targetResponse.bodyTruncated === true,
-    },
-  }, null, 2)}\n`, "utf8");
-}
-
-function replayFieldsFromArgs(args) {
-  const context = args && args.replay_context && typeof args.replay_context === "object"
-    ? args.replay_context
-    : null;
-  if (!context || context.active !== true) {
-    return {
-      verification_attempt_id: null,
-      verification_snapshot_hash: null,
-    };
-  }
-  return {
-    verification_attempt_id: typeof context.verification_attempt_id === "string" ? context.verification_attempt_id : null,
-    verification_snapshot_hash: typeof context.verification_snapshot_hash === "string" ? context.verification_snapshot_hash : null,
-  };
-}
-
-function buildSignedOffensiveRunRow({
-  domain,
-  surfaceId,
-  oracleKind,
-  runId,
-  targetUrl,
-  commandHash,
-  stdoutHash,
-  requestPath,
-  responsePath,
-  pocPath,
-  targetResponse,
-  egressContext,
-  replayFields,
-  classification,
-}) {
-  // The row label is derived from (and asserted against) the scored
-  // classification so a future caller or a new write_row branch can never mint
-  // a MAC-signed row whose offensive_outcome diverges from what was proven.
-  if (!classification || classification.write_row !== true || classification.outcome !== "exploited_safely") {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      "buildSignedOffensiveRunRow requires a classification with write_row=true and outcome=exploited_safely",
-      { code: "offensive_row_outcome_mismatch" },
-    );
-  }
-  const demonstratedSeverity = DEMONSTRATED_SEVERITY_BY_ORACLE[oracleKind];
-  assertEnumValue(demonstratedSeverity, SEVERITY_VALUES, "demonstrated_severity");
-  const row = {
-    version: OFFENSIVE_CONFIRM_VERSION,
-    target_domain: domain,
-    run_id: runId,
-    tool_id: TOOL_ID,
-    target: canonicalizeExploitTarget(targetUrl),
-    offensive_outcome: assertEnumValue(classification.outcome, OFFENSIVE_OUTCOME_VALUES, "offensive_outcome"),
-    dry_run: false,
-    timed_out: false,
-    command_hash: commandHash,
-    stdout_hash: stdoutHash,
-    stderr_hash: EMPTY_HASH,
-    exit_code: 0,
-    demonstrated_severity: demonstratedSeverity,
-    surface_id: surfaceId,
-    verification_attempt_id: replayFields.verification_attempt_id,
-    verification_snapshot_hash: replayFields.verification_snapshot_hash,
-    confirmed_at: new Date().toISOString(),
-    oracle_kind: oracleKind,
-    request_path: requestPath,
-    response_path: responsePath,
-    poc_path: pocPath,
-    stdout_bytes: targetResponse.bodyByteLength || 0,
-    body_truncated: targetResponse.bodyTruncated === true,
-    egress_profile: {
-      egress_profile: egressContext.egress_profile || "default",
-      egress_region: egressContext.egress_region || null,
-      proxy_configured: egressContext.proxy_configured === true,
-      egress_profile_identity_hash: egressContext.egress_profile_identity_hash || null,
-      egress_profile_identity_version: egressContext.egress_profile_identity_version || null,
-    },
-  };
-  validateNoSensitiveMaterial(row, "offensive_runs");
-  return signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  return { outcome: "blocked_by_infra", exploited: false, reason: "target_response_not_resource_shaped" };
 }
 
 async function fetchConfirmRequest(url, {
@@ -804,41 +581,6 @@ function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, st
   } catch {}
 }
 
-function lstatOrNull(target) {
-  try {
-    return fs.lstatSync(target);
-  } catch {
-    return null;
-  }
-}
-
-// Write-side symlink containment (mirrors the #108 read-side guard): refuse to
-// write proof material through a symlinked offensive-runs/ dir, a symlinked
-// session dir, or a symlinked ledger/run file, so a prepared session directory
-// cannot redirect signed rows or captured bytes outside the session. Runs inside
-// the session lock so the check and the writes are atomic against other Bob
-// processes.
-function assertOffensiveSinkSafe(domain, runsDir, sinks) {
-  const nominalSessionDir = sessionDir(domain);
-  if (!fs.existsSync(nominalSessionDir)) return;
-  const realSessionDir = fs.realpathSync(nominalSessionDir);
-  const runsStat = lstatOrNull(runsDir);
-  if (runsStat) {
-    if (runsStat.isSymbolicLink()) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs dir must not be a symlink: ${runsDir}`);
-    }
-    if (path.dirname(fs.realpathSync(runsDir)) !== realSessionDir) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs dir must stay inside its session dir: ${runsDir}`);
-    }
-  }
-  for (const sink of sinks) {
-    const stat = lstatOrNull(sink);
-    if (stat && stat.isSymbolicLink()) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs sink must be a regular file, not a symlink: ${sink}`);
-    }
-  }
-}
-
 async function httpConfirm(args = {}) {
   assertNoForbiddenInputs(args);
   const startedAt = Date.now();
@@ -858,11 +600,6 @@ async function httpConfirm(args = {}) {
   });
   const headers = { ...HEADER_SUBSET };
   assertAllowedRequestHeaders(headers);
-  const commandHash = hashCanonicalJson(requestDescriptor({
-    method,
-    url: surface.target_url,
-    headers,
-  }));
 
   // Use the session's BOUND egress profile (not a hardcoded "default"), so a
   // session initialized with a regional/proxy profile can use the confirmer
@@ -887,6 +624,9 @@ async function httpConfirm(args = {}) {
   const egressProfileName = identity.egress_profile || requestedEgressProfile;
   let baselineResponse;
   let targetResponse;
+  // Track which probe is in flight so a fetch failure is audited against the URL
+  // that actually failed (baseline vs target), not always the target.
+  let inFlightUrl = surface.baseline_url;
   try {
     baselineResponse = await fetchConfirmRequest(surface.baseline_url, {
       method,
@@ -899,6 +639,7 @@ async function httpConfirm(args = {}) {
       domain, surfaceId, method, url: surface.baseline_url,
       egressProfile: egressProfileName, status: baselineResponse.status, startedAt,
     });
+    inFlightUrl = surface.target_url;
     targetResponse = await fetchConfirmRequest(surface.target_url, {
       method,
       headers,
@@ -913,7 +654,7 @@ async function httpConfirm(args = {}) {
   } catch (error) {
     const scopeBlocked = error && error.scope_decision === "blocked";
     auditConfirmRequest({
-      domain, surfaceId, method, url: surface.target_url,
+      domain, surfaceId, method, url: inFlightUrl,
       egressProfile: egressProfileName, status: null,
       scopeDecision: scopeBlocked ? "blocked" : null,
       error: error.message || String(error), startedAt,
@@ -938,122 +679,36 @@ async function httpConfirm(args = {}) {
   const classification = classifyDifferential({
     baselineResponse,
     targetResponse,
-    method,
   });
-  if (!classification.write_row) {
-    return {
-      confirmed: false,
-      target_domain: domain,
-      surface_id: surfaceId,
-      oracle_kind: oracleKind,
-      offensive_outcome: classification.outcome,
-      reason: classification.reason,
-      baseline_status: baselineResponse.status,
-      target_status: targetResponse.status,
-      row_written: false,
-      ...identity,
-      ...internalHostPolicy,
-    };
-  }
-
-  const runId = generateOffensiveRunId();
-  const runsDir = offensiveRunsDir(domain);
-  const requestPath = path.join(runsDir, `${runId}.request`);
-  const responsePath = path.join(runsDir, `${runId}.response`);
-  const pocPath = path.join(runsDir, `${runId}.poc.json`);
-  const requestBytes = captureRequestBytes({
-    runId,
-    method,
-    targetUrl: surface.target_url,
-    baselineUrl: surface.baseline_url,
-    headers,
-    syntheticId: surface.synthetic_id,
-    oracleKind,
-  });
-  const responseBytes = Buffer.isBuffer(targetResponse.bodyBytes)
-    ? targetResponse.bodyBytes
-    : Buffer.alloc(0);
-  const pocBytes = capturePocBytes({
-    baselineResponse,
-    targetResponse,
-    classification,
-  });
-  const stdoutHash = sha256Buffer(responseBytes);
-  const signedRow = buildSignedOffensiveRunRow({
-    domain,
-    surfaceId,
-    oracleKind,
-    runId,
-    targetUrl: surface.target_url,
-    commandHash,
-    stdoutHash,
-    requestPath,
-    responsePath,
-    pocPath,
-    targetResponse,
-    egressContext: identity,
-    replayFields: replayFieldsFromArgs(args),
-    classification,
-  });
-  const jsonlPath = offensiveRunsJsonlPath(domain);
-  withSessionLock(domain, () => {
-    assertOffensiveSinkSafe(domain, runsDir, [jsonlPath, requestPath, responsePath, pocPath]);
-    fs.mkdirSync(runsDir, { recursive: true });
-    fs.writeFileSync(requestPath, requestBytes);
-    fs.writeFileSync(responsePath, responseBytes);
-    fs.writeFileSync(pocPath, pocBytes);
-    appendJsonlLine(jsonlPath, signedRow);
-  });
-
-  const exploitRunRef = {
-    kind: "exploit_run",
-    run_id: runId,
-    tool_id: TOOL_ID,
-    target: signedRow.target,
-    offensive_outcome: signedRow.offensive_outcome,
-    command_hash: signedRow.command_hash,
-    exit_code: signedRow.exit_code,
-    stdout_hash: signedRow.stdout_hash,
-    stderr_hash: signedRow.stderr_hash,
-  };
-
+  // Negative-only confirmer: a synthetic non-existent id has no sound positive
+  // signal (see classifyDifferential), so this tool NEVER mints a signed
+  // offensive-runs row. It reports the differential outcome as a diagnostic and
+  // leaves the signed-row producer path to a real second-identity IDOR oracle
+  // (a follow-up). The #108 proof contract is exercised by the seed-based unit
+  // tests in test/offensive-proof-contract.test.js + test/severity-rise-guard.test.js.
   return {
-    confirmed: true,
+    confirmed: false,
     target_domain: domain,
     surface_id: surfaceId,
     oracle_kind: oracleKind,
-    offensive_outcome: signedRow.offensive_outcome,
-    demonstrated_severity: signedRow.demonstrated_severity,
-    run_id: runId,
-    target: signedRow.target,
-    command_hash: signedRow.command_hash,
-    stdout_hash: signedRow.stdout_hash,
-    stderr_hash: signedRow.stderr_hash,
-    exit_code: signedRow.exit_code,
-    request_path: requestPath,
-    response_path: responsePath,
-    poc_path: pocPath,
-    row_written: true,
-    exploit_run: exploitRunRef,
+    offensive_outcome: classification.outcome,
+    reason: classification.reason,
     baseline_status: baselineResponse.status,
     target_status: targetResponse.status,
+    row_written: false,
     ...identity,
     ...internalHostPolicy,
   };
 }
 
 module.exports = {
-  DEMONSTRATED_SEVERITY_BY_ORACLE,
   HEADER_SUBSET,
   ORACLE_KIND_VALUES,
   READ_ONLY_METHODS,
   TOOL_ID,
   assertReadOnlyPath,
-  buildSignedOffensiveRunRow,
   classifyDifferential,
-  generateOffensiveRunId,
   httpConfirm,
   isResourceShapedResponse,
   normalizePathTemplate,
-  requestDescriptor,
 };

@@ -20,6 +20,7 @@ const {
   buildClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
+  ensureHandoffSigningKey,
   readHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
 const {
@@ -29,8 +30,12 @@ const {
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
 const {
+  signOffensiveRunRow,
   verifyOffensiveRunRowMac,
 } = require("../mcp/lib/offensive-row-mac.js");
+const {
+  canonicalizeExploitTarget,
+} = require("../mcp/lib/claims.js");
 const {
   routeSurfaces,
 } = require("../mcp/lib/surface-router.js");
@@ -195,6 +200,46 @@ function recordExploitedClaim(domain, surfaceId, exploitRunRef, overrides = {}) 
   }));
 }
 
+// bob_http_confirm is NEGATIVE-ONLY (it never mints a signed row), so the #108
+// proof contract is exercised here with a HAND-WRITTEN signed row — the same way
+// the next-PR producer will write one. Mirrors the seed helper in
+// test/severity-rise-guard.test.js.
+function seedSignedLowRow(domain, surfaceId) {
+  const target = canonicalizeExploitTarget(`https://${domain}/api/accounts/known`);
+  const ref = {
+    kind: "exploit_run",
+    run_id: "oconf-seed-low-1",
+    tool_id: "bob_http_confirm",
+    target,
+    offensive_outcome: "exploited_safely",
+    command_hash: "a".repeat(64),
+    exit_code: 0,
+    stdout_hash: "b".repeat(64),
+    stderr_hash: "c".repeat(64),
+  };
+  const row = {
+    version: 1,
+    target_domain: domain,
+    run_id: ref.run_id,
+    tool_id: ref.tool_id,
+    target: ref.target,
+    offensive_outcome: "exploited_safely",
+    dry_run: false,
+    timed_out: false,
+    command_hash: ref.command_hash,
+    exit_code: ref.exit_code,
+    stdout_hash: ref.stdout_hash,
+    stderr_hash: ref.stderr_hash,
+    demonstrated_severity: "low",
+    surface_id: surfaceId,
+  };
+  signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  const filePath = offensiveRunsJsonlPath(domain);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(row)}\n`, "utf8");
+  return { row, ref };
+}
+
 function readOffensiveRows(domain) {
   return fs.readFileSync(offensiveRunsJsonlPath(domain), "utf8")
     .trim()
@@ -203,27 +248,27 @@ function readOffensiveRows(domain) {
     .map((line) => JSON.parse(line));
 }
 
-test("bob_http_confirm confirms by surface_id, writes a signed low row, and supports claim→freeze→verify", () => withTempHome(() => withFixtureServer((req, res) => {
+test("bob_http_confirm is negative-only: a resource-shaped synthetic response is reported, never signed", () => withTempHome(() => withFixtureServer((req, res) => {
   if (req.url === "/api/accounts/known") {
     res.writeHead(401, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "auth required" }));
     return;
   }
+  // A non-existent synthetic id returning resource-shaped data is a catch-all /
+  // server-variance signal, NOT a sound per-object exposure. The confirmer must
+  // report it as a diagnostic negative and write NO signed offensive-runs row.
   if (/^\/api\/accounts\/bob-synthetic-nonexistent-/.test(req.url)) {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ id: "synthetic", status: "missing-but-readable" }));
+    res.end(JSON.stringify({ id: "synthetic", email: "leak@b.test" }));
     return;
   }
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "not found" }));
 }, (port, requests) => {
-  const domain = "confirm-surface.example.test";
+  const domain = "confirm-negonly.example.test";
   const surfaceId = "surface:accounts";
   return withDnsHost(domain, async () => {
-    JSON.parse(initSession({
-      target_domain: domain,
-      target_url: `http://${domain}:${port}/`,
-    }));
+    JSON.parse(initSession({ target_domain: domain, target_url: `http://${domain}:${port}/` }));
     seedRoutedSurface(domain, surfaceId, `http://${domain}:${port}/api/accounts/known`);
 
     const envelope = await executeTool("bob_http_confirm", {
@@ -234,43 +279,52 @@ test("bob_http_confirm confirms by surface_id, writes a signed low row, and supp
     });
     assert.equal(envelope.ok, true, envelope.error && envelope.error.message);
     const confirmed = envelope.data;
-    assert.equal(confirmed.confirmed, true);
-    assert.equal(confirmed.surface_id, surfaceId);
-    assert.equal(confirmed.demonstrated_severity, "low");
-    assert.equal(confirmed.exploit_run.kind, "exploit_run");
-    assert.match(confirmed.run_id, /^oconf-/);
-
+    assert.equal(confirmed.confirmed, false);
+    assert.equal(confirmed.row_written, false);
+    assert.equal(confirmed.reason, "synthetic_id_resource_shape_not_provable");
+    assert.equal(confirmed.exploit_run, undefined);
+    assert.equal(confirmed.run_id, undefined);
+    // baseline + a SINGLE synthetic probe (no second probe in negative-only)
     assert.deepEqual(requests.map((entry) => entry.method), ["GET", "GET"]);
-    assert.equal(requests.every((entry) => entry.body.length === 0), true);
     assert.equal(requests[0].url, "/api/accounts/known");
     assert.match(requests[1].url, /^\/api\/accounts\/bob-synthetic-nonexistent-/);
-
-    const [row] = readOffensiveRows(domain);
-    assert.equal(row.run_id, confirmed.run_id);
-    assert.equal(row.surface_id, surfaceId);
-    assert.equal(row.finding_id, undefined);
-    assert.equal(row.demonstrated_severity, "low");
-    assert.equal(verifyOffensiveRunRowMac(row, readHandoffSigningKey(domain)), true);
-    assert.equal(fs.existsSync(row.request_path), true);
-    assert.equal(fs.existsSync(row.response_path), true);
-
-    const recorded = recordExploitedClaim(domain, surfaceId, confirmed.exploit_run);
-    assert.equal(recorded.recorded, true);
-    assert.equal(recorded.finding_id, "F-1");
-
-    buildClaimFreeze(domain, { write: true, now: new Date("2026-06-01T00:00:00.000Z") });
-    const context = enterVerifyV2(domain);
-    writeV2Round(domain, context, "brutalist", lowVerificationResult("F-1"));
-    writeV2Round(domain, context, "balanced", lowVerificationResult("F-1"));
-    const adjudication = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
-    writeV2Round(domain, context, "final", lowVerificationResult("F-1"), {
-      adjudication_plan_hash: adjudication.adjudication_plan_hash,
-    });
-    const finalRound = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "final").json, "utf8"));
-    assert.equal(finalRound.results[0].severity, "low");
-    assert.equal(finalRound.results[0].confidence_reasons.includes("exploit_replay_confirmed"), true);
+    // and NO signed offensive-runs row was written
+    assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
   });
 })));
+
+test("a hand-written signed low row supports claim→freeze→verify (info→low)", () => withTempHome(() => {
+  // The #108 proof contract end-to-end, exercised with a SEEDED signed row (the
+  // confirmer is negative-only; the real producer is a follow-up).
+  const domain = "confirm-contract.example.test";
+  const surfaceId = "surface:accounts";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known`);
+
+  const { ref } = seedSignedLowRow(domain, surfaceId);
+  const [row] = readOffensiveRows(domain);
+  assert.equal(row.run_id, ref.run_id);
+  assert.equal(row.surface_id, surfaceId);
+  assert.equal(row.finding_id, undefined);
+  assert.equal(row.demonstrated_severity, "low");
+  assert.equal(verifyOffensiveRunRowMac(row, readHandoffSigningKey(domain)), true);
+
+  const recorded = recordExploitedClaim(domain, surfaceId, ref);
+  assert.equal(recorded.recorded, true);
+  assert.equal(recorded.finding_id, "F-1");
+
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-01T00:00:00.000Z") });
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", lowVerificationResult("F-1"));
+  writeV2Round(domain, context, "balanced", lowVerificationResult("F-1"));
+  const adjudication = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+  writeV2Round(domain, context, "final", lowVerificationResult("F-1"), {
+    adjudication_plan_hash: adjudication.adjudication_plan_hash,
+  });
+  const finalRound = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "final").json, "utf8"));
+  assert.equal(finalRound.results[0].severity, "low");
+  assert.equal(finalRound.results[0].confidence_reasons.includes("exploit_replay_confirmed"), true);
+}));
 
 test("recording exploited_safely without a confirmer row is rejected", () => withTempHome(() => {
   const domain = "confirm-negative.example.test";
@@ -316,7 +370,7 @@ test("bob_http_confirm schema rejects raw URL, body, severity, finding_id, and u
   assert.match(methodEnvelope.error.message, /method must be one of GET, HEAD, OPTIONS/);
 }));
 
-test("differential classifier requires a baseline auth challenge and target resource shape", () => {
+test("differential classifier (negative-only) maps the differential to a diagnostic outcome and never mints a row", () => {
   const response = (status, body = "{}", headers = { "content-type": "application/json" }) => ({
     status,
     headers: {
@@ -329,29 +383,34 @@ test("differential classifier requires a baseline auth challenge and target reso
     bodyTruncated: false,
   });
 
-  assert.equal(classifyDifferential({
+  // a resource-shaped target on a synthetic non-existent id is reported as a
+  // diagnostic negative — NEVER exploited_safely, never a write_row
+  const leakish = classifyDifferential({
     baselineResponse: response(401),
     targetResponse: response(200, "{\"id\":7,\"email\":\"a@b.test\"}"),
-    method: "GET",
-  }).outcome, "exploited_safely");
+  });
+  assert.equal(leakish.reason, "synthetic_id_resource_shape_not_provable");
+  assert.equal(leakish.exploited, false);
+  assert.notEqual(leakish.outcome, "exploited_safely");
+  assert.equal(leakish.write_row, undefined);
+  assert.equal(leakish.requires_second_probe, undefined);
+  // baseline not an auth challenge -> infra negative
   assert.equal(classifyDifferential({
     baselineResponse: response(200),
     targetResponse: response(200),
-    method: "GET",
-  }).outcome, "blocked_by_infra");
+  }).reason, "baseline_not_auth_challenge");
+  // target still auth-gated / not-found -> blocked_by_defense
   assert.equal(classifyDifferential({
     baselineResponse: response(401),
     targetResponse: response(403),
-    method: "GET",
   }).outcome, "blocked_by_defense");
   assert.equal(classifyDifferential({
     baselineResponse: response(401),
     targetResponse: response(404),
-    method: "GET",
-  }).outcome, "blocked_by_defense");
+  }).reason, "target_not_found_secure_response");
 });
 
-test("differential classifier refuses to mint a row for non-resource 200 bodies", () => {
+test("differential classifier distinguishes resource-shaped from non-resource targets (still never mints a row)", () => {
   const response = (status, body = "{}", headers = { "content-type": "application/json" }) => ({
     status,
     headers: {
@@ -363,72 +422,58 @@ test("differential classifier refuses to mint a row for non-resource 200 bodies"
     bodyByteLength: Buffer.byteLength(body),
     bodyTruncated: false,
   });
-  const target = (body, headers) => classifyDifferential({
+  // A baseline auth-challenge + a 200 target: the only variable is whether the
+  // body is resource-shaped. Resource-shaped -> diagnostic "not provable" reason;
+  // non-resource -> "not resource shaped". Neither ever mints a row.
+  const NOT_RESOURCE = "target_response_not_resource_shaped";
+  const RESOURCE = "synthetic_id_resource_shape_not_provable";
+  const reasonFor = (body, headers) => classifyDifferential({
     baselineResponse: response(401),
     targetResponse: response(200, body, headers),
-    method: "GET",
-  });
+  }).reason;
 
   // soft-404 / error envelope / empty collections / null payload at HTTP 200
-  assert.notEqual(target("{\"error\":\"not found\"}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"message\":\"no such account\"}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"data\":null}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"results\":[]}").outcome, "exploited_safely");
+  assert.equal(reasonFor("{\"error\":\"not found\"}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"message\":\"no such account\"}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"data\":null}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"results\":[]}"), NOT_RESOURCE);
   // empty paginated collection with metadata siblings (the common empty-list shape)
-  assert.notEqual(target("{\"items\":[],\"total\":0,\"page\":1}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"results\":[],\"count\":0,\"has_more\":false}").outcome, "exploited_safely");
-  assert.notEqual(target("[]").outcome, "exploited_safely");
-  assert.notEqual(target("{}").outcome, "exploited_safely");
+  assert.equal(reasonFor("{\"items\":[],\"total\":0,\"page\":1}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"results\":[],\"count\":0,\"has_more\":false}"), NOT_RESOURCE);
+  assert.equal(reasonFor("[]"), NOT_RESOURCE);
+  assert.equal(reasonFor("{}"), NOT_RESOURCE);
   // generic status / health objects from a catch-all handler are not resources
-  assert.notEqual(target("{\"ok\":true}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"success\":false}").outcome, "exploited_safely");
-  assert.notEqual(target("{\"service\":\"api\",\"region\":\"us\"}").outcome, "exploited_safely");
+  assert.equal(reasonFor("{\"ok\":true}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"success\":false}"), NOT_RESOURCE);
+  assert.equal(reasonFor("{\"service\":\"api\",\"region\":\"us\"}"), NOT_RESOURCE);
   // SPA / app-shell HTML
-  assert.notEqual(
-    target("<html><body><div id=\"root\"></div></body></html>", { "content-type": "text/html" }).outcome,
-    "exploited_safely",
-  );
+  assert.equal(reasonFor("<html><body><div id=\"root\"></div></body></html>", { "content-type": "text/html" }), NOT_RESOURCE);
   // XML status/error envelope is NOT a resource; text/plain markup is length-floored
-  assert.notEqual(
-    target("<response><status>ok</status><code>0</code></response>", { "content-type": "application/xml" }).outcome,
-    "exploited_safely",
-  );
-  assert.notEqual(
-    target("<response><status>ok</status></response>", { "content-type": "text/plain" }).outcome,
-    "exploited_safely",
-  );
-  // genuine resource bodies still confirm
-  assert.equal(target("{\"id\":42,\"email\":\"a@b.test\"}").outcome, "exploited_safely");
-  assert.equal(target("[{\"id\":1}]").outcome, "exploited_safely");
-  // a non-empty list with metadata is a real resource
-  assert.equal(target("{\"items\":[{\"id\":1}],\"total\":1,\"page\":1}").outcome, "exploited_safely");
-  // compact single-field XML record confirms (recall)
-  assert.equal(
-    target("<account><balance>5000</balance></account>", { "content-type": "application/xml" }).outcome,
-    "exploited_safely",
-  );
-
+  assert.equal(reasonFor("<response><status>ok</status><code>0</code></response>", { "content-type": "application/xml" }), NOT_RESOURCE);
+  assert.equal(reasonFor("<response><status>ok</status></response>", { "content-type": "text/plain" }), NOT_RESOURCE);
   // unknown / missing content-type fails CLOSED (catch-all "OK" manufacture vector)
-  assert.notEqual(target("OK", {}).outcome, "exploited_safely");
-  assert.notEqual(target("OK", { "content-type": "application/octet-stream" }).outcome, "exploited_safely");
+  assert.equal(reasonFor("OK", {}), NOT_RESOURCE);
+  assert.equal(reasonFor("OK", { "content-type": "application/octet-stream" }), NOT_RESOURCE);
 
-  // a genuine LARGE JSON resource (>16KB) must still confirm — no window truncation
+  // genuine resource bodies are recognized as resource-shaped (still no row)
+  assert.equal(reasonFor("{\"id\":42,\"email\":\"a@b.test\"}"), RESOURCE);
+  assert.equal(reasonFor("[{\"id\":1}]"), RESOURCE);
+  // a non-empty list with metadata is a real resource
+  assert.equal(reasonFor("{\"items\":[{\"id\":1}],\"total\":1,\"page\":1}"), RESOURCE);
+  // compact single-field XML record (recall)
+  assert.equal(reasonFor("<account><balance>5000</balance></account>", { "content-type": "application/xml" }), RESOURCE);
+  // a genuine LARGE JSON resource (>16KB) must still be recognized — no window truncation
   const bigRecord = JSON.stringify({ id: 7, email: "a@b.test", notes: "x".repeat(40000) });
   assert.equal(bigRecord.length > 16384, true);
-  assert.equal(target(bigRecord).outcome, "exploited_safely");
+  assert.equal(reasonFor(bigRecord), RESOURCE);
+  // structured XML record is resource-shaped
+  assert.equal(reasonFor("<user><id>5</id><email>a@b.test</email></user>", { "content-type": "application/xml" }), RESOURCE);
 
-  // structured XML record confirms; tiny non-structured text does not
-  assert.equal(
-    target("<user><id>5</id><email>a@b.test</email></user>", { "content-type": "application/xml" }).outcome,
-    "exploited_safely",
-  );
-
-  // HEAD/OPTIONS carry no body to inspect -> never a proof row
-  assert.notEqual(classifyDifferential({
+  // HEAD/OPTIONS carry no body to inspect -> not resource shaped, never a row
+  assert.equal(classifyDifferential({
     baselineResponse: response(401),
     targetResponse: { status: 200, headers: { get: () => null }, bodyBytes: Buffer.alloc(0), bodyByteLength: 0, bodyTruncated: false },
-    method: "HEAD",
-  }).outcome, "exploited_safely");
+  }).reason, NOT_RESOURCE);
 });
 
 test("normalizePathTemplate requires {id} to be the final path segment (structural read-only boundary)", () => {
