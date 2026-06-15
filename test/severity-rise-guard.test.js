@@ -22,6 +22,7 @@ const {
   ensureHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
 const {
+  claimFreezePath,
   claimsJsonlPath,
   offensiveRunsJsonlPath,
   sessionNucleusPath,
@@ -999,4 +1000,40 @@ test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", (
     v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
   ]);
   assert.equal(persistedSeverity(domain, "brutalist"), "critical", "matching surface -> proof-backed rise allowed");
+}));
+
+test("#111 verify mirror: a forged freeze with an empty claim surface fails closed (brutalist r1)", () => withTempHome(() => {
+  const domain = "surface-bind-verify-empty.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  // offensiveRunRowSatisfiesEvidence does not reject an empty surface_id (only the
+  // record gate does), so a forged freeze could pair such a row with an empty claim
+  // surface. The mirror must treat an empty/whitespace claim surface as null (no
+  // surface) and fail closed, symmetric with the record gate.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "" });
+  appendRawClaim(domain, {
+    title: "Forged-freeze empty-surface fixture",
+    summary: "Frozen exploited claim whose surface is forged to empty.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  // Forge in place BEFORE entering verify (so the snapshot hash is computed over the
+  // forged content): set the single claim surface to "". assertSnapshotMatchesFreeze
+  // trusts the recorded freeze_hash field, so the mutated claims still load.
+  const freezePath = claimFreezePath(domain);
+  const doc = JSON.parse(fs.readFileSync(freezePath, "utf8"));
+  for (const c of doc.claims) {
+    if (Array.isArray(c.surface_ids) && c.surface_ids.length === 1) c.surface_ids = [""];
+  }
+  fs.writeFileSync(freezePath, JSON.stringify(doc));
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "low", "empty claim surface -> row ineligible -> clamp to baseline");
 }));

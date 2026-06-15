@@ -220,8 +220,15 @@ function clampResultSeveritiesInPlace(domain, results) {
     // this per-claim loop (NOT hoisted) because a finding can accumulate refs from
     // multiple claims; null when the (possibly forged) freeze claim does not carry
     // exactly one surface, which makes the row ineligible and clamps to baseline.
+    // Trim and treat an empty/whitespace single surface as null (no surface),
+    // symmetric with the record gate (which trims the row side and fail-closes on
+    // an empty surface) so a degenerate/forged freeze cannot let an empty claim
+    // surface match an (also empty) row's surface_id.
     const claimSurfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
-    const claimSurfaceId = claimSurfaceIds.length === 1 ? claimSurfaceIds[0] : null;
+    const rawClaimSurfaceId = claimSurfaceIds.length === 1 ? claimSurfaceIds[0] : null;
+    const claimSurfaceId = typeof rawClaimSurfaceId === "string" && rawClaimSurfaceId.trim() !== ""
+      ? rawClaimSurfaceId.trim()
+      : null;
     const exploitRunRefs = findingIds.length === 1
       ? refs
         .filter((ref) => (
@@ -267,9 +274,9 @@ function clampResultSeveritiesInPlace(domain, results) {
               && rowAttemptFreshForState(row, sessionState)
               // Surface binding (issue #111): mirror the record gate. The row's
               // surface_id must equal the owning claim's single surface. surfaceId
-              // === null (claim not exactly-1-surface, e.g. a forged freeze with
-              // padded/absent surfaces) drops the row → maxDemonstratedRank stays 0
-              // → provenRise false → clamp to baseline. Purely subtractive.
+              // === null (claim not exactly-1-surface, OR an empty/whitespace
+              // surface — both fail closed above) drops the row → maxDemonstratedRank
+              // stays 0 → provenRise false → clamp to baseline. Purely subtractive.
               && surfaceId !== null
               && typeof row.surface_id === "string"
               && row.surface_id.trim() === surfaceId
