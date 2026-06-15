@@ -22,6 +22,7 @@ const {
   ensureHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
 const {
+  claimFreezePath,
   claimsJsonlPath,
   offensiveRunsJsonlPath,
   sessionNucleusPath,
@@ -57,6 +58,12 @@ const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+
+// issue #111: the offensive row and the claim must share a single surface_id for
+// the binding gate to pass. Default both helpers to this value so existing
+// exploit-backed setups carry a matching surface; tests that probe the binding
+// override one side explicitly.
+const DEFAULT_SURFACE_ID = "surface-rise-default";
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -128,6 +135,9 @@ function offensiveRunRow(domain, ref = exploitRef(domain), overrides = {}) {
     // The impact tier the safe exploit demonstrated (MAC-covered). The guard
     // requires this to meet/exceed the asserted severity before allowing a rise.
     demonstrated_severity: "critical",
+    // issue #111: the surface the safe exploit ran against (MAC-covered). Must
+    // equal the citing claim's single surface_id or the row is rejected.
+    surface_id: DEFAULT_SURFACE_ID,
     ...overrides,
   };
 }
@@ -178,7 +188,12 @@ function appendFrozenFindingClaim(domain, {
   };
   if (exploitOutcome) claim.exploit_outcome = exploitOutcome;
   if (payload) claim.payload = payload;
-  if (surfaceIds) claim.surface_ids = surfaceIds;
+  // issue #111: an exploited_safely claim must carry exactly one surface_id that
+  // matches its backed row. Default it for exploit-backed setups so the record
+  // gate passes; plain (non-exploit) claims stay byte-identical (no surface_ids).
+  const effectiveSurfaceIds = surfaceIds
+    || (exploitOutcome && exploitOutcome.outcome === "exploited_safely" ? [DEFAULT_SURFACE_ID] : null);
+  if (effectiveSurfaceIds) claim.surface_ids = effectiveSurfaceIds;
   return appendCandidateClaim(claim);
 }
 
@@ -786,3 +801,239 @@ test("exploit_replay_confirmed is exposed by constants and every write schema co
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #111: surface-binding gate (a row produced for surface B can never back
+// a claim for surface A). Record-time gate (claims.js) + verify-time mirror.
+// ---------------------------------------------------------------------------
+
+function invalidArgs(detailCode) {
+  return (error) => error
+    && error.code === "INVALID_ARGUMENTS"
+    && error.details
+    && error.details.code === detailCode;
+}
+
+test("#111: a high row for surface B cannot back a claim for surface A (the laundering gate)", () => withTempHome(() => {
+  const domain = "surface-bind-b-backs-a.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  // critical row stamped for surface-B; equal claim/row severity isolates the
+  // surface check from the ceiling (both critical, so only surface can reject).
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-B" });
+  assert.throws(
+    () => appendFrozenFindingClaim(domain, {
+      severity: "critical",
+      surfaceIds: ["surface-A"],
+      evidenceRefs: [findingRef("F-1"), ref],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_row_surface_mismatch"),
+  );
+  assert.equal(fs.existsSync(claimsJsonlPath(domain)), false, "rejected claim must not touch claims.jsonl");
+}));
+
+test("#111: a claim whose single surface matches its row records (positive control)", () => withTempHome(() => {
+  const domain = "surface-bind-match.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-B" });
+  const claim = appendFrozenFindingClaim(domain, {
+    severity: "critical",
+    surfaceIds: ["surface-B"],
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+  });
+  assert.deepEqual(claim.surface_ids, ["surface-B"], "the recorded claim keeps its single surface");
+}));
+
+test("#111: an exploited claim spanning two surfaces is rejected as ambiguous", () => withTempHome(() => {
+  const domain = "surface-bind-ambiguous.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { surface_id: "surface-A" });
+  assert.throws(
+    () => appendFrozenFindingClaim(domain, {
+      severity: "critical",
+      surfaceIds: ["surface-A", "surface-B"],
+      evidenceRefs: [findingRef("F-1"), ref],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_claim_surface_ambiguous"),
+  );
+}));
+
+test("#111: a cited row with an empty surface_id fails closed", () => withTempHome(() => {
+  const domain = "surface-bind-row-missing.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  // MAC is valid over the empty value; the gate still rejects a surfaceless row.
+  seedSignedOffensiveRow(domain, ref, { surface_id: "" });
+  assert.throws(
+    () => appendFrozenFindingClaim(domain, {
+      severity: "critical",
+      surfaceIds: ["surface-A"],
+      evidenceRefs: [findingRef("F-1"), ref],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_row_surface_missing"),
+  );
+}));
+
+test("#111: an exploited claim with no surface (non-wave null path) fails closed", () => withTempHome(() => {
+  const domain = "surface-bind-claim-missing.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { surface_id: "surface-A" });
+  assert.throws(
+    () => appendFrozenFindingClaim(domain, {
+      severity: "critical",
+      surfaceIds: [], // normalizes away -> length 0 -> ambiguous
+      evidenceRefs: [findingRef("F-1"), ref],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_claim_surface_ambiguous"),
+  );
+}));
+
+test("#111: multi-row claim rejects when any cited row is out-of-surface, accepts when all in-surface", () => withTempHome(() => {
+  // Negative: one in-set low row + one out-of-set critical row -> the ceiling must
+  // not take the critical from the surface-B row; the whole claim is rejected.
+  const negDomain = "surface-bind-multi-neg.example";
+  initWebSession(negDomain);
+  const refA = exploitRef(negDomain, { run_id: "run-A", target: canonicalizeExploitTarget(`https://${negDomain}/a`) });
+  const refB = exploitRef(negDomain, { run_id: "run-B", target: canonicalizeExploitTarget(`https://${negDomain}/b`) });
+  writeOffensiveRunRows(negDomain, [
+    signedOffensiveRow(negDomain, refA, { demonstrated_severity: "low", surface_id: "surface-A" }),
+    signedOffensiveRow(negDomain, refB, { demonstrated_severity: "critical", surface_id: "surface-B" }),
+  ]);
+  assert.throws(
+    () => appendFrozenFindingClaim(negDomain, {
+      severity: "critical",
+      surfaceIds: ["surface-A"],
+      evidenceRefs: [findingRef("F-1"), refA, refB],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_row_surface_mismatch"),
+  );
+
+  // Positive sibling: both cited rows are in-set -> records (no over-blocking).
+  const posDomain = "surface-bind-multi-pos.example";
+  initWebSession(posDomain);
+  const refA2 = exploitRef(posDomain, { run_id: "run-A", target: canonicalizeExploitTarget(`https://${posDomain}/a`) });
+  const refB2 = exploitRef(posDomain, { run_id: "run-B", target: canonicalizeExploitTarget(`https://${posDomain}/b`) });
+  writeOffensiveRunRows(posDomain, [
+    signedOffensiveRow(posDomain, refA2, { demonstrated_severity: "low", surface_id: "surface-A" }),
+    signedOffensiveRow(posDomain, refB2, { demonstrated_severity: "critical", surface_id: "surface-A" }),
+  ]);
+  const claim = appendFrozenFindingClaim(posDomain, {
+    severity: "critical",
+    surfaceIds: ["surface-A"],
+    evidenceRefs: [findingRef("F-1"), refA2, refB2],
+    exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+  });
+  assert.deepEqual(claim.surface_ids, ["surface-A"]);
+}));
+
+test("#111: surface match still applies the severity ceiling independently", () => withTempHome(() => {
+  const domain = "surface-bind-ceiling.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "low", surface_id: "surface-A" });
+  // Surface passes (A === A); the ceiling rejects critical-over-low. Guards against
+  // a future reorder of the surface check and the ceiling.
+  assert.throws(
+    () => appendFrozenFindingClaim(domain, {
+      severity: "critical",
+      surfaceIds: ["surface-A"],
+      evidenceRefs: [findingRef("F-1"), ref],
+      exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    }),
+    invalidArgs("exploit_proof_severity_exceeds_demonstrated"),
+  );
+}));
+
+test("#111 verify mirror: a cross-surface row cannot unlock a rise (clamps to baseline)", () => withTempHome(() => {
+  const domain = "surface-bind-verify-cross.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  // critical row stamped surface-B.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-B" });
+  // appendRawClaim bypasses the record gate so we can stage a frozen claim whose
+  // surface (A) does not match the row (B); the verify mirror must still clamp.
+  appendRawClaim(domain, {
+    title: "Cross-surface verify fixture",
+    summary: "Frozen exploited claim on surface-A citing a surface-B row.",
+    severity: "low", // the explicit frozen baseline
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "low", "surface-B row dropped -> rise clamped to baseline");
+}));
+
+test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", () => withTempHome(() => {
+  const domain = "surface-bind-verify-same.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-A" });
+  appendRawClaim(domain, {
+    title: "Same-surface verify fixture",
+    summary: "Frozen exploited claim on surface-A citing a surface-A row.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "critical", "matching surface -> proof-backed rise allowed");
+}));
+
+test("#111 verify mirror: a forged freeze with an empty claim surface fails closed (brutalist r1)", () => withTempHome(() => {
+  const domain = "surface-bind-verify-empty.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain);
+  // offensiveRunRowSatisfiesEvidence does not reject an empty surface_id (only the
+  // record gate does), so a forged freeze could pair such a row with an empty claim
+  // surface. The mirror must treat an empty/whitespace claim surface as null (no
+  // surface) and fail closed, symmetric with the record gate.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "" });
+  appendRawClaim(domain, {
+    title: "Forged-freeze empty-surface fixture",
+    summary: "Frozen exploited claim whose surface is forged to empty.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  // Forge in place BEFORE entering verify (so the snapshot hash is computed over the
+  // forged content): set the single claim surface to "". assertSnapshotMatchesFreeze
+  // trusts the recorded freeze_hash field, so the mutated claims still load.
+  const freezePath = claimFreezePath(domain);
+  const doc = JSON.parse(fs.readFileSync(freezePath, "utf8"));
+  for (const c of doc.claims) {
+    if (Array.isArray(c.surface_ids) && c.surface_ids.length === 1) c.surface_ids = [""];
+  }
+  fs.writeFileSync(freezePath, JSON.stringify(doc));
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "low", "empty claim surface -> row ineligible -> clamp to baseline");
+}));

@@ -961,18 +961,80 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
     }
   }
 
-  // Binding model: each backed row is content-bound to its ref (run_id, target,
-  // command/stdout/stderr hashes) by offensiveRunRowSatisfiesEvidence, and
-  // run_id single-use (above) makes each row back at most ONE claim. NOT yet
-  // enforced: that the row's surface_id matches the claim's finding/surface, so a
-  // single claim could in principle cite a higher-severity row produced for a
-  // different endpoint (cross-finding severity laundering). This is DORMANT today
-  // — bob_http_confirm is negative-only and writes no rows, so no offensive-runs
-  // row exists to launder, and the claim's surface does not yet flow to this gate
-  // (record-candidate-claim passes a singular surface_id, not surface_ids[]). The
-  // finding/surface binding lands with the signed-row producer PR, which gives
-  // rows a real surface and wires the claim's surface through to here. Tracked +
-  // gated for that PR in https://github.com/vmihalis/hacker-bob/issues/111.
+  // Surface binding (issue #111): cross-finding severity-laundering gate.
+  // Each backed row is already content-bound to its ref (offensiveRunRowSatisfiesEvidence)
+  // and run_id-single-use (above) makes each row back at most ONE claim. ADD: the
+  // row's producer-stamped, MAC-covered surface_id must equal the claim's own
+  // finding surface, so a higher-severity row produced for surface B can never raise
+  // a claim for surface A. claim.surface_ids is set by record-candidate-claim.js
+  // ([finding.surface_id]) and arrives here NORMALIZED (trimmed/deduped/order-preserved
+  // by normalizeOptionalTextArray) because normalizeCandidateClaim runs before this
+  // assert (appendCandidateClaim). Precedent: assertNotStaticOnlyNativeHighSeverity
+  // reads claim.surface_ids above.
+  //
+  // INTEGRITY, NOT CORRECTNESS (same boundary as #108): the MAC proves the producer
+  // STAMPED this surface_id and this demonstrated_severity; it does NOT prove the
+  // producer ATTACKED that surface or that the impact tier is right. A trusted producer
+  // that attacks endpoint B but stamps surface_id=A (convergent mis-stamp), or stamps
+  // demonstrated_severity=critical on a low read (same-surface inflation), passes here.
+  // Those are PRODUCER obligations (the signed-row producer PR's AC-2 endpoint==surface,
+  // AC-3 server-derived severity), not closeable in this string-binding gate. AXIS: this
+  // compares only the opaque surface_id; it does not assert surface kind/axis. A single
+  // web-only producer is planned; add an axis guard if a non-web offensive-row producer
+  // ever lands in a session that also carries smart_contract/code_module surfaces.
+  // The strict single-surface rule is stricter than issue #111's literal "membership"
+  // wording but is identical for every producer today (claims carry one surface) and
+  // additionally blocks surface-set padding; see docs/ISSUE_111_SURFACE_BINDING_PLAN.md.
+  const claimSurfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+  // (1) STRICT single-surface. Rejects surface-set padding (surface_ids=[A,B] to satisfy
+  //     membership for a B-row) AND fail-closes the non-wave null-surface path
+  //     (a claim recorded with no surface normalizes to an empty array).
+  if (claimSurfaceIds.length !== 1) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "exploited_safely claims that cite exploit_run proof must carry exactly one surface_id so each cited offensive-run row binds to a single finding/surface.",
+      {
+        code: "exploit_proof_claim_surface_ambiguous",
+        surface_id_count: claimSurfaceIds.length,
+      },
+    );
+  }
+  // Structural, not implicit (brutalist r1): normalizeOptionalTextArray already
+  // trimmed and dropped empties (so the length===1 check above guarantees a
+  // non-empty entry), but trim here too so the equality below does not silently
+  // depend on that upstream invariant — symmetric with the row-side trim and the
+  // verify mirror.
+  const claimSurfaceId = claimSurfaceIds[0].trim();
+  for (const row of backedRows) {
+    // (2) FAIL-CLOSED on a surfaceless row. row.surface_id is MAC-covered, so a producer
+    //     that forgets to stamp it is a loud reject, not silent laundering. Trim before
+    //     compare so the gate matches the trimmed claim surface; the producer MUST stamp
+    //     the identical, same-case routed surface id.
+    const rowSurfaceId = typeof row.surface_id === "string" ? row.surface_id.trim() : "";
+    if (rowSurfaceId === "") {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "exploited_safely claims require every cited offensive-runs row to carry a non-empty surface_id (the surface the safe exploit ran against).",
+        {
+          code: "exploit_proof_row_surface_missing",
+          run_id: row.run_id || null,
+        },
+      );
+    }
+    // (3) STRICT EQUALITY — the cross-finding severity-laundering gate.
+    if (rowSurfaceId !== claimSurfaceId) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "exploited_safely claim cites an offensive-runs row produced for a different surface; a cited row's surface_id must equal the claim's surface (cross-finding severity laundering is rejected).",
+        {
+          code: "exploit_proof_row_surface_mismatch",
+          run_id: row.run_id || null,
+          row_surface_id: rowSurfaceId,
+          claim_surface_id: claimSurfaceId,
+        },
+      );
+    }
+  }
   const maxDemonstratedRank = backedRows.reduce((maxRank, row) => (
     Math.max(maxRank, exploitSeverityRank(row.demonstrated_severity))
   ), 0);

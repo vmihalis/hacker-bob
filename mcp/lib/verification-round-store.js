@@ -212,13 +212,32 @@ function clampResultSeveritiesInPlace(domain, results) {
     // one finding. Cross-finding row binding is server-enforced at record time
     // via run_id single-use. As a defense-in-depth backstop, if a forged/corrupt
     // freeze contains the same run_id on multiple claims, drop it from all.
+    //
+    // Surface binding (issue #111): mirror the record-time gate. Capture the OWNING
+    // claim's single surface_id alongside each exploit_run ref so the row-eligibility
+    // loop below can require row.surface_id === that surface (a higher-severity row
+    // produced for a different surface can never unlock a rise). Compute it INSIDE
+    // this per-claim loop (NOT hoisted) because a finding can accumulate refs from
+    // multiple claims; null when the (possibly forged) freeze claim does not carry
+    // exactly one surface, which makes the row ineligible and clamps to baseline.
+    // Trim and treat an empty/whitespace single surface as null (no surface),
+    // symmetric with the record gate (which trims the row side and fail-closes on
+    // an empty surface) so a degenerate/forged freeze cannot let an empty claim
+    // surface match an (also empty) row's surface_id.
+    const claimSurfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+    const rawClaimSurfaceId = claimSurfaceIds.length === 1 ? claimSurfaceIds[0] : null;
+    const claimSurfaceId = typeof rawClaimSurfaceId === "string" && rawClaimSurfaceId.trim() !== ""
+      ? rawClaimSurfaceId.trim()
+      : null;
     const exploitRunRefs = findingIds.length === 1
-      ? refs.filter((ref) => (
-        ref
-        && ref.kind === "exploit_run"
-        && typeof ref.run_id === "string"
-        && !duplicateExploitRunIds.has(ref.run_id)
-      ))
+      ? refs
+        .filter((ref) => (
+          ref
+          && ref.kind === "exploit_run"
+          && typeof ref.run_id === "string"
+          && !duplicateExploitRunIds.has(ref.run_id)
+        ))
+        .map((ref) => ({ ref, surfaceId: claimSurfaceId }))
       : [];
     for (const findingId of findingIds) {
       const current = byFinding.get(findingId)
@@ -227,7 +246,7 @@ function clampResultSeveritiesInPlace(domain, results) {
         current.maxRank = rank;
         current.maxSeverity = claim.severity;
       }
-      for (const ref of exploitRunRefs) current.exploitRunRefs.push(ref);
+      for (const entry of exploitRunRefs) current.exploitRunRefs.push(entry);
       byFinding.set(findingId, current);
     }
   }
@@ -248,11 +267,19 @@ function clampResultSeveritiesInPlace(domain, results) {
       if (runRows === null) runRows = readOffensiveRunRecords(domain);
       if (runRows.length > 0) {
         if (signingKey === null) signingKey = readHandoffSigningKey(domain);
-        for (const ref of base.exploitRunRefs) {
+        for (const { ref, surfaceId } of base.exploitRunRefs) {
           for (const row of runRows) {
             if (
               offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
               && rowAttemptFreshForState(row, sessionState)
+              // Surface binding (issue #111): mirror the record gate. The row's
+              // surface_id must equal the owning claim's single surface. surfaceId
+              // === null (claim not exactly-1-surface, OR an empty/whitespace
+              // surface — both fail closed above) drops the row → maxDemonstratedRank
+              // stays 0 → provenRise false → clamp to baseline. Purely subtractive.
+              && surfaceId !== null
+              && typeof row.surface_id === "string"
+              && row.surface_id.trim() === surfaceId
             ) {
               maxDemonstratedRank = Math.max(maxDemonstratedRank, verifySeverityRank(row.demonstrated_severity));
             }

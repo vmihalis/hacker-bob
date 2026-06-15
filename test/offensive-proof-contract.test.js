@@ -64,6 +64,11 @@ function exploitRef(domain = "example.com", overrides = {}) {
   };
 }
 
+// issue #111: an exploited_safely claim must carry exactly one surface_id that
+// matches its backed row's surface_id. Default both helpers to the same value so
+// the positive record path passes; binding tests override one side.
+const DEFAULT_SURFACE_ID = "surface-proof-default";
+
 function exploitedClaim(domain, overrides = {}) {
   return {
     target_domain: domain,
@@ -75,6 +80,7 @@ function exploitedClaim(domain, overrides = {}) {
       safe_oracle: { kind: "reflected_canary" },
     },
     evidence_refs: [exploitRef(domain)],
+    surface_ids: [DEFAULT_SURFACE_ID],
     ...overrides,
   };
 }
@@ -95,6 +101,9 @@ function buildOffensiveRunRow(domain, overrides = {}) {
     stdout_hash: ref.stdout_hash,
     stderr_hash: ref.stderr_hash,
     demonstrated_severity: "low",
+    // issue #111: surface the safe exploit ran against (MAC-covered); must equal
+    // the citing claim's single surface_id.
+    surface_id: DEFAULT_SURFACE_ID,
     ...overrides,
   };
   // The runner records the same canonical (redacted) target the claim ref carries
