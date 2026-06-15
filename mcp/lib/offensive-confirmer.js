@@ -58,6 +58,11 @@ const HEADER_SUBSET = Object.freeze({
 const STATE_CHANGE_PATH_SEGMENT_RE = /(?:^|\/)(?:delete|logout|remove|destroy|deactivate|disable|revoke|reset|unsubscribe|terminate|purge|wipe)(?:\/|$)/i;
 const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch|put|post|submit|send|transfer|refund|reset|revoke|disable|enable|drop|truncate|mutation)$/i;
 
+// An encoded path separator at ANY encoding depth: %2F / %5C, %252F, %2525252F,
+// etc. (`(25)*` absorbs each extra `%25` layer). Layer-count-independent, so it
+// does not depend on how many times decodePathSegments iterates.
+const ENCODED_SEPARATOR_RE = /%(?:25)*(?:2f|5c)/i;
+
 // Recursively percent-decode each path segment until stable (defeats double /
 // multi encoding like %2564elete) so the deny-list sees the real verb.
 function decodePathSegments(pathname) {
@@ -65,7 +70,7 @@ function decodePathSegments(pathname) {
     .split("/")
     .map((seg) => {
       let decoded = seg;
-      for (let i = 0; i < 3; i += 1) {
+      for (let i = 0; i < 8; i += 1) {
         let next;
         try {
           next = decodeURIComponent(decoded);
@@ -171,11 +176,18 @@ function normalizePathTemplate(rawTemplate) {
   // sub-resource read oracle that synthesizes its own baseline is deferred.)
   const pathPart = queryIndex === -1 ? template : template.slice(0, queryIndex);
   const afterSlot = pathPart.slice(pathPart.indexOf("{id}") + "{id}".length);
-  // Recursively decode the suffix before the check so a percent-encoded separator
-  // (e.g. /accounts/{id}%2Fcapture, which many servers route as .../<id>/capture)
-  // cannot smuggle an action segment past the final-segment rule.
-  if (afterSlot.includes("/") || decodePathSegments(afterSlot).includes("/")) {
-    rejectInvalidArguments("path_template {id} must be the final path segment; bob_http_confirm confirms only direct resource reads, so no path segment may follow {id}");
+  // {id} must TERMINATE the final path segment: nothing may follow it except an
+  // inert file extension (.json/.xml). This single allowlist rejects, in one rule,
+  //  - a following path segment (/accounts/{id}/transfer),
+  //  - an encoded separator at ANY depth (/payments/{id}%2Fcapture, %252F...),
+  //  - a same-segment action / matrix suffix (/payments/{id}:capture, {id};delete),
+  // each of which would make the unauth baseline GET (which hits the REAL recorded
+  // id) reach a sub-resource/action — the incident class this tool exists to
+  // prevent. A verb denylist can never enumerate that surface; an allowlist closes
+  // it structurally. (Consequence: PR3's oracle confirms only DIRECT resource
+  // reads; a sub-resource read oracle that synthesizes its own baseline is deferred.)
+  if (afterSlot !== "" && !/^\.[a-z0-9]+$/i.test(afterSlot)) {
+    rejectInvalidArguments("path_template {id} must terminate the final path segment (optionally followed by a file extension); bob_http_confirm confirms only direct resource reads, so nothing else may follow {id}");
   }
   return template;
 }
@@ -188,12 +200,13 @@ function pathTemplateMatchesEndpoint(templatePathname, endpointPathname) {
   const parts = templatePathname.split("{id}");
   if (parts.length !== 2) return false;
   const pattern = new RegExp(`^${escapeRegExp(parts[0])}[^/]+${escapeRegExp(parts[1])}$`);
-  // Match the raw AND the percent-decoded pathname. An encoded separator in the
-  // id segment (e.g. /api/payments/known%2Fcapture) passes `[^/]+` raw but decodes
-  // to an extra path segment; on servers that decode before routing, the unauth
-  // baseline GET would hit a sub-resource/action on the real recorded id. Requiring
-  // the decoded form to also match a single id segment rejects that.
-  return pattern.test(endpointPathname) && pattern.test(decodePathSegments(endpointPathname));
+  if (!pattern.test(endpointPathname)) return false;
+  // `[^/]+` rejects a LITERAL separator in the id segment, but an ENCODED one
+  // (/api/payments/known%2Fcapture, or any %252F… depth) passes raw and, on servers
+  // that decode before routing, would make the unauth baseline GET hit a
+  // sub-resource/action on the real recorded id. Reject any encoded separator.
+  if (ENCODED_SEPARATOR_RE.test(endpointPathname)) return false;
+  return true;
 }
 
 function originFromState(domain, state) {

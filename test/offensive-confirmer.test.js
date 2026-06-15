@@ -303,13 +303,14 @@ test("bob_http_confirm is negative-only: a resource-shaped synthetic response is
 })));
 
 test("bob_http_confirm rejects a recorded endpoint whose id segment hides an encoded separator", () => withTempHome(() => {
-  // A recorded endpoint like /api/accounts/known%2Fdelete matches the `{id}`
-  // template via `[^/]+` raw, but decodes to a sub-resource/action path — the
-  // unauth baseline GET must NOT be allowed to fire against it.
+  // A recorded endpoint like /api/accounts/known%252Fdelete (double-encoded)
+  // matches the `{id}` template via `[^/]+` raw, but a server that decodes before
+  // routing reaches a sub-resource/action path — the unauth baseline GET must NOT
+  // fire against it. The reject is layer-independent (handles %2F, %252F, …).
   const domain = "confirm-encsep.example.test";
   const surfaceId = "surface:accounts";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known%2Fdelete`);
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/api/accounts/known%252Fdelete`);
 
   return executeTool("bob_http_confirm", {
     target_domain: domain,
@@ -517,8 +518,12 @@ test("normalizePathTemplate requires {id} to be the final path segment (structur
   for (const tmpl of ["/api/accounts/{id}/transfer", "/api/payments/{id}/capture", "/api/servers/{id}/restart", "/api/keys/{id}/regenerate", "/api/users/{id}/enable", "/api/users/{id}/profile"]) {
     assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
   }
-  // percent-encoded separators after {id} (single and double encoded) are rejected too
-  for (const tmpl of ["/api/payments/{id}%2Fcapture", "/api/payments/{id}%252Fcapture"]) {
+  // percent-encoded separators after {id} are rejected at ANY encoding depth
+  for (const tmpl of ["/api/payments/{id}%2Fcapture", "/api/payments/{id}%252Fcapture", "/api/payments/{id}%2525252Fcapture", "/api/payments/{id}%5Ccapture"]) {
+    assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
+  }
+  // same-segment action / matrix suffixes after {id} (no literal slash) are rejected too
+  for (const tmpl of ["/api/payments/{id}:capture", "/api/accounts/{id};delete", "/api/users/{id},merge", "/api/users/{id}-summary"]) {
     assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
   }
   // a query string is rejected (baseline/target must be query-symmetric)

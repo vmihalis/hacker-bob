@@ -3,6 +3,10 @@
 const fs = require("fs");
 const { StringDecoder } = require("string_decoder");
 const {
+  ERROR_CODES,
+  ToolError,
+} = require("../envelope.js");
+const {
   assertNonEmptyString,
   parseAgentId,
   parseWaveId,
@@ -376,14 +380,14 @@ function buildSecretEvidenceBypassRows(secretBypass) {
 function normalizeExploitRunEvidenceRefs(rawRefs) {
   if (rawRefs == null) return [];
   if (!Array.isArray(rawRefs)) {
-    throw new Error("evidence_refs must be an array when provided");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "evidence_refs must be an array when provided", { code: "evidence_refs_not_array" });
   }
   return rawRefs.map((ref, index) => {
     if (ref == null || typeof ref !== "object" || Array.isArray(ref)) {
-      throw new Error(`evidence_refs[${index}] must be an object`);
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}] must be an object`, { code: "evidence_ref_not_object" });
     }
     if (ref.kind !== "exploit_run") {
-      throw new Error(`evidence_refs[${index}].kind must be exploit_run`);
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be exploit_run`, { code: "evidence_ref_kind_invalid" });
     }
     return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
   });

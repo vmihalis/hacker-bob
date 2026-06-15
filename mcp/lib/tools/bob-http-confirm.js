@@ -5,6 +5,7 @@ const {
   ORACLE_KIND_VALUES,
   READ_ONLY_METHODS,
 } = require("../offensive-confirmer.js");
+const { REPLAY_CONTEXT_SCHEMA } = require("./replay-context-schema.js");
 
 module.exports = Object.freeze({
   name: "bob_http_confirm",
@@ -21,6 +22,11 @@ module.exports = Object.freeze({
         description: "Absolute path template under the routed surface's recorded endpoint origin, containing exactly one server-substituted {id} path slot, for example /api/accounts/{id}. No URL, finding_id, request body, resource id, severity, or arbitrary headers are accepted.",
       },
       method: { type: "string", enum: [...READ_ONLY_METHODS] },
+      // A verifier/evidence agent passes its replay_context during VERIFY so the
+      // tool's live probes are governed by the same replay lease as bob_http_scan
+      // (see replaySafetyForTool); without this the schema would reject the field
+      // and the probes would run outside the serialized replay policy.
+      replay_context: REPLAY_CONTEXT_SCHEMA,
     },
     required: ["target_domain", "surface_id", "oracle_kind", "path_template"],
     additionalProperties: false,
