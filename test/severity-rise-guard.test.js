@@ -574,13 +574,23 @@ test("stale non-null verification attempt rows do not unlock verify-time rises",
   assert.ok(!document.results[0].confidence_reasons.includes("exploit_replay_confirmed"));
 }));
 
-test("verify-time demonstrated_severity ceiling applies even when there is no severity rise", () => withTempHome(() => {
-  const domain = "severity-rise-no-rise-ceiling.example";
+test("a low exploit row does not cap a finding whose higher baseline is a separate non-exploit claim", () => withTempHome(() => {
+  // Regression guard: the demonstrated-severity ceiling must apply ONLY to the
+  // exploit-backed rise it validates, never as an unconditional cap. F-1 here has
+  // a MEDIUM non-exploit claim (e.g. static analysis) alongside a LOW
+  // exploited_safely confirmer claim; a verifier re-asserting medium (no rise)
+  // must keep medium — the low exploit row must not drag it down.
+  const domain = "severity-rise-no-overcap.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical" });
+  // The low exploited_safely claim needs its backing row to pass the record gate.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "low" });
   appendFrozenFindingClaim(domain, {
     severity: "medium",
+    evidenceRefs: [findingRef("F-1")],
+  });
+  appendFrozenFindingClaim(domain, {
+    severity: "low",
     evidenceRefs: [findingRef("F-1"), ref],
     exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
   });
@@ -595,8 +605,11 @@ test("verify-time demonstrated_severity ceiling applies even when there is no se
     }),
   ]);
 
-  assert.equal(persistedSeverity(domain), "low");
-  assert.deepEqual(response.severity_clamps, [{ finding_id: "F-1", from: "medium", to: "low" }]);
+  assert.equal(persistedSeverity(domain), "medium");
+  assert.ok(
+    !response.severity_clamps || response.severity_clamps.length === 0,
+    "the low exploit row must not clamp the medium baseline",
+  );
 }));
 
 test("exploit_replay_confirmed is stripped from a result that did not back a validated rise", () => withTempHome(() => {

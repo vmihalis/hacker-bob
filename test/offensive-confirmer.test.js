@@ -331,7 +331,7 @@ test("differential classifier requires a baseline auth challenge and target reso
 
   assert.equal(classifyDifferential({
     baselineResponse: response(401),
-    targetResponse: response(200, "{\"ok\":true}"),
+    targetResponse: response(200, "{\"id\":7,\"email\":\"a@b.test\"}"),
     method: "GET",
   }).outcome, "exploited_safely");
   assert.equal(classifyDifferential({
@@ -379,6 +379,10 @@ test("differential classifier refuses to mint a row for non-resource 200 bodies"
   assert.notEqual(target("{\"results\":[],\"count\":0,\"has_more\":false}").outcome, "exploited_safely");
   assert.notEqual(target("[]").outcome, "exploited_safely");
   assert.notEqual(target("{}").outcome, "exploited_safely");
+  // generic status / health objects from a catch-all handler are not resources
+  assert.notEqual(target("{\"ok\":true}").outcome, "exploited_safely");
+  assert.notEqual(target("{\"success\":false}").outcome, "exploited_safely");
+  assert.notEqual(target("{\"service\":\"api\",\"region\":\"us\"}").outcome, "exploited_safely");
   // SPA / app-shell HTML
   assert.notEqual(
     target("<html><body><div id=\"root\"></div></body></html>", { "content-type": "text/html" }).outcome,
@@ -437,6 +441,10 @@ test("normalizePathTemplate requires {id} to be the final path segment (structur
   // structurally closes the "GET a mutation verb against the real id" class,
   // independent of any verb denylist
   for (const tmpl of ["/api/accounts/{id}/transfer", "/api/payments/{id}/capture", "/api/servers/{id}/restart", "/api/keys/{id}/regenerate", "/api/users/{id}/enable", "/api/users/{id}/profile"]) {
+    assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
+  }
+  // percent-encoded separators after {id} (single and double encoded) are rejected too
+  for (const tmpl of ["/api/payments/{id}%2Fcapture", "/api/payments/{id}%252Fcapture"]) {
     assert.throws(() => normalizePathTemplate(tmpl), /final path segment/, `${tmpl} should be rejected`);
   }
   // a query string is rejected (baseline/target must be query-symmetric)

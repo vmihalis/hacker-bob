@@ -29,7 +29,11 @@ module.exports = Object.freeze({
   },
   handler: httpConfirm,
   role_bundles: ["verifier", "evaluator-web", "evidence"],
-  mutating: false,
+  // Read-only against the TARGET, but it appends the audit-graded
+  // offensive-runs.jsonl proof ledger + capture artifacts, so it is a
+  // session-artifact writer like other producers (telemetry/role classification
+  // keys off this flag).
+  mutating: true,
   global_preapproval: true,
   network_access: true,
   browser_access: false,

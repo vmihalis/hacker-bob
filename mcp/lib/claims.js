@@ -965,6 +965,18 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
     Math.max(maxRank, exploitSeverityRank(row.demonstrated_severity))
   ), 0);
   const claimRank = exploitSeverityRank(claim.severity);
+  // Fail closed on an unrecognized severity (rank 0): otherwise the ceiling
+  // comparison below would pass unconditionally (0 > N is always false).
+  if (claimRank === 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "exploited_safely claim severity is not a recognized severity tier.",
+      {
+        code: "exploit_proof_unrecognized_severity",
+        claim_severity: claim.severity,
+      },
+    );
+  }
   if (claimRank > maxDemonstratedRank) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,

@@ -42,7 +42,12 @@ const {
 const {
   offensiveRunsDir,
   offensiveRunsJsonlPath,
+  sessionDir,
 } = require("./paths.js");
+const { redactUrlSensitiveValues } = require("../redaction.js");
+const {
+  appendHttpAuditRecord,
+} = require("./http-records.js");
 const {
   signOffensiveRunRow,
 } = require("./offensive-row-mac.js");
@@ -232,7 +237,10 @@ function normalizePathTemplate(rawTemplate) {
   // sub-resource read oracle that synthesizes its own baseline is deferred.)
   const pathPart = queryIndex === -1 ? template : template.slice(0, queryIndex);
   const afterSlot = pathPart.slice(pathPart.indexOf("{id}") + "{id}".length);
-  if (afterSlot.includes("/")) {
+  // Recursively decode the suffix before the check so a percent-encoded separator
+  // (e.g. /accounts/{id}%2Fcapture, which many servers route as .../<id>/capture)
+  // cannot smuggle an action segment past the final-segment rule.
+  if (afterSlot.includes("/") || decodePathSegments(afterSlot).includes("/")) {
     rejectInvalidArguments("path_template {id} must be the final path segment; bob_http_confirm confirms only direct resource reads, so no path segment may follow {id}");
   }
   return template;
@@ -345,6 +353,10 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state }) {
         continue;
       }
       if (pathTemplateMatchesEndpoint(pathTemplate.split("?")[0], candidate.pathname)) {
+        // Drop any query the recorded endpoint carried: the target is built from
+        // the (query-free) template, so a baseline query would make the
+        // differential turn on query params rather than the id/auth gate.
+        candidate.search = "";
         return candidate;
       }
     }
@@ -386,11 +398,19 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
   };
 }
 
+// Response headers can carry credentials (Set-Cookie, auth tokens). The .poc.json
+// capture dir is read-guarded, but redact them anyway so the on-disk artifact
+// never holds live secrets.
+const SENSITIVE_RESPONSE_HEADERS = new Set([
+  "set-cookie", "set-cookie2", "authorization", "proxy-authorization",
+  "x-auth-token", "x-api-key", "x-csrf-token", "x-amz-security-token",
+]);
+
 function responseHeadersObject(headers) {
   const out = {};
   if (headers && typeof headers.forEach === "function") {
     headers.forEach((value, key) => {
-      out[key] = value;
+      out[key] = SENSITIVE_RESPONSE_HEADERS.has(String(key).toLowerCase()) ? "[redacted]" : value;
     });
   }
   return out;
@@ -429,6 +449,15 @@ const PAGINATION_METADATA_KEYS = new Set([
   "total", "count", "page", "pages", "per_page", "perpage", "page_size", "pagesize",
   "limit", "offset", "has_more", "hasmore", "has_next", "next", "prev", "previous",
   "cursor", "size", "start", "end", "links", "meta", "pagination",
+]);
+// Status/health/infra keys that are never themselves a leaked resource — so a
+// generic 200 like {ok:true}, {success:false}, or {service:"api",region:"us"}
+// from a catch-all/health endpoint is not "resource-shaped". (Canonical resource
+// fields like id/name/email are deliberately NOT here.)
+const STATUS_HEALTH_KEYS = new Set([
+  "ok", "success", "healthy", "alive", "ready", "up", "pong", "ping", "state",
+  "version", "service", "uptime", "build", "commit", "hostname", "region",
+  "environment", "env", "mode", "timestamp", "time",
 ]);
 
 function contentTypeOf(response) {
@@ -470,6 +499,7 @@ function jsonIsGenuineResource(parsed) {
     const lower = key.toLowerCase();
     if (ERROR_ENVELOPE_KEYS.has(lower)) return false;
     if (PAGINATION_METADATA_KEYS.has(lower)) return false;
+    if (STATUS_HEALTH_KEYS.has(lower)) return false;
     if (DATA_WRAPPER_KEYS.includes(lower) && isEmptyValue(parsed[key])) return false;
     return true;
   });
@@ -739,8 +769,79 @@ async function fetchConfirmRequest(url, {
   });
 }
 
+// Record each confirm request in http-audit.jsonl so the session request budget
+// and circuit-breaker summary (built from http-audit records) count confirm
+// traffic — the tool makes 2 live requests per call and must not be invisible to
+// the breaker.
+function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, status, scopeDecision, error, startedAt }) {
+  if (!domain) return;
+  let parsed = null;
+  try {
+    parsed = new URL(url);
+  } catch {}
+  const auditUrl = redactUrlSensitiveValues(url);
+  let auditParsed = parsed;
+  try {
+    auditParsed = new URL(auditUrl);
+  } catch {}
+  try {
+    appendHttpAuditRecord({
+      version: 1,
+      ts: new Date().toISOString(),
+      target_domain: domain,
+      method,
+      url: auditUrl,
+      host: parsed ? parsed.hostname.toLowerCase() : null,
+      path: auditParsed ? `${auditParsed.pathname}${auditParsed.search}` : null,
+      surface_id: surfaceId || null,
+      tool: TOOL_ID,
+      egress_profile: egressProfile || null,
+      status: status == null ? null : status,
+      scope_decision: scopeDecision || null,
+      error: error || null,
+      duration_ms: startedAt ? Date.now() - startedAt : null,
+    });
+  } catch {}
+}
+
+function lstatOrNull(target) {
+  try {
+    return fs.lstatSync(target);
+  } catch {
+    return null;
+  }
+}
+
+// Write-side symlink containment (mirrors the #108 read-side guard): refuse to
+// write proof material through a symlinked offensive-runs/ dir, a symlinked
+// session dir, or a symlinked ledger/run file, so a prepared session directory
+// cannot redirect signed rows or captured bytes outside the session. Runs inside
+// the session lock so the check and the writes are atomic against other Bob
+// processes.
+function assertOffensiveSinkSafe(domain, runsDir, sinks) {
+  const nominalSessionDir = sessionDir(domain);
+  if (!fs.existsSync(nominalSessionDir)) return;
+  const realSessionDir = fs.realpathSync(nominalSessionDir);
+  const runsStat = lstatOrNull(runsDir);
+  if (runsStat) {
+    if (runsStat.isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs dir must not be a symlink: ${runsDir}`);
+    }
+    if (path.dirname(fs.realpathSync(runsDir)) !== realSessionDir) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs dir must stay inside its session dir: ${runsDir}`);
+    }
+  }
+  for (const sink of sinks) {
+    const stat = lstatOrNull(sink);
+    if (stat && stat.isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `offensive-runs sink must be a regular file, not a symlink: ${sink}`);
+    }
+  }
+}
+
 async function httpConfirm(args = {}) {
   assertNoForbiddenInputs(args);
+  const startedAt = Date.now();
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const oracleKind = normalizeOracleKind(args.oracle_kind);
@@ -763,7 +864,13 @@ async function httpConfirm(args = {}) {
     headers,
   }));
 
-  const { profile, identity } = resolveAndAssertSessionEgressIdentity(domain, "default", {
+  // Use the session's BOUND egress profile (not a hardcoded "default"), so a
+  // session initialized with a regional/proxy profile can use the confirmer
+  // instead of being rejected as profile drift.
+  const requestedEgressProfile = typeof state.egress_profile === "string" && state.egress_profile.trim()
+    ? state.egress_profile
+    : "default";
+  const { profile, identity } = resolveAndAssertSessionEgressIdentity(domain, requestedEgressProfile, {
     source: TOOL_ID,
   });
   if (blockInternalHosts && profile && profile.proxy_url) {
@@ -777,6 +884,7 @@ async function httpConfirm(args = {}) {
     );
   }
   const egressAgent = createProxyAgent(profile.proxy_url);
+  const egressProfileName = identity.egress_profile || requestedEgressProfile;
   let baselineResponse;
   let targetResponse;
   try {
@@ -787,6 +895,10 @@ async function httpConfirm(args = {}) {
       blockInternalHosts,
       agent: egressAgent,
     });
+    auditConfirmRequest({
+      domain, surfaceId, method, url: surface.baseline_url,
+      egressProfile: egressProfileName, status: baselineResponse.status, startedAt,
+    });
     targetResponse = await fetchConfirmRequest(surface.target_url, {
       method,
       headers,
@@ -794,15 +906,29 @@ async function httpConfirm(args = {}) {
       blockInternalHosts,
       agent: egressAgent,
     });
+    auditConfirmRequest({
+      domain, surfaceId, method, url: surface.target_url,
+      egressProfile: egressProfileName, status: targetResponse.status, startedAt,
+    });
   } catch (error) {
+    const scopeBlocked = error && error.scope_decision === "blocked";
+    auditConfirmRequest({
+      domain, surfaceId, method, url: surface.target_url,
+      egressProfile: egressProfileName, status: null,
+      scopeDecision: scopeBlocked ? "blocked" : null,
+      error: error.message || String(error), startedAt,
+    });
+    // NOTE: `failure_reason`, NOT `error` — executeTool treats any returned
+    // object with an `error` string as an MCP error, which would surface this
+    // intended `blocked_by_infra` negative confirmation as ok:false/INTERNAL_ERROR.
     return {
       confirmed: false,
       target_domain: domain,
       surface_id: surfaceId,
       oracle_kind: oracleKind,
       offensive_outcome: "blocked_by_infra",
-      reason: error && error.scope_decision === "blocked" ? "scope_blocked" : "transport_error",
-      error: error.message || String(error),
+      reason: scopeBlocked ? "scope_blocked" : "transport_error",
+      failure_reason: error.message || String(error),
       row_written: false,
       ...identity,
       ...internalHostPolicy,
@@ -869,12 +995,14 @@ async function httpConfirm(args = {}) {
     replayFields: replayFieldsFromArgs(args),
     classification,
   });
+  const jsonlPath = offensiveRunsJsonlPath(domain);
   withSessionLock(domain, () => {
+    assertOffensiveSinkSafe(domain, runsDir, [jsonlPath, requestPath, responsePath, pocPath]);
     fs.mkdirSync(runsDir, { recursive: true });
     fs.writeFileSync(requestPath, requestBytes);
     fs.writeFileSync(responsePath, responseBytes);
     fs.writeFileSync(pocPath, pocBytes);
-    appendJsonlLine(offensiveRunsJsonlPath(domain), signedRow);
+    appendJsonlLine(jsonlPath, signedRow);
   });
 
   const exploitRunRef = {

@@ -2060,7 +2060,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_http_scan.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_scan.scope_url_fields, []);
   assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.role_bundles, ["verifier", "evaluator-web", "evidence"]);
-  assert.equal(TOOL_MANIFEST.bob_http_confirm.mutating, false);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_http_confirm.network_access, true);
   assert.equal(TOOL_MANIFEST.bob_http_confirm.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.session_artifacts_written, ["offensive-runs.jsonl", "offensive-runs/"]);

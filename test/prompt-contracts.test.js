@@ -1368,10 +1368,14 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
   // read-only file probes (file_exists / file_contains / regex_match)
   // against the bound repo without taking the docker path.
+  // PR3 adds bob_http_confirm: read-only against the target, but it appends the
+  // audit-graded offensive-runs.jsonl proof ledger + capture artifacts, so it is
+  // a session-artifact writer (mutating) like the other producers here.
   assert.deepEqual(
     mutating.sort(),
     [
       "bob_evm_fetch_source",
+      "bob_http_confirm",
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",

@@ -285,14 +285,16 @@ function clampResultSeveritiesInPlace(domain, results) {
       }
     }
 
-    if (maxDemonstratedRank > 0 && verifySeverityRank(result.severity) > maxDemonstratedRank) {
-      const from = result.severity;
-      const to = severityForVerifyRank(maxDemonstratedRank);
-      if (to && to !== from) {
-        result.severity = to;
-        clamps.push({ finding_id: result.finding_id, from, to });
-      }
-    }
+    // NOTE: there is intentionally NO unconditional "clamp to the exploit row's
+    // demonstrated_severity" here. The record gate (assertExploitedClaimHasProof)
+    // already forbids an exploited_safely claim from being frozen above its cited
+    // rows' demonstrated tier, so an exploit-backed claim can never carry an
+    // unproven-high baseline. Clamping unconditionally would instead corrupt a
+    // finding whose higher baseline comes from a SEPARATE non-exploit claim (e.g.
+    // a medium static-analysis finding alongside a low synthetic-id confirm),
+    // lowering a legitimate medium to low on the strength of unrelated proof. The
+    // rise-guard above (provenRise) is the only place the demonstrated ceiling
+    // applies — to the exploit-backed rise it is actually validating.
 
     // `exploit_replay_confirmed` is a proof claim. Keep it ONLY when it backed a
     // validated severity rise; on a non-rise, an unproven (clamped) rise, or a
