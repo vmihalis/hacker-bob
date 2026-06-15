@@ -149,19 +149,20 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.equal(isExcludedCanonicalPackageFile(excluded), true, `${excluded} should be denied by policy`);
     }
 
-    // Pack-size budget raised to 3.2 MB. The 3.1 MB kimi adapter family
+    // Pack-size budget raised to 3.3 MB. The 3.1 MB kimi adapter family
     // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
     // packages/hacker-bob-kimi/*) was absorbed from PR #58 alongside the existing
     // Y.3 Stage c substrate growth (evidence_refs[] validator + LARGE_BODY_THRESHOLD_BYTES
     // export + EVIDENCE_REF_HANDLE_PREFIXES constant on bob_write_chain_rollup
     // per Y-P14b / O4), plus the packable Plane-Delta graph JSON docs.
-    // Raised again to 3.2 MB for the CVSS v3.1 + CWE report-layer annotations
+    // Raised to 3.2 MB for the CVSS v3.1 + CWE report-layer annotations
     // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
-    // now measured against the lean tarball — mcp/node_modules is excluded from
-    // the pack, so this budget tracks shipped source/docs only. The opencode
-    // adapter family (adapters/opencode/* per-role subagents) is absorbed within
-    // that ceiling. Mirrors the scripts/release-check.js ceiling.
-    assert.ok(pack.size < 3200000, `npm pack size ${pack.size} exceeds 3.2 MB threshold`);
+    // measured against the lean tarball — mcp/node_modules is excluded from the
+    // pack, so this budget tracks shipped source/docs only. Raised again to
+    // 3.3 MB so the opencode adapter family (adapters/opencode/* per-role
+    // subagents) fits alongside those surfaces. Mirrors the
+    // scripts/release-check.js ceiling.
+    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

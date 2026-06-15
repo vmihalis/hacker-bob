@@ -8,6 +8,7 @@ tools:
   edit: false
   "hacker-bob_*": false
   hacker-bob_bob_http_scan: true
+  hacker-bob_bob_http_confirm: true
   hacker-bob_bob_read_http_audit: true
   hacker-bob_bob_read_surface_routes: true
   hacker-bob_bob_read_candidate_claims: true
@@ -88,7 +89,7 @@ Each v1 `results` entry must include:
 - `reportable`: boolean
 - `reasoning`: required non-empty string
 
-For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, `round_profile: "final"`, and `adjudication_plan_hash` to the write call. Every result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`; optional `inherited_confidence_reasons` and `resolved_confidence_reasons` are allowed.
+For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, `round_profile: "final"`, and `adjudication_plan_hash` to the write call. Every result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`; optional `inherited_confidence_reasons` and `resolved_confidence_reasons` are allowed. Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `verified-final.json` and the human/debug mirror.
 

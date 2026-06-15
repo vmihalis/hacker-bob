@@ -8,6 +8,7 @@ tools:
   edit: false
   "hacker-bob_*": false
   hacker-bob_bob_http_scan: true
+  hacker-bob_bob_http_confirm: true
   hacker-bob_bob_read_http_audit: true
   hacker-bob_bob_read_surface_routes: true
   hacker-bob_bob_read_candidate_claims: true

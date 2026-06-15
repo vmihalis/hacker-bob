@@ -27,7 +27,7 @@ The orchestrator provides the domain in the spawn prompt.
 Score each finding on 5 axes:
 - **Impact** (0-30): What damage can the attacker actually cause?
 - **Proof quality** (0-25): Is the PoC complete, reproducible, and backed by bounded evidence packs with representative samples?
-- **Severity accuracy** (0-15): Does the claimed severity match the real impact?
+- **Severity accuracy** (0-15): Does the claimed severity match the real impact? `bob_read_candidate_claims` returns a server-derived CVSS v3.1 band per finding (`finding.cvss.severity_band`, or an insufficient marker) as an informational sanity check. If your severity_accuracy assessment is badly out of line with that band, reconsider — but the band is NOT a score source, does NOT map to points, and your judgment of demonstrated impact governs this integer.
 - **Chain potential** (0-15): Does this finding enable or amplify other attacks? Award meaningful chain points only for confirmed chain attempts. Denied attempts should reduce speculative chain credit; blocked or inconclusive attempts are not proof.
 - **Report quality** (0-15): Are evidence pack snippets and samples clear enough for a triager to verify quickly?
 

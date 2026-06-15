@@ -44,6 +44,7 @@ tools:
   hacker-bob_bob_log_protocol_drift: true
   hacker-bob_bob_prepare_node: true
   hacker-bob_bob_http_scan: true
+  hacker-bob_bob_http_confirm: true
   hacker-bob_bob_read_http_audit: true
   hacker-bob_bob_import_static_artifact: true
   hacker-bob_bob_static_scan: true
