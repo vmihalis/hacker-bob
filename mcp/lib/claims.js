@@ -961,6 +961,17 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
     }
   }
 
+  // Binding model: each backed row is content-bound to its ref (run_id, target,
+  // command/stdout/stderr hashes) by offensiveRunRowSatisfiesEvidence, and
+  // run_id single-use (above) makes each row back at most ONE claim. NOT yet
+  // enforced: that the row's surface_id matches the claim's finding/surface, so a
+  // single claim could in principle cite a higher-severity row produced for a
+  // different endpoint (cross-finding severity laundering). This is DORMANT today
+  // — bob_http_confirm is negative-only and writes no rows, so no offensive-runs
+  // row exists to launder, and the claim's surface does not yet flow to this gate
+  // (record-candidate-claim passes a singular surface_id, not surface_ids[]). The
+  // finding/surface binding lands with the signed-row producer PR, which gives
+  // rows a real surface and wires the claim's surface through to here.
   const maxDemonstratedRank = backedRows.reduce((maxRank, row) => (
     Math.max(maxRank, exploitSeverityRank(row.demonstrated_severity))
   ), 0);
