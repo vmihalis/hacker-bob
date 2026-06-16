@@ -46,6 +46,7 @@ const TRANSITION_GATES = Object.freeze({
   "VERIFY->GRADE": gateVerifyToGrade,
   "GRADE->REPORT": gateGradeToReport,
   "OPEN_FRONTIER->CLAIM_FREEZE": gateOpenFrontierToClaimFreeze,
+  "CLAIM_FREEZE->VERIFY": gateClaimFreezeToVerify,
 });
 
 function compactError(error) {
@@ -132,6 +133,79 @@ function gateGradeToReport(context) {
       message: `GRADE -> REPORT blocked: ${message}`,
       error: message,
     });
+  }
+  return blockers;
+}
+
+function gateClaimFreezeToVerify(context) {
+  const blockers = [];
+
+  // (1) Read the frozen claim batch. The authoritative frozen set is the claims[] array inside
+  // claim-freeze.json (written by buildClaimFreeze(write:true) during CLAIM_FREEZE), NOT a
+  // status filter on claims.jsonl — claim-freeze.js never mutates a claim's status to "frozen".
+  let freeze;
+  try {
+    freeze = require("./claim-freeze.js").readCurrentClaimFreeze(context.target_domain);
+  } catch (error) {
+    blockers.push({
+      code: "claim_freeze_unreadable",
+      blocked_by: "claim_freeze_unreadable",
+      message: `CLAIM_FREEZE -> VERIFY blocked: could not read claim-freeze.json: ${compactError(error)}`,
+      error: compactError(error),
+      remediation:
+        "re-run the claim freeze (bob_record_candidate_claim / freeze flow) so claim-freeze.json is valid before advancing to VERIFY",
+    });
+    return blockers;
+  }
+  // No freeze doc yet, or a freeze with no claims: nothing to re-verify (does not brick).
+  if (!freeze || !Array.isArray(freeze.claims) || freeze.claims.length === 0) {
+    return blockers;
+  }
+
+  // (2) NO-BRICK EARLY EXIT. Keep only frozen claims that both assert exploited_safely AND carry
+  // an exploit_run ref. A normal session (no offensive rows, hence no such claims) returns []
+  // here WITHOUT reading the offensive ledger or the signing key, so a session with NO signing
+  // key on disk is never bricked.
+  const exploitedClaims = freeze.claims.filter((claim) => (
+    claim
+    && typeof claim === "object"
+    && claim.exploit_outcome
+    && claim.exploit_outcome.outcome === "exploited_safely"
+    && Array.isArray(claim.evidence_refs)
+    && claim.evidence_refs.some((ref) => ref && ref.kind === "exploit_run")
+  ));
+  if (exploitedClaims.length === 0) return blockers;
+
+  // (3) Re-confirm each exploited_safely claim still has a fresh, matching, signed offensive row
+  // backing every cited exploit_run ref. Reuse the record-time contract verbatim. The assert
+  // reads the offensive ledger and reads the signing key ONLY when runRows.length > 0, so the
+  // conditional-key-read no-brick rule holds via reuse. existingClaims:[] avoids re-tripping
+  // run_id-single-use against the frozen siblings themselves (single-use was enforced at record
+  // time; this gate re-checks backing/MAC/surface/severity/tool-ceiling freshness).
+  const { assertExploitedClaimHasProof } = require("./claims.js");
+  for (const claim of exploitedClaims) {
+    try {
+      assertExploitedClaimHasProof(claim, { existingClaims: [] });
+    } catch (error) {
+      // Gate RETURNS blockers; the assert THROWS. Convert any throw into a structured blocker.
+      const underlying = (error && error.details && typeof error.details.code === "string")
+        ? error.details.code
+        : null;
+      blockers.push({
+        code: "exploited_claim_proof_unbacked_at_freeze",
+        blocked_by: "exploited_claim_proof_unbacked_at_freeze",
+        claim_id: typeof claim.claim_id === "string" ? claim.claim_id : null,
+        underlying_code: underlying,
+        message:
+          `CLAIM_FREEZE -> VERIFY blocked: frozen exploited_safely claim`
+          + ` ${typeof claim.claim_id === "string" ? claim.claim_id : "(unknown)"}`
+          + ` is no longer backed by a fresh signed offensive-runs row: ${compactError(error)}`,
+        error: compactError(error),
+        remediation:
+          "re-run the offensive confirmer/producer for this finding so a fresh MAC-signed"
+          + " offensive-runs.jsonl row backs every cited exploit_run ref, then re-freeze before VERIFY",
+      });
+    }
   }
   return blockers;
 }

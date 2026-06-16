@@ -18,12 +18,23 @@ const {
   assertCompletenessAgainstFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
+  handoffSigningKeyPath,
   isAuditGradedPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
   sessionDir,
   sessionsRoot,
 } = require("../mcp/lib/paths.js");
+const {
+  evaluateLifecycleTransition,
+} = require("../mcp/lib/lifecycle-gates.js");
+const {
+  advanceSession,
+  initSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  readSessionNucleus,
+} = require("../mcp/lib/governance-store.js");
 const {
   ensureHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
@@ -58,7 +69,7 @@ function exploitRef(domain = "example.com", overrides = {}) {
   return {
     kind: "exploit_run",
     run_id: "run-exploit-1",
-    tool_id: "bob_http_confirm_reflected_canary",
+    tool_id: "bob_http_idor_confirm",
     target: `https://${domain}/search?q=BOB_CANARY_1`,
     offensive_outcome: "exploited_safely",
     command_hash: hex("a"),
@@ -128,6 +139,91 @@ function appendOffensiveRunRow(domain, overrides = {}) {
   signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
   return writeOffensiveRunRow(domain, row);
 }
+
+function advance(domain, toState) {
+  return JSON.parse(advanceSession({ target_domain: domain, to_state: toState }));
+}
+
+function evaluateFreezeToVerify(domain) {
+  return evaluateLifecycleTransition({
+    target_domain: domain,
+    from_state: "CLAIM_FREEZE",
+    to_state: "VERIFY",
+    nucleus: readSessionNucleus(domain),
+  });
+}
+
+function captureThrow(fn) {
+  let captured = null;
+  try {
+    fn();
+  } catch (error) {
+    captured = error;
+  }
+  assert.ok(captured, "expected function to throw");
+  return captured;
+}
+
+test("#freeze-verify-gate: non-exploit frozen claims do not require a signing key", () => withTempHome(() => {
+  const domain = "freeze-verify-no-brick.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  appendCandidateClaim({
+    target_domain: domain,
+    title: "Plain reflected behavior",
+    summary: "A non-offensive finding fixture.",
+    severity: "low",
+    evidence_refs: [{
+      kind: "finding",
+      finding_id: "F-plain",
+      content_hash: hex("0"),
+    }],
+  });
+  advance(domain, "CLAIM_FREEZE");
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  assert.equal(fs.existsSync(handoffSigningKeyPath(domain)), false);
+  assert.deepEqual(evaluateFreezeToVerify(domain).blockers, []);
+
+  const envelope = advance(domain, "VERIFY");
+  assert.equal(envelope.to_state, "VERIFY");
+  assert.equal(envelope.advanced, true);
+}));
+
+test("#freeze-verify-gate: vanished offensive row blocks CLAIM_FREEZE -> VERIFY", () => withTempHome(() => {
+  const domain = "freeze-verify-missing-row.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  appendOffensiveRunRow(domain);
+  appendCandidateClaim(exploitedClaim(domain));
+  advance(domain, "CLAIM_FREEZE");
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  fs.rmSync(offensiveRunsJsonlPath(domain), { force: true });
+  const blockers = evaluateFreezeToVerify(domain).blockers;
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].code, "exploited_claim_proof_unbacked_at_freeze");
+  assert.equal(blockers[0].underlying_code, "exploit_proof_unbacked_exploit_run_evidence");
+
+  const error = captureThrow(() => advanceSession({ target_domain: domain, to_state: "VERIFY" }));
+  assert.equal(error.code, "STATE_CONFLICT");
+  assert.equal(error.details && error.details.code, "exploited_claim_proof_unbacked_at_freeze");
+}));
+
+test("#freeze-verify-gate: backed exploited claim advances without single-use false positive", () => withTempHome(() => {
+  const domain = "freeze-verify-backed.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  appendOffensiveRunRow(domain);
+  appendCandidateClaim(exploitedClaim(domain));
+  advance(domain, "CLAIM_FREEZE");
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  assert.deepEqual(evaluateFreezeToVerify(domain).blockers, []);
+  const envelope = advance(domain, "VERIFY");
+  assert.equal(envelope.to_state, "VERIFY");
+  assert.equal(envelope.advanced, true);
+}));
 
 test("#freeze-completeness: projectExploitRunObservedRef re-hashes the on-disk capture file", () => withTempHome(() => {
   const domain = "exploit-proj-match.example";
