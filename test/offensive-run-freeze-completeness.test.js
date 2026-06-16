@@ -21,6 +21,7 @@ const {
   isAuditGradedPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
+  sessionDir,
 } = require("../mcp/lib/paths.js");
 const {
   ensureHandoffSigningKey,
@@ -294,4 +295,49 @@ test("#freeze-completeness: projectExploitRunObservedRef refuses a traversal run
     stdout_hash: hex("a"),
   });
   assert.equal(obs, null, "a traversal run_id must NOT read a file outside offensive-runs/, even if it exists");
+}));
+
+// Defense-in-depth (issue #114 / Codex P1): the lexical containment guard does
+// not stop a SYMLINKED capture leaf — bare sha256File would follow the link and
+// hash an attacker-chosen inode (a content read-oracle). The secure read must
+// reject a symlinked leaf (O_NOFOLLOW / lstat) → null.
+test("#freeze-completeness: projectExploitRunObservedRef refuses a SYMLINKED capture leaf (no hash oracle)", () => withTempHome(() => {
+  const domain = "exploit-symlink-leaf.example";
+  const runId = "run-symlink-leaf-1";
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  // A real secret file outside the capture dir.
+  const secretPath = path.join(offensiveRunsDir(domain), "..", "SECRET.txt");
+  fs.writeFileSync(secretPath, "out-of-dir secret body the oracle must not hash\n");
+  // Plant a symlink at offensive-runs/<run_id>.stdout -> the secret file.
+  fs.symlinkSync(secretPath, path.join(offensiveRunsDir(domain), `${runId}.stdout`));
+
+  const obs = projectExploitRunObservedRef(domain, {
+    kind: "exploit_run",
+    run_id: runId,
+    stdout_hash: hex("a"),
+  });
+  assert.equal(obs, null, "a symlinked capture leaf must project null, never hash the link target");
+}));
+
+// Defense-in-depth (issue #114): a symlinked offensive-runs/ DIRECTORY also
+// bypasses an O_NOFOLLOW-on-the-leaf-only check. The realpath parent check must
+// reject a capture dir that does not resolve to <session>/offensive-runs → null.
+test("#freeze-completeness: projectExploitRunObservedRef refuses a SYMLINKED capture directory", () => withTempHome(() => {
+  const domain = "exploit-symlink-dir.example";
+  const runId = "run-symlink-dir-1";
+  // Build a real attacker dir holding a real <run_id>.stdout, then point the
+  // session's offensive-runs/ at it via a directory symlink.
+  const sessDir = sessionDir(domain);
+  fs.mkdirSync(sessDir, { recursive: true });
+  const evilDir = path.join(sessDir, "evil-capture-store");
+  fs.mkdirSync(evilDir, { recursive: true });
+  fs.writeFileSync(path.join(evilDir, `${runId}.stdout`), "planted body via symlinked dir\n");
+  fs.symlinkSync(evilDir, offensiveRunsDir(domain));
+
+  const obs = projectExploitRunObservedRef(domain, {
+    kind: "exploit_run",
+    run_id: runId,
+    stdout_hash: hex("a"),
+  });
+  assert.equal(obs, null, "a symlinked offensive-runs/ dir must project null, never hash through the link");
 }));
