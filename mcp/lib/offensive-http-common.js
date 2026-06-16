@@ -531,6 +531,13 @@ const FORBIDDEN_INPUT_FIELDS = Object.freeze([
 ]);
 
 function assertNoForbiddenInputs(args, toolName, extraFields = []) {
+  // Fail fast on a mis-wired caller: a non-array extraFields (e.g. the string
+  // "object_id" instead of ["object_id"]) would spread into single characters
+  // and silently DROP the intended extra forbidden field — weakening the guard.
+  // Throw loudly rather than degrade security quietly.
+  if (!Array.isArray(extraFields)) {
+    rejectInvalidArguments(`${toolName} forbidden-input guard misconfigured: extraFields must be an array of field names`);
+  }
   for (const field of [...FORBIDDEN_INPUT_FIELDS, ...extraFields]) {
     if (Object.prototype.hasOwnProperty.call(args || {}, field)) {
       rejectInvalidArguments(`${toolName} does not accept ${field}; the request is derived server-side from surface_id and path_template`);

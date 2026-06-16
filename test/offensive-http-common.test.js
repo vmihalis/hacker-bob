@@ -24,10 +24,12 @@ const {
   isLoginRedirect,
   responseLooksLikeLoginPage,
   isResourceShapedResponse,
+  auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,
 } = require("../mcp/lib/offensive-http-common.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const { readHttpAuditRecordsFromJsonl } = require("../mcp/lib/http-records.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { readSessionStateStrict } = require("../mcp/lib/session-state-store.js");
@@ -134,6 +136,13 @@ test("assertNoForbiddenInputs guard semantics: nullish args are safe, hasOwnProp
   assert.throws(() => assertNoForbiddenInputs({ url: "" }, "bob_http_confirm"), /does not accept url/);
   // extraFields defaults to [] — only the base list applies when omitted
   assert.doesNotThrow(() => assertNoForbiddenInputs({ object_id: "x" }, "bob_http_confirm"));
+  // a non-array extraFields is a mis-wiring that would silently weaken the guard
+  // (a string spreads into single chars, dropping the intended extra field) — it
+  // must fail fast, not degrade security quietly.
+  assert.throws(
+    () => assertNoForbiddenInputs({}, "bob_http_idor_confirm", "object_id"),
+    /forbidden-input guard misconfigured: extraFields must be an array/,
+  );
 });
 
 // --- rejectInvalidArguments ---
@@ -334,6 +343,40 @@ test("resolveBaselineFromSurface resolves a query-free baseline that matches the
     () => resolveBaselineFromSurface({ domain, surface, pathTemplate: "/api/users/{id}", state }),
     /path shape does not match any recorded endpoint for surface_id/,
   );
+}));
+
+// --- auditConfirmRequest (parameterized toolId attribution) ---
+
+test("auditConfirmRequest writes a breaker-visible record under any toolId and never throws", () => withTempHome(() => {
+  const domain = "common-audit.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  // The point of the parameterized toolId is per-tool attribution; note that
+  // normalizeHttpAuditRecord does NOT persist a `tool` field, so a future producer
+  // passing a different toolId (or omitting it) yields a BYTE-IDENTICAL persisted
+  // record — circuit-breaker / request-budget visibility comes from the record's
+  // existence + surface_id/status/url, never from `tool`. The toolId's only
+  // observable effect is the stderr diagnostic on an audit-write failure.
+  auditConfirmRequest({
+    domain,
+    surfaceId: "surface:accounts",
+    method: "GET",
+    url: `https://${domain}/api/accounts/known`,
+    egressProfile: "default",
+    status: 200,
+    startedAt: 1,
+    toolId: "bob_http_idor_confirm",
+  });
+  const records = readHttpAuditRecordsFromJsonl(domain).filter((r) => r.surface_id === "surface:accounts");
+  assert.equal(records.length, 1, "the probe must be recorded for circuit-breaker visibility");
+  assert.equal(records[0].method, "GET");
+  assert.equal(records[0].status, 200);
+  // a successful probe records scope_decision "allowed" (a null would make
+  // normalizeHttpAuditRecord throw and silently drop the breaker-visibility record)
+  assert.equal(records[0].scope_decision, "allowed");
+  // `tool` is normalized out — a missing toolId cannot make a probe invisible
+  assert.equal(Object.prototype.hasOwnProperty.call(records[0], "tool"), false);
+  // defensive audit contract: never throws even with no domain / no toolId
+  assert.doesNotThrow(() => auditConfirmRequest({ domain: null }));
 }));
 
 // --- SCOPE_VALIDATION_OPTS export contract ---
