@@ -6,8 +6,10 @@ const crypto = require("crypto");
 const {
   assertSafeDomain,
   claimFreezePath,
+  offensiveRunsDir,
   repoChecksJsonlPath,
   repoRunsDir,
+  sessionsRoot,
 } = require("./paths.js");
 const {
   hashCanonicalJson,
@@ -35,6 +37,7 @@ const {
 const {
   readJsonFile,
   withSessionLock,
+  DEFAULT_ARTIFACT_READ_MAX_BYTES,
 } = require("./storage.js");
 
 const CLAIM_FREEZE_VERSION = 1;
@@ -413,6 +416,108 @@ function projectRepoCommandRunObservedRef(domain, frozenRef) {
   };
 }
 
+// Securely recompute the sha256 of an offensive-runs capture leaf for projection.
+// `run_id` is only shape-validated upstream as a non-empty string (claims.js
+// assertExploitRunEvidenceShape), so the path/symlink discipline lives here.
+// Mirrors the realpath + O_NOFOLLOW + nlink + size-cap discipline that
+// readOffensiveRunRecords (claims.js) applies to the proof ledger:
+//   - lexical containment: the leaf must be a DIRECT child of offensive-runs/
+//     (rejects a "../x" traversal run_id);
+//   - symlinked-parent defense: the REAL capture dir must resolve to
+//     <real session dir>/offensive-runs (rejects a symlinked offensive-runs/ or
+//     session dir — O_NOFOLLOW on the leaf alone does not catch a symlinked parent);
+//   - O_NOFOLLOW + fstat: reject a symlinked leaf, a non-regular file, a
+//     hard-linked file, and a file over the artifact read cap.
+// Fail-closed: any of the above (or a missing/unreadable leaf) returns null, which
+// the completeness gate surfaces as `missing` so the lifecycle blocks. Without this,
+// a planted symlink would make sha256File follow the link and hash an
+// attacker-chosen inode (a content read-oracle), and an oversized leaf would force
+// an unbounded synchronous read on the lifecycle-gate path. None of this can launder
+// a `complete` verdict (the frozen stdout_hash is MAC-bound to a signed
+// offensive-runs.jsonl row). The identical repo_command_run twin and a shared
+// secure-hash helper are tracked in #114.
+function sha256OffensiveCaptureSecure(domain, runId) {
+  // run_id is only shape-validated upstream as a non-empty string (claims.js
+  // assertExploitRunEvidenceShape, tracked for a source-level fix in #114). Reject
+  // any run_id that is not a single clean path segment BEFORE building the leaf: a
+  // separator/NUL or a "."/".." segment (e.g. "subdir/../victim") can normalize
+  // back inside offensive-runs/ and alias a DIFFERENT capture file, slipping the
+  // `dirname === runsDir` guard below instead of failing closed.
+  if (typeof runId !== "string" || !runId) return null;
+  if (
+    runId.includes("/") || runId.includes("\\") || runId.includes("\0") ||
+    runId === "." || runId === ".."
+  ) {
+    return null;
+  }
+  const runsDir = path.resolve(offensiveRunsDir(domain));
+  const leaf = path.resolve(path.join(runsDir, `${runId}.stdout`));
+  if (path.dirname(leaf) !== runsDir) return null;
+  // Anchor the expected capture dir to the REAL sessions root + safe domain, the
+  // way claims.js::resolveOffensiveRunsFilePathSecure does — NOT to
+  // realpathSync(sessionDir(domain)), which would resolve a symlinked session dir
+  // before comparing and silently accept it (the recording path rejects it, so
+  // anchoring to realpath of the session dir would be a split-brain bypass).
+  let realDir;
+  let expectedDir;
+  try {
+    const realRoot = fs.realpathSync(sessionsRoot());
+    expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
+    realDir = fs.realpathSync(runsDir);
+  } catch {
+    return null;
+  }
+  if (realDir !== expectedDir) return null;
+  const realLeaf = path.join(realDir, path.basename(leaf));
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  // On platforms without O_NOFOLLOW, pre-check the leaf for a symlink.
+  if (!noFollow) {
+    let lst;
+    try {
+      lst = fs.lstatSync(realLeaf);
+    } catch {
+      return null;
+    }
+    if (lst.isSymbolicLink()) return null;
+  }
+  let fd = null;
+  try {
+    fd = fs.openSync(realLeaf, fs.constants.O_RDONLY | noFollow);
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1) return null;
+    if (DEFAULT_ARTIFACT_READ_MAX_BYTES != null && stats.size > DEFAULT_ARTIFACT_READ_MAX_BYTES) {
+      return null;
+    }
+    return crypto.createHash("sha256").update(fs.readFileSync(fd)).digest("hex");
+  } catch {
+    // ENOENT / ELOOP (symlinked leaf under O_NOFOLLOW) / any error -> missing.
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+// Project an `exploit_run` observed ref by securely recomputing the sha256 of the
+// on-disk stdout capture file at `offensive-runs/<run_id>.stdout`. Mirrors
+// projectRepoCommandRunObservedRef: the frozen ref's `stdout_hash` is the
+// authoritative identity (the completeness gate's `evidenceReferenceIdentityHash`
+// selector already picks `stdout_hash` for kind="exploit_run"). A missing/unreadable/
+// suspicious file → null (gate surfaces `missing`); a present-but-tampered file → the
+// actually recomputed sha (gate surfaces `mismatched`). Path/symlink/size safety is
+// enforced by sha256OffensiveCaptureSecure (see #114 for the twin + shared helper).
+function projectExploitRunObservedRef(domain, frozenRef) {
+  if (!frozenRef || frozenRef.kind !== "exploit_run") return null;
+  if (typeof frozenRef.run_id !== "string" || !frozenRef.run_id) return null;
+  const observed = sha256OffensiveCaptureSecure(domain, frozenRef.run_id);
+  if (observed == null) return null;
+  return {
+    ...frozenRef,
+    stdout_hash: observed,
+  };
+}
+
 // Build the full observed-ref set for the code-bound kinds in a freeze. The
 // caller (typically `assertEvidenceCompletenessForFreeze`) folds these into
 // the existing finding/etc observed set before invoking
@@ -431,6 +536,9 @@ function projectCodeBoundObservedRefs(domain, freeze) {
     } else if (kind === "repo_command_run") {
       const obs = projectRepoCommandRunObservedRef(domain, entry.ref);
       if (obs) projected.push(obs);
+    } else if (kind === "exploit_run") {
+      const obs = projectExploitRunObservedRef(domain, entry.ref);
+      if (obs) projected.push(obs);
     }
   }
   return projected;
@@ -447,6 +555,7 @@ module.exports = {
   iterateFrozenEvidenceRefs,
   normalizeEvidenceReferenceShape,
   projectCodeBoundObservedRefs,
+  projectExploitRunObservedRef,
   projectRepoCommandRunObservedRef,
   projectRepoFileObservedRef,
   readCurrentClaimFreeze,
