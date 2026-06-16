@@ -1280,6 +1280,72 @@ test("AC-5: a trailing-dot FQDN email (victim@corp.com.) in the P2 proof body �
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-8 review hardening ──────────────────────────
+
+test("AC-2: a single endpoint on an in-scope SUBDOMAIN confirms (session base not counted as a 2nd host)", () => withTempHome(async () => {
+  const domain = "idor-subdomain-host.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://api.${domain}/api/accounts/${OBJ_B}`, { hosts: [`api.${domain}`] });
+  seedSyntheticProfiles(domain);
+  ensureHandoffSigningKey(domain);
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 negative: X-Cache-Hits: 1 (Varnish/Fastly numeric hit, no Age) → cache_shared_response", () => withTempHome(async () => {
+  const domain = "idor-neg-xcachehits.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache-Hits": "1" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cache_shared_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 positive: X-Cache-Hits: 0 (numeric miss) still confirms", () => withTempHome(async () => {
+  const domain = "idor-pos-xcachehits0.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache-Hits": "0" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-5: a multi-character-separated credit-card number → non_synthetic_pii_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-multisep-pan.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-B", viewer_id: "viewer-A", billing: "4111  1111 - 1111.1111", details: { secret: { token: CANARY_B } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: a fine-grained GitHub PAT (github_pat_) in the proof body → non_synthetic_secret_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-ghpat.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-B", viewer_id: "viewer-A", tok: "github_pat_11ABCDEFG0abcdefghijkl_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", details: { secret: { token: CANARY_B } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_secret_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

@@ -68,7 +68,6 @@ const {
 const {
   findRoutedSurface,
   candidateSurfaceEndpoints,
-  resolveSurfaceOrigins,
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
@@ -233,6 +232,10 @@ const SECRET_SHAPE_RES = Object.freeze([
   ["aws_access_key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
   ["pem_private_key", /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/],
   ["github_token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
+  ["github_fine_grained_pat", /\bgithub_pat_[A-Za-z0-9_]{30,}/],
+  ["gitlab_token", /\bglpat-[A-Za-z0-9_-]{15,}/],
+  ["google_api_key", /\bAIza[0-9A-Za-z_-]{35}\b/],
+  ["stripe_secret_key", /\b[rs]k_live_[A-Za-z0-9]{16,}/],
   ["slack_token", /\bxox[baprs]-[A-Za-z0-9-]{10,}/],
 ]);
 
@@ -333,7 +336,7 @@ function piiScan(parsedBodyOrText, allowedEmails) {
   // PAN (4111 1111 1111 1111) becomes a contiguous Luhn-checkable run; (2) drop a
   // boundary trailing dot so an absolute-FQDN email (victim@corp.com.) is matched.
   const normalized = text
-    .replace(/(?<=\d)[ .\-](?=\d)/g, "")
+    .replace(/(?<=\d)[ .\-]+(?=\d)/g, "")
     .replace(/\.(?=["'\s,}\])]|$)/g, "");
   const shapes = normalized !== text
     ? [...detectPiiShapes(text), ...detectPiiShapes(normalized)]
@@ -407,14 +410,33 @@ function assertSingleEndpointSingleHost(surface, stateOrigin) {
       { code: "idor_producer_surface_not_single_endpoint", endpoint_count: endpoints.length },
     );
   }
-  const origins = resolveSurfaceOrigins(surface, stateOrigin);
-  if (origins.length !== 1) {
+  // Count the origin(s) the surface's endpoint actually LIVES on — an absolute
+  // endpoint resolves to its OWN origin (which may be an in-scope subdomain of the
+  // session base), a relative endpoint to the session origin — PLUS any surface.hosts.
+  // Do NOT seed the bare session origin the way resolveSurfaceOrigins does, or a single
+  // endpoint on a subdomain would falsely count as two hosts and be rejected.
+  const origins = new Set();
+  for (const { value } of endpoints) {
+    try {
+      const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? new URL(value) : new URL(value, stateOrigin);
+      if (u.protocol === "http:" || u.protocol === "https:") origins.add(u.origin);
+    } catch {}
+  }
+  if (Array.isArray(surface.hosts)) {
+    let protocol = "https:";
+    try { protocol = new URL(stateOrigin).protocol; } catch {}
+    for (const host of surface.hosts) {
+      if (typeof host !== "string" || !host.trim()) continue;
+      try { origins.add(new URL(`${protocol}//${host.trim().replace(/^https?:\/\//i, "")}`).origin); } catch {}
+    }
+  }
+  if (origins.size !== 1) {
     rejectInvalidArguments(
       "bob_http_idor_confirm v1 only confirms single-host surfaces; this surface resolves to more than one origin.",
-      { code: "idor_producer_surface_not_single_endpoint", origin_count: origins.length },
+      { code: "idor_producer_surface_not_single_endpoint", origin_count: origins.size },
     );
   }
-  return { endpoint: endpoints[0], origin: origins[0] };
+  return { endpoint: endpoints[0], origin: [...origins][0] };
 }
 
 // ── the signed-row builder + hardened capture writer ─────────────────────────

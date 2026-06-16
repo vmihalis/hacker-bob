@@ -548,6 +548,12 @@ function responseIsSharedCacheable(response) {
       return true;
     }
   }
+  // Varnish/Fastly report a numeric HIT COUNT (X-Cache-Hits: 1) rather than a "hit"
+  // token; a positive count is a definitive cache hit.
+  const hits = get("x-cache-hits").trim();
+  if (/^\d+$/.test(hits) && Number(hits) > 0) {
+    return true;
+  }
   // SPECULATIVE directive: a public / s-maxage response COULD be served by a shared
   // cache to a different principal. This weaker heuristic is suppressed when the
   // response is explicitly no-store / private (a shared cache must not store it) or
@@ -607,12 +613,18 @@ function cacheInPathWithoutProvenMiss(response) {
   if (/\b(miss|dynamic|bypass)\b/i.test(cacheStatus)) {
     return false; // the cache affirmatively reports a fresh origin fetch
   }
+  // X-Cache-Hits is a numeric HIT COUNT (Varnish/Fastly): exactly 0 is an affirmative
+  // miss (origin fetch); a positive count is a hit (already caught by #15 above).
+  const hits = get("x-cache-hits").trim();
+  if (/^\d+$/.test(hits) && Number(hits) === 0) {
+    return false;
+  }
   // A shared cache is detectably in path if Age (cache-generated per RFC 7234) OR any
-  // cache-status header is present. Deliberately EXCLUDES Via / X-Served-By /
-  // CDN-Cache-Control (set on every response / origin-authored — they do not prove a
-  // cache handled THIS read) and x-iinfo (an Incapsula WAF marker), to avoid
-  // over-blocking legit findings behind a non-caching proxy.
-  if (get("age").trim() !== "") return true;
+  // cache-status header (incl. a numeric X-Cache-Hits) is present. Deliberately
+  // EXCLUDES Via / X-Served-By / CDN-Cache-Control (set on every response / origin-
+  // authored — they do not prove a cache handled THIS read) and x-iinfo (an Incapsula
+  // WAF marker), to avoid over-blocking legit findings behind a non-caching proxy.
+  if (get("age").trim() !== "" || get("x-cache-hits").trim() !== "") return true;
   return CACHE_STATUS_HEADERS.some((h) => get(h).trim() !== "");
 }
 
