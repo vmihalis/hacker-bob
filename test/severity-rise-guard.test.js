@@ -983,7 +983,10 @@ test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", (
   const domain = "surface-bind-verify-same.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-A" });
+  // Re-expressed at medium: the row's tool (bob_http_idor_confirm) caps at medium, and the PR-A
+  // verify-mirror cap now bounds the demonstrated rank by that ceiling, so the legitimate rise this
+  // test exercises lands at the tool's true ceiling (medium), not critical.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium", surface_id: "surface-A" });
   appendRawClaim(domain, {
     title: "Same-surface verify fixture",
     summary: "Frozen exploited claim on surface-A citing a surface-A row.",
@@ -997,9 +1000,36 @@ test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", (
   freezeClaims(domain);
   const context = enterVerifyV2(domain);
   writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "medium", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "medium", "matching surface -> proof-backed rise allowed");
+}));
+
+test("#PR-A verify mirror: a row demonstrating above its tool ceiling cannot unlock a rise past the ceiling", () => withTempHome(() => {
+  const domain = "verify-mirror-tool-ceiling.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain); // tool_id bob_http_idor_confirm, ceiling = medium
+  // Over-ceiling row: demonstrates critical though the tool caps at medium. appendRawClaim bypasses
+  // the record gate (which would reject this), modelling a tampered ledger or a session advanced
+  // past the CLAIM_FREEZE->VERIFY gate with operator_force. The verify-mirror cap must still bound
+  // the row's contribution to the tool ceiling, so a critical rise cannot be proven.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-A" });
+  appendRawClaim(domain, {
+    title: "Over-ceiling verify fixture",
+    summary: "Frozen exploited claim citing a critical-demonstrated row from a medium-ceiling tool.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
     v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
   ]);
-  assert.equal(persistedSeverity(domain, "brutalist"), "critical", "matching surface -> proof-backed rise allowed");
+  assert.equal(persistedSeverity(domain, "brutalist"), "low", "over-ceiling row cannot unlock a critical rise -> clamped to baseline");
 }));
 
 test("#111 verify mirror: a forged freeze with an empty claim surface fails closed (brutalist r1)", () => withTempHome(() => {

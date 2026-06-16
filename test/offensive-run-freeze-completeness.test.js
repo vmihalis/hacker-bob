@@ -10,16 +10,16 @@ const path = require("node:path");
 const {
   appendCandidateClaim,
   canonicalizeExploitTarget,
+  normalizeCandidateClaim,
 } = require("../mcp/lib/claims.js");
 const {
   buildClaimFreeze,
   projectCodeBoundObservedRefs,
   projectExploitRunObservedRef,
   assertCompletenessAgainstFreeze,
-  readCurrentClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
-  claimFreezePath,
+  claimsJsonlPath,
   handoffSigningKeyPath,
   isAuditGradedPath,
   offensiveRunsDir,
@@ -166,6 +166,21 @@ function captureThrow(fn) {
   return captured;
 }
 
+// Append a normalized claim straight to claims.jsonl, bypassing the record-time proof gate
+// (appendCandidateClaim). Models a tampered claims.jsonl that the CLAIM_FREEZE->VERIFY gate must
+// catch, since the record gate would reject every shape these tests construct.
+function appendRawClaim(domain, claimInput) {
+  const claim = normalizeCandidateClaim({ target_domain: domain, ...claimInput });
+  const filePath = claimsJsonlPath(domain);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, `${JSON.stringify(claim)}\n`, "utf8");
+  return claim;
+}
+
+function findingRef(findingId, char = "0") {
+  return { kind: "finding", finding_id: findingId, content_hash: hex(char) };
+}
+
 test("#freeze-verify-gate: non-exploit frozen claims do not require a signing key", () => withTempHome(() => {
   const domain = "freeze-verify-no-brick.example";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
@@ -182,8 +197,10 @@ test("#freeze-verify-gate: non-exploit frozen claims do not require a signing ke
     }],
   });
   advance(domain, "CLAIM_FREEZE");
-  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
 
+  // No buildClaimFreeze here: the gate reads the CANDIDATE claims (claims.jsonl), which exist now —
+  // NOT the freeze snapshot, which the VERIFY bootstrap builds only after this gate passes. This
+  // mirrors production: at CLAIM_FREEZE->VERIFY there is no freeze doc yet and no signing key.
   assert.equal(fs.existsSync(handoffSigningKeyPath(domain)), false);
   assert.deepEqual(evaluateFreezeToVerify(domain).blockers, []);
 
@@ -199,8 +216,9 @@ test("#freeze-verify-gate: vanished offensive row blocks CLAIM_FREEZE -> VERIFY"
   appendOffensiveRunRow(domain);
   appendCandidateClaim(exploitedClaim(domain));
   advance(domain, "CLAIM_FREEZE");
-  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
 
+  // No buildClaimFreeze: the gate reads candidate claims. Remove the backing row AFTER record to
+  // model post-record tampering the gate must catch before VERIFY snapshots the now-unbacked claim.
   fs.rmSync(offensiveRunsJsonlPath(domain), { force: true });
   const blockers = evaluateFreezeToVerify(domain).blockers;
   assert.equal(blockers.length, 1);
@@ -219,7 +237,6 @@ test("#freeze-verify-gate: backed exploited claim advances without single-use fa
   appendOffensiveRunRow(domain);
   appendCandidateClaim(exploitedClaim(domain));
   advance(domain, "CLAIM_FREEZE");
-  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
 
   assert.deepEqual(evaluateFreezeToVerify(domain).blockers, []);
   const envelope = advance(domain, "VERIFY");
@@ -227,54 +244,91 @@ test("#freeze-verify-gate: backed exploited claim advances without single-use fa
   assert.equal(envelope.advanced, true);
 }));
 
-test("#freeze-verify-gate: a tampered freeze with a ref-less exploited_safely claim is blocked (fail-closed)", () => withTempHome(() => {
+test("#freeze-verify-gate: a tampered claims.jsonl exploited_safely claim with no exploit_run ref is blocked (fail-closed)", () => withTempHome(() => {
   const domain = "freeze-verify-tampered-refless.example";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
   advance(domain, "OPEN_FRONTIER");
-  appendCandidateClaim({
-    target_domain: domain,
-    title: "Plain reflected behavior",
-    summary: "A non-offensive finding fixture.",
-    severity: "low",
-    evidence_refs: [{ kind: "finding", finding_id: "F-plain", content_hash: hex("0") }],
+  // Tamper: an exploited_safely claim carrying NO exploit_run ref (only a finding ref). The record
+  // gate would reject it, so only a direct claims.jsonl write produces it. The gate must not
+  // silently skip it (CodeRabbit/brutalist) — it flows into the proof assert and blocks.
+  appendRawClaim(domain, {
+    title: "Ref-less exploited fixture",
+    summary: "exploited_safely asserted with no exploit_run ref.",
+    severity: "critical",
+    status: "candidate",
+    surface_ids: [DEFAULT_SURFACE_ID],
+    evidence_refs: [findingRef("F-refless")],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+    impact: "Bounded fixture impact.",
   });
   advance(domain, "CLAIM_FREEZE");
-  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
-
-  // Simulate claim-freeze.json tampering: inject an exploited_safely claim that carries NO
-  // exploit_run ref. The record gate would have rejected it, so only direct tampering produces it;
-  // the gate must NOT silently skip it (fail-closed), it must block.
-  const freeze = readCurrentClaimFreeze(domain);
-  freeze.claims.push({
-    claim_id: "C-tampered",
-    target_domain: domain,
-    severity: "critical",
-    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
-    evidence_refs: [{ kind: "finding", finding_id: "F-x", content_hash: hex("1") }],
-  });
-  fs.writeFileSync(claimFreezePath(domain), JSON.stringify(freeze));
 
   const blockers = evaluateFreezeToVerify(domain).blockers;
   assert.equal(blockers.length, 1);
   assert.equal(blockers[0].code, "exploited_claim_proof_unbacked_at_freeze");
   assert.equal(blockers[0].underlying_code, "exploit_proof_missing_exploit_run_evidence");
-  assert.equal(blockers[0].claim_id, "C-tampered");
 }));
 
-test("#freeze-verify-gate: a freeze whose claims[] is not an array is blocked (fail-closed)", () => withTempHome(() => {
-  const domain = "freeze-verify-malformed-shape.example";
+test("#freeze-verify-gate: a tampered claim carrying an exploit_run ref with a non-exploited outcome is blocked (Codex P2)", () => withTempHome(() => {
+  const domain = "freeze-verify-tampered-outcome.example";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
   advance(domain, "OPEN_FRONTIER");
+  // Tamper: the outcome was changed away from exploited_safely, but the exploit_run ref remains. The
+  // VERIFY severity-rise guard consumes exploit_run refs regardless of outcome, so the gate must
+  // catch this too — the union filter routes it into the assert, which rejects the outcome/ref mix.
+  appendRawClaim(domain, {
+    title: "Changed-outcome exploit-ref fixture",
+    summary: "exploit_run ref retained after the outcome was flipped to blocked_by_defense.",
+    severity: "low",
+    status: "candidate",
+    evidence_refs: [findingRef("F-out"), exploitRef(domain)],
+    exploit_outcome: { outcome: "blocked_by_defense" },
+    impact: "Bounded fixture impact.",
+  });
   advance(domain, "CLAIM_FREEZE");
-  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
-
-  const freeze = readCurrentClaimFreeze(domain);
-  freeze.claims = "not-an-array";
-  fs.writeFileSync(claimFreezePath(domain), JSON.stringify(freeze));
 
   const blockers = evaluateFreezeToVerify(domain).blockers;
   assert.equal(blockers.length, 1);
-  assert.equal(blockers[0].code, "claim_freeze_invalid_shape");
+  assert.equal(blockers[0].code, "exploited_claim_proof_unbacked_at_freeze");
+  assert.equal(blockers[0].underlying_code, "exploit_run_ref_without_exploited_outcome");
+}));
+
+test("#freeze-verify-gate: a tampered claims.jsonl that reuses one run_id across two findings is blocked (Codex P2)", () => withTempHome(() => {
+  const domain = "freeze-verify-dup-runid.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  appendOffensiveRunRow(domain); // one signed row for run-exploit-1
+  // Two distinct frozen findings both cite the SAME run_id. The record gate enforces run_id
+  // single-use, so only a tampered claims.jsonl produces this; the gate re-checks single-use across
+  // the full candidate set (existingClaims) and blocks the duplication.
+  appendRawClaim(domain, {
+    title: "First finding citing run-exploit-1",
+    summary: "Frozen exploited claim A.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: [DEFAULT_SURFACE_ID],
+    evidence_refs: [findingRef("F-A"), exploitRef(domain)],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  appendRawClaim(domain, {
+    title: "Second finding reusing run-exploit-1",
+    summary: "Frozen exploited claim B (duplicate run_id).",
+    severity: "low",
+    status: "candidate",
+    surface_ids: [DEFAULT_SURFACE_ID],
+    evidence_refs: [findingRef("F-B"), exploitRef(domain)],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  advance(domain, "CLAIM_FREEZE");
+
+  const blockers = evaluateFreezeToVerify(domain).blockers;
+  assert.ok(blockers.length >= 1);
+  assert.ok(
+    blockers.some((b) => b.underlying_code === "exploit_run_run_id_already_consumed"),
+    "duplicate run_id across frozen findings must be caught",
+  );
 }));
 
 test("#freeze-completeness: projectExploitRunObservedRef re-hashes the on-disk capture file", () => withTempHome(() => {
