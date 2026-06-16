@@ -9,7 +9,7 @@ const {
   offensiveRunsDir,
   repoChecksJsonlPath,
   repoRunsDir,
-  sessionDir,
+  sessionsRoot,
 } = require("./paths.js");
 const {
   hashCanonicalJson,
@@ -440,15 +440,21 @@ function sha256OffensiveCaptureSecure(domain, runId) {
   const runsDir = path.resolve(offensiveRunsDir(domain));
   const leaf = path.resolve(path.join(runsDir, `${runId}.stdout`));
   if (path.dirname(leaf) !== runsDir) return null;
+  // Anchor the expected capture dir to the REAL sessions root + safe domain, the
+  // way claims.js::resolveOffensiveRunsFilePathSecure does — NOT to
+  // realpathSync(sessionDir(domain)), which would resolve a symlinked session dir
+  // before comparing and silently accept it (the recording path rejects it, so
+  // anchoring to realpath of the session dir would be a split-brain bypass).
   let realDir;
-  let realSessionDir;
+  let expectedDir;
   try {
-    realSessionDir = fs.realpathSync(sessionDir(domain));
+    const realRoot = fs.realpathSync(sessionsRoot());
+    expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
     realDir = fs.realpathSync(runsDir);
   } catch {
     return null;
   }
-  if (realDir !== path.join(realSessionDir, "offensive-runs")) return null;
+  if (realDir !== expectedDir) return null;
   const realLeaf = path.join(realDir, path.basename(leaf));
   const noFollow = fs.constants.O_NOFOLLOW || 0;
   // On platforms without O_NOFOLLOW, pre-check the leaf for a symlink.

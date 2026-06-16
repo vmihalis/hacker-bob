@@ -22,6 +22,7 @@ const {
   offensiveRunsDir,
   offensiveRunsJsonlPath,
   sessionDir,
+  sessionsRoot,
 } = require("../mcp/lib/paths.js");
 const {
   ensureHandoffSigningKey,
@@ -340,4 +341,28 @@ test("#freeze-completeness: projectExploitRunObservedRef refuses a SYMLINKED cap
     stdout_hash: hex("a"),
   });
   assert.equal(obs, null, "a symlinked offensive-runs/ dir must project null, never hash through the link");
+}));
+
+// Defense-in-depth (issue #114 / Codex high): a symlinked SESSION directory must
+// also be rejected. The secure read must anchor the expected capture dir to the
+// real sessions root + safe domain (like resolveOffensiveRunsFilePathSecure),
+// NOT to realpath(sessionDir) — which would resolve the session symlink and
+// silently accept attacker-substituted capture bytes.
+test("#freeze-completeness: projectExploitRunObservedRef refuses a SYMLINKED session directory", () => withTempHome(() => {
+  const domain = "exploit-symlink-sess.example";
+  const runId = "run-symlink-sess-1";
+  // A real attacker tree OUTSIDE the sessions root, holding a real capture leaf.
+  const attacker = path.join(process.env.HOME, "attacker-evil");
+  fs.mkdirSync(path.join(attacker, "offensive-runs"), { recursive: true });
+  fs.writeFileSync(path.join(attacker, "offensive-runs", `${runId}.stdout`), "planted body via session symlink\n");
+  // Point the whole session dir at the attacker tree via a symlink.
+  fs.mkdirSync(sessionsRoot(), { recursive: true });
+  fs.symlinkSync(attacker, sessionDir(domain));
+
+  const obs = projectExploitRunObservedRef(domain, {
+    kind: "exploit_run",
+    run_id: runId,
+    stdout_hash: hex("a"),
+  });
+  assert.equal(obs, null, "a symlinked session dir must project null, never hash attacker-substituted bytes");
 }));
