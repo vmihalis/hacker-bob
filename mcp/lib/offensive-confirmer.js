@@ -76,7 +76,7 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
     state,
   });
 
-  assertReadOnlyPath(baselineUrl.toString());
+  assertReadOnlyPath(baselineUrl.toString(), TOOL_ID);
   if (!pathTemplateMatchesEndpoint(pathTemplate.split("?")[0], baselineUrl.pathname)) {
     rejectInvalidArguments("path_template path shape does not match the surface's recorded endpoint path");
   }
@@ -85,7 +85,7 @@ function resolveConfirmSurface({ domain, surfaceId, pathTemplate, state }) {
   const resolvedTemplate = pathTemplate.replace("{id}", encodeURIComponent(syntheticId));
   const targetUrl = new URL(resolvedTemplate, baselineUrl.origin);
   assertSafeRequestUrl(targetUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
-  assertReadOnlyPath(targetUrl.toString());
+  assertReadOnlyPath(targetUrl.toString(), TOOL_ID);
   if (targetUrl.origin !== baselineUrl.origin) {
     rejectInvalidArguments("path_template must resolve under the surface endpoint origin");
   }
@@ -160,7 +160,7 @@ async function httpConfirm(args = {}) {
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const oracleKind = normalizeOracleKind(args.oracle_kind);
   const method = normalizeMethod(args.method);
-  const pathTemplate = normalizePathTemplate(args.path_template);
+  const pathTemplate = normalizePathTemplate(args.path_template, TOOL_ID);
   const { state } = readSessionStateStrict(domain);
   const internalHostPolicy = blockInternalHostsPolicyFields(state);
   const blockInternalHosts = internalHostPolicy.block_internal_hosts === true;

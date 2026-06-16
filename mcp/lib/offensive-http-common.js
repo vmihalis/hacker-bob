@@ -109,9 +109,14 @@ function escapeRegExp(value) {
 // closed by the inert-extension allowlist in normalizePathTemplate.
 function capturedIdSegmentIsSafe(idSegment) {
   if (!idSegment || idSegment.includes("/") || idSegment.includes("\\")) return false;
+  // A `.` / `..` segment is a relative path traversal, never a real resource id:
+  // /api/items/.. resolves to the parent collection, /api/items/. to the collection
+  // itself. Reject literal AND percent-encoded (%2e) forms (no legit id is . or ..).
+  if (idSegment === "." || idSegment === "..") return false;
   if (/[:;,]/.test(idSegment)) return false;
   if (ENCODED_SEPARATOR_RE.test(idSegment)) return false;
   const decoded = decodePathSegments(idSegment);
+  if (decoded === "." || decoded === "..") return false;
   if (decoded.includes("/") || decoded.includes("\\")) return false;
   if (/[:;,]/.test(decoded)) return false;
   if (/%[0-9a-f]{2}/i.test(decoded)) return false;
@@ -127,45 +132,67 @@ function pathTemplateMatchesEndpoint(templatePathname, endpointPathname) {
   return capturedIdSegmentIsSafe(match[1]);
 }
 
-function assertReadOnlyPath(url) {
+// `toolName` defaults to "bob_http_confirm" so the negative-only confirmer's
+// error strings stay byte-identical after the PR-B extraction; the IDOR producer
+// passes its own tool id so its rejection messages name it correctly.
+function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
   const parsed = new URL(url);
   const pathAndQuery = `${parsed.pathname}${parsed.search}`;
   const decodedPath = decodePathSegments(parsed.pathname);
   if (STATE_CHANGE_PATH_SEGMENT_RE.test(parsed.pathname) || STATE_CHANGE_PATH_SEGMENT_RE.test(decodedPath)) {
     rejectInvalidArguments(
-      "path_template resolves to a state-changing path segment; bob_http_confirm only shrinks, not eliminates, GET-side-effect risk and rejects mutation-shaped paths",
+      `path_template resolves to a state-changing path segment; ${toolName} only shrinks, not eliminates, GET-side-effect risk and rejects mutation-shaped paths`,
       { path: parsed.pathname },
     );
+  }
+  // Reject path traversal: a `.` or `..` segment, literal OR percent-encoded at any
+  // depth (e.g. /api/%252e%252e/admin), that a server may decode would route the
+  // request to a DIFFERENT resource than the recorded endpoint. decodePathSegments
+  // resolves each segment to a fixed point, so a double-encoded traversal is seen
+  // here. No legitimate resource path contains a bare `.`/`..` segment.
+  for (const segment of decodedPath.split("/")) {
+    if (segment === "." || segment === "..") {
+      rejectInvalidArguments(
+        `path_template resolves to a path-traversal (. or ..) segment; ${toolName} rejects traversal paths`,
+        { path: parsed.pathname },
+      );
+    }
   }
   const params = new URLSearchParams(parsed.search);
   for (const [rawKey, rawValue] of params.entries()) {
     const key = String(rawKey || "").trim();
     const value = String(rawValue || "").trim();
     if (/^action$/i.test(key) || /^_method$/i.test(key)) {
-      rejectInvalidArguments(`query parameter ${key} is not allowed for bob_http_confirm`);
+      rejectInvalidArguments(`query parameter ${key} is not allowed for ${toolName}`);
     }
     if (VERB_LIKE_TOKEN_RE.test(key) || VERB_LIKE_TOKEN_RE.test(value)) {
       rejectInvalidArguments(`query parameter ${key} carries a mutation-shaped token`);
     }
     if (/graphql|query/i.test(key) && /\bmutation\b/i.test(value)) {
-      rejectInvalidArguments("GraphQL mutation-shaped query is not allowed for bob_http_confirm");
+      rejectInvalidArguments(`GraphQL mutation-shaped query is not allowed for ${toolName}`);
     }
   }
   // Check the raw AND the recursively-decoded path so an encoded `mutation`
   // segment (e.g. /api/%6Dutation/{id}) that routers decode before dispatch is
   // also rejected, not just the literal form.
   if (/\bmutation\b/i.test(pathAndQuery) || /\bmutation\b/i.test(decodedPath)) {
-    rejectInvalidArguments("mutation-shaped path or query is not allowed for bob_http_confirm");
+    rejectInvalidArguments(`mutation-shaped path or query is not allowed for ${toolName}`);
   }
 }
 
-function normalizePathTemplate(rawTemplate) {
+function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
   const template = assertRequiredText(rawTemplate, "path_template");
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(template)) {
     rejectInvalidArguments("path_template must be a path, not an absolute URL");
   }
   if (!template.startsWith("/")) {
     rejectInvalidArguments("path_template must start with /");
+  }
+  // A leading `//` is a network-path reference (protocol-relative URL): new URL("//host/x",
+  // origin) resolves to a DIFFERENT host, taking the probe off the bound surface origin.
+  // It passes the absolute-URL scheme check (no `scheme://`) but is not a path.
+  if (template.startsWith("//")) {
+    rejectInvalidArguments("path_template must be an absolute path, not a // network-path reference (it resolves to a different host)");
   }
   if (template.includes("#")) {
     rejectInvalidArguments("path_template must not include a fragment");
@@ -207,7 +234,7 @@ function normalizePathTemplate(rawTemplate) {
   // it structurally. (Consequence: PR3's oracle confirms only DIRECT resource
   // reads; a sub-resource read oracle that synthesizes its own baseline is deferred.)
   if (afterSlot !== "" && !INERT_EXTENSION_RE.test(afterSlot)) {
-    rejectInvalidArguments("path_template {id} must terminate the final path segment (optionally followed by an inert file extension like .json); bob_http_confirm confirms only direct resource reads, so nothing else may follow {id}");
+    rejectInvalidArguments(`path_template {id} must terminate the final path segment (optionally followed by an inert file extension like .json); ${toolName} confirms only direct resource reads, so nothing else may follow {id}`);
   }
   return template;
 }
@@ -265,10 +292,10 @@ function resolveSurfaceOrigins(surface, stateOrigin) {
   return Array.from(origins);
 }
 
-function originFromState(domain, state) {
+function originFromState(domain, state, toolName = "bob_http_confirm") {
   const targetUrl = state && state.target_url;
   if (typeof targetUrl !== "string" || !targetUrl.trim()) {
-    rejectInvalidArguments("bob_http_confirm requires a web session with target_url");
+    rejectInvalidArguments(`${toolName} requires a web session with target_url`);
   }
   let parsed;
   try {
@@ -291,8 +318,8 @@ function urlFromEndpoint(endpoint, origin, fieldName) {
   rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path`);
 }
 
-function resolveBaselineFromSurface({ domain, surface, pathTemplate, state }) {
-  const stateOrigin = originFromState(domain, state);
+function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName = "bob_http_confirm" }) {
+  const stateOrigin = originFromState(domain, state, toolName);
   const origins = resolveSurfaceOrigins(surface, stateOrigin);
   for (const endpoint of candidateSurfaceEndpoints(surface)) {
     for (const origin of origins) {
@@ -469,6 +496,126 @@ function isResourceShapedResponse(response) {
   return false;
 }
 
+// The cache-STATUS headers a reverse proxy / CDN sets to report hit-vs-miss for
+// THIS response (so their presence proves a cache handled it, and a HIT/MISS token
+// inside them is the disposition). Beyond X-Cache / CF-Cache-Status / RFC 9211
+// Cache-Status this MUST include the canonical vendor variants — nginx
+// X-Cache-Status ($upstream_cache_status), X-Proxy-Cache / X-Nginx-Cache, Google
+// Cloud CDN x-goog-cache-status, Akamai X-Cache-Remote (TCP_HIT), EdgeCast/Verizon
+// X-EC-Cache, Varnish X-Varnish-Cache/X-VCache — or a path-keyed shared cache that
+// labels only one of these (with no Age) would cross-fill undetected. Deliberately
+// EXCLUDES Via, X-Served-By, CDN-Cache-Control (set on every response / origin-
+// authored — they do not prove a cache HIT) and x-iinfo (an Incapsula WAF marker).
+const CACHE_STATUS_HEADERS = Object.freeze([
+  "x-cache", "cf-cache-status", "cache-status",
+  "x-cache-status", "x-proxy-cache", "x-nginx-cache",
+  "x-goog-cache-status", "x-cache-remote", "x-ec-cache",
+  "x-varnish-cache", "x-vcache",
+]);
+
+// Does the response carry an affirmative cache-HIT signal (a cache demonstrably
+// SERVED this body)? Age>0, any cache-status header with a \bhit\b token (underscore-
+// normalized so TCP_HIT is seen), or a positive numeric X-Cache-Hits.
+function cacheReportsHit(get) {
+  const ageRaw = get("age").trim();
+  if (/^\d+$/.test(ageRaw) && Number(ageRaw) > 0) return true;
+  for (const headerName of CACHE_STATUS_HEADERS) {
+    if (/\bhit\b/i.test(get(headerName).replace(/_/g, " "))) return true;
+  }
+  const hits = get("x-cache-hits").trim();
+  return /^\d+$/.test(hits) && Number(hits) > 0;
+}
+
+// Does the response carry an affirmative cache-MISS signal (a cache demonstrably
+// FETCHED this body from origin)? ONLY an explicit miss/dynamic/bypass cache-status
+// token (NOT updating/revalidated/stale — those serve a stale cached body, and NOT a
+// numeric X-Cache-Hits:0, which is weaker / cross-CDN-ambiguous).
+function cacheReportsMiss(get) {
+  // ONLY an explicit cache-status MISS token proves a fresh origin fetch. X-Cache-Hits:0
+  // is deliberately NOT a proven miss — a numeric "0 hits" is weaker / cross-CDN-ambiguous
+  // and could mask a cross-principal hit, so a response carrying only X-Cache-Hits:0 is
+  // NOT trusted as origin and falls through to fail closed (cacheDetectablyInPath).
+  const combined = CACHE_STATUS_HEADERS.map((h) => get(h)).join(" ").replace(/_/g, " ");
+  return /\b(miss|dynamic|bypass)\b/i.test(combined);
+}
+
+// Is a shared cache detectably in the request path at all (regardless of hit/miss)?
+// Age (cache-generated per RFC 7234), a numeric X-Cache-Hits, or any cache-status
+// header. Deliberately EXCLUDES Via / X-Served-By / CDN-Cache-Control (set on every
+// response / origin-authored) and x-iinfo (an Incapsula WAF marker).
+function cacheDetectablyInPath(get) {
+  return get("age").trim() !== ""
+    || get("x-cache-hits").trim() !== ""
+    || CACHE_STATUS_HEADERS.some((h) => get(h).trim() !== "");
+}
+
+// Cache-cross-fill discriminator for the IDOR producer (PR-C §3.4). A
+// cross-tenant read that is actually an edge/CDN cache cross-fill — not an
+// origin BOLA — leaves cache-status fingerprints on the response. This flags a
+// response that a SHARED cache could have served:
+//   - Age > 0                              (the response sat in a shared cache)
+//   - X-Cache / CF-Cache-Status / X-Served-By contains HIT
+//   - Cache-Control public | s-maxage WITHOUT a Vary: Authorization|Cookie
+//     (a shared cache is allowed to serve this object to a different principal)
+// A Vary on Authorization/Cookie means the cache keys on the credential, so a
+// `public`/`s-maxage` response that varies by credential is NOT a cross-principal
+// cache hazard and is not flagged. The producer trips on a true here for P2/P2′
+// → `blocked_by_infra:cache_shared_response`, signing nothing. Read-only header
+// inspection; never used to gate a signed row positively.
+function responseIsSharedCacheable(response) {
+  if (!response || !response.headers || typeof response.headers.get !== "function") {
+    return false;
+  }
+  const get = (name) => String(response.headers.get(name) || "");
+  // A DEFINITIVE cache HIT (Age>0 / explicit HIT token / positive X-Cache-Hits) is the
+  // ONLY signal that proves THIS response was served from a shared cache to (potentially)
+  // a different principal, so it is the cross-principal hazard. It fires REGARDLESS of
+  // Cache-Control — a no-store/private header does not negate an observed hit.
+  //
+  // A bare Cache-Control directive (public / s-maxage) is the ORIGIN's cacheability HINT,
+  // NOT evidence a cache acted on THIS response. Flagging it without a detectable cache in
+  // path false-negatives every legit IDOR on an origin that merely marks a resource
+  // cacheable. The "cache detectably in path but no proven miss" case (the real residual
+  // cross-fill risk) is handled, fail-closed, by cacheInPathWithoutProvenMiss (#15b) — so
+  // this function is just the definitive-hit signal and does not speculate on directives.
+  return cacheReportsHit(get);
+}
+
+// AFFIRMATIVE-ORIGIN gate for the IDOR producer's cross-principal proof bodies
+// (PR-C §3.4 hardening). responseIsSharedCacheable only flags a DEFINITIVE hazard
+// (Age>0 / explicit HIT); a misconfigured query-string-ignoring shared cache that
+// stored a `private`/`no-store` body and emits Age:0 / an unlabeled cache-status
+// header leaves no definitive HIT, so canary-survival on a cross-principal read
+// could be a downstream cache CROSS-FILL rather than an origin object-authorization
+// break. This returns true when a shared cache is DETECTABLY in the request path
+// (per cacheDetectablyInPath — Age, a numeric X-Cache-Hits, or any cache-STATUS
+// header; NOT Via / X-Served-By / CDN-Cache-Control, which are not cache-hit evidence)
+// but does NOT affirmatively prove a fresh origin fetch (no explicit MISS cache
+// status). The producer fails CLOSED on true. A direct origin read (NO cache header at
+// all) returns false and is trusted; a CDN that labels its MISS returns false and is
+// trusted. RESIDUAL: a truly fingerprint-less shared cache is indistinguishable from
+// origin here — closed only by a live path-segment cache-buster (PR-D), since a
+// query-key cache-buster cannot defeat a path-keyed cache and {id} must stay final.
+function cacheInPathWithoutProvenMiss(response) {
+  if (!response || !response.headers || typeof response.headers.get !== "function") {
+    return false;
+  }
+  const get = (name) => String(response.headers.get(name) || "");
+  // A HIT signal anywhere means a cache SERVED this body — fail closed even if another
+  // cache layer also annotates a miss (one layer's miss must NOT override another's hit).
+  if (cacheReportsHit(get)) return true;
+  // An affirmative miss (and no hit) proves a fresh origin fetch — trust it as origin.
+  // ONLY the unambiguous origin-fetch statuses count (miss/dynamic/bypass, X-Cache-Hits:0);
+  // updating/revalidated/stale are stale-cache serves and are deliberately not misses.
+  if (cacheReportsMiss(get)) return false;
+  // A cache is detectably in path but proved no miss → cannot confirm an ORIGIN read,
+  // so fail closed. RESIDUAL: a truly fingerprint-less shared cache (no cache header at
+  // all) is indistinguishable from origin here — closed only by a live path-segment
+  // cache-buster in PR-D (a query-key buster cannot defeat a path-keyed cache, and {id}
+  // must stay the final segment).
+  return cacheDetectablyInPath(get);
+}
+
 // Record each offensive probe in http-audit.jsonl so the session request budget
 // and circuit-breaker summary (built from http-audit records) count the live
 // traffic — an offensive tool makes multiple live requests per call and must not
@@ -476,8 +623,11 @@ function isResourceShapedResponse(response) {
 // (bob_http_confirm, bob_http_idor_confirm) is attributed correctly in the audit
 // record's `tool` field; the confirmer passes its own TOOL_ID for byte-identical
 // behavior.
+// Returns true if the audit record was persisted, false if the write was swallowed
+// (so a signing producer can fail closed rather than mint a row for an unrecorded probe).
+// The negative-only confirmer ignores the return value, so its behavior is unchanged.
 function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, status, scopeDecision, error, startedAt, toolId }) {
-  if (!domain) return;
+  if (!domain) return false;
   let parsed = null;
   try {
     parsed = new URL(url);
@@ -509,14 +659,17 @@ function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, st
       error: error || null,
       duration_ms: startedAt ? Date.now() - startedAt : null,
     });
+    return true;
   } catch (auditError) {
     // A swallowed audit-write failure makes this probe invisible to the circuit
     // breaker / request budget — a control-plane gap. We still must not let an
     // audit failure abort the confirm, but surface it to stderr so it is
-    // detectable outside the control plane.
+    // detectable outside the control plane, and report false so a signing producer
+    // can fail closed.
     try {
       process.stderr.write(`${toolId}: http-audit write failed: ${auditError && auditError.message ? auditError.message : String(auditError)}\n`);
     } catch {}
+    return false;
   }
 }
 
@@ -563,6 +716,8 @@ module.exports = {
   isLoginRedirect,
   responseLooksLikeLoginPage,
   isResourceShapedResponse,
+  responseIsSharedCacheable,
+  cacheInPathWithoutProvenMiss,
   auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,

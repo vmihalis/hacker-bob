@@ -401,6 +401,7 @@ const {
 const EXPECTED_TOOL_NAMES = [
   "bob_http_scan",
   "bob_http_confirm",
+  "bob_http_idor_confirm",
   "bob_read_http_audit",
   "bob_start_next_wave",
   "bob_start_wave",
