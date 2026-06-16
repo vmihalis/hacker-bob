@@ -513,6 +513,39 @@ const CACHE_STATUS_HEADERS = Object.freeze([
   "x-varnish-cache", "x-vcache",
 ]);
 
+// Does the response carry an affirmative cache-HIT signal (a cache demonstrably
+// SERVED this body)? Age>0, any cache-status header with a \bhit\b token (underscore-
+// normalized so TCP_HIT is seen), or a positive numeric X-Cache-Hits.
+function cacheReportsHit(get) {
+  const ageRaw = get("age").trim();
+  if (/^\d+$/.test(ageRaw) && Number(ageRaw) > 0) return true;
+  for (const headerName of CACHE_STATUS_HEADERS) {
+    if (/\bhit\b/i.test(get(headerName).replace(/_/g, " "))) return true;
+  }
+  const hits = get("x-cache-hits").trim();
+  return /^\d+$/.test(hits) && Number(hits) > 0;
+}
+
+// Does the response carry an affirmative cache-MISS signal (a cache demonstrably
+// FETCHED this body from origin)? A miss/dynamic/bypass cache-status token (NOT
+// updating/revalidated/stale — those serve a stale cached body), or X-Cache-Hits: 0.
+function cacheReportsMiss(get) {
+  const combined = CACHE_STATUS_HEADERS.map((h) => get(h)).join(" ").replace(/_/g, " ");
+  if (/\b(miss|dynamic|bypass)\b/i.test(combined)) return true;
+  const hits = get("x-cache-hits").trim();
+  return /^\d+$/.test(hits) && Number(hits) === 0;
+}
+
+// Is a shared cache detectably in the request path at all (regardless of hit/miss)?
+// Age (cache-generated per RFC 7234), a numeric X-Cache-Hits, or any cache-status
+// header. Deliberately EXCLUDES Via / X-Served-By / CDN-Cache-Control (set on every
+// response / origin-authored) and x-iinfo (an Incapsula WAF marker).
+function cacheDetectablyInPath(get) {
+  return get("age").trim() !== ""
+    || get("x-cache-hits").trim() !== ""
+    || CACHE_STATUS_HEADERS.some((h) => get(h).trim() !== "");
+}
+
 // Cache-cross-fill discriminator for the IDOR producer (PR-C §3.4). A
 // cross-tenant read that is actually an edge/CDN cache cross-fill — not an
 // origin BOLA — leaves cache-status fingerprints on the response. This flags a
@@ -531,42 +564,24 @@ function responseIsSharedCacheable(response) {
     return false;
   }
   const get = (name) => String(response.headers.get(name) || "");
-  // DEFINITIVE cache-HIT evidence: the response demonstrably came FROM a shared
-  // cache (Age > 0, or an explicit X-Cache / CF-Cache-Status / X-Served-By HIT).
-  // This fires REGARDLESS of Cache-Control — a no-store/private header does not
-  // negate the fact that a shared cache already served this body to (potentially) a
-  // different principal, so it remains a cross-principal hazard.
-  const ageRaw = get("age").trim();
-  if (ageRaw !== "" && /^\d+$/.test(ageRaw) && Number(ageRaw) > 0) {
+  // DEFINITIVE cache-HIT evidence fires REGARDLESS of Cache-Control — a no-store/
+  // private header does not negate that a shared cache already served this body to
+  // (potentially) a different principal, so it remains a cross-principal hazard.
+  if (cacheReportsHit(get)) {
     return true;
   }
-  // Includes the standardized RFC 9211 `Cache-Status` (e.g. "ExampleCache; hit").
-  // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
-  // "TCP_HIT", "TCP_MEM_HIT") are seen by the \bhit\b word boundary.
-  for (const headerName of CACHE_STATUS_HEADERS) {
-    if (/\bhit\b/i.test(get(headerName).replace(/_/g, " "))) {
-      return true;
-    }
+  // An affirmative MISS proves THIS response came from origin, so it is NOT a
+  // cross-principal hazard even under a public / s-maxage directive — suppress the
+  // speculative branch below (a CDN that labels its MISS must not block a legit read).
+  if (cacheReportsMiss(get)) {
+    return false;
   }
-  // Varnish/Fastly report a numeric HIT COUNT (X-Cache-Hits: 1) rather than a "hit"
-  // token; a positive count is a definitive cache hit.
-  const hits = get("x-cache-hits").trim();
-  if (/^\d+$/.test(hits) && Number(hits) > 0) {
-    return true;
-  }
-  // SPECULATIVE directive: a public / s-maxage response COULD be served by a shared
-  // cache to a different principal. This weaker heuristic is suppressed when the
-  // response is explicitly no-store / private (a shared cache must not store it) or
-  // Varies by Authorization/Cookie (the cache keys on the credential). The
-  // no-store/private suppression applies ONLY to this speculative branch — never to
-  // the definitive HIT evidence above — so it cannot mask a real cache cross-fill.
+  // SPECULATIVE directive: a public / positive-s-maxage response COULD be served by a
+  // shared cache to a different principal. Suppressed when the response is explicitly
+  // no-store / private (a shared cache must not store it) or Varies on the credential.
   const cacheControl = get("cache-control").toLowerCase();
-  // s-maxage=0 forces shared caches to REVALIDATE every time (it does not let them
-  // serve a stored copy to a different principal), so only a POSITIVE s-maxage is a
-  // shared-cache hazard — matching the bare token would false-negative every
-  // CDN-revalidated (s-maxage=0) response.
-  // Accept optional BWS around `=` and an optionally-quoted value (HTTP allows
-  // s-maxage = "60" / s-maxage =60).
+  // s-maxage=0 forces revalidation, so only a POSITIVE s-maxage counts; accept BWS
+  // around `=` and an optional quote (HTTP allows s-maxage = "60").
   const sMaxageMatch = cacheControl.match(/\bs-maxage\s*=\s*"?(\d+)/);
   const sharedDirective = /\bpublic\b/.test(cacheControl)
     || (sMaxageMatch != null && Number(sMaxageMatch[1]) > 0);
@@ -574,8 +589,12 @@ function responseIsSharedCacheable(response) {
     if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
       return false;
     }
-    const vary = get("vary").toLowerCase();
-    const variesByCredential = /\bauthorization\b/.test(vary) || /\bcookie\b/.test(vary);
+    // Parse Vary as EXACT comma-separated header tokens — a substring test would let a
+    // non-credential header like `x-authorization-id` wrongly suppress the hazard.
+    // `Vary: *` keys on everything (never reusable cross-principal), so it suppresses too.
+    const varyTokens = get("vary").toLowerCase().split(",").map((t) => t.trim());
+    const variesByCredential = varyTokens.includes("authorization")
+      || varyTokens.includes("cookie") || varyTokens.includes("*");
     if (!variesByCredential) {
       return true;
     }
@@ -602,30 +621,19 @@ function cacheInPathWithoutProvenMiss(response) {
     return false;
   }
   const get = (name) => String(response.headers.get(name) || "");
-  // Includes the standardized RFC 9211 `Cache-Status` (its "fwd=miss" reports an
-  // affirmative origin fetch, like X-Cache: MISS). ONLY the unambiguous origin-fetch
-  // statuses count as a proven MISS — `updating`/`revalidated`/`stale` are stale-
-  // cache SERVES (the body came from cache), and `expired` is cross-CDN-ambiguous, so
-  // they are deliberately excluded and fall through to fail closed below.
-  // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
-  // "TCP_MISS") are seen by the \b...\b word boundaries.
-  const cacheStatus = CACHE_STATUS_HEADERS.map((h) => get(h)).join(" ").replace(/_/g, " ");
-  if (/\b(miss|dynamic|bypass)\b/i.test(cacheStatus)) {
-    return false; // the cache affirmatively reports a fresh origin fetch
-  }
-  // X-Cache-Hits is a numeric HIT COUNT (Varnish/Fastly): exactly 0 is an affirmative
-  // miss (origin fetch); a positive count is a hit (already caught by #15 above).
-  const hits = get("x-cache-hits").trim();
-  if (/^\d+$/.test(hits) && Number(hits) === 0) {
-    return false;
-  }
-  // A shared cache is detectably in path if Age (cache-generated per RFC 7234) OR any
-  // cache-status header (incl. a numeric X-Cache-Hits) is present. Deliberately
-  // EXCLUDES Via / X-Served-By / CDN-Cache-Control (set on every response / origin-
-  // authored — they do not prove a cache handled THIS read) and x-iinfo (an Incapsula
-  // WAF marker), to avoid over-blocking legit findings behind a non-caching proxy.
-  if (get("age").trim() !== "" || get("x-cache-hits").trim() !== "") return true;
-  return CACHE_STATUS_HEADERS.some((h) => get(h).trim() !== "");
+  // A HIT signal anywhere means a cache SERVED this body — fail closed even if another
+  // cache layer also annotates a miss (one layer's miss must NOT override another's hit).
+  if (cacheReportsHit(get)) return true;
+  // An affirmative miss (and no hit) proves a fresh origin fetch — trust it as origin.
+  // ONLY the unambiguous origin-fetch statuses count (miss/dynamic/bypass, X-Cache-Hits:0);
+  // updating/revalidated/stale are stale-cache serves and are deliberately not misses.
+  if (cacheReportsMiss(get)) return false;
+  // A cache is detectably in path but proved no miss → cannot confirm an ORIGIN read,
+  // so fail closed. RESIDUAL: a truly fingerprint-less shared cache (no cache header at
+  // all) is indistinguishable from origin here — closed only by a live path-segment
+  // cache-buster in PR-D (a query-key buster cannot defeat a path-keyed cache, and {id}
+  // must stay the final segment).
+  return cacheDetectablyInPath(get);
 }
 
 // Record each offensive probe in http-audit.jsonl so the session request budget

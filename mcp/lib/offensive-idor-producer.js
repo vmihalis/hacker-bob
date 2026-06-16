@@ -17,7 +17,12 @@
 // arbitrary in-process code (a same-UID `node -e` that require()s the 0600
 // handoff signing key and hand-MACs a row around every gate below). This is the
 // SAME assumption Bob's wave-handoff signing already makes; absolute
-// un-fakeability requires the deferred offensive-SANDBOX (UID/container) PR.
+// un-fakeability requires the deferred offensive-SANDBOX (UID/container) PR. The
+// second handler parameter ({ fetch_fn, provision }) — the seam tests use to drive
+// the oracle without a live target — is WITHIN this same in-process boundary: a
+// same-UID caller that can pass it can already read the signing key and forge a row
+// directly, so the seam does not widen the trust boundary the sandbox PR closes. The
+// MCP dispatcher always calls idorConfirm(args) with NO second argument.
 //
 // CACHE-CROSS-FILL RESIDUAL (honest): the canary witness proves identity A obtained
 // B's private object, but #15/#15b/#16 distinguish an ORIGIN object-authorization
@@ -208,6 +213,24 @@ function decodeJsonUnicodeEscapes(text) {
     : "";
 }
 
+// Percent-decode a value to a FIXED POINT (defeats single + multi-layer encoding like
+// %62 / %2562). Used to compare a server-minted object id against the canary in its
+// truly-decoded form. Bounded iterations; stops on a non-decoding remnant.
+function decodePercentToFixedPoint(value) {
+  let decoded = String(value);
+  for (let i = 0; i < 8; i += 1) {
+    let next;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      break;
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
 function bodyLeaksCanary(response, canary) {
   if (!response || !Buffer.isBuffer(response.bodyBytes) || typeof canary !== "string" || !canary) {
     return false;
@@ -236,6 +259,7 @@ const SECRET_SHAPE_RES = Object.freeze([
   ["gitlab_token", /\bglpat-[A-Za-z0-9_-]{15,}/],
   ["google_api_key", /\bAIza[0-9A-Za-z_-]{35}\b/],
   ["stripe_secret_key", /\b[rs]k_live_[A-Za-z0-9]{16,}/],
+  ["openai_key", /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/],
   ["slack_token", /\bxox[baprs]-[A-Za-z0-9-]{10,}/],
 ]);
 
@@ -821,9 +845,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       ...identity, ...internalHostPolicy,
     });
   }
-  // Canary disjoint from O_B's id/slug/URL path/query (mint condition #19).
+  // Canary disjoint from O_B's id/slug/URL path/query (mint condition #19). Compare
+  // BOTH the raw id AND its percent-decoded form (to a fixed point) against the canary:
+  // a server-minted id that is a percent-encoded canary (e.g. %62%62... = "bb...")
+  // would slip past a raw includes() yet decode to the canary at the server, making the
+  // canary-at-leaf a trivial id reflection rather than a cross-tenant read.
   const objBId = String(object_b);
-  if (objBId.includes(canary_b)) {
+  if (objBId.includes(canary_b) || decodePercentToFixedPoint(objBId).includes(canary_b)) {
     return blocked("blocked_by_design", "canary_reflected_in_object_id", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
       ...identity, ...internalHostPolicy,
@@ -1007,7 +1035,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     return fail("blocked_by_infra", "canary_did_not_survive_fresh_url");
   }
   // #9 OBJECT-SCOPING — P3 (A's own object) must NOT carry O_B's canary; canary
-  // absent from anon bodies (P4/P4-id).
+  // absent from anon bodies (P4/P4-id). A truncated P3 could hide B's canary past the
+  // fetch cap, so reject truncation before trusting the leak scan (symmetric with
+  // P4/P4id/P5/P6).
+  if (P3.bodyTruncated !== false) {
+    return fail("blocked_by_design", "p3_body_truncated");
+  }
   const p3Parsed = parseJsonBody(P3);
   // PROVE P3 IS IDENTITY A's OWN OBJECT: A must successfully read O_A carrying A's
   // OWN canary. The tenant discriminator (#14) for identity A is derived from P3;
