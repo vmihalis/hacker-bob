@@ -203,9 +203,15 @@ async function tempEmail(args) {
   return JSON.stringify({ error: `Unknown operation: ${op}` });
 }
 
+function tempMailboxIsKnown(address) {
+  if (typeof address !== "string" || !address) return false;
+  return tempMailboxes.has(address.trim());
+}
+
 module.exports = {
   tempEmail,
   tempEmailCreate,
   tempEmailExtract,
+  tempMailboxIsKnown,
   tempEmailPoll,
 };

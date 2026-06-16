@@ -1,5 +1,7 @@
 [
   "test/mcp-server.test.js",
+  "test/pii-detector.test.js",
+  "test/auto-signup-pii-gate.test.js",
   "test/pipeline-events.test.js",
   "test/verification-contracts.test.js",
   "test/session-state-store.test.js",

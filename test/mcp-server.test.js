@@ -81,6 +81,9 @@ const {
   normalizeAutoSignupResult,
 } = require("../mcp/lib/signup.js");
 const {
+  tempEmailCreate,
+} = require("../mcp/lib/temp-email.js");
+const {
   toolInvocationSidecarPath,
   toolInvocationTelemetryPath,
   appendToolInvocationTelemetryEvent,
@@ -616,6 +619,30 @@ function withEnv(overrides, fn) {
   } catch (error) {
     cleanup();
     throw error;
+  }
+}
+
+async function provisionSignupTempEmail() {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      if (url.includes("mail.tm/domains")) {
+        return { ok: true, json: async () => ({ "hydra:member": [{ domain: "test.tm" }] }) };
+      }
+      if (url.includes("mail.tm/accounts")) {
+        return { ok: true, status: 201, json: async () => ({ id: "abc" }) };
+      }
+      if (url.includes("mail.tm/token")) {
+        return { ok: true, json: async () => ({ token: "jwt123" }) };
+      }
+      return { ok: false, status: 500, text: async () => "" };
+    };
+
+    const created = JSON.parse(await tempEmailCreate("mail.tm"));
+    assert.equal(created.success, true);
+    return created.email_address;
+  } finally {
+    global.fetch = originalFetch;
   }
 }
 
@@ -14909,6 +14936,7 @@ test("auto-signup result normalization fails ambiguous states and preserves diag
 test("bob_auto_signup returns ok true manual fallback when browser automation is unavailable", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const originalResolve = Module._resolveFilename;
     Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
       if (request === "patchright") {
@@ -14920,7 +14948,7 @@ test("bob_auto_signup returns ok true manual fallback when browser automation is
       const result = await executeTool("bob_auto_signup", {
         target_domain: "example.com",
         signup_url: "https://example.com/signup",
-        email: "a@example.test",
+        email,
         password: "Password123!",
       });
 
@@ -14939,12 +14967,13 @@ test("bob_auto_signup returns ok true manual fallback when browser automation is
 test("bob_auto_signup rejects raw proxy arguments and uses egress profiles only", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const rawProxySecret = ["browser", "proxy", "secret"].join("-");
     const rawProxy = ["http://user:", rawProxySecret, "@proxy.example:8080"].join("");
     const rejected = await executeTool("bob_auto_signup", {
       target_domain: "example.com",
       signup_url: "https://example.com/signup",
-      email: "a@example.test",
+      email,
       password: "Password123!",
       proxy: rawProxy,
     });
@@ -14980,7 +15009,7 @@ test("bob_auto_signup rejects raw proxy arguments and uses egress profiles only"
           const result = await executeTool("bob_auto_signup", {
             target_domain: "example.com",
             signup_url: "https://example.com/signup",
-            email: "a@example.test",
+            email,
             password: "Password123!",
             egress_profile: "browser-eu",
           });
@@ -15093,6 +15122,7 @@ test("bob_auto_signup refuses strict internal-host mode before browser availabil
   await withTempHome(async () => {
     const domain = "example.com";
     seedSessionState(domain);
+    const email = await provisionSignupTempEmail();
 
     const originalResolve = Module._resolveFilename;
     let patchrightResolveCalls = 0;
@@ -15109,7 +15139,7 @@ test("bob_auto_signup refuses strict internal-host mode before browser availabil
         const result = await executeTool("bob_auto_signup", {
           target_domain: domain,
           signup_url: "https://signup.example.com/register",
-          email: "a@example.test",
+          email,
           password: "Password123!",
           block_internal_hosts: true,
         });
@@ -15138,6 +15168,7 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
       checkpoint_mode: "paranoid",
     });
     assert.equal(init.ok, true);
+    const email = await provisionSignupTempEmail();
 
     const originalResolve = Module._resolveFilename;
     let patchrightResolveCalls = 0;
@@ -15154,7 +15185,7 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
         const result = await executeTool("bob_auto_signup", {
           target_domain: domain,
           signup_url: `https://signup.${domain}/register`,
-          email: "a@example.test",
+          email,
           password: "Password123!",
         });
 
@@ -15176,10 +15207,11 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
 test("bob_auto_signup treats non-policy egress profile failures as manual fallback", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const result = await executeTool("bob_auto_signup", {
       target_domain: "example.com",
       signup_url: "https://signup.example.com/register",
-      email: "a@example.test",
+      email,
       password: "Password123!",
       egress_profile: "missing-profile",
     });
