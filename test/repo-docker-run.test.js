@@ -215,12 +215,25 @@ test("buildDockerRunArgv emits --read-only (O-P3)", () => {
   assert.ok(argv.args.includes("--read-only"), "expected --read-only flag");
 });
 
-test("buildDockerRunArgv emits --tmpfs /tmp:size=512m (O-P3)", () => {
+test("buildDockerRunArgv emits an EXEC-capable /tmp tmpfs (O-P3 + portability)", () => {
   const argv = buildDockerRunArgv({
     repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
     allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
   });
-  assert.equal(valueAfterFlag(argv.args, "--tmpfs"), "/tmp:size=512m");
+  // exec is required so a sanitizer harness / fuzzer / test runner can stage and
+  // run a binary under $TMPDIR (Docker tmpfs defaults to noexec, which breaks the
+  // native-repro idiom with a bare exit-126); nosuid+nodev keep the hardening.
+  assert.equal(valueAfterFlag(argv.args, "--tmpfs"), "/tmp:size=512m,exec,nosuid,nodev");
+});
+
+test("buildDockerRunArgv sets HOME=/work so build caches land on the writable mount", () => {
+  const argv = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
+  });
+  // Read-only root + default ~ means cmake/cargo/pip/go caches have nowhere to
+  // write; HOME=/work points them at the session-scoped writable mount.
+  assert.equal(valueAfterFlag(argv.args, "--env"), "HOME=/work");
 });
 
 test("buildDockerRunArgv mounts /src read-only by default and /work read-write", () => {
@@ -316,8 +329,11 @@ test("buildDockerRunArgv does NOT thread proxy when allow_network=false", () => 
     repoMountMode: "read_only",
     egressProfile: { proxy_url: "http://proxy.invalid:3128/", proxy_configured: true },
   });
-  // No --env flag should appear when network is closed: a proxy is meaningless and would leak intent.
-  assert.equal(argv.args.indexOf("--env"), -1, "--env should not appear under --network none");
+  // No PROXY --env should appear when network is closed: a proxy is meaningless
+  // and would leak intent. (HOME=/work is always set and is unrelated to egress.)
+  const envValues = argv.args.filter((_, i) => argv.args[i - 1] === "--env");
+  assert.ok(!envValues.some((v) => /proxy/i.test(v)), "no proxy --env under --network none");
+  assert.deepEqual(envValues, ["HOME=/work"], "only the HOME env is threaded under --network none");
 });
 
 // ---------- S14 differential checkout builder (pure) ----------
@@ -925,7 +941,8 @@ test("repoDockerRun live mode constructs argv with every O-P3 sandbox flag (per-
     assert.equal(valueAfterFlag(capturedArgs, "--memory"), "4g");
     assert.equal(valueAfterFlag(capturedArgs, "--pids-limit"), "1024");
     assert.ok(capturedArgs.includes("--read-only"));
-    assert.equal(valueAfterFlag(capturedArgs, "--tmpfs"), "/tmp:size=512m");
+    assert.equal(valueAfterFlag(capturedArgs, "--tmpfs"), "/tmp:size=512m,exec,nosuid,nodev");
+    assert.equal(valueAfterFlag(capturedArgs, "--env"), "HOME=/work");
 
     // Mounts: /src read-only, /work writable.
     const mounts = capturedArgs

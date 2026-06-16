@@ -288,7 +288,7 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "set -eu",
     "rm -rf /work/repo /work/out",
     "mkdir -p /work/repo /work/out/corpus",
-    "cp -a /src/. /work/repo/",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
     "cd /work/repo",
     "if [ -x ./configure ]; then ./configure; fi",
     `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do perl -0ne ${NATIVE_LIBFUZZER_DEFINITION_PERL} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
@@ -429,7 +429,7 @@ function recommendedCommandsFor(
     // (writable), then cmake+ctest from there. This is the MVP carry-back
     // for read-only-mount staging.
     const staging =
-      "cp -a /src/. /work/repo/ && cd /work/repo && cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure";
+      "cp -a --no-preserve=ownership /src/. /work/repo/ && cd /work/repo && cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure";
     const sanitizerNote = nfsXdrShape ? " (NFS/XDR shape detected — preload libtirpc/libssl/libkrb5)" : "";
     const commands = [];
     if (!nativeFuzzOnly) {
@@ -462,7 +462,7 @@ function recommendedCommandsFor(
         command: [
           "sh",
           "-lc",
-          `cp -a /src/. /work/repo/ && cd /work/repo && find -- ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
+          `cp -a --no-preserve=ownership /src/. /work/repo/ && cd /work/repo && find -- ${quotedSeedRel} -maxdepth 2 -type f | head -20`,
         ],
         role: "fuzz",
       });
@@ -1384,7 +1384,22 @@ function buildDockerRunArgv({
   args.push("--memory", "4g");
   args.push("--pids-limit", "1024");
   args.push("--read-only");
-  args.push("--tmpfs", "/tmp:size=512m");
+  // /tmp is an EXEC-capable tmpfs. Docker's tmpfs default is noexec, which
+  // breaks the dominant native-repro idiom (build a sanitizer harness and run
+  // it) the moment a build system, fuzzer, or test runner stages a binary under
+  // $TMPDIR — the run fails with a bare "Permission denied" exit 126 that reads
+  // like a bug in the harness, not a sandbox policy. nosuid+nodev still block
+  // privilege escalation; the code under test already executes from /work, so
+  // exec on the scratch tmpfs removes a portability footgun without widening the
+  // threat model. Sized to bound a runaway write.
+  args.push("--tmpfs", "/tmp:size=512m,exec,nosuid,nodev");
+  // A writable HOME on a read-only-root container. Build tooling (cmake, cargo,
+  // pip, go, ccache) writes to $HOME/.cache, $HOME/.cmake, etc.; with the root
+  // filesystem read-only and no HOME override the default ~ is unwritable and
+  // builds fail far from the real error. /work is the session-scoped writable
+  // mount, so point HOME at it. Set for every run so the offline path is
+  // identical to the networked one.
+  args.push("--env", "HOME=/work");
   // Mounts: /src is the bound repo (read-only by default), /work is
   // session-scoped writable space for build artefacts.
   const mountSuffix = repoMountMode === "read_write" ? "rw" : "ro";

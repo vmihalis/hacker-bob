@@ -521,7 +521,12 @@ const REPO_WORKFLOW_TEXT = [
   "   for unsafe-sink hunting, config-misuse hunting, docs-vs-behavior diffs.",
   "3. `bob_repo_docker_run({ target_domain, command, allow_network?: false })`",
   "   — sandboxed execution (cap-drop ALL, no-new-privileges, --user 1000:1000,",
-  "   --network none default). Use for fuzz / sanitizer / build runs.",
+  "   --network none default). Writable surfaces: `/work` (session-scoped, persists",
+  "   across calls), exec-capable `/tmp` scratch, and `HOME=/work` for build caches;",
+  "   stage `/src` into `/work` and build+run there. This is the ONLY execution path",
+  "   that writes the audit-graded repo-command-runs.jsonl ledger — a raw `docker` or",
+  "   Bash invocation is NOT captured and cannot back a high/critical claim or a",
+  "   verified_pass. Use it for every fuzz / sanitizer / build / repro run.",
   "4. Static analyzers via cli_tools: semgrep, trivy, CodeQL, Coccinelle,",
   "   cargo-audit, npm-audit, pip-audit. Each pack lists the install_check",
   "   + invocation template.",
@@ -557,7 +562,7 @@ const OSS_BRIEF_SLICE_REGISTRY = Object.freeze([
   // `repo_workflow` leads when the active task lens is one of the OSS lenses.
   // Returns "" for other lenses; the registry assembly pass drops empty-string
   // slices so the brief stays absent rather than carrying an empty header.
-  briefSliceEntry("repo_workflow", 2688, (context) => (
+  briefSliceEntry("repo_workflow", 3072, (context) => (
     isOssLens(context.taskLens) ? REPO_WORKFLOW_TEXT : ""
   )),
   briefSliceEntry("governance", 1024, (context) => context.governance),

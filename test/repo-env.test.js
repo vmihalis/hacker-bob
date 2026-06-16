@@ -217,7 +217,10 @@ test("recommendedCommandsFor c uses compose role with sh -lc staging recipe", ()
   assert.equal(compose.command[1], "-lc");
   // The compose recipe must stage /src into /work/repo (read-only mount
   // wisdom from MVP).
-  assert.match(compose.command[2], /cp\s+-a\s+\/src/);
+  // ownership-tolerant copy: -a preserves symlinks/mode/timestamps but
+  // --no-preserve=ownership avoids the chown failure when uid 1000 stages files
+  // it does not own from the read-only /src mount.
+  assert.match(compose.command[2], /cp\s+-a\s+--no-preserve=ownership\s+\/src/);
   assert.match(compose.command[2], /\/work\/repo/);
   assert.match(compose.command[2], /cmake/);
 });
