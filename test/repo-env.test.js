@@ -474,6 +474,12 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
     assert.match(withFuzz, new RegExp(`\\b${pkg.replace(/[-]/g, "\\-")}\\b`),
       `native fuzz package ${pkg} missing`);
   }
+  // The fuzz image must expose the unversioned `llvm-symbolizer` so ASAN
+  // auto-symbolizes crash frames to source:line (the reproduction gate refuses an
+  // unsymbolized, /src-less backtrace). The non-fuzz image must not.
+  assert.match(withFuzz, /ln -sf\s+"\$\(command -v llvm-symbolizer-18\)"\s+\/usr\/local\/bin\/llvm-symbolizer/,
+    "native fuzz image must symlink llvm-symbolizer for ASAN auto-symbolization");
+  assert.doesNotMatch(withoutFuzz, /llvm-symbolizer/);
 });
 
 test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () => {

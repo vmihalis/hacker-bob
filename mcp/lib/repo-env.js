@@ -144,7 +144,13 @@ const NFS_EXTRA_APT_PACKAGES = Object.freeze([
   "libtirpc-dev",
 ]);
 const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
+  // compiler-rt provides the ASAN/fuzzer static runtimes the sanitizer-instrumented
+  // harness links against; llvm-18 provides llvm-symbolizer-18 so the crash
+  // backtrace resolves to /src-rooted source:line frames (the reproduction gate
+  // requires a /src root-cause frame — unsymbolized module+offset frames are
+  // refused as unattributable).
   "libclang-rt-18-dev",
+  "llvm-18",
   "pkg-config",
   "autoconf",
   "automake",
@@ -524,6 +530,13 @@ function buildDockerfileBob({
       lines.push("RUN apt-get update \\");
       lines.push(`    && apt-get install -y --no-install-recommends ${packages.join(" ")} \\`);
       lines.push("    && rm -rf /var/lib/apt/lists/*");
+      if (nativeFuzzShape) {
+        // AddressSanitizer auto-symbolizes by exec'ing `llvm-symbolizer` from PATH;
+        // the llvm-18 package only ships the versioned `llvm-symbolizer-18`. Expose
+        // the unversioned name so crash frames resolve to source:line without the
+        // harness having to export ASAN_SYMBOLIZER_PATH.
+        lines.push("RUN ln -sf \"$(command -v llvm-symbolizer-18)\" /usr/local/bin/llvm-symbolizer");
+      }
     } else {
       lines.push(`# apt-get install skipped (allow_network=false). Packages would be: ${packages.join(" ")}`);
     }
