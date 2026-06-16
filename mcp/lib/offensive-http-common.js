@@ -145,6 +145,19 @@ function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
       { path: parsed.pathname },
     );
   }
+  // Reject path traversal: a `.` or `..` segment, literal OR percent-encoded at any
+  // depth (e.g. /api/%252e%252e/admin), that a server may decode would route the
+  // request to a DIFFERENT resource than the recorded endpoint. decodePathSegments
+  // resolves each segment to a fixed point, so a double-encoded traversal is seen
+  // here. No legitimate resource path contains a bare `.`/`..` segment.
+  for (const segment of decodedPath.split("/")) {
+    if (segment === "." || segment === "..") {
+      rejectInvalidArguments(
+        `path_template resolves to a path-traversal (. or ..) segment; ${toolName} rejects traversal paths`,
+        { path: parsed.pathname },
+      );
+    }
+  }
   const params = new URLSearchParams(parsed.search);
   for (const [rawKey, rawValue] of params.entries()) {
     const key = String(rawKey || "").trim();
@@ -505,9 +518,11 @@ function responseIsSharedCacheable(response) {
     return true;
   }
   // Includes the standardized RFC 9211 `Cache-Status` (e.g. "ExampleCache; hit").
+  // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
+  // "TCP_HIT", "TCP_MEM_HIT") are seen by the \bhit\b word boundary.
   const cacheStatusHeaders = ["x-cache", "cf-cache-status", "x-served-by", "cache-status"];
   for (const headerName of cacheStatusHeaders) {
-    if (/\bhit\b/i.test(get(headerName))) {
+    if (/\bhit\b/i.test(get(headerName).replace(/_/g, " "))) {
       return true;
     }
   }
@@ -522,7 +537,8 @@ function responseIsSharedCacheable(response) {
   // serve a stored copy to a different principal), so only a POSITIVE s-maxage is a
   // shared-cache hazard — matching the bare token would false-negative every
   // CDN-revalidated (s-maxage=0) response.
-  const sMaxageMatch = cacheControl.match(/\bs-maxage=(\d+)/);
+  // Accept an optionally-quoted value (HTTP allows s-maxage="60").
+  const sMaxageMatch = cacheControl.match(/\bs-maxage="?(\d+)/);
   const sharedDirective = /\bpublic\b/.test(cacheControl)
     || (sMaxageMatch != null && Number(sMaxageMatch[1]) > 0);
   if (sharedDirective) {
@@ -562,7 +578,9 @@ function cacheInPathWithoutProvenMiss(response) {
   // statuses count as a proven MISS — `updating`/`revalidated`/`stale` are stale-
   // cache SERVES (the body came from cache), and `expired` is cross-CDN-ambiguous, so
   // they are deliberately excluded and fall through to fail closed below.
-  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")} ${get("cache-status")}`;
+  // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
+  // "TCP_MISS") are seen by the \b...\b word boundaries.
+  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")} ${get("cache-status")}`.replace(/_/g, " ");
   if (/\b(miss|dynamic|bypass)\b/i.test(cacheStatus)) {
     return false; // the cache affirmatively reports a fresh origin fetch
   }

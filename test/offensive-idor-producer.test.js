@@ -1023,6 +1023,94 @@ test("AC-5 safety: a self-provisioned id of '..' (path traversal) → object_id_
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-6 review hardening ──────────────────────────
+
+test("AC-5: foreign PII in a DUPLICATE (shadowed) JSON key evades parse but the raw-body scan catches it → blocked", () => withTempHome(async () => {
+  const domain = "idor-neg-dupkey-pii.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        // Raw JSON with a duplicate `contact` key: JSON.parse keeps the synthetic LAST
+        // value, but the foreign address is still in the raw bytes.
+        return jsonResponse(200, `{"id":"${OBJ_B}","owner_scope":"tenant-B","viewer_id":"viewer-A","contact":"victim@gmail.com","contact":"eval_a@example.test","details":{"secret":{"token":"${CANARY_B}"}}}`);
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: an injected JWT credential in the P2 proof body → non_synthetic_secret_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-secret-body.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, {
+          id: OBJ_B, owner_scope: "tenant-B", viewer_id: "viewer-A",
+          session: "eyJhbGciOiJIUzI1NiIsImtpZCI6IjEifQ.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+          details: { secret: { token: CANARY_B } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_secret_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P5 deny body that \\u-escapes B's canary (decodes to it) → p5_canary_in_deny_body", () => withTempHome(async () => {
+  const domain = "idor-neg-p5-uescape.example.test";
+  setupSession(domain);
+  const escaped = "\\u0062".repeat(64); // decodes to "b" * 64 === CANARY_B
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, `{"error":"forbidden","leaked":"${escaped}"}`),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 positive: an underscore-delimited X-Cache: TCP_MISS still confirms (proven origin)", () => withTempHome(async () => {
+  const domain = "idor-pos-tcp-miss.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache": "TCP_MISS" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 negative: a quoted Cache-Control: s-maxage=\"60\" is a shared-cache hazard → cache_shared_response", () => withTempHome(async () => {
+  const domain = "idor-neg-smaxage-quoted.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": 's-maxage="60"' } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cache_shared_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-2 safety: a recorded endpoint with double-encoded traversal (%252e%252e) is rejected by assertReadOnlyPath", () => withTempHome(async () => {
+  const domain = "idor-neg-traversal.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/%252e%252e/admin/${OBJ_B}`);
+  seedSyntheticProfiles(domain);
+  ensureHandoffSigningKey(domain);
+  const args = { ...baseArgs(domain), path_template: "/api/%252e%252e/admin/{id}" };
+  await assert.rejects(
+    () => idorConfirm(args, { fetch_fn: soundFetchFn(domain), provision: soundProvision() }),
+    /path-traversal/,
+  );
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

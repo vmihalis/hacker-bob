@@ -204,7 +204,37 @@ function bodyLeaksCanary(response, canary) {
   if (!response || !Buffer.isBuffer(response.bodyBytes) || typeof canary !== "string" || !canary) {
     return false;
   }
-  return response.bodyBytes.toString("utf8").includes(canary);
+  const raw = response.bodyBytes.toString("utf8");
+  if (raw.includes(canary)) return true;
+  // Also scan the JSON-DECODED form: a deny body that \u-escapes the hex canary
+  // (e.g. "bb...") has raw bytes that differ from the literal canary but
+  // decode to it. Parse + re-serialize so JSON escapes are resolved before the scan.
+  try {
+    if (JSON.stringify(JSON.parse(raw)).includes(canary)) return true;
+  } catch {}
+  return false;
+}
+
+// Focused secret-shape detector for the SIGNED proof body (AC-5 #17b). detectPiiShapes
+// covers email/phone/ssn/credit-card; this catches high-confidence CREDENTIAL shapes a
+// server could inject into the cross-tenant read (expanded-record leak). O_B is
+// self-provisioned synthetic, so any of these in the proof body is non-synthetic. The
+// 256-bit hex canary matches NONE of these patterns, so it never false-positives.
+const SECRET_SHAPE_RES = Object.freeze([
+  ["jwt", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/],
+  ["aws_access_key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ["pem_private_key", /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/],
+  ["github_token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
+  ["slack_token", /\bxox[baprs]-[A-Za-z0-9-]{10,}/],
+]);
+
+function secretShapesIn(parsedBodyOrText) {
+  const scan = typeof parsedBodyOrText === "string" ? parsedBodyOrText : canonicalJson(parsedBodyOrText);
+  const found = [];
+  for (const [label, re] of SECRET_SHAPE_RES) {
+    if (re.test(scan)) found.push(label);
+  }
+  return found;
 }
 
 // Walk a parsed body to a fixed FIELD_PATH (array of string keys) and return the
@@ -1059,11 +1089,27 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // #17 SYNTHETIC-ONLY (AC-5) — piiScan P1, P2, AND the cache-bust P2′ find only
   // allowlisted synthetics. P2′ is another successful A→B proof body whose canary
   // is required before signing (#16), so it must clear the same PII tripwire — a
-  // fresh-URL fetch can return an expanded payload the cached P2 did not.
+  // fresh-URL fetch can return an expanded payload the cached P2 did not. Scan BOTH
+  // the parsed body (canonicalJson resolves \u escapes) AND the RAW body text — a
+  // JSON response with DUPLICATE keys keeps only the last value after JSON.parse, so
+  // foreign PII in a shadowed duplicate key would evade a parsed-only scan.
   if (piiScan(p1Parsed, allowedEmails).length > 0
     || piiScan(p2Parsed, allowedEmails).length > 0
-    || piiScan(p2primeParsed, allowedEmails).length > 0) {
+    || piiScan(p2primeParsed, allowedEmails).length > 0
+    || piiScan(bodyTextOf(P1), allowedEmails).length > 0
+    || piiScan(bodyTextOf(P2), allowedEmails).length > 0
+    || piiScan(bodyTextOf(P2prime), allowedEmails).length > 0) {
     return fail("blocked_operator_pii", "non_synthetic_pii_in_response");
+  }
+  // #17b SYNTHETIC-ONLY (secrets) — the signed proof body must not carry injected
+  // credential-shaped data (JWT / AWS key / PEM / prefixed tokens). O_B is
+  // self-provisioned synthetic, so a secret here is a server-injected expanded-record
+  // leak. Scan parsed + raw, same dup-key/escape reasoning as the PII tripwire.
+  if (secretShapesIn(p2Parsed).length > 0
+    || secretShapesIn(bodyTextOf(P2)).length > 0
+    || secretShapesIn(bodyTextOf(P1)).length > 0
+    || secretShapesIn(bodyTextOf(P2prime)).length > 0) {
+    return fail("blocked_operator_pii", "non_synthetic_secret_in_response");
   }
 
   // ── All mint conditions hold. Build the canonical target. ──
