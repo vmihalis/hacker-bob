@@ -527,8 +527,9 @@ function cacheReportsHit(get) {
 }
 
 // Does the response carry an affirmative cache-MISS signal (a cache demonstrably
-// FETCHED this body from origin)? A miss/dynamic/bypass cache-status token (NOT
-// updating/revalidated/stale — those serve a stale cached body), or X-Cache-Hits: 0.
+// FETCHED this body from origin)? ONLY an explicit miss/dynamic/bypass cache-status
+// token (NOT updating/revalidated/stale — those serve a stale cached body, and NOT a
+// numeric X-Cache-Hits:0, which is weaker / cross-CDN-ambiguous).
 function cacheReportsMiss(get) {
   // ONLY an explicit cache-status MISS token proves a fresh origin fetch. X-Cache-Hits:0
   // is deliberately NOT a proven miss — a numeric "0 hits" is weaker / cross-CDN-ambiguous
@@ -583,16 +584,17 @@ function responseIsSharedCacheable(response) {
 // AFFIRMATIVE-ORIGIN gate for the IDOR producer's cross-principal proof bodies
 // (PR-C §3.4 hardening). responseIsSharedCacheable only flags a DEFINITIVE hazard
 // (Age>0 / explicit HIT); a misconfigured query-string-ignoring shared cache that
-// stored a `private`/`no-store` body and emits Age:0 / Via / an unlabeled cache
+// stored a `private`/`no-store` body and emits Age:0 / an unlabeled cache-status
 // header leaves no definitive HIT, so canary-survival on a cross-principal read
 // could be a downstream cache CROSS-FILL rather than an origin object-authorization
 // break. This returns true when a shared cache is DETECTABLY in the request path
-// (it added an Age, Via, X-Cache, CF-Cache-Status, or X-Served-By header) but does
-// NOT affirmatively prove a fresh origin fetch (no MISS/DYNAMIC/EXPIRED cache
-// status). The producer fails CLOSED on true. A direct origin read (NO cache header
-// at all) returns false and is trusted; a CDN that labels its MISS returns false and
-// is trusted. RESIDUAL: a truly fingerprint-less shared cache is indistinguishable
-// from origin here — closed only by a live path-segment cache-buster (PR-D), since a
+// (per cacheDetectablyInPath — Age, a numeric X-Cache-Hits, or any cache-STATUS
+// header; NOT Via / X-Served-By / CDN-Cache-Control, which are not cache-hit evidence)
+// but does NOT affirmatively prove a fresh origin fetch (no explicit MISS cache
+// status). The producer fails CLOSED on true. A direct origin read (NO cache header at
+// all) returns false and is trusted; a CDN that labels its MISS returns false and is
+// trusted. RESIDUAL: a truly fingerprint-less shared cache is indistinguishable from
+// origin here — closed only by a live path-segment cache-buster (PR-D), since a
 // query-key cache-buster cannot defeat a path-keyed cache and {id} must stay final.
 function cacheInPathWithoutProvenMiss(response) {
   if (!response || !response.headers || typeof response.headers.get !== "function") {
@@ -621,8 +623,11 @@ function cacheInPathWithoutProvenMiss(response) {
 // (bob_http_confirm, bob_http_idor_confirm) is attributed correctly in the audit
 // record's `tool` field; the confirmer passes its own TOOL_ID for byte-identical
 // behavior.
+// Returns true if the audit record was persisted, false if the write was swallowed
+// (so a signing producer can fail closed rather than mint a row for an unrecorded probe).
+// The negative-only confirmer ignores the return value, so its behavior is unchanged.
 function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, status, scopeDecision, error, startedAt, toolId }) {
-  if (!domain) return;
+  if (!domain) return false;
   let parsed = null;
   try {
     parsed = new URL(url);
@@ -654,14 +659,17 @@ function auditConfirmRequest({ domain, surfaceId, method, url, egressProfile, st
       error: error || null,
       duration_ms: startedAt ? Date.now() - startedAt : null,
     });
+    return true;
   } catch (auditError) {
     // A swallowed audit-write failure makes this probe invisible to the circuit
     // breaker / request budget — a control-plane gap. We still must not let an
     // audit failure abort the confirm, but surface it to stderr so it is
-    // detectable outside the control plane.
+    // detectable outside the control plane, and report false so a signing producer
+    // can fail closed.
     try {
       process.stderr.write(`${toolId}: http-audit write failed: ${auditError && auditError.message ? auditError.message : String(auditError)}\n`);
     } catch {}
+    return false;
   }
 }
 

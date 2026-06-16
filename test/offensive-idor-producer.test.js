@@ -1410,6 +1410,70 @@ test("AC-5: an injected OpenAI-style key (sk-proj-) in the proof body → non_sy
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-11 review hardening ──────────────────────────
+
+test("AC-6 negative: P5 deny body with a PERCENT-encoded canary (decodes to it) → p5_canary_in_deny_body", () => withTempHome(async () => {
+  const domain = "idor-neg-p5-pctenc.example.test";
+  setupSession(domain);
+  const pctCanary = "%62".repeat(64); // decodes to "b" * 64 === CANARY_B
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, `{"error":"forbidden","leaked":"${pctCanary}"}`),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: foreign PII as a PERCENT-encoded value in the proof body → non_synthetic_pii_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-pctenc-pii.example.test";
+  setupSession(domain);
+  const pctEmail = [...("victim@gmail.com")].map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, `{"id":"${OBJ_B}","owner_scope":"tenant-B","viewer_id":"viewer-A","contact":"${pctEmail}","details":{"secret":{"token":"${CANARY_B}"}}}`);
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: a control-object id (object_a) that is a percent-encoded canary → canary_reflected_in_object_id", () => withTempHome(async () => {
+  const domain = "idor-neg-obja-encoded-canary.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), object_a: "%61".repeat(64) }; // decodes to "a" * 64 === CANARY_A
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "canary_reflected_in_object_id");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) → own_scope_not_private", () => withTempHome(async () => {
+  // Before this fix account_id was an owning-scope key, so two records with different
+  // account_ids (even in the SAME tenant) falsely satisfied the cross-tenant
+  // discriminator. account_id is now ignored, so an O_B body carrying ONLY account_id
+  // exposes no private owner scope and the producer signs nothing.
+  const domain = "idor-neg-accountid-not-tenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, account_id: "acct-b-1", viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "own_scope_not_private");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

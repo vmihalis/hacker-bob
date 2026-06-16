@@ -237,11 +237,13 @@ function bodyLeaksCanary(response, canary) {
   }
   const raw = response.bodyBytes.toString("utf8");
   if (raw.includes(canary)) return true;
-  // A deny body can hide the canary by \u-escaping it (e.g. "bb...") AND/OR
-  // placing it in a shadowed duplicate key. Decode \u escapes in the RAW text (dup
-  // keys preserved) so the substring scan catches both forms.
-  const unescaped = decodeJsonUnicodeEscapes(raw);
-  if (unescaped !== raw && unescaped.includes(canary)) return true;
+  // A deny/error body can hide the canary by \u-escaping it ("bb..."), by
+  // PERCENT-encoding it ("%62%62..."), and/or by placing it in a shadowed duplicate
+  // key. Scan each decoded form over the RAW text (dup keys preserved) so the substring
+  // scan catches every common reflected-input encoding.
+  for (const decoded of [decodeJsonUnicodeEscapes(raw), decodePercentToFixedPoint(raw)]) {
+    if (decoded !== raw && decoded.includes(canary)) return true;
+  }
   return false;
 }
 
@@ -316,7 +318,11 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 // Capture the object's OWNING scope from B's self-read at a fixed well-known key.
 // Used for the cross-tenant scope proof (mint condition #13) and the tenant
 // discriminator (mint condition #14). Returns a trimmed string or null.
-const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id", "account_id"]);
+// Tenant/owner-scope keys ONLY. `account_id` is deliberately EXCLUDED: in many APIs it
+// is the record's OWN id (per-resource), not a tenant — so two different records would
+// carry different account_ids even within the SAME tenant, which would FALSELY satisfy
+// the cross-tenant discriminator (#14). These keys are unambiguously tenant/owner-level.
+const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
 function ownScopeOf(parsedBody) {
@@ -688,6 +694,7 @@ async function runProbe({
   blockInternalHosts,
   agent,
   startedAt,
+  auditFailures,
 }) {
   let response;
   let error;
@@ -709,7 +716,7 @@ async function runProbe({
   } catch (e) {
     error = e;
   }
-  auditConfirmRequest({
+  const auditOk = auditConfirmRequest({
     domain,
     surfaceId,
     method,
@@ -721,6 +728,10 @@ async function runProbe({
     startedAt,
     toolId: TOOL_ID,
   });
+  // A swallowed audit-write failure means this live probe is invisible to the circuit
+  // breaker / request budget. The producer signs a durable proof row, so it must NOT
+  // proceed on an unrecorded probe — record the failure so idorConfirm fails closed.
+  if (auditOk === false && Array.isArray(auditFailures)) auditFailures.push(url);
   if (error) throw error;
   return response;
 }
@@ -850,8 +861,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // a server-minted id that is a percent-encoded canary (e.g. %62%62... = "bb...")
   // would slip past a raw includes() yet decode to the canary at the server, making the
   // canary-at-leaf a trivial id reflection rather than a cross-tenant read.
+  // Apply the disjointness to EVERY object/canary pair: O_A and O_C are the tenant
+  // discriminator (P3) and the C-authentication proof (P7), so an id that is (an encoding
+  // of) its own canary would make those legs a trivial id reflection too.
+  const canaryReflectedInId = (objectId, canary) => {
+    const id = String(objectId);
+    return id.includes(canary) || decodePercentToFixedPoint(id).includes(canary);
+  };
   const objBId = String(object_b);
-  if (objBId.includes(canary_b) || decodePercentToFixedPoint(objBId).includes(canary_b)) {
+  if (canaryReflectedInId(object_b, canary_b)
+    || canaryReflectedInId(object_a, canary_a)
+    || canaryReflectedInId(object_c, canary_c)) {
     return blocked("blocked_by_design", "canary_reflected_in_object_id", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
       ...identity, ...internalHostPolicy,
@@ -908,6 +928,9 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   assertSafeRequestUrl(p2TargetUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
   assertReadOnlyPath(p2TargetUrl.toString(), TOOL_ID);
 
+  // Shared accumulator: runProbe pushes here when a probe's http-audit write is
+  // swallowed, so the producer fails closed rather than signing for an unrecorded probe.
+  const auditFailures = [];
   const probeBase = {
     fetchFn: fetch_fn,
     method,
@@ -917,6 +940,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     blockInternalHosts,
     agent: egressAgent,
     startedAt,
+    auditFailures,
   };
 
   // P4 cold-first so any edge cache is cold during authed reads.
@@ -976,6 +1000,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
     ...identity, ...internalHostPolicy,
   });
+
+  // #0 CONTROL-PLANE: every probe must have been recorded to http-audit. A swallowed
+  // audit write makes a live probe invisible to the circuit breaker / request budget,
+  // so the producer must not mint a durable proof row for an unrecorded run.
+  if (auditFailures.length > 0) {
+    return fail("blocked_by_infra", "probe_audit_failed");
+  }
 
   // #1 NON-TRUNCATION (P1/P2/P2′/P5). A truncated proof body could hide the canary
   // or foreign PII past the fetch cap, so every signing-relevant body must be whole.
@@ -1177,7 +1208,9 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const proofParsed = [p1Parsed, p2Parsed, p2primeParsed];
   const proofScanTexts = [P1, P2, P2prime].flatMap((r) => {
     const raw = bodyTextOf(r);
-    return [raw, decodeJsonUnicodeEscapes(raw)];
+    // raw + \u-decoded (dup-key/escape) + percent-decoded (a sensitive value encoded as
+    // %xx survives JSON.parse + canonicalJson but decodes server-side).
+    return [raw, decodeJsonUnicodeEscapes(raw), decodePercentToFixedPoint(raw)];
   });
   if (proofParsed.some((p) => piiScan(p, allowedEmails).length > 0)
     || proofScanTexts.some((t) => piiScan(t, allowedEmails).length > 0)) {
