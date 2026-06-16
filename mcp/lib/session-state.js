@@ -386,6 +386,10 @@ function applyOperatorConstraintUpdate(domain, transform) {
     auth_context: priorNucleus.auth_context,
     operator_constraint: operatorConstraint,
     lifecycle_state: priorNucleus.lifecycle_state,
+    // Preserve the repo session's pinned repo_hash across nucleus rewrites; it is
+    // the O-D6 docker image-tag binding and dropping it makes bob_repo_docker_run
+    // crash (readRepoSession -> null repo_hash -> buildImageTag null.slice).
+    repo_hash: priorNucleus.repo_hash,
   });
   writeJsonDocument(sessionNucleusPath(domain), nextNucleus);
   const updatedEvent = appendSessionEvent({
@@ -560,6 +564,10 @@ function advanceSession(args) {
       auth_context: priorNucleus.auth_context,
       operator_constraint: priorNucleus.operator_constraint,
       lifecycle_state: toState,
+      // Preserve the repo session's pinned repo_hash across the lifecycle advance;
+      // without it the nucleus loses repo_hash on the first transition and every
+      // bob_repo_docker_run then crashes (null repo_hash -> buildImageTag null.slice).
+      repo_hash: priorNucleus.repo_hash,
     });
 
     // Single-source-of-truth lifecycle write (Step 4). The two durable

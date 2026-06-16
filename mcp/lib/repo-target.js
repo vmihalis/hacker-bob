@@ -686,10 +686,18 @@ function readRepoSession(targetDomain) {
       `target_domain ${domain} is not a repo session`,
     );
   }
+  // repo_hash is the O-D6 image-tag binding. Prefer the pinned top-level value;
+  // fall back to the bound commit (which is what init derives repo_hash from for a
+  // git session, line ~548) so a nucleus that lost the top-level field across a
+  // rewrite still resolves the SAME hash the image was tagged with, rather than
+  // crashing bob_repo_docker_run on a null slice.
+  const boundCommit = nucleus.scope_policy.target_repo
+    ? nucleus.scope_policy.target_repo.commit
+    : null;
   return {
     target_domain: nucleus.target_domain,
     target_repo: nucleus.scope_policy.target_repo,
-    repo_hash: nucleus.repo_hash || null,
+    repo_hash: nucleus.repo_hash || boundCommit || null,
     nucleus_hash: nucleus.nucleus_hash,
     lifecycle_state: nucleus.lifecycle_state,
   };

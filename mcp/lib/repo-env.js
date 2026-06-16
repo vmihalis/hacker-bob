@@ -622,6 +622,16 @@ function buildImageTag(targetDomain, repoHash) {
   // SessionNucleus. The hash is intentionally already capped to 8-64 hex
   // chars by `initRepoSession`; we trim to 16 for the tag so we stay under
   // docker's 128-char tag limit while still scoping per repo state.
+  if (typeof repoHash !== "string" || !repoHash) {
+    // Defense-in-depth: a missing repo_hash used to surface as a cryptic
+    // "Cannot read properties of null (reading 'slice')" that silently killed
+    // every bob_repo_docker_run. Fail with an actionable message instead.
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `repo session ${targetDomain} has no pinned repo_hash; cannot derive the docker image tag (re-init the repo session)`,
+      { repo_error_code: "repo_hash_unresolved" },
+    );
+  }
   const tag = `bob-oss-${targetDomain}:${repoHash.slice(0, 16)}`;
   return tag;
 }

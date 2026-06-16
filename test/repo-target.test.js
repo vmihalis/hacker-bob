@@ -18,10 +18,12 @@ const {
   assertHistoryAvailableForRef,
   buildRepoInventory,
   initRepoSession,
+  readRepoSession,
   repoCheck,
   SEED_CORPUS_SUMMARY_LIMIT,
 } = require("../mcp/lib/repo-target.js");
 const {
+  buildImageTag,
   prepareRepoEnv,
   repoDockerRun,
 } = require("../mcp/lib/repo-env.js");
@@ -521,6 +523,33 @@ test("initRepoSession refuses to resume a target_domain bound to a different rep
     },
   );
 }));
+
+test("repo session retains repo_hash across a lifecycle advance (bob_repo_docker_run image tag stays resolvable)", () => withTempHome((home) => {
+  // Regression: nucleus rewrites during advanceSession dropped the top-level
+  // repo_hash, so readRepoSession returned null and buildImageTag crashed with
+  // "Cannot read properties of null (reading 'slice')" on EVERY bob_repo_docker_run
+  // — forcing evaluators to bypass the audit-graded tool via raw Bash docker.
+  const { repo, second } = createTwoCommitGitRepo(home, "repo-hash-persist");
+  const init = parseResult(initRepoSession({ repo_path: repo, target_domain: "repo-hash-persist" }));
+  const domain = init.target_domain;
+
+  const afterInit = readRepoSession(domain);
+  assert.ok(afterInit.repo_hash, "repo_hash present after init");
+
+  parseResult(buildRepoInventory({ target_domain: domain }));
+  parseResult(routeSurfaces({ target_domain: domain }));
+  parseResult(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+
+  const afterAdvance = readRepoSession(domain);
+  assert.ok(afterAdvance.repo_hash, "repo_hash MUST survive the lifecycle advance");
+  assert.equal(afterAdvance.repo_hash, afterInit.repo_hash, "repo_hash stable across advance");
+  // The image tag now derives without throwing.
+  assert.match(buildImageTag(domain, afterAdvance.repo_hash), /^bob-oss-repo-hash-persist:[0-9a-f]{8,16}$/);
+}));
+
+test("buildImageTag fails with a clear error (not a null slice) when repo_hash is unresolved", () => {
+  assert.throws(() => buildImageTag("repo-x", null), /no pinned repo_hash/);
+});
 
 test("repo inventory stays bound to the initialized repo root", () => withTempHome((home) => {
   const repo = path.join(home, "sample-project");
