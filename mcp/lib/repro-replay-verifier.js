@@ -124,8 +124,19 @@ async function verifyReproReproduction(input, deps = {}) {
     // fires identically on both trees and dies exactly here; so does an env/always-crash.
     result = RESULT_REFUTED;
     reason = "no differential flip: the command also crashes the upstream-fix tree (forged/over-broad/non-attributable)";
+  } else if (controlRun.exit_code !== 0) {
+    // The fix tree neither crashed NOR completed cleanly (non-zero exit, no crash
+    // banner). The most likely cause is that the command FAILED TO BUILD/RUN the
+    // harness on the fixed source (e.g. the fix changed an API the harness calls),
+    // so the absence of a crash proves nothing — the bug may simply never have been
+    // exercised. Treat as inconclusive rather than minting a verified_pass off a
+    // false-quiet control. (The reproduction idiom is: crash -> non-zero + banner;
+    // clean -> exit 0. A clean control MUST be a zero-exit completion.)
+    result = RESULT_INCONCLUSIVE;
+    reason = `control (upstream-fix) tree did not crash but exited ${controlRun.exit_code} with no sanitizer banner — cannot distinguish a genuine fix from a failed build/run; differential inconclusive`;
   } else {
-    // Real, attributable, flipping crash: vuln crashes with a /src frame; fix is quiet.
+    // Real, attributable, flipping crash: vuln crashes with a /src frame; fix builds,
+    // runs the harness, and is quiet (exit 0).
     result = RESULT_VERIFIED_PASS;
     reason = "differential reproduction: crashes the vulnerable tree, quiet on the upstream-fix tree";
   }
@@ -147,6 +158,7 @@ async function verifyReproReproduction(input, deps = {}) {
     src_frame: vulnVerdict.src_frame,
     vuln_crashed: vulnVerdict.crashed,
     control_crashed: controlVerdict.crashed,
+    control_exit_code: typeof controlRun.exit_code === "number" ? controlRun.exit_code : null,
   };
   const record = { ...body, results_hash: hashCanonicalJson(body) };
 

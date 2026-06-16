@@ -90,6 +90,27 @@ test("REFUTED: a crash with no /src frame is unattributable", async () => {
   });
 });
 
+test("INCONCLUSIVE: a control that does not crash but exits non-zero (failed build/run) is not a false flip", async () => {
+  await withTempHome(async () => {
+    // The vuln tree crashes with a /src frame; the control (fix) tree prints no
+    // sanitizer banner but exits non-zero — e.g. the fix changed an API and the
+    // harness failed to build, so the bug was never exercised. The absence of a
+    // crash there must NOT be read as a clean flip.
+    const runner = async ({ checkout }) => (
+      checkout
+        ? { run_id: "RC", exit_code: 2, stdout_text: "", stderr_text: "make: *** [all] Error 2\n" }
+        : { run_id: "RV", exit_code: 1, stdout_text: "", stderr_text: ASAN_CRASH }
+    );
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-9", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: runner },
+    );
+    assert.equal(r.result, RESULT_INCONCLUSIVE);
+    assert.match(r.reason, /exited 2 with no sanitizer banner/);
+    assert.equal(readReproVerifiedSummary(DOMAIN).verified_pass_count, 0);
+  });
+});
+
 test("INCONCLUSIVE: a degraded re-execution is not scored as a miss", async () => {
   await withTempHome(async () => {
     const r = await run({ vuln: { error: "docker_unavailable" }, control: { text: CLEAN } });
