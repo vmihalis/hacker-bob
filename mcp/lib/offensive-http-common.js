@@ -294,8 +294,8 @@ function urlFromEndpoint(endpoint, origin, fieldName) {
   rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path`);
 }
 
-function resolveBaselineFromSurface({ domain, surface, pathTemplate, state }) {
-  const stateOrigin = originFromState(domain, state);
+function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName = "bob_http_confirm" }) {
+  const stateOrigin = originFromState(domain, state, toolName);
   const origins = resolveSurfaceOrigins(surface, stateOrigin);
   for (const endpoint of candidateSurfaceEndpoints(surface)) {
     for (const origin of origins) {
@@ -501,6 +501,13 @@ function responseIsSharedCacheable(response) {
     }
   }
   const cacheControl = get("cache-control").toLowerCase();
+  // no-store / private take precedence over public / s-maxage — a shared cache
+  // must not serve such a response to a different principal, so it is not a
+  // cross-principal cache hazard (avoids a false-positive that would reject a
+  // legitimate finding as cache_shared_response).
+  if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
+    return false;
+  }
   const sharedDirective = /\bpublic\b/.test(cacheControl) || /\bs-maxage\b/.test(cacheControl);
   if (sharedDirective) {
     const vary = get("vary").toLowerCase();

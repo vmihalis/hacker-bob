@@ -83,6 +83,8 @@ const {
 const {
   offensiveRunsDir,
   offensiveRunsJsonlPath,
+  sessionsRoot,
+  assertSafeDomain,
 } = require("./paths.js");
 const {
   resolveAuthProfile,
@@ -115,12 +117,13 @@ const SAFE_OBJECT_CAP = 256 * 1024;
 // way (mint condition #7). A fragment/error envelope is rejected.
 const P2_LENGTH_TOLERANCE = 4;
 
-// AC-5: the EXACT-MATCH synthetic-identifier allowlist. piiScan finds ONLY these
-// names; any other PII shape aborts. eval_* mailboxes are matched by prefix (the
-// random suffix differs per provisioned identity). "pentest_user" and "Evaluator
-// Test" are the autoSignup synthetic defaults. NOTHING else is admitted.
+// AC-5: the EXACT-MATCH synthetic-identifier allowlist. piiScan admits ONLY the
+// actual provisioned synthetic mailboxes (passed per-run as allowedEmails) — never
+// a prefix, which would admit a REAL target user whose address merely starts with
+// it (e.g. eval_uator@victim.com) and defeat the synthetic-only guarantee.
+// "pentest_user" and "Evaluator Test" are the autoSignup synthetic name defaults.
+// NOTHING else is admitted.
 const SYNTHETIC_NAME_ALLOWLIST = Object.freeze(["pentest_user", "Evaluator Test"]);
-const SYNTHETIC_EMAIL_PREFIX = "eval_";
 
 // Provenance flags every resolved auth profile MUST carry before this producer
 // will sign (mint condition #18 — the INERT invariant). Nothing stamps these at
@@ -251,8 +254,10 @@ function piiScan(parsedBodyOrText, allowedEmails) {
   for (const shape of shapes) {
     if (shape.type === "email") {
       const lower = String(shape.value).toLowerCase();
-      // eval_* mailboxes are synthetic; the provisioned addresses are exact-allowlisted.
-      if (lower.startsWith(SYNTHETIC_EMAIL_PREFIX) || allowed.has(lower)) continue;
+      // EXACT-MATCH only against the actual provisioned synthetic mailboxes — a
+      // prefix match would admit a real target user whose address merely starts
+      // with the prefix, defeating the synthetic-only AC-5 guarantee.
+      if (allowed.has(lower)) continue;
       offending.push(shape);
     } else {
       // phone / ssn / credit_card / any non-email shape is never allowlisted.
@@ -359,7 +364,6 @@ function sha256OfFileFd(realLeaf) {
 // domain), so a symlinked offensive-runs/ or session dir is rejected, not
 // followed. Returns the real capture dir; creates it under the nominal dir first.
 function resolveCaptureDirSecure(domain) {
-  const { sessionsRoot, assertSafeDomain } = require("./paths.js");
   const nominalDir = offensiveRunsDir(domain);
   fs.mkdirSync(nominalDir, { recursive: true });
   const realRoot = fs.realpathSync(sessionsRoot());
@@ -395,7 +399,6 @@ function writeCaptureAndHash(captureDir, runId, suffix, contentBytes) {
 // so readOffensiveRunRecords (fail-closed on a partial line) never sees a torn
 // record. Realpath/O_NOFOLLOW/nlink discipline on the ledger leaf.
 function appendSignedRowHardened(domain, row) {
-  const { sessionsRoot, assertSafeDomain } = require("./paths.js");
   const nominalPath = offensiveRunsJsonlPath(domain);
   const nominalDir = path.dirname(nominalPath);
   fs.mkdirSync(nominalDir, { recursive: true });
@@ -603,7 +606,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // producer at an off-route target; with #111 (claim.surface_id === row.surface_id)
   // it ties the signed proof to the routed surface. The probe targets below are
   // built from this bound origin, so row.target is routed by construction.
-  const baselineUrl = resolveBaselineFromSurface({ domain, surface, pathTemplate, state });
+  const baselineUrl = resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName: TOOL_ID });
 
   // Egress identity (mirrors bob_http_confirm).
   const requestedEgressProfile = typeof state.egress_profile === "string" && state.egress_profile.trim()
@@ -739,8 +742,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
 
   let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6;
   try {
-    P4 = await runProbe({ ...probeBase, url: oBUrl, headers: {} }); // anon, cold-first
-    P4id = await runProbe({ ...probeBase, url: oBUrl, headers: {} }); // anon by real id
+    // P4 + P4id are both ANON reads of O_B by its real server-assigned id, run
+    // cold-first so any edge cache is cold during the authed reads. They are
+    // intentionally identical here (the object is addressed only by its one real
+    // id; there is no separate "synthetic id" axis as in #110), so P4id is an anon
+    // consistency re-read — both must 401/403 (mint condition #10). A distinct
+    // private-vs-unlisted-by-id discriminator is a PR-D oracle refinement.
+    P4 = await runProbe({ ...probeBase, url: oBUrl, headers: {} }); // anon baseline (cold-first)
+    P4id = await runProbe({ ...probeBase, url: oBUrl, headers: {} }); // anon consistency re-read
     P0a = await runProbe({ ...probeBase, url: oBUrl, headers: idB.headers });
     P0b = await runProbe({ ...probeBase, url: oBUrl, headers: idB.headers });
     P1 = await runProbe({ ...probeBase, url: oBUrl, headers: idB.headers });
@@ -748,6 +757,9 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // P2′ on a fresh never-before-requested URL variant + server-added no-cache.
     const p2primeUrl = new URL(oBUrl);
     p2primeUrl.searchParams.set("_bobcb", crypto.randomBytes(8).toString("hex"));
+    // Re-validate scope on the cache-bust variant (defense-in-depth: same host as
+    // the validated oBUrl, but never dispatch a URL that has not passed scope).
+    assertSafeRequestUrl(p2primeUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
     P2prime = await runProbe({
       ...probeBase,
       url: p2primeUrl.toString(),

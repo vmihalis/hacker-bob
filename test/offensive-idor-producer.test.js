@@ -277,9 +277,18 @@ test("tenantDiscriminator reads the first well-known key", () => {
   assert.equal(tenantDiscriminator({}), null);
 });
 
-test("piiScan allowlists eval_* + provisioned mailboxes, aborts on foreign PII", () => {
-  assert.deepEqual(piiScan({ email: "eval_x@example.test" }, []), []);
+test("piiScan EXACT-matches provisioned mailboxes only (no eval_* prefix hole), aborts on foreign PII", () => {
+  // The actual provisioned synthetic address passes (exact allowlist match).
   assert.deepEqual(piiScan({ email: "eval_a@example.test" }, ["eval_a@example.test"]), []);
+  // An eval_*-prefixed address that is NOT a provisioned mailbox is now FLAGGED —
+  // the prefix is no longer a free pass (a real eval_uator@victim.com would
+  // otherwise defeat the synthetic-only AC-5 guarantee).
+  const prefixImposter = piiScan({ email: "eval_uator@victim.com" }, ["eval_a@example.test"]);
+  assert.equal(prefixImposter.length, 1);
+  assert.equal(prefixImposter[0].type, "email");
+  // an eval_ address with an empty allowlist is flagged too (no implicit prefix pass)
+  assert.equal(piiScan({ email: "eval_x@example.test" }, []).length, 1);
+  // a clearly-foreign address is flagged
   const foreign = piiScan({ email: "victim@gmail.com" }, []);
   assert.equal(foreign.length, 1);
   assert.equal(foreign[0].type, "email");
