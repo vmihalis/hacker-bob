@@ -490,6 +490,11 @@ function responseIsSharedCacheable(response) {
     return false;
   }
   const get = (name) => String(response.headers.get(name) || "");
+  // DEFINITIVE cache-HIT evidence: the response demonstrably came FROM a shared
+  // cache (Age > 0, or an explicit X-Cache / CF-Cache-Status / X-Served-By HIT).
+  // This fires REGARDLESS of Cache-Control — a no-store/private header does not
+  // negate the fact that a shared cache already served this body to (potentially) a
+  // different principal, so it remains a cross-principal hazard.
   const ageRaw = get("age").trim();
   if (ageRaw !== "" && /^\d+$/.test(ageRaw) && Number(ageRaw) > 0) {
     return true;
@@ -500,16 +505,18 @@ function responseIsSharedCacheable(response) {
       return true;
     }
   }
+  // SPECULATIVE directive: a public / s-maxage response COULD be served by a shared
+  // cache to a different principal. This weaker heuristic is suppressed when the
+  // response is explicitly no-store / private (a shared cache must not store it) or
+  // Varies by Authorization/Cookie (the cache keys on the credential). The
+  // no-store/private suppression applies ONLY to this speculative branch — never to
+  // the definitive HIT evidence above — so it cannot mask a real cache cross-fill.
   const cacheControl = get("cache-control").toLowerCase();
-  // no-store / private take precedence over public / s-maxage — a shared cache
-  // must not serve such a response to a different principal, so it is not a
-  // cross-principal cache hazard (avoids a false-positive that would reject a
-  // legitimate finding as cache_shared_response).
-  if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
-    return false;
-  }
   const sharedDirective = /\bpublic\b/.test(cacheControl) || /\bs-maxage\b/.test(cacheControl);
   if (sharedDirective) {
+    if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
+      return false;
+    }
     const vary = get("vary").toLowerCase();
     const variesByCredential = /\bauthorization\b/.test(vary) || /\bcookie\b/.test(vary);
     if (!variesByCredential) {
@@ -517,6 +524,36 @@ function responseIsSharedCacheable(response) {
     }
   }
   return false;
+}
+
+// AFFIRMATIVE-ORIGIN gate for the IDOR producer's cross-principal proof bodies
+// (PR-C §3.4 hardening). responseIsSharedCacheable only flags a DEFINITIVE hazard
+// (Age>0 / explicit HIT); a misconfigured query-string-ignoring shared cache that
+// stored a `private`/`no-store` body and emits Age:0 / Via / an unlabeled cache
+// header leaves no definitive HIT, so canary-survival on a cross-principal read
+// could be a downstream cache CROSS-FILL rather than an origin object-authorization
+// break. This returns true when a shared cache is DETECTABLY in the request path
+// (it added an Age, Via, X-Cache, CF-Cache-Status, or X-Served-By header) but does
+// NOT affirmatively prove a fresh origin fetch (no MISS/DYNAMIC/EXPIRED cache
+// status). The producer fails CLOSED on true. A direct origin read (NO cache header
+// at all) returns false and is trusted; a CDN that labels its MISS returns false and
+// is trusted. RESIDUAL: a truly fingerprint-less shared cache is indistinguishable
+// from origin here — closed only by a live path-segment cache-buster (PR-D), since a
+// query-key cache-buster cannot defeat a path-keyed cache and {id} must stay final.
+function cacheInPathWithoutProvenMiss(response) {
+  if (!response || !response.headers || typeof response.headers.get !== "function") {
+    return false;
+  }
+  const get = (name) => String(response.headers.get(name) || "");
+  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")}`;
+  if (/\b(miss|dynamic|expired|updating|revalidated|bypass)\b/i.test(cacheStatus)) {
+    return false; // the cache affirmatively reports a fresh origin fetch
+  }
+  return get("age").trim() !== ""
+    || get("via").trim() !== ""
+    || get("x-cache").trim() !== ""
+    || get("cf-cache-status").trim() !== ""
+    || get("x-served-by").trim() !== "";
 }
 
 // Record each offensive probe in http-audit.jsonl so the session request budget
@@ -614,6 +651,7 @@ module.exports = {
   responseLooksLikeLoginPage,
   isResourceShapedResponse,
   responseIsSharedCacheable,
+  cacheInPathWithoutProvenMiss,
   auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,

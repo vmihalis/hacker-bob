@@ -164,9 +164,10 @@ function soundFetchFn(domain, overrides = {}) {
     const u = new URL(url);
     const wantsOB = u.pathname.includes(OBJ_B);
     const wantsOA = u.pathname.includes(OBJ_A);
+    const wantsOC = u.pathname.includes(OBJ_C);
 
     if (overrides.handler) {
-      const r = overrides.handler({ url, headers, isA, isB, isC, wantsOB, wantsOA, calls });
+      const r = overrides.handler({ url, headers, isA, isB, isC, wantsOB, wantsOA, wantsOC, calls });
       if (r) return r;
     }
 
@@ -198,6 +199,14 @@ function soundFetchFn(domain, overrides = {}) {
       }
       // B (or C) reading A's object → partitioned (deny/404).
       return overrides.p6 ? overrides.p6({ calls }) : challenge(403);
+    }
+    if (wantsOC) {
+      // C reading its OWN object O_C → 200 + C's canary (proves C authenticates,
+      // the P7 leg). A/B reading O_C → partitioned deny.
+      if (isC) {
+        return overrides.p7 ? overrides.p7({ calls }) : jsonResponse(200, resourceBody({ canary: CANARY_C, scope: "tenant-C", viewer: "viewer-C", objId: OBJ_C }));
+      }
+      return challenge(403);
     }
     return challenge(404);
   };
@@ -764,6 +773,113 @@ test("AC-6 negative: P3 is not provably identity A's own object (no A-canary) �
   assert.equal(result.confirmed, false);
   assert.equal(result.reason, "p3_not_identity_a_object");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+// ───────────────────────── round-3 review hardening ──────────────────────────
+
+test("AC-6 negative: a P6 401/403 deny body that STILL leaks A's canary → p6_canary_in_deny_body", () => withTempHome(async () => {
+  // Symmetric to the P5 deny-body scan: a B->O_A control request that returns 403
+  // but still echoes A's object means the tenant partition is false.
+  const domain = "idor-neg-p6-canary-deny.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    p6: () => jsonResponse(403, { error: "forbidden", details: { secret: { token: CANARY_A } } }),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p6_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: identity C cannot read its OWN object (stale creds) → identity_c_not_authenticated", () => withTempHome(async () => {
+  // P5's authenticated-but-shared exclusion only holds if C is genuinely
+  // authenticated. If C cannot read O_C, its 401/403 on O_B is just "C not logged
+  // in" (same as anon) and proves nothing — the producer must refuse to sign.
+  const domain = "idor-neg-c-stale.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p7: () => challenge(403) });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "identity_c_not_authenticated");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: a self-provisioned id with a path separator → object_id_unsafe_segment", () => withTempHome(async () => {
+  // encodeURIComponent only ENCODES the id — it does not reject it. A server-minted
+  // id carrying a `/` could route to a sub-resource once a router decodes it, so the
+  // producer rejects any id that is not a clean single path segment.
+  const domain = "idor-neg-unsafe-id.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), object_b: "obj/b/200" };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "object_id_unsafe_segment");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: a TRUNCATED cache-bust P2′ body → body_truncated (P2′ now in the truncation gate)", () => withTempHome(async () => {
+  const domain = "idor-neg-p2prime-trunc.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB, url }) => {
+      if (wantsOB && isA && url.includes("_bobcb=")) {
+        const r = jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-B", details: { secret: { token: CANARY_B } } });
+        r.bodyTruncated = true;
+        return r;
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "body_truncated");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: an OVERSIZED cache-bust P2′ body → object_too_large (P2′ now in the size gate)", () => withTempHome(async () => {
+  const domain = "idor-neg-p2prime-large.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB, url }) => {
+      if (wantsOB && isA && url.includes("_bobcb=")) {
+        return jsonResponse(200, {
+          id: OBJ_B, owner_scope: "tenant-B", filler: "x".repeat(300 * 1024),
+          details: { secret: { token: CANARY_B } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "object_too_large");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: a shared cache is in the path on P2 (Age:0, no MISS label) → cannot_prove_origin_read_through_cache", () => withTempHome(async () => {
+  // The canary survives, responseIsSharedCacheable does NOT fire (Age:0, no HIT,
+  // private suppresses the speculative branch), but a cache that emits Age means a
+  // shared cache is in the path — so without an affirmative MISS the producer cannot
+  // prove this was an origin read (vs a query-ignoring cache cross-fill) and fails
+  // closed. Adversarial-audit finding (wf_cf30cbfe-540).
+  const domain = "idor-neg-cache-crossfill.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { Age: "0", "Cache-Control": "private" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cannot_prove_origin_read_through_cache");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 positive: a labeled CDN MISS on the cross-tenant read still confirms (origin proven)", () => withTempHome(async () => {
+  // A cache IN the path that affirmatively labels its MISS is a proven origin fetch,
+  // so #15b does not block — the cross-tenant read still mints a row.
+  const domain = "idor-pos-cdn-miss.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache": "MISS", "CF-Cache-Status": "MISS" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
 }));
 
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────

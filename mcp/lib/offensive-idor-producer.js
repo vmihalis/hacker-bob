@@ -19,6 +19,17 @@
 // SAME assumption Bob's wave-handoff signing already makes; absolute
 // un-fakeability requires the deferred offensive-SANDBOX (UID/container) PR.
 //
+// CACHE-CROSS-FILL RESIDUAL (honest): the canary witness proves identity A obtained
+// B's private object, but #15/#15b/#16 distinguish an ORIGIN object-authorization
+// break from a downstream shared-cache cross-fill by requiring an affirmative-origin
+// signal (no cache in path, or a labeled cache MISS) and failing closed when a cache
+// is detectably present without one. A truly FINGERPRINT-LESS query-string-ignoring
+// shared cache (no Age/Via/X-Cache and ignores the no-cache request header) is
+// indistinguishable from origin here, so it could still mislabel a cache cross-fill
+// as an origin IDOR (the cross-tenant READ is real either way, same MEDIUM impact).
+// Closed only by a live PATH-segment cache-buster in PR-D — a query-key buster
+// cannot defeat a path-keyed cache and {id} must stay the final segment.
+//
 // INERT AT HEAD: the provenance refuse-to-sign gate (every resolved profile must
 // carry synthetic:true + email_origin:"temp_email" + provisioned_via:
 // "bob_auto_signup") can never be satisfied pre-PR-PROV — nothing stamps those
@@ -61,12 +72,14 @@ const {
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
+  capturedIdSegmentIsSafe,
   originFromState,
   isResourceShapedResponse,
   isAuthChallenge,
   isLoginRedirect,
   responseLooksLikeLoginPage,
   responseIsSharedCacheable,
+  cacheInPathWithoutProvenMiss,
   auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,
@@ -179,6 +192,19 @@ function parseJsonBody(response) {
   } catch {
     return null;
   }
+}
+
+// Scan the ENTIRE response body (bounded only by safe-fetch's 1 MB response cap,
+// NOT the 256 KB object cap bodyTextOf applies) for an exact canary occurrence.
+// Used for deny/leak bodies (P4/P4id/P5/P6) where a canary hidden past the object
+// cap would otherwise be missed and a leak read as a clean deny. A body truncated
+// at the 1 MB fetch cap is rejected separately by the per-probe truncation gates,
+// so anything beyond 1 MB is never silently trusted.
+function bodyLeaksCanary(response, canary) {
+  if (!response || !Buffer.isBuffer(response.bodyBytes) || typeof canary !== "string" || !canary) {
+    return false;
+  }
+  return response.bodyBytes.toString("utf8").includes(canary);
 }
 
 // Walk a parsed body to a fixed FIELD_PATH (array of string keys) and return the
@@ -733,6 +759,20 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       ...identity, ...internalHostPolicy,
     });
   }
+  // Each self-provisioned id is interpolated into the {id} slot of the probe URL
+  // (encodeURIComponent only encodes — it does not REJECT). A server-minted id
+  // carrying a path separator (literal/encoded at any depth) or action/matrix
+  // punctuation could route the read to a sub-resource/action once decoded, so
+  // every id must be a CLEAN single resource segment — the same guard the
+  // read-only confirmer applies to a recorded baseline id (capturedIdSegmentIsSafe).
+  if (!capturedIdSegmentIsSafe(objBId)
+    || !capturedIdSegmentIsSafe(String(object_a))
+    || !capturedIdSegmentIsSafe(String(object_c))) {
+    return blocked("blocked_by_design", "object_id_unsafe_segment", {
+      target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+      ...identity, ...internalHostPolicy,
+    });
+  }
 
   // CANARY-REFLECTED + FIELD_PATH discovery (mint condition #20, D11b): discover
   // FIELD_PATH from the owner readback; if the canary is not reflected, abort.
@@ -783,10 +823,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
 
   // P4 cold-first so any edge cache is cold during authed reads.
   const oBUrl = p2TargetUrl.toString();
+  // O_A (A's own object, for the tenant discriminator + partition symmetry) and
+  // O_C (C's own object, to PROVE C authenticates) are also dynamically built, so
+  // they must clear the SAME scope + read-only guards as oBUrl — never dispatch a
+  // URL that has not passed assertSafeRequestUrl.
   const oAUrl = buildTargetUrl(pathTemplate, String(object_a), baselineUrl.origin).toString();
+  assertSafeRequestUrl(oAUrl, domain, SCOPE_VALIDATION_OPTS);
   assertReadOnlyPath(oAUrl, TOOL_ID);
+  const oCUrl = buildTargetUrl(pathTemplate, String(object_c), baselineUrl.origin).toString();
+  assertSafeRequestUrl(oCUrl, domain, SCOPE_VALIDATION_OPTS);
+  assertReadOnlyPath(oCUrl, TOOL_ID);
 
-  let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6;
+  let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6; let P7;
   try {
     // P4 + P4id are both ANON reads of O_B by its real server-assigned id, run
     // cold-first so any edge cache is cold during the authed reads. They are
@@ -815,6 +863,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     P3 = await runProbe({ ...probeBase, url: oAUrl, headers: idA.headers });
     P5 = await runProbe({ ...probeBase, url: oBUrl, headers: idC.headers });
     P6 = await runProbe({ ...probeBase, url: oAUrl, headers: idB.headers });
+    P7 = await runProbe({ ...probeBase, url: oCUrl, headers: idC.headers }); // C reads its OWN object
   } catch (error) {
     return blocked("blocked_by_infra", "transport_error", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
@@ -829,8 +878,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     ...identity, ...internalHostPolicy,
   });
 
-  // #1 NON-TRUNCATION (P1/P2/P5).
-  if (P1.bodyTruncated !== false || P2.bodyTruncated !== false || P5.bodyTruncated !== false) {
+  // #1 NON-TRUNCATION (P1/P2/P2′/P5). A truncated proof body could hide the canary
+  // or foreign PII past the fetch cap, so every signing-relevant body must be whole.
+  if (P1.bodyTruncated !== false || P2.bodyTruncated !== false
+    || P2prime.bodyTruncated !== false || P5.bodyTruncated !== false) {
     return fail("blocked_by_design", "body_truncated");
   }
   // #2 PARSE (P1/P2).
@@ -840,8 +891,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (p1Parsed == null || p2Parsed == null) {
     return fail("blocked_by_design", "body_not_parseable");
   }
-  // #3 SIZE.
-  if ((P1.bodyByteLength || 0) >= SAFE_OBJECT_CAP || (P2.bodyByteLength || 0) >= SAFE_OBJECT_CAP) {
+  // #3 SIZE (P1/P2/P2′).
+  if ((P1.bodyByteLength || 0) >= SAFE_OBJECT_CAP
+    || (P2.bodyByteLength || 0) >= SAFE_OBJECT_CAP
+    || (P2prime.bodyByteLength || 0) >= SAFE_OBJECT_CAP) {
     return fail("blocked_by_design", "object_too_large");
   }
   // #4 STABILITY P0 — two B-as-B reads byte-identical after canonicalJson.
@@ -889,7 +942,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (canaryAt(p3Parsed, fieldPath) === canary_b) {
     return fail("blocked_by_design", "canary_viewer_echoed_p3");
   }
-  if (bodyTextOf(P4).includes(canary_b) || bodyTextOf(P4id).includes(canary_b)) {
+  if (bodyLeaksCanary(P4, canary_b) || bodyLeaksCanary(P4id, canary_b)) {
     return fail("blocked_by_design", "canary_leaked_unauthenticated");
   }
   // #10 ACCESS CONTROL — P4 and P4-id both 401/403.
@@ -900,16 +953,29 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (responseLooksLikeLoginPage(P2) || isLoginRedirect(P2)) {
     return fail("blocked_by_defense", "p2_login_page");
   }
-  // #11 AUTHENTICATED-BUT-SHARED EXCLUSION — P5 a TRUE deny (401/403 ONLY) whose
-  // body does NOT carry B's canary.
+  // #11 AUTHENTICATED-BUT-SHARED EXCLUSION — a DIFFERENT authenticated identity C
+  // is denied O_B. This only excludes "shared to all authenticated users" if C is
+  // GENUINELY authenticated: a 401/403 from stale/invalid C creds is just "C not
+  // logged in" (indistinguishable from anon P4) and proves nothing. So PROVE C
+  // authenticates first — C must read its OWN object O_C (P7) as a 200 resource
+  // reflecting C's own canary, exactly as P3 proves identity A.
+  if (P7.bodyTruncated !== false) {
+    return fail("blocked_by_design", "p7_body_truncated");
+  }
+  const p7Parsed = parseJsonBody(P7);
+  if (p7Parsed == null || !isResourceShapedResponse(P7) || discoverCanaryFieldPath(p7Parsed, canary_c) == null) {
+    return fail("blocked_by_design", "identity_c_not_authenticated");
+  }
+  // P5 must be a TRUE deny (401/403 ONLY) whose body does NOT carry B's canary.
   if (P5.bodyTruncated !== false) {
     return fail("blocked_by_design", "p5_body_truncated");
   }
   if (isAuthChallenge(P5)) {
     // A 401/403 whose body STILL leaks B's canary is NOT a true deny — identity C
     // actually received B's object inside the error envelope, so the access-control
-    // leg would be unsound. Scan the deny body the same way P4/P4id are scanned.
-    if (bodyTextOf(P5).includes(canary_b)) {
+    // leg would be unsound. Scan the FULL deny body (bodyLeaksCanary), so a canary
+    // hidden past the object cap in a large error envelope is not missed.
+    if (bodyLeaksCanary(P5, canary_b)) {
       return fail("blocked_by_design", "p5_canary_in_deny_body");
     }
   } else {
@@ -924,9 +990,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     }
     return fail("blocked_by_design", "p5_ambiguous");
   }
-  // #12 TENANT PARTITION SYMMETRY — P6 (B→O_A) challenged OR 404.
+  // #12 TENANT PARTITION SYMMETRY — P6 (B→O_A) challenged OR 404, AND its body does
+  // NOT leak A's canary. A truncated P6 could hide canary_a past the fetch cap; a
+  // 401/403/404 whose body STILL carries canary_a means B actually read A's object
+  // (the partition is false) — both block. Symmetric to the P5 deny-body scan.
+  if (P6.bodyTruncated !== false) {
+    return fail("blocked_by_design", "p6_body_truncated");
+  }
   if (!(isAuthChallenge(P6) || P6.status === 404)) {
     return fail("blocked_by_design", "p6_not_partitioned");
+  }
+  if (bodyLeaksCanary(P6, canary_a)) {
+    return fail("blocked_by_design", "p6_canary_in_deny_body");
   }
   // #13 CROSS-TENANT SCOPE PROOF — ownScopeOf(P1) is B's OWN private scope.
   const p1Scope = ownScopeOf(p1Parsed);
@@ -939,9 +1014,21 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (!tenantA || !tenantB || tenantA.key !== tenantB.key || tenantA.value === tenantB.value) {
     return fail("blocked_by_design", "identities_collided_not_provable");
   }
-  // #15 CACHE ORIGIN-PROOF — no shared-cache signal on P2/P2′.
+  // #15 CACHE ORIGIN-PROOF — no DEFINITIVE shared-cache hazard signal on P2/P2′.
   if (responseIsSharedCacheable(P2) || responseIsSharedCacheable(P2prime)) {
     return fail("blocked_by_infra", "cache_shared_response");
+  }
+  // #15b AFFIRMATIVE-ORIGIN — the cross-principal proof bodies must be ORIGIN reads,
+  // not a downstream cache cross-fill. responseIsSharedCacheable only catches a
+  // DEFINITIVE hazard (Age>0 / explicit HIT); a query-string-ignoring shared cache
+  // that stored a `private`/`no-store` body and emits Age:0 / Via / an unlabeled
+  // cache header would serve B's body to A for BOTH P2 and the ?_bobcb P2′ (same
+  // path → same cache key), defeating #16's fresh-URL leg. So when a shared cache is
+  // DETECTABLY in the request path without an affirmative MISS, fail closed rather
+  // than mint a row that mislabels a cache cross-fill as an origin authorization
+  // break. A direct origin read (no cache header) and a labeled-MISS CDN both pass.
+  if (cacheInPathWithoutProvenMiss(P2) || cacheInPathWithoutProvenMiss(P2prime)) {
+    return fail("blocked_by_infra", "cannot_prove_origin_read_through_cache");
   }
   // #17 SYNTHETIC-ONLY (AC-5) — piiScan P1, P2, AND the cache-bust P2′ find only
   // allowlisted synthetics. P2′ is another successful A→B proof body whose canary
@@ -971,6 +1058,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     p4_id_challenged: true,
     p5_denied: true,
     p6_partitioned: true,
+    c_authenticated: true,
     tenants_distinct: true,
     own_scope_private: true,
     no_cache_signal: true,
@@ -979,7 +1067,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     probe_statuses: {
       p0a: P0a.status, p0b: P0b.status, p1: P1.status, p2: P2.status,
       p2prime: P2prime.status, p3: P3.status, p4: P4.status, p4id: P4id.status,
-      p5: P5.status, p6: P6.status,
+      p5: P5.status, p6: P6.status, p7: P7.status,
     },
     relation: relationBooleans,
     field_path: fieldPath,
@@ -1040,6 +1128,9 @@ module.exports = {
   tenantDiscriminator,
   piiScan,
   profileHasProvenance,
-  buildSignedOffensiveRunRow,
-  assertSingleEndpointSingleHost,
+  // NOTE: buildSignedOffensiveRunRow + assertSingleEndpointSingleHost are NOT
+  // exported. buildSignedOffensiveRunRow signs+writes a row WITHOUT running the
+  // mint-condition gates (those live in idorConfirm), so exporting it would give an
+  // internal caller a gate-bypassing signed-row path. Keep the row builder private;
+  // tests drive the full oracle through idorConfirm.
 };
