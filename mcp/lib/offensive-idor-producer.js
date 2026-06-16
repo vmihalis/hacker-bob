@@ -834,7 +834,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   assertSafeRequestUrl(oCUrl, domain, SCOPE_VALIDATION_OPTS);
   assertReadOnlyPath(oCUrl, TOOL_ID);
 
-  let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6; let P7;
+  let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6; let P7; let P8;
   try {
     // P4 + P4id are both ANON reads of O_B by its real server-assigned id, run
     // cold-first so any edge cache is cold during the authed reads. They are
@@ -864,6 +864,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     P5 = await runProbe({ ...probeBase, url: oBUrl, headers: idC.headers });
     P6 = await runProbe({ ...probeBase, url: oAUrl, headers: idB.headers });
     P7 = await runProbe({ ...probeBase, url: oCUrl, headers: idC.headers }); // C reads its OWN object
+    P8 = await runProbe({ ...probeBase, url: oCUrl, headers: {} }); // ANON reads O_C (proves O_C is auth-gated)
   } catch (error) {
     return blocked("blocked_by_infra", "transport_error", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
@@ -914,6 +915,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     || p2Len > p1Len * P2_LENGTH_TOLERANCE || p1Len > p2Len * P2_LENGTH_TOLERANCE) {
     return fail("blocked_by_design", "p2_shape_out_of_tolerance");
   }
+  // #7b RESOURCE SHAPE P2/P2′ — the cross-tenant reads must be genuine 2xx RESOURCE
+  // responses, not a 401/403 error envelope that merely echoes B's id/canary at the
+  // field path. "A READ B's object" requires a real resource body; an error body that
+  // reflects the canary is not a read. (P1 is already shape-checked at #6.)
+  if (isResourceShapedResponse(P2) !== true || isResourceShapedResponse(P2prime) !== true) {
+    return fail("blocked_by_design", "p2_not_resource_shaped");
+  }
   // #8 PRIMARY WITNESS — exact leaf equality on P1 AND P2. Checked BEFORE the
   // P2′ persistence leg so "A never read B's object" is the surfaced reason for a
   // proper deny, not the downstream cache-persistence check.
@@ -942,6 +950,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (canaryAt(p3Parsed, fieldPath) === canary_b) {
     return fail("blocked_by_design", "canary_viewer_echoed_p3");
   }
+  // The anon P4/P4id bodies are trusted to prove the unauthenticated read does NOT
+  // leak the canary; a truncated anon body could hide the canary past the fetch cap,
+  // so reject truncation before the leak scan.
+  if (P4.bodyTruncated !== false || P4id.bodyTruncated !== false) {
+    return fail("blocked_by_design", "p4_body_truncated");
+  }
   if (bodyLeaksCanary(P4, canary_b) || bodyLeaksCanary(P4id, canary_b)) {
     return fail("blocked_by_design", "canary_leaked_unauthenticated");
   }
@@ -957,8 +971,20 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // is denied O_B. This only excludes "shared to all authenticated users" if C is
   // GENUINELY authenticated: a 401/403 from stale/invalid C creds is just "C not
   // logged in" (indistinguishable from anon P4) and proves nothing. So PROVE C
-  // authenticates first — C must read its OWN object O_C (P7) as a 200 resource
-  // reflecting C's own canary, exactly as P3 proves identity A.
+  // authenticates first. Two legs are required, because C reading O_C is only proof
+  // of authentication if O_C is NOT publicly readable:
+  //   (a) O_C is access-controlled — an ANON read (P8) is denied and does not leak
+  //       canary_c. If O_C were public, a stale/empty C would read it too.
+  //   (b) C passes that gate — C's read (P7) is a 200 resource reflecting canary_c.
+  if (P8.bodyTruncated !== false) {
+    return fail("blocked_by_design", "p8_body_truncated");
+  }
+  if (bodyLeaksCanary(P8, canary_c)) {
+    return fail("blocked_by_design", "o_c_public_canary_leaked");
+  }
+  if (!isAuthChallenge(P8)) {
+    return fail("blocked_by_design", "o_c_not_access_controlled");
+  }
   if (P7.bodyTruncated !== false) {
     return fail("blocked_by_design", "p7_body_truncated");
   }
@@ -1059,6 +1085,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     p5_denied: true,
     p6_partitioned: true,
     c_authenticated: true,
+    o_c_access_controlled: true,
     tenants_distinct: true,
     own_scope_private: true,
     no_cache_signal: true,
@@ -1067,7 +1094,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     probe_statuses: {
       p0a: P0a.status, p0b: P0b.status, p1: P1.status, p2: P2.status,
       p2prime: P2prime.status, p3: P3.status, p4: P4.status, p4id: P4id.status,
-      p5: P5.status, p6: P6.status, p7: P7.status,
+      p5: P5.status, p6: P6.status, p7: P7.status, p8: P8.status,
     },
     relation: relationBooleans,
     field_path: fieldPath,

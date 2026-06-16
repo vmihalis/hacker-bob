@@ -882,6 +882,101 @@ test("AC-6 positive: a labeled CDN MISS on the cross-tenant read still confirms 
   assert.equal(result.row_written, true);
 }));
 
+// ───────────────────────── round-4 review hardening ──────────────────────────
+
+test("AC-6 negative: P2 is a 401/403 error envelope echoing B's canary (not a resource read) → p2_not_resource_shaped", () => withTempHome(async () => {
+  const domain = "idor-neg-p2-errorenvelope.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        // A's read is a 403 envelope that merely ECHOES B's canary at the leaf — a
+        // reflected error, not a genuine cross-tenant resource read.
+        return jsonResponse(403, { error: "forbidden", details: { secret: { token: CANARY_B } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p2_not_resource_shaped");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: a TRUNCATED anon P4 body → p4_body_truncated", () => withTempHome(async () => {
+  const domain = "idor-neg-p4-trunc.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, isC, wantsOB }) => {
+      if (wantsOB && !isA && !isB && !isC) {
+        const r = challenge(403);
+        r.bodyTruncated = true; // anon body truncated → a canary could hide past the cap
+        return r;
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p4_body_truncated");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: O_C is publicly readable (anon gets canary_c) → o_c_public_canary_leaked", () => withTempHome(async () => {
+  // If O_C is public, C reading it proves nothing about C's authentication, so the
+  // P5 authenticated-but-shared exclusion would be unsound.
+  const domain = "idor-neg-oc-public.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, isC, wantsOC }) => {
+      if (wantsOC && !isA && !isB && !isC) {
+        return jsonResponse(200, resourceBody({ canary: CANARY_C, scope: "tenant-C", viewer: "anon", objId: OBJ_C }));
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "o_c_public_canary_leaked");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: O_C is not access-controlled (anon 200 without canary) → o_c_not_access_controlled", () => withTempHome(async () => {
+  const domain = "idor-neg-oc-notgated.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, isC, wantsOC }) => {
+      if (wantsOC && !isA && !isB && !isC) {
+        return jsonResponse(200, { id: OBJ_C, owner_scope: "tenant-C", details: { secret: { token: "no-canary" } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "o_c_not_access_controlled");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 positive: a standardized Cache-Status: fwd=miss still confirms (proven origin)", () => withTempHome(async () => {
+  const domain = "idor-pos-cachestatus-miss.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Status": "ExampleCache; fwd=miss" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 negative: a Cache-Status header present without a MISS label → cannot_prove_origin_read_through_cache", () => withTempHome(async () => {
+  const domain = "idor-neg-cachestatus-ambiguous.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Status": "ExampleCache" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cannot_prove_origin_read_through_cache");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

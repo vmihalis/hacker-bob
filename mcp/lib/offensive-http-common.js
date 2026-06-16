@@ -499,7 +499,8 @@ function responseIsSharedCacheable(response) {
   if (ageRaw !== "" && /^\d+$/.test(ageRaw) && Number(ageRaw) > 0) {
     return true;
   }
-  const cacheStatusHeaders = ["x-cache", "cf-cache-status", "x-served-by"];
+  // Includes the standardized RFC 9211 `Cache-Status` (e.g. "ExampleCache; hit").
+  const cacheStatusHeaders = ["x-cache", "cf-cache-status", "x-served-by", "cache-status"];
   for (const headerName of cacheStatusHeaders) {
     if (/\bhit\b/i.test(get(headerName))) {
       return true;
@@ -545,15 +546,22 @@ function cacheInPathWithoutProvenMiss(response) {
     return false;
   }
   const get = (name) => String(response.headers.get(name) || "");
-  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")}`;
+  // Includes the standardized RFC 9211 `Cache-Status` (its "fwd=miss" reports an
+  // affirmative origin fetch, like X-Cache: MISS).
+  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")} ${get("cache-status")}`;
   if (/\b(miss|dynamic|expired|updating|revalidated|bypass)\b/i.test(cacheStatus)) {
     return false; // the cache affirmatively reports a fresh origin fetch
   }
+  // Any of these headers means a shared cache / CDN is in the request path:
+  // Age + Via (generic), the vendor cache-status headers, the standardized
+  // Cache-Status (RFC 9211), and CDN-Cache-Control (a CDN-only caching directive).
   return get("age").trim() !== ""
     || get("via").trim() !== ""
     || get("x-cache").trim() !== ""
     || get("cf-cache-status").trim() !== ""
-    || get("x-served-by").trim() !== "";
+    || get("x-served-by").trim() !== ""
+    || get("cache-status").trim() !== ""
+    || get("cdn-cache-control").trim() !== "";
 }
 
 // Record each offensive probe in http-audit.jsonl so the session request budget
