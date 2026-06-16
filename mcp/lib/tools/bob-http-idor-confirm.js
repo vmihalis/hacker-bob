@@ -46,11 +46,20 @@ module.exports = Object.freeze({
   // ["verifier","evaluator-web","evidence"] set bob_http_confirm uses.
   role_bundles: ["evaluator-web"],
   // Declares the INTENT that the live arm require per-call operator approval (it
-  // mints proof AND CREATEs objects). NOTE: at HEAD this tool is INERT (no live
-  // path — see description), and global_preapproval is not yet wired to a distinct
-  // per-call checkpoint (its authority_class matches bob_http_confirm); the
-  // operator-checkpoint enforcement lands with the live arm in PR-D. DO NOT copy
+  // mints proof AND CREATEs objects). NOTE: at HEAD this tool is INERT and the
+  // per-call checkpoint is NOT yet wired (its authority_class matches
+  // bob_http_confirm); enforcement lands with the live arm in PR-D. DO NOT copy
   // bob_http_confirm's global_preapproval:true.
+  //
+  // SEQUENCING SAFETY (why PR-PROV landing before PR-D cannot make this go live): the
+  // inertness does NOT rest on the provenance gate alone. The MCP dispatcher calls
+  // idorConfirm(args) with NO `provision` arg, so the handler returns
+  // blocked_by_design:object_not_self_provisioned BEFORE any network/signing — an
+  // independent, structural dormancy. PR-PROV only stamps identity provenance; it does
+  // NOT add live self-provisioning. The handler can only mint once PR-D wires live
+  // self-provisioning into the dispatcher, and PR-D wires the operator checkpoint in
+  // the SAME step. So there is no ordering in which provenance-before-checkpoint
+  // activates this tool.
   global_preapproval: false,
   mutating: true,
   network_access: true,

@@ -188,6 +188,12 @@ function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
   if (!template.startsWith("/")) {
     rejectInvalidArguments("path_template must start with /");
   }
+  // A leading `//` is a network-path reference (protocol-relative URL): new URL("//host/x",
+  // origin) resolves to a DIFFERENT host, taking the probe off the bound surface origin.
+  // It passes the absolute-URL scheme check (no `scheme://`) but is not a path.
+  if (template.startsWith("//")) {
+    rejectInvalidArguments("path_template must be an absolute path, not a // network-path reference (it resolves to a different host)");
+  }
   if (template.includes("#")) {
     rejectInvalidArguments("path_template must not include a fragment");
   }
@@ -490,6 +496,23 @@ function isResourceShapedResponse(response) {
   return false;
 }
 
+// The cache-STATUS headers a reverse proxy / CDN sets to report hit-vs-miss for
+// THIS response (so their presence proves a cache handled it, and a HIT/MISS token
+// inside them is the disposition). Beyond X-Cache / CF-Cache-Status / RFC 9211
+// Cache-Status this MUST include the canonical vendor variants — nginx
+// X-Cache-Status ($upstream_cache_status), X-Proxy-Cache / X-Nginx-Cache, Google
+// Cloud CDN x-goog-cache-status, Akamai X-Cache-Remote (TCP_HIT), EdgeCast/Verizon
+// X-EC-Cache, Varnish X-Varnish-Cache/X-VCache — or a path-keyed shared cache that
+// labels only one of these (with no Age) would cross-fill undetected. Deliberately
+// EXCLUDES Via, X-Served-By, CDN-Cache-Control (set on every response / origin-
+// authored — they do not prove a cache HIT) and x-iinfo (an Incapsula WAF marker).
+const CACHE_STATUS_HEADERS = Object.freeze([
+  "x-cache", "cf-cache-status", "cache-status",
+  "x-cache-status", "x-proxy-cache", "x-nginx-cache",
+  "x-goog-cache-status", "x-cache-remote", "x-ec-cache",
+  "x-varnish-cache", "x-vcache",
+]);
+
 // Cache-cross-fill discriminator for the IDOR producer (PR-C §3.4). A
 // cross-tenant read that is actually an edge/CDN cache cross-fill — not an
 // origin BOLA — leaves cache-status fingerprints on the response. This flags a
@@ -520,8 +543,7 @@ function responseIsSharedCacheable(response) {
   // Includes the standardized RFC 9211 `Cache-Status` (e.g. "ExampleCache; hit").
   // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
   // "TCP_HIT", "TCP_MEM_HIT") are seen by the \bhit\b word boundary.
-  const cacheStatusHeaders = ["x-cache", "cf-cache-status", "x-served-by", "cache-status"];
-  for (const headerName of cacheStatusHeaders) {
+  for (const headerName of CACHE_STATUS_HEADERS) {
     if (/\bhit\b/i.test(get(headerName).replace(/_/g, " "))) {
       return true;
     }
@@ -537,8 +559,9 @@ function responseIsSharedCacheable(response) {
   // serve a stored copy to a different principal), so only a POSITIVE s-maxage is a
   // shared-cache hazard — matching the bare token would false-negative every
   // CDN-revalidated (s-maxage=0) response.
-  // Accept an optionally-quoted value (HTTP allows s-maxage="60").
-  const sMaxageMatch = cacheControl.match(/\bs-maxage="?(\d+)/);
+  // Accept optional BWS around `=` and an optionally-quoted value (HTTP allows
+  // s-maxage = "60" / s-maxage =60).
+  const sMaxageMatch = cacheControl.match(/\bs-maxage\s*=\s*"?(\d+)/);
   const sharedDirective = /\bpublic\b/.test(cacheControl)
     || (sMaxageMatch != null && Number(sMaxageMatch[1]) > 0);
   if (sharedDirective) {
@@ -580,22 +603,17 @@ function cacheInPathWithoutProvenMiss(response) {
   // they are deliberately excluded and fall through to fail closed below.
   // Normalize `_` to a space so underscore-delimited CDN tokens (Varnish/Squid
   // "TCP_MISS") are seen by the \b...\b word boundaries.
-  const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")} ${get("cache-status")}`.replace(/_/g, " ");
+  const cacheStatus = CACHE_STATUS_HEADERS.map((h) => get(h)).join(" ").replace(/_/g, " ");
   if (/\b(miss|dynamic|bypass)\b/i.test(cacheStatus)) {
     return false; // the cache affirmatively reports a fresh origin fetch
   }
-  // Any of these headers means a shared cache / CDN is in the request path: Age
-  // (cache-generated per RFC 7234), the vendor cache-status headers, the standardized
-  // Cache-Status (RFC 9211), and CDN-Cache-Control (a CDN-only caching directive).
-  // `Via` is deliberately NOT here — it is a general hop-by-hop header set by ANY
-  // forward/reverse proxy or gateway, not just caches, so it would over-block legit
-  // findings behind a non-caching proxy.
-  return get("age").trim() !== ""
-    || get("x-cache").trim() !== ""
-    || get("cf-cache-status").trim() !== ""
-    || get("x-served-by").trim() !== ""
-    || get("cache-status").trim() !== ""
-    || get("cdn-cache-control").trim() !== "";
+  // A shared cache is detectably in path if Age (cache-generated per RFC 7234) OR any
+  // cache-status header is present. Deliberately EXCLUDES Via / X-Served-By /
+  // CDN-Cache-Control (set on every response / origin-authored — they do not prove a
+  // cache handled THIS read) and x-iinfo (an Incapsula WAF marker), to avoid
+  // over-blocking legit findings behind a non-caching proxy.
+  if (get("age").trim() !== "") return true;
+  return CACHE_STATUS_HEADERS.some((h) => get(h).trim() !== "");
 }
 
 // Record each offensive probe in http-audit.jsonl so the session request budget

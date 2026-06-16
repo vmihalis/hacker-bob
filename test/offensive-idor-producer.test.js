@@ -1111,6 +1111,175 @@ test("AC-2 safety: a recorded endpoint with double-encoded traversal (%252e%252e
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-7 review hardening ──────────────────────────
+
+test("AC-6 positive: X-Served-By (Fastly/Heroku node id on every response) does not over-block", () => withTempHome(async () => {
+  const domain = "idor-pos-xservedby.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Served-By": "cache-lhr1234-LHR" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 positive: CDN-Cache-Control (origin-authored directive) does not over-block", () => withTempHome(async () => {
+  const domain = "idor-pos-cdncc.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "CDN-Cache-Control": "max-age=60" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 negative: Cache-Control: s-maxage = 60 (BWS around =) is a shared-cache hazard → cache_shared_response", () => withTempHome(async () => {
+  const domain = "idor-neg-smaxage-ws.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "s-maxage = 60" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cache_shared_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P5 deny body with the canary \\u-escaped in a SHADOWED duplicate key → p5_canary_in_deny_body", () => withTempHome(async () => {
+  const domain = "idor-neg-p5-escaped-shadow.example.test";
+  setupSession(domain);
+  const escaped = "\\u0062".repeat(64); // decodes to "b" * 64 === CANARY_B
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, `{"detail":"forbidden","leaked":"${escaped}","leaked":"clean"}`),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: foreign PII \\u-escaped in a SHADOWED duplicate key (evades raw + parse) → blocked", () => withTempHome(async () => {
+  const domain = "idor-neg-escaped-shadow-pii.example.test";
+  setupSession(domain);
+  const escapedForeign = [...("victim@gmail.com")].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, `{"id":"${OBJ_B}","owner_scope":"tenant-B","viewer_id":"viewer-A","contact":"${escapedForeign}","contact":"eval_a@example.test","details":{"secret":{"token":"${CANARY_B}"}}}`);
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-2 safety: a // network-path-reference path_template is rejected (resolves to a different host)", () => withTempHome(async () => {
+  const domain = "idor-neg-netpath.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain));
+  seedSyntheticProfiles(domain);
+  ensureHandoffSigningKey(domain);
+  const args = { ...baseArgs(domain), path_template: "//evil.test/{id}" };
+  await assert.rejects(
+    () => idorConfirm(args, { fetch_fn: soundFetchFn(domain), provision: soundProvision() }),
+    /network-path reference/,
+  );
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P3 (A's own object) leaks B's canary at a NON-discovered field → canary_viewer_echoed_p3", () => withTempHome(async () => {
+  const domain = "idor-neg-p3-canary-elsewhere.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOA }) => {
+      if (wantsOA && isA) {
+        // O_A is resource-shaped and carries A's OWN canary at the leaf (prove-A
+        // passes), but ALSO leaks B's canary in a stray field (cross-contamination) —
+        // the field-path-only check missed this; the full-body scan catches it.
+        return jsonResponse(200, {
+          id: OBJ_A, owner_scope: "tenant-A", viewer_id: "viewer-A", stray_ref: CANARY_B,
+          details: { secret: { token: CANARY_A } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "canary_viewer_echoed_p3");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+// ─────────────────── round-7 (adversarial-audit wf_b61d6918-693) hardening ───────────────────
+
+test("AC-6 negative: nginx X-Cache-Status: HIT (no Age, private body) is a shared-cache cross-fill → cache_shared_response", () => withTempHome(async () => {
+  const domain = "idor-neg-nginx-hit.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache-Status": "HIT", "Cache-Control": "private, no-store" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cache_shared_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: Google x-goog-cache-status: hit (no Age) → cache_shared_response", () => withTempHome(async () => {
+  const domain = "idor-neg-goog-hit.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "x-goog-cache-status": "hit" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cache_shared_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 positive: nginx X-Cache-Status: MISS still confirms (proven origin)", () => withTempHome(async () => {
+  const domain = "idor-pos-nginx-miss.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache-Status": "MISS" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-5: a spaced/grouped credit-card number in the P2 proof body → non_synthetic_pii_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-formatted-pan.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, {
+          id: OBJ_B, owner_scope: "tenant-B", viewer_id: "viewer-A", billing: "4111 1111 1111 1111",
+          details: { secret: { token: CANARY_B } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: a trailing-dot FQDN email (victim@corp.com.) in the P2 proof body → non_synthetic_pii_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-fqdn-email.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, {
+          id: OBJ_B, owner_scope: "tenant-B", viewer_id: "viewer-A", contact: "victim@corp.com.",
+          details: { secret: { token: CANARY_B } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

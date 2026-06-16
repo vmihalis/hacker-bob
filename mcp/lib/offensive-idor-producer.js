@@ -200,18 +200,26 @@ function parseJsonBody(response) {
 // cap would otherwise be missed and a leak read as a clean deny. A body truncated
 // at the 1 MB fetch cap is rejected separately by the per-probe truncation gates,
 // so anything beyond 1 MB is never silently trusted.
+// Resolve JSON \uXXXX escapes in RAW text WITHOUT parsing, so duplicate/shadowed keys
+// are preserved (JSON.parse would drop a shadowed key). Lets a substring scan catch a
+// value that is BOTH \u-escaped AND hidden in a shadowed duplicate key.
+function decodeJsonUnicodeEscapes(text) {
+  return typeof text === "string"
+    ? text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    : "";
+}
+
 function bodyLeaksCanary(response, canary) {
   if (!response || !Buffer.isBuffer(response.bodyBytes) || typeof canary !== "string" || !canary) {
     return false;
   }
   const raw = response.bodyBytes.toString("utf8");
   if (raw.includes(canary)) return true;
-  // Also scan the JSON-DECODED form: a deny body that \u-escapes the hex canary
-  // (e.g. "bb...") has raw bytes that differ from the literal canary but
-  // decode to it. Parse + re-serialize so JSON escapes are resolved before the scan.
-  try {
-    if (JSON.stringify(JSON.parse(raw)).includes(canary)) return true;
-  } catch {}
+  // A deny body can hide the canary by \u-escaping it (e.g. "bb...") AND/OR
+  // placing it in a shadowed duplicate key. Decode \u escapes in the RAW text (dup
+  // keys preserved) so the substring scan catches both forms.
+  const unescaped = decodeJsonUnicodeEscapes(raw);
+  if (unescaped !== raw && unescaped.includes(canary)) return true;
   return false;
 }
 
@@ -319,7 +327,17 @@ function piiScan(parsedBodyOrText, allowedEmails) {
   const text = typeof parsedBodyOrText === "string"
     ? parsedBodyOrText
     : canonicalJson(parsedBodyOrText);
-  const shapes = detectPiiShapes(text);
+  // detectPiiShapes only matches a CONTIGUOUS card run and an email whose domain does
+  // not end in a root-label dot. Also scan a NORMALIZED copy so the human-readable
+  // display forms are seen: (1) join intra-digit separators so a spaced/dashed/dotted
+  // PAN (4111 1111 1111 1111) becomes a contiguous Luhn-checkable run; (2) drop a
+  // boundary trailing dot so an absolute-FQDN email (victim@corp.com.) is matched.
+  const normalized = text
+    .replace(/(?<=\d)[ .\-](?=\d)/g, "")
+    .replace(/\.(?=["'\s,}\])]|$)/g, "");
+  const shapes = normalized !== text
+    ? [...detectPiiShapes(text), ...detectPiiShapes(normalized)]
+    : detectPiiShapes(text);
   const allowed = new Set((Array.isArray(allowedEmails) ? allowedEmails : []).map((e) => String(e).toLowerCase()));
   const offending = [];
   for (const shape of shapes) {
@@ -977,7 +995,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (p3Parsed == null || !isResourceShapedResponse(P3) || discoverCanaryFieldPath(p3Parsed, canary_a) == null) {
     return fail("blocked_by_design", "p3_not_identity_a_object");
   }
-  if (canaryAt(p3Parsed, fieldPath) === canary_b) {
+  // Scan ALL of P3 for B's canary (not just the discovered field path): B's canary
+  // appearing ANYWHERE in A's own-object response is cross-contamination / a shared
+  // store, so use the full-body leak scan (raw + \u-decoded), same as P4/P5/P6.
+  if (bodyLeaksCanary(P3, canary_b)) {
     return fail("blocked_by_design", "canary_viewer_echoed_p3");
   }
   // The anon P4/P4id bodies are trusted to prove the unauthenticated read does NOT
@@ -1093,22 +1114,26 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // the parsed body (canonicalJson resolves \u escapes) AND the RAW body text — a
   // JSON response with DUPLICATE keys keeps only the last value after JSON.parse, so
   // foreign PII in a shadowed duplicate key would evade a parsed-only scan.
-  if (piiScan(p1Parsed, allowedEmails).length > 0
-    || piiScan(p2Parsed, allowedEmails).length > 0
-    || piiScan(p2primeParsed, allowedEmails).length > 0
-    || piiScan(bodyTextOf(P1), allowedEmails).length > 0
-    || piiScan(bodyTextOf(P2), allowedEmails).length > 0
-    || piiScan(bodyTextOf(P2prime), allowedEmails).length > 0) {
+  // Each proof body is screened in three forms so neither a duplicate (shadowed) key
+  // nor a \u-escaped value can smuggle foreign PII past the synthetic-only gate: the
+  // parsed object (canonicalJson resolves escapes but drops shadowed keys), the raw
+  // text (keeps shadowed keys but not escapes), and the raw text with \u escapes
+  // decoded (keeps shadowed keys AND resolves escapes).
+  const proofParsed = [p1Parsed, p2Parsed, p2primeParsed];
+  const proofScanTexts = [P1, P2, P2prime].flatMap((r) => {
+    const raw = bodyTextOf(r);
+    return [raw, decodeJsonUnicodeEscapes(raw)];
+  });
+  if (proofParsed.some((p) => piiScan(p, allowedEmails).length > 0)
+    || proofScanTexts.some((t) => piiScan(t, allowedEmails).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_pii_in_response");
   }
   // #17b SYNTHETIC-ONLY (secrets) — the signed proof body must not carry injected
   // credential-shaped data (JWT / AWS key / PEM / prefixed tokens). O_B is
   // self-provisioned synthetic, so a secret here is a server-injected expanded-record
-  // leak. Scan parsed + raw, same dup-key/escape reasoning as the PII tripwire.
-  if (secretShapesIn(p2Parsed).length > 0
-    || secretShapesIn(bodyTextOf(P2)).length > 0
-    || secretShapesIn(bodyTextOf(P1)).length > 0
-    || secretShapesIn(bodyTextOf(P2prime)).length > 0) {
+  // leak. Same parsed + raw + \u-decoded screening as the PII tripwire.
+  if (proofParsed.some((p) => secretShapesIn(p).length > 0)
+    || proofScanTexts.some((t) => secretShapesIn(t).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_secret_in_response");
   }
 
