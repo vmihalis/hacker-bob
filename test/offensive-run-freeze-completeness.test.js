@@ -298,6 +298,24 @@ test("#freeze-completeness: projectExploitRunObservedRef refuses a traversal run
   assert.equal(obs, null, "a traversal run_id must NOT read a file outside offensive-runs/, even if it exists");
 }));
 
+// Defense-in-depth (issue #114 / Codex P2): a run_id that NORMALIZES back inside
+// the dir (e.g. "subdir/../victim") would otherwise resolve to victim.stdout and
+// pass the dirname guard, aliasing a DIFFERENT capture. Reject raw separators →
+// null, fail-closed.
+test("#freeze-completeness: projectExploitRunObservedRef refuses a normalizing run_id that aliases another capture", () => withTempHome(() => {
+  const domain = "exploit-alias.example";
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  // A real capture for run "victim" that the aliasing run_id would resolve to.
+  fs.writeFileSync(path.join(offensiveRunsDir(domain), "victim.stdout"), "victim capture body\n");
+
+  const obs = projectExploitRunObservedRef(domain, {
+    kind: "exploit_run",
+    run_id: "subdir/../victim",
+    stdout_hash: hex("a"),
+  });
+  assert.equal(obs, null, "a run_id with separators/normalization must project null, not alias victim's capture");
+}));
+
 // Defense-in-depth (issue #114 / Codex P1): the lexical containment guard does
 // not stop a SYMLINKED capture leaf — bare sha256File would follow the link and
 // hash an attacker-chosen inode (a content read-oracle). The secure read must

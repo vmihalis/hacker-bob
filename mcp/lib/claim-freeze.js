@@ -437,6 +437,19 @@ function projectRepoCommandRunObservedRef(domain, frozenRef) {
 // offensive-runs.jsonl row). The identical repo_command_run twin and a shared
 // secure-hash helper are tracked in #114.
 function sha256OffensiveCaptureSecure(domain, runId) {
+  // run_id is only shape-validated upstream as a non-empty string (claims.js
+  // assertExploitRunEvidenceShape, tracked for a source-level fix in #114). Reject
+  // any run_id that is not a single clean path segment BEFORE building the leaf: a
+  // separator/NUL or a "."/".." segment (e.g. "subdir/../victim") can normalize
+  // back inside offensive-runs/ and alias a DIFFERENT capture file, slipping the
+  // `dirname === runsDir` guard below instead of failing closed.
+  if (typeof runId !== "string" || !runId) return null;
+  if (
+    runId.includes("/") || runId.includes("\\") || runId.includes("\0") ||
+    runId === "." || runId === ".."
+  ) {
+    return null;
+  }
   const runsDir = path.resolve(offensiveRunsDir(domain));
   const leaf = path.resolve(path.join(runsDir, `${runId}.stdout`));
   if (path.dirname(leaf) !== runsDir) return null;
