@@ -157,22 +157,35 @@ function gateClaimFreezeToVerify(context) {
     });
     return blockers;
   }
-  // No freeze doc yet, or a freeze with no claims: nothing to re-verify (does not brick).
-  if (!freeze || !Array.isArray(freeze.claims) || freeze.claims.length === 0) {
+  // No freeze doc yet: not this gate's concern, and a normal pre-freeze advance must not brick.
+  if (!freeze) return blockers;
+  // A freeze that exists but whose claims[] is not an array is corrupt/tampered — fail closed
+  // (CodeRabbit): a malformed freeze must not silently advance to VERIFY. An empty claims[] is
+  // legitimate (nothing to re-verify) and falls through to the [] return below.
+  if (!Array.isArray(freeze.claims)) {
+    blockers.push({
+      code: "claim_freeze_invalid_shape",
+      blocked_by: "claim_freeze_invalid_shape",
+      message: "CLAIM_FREEZE -> VERIFY blocked: claim-freeze.json must contain a claims[] array.",
+      remediation: "rebuild claim-freeze.json from the persisted candidate claims before advancing to VERIFY",
+    });
     return blockers;
   }
 
-  // (2) NO-BRICK EARLY EXIT. Keep only frozen claims that both assert exploited_safely AND carry
-  // an exploit_run ref. A normal session (no offensive rows, hence no such claims) returns []
-  // here WITHOUT reading the offensive ledger or the signing key, so a session with NO signing
-  // key on disk is never bricked.
+  // (2) NO-BRICK EARLY EXIT. Select EVERY frozen claim asserting exploited_safely (NOT only those
+  // that already carry an exploit_run ref). A normal session has zero such claims and returns []
+  // here WITHOUT reading the offensive ledger or the signing key, so a session with NO signing key
+  // on disk is never bricked. FAIL-CLOSED (CodeRabbit/brutalist): an exploited_safely claim that
+  // lacks a valid exploit_run ref — only possible via claim-freeze.json tampering, since the record
+  // gate rejects it — is NOT silently skipped; it flows into assertExploitedClaimHasProof below,
+  // which throws exploit_proof_missing_exploit_run_evidence BEFORE any ledger/key read, and that
+  // throw is converted to a blocker in step (3). No-brick is unaffected: the filter still requires
+  // exploited_safely, and the missing-ref throw fires before the conditional signing-key read.
   const exploitedClaims = freeze.claims.filter((claim) => (
     claim
     && typeof claim === "object"
     && claim.exploit_outcome
     && claim.exploit_outcome.outcome === "exploited_safely"
-    && Array.isArray(claim.evidence_refs)
-    && claim.evidence_refs.some((ref) => ref && ref.kind === "exploit_run")
   ));
   if (exploitedClaims.length === 0) return blockers;
 

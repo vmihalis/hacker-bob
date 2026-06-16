@@ -16,8 +16,10 @@ const {
   projectCodeBoundObservedRefs,
   projectExploitRunObservedRef,
   assertCompletenessAgainstFreeze,
+  readCurrentClaimFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
+  claimFreezePath,
   handoffSigningKeyPath,
   isAuditGradedPath,
   offensiveRunsDir,
@@ -223,6 +225,56 @@ test("#freeze-verify-gate: backed exploited claim advances without single-use fa
   const envelope = advance(domain, "VERIFY");
   assert.equal(envelope.to_state, "VERIFY");
   assert.equal(envelope.advanced, true);
+}));
+
+test("#freeze-verify-gate: a tampered freeze with a ref-less exploited_safely claim is blocked (fail-closed)", () => withTempHome(() => {
+  const domain = "freeze-verify-tampered-refless.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  appendCandidateClaim({
+    target_domain: domain,
+    title: "Plain reflected behavior",
+    summary: "A non-offensive finding fixture.",
+    severity: "low",
+    evidence_refs: [{ kind: "finding", finding_id: "F-plain", content_hash: hex("0") }],
+  });
+  advance(domain, "CLAIM_FREEZE");
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  // Simulate claim-freeze.json tampering: inject an exploited_safely claim that carries NO
+  // exploit_run ref. The record gate would have rejected it, so only direct tampering produces it;
+  // the gate must NOT silently skip it (fail-closed), it must block.
+  const freeze = readCurrentClaimFreeze(domain);
+  freeze.claims.push({
+    claim_id: "C-tampered",
+    target_domain: domain,
+    severity: "critical",
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+    evidence_refs: [{ kind: "finding", finding_id: "F-x", content_hash: hex("1") }],
+  });
+  fs.writeFileSync(claimFreezePath(domain), JSON.stringify(freeze));
+
+  const blockers = evaluateFreezeToVerify(domain).blockers;
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].code, "exploited_claim_proof_unbacked_at_freeze");
+  assert.equal(blockers[0].underlying_code, "exploit_proof_missing_exploit_run_evidence");
+  assert.equal(blockers[0].claim_id, "C-tampered");
+}));
+
+test("#freeze-verify-gate: a freeze whose claims[] is not an array is blocked (fail-closed)", () => withTempHome(() => {
+  const domain = "freeze-verify-malformed-shape.example";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  advance(domain, "OPEN_FRONTIER");
+  advance(domain, "CLAIM_FREEZE");
+  buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  const freeze = readCurrentClaimFreeze(domain);
+  freeze.claims = "not-an-array";
+  fs.writeFileSync(claimFreezePath(domain), JSON.stringify(freeze));
+
+  const blockers = evaluateFreezeToVerify(domain).blockers;
+  assert.equal(blockers.length, 1);
+  assert.equal(blockers[0].code, "claim_freeze_invalid_shape");
 }));
 
 test("#freeze-completeness: projectExploitRunObservedRef re-hashes the on-disk capture file", () => withTempHome(() => {
