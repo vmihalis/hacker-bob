@@ -127,13 +127,16 @@ function pathTemplateMatchesEndpoint(templatePathname, endpointPathname) {
   return capturedIdSegmentIsSafe(match[1]);
 }
 
-function assertReadOnlyPath(url) {
+// `toolName` defaults to "bob_http_confirm" so the negative-only confirmer's
+// error strings stay byte-identical after the PR-B extraction; the IDOR producer
+// passes its own tool id so its rejection messages name it correctly.
+function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
   const parsed = new URL(url);
   const pathAndQuery = `${parsed.pathname}${parsed.search}`;
   const decodedPath = decodePathSegments(parsed.pathname);
   if (STATE_CHANGE_PATH_SEGMENT_RE.test(parsed.pathname) || STATE_CHANGE_PATH_SEGMENT_RE.test(decodedPath)) {
     rejectInvalidArguments(
-      "path_template resolves to a state-changing path segment; bob_http_confirm only shrinks, not eliminates, GET-side-effect risk and rejects mutation-shaped paths",
+      `path_template resolves to a state-changing path segment; ${toolName} only shrinks, not eliminates, GET-side-effect risk and rejects mutation-shaped paths`,
       { path: parsed.pathname },
     );
   }
@@ -142,24 +145,24 @@ function assertReadOnlyPath(url) {
     const key = String(rawKey || "").trim();
     const value = String(rawValue || "").trim();
     if (/^action$/i.test(key) || /^_method$/i.test(key)) {
-      rejectInvalidArguments(`query parameter ${key} is not allowed for bob_http_confirm`);
+      rejectInvalidArguments(`query parameter ${key} is not allowed for ${toolName}`);
     }
     if (VERB_LIKE_TOKEN_RE.test(key) || VERB_LIKE_TOKEN_RE.test(value)) {
       rejectInvalidArguments(`query parameter ${key} carries a mutation-shaped token`);
     }
     if (/graphql|query/i.test(key) && /\bmutation\b/i.test(value)) {
-      rejectInvalidArguments("GraphQL mutation-shaped query is not allowed for bob_http_confirm");
+      rejectInvalidArguments(`GraphQL mutation-shaped query is not allowed for ${toolName}`);
     }
   }
   // Check the raw AND the recursively-decoded path so an encoded `mutation`
   // segment (e.g. /api/%6Dutation/{id}) that routers decode before dispatch is
   // also rejected, not just the literal form.
   if (/\bmutation\b/i.test(pathAndQuery) || /\bmutation\b/i.test(decodedPath)) {
-    rejectInvalidArguments("mutation-shaped path or query is not allowed for bob_http_confirm");
+    rejectInvalidArguments(`mutation-shaped path or query is not allowed for ${toolName}`);
   }
 }
 
-function normalizePathTemplate(rawTemplate) {
+function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
   const template = assertRequiredText(rawTemplate, "path_template");
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(template)) {
     rejectInvalidArguments("path_template must be a path, not an absolute URL");
@@ -207,7 +210,7 @@ function normalizePathTemplate(rawTemplate) {
   // it structurally. (Consequence: PR3's oracle confirms only DIRECT resource
   // reads; a sub-resource read oracle that synthesizes its own baseline is deferred.)
   if (afterSlot !== "" && !INERT_EXTENSION_RE.test(afterSlot)) {
-    rejectInvalidArguments("path_template {id} must terminate the final path segment (optionally followed by an inert file extension like .json); bob_http_confirm confirms only direct resource reads, so nothing else may follow {id}");
+    rejectInvalidArguments(`path_template {id} must terminate the final path segment (optionally followed by an inert file extension like .json); ${toolName} confirms only direct resource reads, so nothing else may follow {id}`);
   }
   return template;
 }
@@ -265,10 +268,10 @@ function resolveSurfaceOrigins(surface, stateOrigin) {
   return Array.from(origins);
 }
 
-function originFromState(domain, state) {
+function originFromState(domain, state, toolName = "bob_http_confirm") {
   const targetUrl = state && state.target_url;
   if (typeof targetUrl !== "string" || !targetUrl.trim()) {
-    rejectInvalidArguments("bob_http_confirm requires a web session with target_url");
+    rejectInvalidArguments(`${toolName} requires a web session with target_url`);
   }
   let parsed;
   try {
@@ -469,6 +472,46 @@ function isResourceShapedResponse(response) {
   return false;
 }
 
+// Cache-cross-fill discriminator for the IDOR producer (PR-C §3.4). A
+// cross-tenant read that is actually an edge/CDN cache cross-fill — not an
+// origin BOLA — leaves cache-status fingerprints on the response. This flags a
+// response that a SHARED cache could have served:
+//   - Age > 0                              (the response sat in a shared cache)
+//   - X-Cache / CF-Cache-Status / X-Served-By contains HIT
+//   - Cache-Control public | s-maxage WITHOUT a Vary: Authorization|Cookie
+//     (a shared cache is allowed to serve this object to a different principal)
+// A Vary on Authorization/Cookie means the cache keys on the credential, so a
+// `public`/`s-maxage` response that varies by credential is NOT a cross-principal
+// cache hazard and is not flagged. The producer trips on a true here for P2/P2′
+// → `blocked_by_infra:cache_shared_response`, signing nothing. Read-only header
+// inspection; never used to gate a signed row positively.
+function responseIsSharedCacheable(response) {
+  if (!response || !response.headers || typeof response.headers.get !== "function") {
+    return false;
+  }
+  const get = (name) => String(response.headers.get(name) || "");
+  const ageRaw = get("age").trim();
+  if (ageRaw !== "" && /^\d+$/.test(ageRaw) && Number(ageRaw) > 0) {
+    return true;
+  }
+  const cacheStatusHeaders = ["x-cache", "cf-cache-status", "x-served-by"];
+  for (const headerName of cacheStatusHeaders) {
+    if (/\bhit\b/i.test(get(headerName))) {
+      return true;
+    }
+  }
+  const cacheControl = get("cache-control").toLowerCase();
+  const sharedDirective = /\bpublic\b/.test(cacheControl) || /\bs-maxage\b/.test(cacheControl);
+  if (sharedDirective) {
+    const vary = get("vary").toLowerCase();
+    const variesByCredential = /\bauthorization\b/.test(vary) || /\bcookie\b/.test(vary);
+    if (!variesByCredential) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Record each offensive probe in http-audit.jsonl so the session request budget
 // and circuit-breaker summary (built from http-audit records) count the live
 // traffic — an offensive tool makes multiple live requests per call and must not
@@ -563,6 +606,7 @@ module.exports = {
   isLoginRedirect,
   responseLooksLikeLoginPage,
   isResourceShapedResponse,
+  responseIsSharedCacheable,
   auditConfirmRequest,
   assertNoForbiddenInputs,
   SCOPE_VALIDATION_OPTS,

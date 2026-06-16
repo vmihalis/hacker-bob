@@ -1339,6 +1339,11 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // read-only NEGATIVE-ONLY differential confirmer: it appends http-audit.jsonl
   // records for its probes (never writes signed offensive-runs rows); web budget
   // bumps by +1 (web 45→46), while SC remains unchanged.
+  // PR-C adds bob_http_idor_confirm to evaluator-web ONLY (narrow on purpose:
+  // check:authority-inventory asserts no read-only/verifier/evidence role
+  // inherits the signed-row producer). It is opaque-context (server-derived
+  // request, no brief surfacing); web budget bumps by +1 (web 46→47), SC
+  // unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1348,7 +1353,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 46 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 47 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
