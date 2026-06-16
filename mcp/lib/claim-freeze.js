@@ -416,15 +416,28 @@ function projectRepoCommandRunObservedRef(domain, frozenRef) {
 
 // Project an `exploit_run` observed ref by recomputing the sha256 of the on-disk
 // stdout capture file at `offensive-runs/<run_id>.stdout`. Mirrors
-// projectRepoCommandRunObservedRef exactly: the frozen ref's `stdout_hash` is the
+// projectRepoCommandRunObservedRef: the frozen ref's `stdout_hash` is the
 // authoritative identity (the completeness gate's `evidenceReferenceIdentityHash`
 // selector already picks `stdout_hash` for kind="exploit_run"). A missing/unreadable
 // file → null (gate surfaces `missing`); a present-but-tampered file → the actually
 // recomputed sha (gate surfaces `mismatched`).
+//
+// Defense-in-depth (issue #114): `run_id` is only shape-validated upstream as a
+// non-empty string (claims.js assertExploitRunEvidenceShape), so a crafted run_id
+// like "../../x" would otherwise turn this projection into an arbitrary
+// `<path>.stdout` existence + sha256 read-oracle. It can never launder a `complete`
+// verdict (the frozen stdout_hash is MAC-bound to a signed offensive-runs.jsonl
+// row), but we still refuse to read outside the session capture dir: resolve the
+// joined path and return null if it escapes offensiveRunsDir. The source-level
+// run_id validator and the identical repo_command_run twin are tracked in #114.
 function projectExploitRunObservedRef(domain, frozenRef) {
   if (!frozenRef || frozenRef.kind !== "exploit_run") return null;
   if (typeof frozenRef.run_id !== "string" || !frozenRef.run_id) return null;
-  const stdoutPath = path.join(offensiveRunsDir(domain), `${frozenRef.run_id}.stdout`);
+  const runsDir = path.resolve(offensiveRunsDir(domain));
+  const stdoutPath = path.resolve(path.join(runsDir, `${frozenRef.run_id}.stdout`));
+  if (stdoutPath !== runsDir && !stdoutPath.startsWith(`${runsDir}${path.sep}`)) {
+    return null;
+  }
   const observed = sha256File(stdoutPath);
   if (observed == null) return null;
   return {

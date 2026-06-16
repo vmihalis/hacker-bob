@@ -8,15 +8,8 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
-  EVIDENCE_REFERENCE_KIND_VALUES,
-  OFFENSIVE_OUTCOME_VALUES,
-  SAFE_ORACLE_KINDS,
   appendCandidateClaim,
   canonicalizeExploitTarget,
-  evidenceReferenceLookupKey,
-  normalizeCandidateClaim,
-  normalizeEvidenceReferenceShape,
-  readCandidateClaims,
 } = require("../mcp/lib/claims.js");
 const {
   buildClaimFreeze,
@@ -25,11 +18,9 @@ const {
   assertCompletenessAgainstFreeze,
 } = require("../mcp/lib/claim-freeze.js");
 const {
-  claimsJsonlPath,
   isAuditGradedPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
-  repoCommandRunsJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   ensureHandoffSigningKey,
@@ -219,4 +210,88 @@ test("#freeze-completeness: a recorded exploited_safely claim freezes and projec
   // 6. The completeness gate passes when supplied the projected observed refs.
   const verdict = assertCompletenessAgainstFreeze(freeze, projected);
   assert.equal(verdict.complete, true, `expected complete; got ${JSON.stringify(verdict)}`);
+}));
+
+// Negative end-to-end: the WHOLE point of exploit_run being a content-bound
+// kind is tamper-evidence. If the on-disk capture is altered after freeze, the
+// re-projected sha no longer matches the frozen stdout_hash and the completeness
+// gate MUST report complete:false with an exploit_run mismatch — blocking the
+// lifecycle. This exercises the hash-differs branch (claim-freeze.js:287) through
+// the real record→freeze→project path.
+test("#freeze-completeness: a TAMPERED exploit_run capture drives completeness to false (not silently complete)", () => withTempHome(() => {
+  const domain = "exploit-freeze-tamper.example";
+  const runId = "run-tamper-1";
+  const originalContent = "BOB_SYNTH_CANARY_orig synthetic cross-tenant body\n";
+  const stdoutHash = sha256Hex(originalContent);
+
+  // Seed a signed row + claim whose frozen stdout_hash == sha256(originalContent).
+  appendOffensiveRunRow(domain, { run_id: runId, stdout_hash: stdoutHash });
+  appendCandidateClaim(exploitedClaim(domain, {
+    evidence_refs: [exploitRef(domain, { run_id: runId, stdout_hash: stdoutHash })],
+  }));
+
+  // Write a TAMPERED capture file at offensive-runs/<run_id>.stdout (sha != frozen stdout_hash).
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  fs.writeFileSync(
+    path.join(offensiveRunsDir(domain), `${runId}.stdout`),
+    "TAMPERED synthetic body — altered after freeze\n",
+  );
+
+  const freeze = buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+  const projected = projectCodeBoundObservedRefs(domain, freeze);
+  // The projection still emits an exploit_run observed ref (the file exists), but
+  // carrying the TAMPERED sha — so the gate must flag a mismatch, not satisfy.
+  const verdict = assertCompletenessAgainstFreeze(freeze, projected);
+  assert.equal(verdict.complete, false, "a tampered capture must NOT satisfy completeness");
+  assert.ok(
+    verdict.mismatched.some((m) => m.kind === "exploit_run"),
+    `the gate must report the exploit_run ref as mismatched; got ${JSON.stringify(verdict.mismatched)}`,
+  );
+}));
+
+// Focused unit coverage for the exploit_run-specific anti-silent-satisfy guard
+// (claim-freeze.js:277): an observed exploit_run ref that is present by key but
+// omits its stdout_hash must count as a mismatch, NOT a key-presence satisfy.
+// Without this guard a verifier could satisfy the freeze without ever proving the
+// capture's content identity.
+test("#freeze-completeness: an exploit_run observed ref missing its stdout_hash is a mismatch, never a silent satisfy", () => withTempHome(() => {
+  const domain = "exploit-null-hash.example";
+  const runId = "run-nullhash-1";
+  const stdoutHash = sha256Hex("BOB_SYNTH_CANARY_nullhash body\n");
+
+  appendOffensiveRunRow(domain, { run_id: runId, stdout_hash: stdoutHash });
+  appendCandidateClaim(exploitedClaim(domain, {
+    evidence_refs: [exploitRef(domain, { run_id: runId, stdout_hash: stdoutHash })],
+  }));
+  const freeze = buildClaimFreeze(domain, { write: true, now: new Date("2026-06-16T00:00:00.000Z") });
+
+  // Supply an observed exploit_run ref that matches the frozen key (run_id) but
+  // carries no stdout_hash — the gate must NOT treat key-presence as satisfaction.
+  const observedWithoutHash = [{ kind: "exploit_run", run_id: runId }];
+  const verdict = assertCompletenessAgainstFreeze(freeze, observedWithoutHash);
+  assert.equal(verdict.complete, false, "key-present-but-hash-null must not satisfy the freeze");
+  assert.ok(
+    verdict.mismatched.some((m) => m.kind === "exploit_run" && m.observed_hash === null),
+    `the null-observed-hash guard must flag a mismatch; got ${JSON.stringify(verdict.mismatched)}`,
+  );
+}));
+
+// Defense-in-depth (issue #114): a crafted run_id must never let the projection
+// read a file OUTSIDE offensive-runs/. Plant a real file one level up that a
+// "../" run_id would resolve to; without the containment guard the projection
+// would read it and return its sha (an arbitrary <path>.stdout read-oracle). With
+// the guard the resolved path escapes offensiveRunsDir → null.
+test("#freeze-completeness: projectExploitRunObservedRef refuses a traversal run_id even when the target file exists", () => withTempHome(() => {
+  const domain = "exploit-traversal.example";
+  // offensiveRunsDir(domain)/../OUTSIDE.stdout — a real file just outside the capture dir.
+  const outsidePath = path.join(offensiveRunsDir(domain), "..", "OUTSIDE.stdout");
+  fs.mkdirSync(path.dirname(outsidePath), { recursive: true });
+  fs.writeFileSync(outsidePath, "secret body outside the capture dir\n");
+
+  const obs = projectExploitRunObservedRef(domain, {
+    kind: "exploit_run",
+    run_id: "../OUTSIDE",
+    stdout_hash: hex("a"),
+  });
+  assert.equal(obs, null, "a traversal run_id must NOT read a file outside offensive-runs/, even if it exists");
 }));
