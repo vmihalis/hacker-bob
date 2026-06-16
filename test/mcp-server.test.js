@@ -15086,6 +15086,48 @@ test("bob_signup_detect uses egress profiles and rejects proxy-backed strict mod
   });
 });
 
+test("bob_auto_signup rejects a non-temp-provisioned email before any browser or network work", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain);
+    // Intentionally do NOT provision a temp mailbox: a synthetic literal is not
+    // bound to the in-process bob_temp_email store and must fail the gate.
+    const email = "synthetic@example.com";
+
+    const originalResolve = Module._resolveFilename;
+    let patchrightResolveCalls = 0;
+    Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
+      if (request === "patchright") {
+        patchrightResolveCalls += 1;
+        throw new Error("Patchright resolution must not run when the signup email fails the temp-binding gate");
+      }
+      return originalResolve.call(this, request, parent, isMain, options);
+    };
+
+    try {
+      await withMockSafeFetch({}, async (requestedUrls) => {
+        const result = await executeTool("bob_auto_signup", {
+          target_domain: domain,
+          signup_url: "https://signup.example.com/register",
+          email,
+          password: "Password123!",
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, "INVALID_ARGUMENTS");
+        assert.equal(result.error.details.code, "auto_signup_email_not_temp_provisioned");
+        // The gate fires before egress resolution, URL safety, browser resolve, and authStore:
+        assert.equal(patchrightResolveCalls, 0);
+        assert.deepEqual(requestedUrls, []);
+        // The supplied email must never be echoed back anywhere in the envelope.
+        assert.equal(JSON.stringify(result).includes(email), false);
+      }, { dnsRecords: { "signup.example.com": [{ address: "10.0.0.5", family: 4 }] } });
+    } finally {
+      Module._resolveFilename = originalResolve;
+    }
+  });
+});
+
 test("bob_auto_signup blocks internal and off-target signup URLs before browser launch", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
