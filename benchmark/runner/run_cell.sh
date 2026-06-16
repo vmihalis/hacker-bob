@@ -50,7 +50,9 @@ vuln_commit=$(printf '%s' "$row" | cut -f6)
 vul_repo_url=$(printf '%s' "$row" | cut -f7)
 
 # ---- provision the vulnerable target (per-case dir) ------------------------
-REPO="$REPOS_DIR/$CASE_ID"
+REPO="$REPOS_DIR/$CASE_ID-t$TRIAL"   # per-trial checkout: bob keys repo sessions by
+                                     # repo-path hash and resumes existing ones, so a
+                                     # unique path per trial guarantees N independent sessions.
 BOB_TARGET="$REPO"
 if [ -n "$vul_repo_url" ]; then
   # TARBALL MODE: CyberGym repo-vul.tar.gz = byte-identical paired target.
@@ -113,7 +115,7 @@ run_claude() {  # $1 = slash command
 # ---- launch ---------------------------------------------------------------
 ts=$(date +%s)
 echo "[cell $cell_id] launch  case=$CASE_ID project=$project trial=$TRIAL target_id=$target_id"
-run_claude "/bob-oss $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >"$logf" 2>&1
+run_claude "/bob-evaluate $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >"$logf" 2>&1
 rc=$?
 
 # ---- drive to terminal (resume if -p stopped at the launch barrier) -------
@@ -123,7 +125,7 @@ while ! complete "$SDIR" && [ "$resumes" -lt "$MAX_RESUMES" ]; do
   [ $(( $(date +%s) - ts )) -ge "$CELL_TIMEOUT" ] && { echo "[cell $cell_id] timeout"; break; }
   resumes=$((resumes+1))
   echo "[cell $cell_id] not terminal yet; resume #$resumes"
-  run_claude "/bob-oss resume $target_id" >>"$logf" 2>&1
+  run_claude "/bob-evaluate $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >>"$logf" 2>&1
   SDIR=$(resolve_sdir)
 done
 SDIR=$(resolve_sdir)
