@@ -203,6 +203,10 @@ async function tempEmail(args) {
   return JSON.stringify({ error: `Unknown operation: ${op}` });
 }
 
+// Intentionally case-sensitive: the store keys on the raw provider address
+// (set above with no lowercasing), so callers must pass the address returned by
+// bob_temp_email verbatim. Lowercasing here would false-reject a mailbox whose
+// provider returned a mixed-case domain. This is process-global, not per-session.
 function tempMailboxIsKnown(address) {
   if (typeof address !== "string" || !address) return false;
   return tempMailboxes.has(address.trim());

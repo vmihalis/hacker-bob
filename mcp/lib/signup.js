@@ -164,7 +164,7 @@ function assertSignupEmailAllowed(email, options = {}) {
   if (!tempMailboxIsKnown(email)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "bob_auto_signup requires an email provisioned via bob_temp_email this session; create one with bob_temp_email and pass that address.",
+      "bob_auto_signup requires an email created via bob_temp_email in this running MCP process; call bob_temp_email and pass the returned address verbatim (the match is exact and case-sensitive).",
       { code: "auto_signup_email_not_temp_provisioned" },
     );
   }
