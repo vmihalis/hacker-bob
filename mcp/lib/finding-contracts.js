@@ -77,6 +77,38 @@ function normalizeSurfaceType(value) {
   return trimmed;
 }
 
+// The structured PoC recipe an OSS native-code finding declares: the exact argv
+// the reproduction verifier re-runs on the vuln tree and the upstream-fix tree to
+// confirm a differential flip. Distinct from the free-text repro_command (a human
+// hint): this is the machine-runnable token array, shaped identically to
+// bob_verify_repro_reproduction's `command` parameter so a verified_pass binds to
+// it by command_hash. Excluded from computeFindingDedupeKey (allowlist), so adding
+// it never reshuffles finding ids.
+const REPRO_COMMAND_ARGV_MAX_TOKENS = 64;
+const REPRO_COMMAND_ARGV_MAX_TOKEN_LEN = 4096;
+
+function normalizeReproCommandArgv(value, fieldName = "repro_command_argv") {
+  if (value == null) return null;
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of command tokens`);
+  }
+  if (value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty argv array`);
+  }
+  if (value.length > REPRO_COMMAND_ARGV_MAX_TOKENS) {
+    throw new Error(`${fieldName} must have ${REPRO_COMMAND_ARGV_MAX_TOKENS} tokens or fewer`);
+  }
+  return value.map((token, index) => {
+    if (typeof token !== "string" || token.length === 0) {
+      throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+    }
+    if (token.length > REPRO_COMMAND_ARGV_MAX_TOKEN_LEN) {
+      throw new Error(`${fieldName}[${index}] must be ${REPRO_COMMAND_ARGV_MAX_TOKEN_LEN} characters or fewer`);
+    }
+    return token;
+  });
+}
+
 const REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES = Object.freeze(
   ATTACK_VECTOR_VALUES.filter((value) => value !== "unknown"),
 );
@@ -501,6 +533,7 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       affected_package: normalizeOptionalText(record.affected_package, "affected_package"),
       affected_version_range: normalizeOptionalText(record.affected_version_range, "affected_version_range"),
       repro_command: normalizeOptionalText(record.repro_command, "repro_command"),
+      repro_command_argv: normalizeReproCommandArgv(record.repro_command_argv, "repro_command_argv"),
       description: assertRequiredText(record.description, "description"),
       proof_of_concept: assertRequiredText(record.proof_of_concept, "proof_of_concept"),
       response_evidence: normalizeOptionalText(record.response_evidence, "response_evidence"),
@@ -630,6 +663,7 @@ function renderFindingMarkdownEntry(finding) {
     finding.affected_package ? `\n- **Affected Package:** ${finding.affected_package}` : "",
     finding.affected_version_range ? `\n- **Affected Version Range:** ${finding.affected_version_range}` : "",
     finding.repro_command ? `\n- **Repro Command:** \`${finding.repro_command}\`` : "",
+    finding.repro_command_argv ? `\n- **Repro Argv:** \`${JSON.stringify(finding.repro_command_argv)}\`` : "",
   ].join("");
   let scBlock = "";
   if (finding.sc_evidence) {

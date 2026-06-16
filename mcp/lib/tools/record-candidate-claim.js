@@ -300,6 +300,7 @@ function buildFindingPayloadRecord(args, context, findingId, { requireCwe = fals
     affected_package: args.affected_package,
     affected_version_range: args.affected_version_range,
     repro_command: args.repro_command,
+    repro_command_argv: args.repro_command_argv,
     description: args.description,
     proof_of_concept: args.proof_of_concept,
     response_evidence: args.response_evidence,
@@ -484,6 +485,7 @@ function buildClaimPayloadFromFinding(finding, findingContentHash, args, secretB
     "affected_package",
     "affected_version_range",
     "repro_command",
+    "repro_command_argv",
     "description",
     "proof_of_concept",
     "response_evidence",
@@ -779,6 +781,11 @@ module.exports = Object.freeze({
       "repro_command": {
         "type": "string",
         "description": "OSS mode: bounded local command that reproduces or verifies the issue when known. High/critical native-code claims must additionally cite the run as an evidence_refs[] entry of kind \"repo_command_run\" backed by a non-dry-run row in repo-command-runs.jsonl."
+      },
+      "repro_command_argv": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "OSS native-code mode: the machine-runnable PoC as a token array (e.g. [\"sh\",\"-lc\",\"build the ASAN harness && run the crashing input\"]). Required for high/critical C/C++/Rust-unsafe/asm findings: the reproduction verifier (bob_verify_repro_reproduction) re-runs this VERBATIM on the vulnerable tree AND the upstream-fix tree, and a verified_pass is minted only on a genuine sanitizer flip (crashes vuln, quiet on fix). A printf'd banner fires on both trees and is refuted."
       },
       "description": {
         "type": "string"

@@ -281,6 +281,8 @@ function nativeClaimInput(context, evidenceRefs, overrides = {}) {
     surface_ids: [context.assignment.surface_id],
     evidence_refs: evidenceRefs,
     impact: "Remote input can crash the process and may disclose adjacent memory.",
+    // O-P4 requires high/critical native claims to declare the runnable PoC recipe.
+    payload: { finding: { id: "F-1", repro_command_argv: ["sh", "-lc", "/work/repro.sh"] } },
     ...overrides,
   };
 }

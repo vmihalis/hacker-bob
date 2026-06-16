@@ -389,6 +389,30 @@ function writeGradeVerdict(args) {
     );
   }
   const finalSeverities = finalSeverityByFinding(domain);
+  // O-P4 differential-reproduction proof gate. A final-reportable high/critical
+  // native-code finding must be backed by a verified_pass in repro-verified.jsonl
+  // bound (by command_hash) to its declared repro_command_argv. The single
+  // repo_command_run the claim cited is forgeable; only the verifier's differential
+  // re-run mints the verified_pass, and that ledger is MCP-write-only. Fail closed:
+  // an unbacked native high/critical finding cannot be graded (mirrors the
+  // reachability-stamp gate above).
+  const { reproVerifiedGapForNativeReportableFindings } = require("./claims.js");
+  const reproGap = reproVerifiedGapForNativeReportableFindings(domain, {
+    reportableFindingIds: finalReportableSeveritySet,
+    finalSeverities,
+  });
+  if (reproGap.missing.length > 0) {
+    const detail = reproGap.missing.map((m) => `${m.finding_id} (${m.reason})`).join(", ");
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Differential reproduction verified_pass is required for final reportable high/critical native-code finding(s) before grading: ${detail}.`,
+      { code: "O_P4_missing_repro_verified_pass", missing: reproGap.missing },
+      {
+        remediation:
+          "Run bob_verify_repro_reproduction with command = the finding's repro_command_argv and control_ref = the upstream-fix commit; it mints a verified_pass only on a genuine sanitizer flip. Or lower the finding's severity below high / exclude it from the reportable set.",
+      },
+    );
+  }
   const findings = normalizedFindings.map((finding) => {
     const recordedSeverity = finalSeverities.get(finding.finding_id);
     if (!recordedSeverity) return finding;

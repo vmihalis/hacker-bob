@@ -27,12 +27,16 @@ const {
   gradeArtifactPaths,
   claimFreezePath,
   repoInventoryPath,
+  reproVerifiedJsonlPath,
   sessionDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
 const {
   appendCandidateClaim,
 } = require("../mcp/lib/claims.js");
+const {
+  hashCanonicalJson,
+} = require("../mcp/lib/verification-contracts.js");
 const {
   buildRepoInventory,
   initRepoSession,
@@ -204,11 +208,33 @@ function seedLocalParserRepo(home, targetDomain) {
   };
 }
 
+// The PoC recipe the reproduction verifier re-runs. Native high/critical findings
+// declare it (on the claim's finding payload) and a matching verified_pass is
+// seeded so the grade-time O-P4 gate can bind one to the other by command_hash.
+const REPRO_COMMAND_ARGV = ["sh", "-lc", "./harness crash-input.bin"];
+
+// Seed the MCP-write-only verified_pass ledger row the reproduction verifier would
+// mint on a genuine differential flip (crashes vuln tree, quiet on fix tree),
+// bound to REPRO_COMMAND_ARGV by command_hash.
+function seedReproVerifiedPass(domain, findingId = "F-1") {
+  appendJsonlLine(reproVerifiedJsonlPath(domain), {
+    version: 1,
+    target_domain: domain,
+    finding_id: findingId,
+    result: "verified_pass",
+    reason: "differential reproduction: crashes the vulnerable tree, quiet on the upstream-fix tree",
+    command_hash: hashCanonicalJson(REPRO_COMMAND_ARGV),
+    control_ref: "a".repeat(40),
+    crash_class: "heap-buffer-overflow",
+  });
+}
+
 function seedFrozenRepoFinding(domain, surfaceIds, {
   findingId = "F-1",
   severity = "high",
   reachabilityAssertion = null,
 } = {}) {
+  const reproArgv = REPRO_COMMAND_ARGV;
   const claim = {
     target_domain: domain,
     title: "Native parser over-read",
@@ -222,16 +248,15 @@ function seedFrozenRepoFinding(domain, surfaceIds, {
       content_hash: "0".repeat(64),
     }],
     impact: "Parser crash on crafted input.",
-  };
-  if (reachabilityAssertion) {
-    claim.payload = {
+    payload: {
       finding: {
         id: findingId,
         capability_pack: "oss_native_code",
-        reachability_assertion: reachabilityAssertion,
+        repro_command_argv: reproArgv,
+        ...(reachabilityAssertion ? { reachability_assertion: reachabilityAssertion } : {}),
       },
-    };
-  }
+    },
+  };
   appendCandidateClaim(claim);
   buildClaimFreeze(domain, {
     write: true,
@@ -246,6 +271,11 @@ function seedFrozenRepoFinding(domain, surfaceIds, {
     });
   }
   writeEvidencePacks({ target_domain: domain, packs: [evidencePack(findingId)] });
+  // A native finding verified up to high/critical needs a differential
+  // reproduction verified_pass to clear the grade-time O-P4 gate.
+  if (severity === "high" || severity === "critical") {
+    seedReproVerifiedPass(domain, findingId);
+  }
 }
 
 function seedFinalVerificationFromFrozen(domain, { findingId = "F-1" } = {}) {
@@ -651,6 +681,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -667,6 +698,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "local",
@@ -689,6 +721,7 @@ test("conflicting forced reachability assertions use the earliest assertion with
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -731,6 +764,7 @@ test("same-classification frozen reachability assertions with different call pat
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -747,6 +781,7 @@ test("same-classification frozen reachability assertions with different call pat
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -769,6 +804,7 @@ test("same-classification frozen reachability assertions with different call pat
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -811,6 +847,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -827,6 +864,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "local",
@@ -860,6 +898,7 @@ test("reachability assertion ordering sorts missing created_at after valid times
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -918,6 +957,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -934,6 +974,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -956,6 +997,7 @@ test("grade-time reachability ignores malformed or idless frozen assertions", ()
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,
@@ -997,6 +1039,7 @@ test("corrupt frozen reachability assertion fallback is audited and not defensib
       payload: {
         finding: {
           id: "F-1",
+          repro_command_argv: REPRO_COMMAND_ARGV,
           capability_pack: "oss_native_code",
           reachability_assertion: {
             attack_vector: "network",
@@ -1019,6 +1062,7 @@ test("corrupt frozen reachability assertion fallback is audited and not defensib
       });
     }
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedReproVerifiedPass(domain);
 
     writeGradeVerdict({
       target_domain: domain,

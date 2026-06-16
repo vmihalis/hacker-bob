@@ -528,19 +528,45 @@ function repoCommandRunRowSatisfiesEvidence(row, ref) {
   return true;
 }
 
-function assertNotStaticOnlyNativeHighSeverity(claim) {
-  if (!O_P4_TRIGGERING_SEVERITIES.has(claim.severity)) return;
-  const surfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
-  if (surfaceIds.length === 0) return;
-  const surfaceInfo = claimSurfaceLanguageMap(claim.target_domain, surfaceIds);
-  const nativeSurfaces = [];
-  for (const surfaceId of surfaceIds) {
+// The native-code surfaces a claim touches: code_module surfaces whose language
+// is in the O_P4_NATIVE_LANGUAGES set (C/C++/Rust-unsafe/asm). Shared by the
+// claim-record gate and the grade-time reproduction gate so both agree on which
+// findings are subject to the differential-reproduction proof contract.
+function nativeCodeSurfacesForClaim(domain, surfaceIds) {
+  const ids = Array.isArray(surfaceIds) ? surfaceIds : [];
+  if (ids.length === 0) return [];
+  const surfaceInfo = claimSurfaceLanguageMap(domain, ids);
+  const native = [];
+  for (const surfaceId of ids) {
     const info = surfaceInfo.get(surfaceId);
     if (!info) continue;
     if (info.kind !== "code_module") continue;
     if (!info.language || !O_P4_NATIVE_LANGUAGES.has(info.language)) continue;
-    nativeSurfaces.push({ surface_id: surfaceId, language: info.language });
+    native.push({ surface_id: surfaceId, language: info.language });
   }
+  return native;
+}
+
+// The structured PoC recipe carried on the claim's embedded finding payload — the
+// argv the reproduction verifier re-runs. Returns the validated token array, or
+// null when absent/malformed (so callers can require it explicitly).
+function claimReproCommandArgv(claim) {
+  const finding = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+    ? claim.payload.finding
+    : null;
+  const argv = finding && typeof finding === "object" && !Array.isArray(finding)
+    ? finding.repro_command_argv
+    : null;
+  if (!Array.isArray(argv) || argv.length === 0) return null;
+  if (!argv.every((token) => typeof token === "string" && token.length > 0)) return null;
+  return argv;
+}
+
+function assertNotStaticOnlyNativeHighSeverity(claim) {
+  if (!O_P4_TRIGGERING_SEVERITIES.has(claim.severity)) return;
+  const surfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+  if (surfaceIds.length === 0) return;
+  const nativeSurfaces = nativeCodeSurfacesForClaim(claim.target_domain, surfaceIds);
   if (nativeSurfaces.length === 0) return;
   const evidenceRefs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
   const repoCommandRunRefs = evidenceRefs.filter((ref) => ref && ref.kind === "repo_command_run");
@@ -574,6 +600,94 @@ function assertNotStaticOnlyNativeHighSeverity(claim) {
       },
     );
   }
+  // The finding must also declare the machine-runnable PoC recipe
+  // (repro_command_argv) so the verifier can re-run the differential reproduction.
+  // The single repo_command_run above proves a run happened, but its banner is
+  // forgeable; pairing it with a declared argv lets the grade gate later require a
+  // verified_pass bound (by command_hash) to exactly this recipe.
+  if (!claimReproCommandArgv(claim)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "high/critical native-code claims must declare a repro_command_argv (the PoC token array the reproduction verifier re-runs on the vulnerable and upstream-fix trees). Add the runnable recipe so a differential verified_pass can be minted.",
+      {
+        code: "O_P4_missing_repro_command_argv",
+        severity: claim.severity,
+        native_surfaces: nativeSurfaces,
+      },
+    );
+  }
+}
+
+// O-P4 grade-time gate: the differential-reproduction proof contract. A finding
+// that is FINAL-reportable at high/critical AND lives on a native-code surface
+// must be backed by a verified_pass in repro-verified.jsonl whose command_hash
+// binds to the finding's declared repro_command_argv. The single repo_command_run
+// the claim cited is forgeable (printf a banner); only the verifier's differential
+// re-run (crashes the vuln tree, quiet on the upstream-fix tree) mints a
+// verified_pass, and that ledger is MCP-write-only (agent-Write-blocked). This is
+// what makes the high/critical native-code claim non-fabricatable at report time.
+//
+// args: { reportableFindingIds: Set<finding_id>, finalSeverities: Map<finding_id, severity> }
+// returns: { missing: [{ finding_id, reason }] } — empty when every native
+// high/critical reportable finding is backed by a bound verified_pass.
+function reproVerifiedGapForNativeReportableFindings(domain, { reportableFindingIds, finalSeverities } = {}) {
+  const reportable = reportableFindingIds instanceof Set ? reportableFindingIds : new Set();
+  const severities = finalSeverities instanceof Map ? finalSeverities : new Map();
+  if (reportable.size === 0) return { missing: [] };
+
+  // Index the frozen claim batch by its embedded finding id so we can resolve each
+  // reportable finding's surfaces + declared recipe.
+  const claimByFinding = new Map();
+  let claims = [];
+  try {
+    claims = readCandidateClaims(domain);
+  } catch {
+    claims = [];
+  }
+  for (const claim of claims) {
+    const finding = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload.finding
+      : null;
+    const findingId = finding && typeof finding === "object" ? finding.id : null;
+    if (typeof findingId === "string" && !claimByFinding.has(findingId)) {
+      claimByFinding.set(findingId, claim);
+    }
+  }
+
+  const { readReproVerifiedSummary } = require("./repro-replay-verifier.js");
+  let verifiedByFinding = {};
+  try {
+    verifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    verifiedByFinding = {};
+  }
+
+  const missing = [];
+  for (const findingId of reportable) {
+    const severity = severities.get(findingId);
+    if (!O_P4_TRIGGERING_SEVERITIES.has(severity)) continue;
+    const claim = claimByFinding.get(findingId);
+    if (!claim) continue; // unresolvable claim; reachability-stamp gate owns repo-module coverage
+    const nativeSurfaces = nativeCodeSurfacesForClaim(domain, claim.surface_ids);
+    if (nativeSurfaces.length === 0) continue;
+    const argv = claimReproCommandArgv(claim);
+    if (!argv) {
+      // Should already have been rejected at claim-record; defensive at grade time.
+      missing.push({ finding_id: findingId, reason: "no_repro_command_argv" });
+      continue;
+    }
+    const verified = verifiedByFinding[findingId];
+    if (!verified) {
+      missing.push({ finding_id: findingId, reason: "no_verified_pass" });
+      continue;
+    }
+    if (verified.command_hash !== hashCanonicalJson(argv)) {
+      // A verified_pass exists but for a different command than the finding declares.
+      missing.push({ finding_id: findingId, reason: "verified_pass_command_hash_mismatch" });
+      continue;
+    }
+  }
+  return { missing };
 }
 
 function appendCandidateClaim(input, options = {}) {
@@ -610,6 +724,9 @@ module.exports = {
   O_P4_TRIGGERING_SEVERITIES,
   appendCandidateClaim,
   assertNotStaticOnlyNativeHighSeverity,
+  reproVerifiedGapForNativeReportableFindings,
+  nativeCodeSurfacesForClaim,
+  claimReproCommandArgv,
   claimSurfaceLanguageMap,
   evidenceReferenceLookupKey,
   generatedClaimId,

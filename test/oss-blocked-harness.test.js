@@ -125,6 +125,8 @@ const HIGH_SEVERITY_NATIVE_CLAIM_BASE = Object.freeze({
   title: "Bounded copy parses attacker-length field",
   summary: "Parser reads a length-prefixed field but the underlying buffer is shorter; reachable via packet input.",
   severity: "high",
+  // O-P4 requires high/critical native claims to declare the runnable PoC recipe.
+  payload: { finding: { id: "F-1", repro_command_argv: ["sh", "-lc", "./harness crash.bin"] } },
 });
 
 test("high-severity native-code claim with only repo_file evidence is rejected (O-P4)", () => {

@@ -690,6 +690,14 @@ test("O-P4 validator accepts the same high-severity native-code claim once a pro
       summary: "Parser bounds-check missed on packet input.",
       severity: "high",
       surface_ids: [surfaceId],
+      // O-P4 also requires the declared PoC recipe so the verifier can re-run the
+      // differential; it lives on the embedded finding payload.
+      payload: {
+        finding: {
+          id: "F-1",
+          repro_command_argv: ["sh", "-lc", "./fuzzer crash-input.bin"],
+        },
+      },
       evidence_refs: [
         {
           kind: "repo_file",
@@ -710,5 +718,48 @@ test("O-P4 validator accepts the same high-severity native-code claim once a pro
     assert.ok(claim.claim_id, "claim must persist");
     assert.equal(claim.severity, "high");
     assert.equal(claim.evidence_refs.length, 2);
+  });
+});
+
+test("O-P4 validator rejects a high-severity native-code claim that has a backed repo_command_run but no repro_command_argv recipe", () => {
+  withTempHome(() => {
+    const domain = "repo-oss-o8-no-argv.example";
+    const surfaceId = "repo:module:src_parser_c-aa0003";
+    seedNativeCodeSurface(domain, surfaceId, "c");
+    appendRepoCommandRunRow(domain, {
+      run_id: "run-fuzzer-002",
+      command_hash: "b".repeat(64),
+      exit_code: 134,
+      stdout_hash: "c".repeat(64),
+      stderr_hash: "d".repeat(64),
+    });
+
+    let caught;
+    try {
+      appendCandidateClaim({
+        target_domain: domain,
+        title: "Bounds check missed",
+        summary: "Parser bounds-check missed on packet input.",
+        severity: "high",
+        surface_ids: [surfaceId],
+        // repo_command_run is present and backed, but no repro_command_argv is
+        // declared -> the verifier cannot re-run a differential -> rejected.
+        evidence_refs: [
+          {
+            kind: "repo_command_run",
+            run_id: "run-fuzzer-002",
+            command_hash: "b".repeat(64),
+            exit_code: 134,
+            stdout_hash: "c".repeat(64),
+            stderr_hash: "d".repeat(64),
+          },
+        ],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught, "expected O-P4 rejection for missing repro_command_argv");
+    assert.equal(caught.details.code, "O_P4_missing_repro_command_argv");
+    assert.equal(caught.details.severity, "high");
   });
 });
