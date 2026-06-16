@@ -2,8 +2,11 @@
 description: Bob web evaluator subagent — tests one routed attack surface for vulnerabilities and writes a wave handoff.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: false
   edit: false
   "hacker-bob_*": false

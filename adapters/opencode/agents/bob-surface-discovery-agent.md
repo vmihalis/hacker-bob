@@ -2,8 +2,11 @@
 description: Bob surface-discovery subagent — runs bounded normal surface discovery (subdomain enum, live hosts, archived/crawled URLs, nuclei, JS/JWT extraction) and writes attack_surface.json.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: true
   edit: false
   "hacker-bob_*": false

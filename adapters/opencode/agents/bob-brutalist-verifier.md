@@ -2,6 +2,7 @@
 description: Bob round-1 verifier subagent — re-runs PoCs with maximum skepticism and filters non-bugs and severity inflation.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
   write: false

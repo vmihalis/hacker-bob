@@ -2,6 +2,7 @@
 description: Bob round-3 verifier subagent — re-runs only reportable findings with fresh requests as final confirmation.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
   write: false

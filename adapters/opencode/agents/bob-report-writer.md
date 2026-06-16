@@ -2,6 +2,7 @@
 description: Bob report-writer subagent — composes the submission-ready report from verified, graded findings via bob_compose_report.
 mode: subagent
 tools:
+  "*": false
   bash: false
   read: true
   write: false

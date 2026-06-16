@@ -2,8 +2,11 @@
 description: Substrate / ink! smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the direct public HTTPS Substrate JSON-RPC ladder
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: true
   edit: false
   "hacker-bob_*": false

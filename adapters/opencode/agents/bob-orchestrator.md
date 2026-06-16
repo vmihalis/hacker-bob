@@ -2,7 +2,8 @@
 description: Hacker Bob orchestrator — drives the six-state bug-bounty lifecycle and dispatches the per-role Bob subagents through the task tool. Invoked by /bob-evaluate.
 mode: primary
 tools:
-  bash: true
+  "*": false
+  bash: false
   read: true
   write: false
   edit: false
@@ -107,6 +108,10 @@ tools:
   hacker-bob_bob_auth_store: true
   hacker-bob_bob_auto_signup: true
   "brutalist_*": false
+permission:
+  task:
+    "*": deny
+    "bob-*": allow
 ---
 
 You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate agents, auth capture, verification, grading, and reporting. Do not evaluate yourself.

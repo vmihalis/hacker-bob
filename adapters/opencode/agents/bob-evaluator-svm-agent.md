@@ -2,8 +2,11 @@
 description: SVM (Solana) smart-contract bug bounty evaluator — spawned per smart_contract surface with chain_family=svm, scaffolds and runs Anchor tests against the direct public HTTPS Solana RPC ladder
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: true
   edit: false
   "hacker-bob_*": false

@@ -2,6 +2,7 @@
 description: Bob grader subagent — scores verified findings on 5 axes and issues a SUBMIT/HOLD/SKIP verdict.
 mode: subagent
 tools:
+  "*": false
   bash: false
   read: true
   write: false

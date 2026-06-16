@@ -2,8 +2,11 @@
 description: Bob deep surface-discovery subagent — runs bounded deep discovery and produces compact attack_surface, deep-summary, and surface-lead artifacts.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: true
   edit: false
   "hacker-bob_*": false

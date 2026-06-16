@@ -2,6 +2,7 @@
 description: Bob surface-router subagent — calls the MCP surface router after discovery and reports the capability-pack summary.
 mode: subagent
 tools:
+  "*": false
   bash: false
   read: true
   write: false

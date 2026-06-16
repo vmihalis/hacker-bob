@@ -24,13 +24,20 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 const AGENTS_SOURCE_DIR = path.join("adapters", "opencode", "agents");
 
 // OpenCode emits the native-tool booleans in this fixed order for stable,
-// drift-free frontmatter. MCP `bob_*` tools ARE gated per role below:
-// OpenCode registers MCP tools as `<server>_<tool>` keys that the per-agent
-// `tools:` map matches with glob patterns (longest matching pattern wins in
-// Wildcard.all), so each subagent denies `hacker-bob_*` wholesale and then
-// allows exactly its registry-driven role bundle from mcpToolNamesForRole().
-// This mirrors the Claude per-agent `mcp__hacker-bob__bob_*` allow-lists.
-const OPENCODE_TOOL_ORDER = Object.freeze(["bash", "read", "write", "edit", "task"]);
+// drift-free frontmatter. OpenCode's `tools:` map is an OVERRIDE map, NOT an
+// allow-list: an unlisted tool is INHERITED from host defaults (all built-in
+// tools are enabled by default — bash, read, write, edit, grep, glob, list,
+// task, webfetch, websearch, ...). So listing only the tools a role needs would
+// still leave webfetch/websearch/list/etc. open. Rules are resolved
+// last-matching-wins by DECLARATION ORDER (not longest-match), so
+// renderFrontmatter emits a `"*": false` catch-all FIRST, then re-allows each
+// role's native tools plus its registry-driven `hacker-bob_*` MCP bundle from
+// mcpToolNamesForRole() (the specific allow keys follow the deny globs and win).
+// This mirrors the Claude per-agent allow-lists, where unlisted tools are denied.
+// grep/glob are listed so the agent-suite roles (discovery + evaluators) that
+// use them under Claude can be re-allowed explicitly under the `"*": false`
+// baseline; read-only roles never set them and so stay denied.
+const OPENCODE_TOOL_ORDER = Object.freeze(["bash", "read", "grep", "glob", "write", "edit", "task"]);
 
 // Server keys Bob wires into opencode.json (see adapters/opencode/index.js).
 const BOB_MCP_SERVER_KEY = "hacker-bob";
@@ -50,19 +57,32 @@ const OPENCODE_CROSS_CUTTING_SPECS = Object.freeze({
   orchestrator: Object.freeze({
     name: "bob-orchestrator",
     mode: "primary",
-    tools: Object.freeze({ bash: true, read: true, write: false, edit: false, task: true }),
+    // The root orchestrator is the lifecycle authority: it only drives MCP state
+    // transitions and dispatches Bob subagents. It gets NO bash — parity with the
+    // Claude orchestrator skill's `allowed-tools: [Task, Read]` — so a
+    // prompt-injected target/session artifact cannot run raw curl, scanners, or
+    // local commands outside Bob's first-party-scoped, egress-profile-gated MCP
+    // HTTP tools. Worker roles keep bash where they need it.
+    tools: Object.freeze({ bash: false, read: true, write: false, edit: false, task: true }),
+    // permission.task allow-lists Task dispatch to the Bob-owned `bob-*` subagent
+    // set. Without it, `task: true` lets the orchestrator delegate to ANY
+    // global/project subagent (potentially one with broader tools). OpenCode
+    // removes deny-matched subagents from the Task tool description entirely.
+    permission: Object.freeze({
+      task: Object.freeze({ "*": "deny", "bob-*": "allow" }),
+    }),
     description: "Hacker Bob orchestrator — drives the six-state bug-bounty lifecycle and dispatches the per-role Bob subagents through the task tool. Invoked by /bob-evaluate.",
   }),
   "surface-discovery": Object.freeze({
     name: "bob-surface-discovery-agent",
     mode: "subagent",
-    tools: Object.freeze({ bash: true, read: true, write: true, edit: false }),
+    tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: true, edit: false }),
     description: "Bob surface-discovery subagent — runs bounded normal surface discovery (subdomain enum, live hosts, archived/crawled URLs, nuclei, JS/JWT extraction) and writes attack_surface.json.",
   }),
   "deep-surface-discovery": Object.freeze({
     name: "bob-deep-surface-discovery-agent",
     mode: "subagent",
-    tools: Object.freeze({ bash: true, read: true, write: true, edit: false }),
+    tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: true, edit: false }),
     description: "Bob deep surface-discovery subagent — runs bounded deep discovery and produces compact attack_surface, deep-summary, and surface-lead artifacts.",
   }),
   "surface-router": Object.freeze({
@@ -74,7 +94,7 @@ const OPENCODE_CROSS_CUTTING_SPECS = Object.freeze({
   evaluator: Object.freeze({
     name: "bob-evaluator-agent",
     mode: "subagent",
-    tools: Object.freeze({ bash: true, read: true, write: false, edit: false }),
+    tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: false, edit: false }),
     description: "Bob web evaluator subagent — tests one routed attack surface for vulnerabilities and writes a wave handoff.",
   }),
 });
@@ -86,7 +106,7 @@ const OPENCODE_TRAILING_SPECS = Object.freeze({
   "evaluator-spawn": Object.freeze({
     name: "bob-evaluator-spawn",
     mode: "subagent",
-    tools: Object.freeze({ bash: true, read: true, write: true, edit: false }),
+    tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: true, edit: false }),
     description: "Bob generic TaskGraph evaluator shell — executes a dispatched Transition/Hypothesis node under the brief's allowed_tools_for_node[] constraint and writes a wave handoff.",
   }),
   chain: Object.freeze({
@@ -131,6 +151,47 @@ const OPENCODE_TRAILING_SPECS = Object.freeze({
     tools: Object.freeze({ bash: false, read: true, write: false, edit: false }),
     description: "Bob report-writer subagent — composes the submission-ready report from verified, graded findings via bob_compose_report.",
   }),
+  // Read-only session viewers bound to the /bob-status and /bob-debug commands.
+  // OpenCode commands cannot self-restrict tools (command frontmatter has no
+  // tools:/permission: field) and default to the CURRENT agent — so a
+  // /bob-status invoked while the primary orchestrator is active would otherwise
+  // inherit its mutating MCP surface. Routing the commands through these
+  // dedicated subagents is the enforcement boundary: each carries only its
+  // read-only READ_ONLY_*_TOOLS registry bundle (no write/edit, no task, no
+  // mutating Bob tools), and bash is scoped via permission.bash to the same
+  // read-only command set the Claude skills allow — session enumeration under
+  // ~/hacker-bob-sessions plus the passive update-cache `node -e` read.
+  status: Object.freeze({
+    name: "bob-status",
+    mode: "subagent",
+    tools: Object.freeze({ bash: true, read: true, glob: true, write: false, edit: false }),
+    permission: Object.freeze({
+      bash: Object.freeze({
+        "*": "deny",
+        "node *": "allow",
+        "find *": "allow",
+        "ls *": "allow",
+        "stat *": "allow",
+        "test *": "allow",
+      }),
+    }),
+    description: "Bob status reader (read-only) — renders the latest or selected Hacker Bob session's status from read-only MCP summaries. Bound to /bob-status.",
+  }),
+  debug: Object.freeze({
+    name: "bob-debug",
+    mode: "subagent",
+    tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: false, edit: false }),
+    permission: Object.freeze({
+      bash: Object.freeze({
+        "*": "deny",
+        "find *": "allow",
+        "ls *": "allow",
+        "stat *": "allow",
+        "test *": "allow",
+      }),
+    }),
+    description: "Bob debug reader (read-only) — diagnoses the latest or selected run from read-only telemetry/verification MCP readers. Bound to /bob-debug.",
+  }),
 });
 
 function evaluatorPackSpecs() {
@@ -144,7 +205,7 @@ function evaluatorPackSpecs() {
       Object.freeze({
         name: `bob-${role.name}`,
         mode: "subagent",
-        tools: Object.freeze({ bash: true, read: true, write: true, edit: false }),
+        tools: Object.freeze({ bash: true, read: true, grep: true, glob: true, write: true, edit: false }),
         description: role.description,
       }),
     ]),
@@ -167,21 +228,45 @@ function opencodeRoleOutputPath(roleId, { root = DEFAULT_ROOT } = {}) {
   return path.join(root, AGENTS_SOURCE_DIR, `${roleSpec(roleId).name}.md`);
 }
 
+// Render an optional `permission:` block (granular allow/ask/deny maps). Used
+// for permission.task (orchestrator subagent allow-listing) and permission.bash
+// (status/debug read-only command scoping). Glob keys are quoted — YAML requires
+// it for `*` and for keys containing spaces (e.g. `node *`) — and emitted in
+// declaration order, because OpenCode resolves last-matching-rule-wins: the
+// `"*"` catch-all must stay first and the specific rules after it.
+function renderPermissionBlock(permission) {
+  const lines = ["permission:"];
+  for (const [key, patternMap] of Object.entries(permission)) {
+    lines.push(`  ${key}:`);
+    for (const [pattern, action] of Object.entries(patternMap)) {
+      lines.push(`    "${pattern}": ${action}`);
+    }
+  }
+  return lines;
+}
+
 function renderFrontmatter(spec, roleId) {
   const lines = ["---", `description: ${spec.description}`, `mode: ${spec.mode}`, "tools:"];
+  // Deny-all baseline FIRST (see the OPENCODE_TOOL_ORDER note): OpenCode's tools
+  // map is an override map and unlisted tools stay enabled, so the catch-all is
+  // what actually closes webfetch/websearch/list/skill/etc. for every role.
+  // Specific re-allows below win under last-matching-rule precedence.
+  lines.push(`  "*": false`);
   for (const tool of OPENCODE_TOOL_ORDER) {
     if (tool in spec.tools) lines.push(`  ${tool}: ${spec.tools[tool]}`);
   }
-  // Registry-driven MCP gating: deny the whole hacker-bob server, then allow
-  // exactly this role's bundle. OpenCode's Wildcard.all gives the longest
-  // matching pattern precedence, so each specific `hacker-bob_bob_*` allow key
-  // overrides the `hacker-bob_*` deny glob. The external @brutalist/mcp server
-  // is opened only for the verifier role that owns the roast contract.
+  // Registry-driven MCP gating: deny the whole hacker-bob server, then re-allow
+  // exactly this role's bundle. The specific `hacker-bob_bob_*` allow keys are
+  // emitted AFTER the `hacker-bob_*` deny glob so last-matching-rule precedence
+  // lets them win. The external @brutalist/mcp server is opened only for the
+  // verifier role that owns the roast contract.
   lines.push(`  "${BOB_MCP_SERVER_KEY}_*": false`);
   for (const toolName of mcpToolNamesForRole(roleId)) {
     lines.push(`  ${BOB_MCP_SERVER_KEY}_${toolName}: true`);
   }
   lines.push(`  "${BRUTALIST_MCP_SERVER_KEY}_*": ${BRUTALIST_ALLOWED_ROLE_IDS.includes(roleId)}`);
+  // Optional granular permission block (task allow-listing / bash scoping).
+  if (spec.permission) lines.push(...renderPermissionBlock(spec.permission));
   lines.push("---");
   return lines.join("\n");
 }

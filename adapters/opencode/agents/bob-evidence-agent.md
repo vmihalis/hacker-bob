@@ -2,6 +2,7 @@
 description: Bob evidence subagent — collects bounded pre-grade evidence packs for final reportable findings.
 mode: subagent
 tools:
+  "*": false
   bash: false
   read: true
   write: false

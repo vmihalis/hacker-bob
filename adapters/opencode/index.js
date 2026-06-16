@@ -5,11 +5,10 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const config = require("./config.js");
 const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
+const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
 const {
   AGENTS_SOURCE_DIR,
   OPENCODE_ROLE_SPECS,
-  renderOpencodePromptBody,
-  roleBody,
   updateOpencodeRoleFiles,
 } = require("../../scripts/lib/opencode-role-renderer.js");
 
@@ -34,14 +33,23 @@ function agentTargetFiles() {
   return agentSpecList().map((spec) => path.join(AGENTS_DIR, `${spec.name}.md`));
 }
 
-// status/debug commands render the shared read-only role bodies; the rest map to
-// node helpers or the orchestrator agent.
+// status/debug commands bind to their dedicated read-only subagents; the rest
+// map to node helpers or the orchestrator agent. The role id keys the
+// OPENCODE_ROLE_SPECS lookup that resolves the bound `bob-<role>` agent name.
 const COMMAND_ROLE_IDS = Object.freeze({ status: "status", debug: "debug" });
 
 // External adversarial-roast MCP server consumed by the brutalist-verifier
 // role. Optional — registered alongside hacker-bob but not required at runtime.
 // See prompts/roles/brutalist-verifier.md for the graceful-fallback contract.
-const BRUTALIST_COMMAND = Object.freeze(["npx", "-y", "@brutalist/mcp@latest"]);
+// OpenCode reads a flat `command` array, but the package name and PINNED version
+// are the single source of truth shared with the Claude/Codex/Kimi/generic
+// adapters (BRUTALIST_MCP_SERVER = { command, args: ["-y", "@brutalist/mcp@<pin>"] }).
+// Deriving from it keeps the reviewed version in lockstep instead of letting
+// OpenCode installs float on `@latest` and silently execute a newer release.
+const BRUTALIST_COMMAND = Object.freeze([
+  BRUTALIST_MCP_SERVER.command,
+  ...BRUTALIST_MCP_SERVER.args,
+]);
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -50,14 +58,6 @@ function isPlainObject(value) {
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function dirExists(dirPath) {
-  try {
-    return fs.statSync(dirPath).isDirectory();
   } catch {
     return false;
   }
@@ -112,9 +112,9 @@ function bobEntryMatches(entry, targetAbs) {
 }
 
 // The /bob-evaluate command routes to the bob-orchestrator primary agent (whose
-// rendered contract carries the full runbook). status/debug inline the shared
-// read-only role bodies; update/export/egress call the mcp/lib helpers directly
-// (OpenCode has no hooks dir, so there is nothing to wrap).
+// rendered contract carries the full runbook). status/debug bind to their
+// dedicated read-only subagents (bob-status / bob-debug); update/export/egress
+// call the mcp/lib helpers directly (OpenCode has no hooks dir, nothing to wrap).
 function renderEvaluateCommand(spec) {
   return [
     "---",
@@ -139,17 +139,24 @@ function renderEvaluateCommand(spec) {
 }
 
 function renderRoleCommand(commandId, spec) {
-  const roleId = COMMAND_ROLE_IDS[commandId];
-  const body = renderOpencodePromptBody(roleId, roleBody(roleId));
+  // status/debug bind to their dedicated read-only subagents (bob-status /
+  // bob-debug) via `agent:`, mirroring how /bob-evaluate routes to
+  // bob-orchestrator. OpenCode command frontmatter cannot restrict tools itself
+  // and otherwise runs under the CURRENT agent (e.g. the primary orchestrator
+  // with its mutating MCP surface), so the agent binding is the read-only
+  // enforcement boundary — the subagent file carries the role body plus its
+  // locked-down tool/permission frontmatter.
+  const agentName = OPENCODE_ROLE_SPECS[COMMAND_ROLE_IDS[commandId]].name;
   return [
     "---",
     `description: ${spec.description}`,
+    `agent: ${agentName}`,
     "---",
     "",
     `The operator invoked /${spec.command} with: \`$ARGUMENTS\` (optional target selector).`,
-    "Use it to choose the Hacker Bob session, then follow the workflow below.",
-    "",
-    body.trimEnd(),
+    `You are the read-only \`${agentName}\` agent. Treat \`$ARGUMENTS\` as the Hacker Bob`,
+    "session selector and follow your agent contract. Do not mutate lifecycle,",
+    "verification, grade, or report state.",
     "",
   ].join("\n");
 }
@@ -536,10 +543,55 @@ function removeMcpConfig(targetAbs, result) {
   }
 }
 
+// Walk the directory chain above a managed path. If any intermediate component
+// is a symlink, removing the leaf through it would escape the install target —
+// e.g. a symlinked `.opencode` or `.opencode/agents` pointing at a shared
+// ~/.config/opencode/agents, where `fs.rmSync` would delete Bob-named files in
+// the symlink TARGET. Install rejects symlinked parents via createSafeInstallFs;
+// uninstall must hold the same line. We skip-and-continue (matching
+// removeMcpConfig) rather than throwing, so one aliased path never aborts the
+// rest of a legitimate uninstall.
+function parentComponentsSafe(targetAbs, relativePath, result, type) {
+  const parents = relativePath.split(path.sep).filter(Boolean).slice(0, -1);
+  let current = targetAbs;
+  for (const part of parents) {
+    current = path.join(current, part);
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      // Missing parent: the leaf cannot exist below it, nothing to remove.
+      return true;
+    }
+    if (stat.isSymbolicLink()) {
+      result.skipped.push({
+        type,
+        path: relativePath,
+        reason: `refusing to follow symlinked parent directory ${path.relative(targetAbs, current)}`,
+      });
+      return false;
+    }
+    if (!stat.isDirectory()) return true;
+  }
+  return true;
+}
+
 function maybeRemoveFile(targetAbs, relativePath, result) {
+  if (!parentComponentsSafe(targetAbs, relativePath, result, "file")) return;
   const filePath = path.join(targetAbs, relativePath);
-  if (!fs.existsSync(filePath)) return;
-  const stat = fs.lstatSync(filePath);
+  // lstat (not existsSync, which follows links) so a symlinked leaf is detected
+  // rather than dereferenced — removing it would either delete an arbitrary
+  // target or leave a dangling link, neither of which is a Bob-owned file.
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    result.skipped.push({ type: "file", path: relativePath, reason: "refusing to remove symlinked file" });
+    return;
+  }
   if (stat.isDirectory()) {
     result.skipped.push({ type: "file", path: relativePath, reason: "expected file but found directory" });
     return;
@@ -549,8 +601,21 @@ function maybeRemoveFile(targetAbs, relativePath, result) {
 }
 
 function maybeRemoveEmptyDir(targetAbs, relativePath, result) {
+  if (!parentComponentsSafe(targetAbs, relativePath, result, "dir")) return;
   const dirPath = path.join(targetAbs, relativePath);
-  if (!dirExists(dirPath)) return;
+  // lstat the leaf too: a symlinked managed dir (e.g. `.opencode` aliasing a
+  // shared config dir) must not be swept through or rmdir'd.
+  let stat;
+  try {
+    stat = fs.lstatSync(dirPath);
+  } catch {
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    result.skipped.push({ type: "dir", path: relativePath, reason: "refusing to remove symlinked directory" });
+    return;
+  }
+  if (!stat.isDirectory()) return;
   if (fs.readdirSync(dirPath).length !== 0) return;
   result.actions.push({ type: "remove_empty_dir", path: relativePath });
   if (!result.dry_run) fs.rmdirSync(dirPath);

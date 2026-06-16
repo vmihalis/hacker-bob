@@ -2,6 +2,7 @@
 description: Bob chain-builder subagent — analyzes proven findings for credible impact chains that elevate severity, via the MCP graph apparatus.
 mode: subagent
 tools:
+  "*": false
   bash: false
   read: true
   write: false

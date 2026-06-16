@@ -2,6 +2,7 @@
 description: Bob round-2 verifier subagent — reviews decisions for false negatives and severity over-corrections.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
   write: false

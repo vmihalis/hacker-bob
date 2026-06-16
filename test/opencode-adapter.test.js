@@ -45,15 +45,18 @@ test("opencode install writes the OpenCode-shaped MCP entry and command/subagent
       enabled: true,
     });
     assert.equal(cfg.mcp.brutalist.type, "local");
-    assert.deepEqual(cfg.mcp.brutalist.command, ["npx", "-y", "@brutalist/mcp@latest"]);
+    // Pinned to the same reviewed version the Claude/Codex/Kimi/generic adapters
+    // share via BRUTALIST_MCP_SERVER — never the floating @latest tag.
+    assert.deepEqual(cfg.mcp.brutalist.command, ["npx", "-y", "@brutalist/mcp@1.14.7"]);
 
     // All six slash commands are rendered.
     for (const commandId of opencode.commandIds()) {
       const file = path.join(workspace, ".opencode", "commands", opencode.commandSpec(commandId).file);
       assert.ok(fs.existsSync(file), `expected command file ${file}`);
     }
-    // All 18 per-role subagents are installed under .opencode/agents/.
-    assert.equal(opencode.agentTargetFiles().length, 18);
+    // All 20 per-role subagents are installed under .opencode/agents/ (18 worker
+    // roles + the read-only bob-status / bob-debug command-bound subagents).
+    assert.equal(opencode.agentTargetFiles().length, 20);
     for (const relative of opencode.agentTargetFiles()) {
       assert.ok(fs.existsSync(path.join(workspace, relative)), `expected agent file ${relative}`);
     }
@@ -145,6 +148,66 @@ test("opencode subagent frontmatter gates MCP tools to each role's registry bund
     const orchestrator = frontmatterOf("bob-orchestrator.md");
     assert.match(orchestrator, /^  "hacker-bob_\*": false$/m);
     assert.doesNotMatch(orchestrator, /hacker-bob_bob_write_wave_handoff/);
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode frontmatter denies tools by default and locks down orchestrator + status/debug", () => {
+  const workspace = makeWorkspace();
+  try {
+    installInto(workspace);
+    const frontmatterOf = (agentFile) =>
+      fs.readFileSync(path.join(workspace, ".opencode", "agents", agentFile), "utf8")
+        .match(/^---\n([\s\S]*?)\n---\n/)[1];
+
+    // Deny-all baseline: OpenCode's tools map is an override map (unlisted tools
+    // stay enabled), so every role must emit `"*": false` to actually close
+    // webfetch/websearch/list/etc. unless explicitly re-allowed.
+    for (const file of ["bob-orchestrator.md", "bob-grader.md", "bob-evaluator-agent.md", "bob-status.md"]) {
+      assert.match(frontmatterOf(file), /^  "\*": false$/m, `${file} missing deny-all baseline`);
+    }
+
+    // The root orchestrator is the lifecycle authority: NO bash, and Task
+    // dispatch allow-listed to Bob-owned subagents (deny-all then allow bob-*).
+    const orchestrator = frontmatterOf("bob-orchestrator.md");
+    assert.match(orchestrator, /^  bash: false$/m);
+    assert.match(orchestrator, /^permission:\n  task:\n    "\*": deny\n    "bob-\*": allow$/m);
+
+    // status/debug are read-only subagents: no write/edit/task, no mutating Bob
+    // tools, and bash scoped deny-by-default via permission.bash.
+    for (const file of ["bob-status.md", "bob-debug.md"]) {
+      const fm = frontmatterOf(file);
+      assert.match(fm, /^mode: subagent$/m, `${file} must be a subagent`);
+      assert.doesNotMatch(fm, /^  (write|edit|task): true$/m, `${file} must not enable write/edit/task`);
+      assert.doesNotMatch(fm, /hacker-bob_bob_advance_session/, `${file} must not allow lifecycle mutators`);
+      assert.doesNotMatch(
+        fm,
+        /hacker-bob_bob_(write|compose|finalize|amend|record|apply|advance|start|merge)_/,
+        `${file} must not allow any Bob write/lifecycle tool`,
+      );
+      assert.match(fm, /^permission:\n  bash:\n    "\*": deny$/m, `${file} must scope bash deny-by-default`);
+    }
+
+    // The /bob-status and /bob-debug commands route to those read-only agents
+    // (commands cannot self-restrict tools, so the agent binding is the gate).
+    assert.match(
+      fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-status.md"), "utf8"),
+      /^agent: bob-status$/m,
+    );
+    assert.match(
+      fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-debug.md"), "utf8"),
+      /^agent: bob-debug$/m,
+    );
+
+    // Agent-suite roles re-allow grep/glob under the deny-all; read-only roles
+    // and the verifiers do not.
+    const evaluator = frontmatterOf("bob-evaluator-agent.md");
+    assert.match(evaluator, /^  grep: true$/m);
+    assert.match(evaluator, /^  glob: true$/m);
+    for (const file of ["bob-grader.md", "bob-brutalist-verifier.md", "bob-orchestrator.md"]) {
+      assert.doesNotMatch(frontmatterOf(file), /^  (grep|glob): true$/m, `${file} must not re-allow grep/glob`);
+    }
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -292,6 +355,44 @@ test("opencode uninstall refuses to rewrite a symlinked opencode.json", () => {
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("opencode uninstall refuses to remove Bob files through a symlinked .opencode/agents parent", () => {
+  const workspace = makeWorkspace();
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "bob-opencode-shared-agents-"));
+  try {
+    installInto(workspace);
+    // Operator aliased .opencode/agents at a SHARED agents dir (e.g.
+    // ~/.config/opencode/agents) that holds a same-named operator file. Replacing
+    // the in-target dir with a symlink to it simulates that aliasing. Uninstall
+    // must not traverse the symlinked parent and delete Bob-named files in the
+    // link target — that target is outside the install scope.
+    const realAgents = path.join(workspace, ".opencode", "agents");
+    const sharedOrchestrator = path.join(shared, "bob-orchestrator.md");
+    fs.writeFileSync(sharedOrchestrator, "shared agent owned by the operator\n", "utf8");
+    fs.rmSync(realAgents, { recursive: true, force: true });
+    fs.symlinkSync(shared, realAgents);
+
+    const result = opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    assert.equal(result.ok, true);
+    // The symlinked parent (and the leaf files reached through it) are skipped.
+    assert.ok(
+      result.skipped.some((s) => /symlink/.test(s.reason) && /agents/.test(s.path)),
+      `expected a symlinked-parent skip entry, got ${JSON.stringify(result.skipped)}`,
+    );
+    assert.ok(fs.existsSync(sharedOrchestrator), "shared symlink-target file must survive uninstall");
+    assert.equal(
+      fs.readFileSync(sharedOrchestrator, "utf8"),
+      "shared agent owned by the operator\n",
+      "shared symlink-target file must not be rewritten",
+    );
+    // The symlink itself must be left in place (never rmdir'd through).
+    assert.ok(fs.existsSync(realAgents), "the .opencode/agents symlink must be left in place");
+    assert.ok(fs.lstatSync(realAgents).isSymbolicLink(), "the parent must remain a symlink, not be replaced");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(shared, { recursive: true, force: true });
   }
 });
 

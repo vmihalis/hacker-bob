@@ -2,8 +2,11 @@
 description: Bob generic TaskGraph evaluator shell — executes a dispatched Transition/Hypothesis node under the brief's allowed_tools_for_node[] constraint and writes a wave handoff.
 mode: subagent
 tools:
+  "*": false
   bash: true
   read: true
+  grep: true
+  glob: true
   write: true
   edit: false
   "hacker-bob_*": false
