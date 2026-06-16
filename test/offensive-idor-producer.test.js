@@ -664,6 +664,108 @@ test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", 
   assert.equal(result.reason, "own_scope_not_private");
 }));
 
+// ───────────────────────── round-2 review hardening ──────────────────────────
+
+test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {
+  // normalizePathTemplate forces {id} to be the FINAL segment, but a verb-NAMED
+  // collection BEFORE the id still resolves through resolveBaselineFromSurface, so
+  // the producer applies assertReadOnlyPath (the same guard the read-only confirmer
+  // runs on its baseline). A recorded /api/reset/<id> endpoint is rejected as a
+  // state-changing path before any object is provisioned or probed.
+  const domain = "idor-readonly-verb.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/reset/${OBJ_B}`);
+  seedSyntheticProfiles(domain);
+  ensureHandoffSigningKey(domain);
+  const args = { ...baseArgs(domain), path_template: "/api/reset/{id}" };
+  await assert.rejects(
+    () => idorConfirm(args, { fetch_fn: soundFetchFn(domain), provision: soundProvision() }),
+    /state-changing path segment/,
+  );
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: Bob-local profile metadata (provenance flags + synthetic mailbox) is never sent as an outbound header", () => withTempHome(async () => {
+  // The auth profile co-mingles real headers (Authorization) with Bob-local fields
+  // (synthetic/email_origin/provisioned_via/email). buildHeaderProfile Object.assigns
+  // its first arg verbatim, so the producer must strip the metadata before building
+  // outbound headers — otherwise it would leak provenance + the synthetic mailbox
+  // to the target once armed.
+  const domain = "idor-header-leak.example.test";
+  setupSession(domain);
+  const seenHeaderKeys = new Set();
+  const base = soundFetchFn(domain);
+  const fetch_fn = async (req) => {
+    for (const key of Object.keys(req.headers || {})) seenHeaderKeys.add(key);
+    return base(req);
+  };
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  for (const leaky of ["synthetic", "email_origin", "provisioned_via", "email", "local_storage", "credentials"]) {
+    assert.ok(!seenHeaderKeys.has(leaky), `outbound headers must not carry Bob-local field "${leaky}"; saw [${[...seenHeaderKeys].join(", ")}]`);
+  }
+  // the genuine auth header IS still sent
+  assert.ok(seenHeaderKeys.has("Authorization"), "Authorization header must still be sent");
+}));
+
+test("AC-5: foreign PII appearing ONLY in the cache-bust P2′ proof body → blocked_operator_pii", () => withTempHome(async () => {
+  const domain = "idor-ac5-p2prime-pii.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB, url }) => {
+      if (wantsOB && isA && url.includes("_bobcb=")) {
+        // P2′ (fresh URL) returns an EXPANDED body carrying a real victim email; the
+        // cached P2 stays clean. Without scanning P2′ this would sign.
+        return jsonResponse(200, {
+          id: OBJ_B, owner_scope: "tenant-B", related_user: "victim@gmail.com", viewer_id: "viewer-A",
+          details: { secret: { token: CANARY_B } },
+        });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: a P5 401/403 deny body that STILL leaks B's canary → p5_canary_in_deny_body", () => withTempHome(async () => {
+  // A defensive server can return 403 while still echoing the object in the error
+  // envelope — identity C actually received B's bytes, so the access-control leg is
+  // not a true deny and the producer must refuse to sign.
+  const domain = "idor-neg-p5-canary-deny.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, { error: "forbidden", details: { secret: { token: CANARY_B } } }),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P3 is not provably identity A's own object (no A-canary) → p3_not_identity_a_object", () => withTempHome(async () => {
+  // P3 supplies identity A's tenant discriminator (#14); if A's read of O_A does
+  // not reflect A's OWN canary, the cross-tenant distinctness is not grounded and
+  // the producer signs nothing.
+  const domain = "idor-neg-p3-not-a.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOA }) => {
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-A", details: { secret: { token: "not-a-canary" } }, server_ts: "x" });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p3_not_identity_a_object");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {

@@ -60,6 +60,7 @@ const {
   resolveSurfaceOrigins,
   resolveBaselineFromSurface,
   normalizePathTemplate,
+  assertReadOnlyPath,
   originFromState,
   isResourceShapedResponse,
   isAuthChallenge,
@@ -133,6 +134,20 @@ const REQUIRED_PROVENANCE = Object.freeze({
   email_origin: "temp_email",
   provisioned_via: "bob_auto_signup",
 });
+
+// An auth profile object co-mingles real HTTP headers (Authorization, Cookie,
+// X-*) with Bob-LOCAL metadata: credentials/local_storage/session_storage (the
+// summarizeAuthProfile exclusions) PLUS the PR-PROV provenance flags this
+// producer requires (synthetic/email_origin/provisioned_via) and the synthetic
+// mailbox (email) + expiry hints. buildHeaderProfile Object.assigns its first arg
+// verbatim into the outbound header map, so the full profile must NEVER be passed
+// as headers — that would leak Bob-local provenance and the synthetic mailbox to
+// the TARGET. These keys are stripped before building outbound headers.
+const PROFILE_METADATA_KEYS = Object.freeze(new Set([
+  "credentials", "local_storage", "session_storage",
+  "synthetic", "email_origin", "provisioned_via", "email",
+  "expires_at", "expiresAt", "expiry", "expires",
+]));
 
 // ── small helpers ──────────────────────────────────────────────────────────
 
@@ -278,8 +293,18 @@ function resolveIdentity(profileName, url, domain, label) {
   if (!profile || typeof profile !== "object") {
     return { name, profile: null, headers: null };
   }
+  // Build outbound HTTP headers from ONLY the profile's header fields. Strip the
+  // Bob-local metadata (provenance flags, synthetic mailbox, credentials, storage,
+  // expiry hints) so buildHeaderProfile's Object.assign cannot emit them as
+  // outbound headers to the target. The JWT-in-storage promotion still runs from
+  // the storage arg below.
+  const headerFields = {};
+  for (const [key, value] of Object.entries(profile)) {
+    if (PROFILE_METADATA_KEYS.has(key)) continue;
+    headerFields[key] = value;
+  }
   const headers = buildHeaderProfile(
-    profile,
+    headerFields,
     {},
     profile.local_storage && typeof profile.local_storage === "object" ? profile.local_storage : {},
   );
@@ -365,9 +390,23 @@ function sha256OfFileFd(realLeaf) {
 // followed. Returns the real capture dir; creates it under the nominal dir first.
 function resolveCaptureDirSecure(domain) {
   const nominalDir = offensiveRunsDir(domain);
-  fs.mkdirSync(nominalDir, { recursive: true });
+  const nominalParent = path.dirname(nominalDir);
   const realRoot = fs.realpathSync(sessionsRoot());
-  const expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
+  const expectedParent = path.join(realRoot, assertSafeDomain(domain));
+  // Create + verify the SESSION dir BEFORE creating offensive-runs/ under it: a
+  // recursive mkdir would otherwise FOLLOW a symlinked session dir and plant the
+  // capture dir at the link target. Checking the parent first means children are
+  // never created under a symlinked parent (the post-mkdir realpath check below is
+  // kept as a second line for a symlinked offensive-runs/ leaf itself).
+  fs.mkdirSync(nominalParent, { recursive: true });
+  if (fs.realpathSync(nominalParent) !== expectedParent) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `offensive-runs session dir must stay inside its session root without symlinks: ${nominalParent}`,
+    );
+  }
+  fs.mkdirSync(nominalDir, { recursive: true });
+  const expectedDir = path.join(expectedParent, "offensive-runs");
   const realDir = fs.realpathSync(nominalDir);
   if (realDir !== expectedDir) {
     throw new ToolError(
@@ -607,6 +646,11 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // it ties the signed proof to the routed surface. The probe targets below are
   // built from this bound origin, so row.target is routed by construction.
   const baselineUrl = resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName: TOOL_ID });
+  // Reject a mutation-shaped recorded endpoint BEFORE any probe — normalizePathTemplate
+  // already forces {id} to be the FINAL segment, but a verb-NAMED collection before
+  // the id (/api/reset/{id}, /delete/{id}) still resolves here, so apply the same
+  // read-only guard the sibling confirmer runs on its baseline (offensive-confirmer.js).
+  assertReadOnlyPath(baselineUrl.toString(), TOOL_ID);
 
   // Egress identity (mirrors bob_http_confirm).
   const requestedEgressProfile = typeof state.egress_profile === "string" && state.egress_profile.trim()
@@ -724,6 +768,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     });
   }
   assertSafeRequestUrl(p2TargetUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
+  assertReadOnlyPath(p2TargetUrl.toString(), TOOL_ID);
 
   const probeBase = {
     fetchFn: fetch_fn,
@@ -739,6 +784,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // P4 cold-first so any edge cache is cold during authed reads.
   const oBUrl = p2TargetUrl.toString();
   const oAUrl = buildTargetUrl(pathTemplate, String(object_a), baselineUrl.origin).toString();
+  assertReadOnlyPath(oAUrl, TOOL_ID);
 
   let P0a; let P0b; let P1; let P2; let P2prime; let P3; let P4; let P4id; let P5; let P6;
   try {
@@ -760,6 +806,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // Re-validate scope on the cache-bust variant (defense-in-depth: same host as
     // the validated oBUrl, but never dispatch a URL that has not passed scope).
     assertSafeRequestUrl(p2primeUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
+    assertReadOnlyPath(p2primeUrl.toString(), TOOL_ID);
     P2prime = await runProbe({
       ...probeBase,
       url: p2primeUrl.toString(),
@@ -831,7 +878,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // #9 OBJECT-SCOPING — P3 (A's own object) must NOT carry O_B's canary; canary
   // absent from anon bodies (P4/P4-id).
   const p3Parsed = parseJsonBody(P3);
-  if (p3Parsed != null && canaryAt(p3Parsed, fieldPath) === canary_b) {
+  // PROVE P3 IS IDENTITY A's OWN OBJECT: A must successfully read O_A carrying A's
+  // OWN canary. The tenant discriminator (#14) for identity A is derived from P3;
+  // without a positive self-read, P3 could be a stray/error/empty body that merely
+  // happens to carry an owning-scope key, making the cross-tenant distinctness
+  // unsound. A 200 resource body reflecting canary_a is the categorical proof.
+  if (p3Parsed == null || !isResourceShapedResponse(P3) || discoverCanaryFieldPath(p3Parsed, canary_a) == null) {
+    return fail("blocked_by_design", "p3_not_identity_a_object");
+  }
+  if (canaryAt(p3Parsed, fieldPath) === canary_b) {
     return fail("blocked_by_design", "canary_viewer_echoed_p3");
   }
   if (bodyTextOf(P4).includes(canary_b) || bodyTextOf(P4id).includes(canary_b)) {
@@ -845,11 +900,19 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (responseLooksLikeLoginPage(P2) || isLoginRedirect(P2)) {
     return fail("blocked_by_defense", "p2_login_page");
   }
-  // #11 AUTHENTICATED-BUT-SHARED EXCLUSION — P5 a TRUE deny (401/403 ONLY).
+  // #11 AUTHENTICATED-BUT-SHARED EXCLUSION — P5 a TRUE deny (401/403 ONLY) whose
+  // body does NOT carry B's canary.
   if (P5.bodyTruncated !== false) {
     return fail("blocked_by_design", "p5_body_truncated");
   }
-  if (!isAuthChallenge(P5)) {
+  if (isAuthChallenge(P5)) {
+    // A 401/403 whose body STILL leaks B's canary is NOT a true deny — identity C
+    // actually received B's object inside the error envelope, so the access-control
+    // leg would be unsound. Scan the deny body the same way P4/P4id are scanned.
+    if (bodyTextOf(P5).includes(canary_b)) {
+      return fail("blocked_by_design", "p5_canary_in_deny_body");
+    }
+  } else {
     // P5 200-without-canary → p5_ambiguous (D11a HARD block). P5 404 / canary
     // present are equally non-deny and also block here.
     if (P5.status === 404) {
@@ -880,8 +943,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (responseIsSharedCacheable(P2) || responseIsSharedCacheable(P2prime)) {
     return fail("blocked_by_infra", "cache_shared_response");
   }
-  // #17 SYNTHETIC-ONLY (AC-5) — piiScan P1 and P2 find only allowlisted synthetics.
-  if (piiScan(p1Parsed, allowedEmails).length > 0 || piiScan(p2Parsed, allowedEmails).length > 0) {
+  // #17 SYNTHETIC-ONLY (AC-5) — piiScan P1, P2, AND the cache-bust P2′ find only
+  // allowlisted synthetics. P2′ is another successful A→B proof body whose canary
+  // is required before signing (#16), so it must clear the same PII tripwire — a
+  // fresh-URL fetch can return an expanded payload the cached P2 did not.
+  if (piiScan(p1Parsed, allowedEmails).length > 0
+    || piiScan(p2Parsed, allowedEmails).length > 0
+    || piiScan(p2primeParsed, allowedEmails).length > 0) {
     return fail("blocked_operator_pii", "non_synthetic_pii_in_response");
   }
 
