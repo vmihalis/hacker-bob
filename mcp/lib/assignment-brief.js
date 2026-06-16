@@ -536,6 +536,17 @@ const REPO_WORKFLOW_TEXT = [
   "`repo-command-runs.jsonl` rows. Flat `cov`/`ft` means switch seed or",
   "harness strategy; it never completes or blocks a surface by itself.",
   "",
+  "Memory-safety proof contract (native C/C++/Rust-unsafe/asm):",
+  "When a sanitizer crash reproduces, record the finding with `repro_command_argv`",
+  "— the exact `bob_repo_docker_run` token array that triggers it — alongside the",
+  "cited repo_command_run evidence; high/critical native claims are rejected",
+  "without this recipe. At verification the differential gate",
+  "`bob_verify_repro_reproduction({ finding_id, command: repro_command_argv,",
+  "control_ref })` re-runs the SAME argv on the vulnerable tree and the upstream-",
+  "fix tree (control_ref = the fix commit): a real bug crashes the vulnerable tree",
+  "and is QUIET on the fix; a printf'd banner fires on both and is refuted. A claim",
+  "with no verified_pass bound to its argv cannot be graded at high/critical.",
+  "",
   "The curl-shaped HTTP playbook (`bob_http_scan`, ffuf-style content",
   "discovery, param fuzzing) is de-emphasized under OSS lenses — repo-bound",
   "sessions do not own the deployed instance unless an operator explicitly",
@@ -546,7 +557,7 @@ const OSS_BRIEF_SLICE_REGISTRY = Object.freeze([
   // `repo_workflow` leads when the active task lens is one of the OSS lenses.
   // Returns "" for other lenses; the registry assembly pass drops empty-string
   // slices so the brief stays absent rather than carrying an empty header.
-  briefSliceEntry("repo_workflow", 2048, (context) => (
+  briefSliceEntry("repo_workflow", 2688, (context) => (
     isOssLens(context.taskLens) ? REPO_WORKFLOW_TEXT : ""
   )),
   briefSliceEntry("governance", 1024, (context) => context.governance),

@@ -412,6 +412,13 @@ test("repo-path dispatch: orchestrator narrative directs evaluators to bob_repo_
     assert.match(REPO_WORKFLOW_TEXT, new RegExp(`\\b${tool}\\b`),
       `repo_workflow slice content must name '${tool}'`);
   }
+  // The native-code memory-safety proof contract: the slice must point the
+  // evaluator at the declared-recipe field and the differential reproduction gate
+  // the verifier runs, so the brief and the O-P4 claim/grade gates stay coherent.
+  assert.match(REPO_WORKFLOW_TEXT, /\brepro_command_argv\b/,
+    "repo_workflow slice must instruct declaring repro_command_argv");
+  assert.match(REPO_WORKFLOW_TEXT, /\bbob_verify_repro_reproduction\b/,
+    "repo_workflow slice must name the differential reproduction gate");
 });
 
 test("OSS brief extras partition technique packs by task lens and keep CLI packs repo-scoped", () => {
