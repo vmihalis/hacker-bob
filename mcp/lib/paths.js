@@ -129,6 +129,14 @@ function compositionVerifiedJsonlPath(domain) {
   return path.join(sessionDir(domain), "composition-verified.jsonl");
 }
 
+// OSS native-code reproduction-gate ledger. Written ONLY by
+// bob_verify_repro_reproduction (repro-replay-verifier.js) and audit-graded below,
+// so a verified_pass cannot be hand-forged via the Write tool — the O-P4 claim gate
+// requires a verified_pass that only the differential re-execution tool can mint.
+function reproVerifiedJsonlPath(domain) {
+  return path.join(sessionDir(domain), "repro-verified.jsonl");
+}
+
 function sessionNucleusPath(domain) {
   return path.join(sessionDir(domain), "session-nucleus.json");
 }
@@ -459,6 +467,10 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // SC1 confirm-half: the live-verifier's verified_pass ledger. MCP-write-only so
   // a verified_pass cannot be hand-forged via the Write tool; SC1 grades on it.
   "composition-verified.jsonl",
+  // OSS native-code reproduction-gate: the differential verified_pass ledger.
+  // MCP-write-only so a reproduction verdict cannot be hand-forged; the O-P4
+  // claim gate grades on it.
+  "repro-verified.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -608,6 +620,7 @@ module.exports = {
   claimsJsonlPath,
   compositionResultsJsonlPath,
   compositionVerifiedJsonlPath,
+  reproVerifiedJsonlPath,
   docDeltaResultsPath,
   frontierEventsJsonlPath,
   invariantRunsJsonlPath,

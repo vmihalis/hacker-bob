@@ -1374,6 +1374,10 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
   // read-only file probes (file_exists / file_contains / regex_match)
   // against the bound repo without taking the docker path.
+  // The OSS reproduction gate adds bob_verify_repro_reproduction so a
+  // verification round can re-run the differential PoC replay (vuln tree vs
+  // upstream-fix tree) and confirm the minted verified_pass without a
+  // claim-writing tool.
   assert.deepEqual(
     mutating.sort(),
     [
@@ -1381,6 +1385,7 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
+      "bob_verify_repro_reproduction",
       "bob_write_verification_round",
     ].sort(),
   );

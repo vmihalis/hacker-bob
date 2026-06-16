@@ -530,6 +530,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_read_composition_telemetry",
   "bob_run_path_composition_experiment",
   "bob_verify_composition_path",
+  "bob_verify_repro_reproduction",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",

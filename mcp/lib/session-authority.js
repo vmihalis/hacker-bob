@@ -179,6 +179,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_finalize_node: "initialized_session_mutation",
   bob_repo_check: "initialized_session_mutation",
   bob_repo_docker_run: "initialized_session_mutation",
+  bob_verify_repro_reproduction: "initialized_session_mutation",
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   bob_resolve_body: "initialized_session_read",

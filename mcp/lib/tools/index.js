@@ -153,6 +153,12 @@ const TOOL_MODULES = Object.freeze([
   // reproduces on live re-execution; writes the audit-graded
   // composition-verified.jsonl ledger SC1 grades on.
   require("./verify-composition-path.js"),
+  // OSS native-code sibling of verify-composition-path: differential reproduction
+  // gate. Re-runs the PoC command on the vuln tree + the upstream-fix tree and mints
+  // a verified_pass only on a genuine sanitizer flip (crash + /src frame on vuln,
+  // quiet on fix). Defeats the printf-forged-banner gap in the O-P4 claim contract;
+  // writes the audit-graded repro-verified.jsonl the gate grades on.
+  require("./verify-repro-reproduction.js"),
   // Plane X Cycle X.4 — Contract schema + attach with pre-dispatch
   // satisfiability check. Backed by mcp/lib/contracts.js (the X-D4 7-witness
   // schema + the X-D11 satisfiability gate). The attach tool emits

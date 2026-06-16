@@ -150,6 +150,7 @@
       "mcp__hacker-bob__bob_read_composition_telemetry",
       "mcp__hacker-bob__bob_run_path_composition_experiment",
       "mcp__hacker-bob__bob_verify_composition_path",
+      "mcp__hacker-bob__bob_verify_repro_reproduction",
       "mcp__hacker-bob__bob_attach_contract",
       "mcp__hacker-bob__bob_resolve_body",
       "mcp__hacker-bob__bob_prepare_node",
