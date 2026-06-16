@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const {
   assertSafeDomain,
   claimFreezePath,
+  offensiveRunsDir,
   repoChecksJsonlPath,
   repoRunsDir,
 } = require("./paths.js");
@@ -413,6 +414,25 @@ function projectRepoCommandRunObservedRef(domain, frozenRef) {
   };
 }
 
+// Project an `exploit_run` observed ref by recomputing the sha256 of the on-disk
+// stdout capture file at `offensive-runs/<run_id>.stdout`. Mirrors
+// projectRepoCommandRunObservedRef exactly: the frozen ref's `stdout_hash` is the
+// authoritative identity (the completeness gate's `evidenceReferenceIdentityHash`
+// selector already picks `stdout_hash` for kind="exploit_run"). A missing/unreadable
+// file → null (gate surfaces `missing`); a present-but-tampered file → the actually
+// recomputed sha (gate surfaces `mismatched`).
+function projectExploitRunObservedRef(domain, frozenRef) {
+  if (!frozenRef || frozenRef.kind !== "exploit_run") return null;
+  if (typeof frozenRef.run_id !== "string" || !frozenRef.run_id) return null;
+  const stdoutPath = path.join(offensiveRunsDir(domain), `${frozenRef.run_id}.stdout`);
+  const observed = sha256File(stdoutPath);
+  if (observed == null) return null;
+  return {
+    ...frozenRef,
+    stdout_hash: observed,
+  };
+}
+
 // Build the full observed-ref set for the code-bound kinds in a freeze. The
 // caller (typically `assertEvidenceCompletenessForFreeze`) folds these into
 // the existing finding/etc observed set before invoking
@@ -431,6 +451,9 @@ function projectCodeBoundObservedRefs(domain, freeze) {
     } else if (kind === "repo_command_run") {
       const obs = projectRepoCommandRunObservedRef(domain, entry.ref);
       if (obs) projected.push(obs);
+    } else if (kind === "exploit_run") {
+      const obs = projectExploitRunObservedRef(domain, entry.ref);
+      if (obs) projected.push(obs);
     }
   }
   return projected;
@@ -447,6 +470,7 @@ module.exports = {
   iterateFrozenEvidenceRefs,
   normalizeEvidenceReferenceShape,
   projectCodeBoundObservedRefs,
+  projectExploitRunObservedRef,
   projectRepoCommandRunObservedRef,
   projectRepoFileObservedRef,
   readCurrentClaimFreeze,

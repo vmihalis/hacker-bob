@@ -457,6 +457,7 @@ const AUDIT_GRADED_RELATIVE_DIRS = Object.freeze([
   "verification-replay-leases",
   "wave-handoffs",
   "claim-freeze",
+  "offensive-runs",
 ]);
 
 // Wave-handoff per-agent files live at the session root and follow the

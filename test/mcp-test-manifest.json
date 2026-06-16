@@ -99,6 +99,7 @@
   "test/oss-blocked-harness.test.js",
   "test/oss-evidence-reference.test.js",
   "test/offensive-proof-contract.test.js",
+  "test/offensive-run-freeze-completeness.test.js",
   "test/severity-rise-guard.test.js",
   "test/sarif-ingest.test.js",
   "test/static-analysis-index.test.js",
