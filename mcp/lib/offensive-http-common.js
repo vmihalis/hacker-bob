@@ -530,10 +530,12 @@ function cacheReportsHit(get) {
 // FETCHED this body from origin)? A miss/dynamic/bypass cache-status token (NOT
 // updating/revalidated/stale — those serve a stale cached body), or X-Cache-Hits: 0.
 function cacheReportsMiss(get) {
+  // ONLY an explicit cache-status MISS token proves a fresh origin fetch. X-Cache-Hits:0
+  // is deliberately NOT a proven miss — a numeric "0 hits" is weaker / cross-CDN-ambiguous
+  // and could mask a cross-principal hit, so a response carrying only X-Cache-Hits:0 is
+  // NOT trusted as origin and falls through to fail closed (cacheDetectablyInPath).
   const combined = CACHE_STATUS_HEADERS.map((h) => get(h)).join(" ").replace(/_/g, " ");
-  if (/\b(miss|dynamic|bypass)\b/i.test(combined)) return true;
-  const hits = get("x-cache-hits").trim();
-  return /^\d+$/.test(hits) && Number(hits) === 0;
+  return /\b(miss|dynamic|bypass)\b/i.test(combined);
 }
 
 // Is a shared cache detectably in the request path at all (regardless of hit/miss)?
@@ -564,42 +566,18 @@ function responseIsSharedCacheable(response) {
     return false;
   }
   const get = (name) => String(response.headers.get(name) || "");
-  // DEFINITIVE cache-HIT evidence fires REGARDLESS of Cache-Control — a no-store/
-  // private header does not negate that a shared cache already served this body to
-  // (potentially) a different principal, so it remains a cross-principal hazard.
-  if (cacheReportsHit(get)) {
-    return true;
-  }
-  // An affirmative MISS proves THIS response came from origin, so it is NOT a
-  // cross-principal hazard even under a public / s-maxage directive — suppress the
-  // speculative branch below (a CDN that labels its MISS must not block a legit read).
-  if (cacheReportsMiss(get)) {
-    return false;
-  }
-  // SPECULATIVE directive: a public / positive-s-maxage response COULD be served by a
-  // shared cache to a different principal. Suppressed when the response is explicitly
-  // no-store / private (a shared cache must not store it) or Varies on the credential.
-  const cacheControl = get("cache-control").toLowerCase();
-  // s-maxage=0 forces revalidation, so only a POSITIVE s-maxage counts; accept BWS
-  // around `=` and an optional quote (HTTP allows s-maxage = "60").
-  const sMaxageMatch = cacheControl.match(/\bs-maxage\s*=\s*"?(\d+)/);
-  const sharedDirective = /\bpublic\b/.test(cacheControl)
-    || (sMaxageMatch != null && Number(sMaxageMatch[1]) > 0);
-  if (sharedDirective) {
-    if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
-      return false;
-    }
-    // Parse Vary as EXACT comma-separated header tokens — a substring test would let a
-    // non-credential header like `x-authorization-id` wrongly suppress the hazard.
-    // `Vary: *` keys on everything (never reusable cross-principal), so it suppresses too.
-    const varyTokens = get("vary").toLowerCase().split(",").map((t) => t.trim());
-    const variesByCredential = varyTokens.includes("authorization")
-      || varyTokens.includes("cookie") || varyTokens.includes("*");
-    if (!variesByCredential) {
-      return true;
-    }
-  }
-  return false;
+  // A DEFINITIVE cache HIT (Age>0 / explicit HIT token / positive X-Cache-Hits) is the
+  // ONLY signal that proves THIS response was served from a shared cache to (potentially)
+  // a different principal, so it is the cross-principal hazard. It fires REGARDLESS of
+  // Cache-Control — a no-store/private header does not negate an observed hit.
+  //
+  // A bare Cache-Control directive (public / s-maxage) is the ORIGIN's cacheability HINT,
+  // NOT evidence a cache acted on THIS response. Flagging it without a detectable cache in
+  // path false-negatives every legit IDOR on an origin that merely marks a resource
+  // cacheable. The "cache detectably in path but no proven miss" case (the real residual
+  // cross-fill risk) is handled, fail-closed, by cacheInPathWithoutProvenMiss (#15b) — so
+  // this function is just the definitive-hit signal and does not speculate on directives.
+  return cacheReportsHit(get);
 }
 
 // AFFIRMATIVE-ORIGIN gate for the IDOR producer's cross-principal proof bodies

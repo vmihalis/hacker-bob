@@ -1087,14 +1087,16 @@ test("AC-6 positive: an underscore-delimited X-Cache: TCP_MISS still confirms (p
   assert.equal(result.row_written, true);
 }));
 
-test("AC-6 negative: a quoted Cache-Control: s-maxage=\"60\" is a shared-cache hazard → cache_shared_response", () => withTempHome(async () => {
-  const domain = "idor-neg-smaxage-quoted.example.test";
+test("AC-6 positive: a public/s-maxage Cache-Control directive with NO cache in path confirms (directive is an origin hint, not cache evidence)", () => withTempHome(async () => {
+  // A bare public / s-maxage directive is the origin saying "this MAY be cached"; with
+  // no Age/X-Cache/cache-status header, no cache acted on this response, so it is an
+  // origin read — flagging it would false-negative legit IDORs on cacheable resources.
+  const domain = "idor-pos-smaxage-directive.example.test";
   setupSession(domain);
-  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": 's-maxage="60"' } });
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": 'public, s-maxage="60"' } });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "cache_shared_response");
-  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
 }));
 
 test("AC-2 safety: a recorded endpoint with double-encoded traversal (%252e%252e) is rejected by assertReadOnlyPath", () => withTempHome(async () => {
@@ -1129,16 +1131,6 @@ test("AC-6 positive: CDN-Cache-Control (origin-authored directive) does not over
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, true, JSON.stringify(result));
   assert.equal(result.row_written, true);
-}));
-
-test("AC-6 negative: Cache-Control: s-maxage = 60 (BWS around =) is a shared-cache hazard → cache_shared_response", () => withTempHome(async () => {
-  const domain = "idor-neg-smaxage-ws.example.test";
-  setupSession(domain);
-  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "s-maxage = 60" } });
-  const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "cache_shared_response");
-  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 test("AC-6 negative: P5 deny body with the canary \\u-escaped in a SHADOWED duplicate key → p5_canary_in_deny_body", () => withTempHome(async () => {
@@ -1303,13 +1295,17 @@ test("AC-6 negative: X-Cache-Hits: 1 (Varnish/Fastly numeric hit, no Age) → ca
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
-test("AC-6 positive: X-Cache-Hits: 0 (numeric miss) still confirms", () => withTempHome(async () => {
-  const domain = "idor-pos-xcachehits0.example.test";
+test("AC-6 negative: X-Cache-Hits: 0 alone is NOT a proven miss → cannot_prove_origin_read_through_cache", () => withTempHome(async () => {
+  // A numeric 0-hit count means a cache is in path but is weaker/cross-CDN-ambiguous as
+  // origin proof (it could mask a cross-principal hit), so without an EXPLICIT miss token
+  // the producer fails closed rather than trusting it as an origin read.
+  const domain = "idor-neg-xcachehits0.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, { p2Headers: { "X-Cache-Hits": "0" } });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, true, JSON.stringify(result));
-  assert.equal(result.row_written, true);
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cannot_prove_origin_read_through_cache");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 test("AC-5: a multi-character-separated credit-card number → non_synthetic_pii_in_response", () => withTempHome(async () => {
@@ -1348,15 +1344,14 @@ test("AC-5: a fine-grained GitHub PAT (github_pat_) in the proof body → non_sy
 
 // ───────────────────────── round-9 review hardening ──────────────────────────
 
-test("AC-6 positive: public, s-maxage=60 with X-Cache-Hits: 0 (affirmative miss) confirms", () => withTempHome(async () => {
-  // An affirmative miss proves the read came from origin, so it suppresses the
-  // speculative public/s-maxage hazard.
-  const domain = "idor-pos-smaxage-miss.example.test";
+test("AC-6 negative: public, s-maxage=60 with X-Cache-Hits: 0 → cannot_prove_origin (X-Cache-Hits:0 is a cache-in-path signal, not a proven miss)", () => withTempHome(async () => {
+  const domain = "idor-neg-smaxage-xch0.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "public, s-maxage=60", "X-Cache-Hits": "0" } });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, true, JSON.stringify(result));
-  assert.equal(result.row_written, true);
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cannot_prove_origin_read_through_cache");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 test("AC-6 negative: a HIT layer is not overridden by another layer's MISS → cache_shared_response", () => withTempHome(async () => {
@@ -1396,25 +1391,6 @@ test("AC-6 negative: a truncated P3 (A's own object) → p3_body_truncated", () 
   assert.equal(result.confirmed, false);
   assert.equal(result.reason, "p3_body_truncated");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
-}));
-
-test("AC-6 negative: a non-credential Vary (x-authorization-id) does NOT suppress the shared-cache hazard → cache_shared_response", () => withTempHome(async () => {
-  const domain = "idor-neg-vary-substring.example.test";
-  setupSession(domain);
-  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "public, s-maxage=60", Vary: "x-authorization-id" } });
-  const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "cache_shared_response");
-  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
-}));
-
-test("AC-6 positive: a credential Vary (Authorization) suppresses the speculative hazard → confirms", () => withTempHome(async () => {
-  const domain = "idor-pos-vary-auth.example.test";
-  setupSession(domain);
-  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "public, s-maxage=60", Vary: "Authorization" } });
-  const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, true, JSON.stringify(result));
-  assert.equal(result.row_written, true);
 }));
 
 test("AC-5: an injected OpenAI-style key (sk-proj-) in the proof body → non_synthetic_secret_in_response", () => withTempHome(async () => {
