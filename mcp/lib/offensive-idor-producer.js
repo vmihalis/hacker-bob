@@ -171,7 +171,11 @@ const PROFILE_METADATA_KEYS = Object.freeze(new Set([
 // stored/imported auth profile carries them: method/verb overrides turn the producer's
 // GET into a server-side mutation (DELETE/PUT/...), defeating the read-only guarantee.
 const FORBIDDEN_OUTBOUND_HEADERS = Object.freeze(new Set([
+  // Method/verb overrides turn the GET into a server-side mutation.
   "x-http-method-override", "x-http-method", "x-method-override", "x-method",
+  // Host overrides the vhost (routing/cache-key confusion); the body-framing headers
+  // enable request smuggling. safe-fetch derives all of these from the URL itself.
+  "host", "content-length", "transfer-encoding",
 ]));
 
 // ── small helpers ──────────────────────────────────────────────────────────
@@ -221,6 +225,20 @@ function decodeJsonUnicodeEscapes(text) {
     : "";
 }
 
+// Decode ALL common reflected-input encoding layers to a fixed point: JSON \u escapes
+// AND percent-encoding, composed and iterated, so a value that LAYERS encodings (e.g.
+// percent-of-\u, \u-of-percent, %2562) is fully resolved before a substring scan. Used
+// by every canary/PII/secret scan so no single decoder gap lets a leak through.
+function decodeAllEncodingLayers(text) {
+  let decoded = String(text);
+  for (let i = 0; i < 12; i += 1) {
+    const next = decodePercentToFixedPoint(decodeJsonUnicodeEscapes(decoded));
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded;
+}
+
 // Percent-decode a value to a FIXED POINT (defeats single + multi-layer encoding like
 // %62 / %2562). Decodes each valid %XX triplet INDEPENDENTLY so an unrelated literal `%`
 // elsewhere in the body (e.g. "100%", "50% off") does NOT abort the whole decode — a
@@ -248,14 +266,11 @@ function bodyLeaksCanary(response, canary) {
   }
   const raw = response.bodyBytes.toString("utf8");
   if (raw.includes(canary)) return true;
-  // A deny/error body can hide the canary by \u-escaping it ("bb..."), by
-  // PERCENT-encoding it ("%62%62..."), and/or by placing it in a shadowed duplicate
-  // key. Scan each decoded form over the RAW text (dup keys preserved) so the substring
-  // scan catches every common reflected-input encoding.
-  for (const decoded of [decodeJsonUnicodeEscapes(raw), decodePercentToFixedPoint(raw)]) {
-    if (decoded !== raw && decoded.includes(canary)) return true;
-  }
-  return false;
+  // A deny/error body can hide the canary by \u-escaping it ("bb..."), PERCENT-encoding
+  // it ("%62%62..."), LAYERING both, and/or placing it in a shadowed duplicate key.
+  // decodeAllEncodingLayers resolves every layer over the RAW text (dup keys preserved).
+  const decoded = decodeAllEncodingLayers(raw);
+  return decoded !== raw && decoded.includes(canary);
 }
 
 // Focused secret-shape detector for the SIGNED proof body (AC-5 #17b). detectPiiShapes
@@ -917,12 +932,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // signed row's `target` (canonicalizeExploitTarget). A sensitive id — an email-as-id
   // account (/api/accounts/victim@gmail.com) or a token-shaped id — would leak into the
   // durable proof. Screen every id for non-synthetic PII / credential shapes.
-  for (const id of [objBId, String(object_a), String(object_c)]) {
-    if (piiScan(id, allowedEmails).length > 0 || secretShapesIn(id).length > 0) {
-      return blocked("blocked_operator_pii", "object_id_contains_sensitive_value", {
-        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
-        ...identity, ...internalHostPolicy,
-      });
+  for (const rawId of [objBId, String(object_a), String(object_c)]) {
+    for (const id of [rawId, decodeAllEncodingLayers(rawId)]) {
+      if (piiScan(id, allowedEmails).length > 0 || secretShapesIn(id).length > 0) {
+        return blocked("blocked_operator_pii", "object_id_contains_sensitive_value", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
     }
   }
 
@@ -1239,9 +1256,9 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const proofParsed = [p1Parsed, p2Parsed, p2primeParsed];
   const proofScanTexts = [P1, P2, P2prime].flatMap((r) => {
     const raw = bodyTextOf(r);
-    // raw + \u-decoded (dup-key/escape) + percent-decoded (a sensitive value encoded as
-    // %xx survives JSON.parse + canonicalJson but decodes server-side).
-    return [raw, decodeJsonUnicodeEscapes(raw), decodePercentToFixedPoint(raw)];
+    // raw + ALL decoded layers (\u / percent / layered) — a sensitive value encoded in
+    // the body survives JSON.parse + canonicalJson but decodes server-side.
+    return [raw, decodeAllEncodingLayers(raw)];
   });
   if (proofParsed.some((p) => piiScan(p, allowedEmails).length > 0)
     || proofScanTexts.some((t) => piiScan(t, allowedEmails).length > 0)) {
@@ -1263,6 +1280,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // construction — no ledger/scan-trail membership check is needed, and a
   // redacted-http-audit check would add no soundness over this in-memory identity.
   const canonicalTarget = canonicalizeExploitTarget(oBUrl);
+
+  // The canonical target is PERSISTED into the signed row. Its fixed path segments come
+  // from the agent-supplied path_template, so screen the whole target (raw + all decoded
+  // layers) for non-synthetic PII / credential shapes — an email/token in a fixed
+  // segment (/api/users/victim@x.com/{id}) must not leak into the durable proof.
+  for (const form of [canonicalTarget, decodeAllEncodingLayers(canonicalTarget)]) {
+    if (piiScan(form, allowedEmails).length > 0 || secretShapesIn(form).length > 0) {
+      return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
+    }
+  }
 
   // Deterministic captures: the P2 cross-tenant body (canonical-normalized,
   // synthetic+canary bytes only) is the ONLY file re-hashed at freeze.

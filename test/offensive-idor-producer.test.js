@@ -1535,6 +1535,61 @@ test("AC-5: a credit-card number with escaped whitespace (4111\\n1111...) → no
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-13 review hardening ──────────────────────────
+
+test("AC-5 safety: a percent-encoded email-as-id is decoded before the screen → object_id_contains_sensitive_value", () => withTempHome(async () => {
+  const domain = "idor-neg-encoded-email-id.example.test";
+  setupSession(domain);
+  const pctEmail = [...("victim@gmail.com")].map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+  const provision = { ...soundProvision(), object_b: pctEmail };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "object_id_contains_sensitive_value");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P5 deny body with a LAYERED-encoded canary (percent-of-\\u) → p5_canary_in_deny_body", () => withTempHome(async () => {
+  const domain = "idor-neg-p5-layered.example.test";
+  setupSession(domain);
+  const layered = "%5Cu0062".repeat(64); // percent-decode → b → "b"; 64× === CANARY_B
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, `{"error":"forbidden","leaked":"${layered}"}`),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: an email in a FIXED path segment of the proof target → proof_target_contains_sensitive_value", () => withTempHome(async () => {
+  const domain = "idor-neg-target-email.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/users/victim@x.com/${OBJ_B}`);
+  seedSyntheticProfiles(domain);
+  ensureHandoffSigningKey(domain);
+  const args = { ...baseArgs(domain), path_template: "/api/users/victim@x.com/{id}" };
+  const result = await idorConfirm(args, { fetch_fn: soundFetchFn(domain), provision: soundProvision() });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "proof_target_contains_sensitive_value");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: a Host header in an auth profile is NOT sent on the probe (vhost/smuggling)", () => withTempHome(async () => {
+  const domain = "idor-neg-host-header.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain));
+  const flags = { synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" };
+  const mk = (tag) => ({ Authorization: `Bearer eyJ${tag}token`, Host: "evil.example.test", email: `eval_${tag}@example.test`, ...flags });
+  writeAuthFile(resolveAuthJsonPath(domain), `${JSON.stringify({ version: 2, profiles: { identity_a: mk("a"), identity_b: mk("b"), identity_c: mk("c") } }, null, 2)}\n`);
+  ensureHandoffSigningKey(domain);
+  const seen = new Set();
+  const base = soundFetchFn(domain);
+  const fetch_fn = async (req) => { for (const k of Object.keys(req.headers || {})) seen.add(k.toLowerCase()); return base(req); };
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.ok(!seen.has("host"), `Host must be stripped; saw [${[...seen].join(", ")}]`);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {
