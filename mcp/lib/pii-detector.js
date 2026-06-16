@@ -110,6 +110,7 @@ function emailMatchesOperatorDenylist(email, operatorIdentifiers) {
 }
 
 module.exports = {
+  MAX_MATCHES,
   normalizeEmailForComparison,
   detectPiiShapes,
   emailMatchesOperatorDenylist,

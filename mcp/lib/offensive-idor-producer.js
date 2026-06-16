@@ -116,6 +116,7 @@ const {
 } = require("./verification-contracts.js");
 const {
   detectPiiShapes,
+  MAX_MATCHES: PII_MAX_MATCHES,
 } = require("./pii-detector.js");
 
 const TOOL_ID = "bob_http_idor_confirm";
@@ -166,6 +167,13 @@ const PROFILE_METADATA_KEYS = Object.freeze(new Set([
   "expires_at", "expiresAt", "expiry", "expires",
 ]));
 
+// Outbound HEADER names (lowercased) that must NEVER be sent on a read probe even if a
+// stored/imported auth profile carries them: method/verb overrides turn the producer's
+// GET into a server-side mutation (DELETE/PUT/...), defeating the read-only guarantee.
+const FORBIDDEN_OUTBOUND_HEADERS = Object.freeze(new Set([
+  "x-http-method-override", "x-http-method", "x-method-override", "x-method",
+]));
+
 // ── small helpers ──────────────────────────────────────────────────────────
 
 function rejectInvalidArguments(message, details = null) {
@@ -214,17 +222,20 @@ function decodeJsonUnicodeEscapes(text) {
 }
 
 // Percent-decode a value to a FIXED POINT (defeats single + multi-layer encoding like
-// %62 / %2562). Used to compare a server-minted object id against the canary in its
-// truly-decoded form. Bounded iterations; stops on a non-decoding remnant.
+// %62 / %2562). Decodes each valid %XX triplet INDEPENDENTLY so an unrelated literal `%`
+// elsewhere in the body (e.g. "100%", "50% off") does NOT abort the whole decode — a
+// whole-string decodeURIComponent would throw on the stray `%` and leave a percent-
+// encoded canary/PII undecoded, defeating the scan. Bounded iterations.
 function decodePercentToFixedPoint(value) {
   let decoded = String(value);
   for (let i = 0; i < 8; i += 1) {
-    let next;
-    try {
-      next = decodeURIComponent(decoded);
-    } catch {
-      break;
-    }
+    const next = decoded.replace(/%[0-9a-fA-F]{2}/g, (m) => {
+      try {
+        return decodeURIComponent(m);
+      } catch {
+        return m;
+      }
+    });
     if (next === decoded) break;
     decoded = next;
   }
@@ -362,18 +373,19 @@ function piiScan(parsedBodyOrText, allowedEmails) {
     : canonicalJson(parsedBodyOrText);
   // detectPiiShapes only matches a CONTIGUOUS card run and an email whose domain does
   // not end in a root-label dot. Also scan a NORMALIZED copy so the human-readable
-  // display forms are seen: (1) join intra-digit separators so a spaced/dashed/dotted
-  // PAN (4111 1111 1111 1111) becomes a contiguous Luhn-checkable run; (2) drop a
-  // boundary trailing dot so an absolute-FQDN email (victim@corp.com.) is matched.
+  // display forms are seen: (1) join intra-digit separators — actual whitespace/dot/dash
+  // AND JSON-escaped whitespace (\n \t \r) — so a grouped PAN ("4111 1111", "4111\n1111")
+  // becomes a contiguous Luhn-checkable run; (2) drop a boundary trailing dot so an
+  // absolute-FQDN email (victim@corp.com.) is matched.
   const normalized = text
-    .replace(/(?<=\d)[ .\-]+(?=\d)/g, "")
+    .replace(/(?<=\d)(?:[\s.\-]|\\[ntrf])+(?=\d)/g, "")
     .replace(/\.(?=["'\s,}\])]|$)/g, "");
-  const shapes = normalized !== text
-    ? [...detectPiiShapes(text), ...detectPiiShapes(normalized)]
-    : detectPiiShapes(text);
+  const scans = normalized !== text
+    ? [detectPiiShapes(text), detectPiiShapes(normalized)]
+    : [detectPiiShapes(text)];
   const allowed = new Set((Array.isArray(allowedEmails) ? allowedEmails : []).map((e) => String(e).toLowerCase()));
   const offending = [];
-  for (const shape of shapes) {
+  for (const shape of scans.flat()) {
     if (shape.type === "email") {
       const lower = String(shape.value).toLowerCase();
       // EXACT-MATCH only against the actual provisioned synthetic mailboxes — a
@@ -385,6 +397,12 @@ function piiScan(parsedBodyOrText, allowedEmails) {
       // phone / ssn / credit_card / any non-email shape is never allowlisted.
       offending.push(shape);
     }
+  }
+  // FAIL CLOSED on a truncated scan: detectPiiShapes stops at MAX_MATCHES, so a body
+  // padded with that many allowlisted synthetic matches could hide a real foreign PII
+  // shape past the cap. If any scan hit the cap, surface a sentinel so the caller blocks.
+  if (scans.some((s) => s.length >= PII_MAX_MATCHES)) {
+    offending.push({ type: "scan_truncated", value: "pii_match_cap_reached" });
   }
   // Name shapes are not produced by detectPiiShapes; the server-templated CREATE
   // body only carries the synthetic names, asserted disjoint from operator
@@ -408,6 +426,7 @@ function resolveIdentity(profileName, url, domain, label) {
   const headerFields = {};
   for (const [key, value] of Object.entries(profile)) {
     if (PROFILE_METADATA_KEYS.has(key)) continue;
+    if (FORBIDDEN_OUTBOUND_HEADERS.has(String(key).toLowerCase())) continue;
     headerFields[key] = value;
   }
   const headers = buildHeaderProfile(
@@ -694,7 +713,6 @@ async function runProbe({
   blockInternalHosts,
   agent,
   startedAt,
-  auditFailures,
 }) {
   let response;
   let error;
@@ -730,8 +748,12 @@ async function runProbe({
   });
   // A swallowed audit-write failure means this live probe is invisible to the circuit
   // breaker / request budget. The producer signs a durable proof row, so it must NOT
-  // proceed on an unrecorded probe — record the failure so idorConfirm fails closed.
-  if (auditOk === false && Array.isArray(auditFailures)) auditFailures.push(url);
+  // proceed — ABORT immediately rather than keep firing un-audited live probes.
+  if (auditOk === false) {
+    const auditErr = new ToolError(ERROR_CODES.STATE_CONFLICT, "probe http-audit write failed");
+    auditErr.probe_audit_failed = true;
+    throw auditErr;
+  }
   if (error) throw error;
   return response;
 }
@@ -891,6 +913,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       ...identity, ...internalHostPolicy,
     });
   }
+  // A self-provisioned id is interpolated into the probe URL AND persisted into the
+  // signed row's `target` (canonicalizeExploitTarget). A sensitive id — an email-as-id
+  // account (/api/accounts/victim@gmail.com) or a token-shaped id — would leak into the
+  // durable proof. Screen every id for non-synthetic PII / credential shapes.
+  for (const id of [objBId, String(object_a), String(object_c)]) {
+    if (piiScan(id, allowedEmails).length > 0 || secretShapesIn(id).length > 0) {
+      return blocked("blocked_operator_pii", "object_id_contains_sensitive_value", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+  }
 
   // CANARY-REFLECTED + FIELD_PATH discovery (mint condition #20, D11b): discover
   // FIELD_PATH from the owner readback; if the canary is not reflected, abort.
@@ -928,9 +962,6 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   assertSafeRequestUrl(p2TargetUrl.toString(), domain, SCOPE_VALIDATION_OPTS);
   assertReadOnlyPath(p2TargetUrl.toString(), TOOL_ID);
 
-  // Shared accumulator: runProbe pushes here when a probe's http-audit write is
-  // swallowed, so the producer fails closed rather than signing for an unrecorded probe.
-  const auditFailures = [];
   const probeBase = {
     fetchFn: fetch_fn,
     method,
@@ -940,7 +971,6 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     blockInternalHosts,
     agent: egressAgent,
     startedAt,
-    auditFailures,
   };
 
   // P4 cold-first so any edge cache is cold during authed reads.
@@ -988,6 +1018,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     P7 = await runProbe({ ...probeBase, url: oCUrl, headers: idC.headers }); // C reads its OWN object
     P8 = await runProbe({ ...probeBase, url: oCUrl, headers: {} }); // ANON reads O_C (proves O_C is auth-gated)
   } catch (error) {
+    // A probe whose http-audit write failed aborts the whole run (control-plane gap):
+    // the producer must not sign a durable proof row for an unrecorded live probe.
+    if (error && error.probe_audit_failed) {
+      return blocked("blocked_by_infra", "probe_audit_failed", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     return blocked("blocked_by_infra", "transport_error", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
       failure_reason: error.message || String(error),
@@ -1000,13 +1038,6 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
     ...identity, ...internalHostPolicy,
   });
-
-  // #0 CONTROL-PLANE: every probe must have been recorded to http-audit. A swallowed
-  // audit write makes a live probe invisible to the circuit breaker / request budget,
-  // so the producer must not mint a durable proof row for an unrecorded run.
-  if (auditFailures.length > 0) {
-    return fail("blocked_by_infra", "probe_audit_failed");
-  }
 
   // #1 NON-TRUNCATION (P1/P2/P2′/P5). A truncated proof body could hide the canary
   // or foreign PII past the fetch cap, so every signing-relevant body must be whole.

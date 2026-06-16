@@ -1474,6 +1474,67 @@ test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) 
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-12 review hardening ──────────────────────────
+
+test("AC-6 negative: a percent-encoded canary survives a stray literal % (100%) in the same deny body → p5_canary_in_deny_body", () => withTempHome(async () => {
+  // A whole-string decodeURIComponent would THROW on the stray `%` in "100%" and leave
+  // the %62%62 canary undecoded; the per-triplet decode handles each %XX independently.
+  const domain = "idor-neg-p5-pct-stray.example.test";
+  setupSession(domain);
+  const pctCanary = "%62".repeat(64);
+  const fetch_fn = soundFetchFn(domain, {
+    p5: () => jsonResponse(403, `{"progress":"100%","error":"forbidden","leaked":"${pctCanary}"}`),
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "p5_canary_in_deny_body");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: a method-override header in an auth profile is NOT sent on the read probe", () => withTempHome(async () => {
+  const domain = "idor-neg-method-override.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain));
+  const flags = { synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" };
+  const mk = (tag) => ({ Authorization: `Bearer eyJ${tag}token`, "X-HTTP-Method-Override": "DELETE", email: `eval_${tag}@example.test`, ...flags });
+  writeAuthFile(resolveAuthJsonPath(domain), `${JSON.stringify({ version: 2, profiles: { identity_a: mk("a"), identity_b: mk("b"), identity_c: mk("c") } }, null, 2)}\n`);
+  ensureHandoffSigningKey(domain);
+  const seen = new Set();
+  const base = soundFetchFn(domain);
+  const fetch_fn = async (req) => { for (const k of Object.keys(req.headers || {})) seen.add(k.toLowerCase()); return base(req); };
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.ok(!seen.has("x-http-method-override"), `method override must be stripped; saw [${[...seen].join(", ")}]`);
+  assert.ok(seen.has("authorization"), "Authorization must still be sent");
+}));
+
+test("AC-5 safety: a self-provisioned id that is an email (email-as-id) → object_id_contains_sensitive_value", () => withTempHome(async () => {
+  const domain = "idor-neg-email-id.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), object_b: "victim@gmail.com" };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "object_id_contains_sensitive_value");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5: a credit-card number with escaped whitespace (4111\\n1111...) → non_synthetic_pii_in_response", () => withTempHome(async () => {
+  const domain = "idor-neg-escaped-ws-pan.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOB }) => {
+      if (wantsOB && isA) {
+        return jsonResponse(200, `{"id":"${OBJ_B}","owner_scope":"tenant-B","viewer_id":"viewer-A","billing":"4111\\n1111\\t1111 1111","details":{"secret":{"token":"${CANARY_B}"}}}`);
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_synthetic_pii_in_response");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {
