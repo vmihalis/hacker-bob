@@ -109,9 +109,14 @@ function escapeRegExp(value) {
 // closed by the inert-extension allowlist in normalizePathTemplate.
 function capturedIdSegmentIsSafe(idSegment) {
   if (!idSegment || idSegment.includes("/") || idSegment.includes("\\")) return false;
+  // A `.` / `..` segment is a relative path traversal, never a real resource id:
+  // /api/items/.. resolves to the parent collection, /api/items/. to the collection
+  // itself. Reject literal AND percent-encoded (%2e) forms (no legit id is . or ..).
+  if (idSegment === "." || idSegment === "..") return false;
   if (/[:;,]/.test(idSegment)) return false;
   if (ENCODED_SEPARATOR_RE.test(idSegment)) return false;
   const decoded = decodePathSegments(idSegment);
+  if (decoded === "." || decoded === "..") return false;
   if (decoded.includes("/") || decoded.includes("\\")) return false;
   if (/[:;,]/.test(decoded)) return false;
   if (/%[0-9a-f]{2}/i.test(decoded)) return false;
@@ -513,7 +518,13 @@ function responseIsSharedCacheable(response) {
   // no-store/private suppression applies ONLY to this speculative branch — never to
   // the definitive HIT evidence above — so it cannot mask a real cache cross-fill.
   const cacheControl = get("cache-control").toLowerCase();
-  const sharedDirective = /\bpublic\b/.test(cacheControl) || /\bs-maxage\b/.test(cacheControl);
+  // s-maxage=0 forces shared caches to REVALIDATE every time (it does not let them
+  // serve a stored copy to a different principal), so only a POSITIVE s-maxage is a
+  // shared-cache hazard — matching the bare token would false-negative every
+  // CDN-revalidated (s-maxage=0) response.
+  const sMaxageMatch = cacheControl.match(/\bs-maxage=(\d+)/);
+  const sharedDirective = /\bpublic\b/.test(cacheControl)
+    || (sMaxageMatch != null && Number(sMaxageMatch[1]) > 0);
   if (sharedDirective) {
     if (/\bno-store\b/.test(cacheControl) || /\bprivate\b/.test(cacheControl)) {
       return false;
@@ -547,16 +558,21 @@ function cacheInPathWithoutProvenMiss(response) {
   }
   const get = (name) => String(response.headers.get(name) || "");
   // Includes the standardized RFC 9211 `Cache-Status` (its "fwd=miss" reports an
-  // affirmative origin fetch, like X-Cache: MISS).
+  // affirmative origin fetch, like X-Cache: MISS). ONLY the unambiguous origin-fetch
+  // statuses count as a proven MISS — `updating`/`revalidated`/`stale` are stale-
+  // cache SERVES (the body came from cache), and `expired` is cross-CDN-ambiguous, so
+  // they are deliberately excluded and fall through to fail closed below.
   const cacheStatus = `${get("x-cache")} ${get("cf-cache-status")} ${get("x-served-by")} ${get("cache-status")}`;
-  if (/\b(miss|dynamic|expired|updating|revalidated|bypass)\b/i.test(cacheStatus)) {
+  if (/\b(miss|dynamic|bypass)\b/i.test(cacheStatus)) {
     return false; // the cache affirmatively reports a fresh origin fetch
   }
-  // Any of these headers means a shared cache / CDN is in the request path:
-  // Age + Via (generic), the vendor cache-status headers, the standardized
+  // Any of these headers means a shared cache / CDN is in the request path: Age
+  // (cache-generated per RFC 7234), the vendor cache-status headers, the standardized
   // Cache-Status (RFC 9211), and CDN-Cache-Control (a CDN-only caching directive).
+  // `Via` is deliberately NOT here — it is a general hop-by-hop header set by ANY
+  // forward/reverse proxy or gateway, not just caches, so it would over-block legit
+  // findings behind a non-caching proxy.
   return get("age").trim() !== ""
-    || get("via").trim() !== ""
     || get("x-cache").trim() !== ""
     || get("cf-cache-status").trim() !== ""
     || get("x-served-by").trim() !== ""

@@ -977,6 +977,52 @@ test("AC-6 negative: a Cache-Status header present without a MISS label → cann
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+// ───────────────────────── round-5 review hardening ──────────────────────────
+
+test("AC-6 positive: Cache-Control: s-maxage=0 still confirms (revalidate is not a shared-cache hazard)", () => withTempHome(async () => {
+  // s-maxage=0 forces shared caches to revalidate every time — not a cross-principal
+  // hazard. Matching the bare token would false-negative every CDN-revalidated read.
+  const domain = "idor-pos-smaxage0.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "Cache-Control": "s-maxage=0" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 positive: a Via header (generic proxy, not a cache) still confirms", () => withTempHome(async () => {
+  // Via is set by ANY forward/reverse proxy or gateway, not just caches, so it must
+  // not count as shared-cache-in-path evidence (would over-block proxied deployments).
+  const domain = "idor-pos-via.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { Via: "1.1 proxy.example" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("AC-6 negative: CF-Cache-Status: UPDATING (stale-cache serve, not origin) → cannot_prove_origin_read_through_cache", () => withTempHome(async () => {
+  // UPDATING / REVALIDATED serve a stale cached body while refreshing — the body came
+  // from cache, NOT a fresh origin fetch, so it must not be trusted as a proven MISS.
+  const domain = "idor-neg-cf-updating.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, { p2Headers: { "CF-Cache-Status": "UPDATING" } });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "cannot_prove_origin_read_through_cache");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-5 safety: a self-provisioned id of '..' (path traversal) → object_id_unsafe_segment", () => withTempHome(async () => {
+  const domain = "idor-neg-dotdot-id.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), object_b: ".." };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "object_id_unsafe_segment");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-trip: record → freeze re-hash → verify ──────────────────────────
 
 test("round-trip: a minted row backs an exploited_safely claim, then re-hashes at freeze (medium held)", () => withTempHome(async () => {
