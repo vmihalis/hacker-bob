@@ -212,7 +212,7 @@ function seedSignedLowRow(domain, surfaceId) {
   const ref = {
     kind: "exploit_run",
     run_id: "oconf-seed-low-1",
-    tool_id: "bob_http_confirm",
+    tool_id: "bob_http_idor_confirm",
     target,
     offensive_outcome: "exploited_safely",
     command_hash: "a".repeat(64),

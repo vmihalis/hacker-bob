@@ -107,7 +107,7 @@ function exploitRef(domain, overrides = {}) {
   return {
     kind: "exploit_run",
     run_id: "run-exploit-1",
-    tool_id: "bob_http_confirm_reflected_canary",
+    tool_id: "bob_http_idor_confirm",
     target: canonicalizeExploitTarget(`https://${domain}/proof`),
     offensive_outcome: "exploited_safely",
     command_hash: hex("a"),
@@ -304,7 +304,7 @@ test("web v2 exploit proof plus exploit_replay_confirmed allows a severity rise"
   const domain = "severity-rise-proof.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium" });
   appendFrozenFindingClaim(domain, {
     severity: "low",
     evidenceRefs: [findingRef("F-1"), ref],
@@ -318,12 +318,12 @@ test("web v2 exploit proof plus exploit_replay_confirmed allows a severity rise"
 
   writeV2Round(domain, context, "brutalist", [
     v2VerificationResult("F-1", {
-      severity: "critical",
+      severity: "medium",
       confidence_reasons: ["exploit_replay_confirmed"],
     }),
   ]);
 
-  assert.equal(persistedSeverity(domain), "critical");
+  assert.equal(persistedSeverity(domain), "medium");
 }));
 
 test("web v2 low demonstrated row without finding_id unlocks only an info to low rise", () => withTempHome(() => {
@@ -432,7 +432,7 @@ test("web v2 severity rises require both the confidence reason and a satisfying 
   const domainWithRow = "severity-rise-row-no-reason.example";
   initWebSession(domainWithRow);
   const refWithRow = exploitRef(domainWithRow);
-  seedSignedOffensiveRow(domainWithRow, refWithRow);
+  seedSignedOffensiveRow(domainWithRow, refWithRow, { demonstrated_severity: "medium" });
   appendFrozenFindingClaim(domainWithRow, {
     severity: "low",
     evidenceRefs: [findingRef("F-1"), refWithRow],
@@ -454,7 +454,7 @@ test("web v2 severity rises require both the confidence reason and a satisfying 
   const domainWithReason = "severity-rise-reason-no-row.example";
   initWebSession(domainWithReason);
   const refWithReason = exploitRef(domainWithReason);
-  seedSignedOffensiveRow(domainWithReason, refWithReason);
+  seedSignedOffensiveRow(domainWithReason, refWithReason, { demonstrated_severity: "medium" });
   appendFrozenFindingClaim(domainWithReason, {
     severity: "low",
     evidenceRefs: [findingRef("F-1"), refWithReason],
@@ -498,7 +498,7 @@ test("a multi-finding claim's exploit row cannot prove a sibling finding's rise"
   const domain = "severity-rise-multi-finding.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical" });
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium" });
   // One claim references BOTH F-1 and F-2 plus a single exploit_run ref. The
   // guard refuses to propagate that row to either finding (cross-finding
   // spillover guard), so an exploit_replay_confirmed rise on F-2 is clamped.
@@ -736,7 +736,7 @@ test("corrupt offensive ledger fails closed for exploit-backed ceiling checks", 
   const domain = "severity-rise-corrupt-ledger.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref);
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium" });
   appendFrozenFindingClaim(domain, {
     severity: "low",
     evidenceRefs: [findingRef("F-1"), ref],
@@ -837,9 +837,9 @@ test("#111: a claim whose single surface matches its row records (positive contr
   const domain = "surface-bind-match.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-B" });
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium", surface_id: "surface-B" });
   const claim = appendFrozenFindingClaim(domain, {
-    severity: "critical",
+    severity: "medium",
     surfaceIds: ["surface-B"],
     evidenceRefs: [findingRef("F-1"), ref],
     exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
@@ -924,10 +924,10 @@ test("#111: multi-row claim rejects when any cited row is out-of-surface, accept
   const refB2 = exploitRef(posDomain, { run_id: "run-B", target: canonicalizeExploitTarget(`https://${posDomain}/b`) });
   writeOffensiveRunRows(posDomain, [
     signedOffensiveRow(posDomain, refA2, { demonstrated_severity: "low", surface_id: "surface-A" }),
-    signedOffensiveRow(posDomain, refB2, { demonstrated_severity: "critical", surface_id: "surface-A" }),
+    signedOffensiveRow(posDomain, refB2, { demonstrated_severity: "medium", surface_id: "surface-A" }),
   ]);
   const claim = appendFrozenFindingClaim(posDomain, {
-    severity: "critical",
+    severity: "medium",
     surfaceIds: ["surface-A"],
     evidenceRefs: [findingRef("F-1"), refA2, refB2],
     exploitOutcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
@@ -983,7 +983,10 @@ test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", (
   const domain = "surface-bind-verify-same.example";
   initWebSession(domain);
   const ref = exploitRef(domain);
-  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-A" });
+  // Re-expressed at medium: the row's tool (bob_http_idor_confirm) caps at medium, and the PR-A
+  // verify-mirror cap now bounds the demonstrated rank by that ceiling, so the legitimate rise this
+  // test exercises lands at the tool's true ceiling (medium), not critical.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium", surface_id: "surface-A" });
   appendRawClaim(domain, {
     title: "Same-surface verify fixture",
     summary: "Frozen exploited claim on surface-A citing a surface-A row.",
@@ -997,9 +1000,36 @@ test("#111 verify mirror: a same-surface row still unlocks a legitimate rise", (
   freezeClaims(domain);
   const context = enterVerifyV2(domain);
   writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", { severity: "medium", confidence_reasons: ["exploit_replay_confirmed"] }),
+  ]);
+  assert.equal(persistedSeverity(domain, "brutalist"), "medium", "matching surface -> proof-backed rise allowed");
+}));
+
+test("#PR-A verify mirror: a row demonstrating above its tool ceiling cannot unlock a rise past the ceiling", () => withTempHome(() => {
+  const domain = "verify-mirror-tool-ceiling.example";
+  initWebSession(domain);
+  const ref = exploitRef(domain); // tool_id bob_http_idor_confirm, ceiling = medium
+  // Over-ceiling row: demonstrates critical though the tool caps at medium. appendRawClaim bypasses
+  // the record gate (which would reject this), modelling a tampered ledger or a session advanced
+  // past the CLAIM_FREEZE->VERIFY gate with operator_force. The verify-mirror cap must still bound
+  // the row's contribution to the tool ceiling, so a critical rise cannot be proven.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "critical", surface_id: "surface-A" });
+  appendRawClaim(domain, {
+    title: "Over-ceiling verify fixture",
+    summary: "Frozen exploited claim citing a critical-demonstrated row from a medium-ceiling tool.",
+    severity: "low",
+    status: "candidate",
+    surface_ids: ["surface-A"],
+    evidence_refs: [findingRef("F-1"), ref],
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "reflected_canary" } },
+    impact: "Bounded fixture impact.",
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+  writeV2Round(domain, context, "brutalist", [
     v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
   ]);
-  assert.equal(persistedSeverity(domain, "brutalist"), "critical", "matching surface -> proof-backed rise allowed");
+  assert.equal(persistedSeverity(domain, "brutalist"), "low", "over-ceiling row cannot unlock a critical rise -> clamped to baseline");
 }));
 
 test("#111 verify mirror: a forged freeze with an empty claim surface fails closed (brutalist r1)", () => withTempHome(() => {

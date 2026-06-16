@@ -53,7 +53,7 @@ function exploitRef(domain = "example.com", overrides = {}) {
   return {
     kind: "exploit_run",
     run_id: "run-exploit-1",
-    tool_id: "bob_http_confirm_reflected_canary",
+    tool_id: "bob_http_idor_confirm",
     target: `https://${domain}/search?q=BOB_CANARY_1`,
     offensive_outcome: "exploited_safely",
     command_hash: hex("a"),
@@ -375,6 +375,70 @@ test("exploited_safely claim severity cannot exceed demonstrated_severity", () =
     severity: "low",
   }));
   assert.equal(lowClaim.severity, "low");
+}));
+
+test("offensive tool demonstrated-severity ceiling rejects above-medium IDOR rows", () => withTempHome(() => {
+  const criticalDomain = "offensive-tool-ceiling-critical.example";
+  appendOffensiveRunRow(criticalDomain, {
+    tool_id: "bob_http_idor_confirm",
+    demonstrated_severity: "critical",
+  });
+  const criticalError = mustThrow(() => appendCandidateClaim(exploitedClaim(criticalDomain, {
+    severity: "critical",
+    evidence_refs: [exploitRef(criticalDomain, { tool_id: "bob_http_idor_confirm" })],
+  })));
+  assertInvalidArgumentsCode(criticalError, "exploit_proof_tool_demonstrated_ceiling_exceeded");
+  assert.equal(criticalError.details.tool_ceiling, "medium");
+
+  const mediumDomain = "offensive-tool-ceiling-medium.example";
+  appendOffensiveRunRow(mediumDomain, {
+    tool_id: "bob_http_idor_confirm",
+    demonstrated_severity: "medium",
+  });
+  const ok = appendCandidateClaim(exploitedClaim(mediumDomain, {
+    severity: "medium",
+    evidence_refs: [exploitRef(mediumDomain, { tool_id: "bob_http_idor_confirm" })],
+  }));
+  assert.equal(ok.severity, "medium");
+}));
+
+test("unknown offensive tool ids fail closed to the info demonstrated-severity ceiling", () => withTempHome(() => {
+  const toolId = "totally_unknown_tool";
+
+  const criticalDomain = "offensive-tool-ceiling-unknown-critical.example";
+  appendOffensiveRunRow(criticalDomain, {
+    tool_id: toolId,
+    demonstrated_severity: "critical",
+  });
+  const criticalError = mustThrow(() => appendCandidateClaim(exploitedClaim(criticalDomain, {
+    severity: "critical",
+    evidence_refs: [exploitRef(criticalDomain, { tool_id: toolId })],
+  })));
+  assertInvalidArgumentsCode(criticalError, "exploit_proof_tool_demonstrated_ceiling_exceeded");
+  assert.equal(criticalError.details.tool_ceiling, "info");
+
+  const lowDomain = "offensive-tool-ceiling-unknown-low.example";
+  appendOffensiveRunRow(lowDomain, {
+    tool_id: toolId,
+    demonstrated_severity: "low",
+  });
+  const lowError = mustThrow(() => appendCandidateClaim(exploitedClaim(lowDomain, {
+    severity: "low",
+    evidence_refs: [exploitRef(lowDomain, { tool_id: toolId })],
+  })));
+  assertInvalidArgumentsCode(lowError, "exploit_proof_tool_demonstrated_ceiling_exceeded");
+  assert.equal(lowError.details.tool_ceiling, "info");
+
+  const infoDomain = "offensive-tool-ceiling-unknown-info.example";
+  appendOffensiveRunRow(infoDomain, {
+    tool_id: toolId,
+    demonstrated_severity: "info",
+  });
+  const ok = appendCandidateClaim(exploitedClaim(infoDomain, {
+    severity: "informational",
+    evidence_refs: [exploitRef(infoDomain, { tool_id: toolId })],
+  }));
+  assert.equal(ok.severity, "informational");
 }));
 
 test("exploit_run canonicalizes targets to origin+path (strips secrets value-blind)", () => {

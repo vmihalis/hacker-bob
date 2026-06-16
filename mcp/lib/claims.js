@@ -752,6 +752,22 @@ const CLAIM_EXPLOIT_SEVERITY_RANK = Object.freeze(
   Object.fromEntries(SEVERITY_VALUES.map((severity, index) => [severity, SEVERITY_VALUES.length - index])),
 );
 
+// Per-offensive-tool cap on the demonstrated_severity a signed row may assert. REAL signable
+// producers ONLY. FAIL-CLOSED: any tool_id that is NOT an own key resolves to "info" (lowest tier);
+// `?? "critical"` would be fail-OPEN and is forbidden. Object.freeze + "use strict" means an
+// in-process actor's `MAP.x = "critical"` THROWS — the map cannot be widened at runtime.
+//
+//   bob_http_idor_confirm: the future PR-C second-test-identity IDOR producer (does NOT exist at
+//   HEAD; pre-seeded per design D5 so the ceiling enforces the day PR-C first writes a row). A safe
+//   cross-tenant READ of attacker-owned SYNTHETIC objects caps at MEDIUM by construction.
+// DELIBERATELY ABSENT: bob_http_confirm (real, but NEGATIVE-ONLY — mints no signed row in
+//   production; mapping it would grant a signable ceiling to a tool that must never sign).
+const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
+  Object.assign(Object.create(null), {
+    bob_http_idor_confirm: "medium",
+  }),
+);
+
 function exploitSeverityRank(severity) {
   const normalized = severity === "informational" ? "info" : severity;
   return (typeof normalized === "string" && CLAIM_EXPLOIT_SEVERITY_RANK[normalized.toLowerCase()]) || 0;
@@ -1062,6 +1078,26 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
       },
     );
   }
+
+  // Per-tool demonstrated_severity ceiling (PR-A). The claim-vs-row ceiling above bounds
+  // claim.severity by what the rows demonstrated; this bounds what any single row is even ALLOWED
+  // to demonstrate, per the tool that produced it. FAIL-CLOSED to "info" for unknown/forged tool_ids.
+  for (const row of backedRows) {
+    const toolCeil = OFFENSIVE_TOOL_DEMONSTRATED_CEILING[row.tool_id] ?? "info";
+    if (exploitSeverityRank(row.demonstrated_severity) > exploitSeverityRank(toolCeil)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "offensive-runs row demonstrates a severity above the ceiling permitted for the tool that produced it.",
+        {
+          code: "exploit_proof_tool_demonstrated_ceiling_exceeded",
+          run_id: row.run_id || null,
+          tool_id: row.tool_id || null,
+          demonstrated_severity: row.demonstrated_severity,
+          tool_ceiling: toolCeil,
+        },
+      );
+    }
+  }
 }
 
 function appendCandidateClaim(input, options = {}) {
@@ -1096,6 +1132,7 @@ module.exports = {
   CLAIM_STATUSES,
   CLAIM_VERSION,
   EVIDENCE_REFERENCE_KIND_VALUES,
+  OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
   OFFENSIVE_OUTCOME_VALUES,
   O_P4_NATIVE_LANGUAGES,
   O_P4_TRIGGERING_SEVERITIES,

@@ -49,6 +49,7 @@ const {
 const {
   readOffensiveRunRecords,
   offensiveRunRowSatisfiesEvidence,
+  OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("./claims.js");
 const {
   readHandoffSigningKey,
@@ -281,7 +282,17 @@ function clampResultSeveritiesInPlace(domain, results) {
               && typeof row.surface_id === "string"
               && row.surface_id.trim() === surfaceId
             ) {
-              maxDemonstratedRank = Math.max(maxDemonstratedRank, verifySeverityRank(row.demonstrated_severity));
+              // Per-tool demonstrated_severity ceiling (PR-A), applied HERE too so the cap is a true
+              // system invariant — enforced at the record gate, the CLAIM_FREEZE->VERIFY gate, AND
+              // this verify-time severity-rise path. Cap the row's demonstrated rank at its tool's
+              // ceiling before it can unlock a rise: a forged/over-ceiling row, or a session advanced
+              // past the gate with operator_force, cannot raise severity above the tool's ceiling. An
+              // unknown/forged tool_id fail-closes to "info" (lowest tier).
+              const toolCeilRank = verifySeverityRank(
+                OFFENSIVE_TOOL_DEMONSTRATED_CEILING[row.tool_id] ?? "info",
+              );
+              const cappedRowRank = Math.min(verifySeverityRank(row.demonstrated_severity), toolCeilRank);
+              maxDemonstratedRank = Math.max(maxDemonstratedRank, cappedRowRank);
             }
           }
         }
