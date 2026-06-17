@@ -183,6 +183,10 @@ test("htmlContextAt classifies executable vs safe reflection contexts (fail-clos
     // inert <template> + legacy <plaintext> contents are non-executable → raw-text
     ["<template><div>NONCE", "rawtext"],
     ["<plaintext>NONCE", "rawtext"],
+    // a reflection inside a <!doctype>/<!…> declaration or <?…> PI is inert
+    ["<!doctype html PUBLIC NONCE", "declaration"],
+    ["<body><!ENTITY x NONCE", "declaration"],
+    ["<?xml version=NONCE", "declaration"],
   ];
   for (const [tpl, want] of cases) {
     const idx = tpl.indexOf("NONCE");
@@ -344,6 +348,20 @@ test("negative: a </scriptPREFIX> inside <script> does NOT exit raw-text → min
   setupSession(domain);
   const fetch_fn = reflectFetchFn({
     wrap: (r) => `<!doctype html><html><head><script>var s = "</scripture>"; var t = ${r};</script></head><body></body></html>`,
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "safe_context");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("negative: a reflection inside a <!doctype …> declaration is inert → mints NOTHING", () => withTempHome(async () => {
+  // The nonce reflects INSIDE a <!doctype …> declaration; the browser consumes it
+  // as markup metadata until the next `>`, so it is not an executable text node.
+  const domain = "reflect-neg-doctype.example.test";
+  setupSession(domain);
+  const fetch_fn = reflectFetchFn({
+    wrap: (r) => `<!doctype html SYSTEM "about:legacy-compat" ${r}><html><body></body></html>`,
   });
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, false, JSON.stringify(result));

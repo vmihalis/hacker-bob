@@ -281,6 +281,11 @@ function htmlContextAt(html, idx) {
       if (c === "<") {
         if (startsWith("<!--", i)) { state = "comment"; i += 4; continue; }
         if (startsWith("<![CDATA[", i)) { state = "cdata"; i += 9; continue; }
+        // <!doctype …>, <!ENTITY …>, any other <!…> declaration / bogus comment, and
+        // a <?…> processing instruction are consumed as markup until the next ">" —
+        // not an executable sink. Enter an inert declaration state so a reflection
+        // inside them fails closed instead of classifying as text_node (codex).
+        if (startsWith("<!", i) || startsWith("<?", i)) { state = "declaration"; i += 2; continue; }
         const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9:_-]*)/.exec(html.slice(i, i + 64));
         if (m) {
           tagIsClosing = m[1] === "/";
@@ -301,6 +306,12 @@ function htmlContextAt(html, idx) {
     }
     if (state === "cdata") {
       if (startsWith("]]>", i)) { state = "text"; i += 3; continue; }
+      i += 1;
+      continue;
+    }
+    if (state === "declaration") {
+      // <!doctype …> / <!…> bogus comment / <?…> PI: consume until the closing ">".
+      if (c === ">") { state = "text"; i += 1; continue; }
       i += 1;
       continue;
     }
@@ -347,6 +358,7 @@ function htmlContextAt(html, idx) {
     case "attr_single": return "quoted_attr";
     case "comment": return "comment";
     case "cdata": return "cdata";
+    case "declaration": return "declaration";
     case "rawtext": return "rawtext";
     case "rcdata": return "rcdata";
     default: return "unknown";
