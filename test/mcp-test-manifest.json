@@ -156,6 +156,7 @@
   "test/claim-secret-evidence-bypass.test.js",
   "test/offensive-confirmer.test.js",
   "test/offensive-http-common.test.js",
+  "test/offensive-capture-writer.test.js",
   "test/lifecycle-state-drift.test.js",
   "test/evidence-gate-lifecycle.test.js"
 ]
