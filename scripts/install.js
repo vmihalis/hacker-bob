@@ -381,7 +381,15 @@ function installProject(projectDir, options = {}) {
         fs.rmSync(path.join(targetLibDir, name), { recursive: true, force: true });
       }
     }
-    copyDirRecursive(sourceLibDir, targetLibDir, (relative, name) => name.endsWith(".js"));
+    // Copy .js modules plus any .sh build assets a module reads at load time
+    // (e.g. repo-env.js resolves a native-fuzz build script under mcp/lib/fuzz/).
+    // Dropping a load-time .sh asset crashes mcp/server.js startup the same way a
+    // dropped subdir would, so the runtime-copy must carry both.
+    copyDirRecursive(
+      sourceLibDir,
+      targetLibDir,
+      (relative, name) => name.endsWith(".js") || name.endsWith(".sh"),
+    );
   }
   const copiedRuntimeDependencies = copyRuntimeNodeDependencies(sourceRoot, mcpDir);
 
