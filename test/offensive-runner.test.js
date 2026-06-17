@@ -11,11 +11,10 @@ const {
   parseAllowlistedArgv,
   scrubbedDockerEnv,
   offensiveRunCount,
+  offensiveRunBudgetPath,
   MAX_OFFENSIVE_RUNS,
-  OFFENSIVE_RUN_AUDIT_METHOD,
 } = require("../mcp/lib/offensive-runner.js");
 const { initSession } = require("../mcp/lib/session-state.js");
-const { auditConfirmRequest } = require("../mcp/lib/offensive-http-common.js");
 const { repoRunsDir } = require("../mcp/lib/paths.js");
 
 const DIGEST = "ghcr.io/bobnetsec/bob-offense@sha256:" + "b".repeat(64);
@@ -91,6 +90,9 @@ test("parseAllowlistedArgv: boolean vs value flags, bare-arg smuggling closed, r
   assert.throws(() => parseAllowlistedArgv(["httpx", "-u", "-silent"], spec), /requires a value/);
   // a boolean flag followed by another allowlisted flag is fine
   assert.doesNotThrow(() => parseAllowlistedArgv(["httpx", "-silent", "-u", "https://x"], spec));
+  // the container binary (toolArgv[0]) must be a bare name — no path/metacharacters
+  assert.throws(() => parseAllowlistedArgv(["/bin/sh", "-silent"], spec), /bare \[a-zA-Z0-9._-\] token/);
+  assert.throws(() => parseAllowlistedArgv(["rm;reboot", "-silent"], spec), /bare \[a-zA-Z0-9._-\] token/);
 });
 
 // ───────────────────────── safety gates (NO docker lifecycle reached) ─────────────────────────
@@ -128,12 +130,22 @@ test("flag allowlist: an unlisted flag blocks before any docker call (full lifec
   assert.ok(noLifecycle(docker));
 }));
 
-test("run budget: fail-closed at MAX_OFFENSIVE_RUNS, no docker lifecycle (F3)", () => withTempHome(async () => {
+test("offensiveRunCount: monotonic counter (missing=0, value, malformed=fail-closed)", () => withTempHome(async () => {
+  const domain = "runner-counter.example.test";
+  setup(domain);
+  assert.equal(offensiveRunCount(domain), 0, "missing counter file = 0");
+  fs.writeFileSync(offensiveRunBudgetPath(domain), "7");
+  assert.equal(offensiveRunCount(domain), 7);
+  fs.writeFileSync(offensiveRunBudgetPath(domain), "garbage");
+  assert.equal(offensiveRunCount(domain), Number.POSITIVE_INFINITY, "malformed counter fails closed");
+}));
+
+test("run budget: fail-closed at MAX (untrimmable counter, NOT the 5000-trimmed audit log) (F3)", () => withTempHome(async () => {
   const domain = "runner-budget.example.test";
   setup(domain);
-  for (let i = 0; i < MAX_OFFENSIVE_RUNS; i += 1) {
-    auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: `https://${domain}/`, status: null, scopeDecision: "allowed", startedAt: Date.now(), toolId: "x" });
-  }
+  // Seed the monotonic counter at the cap — the budget does NOT read http-audit
+  // (which trims at HTTP_AUDIT_LOG_MAX_RECORDS and would let the budget reset).
+  fs.writeFileSync(offensiveRunBudgetPath(domain), String(MAX_OFFENSIVE_RUNS));
   assert.ok(offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS);
   const docker = makeStubDocker();
   const r = await runOffensiveTool(baseRun(domain, { docker }));
@@ -267,5 +279,44 @@ test("a positive verdict with an out-of-scope canonicalTarget is blocked, never 
     sign: () => { signed = true; return {}; },
   }));
   assert.equal(r.reason, "oracle_target_out_of_scope");
+  assert.equal(signed, false);
+}));
+
+test("forcedFlags reject the '--' pass-through separator", () => withTempHome(async () => {
+  const domain = "runner-forceddd.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(runOffensiveTool(baseRun(domain, { forcedFlags: ["--"], docker })), /server-defined flag tokens/);
+  assert.ok(noLifecycle(docker));
+}));
+
+test("scope-gate fails CLOSED on a URL-shaped value of an UNDECLARED url flag", () => withTempHome(async () => {
+  // -H is a value flag NOT in flagSpec.url; its value still looks like a URL, so the
+  // gate must scope-check it — an incomplete flagSpec.url cannot fail open.
+  const domain = "runner-undeclared.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, {
+      toolArgv: ["httpx", "-u", `https://${domain}/`, "-H", "https://evil.example.com/"],
+      flagSpec: { boolean: ["-silent"], value: ["-u", "-H"], url: ["-u"] },
+      docker,
+    })),
+    (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
+  );
+  assert.ok(noLifecycle(docker));
+}));
+
+test("signed content is secret-scanned: a classify returning secret stdoutContent is blocked", () => withTempHome(async () => {
+  const domain = "runner-signscan.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ writeStdout: "benign output" });
+  let signed = false;
+  const r = await runOffensiveTool(baseRun(domain, {
+    docker,
+    classify: () => ({ positive: true, surfaceId: "surface:x", canonicalTarget: `https://${domain}/x`, stdoutContent: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789", relationBooleans: {} }),
+    sign: () => { signed = true; return {}; },
+  }));
+  assert.equal(r.reason, "offensive_signed_content_contains_sensitive_value");
   assert.equal(signed, false);
 }));

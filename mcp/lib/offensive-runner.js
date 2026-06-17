@@ -54,7 +54,6 @@ const { withSessionLock } = require("./storage.js");
 const { validateNoSensitiveMaterial } = require("./sensitive-material.js");
 const { assertSafeRequestUrl } = require("./safe-fetch.js");
 const { SCOPE_VALIDATION_OPTS, auditConfirmRequest } = require("./offensive-http-common.js");
-const { readHttpAuditRecordsFromJsonl } = require("./http-records.js");
 const { buildAndSignOffensiveRow } = require("./offensive-capture-writer.js");
 const { buildOffensiveDockerRunArgv } = require("./offensive-sandbox.js");
 
@@ -67,8 +66,10 @@ const MAX_OFFENSIVE_RUNS = 200;
 // a distinctive `method` token that survives normalization.
 const OFFENSIVE_RUN_AUDIT_METHOD = "CONTAINER_RUN";
 // On-disk stream cap per stream; the FULL captured slice up to this is secret-scanned
-// (no unscanned-but-persisted tail), so the read cap == the stream cap.
-const STREAM_CAP_BYTES = 16 * 1024 * 1024;
+// (no unscanned-but-persisted tail), so the read cap == the stream cap. Kept modest
+// (4 MiB) so the synchronous secret scan can't block the event loop on a huge capture
+// — far more than a count/boolean oracle needs; output past it is truncated.
+const STREAM_CAP_BYTES = 4 * 1024 * 1024;
 const CAPTURE_READ_CAP_BYTES = STREAM_CAP_BYTES;
 // A FIXED minimal PATH for the docker client — never the inherited PATH (F2).
 const FIXED_DOCKER_PATH = "/usr/local/bin:/usr/bin:/bin";
@@ -90,6 +91,11 @@ function scrubbedDockerEnv(dockerConfigDir) {
 // discipline, bounded to CAPTURE_READ_CAP_BYTES.
 function secureReadCaptureBytes(filePath) {
   const noFollow = fs.constants.O_NOFOLLOW || 0;
+  // If the platform lacks O_NOFOLLOW, lstat-gate the path so a symlink swapped in
+  // after the O_EXCL write is not followed (don't silently drop the protection).
+  if (!noFollow) {
+    try { if (fs.lstatSync(filePath).isSymbolicLink()) return Buffer.alloc(0); } catch { return Buffer.alloc(0); }
+  }
   let fd;
   try {
     fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
@@ -115,6 +121,12 @@ function secureReadCaptureBytes(filePath) {
 function parseAllowlistedArgv(toolArgv, spec) {
   if (!Array.isArray(toolArgv) || toolArgv.length === 0 || !toolArgv.every((t) => typeof t === "string" && t.length > 0)) {
     rejectInvalid("toolArgv must be a non-empty array of non-empty strings");
+  }
+  // toolArgv[0] is the container binary the runner executes — constrain it to a bare
+  // binary-name token (no path separators / metacharacters) so an arbitrary in-image
+  // binary or path can't be run. PR5b binds it to the tool spec's declared binary.
+  if (!/^[a-zA-Z0-9._-]+$/.test(toolArgv[0])) {
+    rejectInvalid("toolArgv[0] (the container binary name) must be a bare [a-zA-Z0-9._-] token", { code: "offensive_bad_binary" });
   }
   const booleanFlags = spec && spec.boolean ? new Set(spec.boolean) : new Set();
   const valueFlags = spec && spec.value ? new Set(spec.value) : new Set();
@@ -156,17 +168,56 @@ function parseAllowlistedArgv(toolArgv, spec) {
   return pairs;
 }
 
-// F3 (fail-closed): count prior offensive container runs from http-audit. On a read
-// error return Infinity so the budget check blocks (never fail open).
+function offensiveRunBudgetPath(domain) {
+  return path.join(sessionDir(domain), "offensive-run-budget");
+}
+
+// F3 (fail-closed): the per-session offensive-run count is a MONOTONIC counter in a
+// dedicated session file — NOT derived from http-audit.jsonl, which is trimmed to the
+// last HTTP_AUDIT_LOG_MAX_RECORDS (5000) and would let early CONTAINER_RUN rows evict
+// so the budget silently resets and permits unlimited wide-open runs. Missing file =
+// 0 (fresh session); an unreadable / malformed value fails CLOSED (Infinity → blocks).
+// (The run is STILL recorded to http-audit for circuit-breaker visibility; that write
+// is just no longer the budget source.) O(1) read, so the count under the lock no
+// longer re-parses a growing log.
 function offensiveRunCount(domain) {
-  let records;
+  let raw;
   try {
-    records = readHttpAuditRecordsFromJsonl(domain);
-  } catch {
+    raw = fs.readFileSync(offensiveRunBudgetPath(domain), "utf8");
+  } catch (e) {
+    if (e && e.code === "ENOENT") return 0;
     return Number.POSITIVE_INFINITY;
   }
-  if (!Array.isArray(records)) return Number.POSITIVE_INFINITY;
-  return records.filter((r) => r && r.method === OFFENSIVE_RUN_AUDIT_METHOD && r.scope_decision === "allowed").length;
+  const n = Number.parseInt(String(raw).trim(), 10);
+  return Number.isInteger(n) && n >= 0 ? n : Number.POSITIVE_INFINITY;
+}
+
+// Reserve one run by incrementing the monotonic counter (the caller holds the session
+// lock). Returns false (fail closed) if the reservation can't be read or persisted.
+function incrementOffensiveRun(domain) {
+  const next = offensiveRunCount(domain) + 1;
+  if (!Number.isFinite(next)) return false;
+  try {
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.writeFileSync(offensiveRunBudgetPath(domain), String(next), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A legitimate session dir is a real directory Bob created — never a symlink. A
+// symlinked session root would redirect scratch writes outside the canonical tree
+// (realpath would resolve+accept it), so reject it before any scratch write.
+function assertSessionDirReal(domain) {
+  let st;
+  try {
+    st = fs.lstatSync(sessionDir(domain));
+  } catch (e) {
+    if (e && e.code === "ENOENT") return; // not created yet — we mkdir it ourselves
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, "session dir is not accessible");
+  }
+  if (st.isSymbolicLink()) throw new ToolError(ERROR_CODES.STATE_CONFLICT, "session dir must not be a symlink");
 }
 
 // Realpath-verify a session-internal dir is actually under the session dir (defends
@@ -282,8 +333,8 @@ async function runOffensiveTool({
   // --max-redirs 0, -disable-update-check) — NEVER agent-supplied. They bypass the
   // tool-argv allowlist by design, so assert each is a flag token: a bare arg or a
   // command cannot be smuggled through the exemption.
-  if (!Array.isArray(forcedFlags) || !forcedFlags.every((f) => typeof f === "string" && f.startsWith("-"))) {
-    rejectInvalid("forcedFlags must be server-defined flag tokens (each starting with '-')");
+  if (!Array.isArray(forcedFlags) || !forcedFlags.every((f) => typeof f === "string" && f.startsWith("-") && f !== "--")) {
+    rejectInvalid("forcedFlags must be server-defined flag tokens (each starting with '-', never the '--' pass-through separator)");
   }
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
@@ -293,8 +344,14 @@ async function runOffensiveTool({
   // spawn. Repeated flags all run in the container, so all are checked — a Map that
   // kept only the last value would let `-u <in-scope> -u <evil>` attack evil.
   const urlFlagNames = flagSpec && flagSpec.url ? new Set(flagSpec.url) : new Set();
+  // Fail CLOSED: scope-check every declared URL flag AND every value that LOOKS like
+  // an http(s) URL — so an undeclared URL-bearing flag can't slip out-of-scope
+  // traffic past an incomplete flagSpec.url.
+  const looksLikeUrl = (v) => /^https?:\/\//i.test(String(v));
   for (const { flag, value } of argvPairs) {
-    if (urlFlagNames.has(flag)) assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
+    if (urlFlagNames.has(flag) || looksLikeUrl(value)) {
+      assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
+    }
   }
 
   // 3) Build the docker argv NOW — it validates imageDigest / workTmpfsBytes /
@@ -319,6 +376,7 @@ async function runOffensiveTool({
     if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) return { ok: false, reason: "offensive_run_budget_exhausted" };
     const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProxyUrl ? "proxy" : null, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
     if (auditOk === false) return { ok: false, reason: "offensive_run_audit_failed" };
+    if (!incrementOffensiveRun(domain)) return { ok: false, reason: "offensive_run_budget_write_failed" };
     return { ok: true };
   });
   if (!reservation.ok) {
@@ -326,6 +384,7 @@ async function runOffensiveTool({
   }
 
   // 5) Create the filesystem scratch (post-reservation) + verify it's confined.
+  assertSessionDirReal(domain); // reject a symlinked session root before writing through it
   fs.mkdirSync(scratchDir, { recursive: true });
   assertDirUnderSession(domain, scratchDir);
   fs.mkdirSync(dockerConfigDir, { recursive: true });
@@ -394,6 +453,18 @@ async function runOffensiveTool({
     return blocked(domain, toolId, "blocked_by_design", "oracle_target_out_of_scope");
   }
 
+  // The content that will actually be SIGNED must itself pass the secret scan — a
+  // classify that returns its own stdoutContent/stderrContent must not bypass the
+  // backstop that ran on the raw captured bytes.
+  const signStdout = verdict.stdoutContent != null ? String(verdict.stdoutContent) : stdoutText;
+  const signStderr = verdict.stderrContent != null ? String(verdict.stderrContent) : stderrText;
+  try {
+    validateNoSensitiveMaterial(signStdout, "offensive_sign_stdout", { maxTextChars: STREAM_CAP_BYTES });
+    validateNoSensitiveMaterial(signStderr, "offensive_sign_stderr", { maxTextChars: STREAM_CAP_BYTES });
+  } catch {
+    return blocked(domain, toolId, "blocked_operator_pii", "offensive_signed_content_contains_sensitive_value");
+  }
+
   // F11: surfaceId/canonicalTarget are server-derived by the caller (verdict). The
   // signer re-hashes from its OWN O_EXCL-owned offensive-runs/ leaves.
   // DEFERRED (PR5b): bind the row's command_hash to the actual container command —
@@ -405,8 +476,8 @@ async function runOffensiveTool({
     canonicalTarget: verdict.canonicalTarget,
     surfaceId: verdict.surfaceId,
     identityTag: "unauth-offensive",
-    stdoutContent: verdict.stdoutContent != null ? verdict.stdoutContent : stdoutText,
-    stderrContent: verdict.stderrContent != null ? verdict.stderrContent : stderrText,
+    stdoutContent: signStdout,
+    stderrContent: signStderr,
     relationBooleans: verdict.relationBooleans || {},
   }));
 
@@ -424,6 +495,7 @@ module.exports = {
   scrubbedDockerEnv,
   secureReadCaptureBytes,
   offensiveRunCount,
+  offensiveRunBudgetPath,
   mintRunId,
   defaultOffensiveDocker,
   MAX_OFFENSIVE_RUNS,
