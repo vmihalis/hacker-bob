@@ -107,11 +107,19 @@ test("opencode renders the task-tool spawn seam (not @mention/Agent) and routes 
     const evalCmd = fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-evaluate.md"), "utf8");
     assert.match(evalCmd, /^agent: bob-orchestrator$/m);
 
-    // Utility commands call the shared mcp/lib helpers directly (no hooks dir).
+    // Utility commands call the shared mcp/lib helpers directly (no hooks dir),
+    // and bind to the built-in bash-capable `build` primary so their node/npx
+    // snippets run even when the active agent is bash-restricted (e.g.
+    // bob-orchestrator after /bob-evaluate). `build` is a primary, not a `bob-*`
+    // Task subagent, so it stays out of the orchestrator's Task allow-list.
     const egressCmd = fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-egress.md"), "utf8");
     assert.match(egressCmd, /mcp\/lib\/egress-cli\.js/);
+    assert.match(egressCmd, /^agent: build$/m);
     const updateCmd = fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-update.md"), "utf8");
     assert.match(updateCmd, /mcp\/lib\/update-check\.js/);
+    assert.match(updateCmd, /^agent: build$/m);
+    const exportCmd = fs.readFileSync(path.join(workspace, ".opencode", "commands", "bob-export.md"), "utf8");
+    assert.match(exportCmd, /^agent: build$/m);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -169,10 +177,20 @@ test("opencode frontmatter denies tools by default and locks down orchestrator +
     }
 
     // The root orchestrator is the lifecycle authority: NO bash, and Task
-    // dispatch allow-listed to Bob-owned subagents (deny-all then allow bob-*).
+    // dispatch allow-listed to EXACTLY Bob's generated subagents by name —
+    // deny-all FIRST, then one exact `bob-<role>` allow per mode:subagent. A
+    // `bob-*` glob is forbidden: OpenCode never filters its merged global+
+    // project+generated agent registry by provenance, so a glob would expose any
+    // operator/global agent whose name merely starts with `bob-`.
     const orchestrator = frontmatterOf("bob-orchestrator.md");
     assert.match(orchestrator, /^  bash: false$/m);
-    assert.match(orchestrator, /^permission:\n  task:\n    "\*": deny\n    "bob-\*": allow$/m);
+    assert.match(orchestrator, /^permission:\n  task:\n    "\*": deny$/m);
+    assert.doesNotMatch(orchestrator, /"bob-\*": allow/, "no bob-* glob — exact names only");
+    assert.match(orchestrator, /^    "bob-grader": allow$/m);
+    assert.match(orchestrator, /^    "bob-evaluator-agent": allow$/m);
+    assert.match(orchestrator, /^    "bob-brutalist-verifier": allow$/m);
+    // The primary orchestrator is never a Task target and must not allow itself.
+    assert.doesNotMatch(orchestrator, /^    "bob-orchestrator": allow$/m);
 
     // status/debug are read-only subagents: no write/edit/task, no mutating Bob
     // tools, and bash scoped deny-by-default via permission.bash.
@@ -188,6 +206,17 @@ test("opencode frontmatter denies tools by default and locks down orchestrator +
       );
       assert.match(fm, /^permission:\n  bash:\n    "\*": deny$/m, `${file} must scope bash deny-by-default`);
     }
+
+    // /bob-status's bash allow-list is pinned to the exact passive update-cache
+    // command, not a broad `node *` that would permit arbitrary `node -e ...`
+    // (file writes / network) from an agent that reads target-influenced data.
+    const status = frontmatterOf("bob-status.md");
+    assert.doesNotMatch(status, /"node \*": allow/, "status must not allow broad node *");
+    assert.match(
+      status,
+      /^    "node -e \\"const update=require\('\.\/mcp\/lib\/update-check\.js'\); console\.log\(JSON\.stringify\(update\.readUpdateCache\(process\.cwd\(\)\) \|\| null, null, 2\)\);\\"": allow$/m,
+      "status must pin the exact update-cache command",
+    );
 
     // The /bob-status and /bob-debug commands route to those read-only agents
     // (commands cannot self-restrict tools, so the agent binding is the gate).
@@ -258,6 +287,28 @@ test("opencode install never overwrites an operator-owned brutalist MCP server",
     const after = readJson(path.join(workspace, "opencode.json"));
     assert.deepEqual(after.mcp.brutalist, operatorBrutalist, "operator brutalist entry must survive uninstall");
     assert.ok(!after.mcp["hacker-bob"], "bob server entry should be removed");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode install refreshes a stale Bob-managed brutalist pin and preserves the operator's enabled toggle", () => {
+  const workspace = makeWorkspace();
+  try {
+    // A prior Bob install wrote an OLDER @brutalist/mcp pin; the operator then
+    // disabled it. A reinstall must refresh the command to the current reviewed
+    // pin (so a security bump takes effect) without re-enabling a server the
+    // operator turned off.
+    fs.writeFileSync(path.join(workspace, "opencode.json"), `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      mcp: { brutalist: { type: "local", command: ["npx", "-y", "@brutalist/mcp@1.0.0"], enabled: false } },
+    }, null, 2)}\n`, "utf8");
+
+    installInto(workspace);
+
+    const cfg = readJson(path.join(workspace, "opencode.json"));
+    assert.deepEqual(cfg.mcp.brutalist.command, opencode.BRUTALIST_COMMAND, "stale Bob pin must be refreshed to the current reviewed command");
+    assert.equal(cfg.mcp.brutalist.enabled, false, "the operator's disabled toggle must be preserved");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -412,6 +463,71 @@ test("opencode uninstall preserves a non-Bob-managed hacker-bob entry", () => {
     const cfg = readJson(path.join(workspace, "opencode.json"));
     assert.deepEqual(cfg.mcp["hacker-bob"].command, ["node", "/somewhere/else/server.js"]);
     assert.ok(result.skipped.some((s) => s.path === "opencode.json"));
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode uninstall removes a Bob-managed brutalist even when the hacker-bob entry was repointed", () => {
+  const workspace = makeWorkspace();
+  try {
+    // Operator repointed hacker-bob at a dev checkout (so it is NOT Bob-managed)
+    // but kept Bob's brutalist entry from a prior install. Uninstall must
+    // preserve the custom hacker-bob (record the skip) yet still strip the
+    // Bob-managed brutalist — leaving it would keep an external npx-spawned MCP
+    // server wired after Bob is gone.
+    fs.writeFileSync(path.join(workspace, "opencode.json"), `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        "hacker-bob": { type: "local", command: ["node", "/somewhere/else/server.js"], enabled: true },
+        brutalist: { type: "local", command: opencode.BRUTALIST_COMMAND, enabled: true },
+      },
+    }, null, 2)}\n`, "utf8");
+
+    const result = opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    const cfg = readJson(path.join(workspace, "opencode.json"));
+    assert.deepEqual(cfg.mcp["hacker-bob"].command, ["node", "/somewhere/else/server.js"], "custom hacker-bob must be preserved");
+    assert.ok(result.skipped.some((s) => s.path === "opencode.json"), "custom hacker-bob skip must be recorded");
+    assert.ok(!cfg.mcp.brutalist, "Bob-managed brutalist must be removed even alongside a custom hacker-bob");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode uninstall also strips a stale-pinned Bob-managed brutalist", () => {
+  const workspace = makeWorkspace();
+  try {
+    // A brutalist entry Bob wrote under an EARLIER pin is still Bob-managed and
+    // must be removed on uninstall (version-agnostic recognizer), not mistaken
+    // for an operator-owned server.
+    installInto(workspace);
+    const cfgPath = path.join(workspace, "opencode.json");
+    const cfg = readJson(cfgPath);
+    cfg.mcp.brutalist.command = ["npx", "-y", "@brutalist/mcp@1.0.0"];
+    fs.writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+
+    opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    assert.ok(!fs.existsSync(cfgPath), "Bob-only config with a stale brutalist pin should be fully removed");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode frontmatter emits the hacker-bob_* deny BEFORE the per-tool allows (load-bearing for last-match-wins)", () => {
+  const workspace = makeWorkspace();
+  try {
+    installInto(workspace);
+    // OpenCode resolves per-agent tool permissions last-matching-rule-wins, so
+    // the wildcard deny MUST precede the specific allows for the allow-list to
+    // take effect. The other tests assert presence/absence of keys but not this
+    // ordering — the actual invariant the whole MCP gating depends on.
+    const fm = fs.readFileSync(path.join(workspace, ".opencode", "agents", "bob-grader.md"), "utf8")
+      .match(/^---\n([\s\S]*?)\n---\n/)[1];
+    const denyIdx = fm.indexOf('"hacker-bob_*": false');
+    const firstAllowIdx = fm.search(/^  hacker-bob_\w+: true$/m);
+    assert.ok(denyIdx >= 0, "expected the hacker-bob_* wildcard deny");
+    assert.ok(firstAllowIdx >= 0, "expected at least one per-tool allow");
+    assert.ok(denyIdx < firstAllowIdx, "wildcard deny must precede the specific allows (OpenCode is last-match-wins)");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

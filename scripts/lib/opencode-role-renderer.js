@@ -46,6 +46,16 @@ const BRUTALIST_MCP_SERVER_KEY = "brutalist";
 // Roles allowed to use the optional external @brutalist/mcp roast server.
 const BRUTALIST_ALLOWED_ROLE_IDS = Object.freeze(["brutalist-verifier"]);
 
+// The single passive command the read-only /bob-status agent may run: a local,
+// network-free read of the update cache. Both the status body substitution AND
+// the status agent's permission.bash allow-list are derived from this one exact
+// string, so the bash allow is pinned to this command alone (not a broad
+// `node *` that would permit arbitrary `node -e`), and the two can never drift —
+// OpenCode matches bash permissions as an anchored literal, so a byte
+// difference would simply deny the read (fail-safe).
+const STATUS_UPDATE_CACHE_COMMAND =
+  'node -e "const update=require(\'./mcp/lib/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"';
+
 // Cross-cutting Bob roles -> OpenCode subagent specs. The orchestrator is the
 // single `mode: primary` agent; every other role is a `mode: subagent` reached
 // via `task(subagent_type: "bob-<name>")` from the orchestrator body.
@@ -64,13 +74,15 @@ const OPENCODE_CROSS_CUTTING_SPECS = Object.freeze({
     // local commands outside Bob's first-party-scoped, egress-profile-gated MCP
     // HTTP tools. Worker roles keep bash where they need it.
     tools: Object.freeze({ bash: false, read: true, write: false, edit: false, task: true }),
-    // permission.task allow-lists Task dispatch to the Bob-owned `bob-*` subagent
-    // set. Without it, `task: true` lets the orchestrator delegate to ANY
-    // global/project subagent (potentially one with broader tools). OpenCode
-    // removes deny-matched subagents from the Task tool description entirely.
-    permission: Object.freeze({
-      task: Object.freeze({ "*": "deny", "bob-*": "allow" }),
-    }),
+    // permission.task allow-lists Task dispatch to EXACTLY Bob's generated
+    // subagents by name — computed in orchestratorTaskPermission() once the full
+    // OPENCODE_ROLE_SPECS set is assembled (the subagent names aren't all known
+    // at this literal). Without it, `task: true` lets the orchestrator delegate
+    // to ANY global/project subagent (potentially one with broader tools); a
+    // `bob-*` GLOB would still reach any operator/global agent whose name merely
+    // starts with `bob-` (OpenCode never filters its merged agent registry by
+    // provenance). OpenCode removes deny-matched subagents from the Task tool
+    // description entirely.
     description: "Hacker Bob orchestrator — drives the six-state bug-bounty lifecycle and dispatches the per-role Bob subagents through the task tool. Invoked by /bob-evaluate.",
   }),
   "surface-discovery": Object.freeze({
@@ -168,7 +180,11 @@ const OPENCODE_TRAILING_SPECS = Object.freeze({
     permission: Object.freeze({
       bash: Object.freeze({
         "*": "deny",
-        "node *": "allow",
+        // Pinned to the exact passive update-cache read (not a broad `node *`
+        // that would permit arbitrary `node -e ...`), so an injected status run
+        // cannot run other Node code. Kept in lockstep with the body via the
+        // shared STATUS_UPDATE_CACHE_COMMAND constant.
+        [STATUS_UPDATE_CACHE_COMMAND]: "allow",
         "find *": "allow",
         "ls *": "allow",
         "stat *": "allow",
@@ -212,11 +228,36 @@ function evaluatorPackSpecs() {
   );
 }
 
-const OPENCODE_ROLE_SPECS = Object.freeze({
-  ...OPENCODE_CROSS_CUTTING_SPECS,
-  ...evaluatorPackSpecs(),
-  ...OPENCODE_TRAILING_SPECS,
-});
+// Allow-list the orchestrator's Task dispatch to EXACTLY Bob's generated
+// subagents (every mode:subagent spec), keeping the `"*": "deny"` catch-all
+// FIRST so OpenCode's last-matching-rule precedence denies everything else. An
+// exact name is an anchored literal match (`bob-grader` does not match
+// `bob-grader-x`), so a pre-existing operator/global agent that merely starts
+// with `bob-` is NOT reachable from the lifecycle-authority agent's task tool.
+function orchestratorTaskPermission(specs) {
+  const allow = {};
+  for (const spec of Object.values(specs)) {
+    if (spec.mode === "subagent") allow[spec.name] = "allow";
+  }
+  return Object.freeze({ task: Object.freeze({ "*": "deny", ...allow }) });
+}
+
+const OPENCODE_ROLE_SPECS = (() => {
+  // Assemble into a mutable object so the orchestrator's task allow-list can be
+  // injected AFTER the full subagent set (including registry-derived per-chain
+  // evaluators) is known; then freeze. Mutating the frozen literal in place
+  // would throw under "use strict".
+  const specs = {
+    ...OPENCODE_CROSS_CUTTING_SPECS,
+    ...evaluatorPackSpecs(),
+    ...OPENCODE_TRAILING_SPECS,
+  };
+  specs.orchestrator = Object.freeze({
+    ...specs.orchestrator,
+    permission: orchestratorTaskPermission(specs),
+  });
+  return Object.freeze(specs);
+})();
 
 function roleSpec(roleId) {
   const spec = OPENCODE_ROLE_SPECS[roleId];
@@ -234,12 +275,19 @@ function opencodeRoleOutputPath(roleId, { root = DEFAULT_ROOT } = {}) {
 // it for `*` and for keys containing spaces (e.g. `node *`) — and emitted in
 // declaration order, because OpenCode resolves last-matching-rule-wins: the
 // `"*"` catch-all must stay first and the specific rules after it.
+// Serialize a pattern as a YAML double-quoted scalar, escaping `\` and `"` so
+// keys that embed quotes (e.g. the exact `node -e "..."` status command) stay
+// valid YAML and round-trip back to the literal command OpenCode matches.
+function yamlDoubleQuoted(value) {
+  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function renderPermissionBlock(permission) {
   const lines = ["permission:"];
   for (const [key, patternMap] of Object.entries(permission)) {
     lines.push(`  ${key}:`);
     for (const [pattern, action] of Object.entries(patternMap)) {
-      lines.push(`    "${pattern}": ${action}`);
+      lines.push(`    ${yamlDoubleQuoted(pattern)}: ${action}`);
     }
   }
   return lines;
@@ -447,10 +495,7 @@ function renderOpencodeEvaluatorPackCatalogue() {
 function renderOpencodePromptBody(roleId, body, options = {}) {
   let document = body;
   if (roleId === "status") {
-    document = document.replace(
-      "{{STATUS_UPDATE_CACHE_COMMAND}}",
-      'node -e "const update=require(\'./mcp/lib/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"',
-    );
+    document = document.replace("{{STATUS_UPDATE_CACHE_COMMAND}}", STATUS_UPDATE_CACHE_COMMAND);
   }
   document = applyOpencodeHostText(document);
   document = replaceLaunchTemplates(document);

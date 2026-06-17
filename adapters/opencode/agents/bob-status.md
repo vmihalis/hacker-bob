@@ -23,7 +23,7 @@ tools:
 permission:
   bash:
     "*": deny
-    "node *": allow
+    "node -e \"const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"": allow
     "find *": allow
     "ls *": allow
     "stat *": allow

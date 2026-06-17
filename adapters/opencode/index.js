@@ -83,15 +83,30 @@ function brutalistMcpEntry() {
   return { type: "local", command: [...BRUTALIST_COMMAND], enabled: true };
 }
 
-// A `brutalist` entry is Bob-managed only when its command is exactly Bob's
-// expected spawn command. Anything else is an operator-owned server that
-// happens to share the key: install must not overwrite it and uninstall must
-// not remove it.
-function isBobBrutalistEntry(entry) {
+// Strip a trailing `@version` from an npm package spec, scope-aware:
+// "@brutalist/mcp@1.14.7" -> "@brutalist/mcp", "@brutalist/mcp" -> itself.
+function npmSpecBase(spec) {
+  if (typeof spec !== "string") return null;
+  const at = spec.lastIndexOf("@");
+  return at > 0 ? spec.slice(0, at) : spec;
+}
+
+// The reviewed @brutalist/mcp package (without its pinned version) Bob launches.
+const BRUTALIST_PACKAGE_BASE = npmSpecBase(BRUTALIST_COMMAND[BRUTALIST_COMMAND.length - 1]);
+
+// A `brutalist` entry is Bob-managed when it launches Bob's reviewed
+// @brutalist/mcp package via the same npx invocation Bob writes — at ANY pinned
+// version, not only the current one. Matching any pin (not the exact current
+// command) lets install REFRESH a stale entry after a pin/security bump and
+// lets uninstall remove an entry Bob wrote under an earlier version, while a
+// genuinely operator-owned server that merely reuses the `brutalist` key (e.g.
+// a local `node my-brutalist.js`, a different launcher/shape) is preserved.
+function isBobManagedBrutalistEntry(entry) {
   return isPlainObject(entry)
     && Array.isArray(entry.command)
     && entry.command.length === BRUTALIST_COMMAND.length
-    && entry.command.every((token, index) => token === BRUTALIST_COMMAND[index]);
+    && entry.command.slice(0, -1).every((token, index) => token === BRUTALIST_COMMAND[index])
+    && npmSpecBase(entry.command[entry.command.length - 1]) === BRUTALIST_PACKAGE_BASE;
 }
 
 function mergeConfig({ serverPath }) {
@@ -113,8 +128,13 @@ function bobEntryMatches(entry, targetAbs) {
 
 // The /bob-evaluate command routes to the bob-orchestrator primary agent (whose
 // rendered contract carries the full runbook). status/debug bind to their
-// dedicated read-only subagents (bob-status / bob-debug); update/export/egress
-// call the mcp/lib helpers directly (OpenCode has no hooks dir, nothing to wrap).
+// dedicated read-only subagents (bob-status / bob-debug). update/export/egress
+// run node/npx maintenance helpers directly (OpenCode has no hooks dir, nothing
+// to wrap), so they bind to the built-in bash-capable `build` primary: an
+// agent-less command inherits the CURRENT agent, and after /bob-evaluate that
+// is bob-orchestrator (rendered bash:false), which would deny their shell
+// snippets. `build` is a primary (not a `bob-*` Task subagent), so it stays out
+// of the orchestrator's Task allow-list.
 function renderEvaluateCommand(spec) {
   return [
     "---",
@@ -165,6 +185,9 @@ function renderUpdateCommand(spec) {
   return [
     "---",
     `description: ${spec.description}`,
+    // Bind to the built-in bash-capable `build` primary so the node/npx helper
+    // below runs regardless of which (possibly bash:false) agent is active.
+    "agent: build",
     "---",
     "",
     "# Hacker Bob Update",
@@ -196,6 +219,8 @@ function renderExportCommand(spec) {
   return [
     "---",
     `description: ${spec.description}`,
+    // Bash-capable agent binding — see renderUpdateCommand.
+    "agent: build",
     "---",
     "",
     "# Hacker Bob Export",
@@ -216,6 +241,8 @@ function renderEgressCommand(spec) {
   return [
     "---",
     `description: ${spec.description}`,
+    // Bash-capable agent binding — see renderUpdateCommand.
+    "agent: build",
     "---",
     "",
     "# Hacker Bob Egress",
@@ -293,12 +320,24 @@ function mergeOpencodeConfig(existing, serverPath) {
   if (!base.$schema) base.$schema = CONFIG_SCHEMA;
   const mcp = isPlainObject(base.mcp) ? { ...base.mcp } : {};
   // The hacker-bob key is Bob-owned and always re-asserted. The optional
-  // brutalist key is only written when absent: an existing entry is either
-  // already Bob's (rewrite would be a no-op apart from clobbering an operator
-  // enabled/disabled toggle) or an operator-owned server we must preserve.
+  // brutalist key is (re)written when it is absent OR a Bob-managed entry from a
+  // prior install — the latter so a pin/security bump to BRUTALIST_COMMAND
+  // actually takes effect on reinstall instead of leaving stale external MCP
+  // code wired. A genuinely operator-owned server that reuses the key is
+  // preserved untouched.
   mcp["hacker-bob"] = bobMcpEntry(serverPath);
+  const existingBrutalist = mcp.brutalist;
   if (!("brutalist" in mcp)) {
     mcp.brutalist = brutalistMcpEntry();
+  } else if (isBobManagedBrutalistEntry(existingBrutalist)) {
+    // Refresh a Bob-managed entry (possibly a stale pin) to the current
+    // reviewed command, but carry over the operator's enabled/disabled toggle
+    // rather than silently re-enabling a server they turned off.
+    const refreshed = brutalistMcpEntry();
+    if (typeof existingBrutalist.enabled === "boolean") {
+      refreshed.enabled = existingBrutalist.enabled;
+    }
+    mcp.brutalist = refreshed;
   }
   base.mcp = mcp;
   return base;
@@ -398,7 +437,7 @@ function doctor({ targetAbs }) {
         addCheck(checks, "error", "opencode_config", `${CONFIG_FILE} is missing the Bob-managed hacker-bob MCP entry`);
       }
       const brutalistEntry = cfg.mcp && cfg.mcp.brutalist;
-      if (isBobBrutalistEntry(brutalistEntry)) {
+      if (isBobManagedBrutalistEntry(brutalistEntry)) {
         addCheck(checks, "ok", "opencode_brutalist_optional", `${CONFIG_FILE} registers the optional @brutalist/mcp server`);
       } else {
         addCheck(checks, "info", "opencode_brutalist_optional", `${CONFIG_FILE} does not register @brutalist/mcp — brutalist verifier will fall back gracefully`);
@@ -516,15 +555,26 @@ function removeMcpConfig(targetAbs, result) {
   }
   if (!isPlainObject(cfg) || !isPlainObject(cfg.mcp)) return;
   if (!("hacker-bob" in cfg.mcp) && !("brutalist" in cfg.mcp)) return;
-  if ("hacker-bob" in cfg.mcp && !bobEntryMatches(cfg.mcp["hacker-bob"], targetAbs)) {
-    result.skipped.push({ type: "config", path: CONFIG_FILE, reason: "hacker-bob MCP entry is not Bob-managed" });
-    return;
-  }
   const nextMcp = { ...cfg.mcp };
-  delete nextMcp["hacker-bob"];
-  if (isBobBrutalistEntry(nextMcp.brutalist)) {
+  // The hacker-bob and brutalist keys are evaluated independently. A hacker-bob
+  // entry the operator repointed away from this install is preserved (and the
+  // skip recorded), but that must NOT block removal of a Bob-managed brutalist
+  // entry sitting alongside it — otherwise uninstall would leave an external
+  // npx-spawned MCP server wired after Bob is gone.
+  if ("hacker-bob" in cfg.mcp) {
+    if (bobEntryMatches(cfg.mcp["hacker-bob"], targetAbs)) {
+      delete nextMcp["hacker-bob"];
+    } else {
+      result.skipped.push({ type: "config", path: CONFIG_FILE, reason: "hacker-bob MCP entry is not Bob-managed" });
+    }
+  }
+  if (isBobManagedBrutalistEntry(nextMcp.brutalist)) {
     delete nextMcp.brutalist;
   }
+  // Nothing Bob-owned was actually removed (e.g. a custom hacker-bob with no
+  // Bob brutalist alongside it): leave the operator's file byte-for-byte
+  // untouched rather than rewriting/reformatting it for a no-op.
+  if (Object.keys(nextMcp).length === Object.keys(cfg.mcp).length) return;
   const next = { ...cfg };
   if (Object.keys(nextMcp).length === 0) {
     delete next.mcp;
@@ -653,7 +703,7 @@ module.exports = {
   doctor,
   id,
   install,
-  isBobBrutalistEntry,
+  isBobManagedBrutalistEntry,
   managedDirs,
   managedFiles,
   mergeConfig,

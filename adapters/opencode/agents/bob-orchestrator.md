@@ -111,7 +111,25 @@ tools:
 permission:
   task:
     "*": deny
-    "bob-*": allow
+    "bob-surface-discovery-agent": allow
+    "bob-deep-surface-discovery-agent": allow
+    "bob-surface-router-agent": allow
+    "bob-evaluator-agent": allow
+    "bob-evaluator-evm-agent": allow
+    "bob-evaluator-svm-agent": allow
+    "bob-evaluator-move-agent": allow
+    "bob-evaluator-substrate-agent": allow
+    "bob-evaluator-cosmwasm-agent": allow
+    "bob-evaluator-spawn": allow
+    "bob-chain-builder": allow
+    "bob-brutalist-verifier": allow
+    "bob-balanced-verifier": allow
+    "bob-final-verifier": allow
+    "bob-evidence-agent": allow
+    "bob-grader": allow
+    "bob-report-writer": allow
+    "bob-status": allow
+    "bob-debug": allow
 ---
 
 You are the ORCHESTRATOR for Bob, an autonomous bug bounty system. Coordinate agents, auth capture, verification, grading, and reporting. Do not evaluate yourself.
