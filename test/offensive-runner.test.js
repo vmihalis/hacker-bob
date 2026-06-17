@@ -136,8 +136,10 @@ test("offensiveRunCount: monotonic counter (missing=0, value, malformed=fail-clo
   assert.equal(offensiveRunCount(domain), 0, "missing counter file = 0");
   fs.writeFileSync(offensiveRunBudgetPath(domain), "7");
   assert.equal(offensiveRunCount(domain), 7);
-  fs.writeFileSync(offensiveRunBudgetPath(domain), "garbage");
-  assert.equal(offensiveRunCount(domain), Number.POSITIVE_INFINITY, "malformed counter fails closed");
+  for (const bad of ["garbage", "7x", "0x10", "7\ntrailing", "-3"]) {
+    fs.writeFileSync(offensiveRunBudgetPath(domain), bad);
+    assert.equal(offensiveRunCount(domain), Number.POSITIVE_INFINITY, `${JSON.stringify(bad)} must fail closed`);
+  }
 }));
 
 test("run budget: fail-closed at MAX (untrimmable counter, NOT the 5000-trimmed audit log) (F3)", () => withTempHome(async () => {
@@ -305,6 +307,48 @@ test("scope-gate fails CLOSED on a URL-shaped value of an UNDECLARED url flag", 
     (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
   );
   assert.ok(noLifecycle(docker));
+}));
+
+test("scope-gate also catches a protocol-relative URL value (//host) on an undeclared flag", () => withTempHome(async () => {
+  const domain = "runner-protorel.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, {
+      toolArgv: ["httpx", "-u", `https://${domain}/`, "-x", "//evil.example.com/"],
+      flagSpec: { boolean: ["-silent"], value: ["-u", "-x"], url: ["-u"] },
+      docker,
+    })),
+    (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
+  );
+  assert.ok(noLifecycle(docker));
+}));
+
+test("forcedFlags carrying a URL value are rejected (can't bypass the scope gate)", () => withTempHome(async () => {
+  const domain = "runner-forcedurl.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(runOffensiveTool(baseRun(domain, { forcedFlags: ["-u=https://evil.example.com/"], docker })), /must not carry a URL/);
+  assert.ok(noLifecycle(docker));
+}));
+
+test("a malformed egressProxyUrl is rejected before any docker call", () => withTempHome(async () => {
+  const domain = "runner-egress.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(runOffensiveTool(baseRun(domain, { egressProxyUrl: "not-a-url", docker })), /http\(s\) proxy URL/);
+  assert.ok(noLifecycle(docker));
+}));
+
+test("networkCreate failure tears down the partial network + scratch", () => withTempHome(async () => {
+  const domain = "runner-netfail.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  docker.networkCreate = (name) => { docker.calls.networkCreate.push(name); throw new Error("boom"); };
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_network_create_failed");
+  assert.equal(docker.calls.networkRm.length, 1, "partial network removed");
+  assert.deepEqual(stdoutLeaves(domain), [], "scratch cleaned on network-create failure");
 }));
 
 test("signed content is secret-scanned: a classify returning secret stdoutContent is blocked", () => withTempHome(async () => {

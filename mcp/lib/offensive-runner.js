@@ -108,16 +108,33 @@ function secureReadCaptureBytes(filePath) {
     const len = Math.min(st.size, CAPTURE_READ_CAP_BYTES);
     if (len <= 0) return Buffer.alloc(0);
     const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, 0);
-    return buf;
+    // read() may return fewer bytes than requested — loop until full, and return
+    // only the bytes actually read so a partial read can't leave a zero-padded tail
+    // that corrupts the secret scan or the row hash.
+    let off = 0;
+    while (off < len) {
+      const n = fs.readSync(fd, buf, off, len - off, off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return off === len ? buf : buf.subarray(0, off);
   } finally {
     fs.closeSync(fd);
   }
 }
 
+// A value is treated as a network target (and scope-checked) if it carries a URL
+// scheme OR is protocol-relative (`//host`). Bare schemeless hosts (e.g. `evil.com`)
+// need PR5b's typed scope_url_fields to disambiguate from non-target values
+// (filenames, numbers); until then a bare host on an UNDECLARED flag is part of the
+// accepted aim-check residual (declared flagSpec.url flags are checked regardless).
+function looksLikeUrl(value) {
+  return /^([a-z][a-z0-9+.-]*:)?\/\//i.test(String(value));
+}
+
 // F9: parse + allowlist the tool argv. `spec` distinguishes boolean flags (no value)
 // from value flags (exactly one value). Bare args + the `--` separator are rejected.
-// Returns a Map of value-flag → value (so URL-flag values can be scope-checked).
+// Returns a list of {flag,value} pairs (repeats preserved) for scope-checking.
 function parseAllowlistedArgv(toolArgv, spec) {
   if (!Array.isArray(toolArgv) || toolArgv.length === 0 || !toolArgv.every((t) => typeof t === "string" && t.length > 0)) {
     rejectInvalid("toolArgv must be a non-empty array of non-empty strings");
@@ -188,7 +205,11 @@ function offensiveRunCount(domain) {
     if (e && e.code === "ENOENT") return 0;
     return Number.POSITIVE_INFINITY;
   }
-  const n = Number.parseInt(String(raw).trim(), 10);
+  // Strict digits-only — parseInt would accept "7x" / "0x10" / "7\ntrailing" and
+  // under-count, so a tampered/malformed counter must fail CLOSED, not parse low.
+  const trimmed = String(raw).trim();
+  if (!/^\d+$/.test(trimmed)) return Number.POSITIVE_INFINITY;
+  const n = Number.parseInt(trimmed, 10);
   return Number.isInteger(n) && n >= 0 ? n : Number.POSITIVE_INFINITY;
 }
 
@@ -329,12 +350,24 @@ async function runOffensiveTool({
 }) {
   if (typeof domain !== "string" || !domain.trim()) rejectInvalid("domain is required");
   if (typeof toolId !== "string" || !toolId.trim()) rejectInvalid("toolId is required");
+  // Reject a symlinked session root BEFORE anything writes through it — the
+  // reservation below writes the audit log + budget counter under the session dir.
+  assertSessionDirReal(domain);
   // forcedFlags are TRUSTED, server/spec-defined tokens the runner injects (e.g.
-  // --max-redirs 0, -disable-update-check) — NEVER agent-supplied. They bypass the
-  // tool-argv allowlist by design, so assert each is a flag token: a bare arg or a
-  // command cannot be smuggled through the exemption.
+  // --max-redirs 0, -disable-update-check) — NEVER agent-supplied. Assert each is a
+  // flag token (not a bare arg / command / the `--` separator) AND carries no URL
+  // value, so a forced flag can't bypass the scope gate or smuggle a target.
   if (!Array.isArray(forcedFlags) || !forcedFlags.every((f) => typeof f === "string" && f.startsWith("-") && f !== "--")) {
     rejectInvalid("forcedFlags must be server-defined flag tokens (each starting with '-', never the '--' pass-through separator)");
+  }
+  for (const f of forcedFlags) {
+    const inline = f.includes("=") ? f.slice(f.indexOf("=") + 1) : "";
+    if (looksLikeUrl(inline)) rejectInvalid("forcedFlags must not carry a URL value (they are control flags, never targets)");
+  }
+  // Egress proxy (PR5a takes a raw url; PR5b resolves the named profile) must be a
+  // well-formed http(s) proxy URL before it is handed to `docker --env`.
+  if (egressProxyUrl != null && (typeof egressProxyUrl !== "string" || !/^https?:\/\/[^\s]+$/i.test(egressProxyUrl))) {
+    rejectInvalid("egressProxyUrl must be an http(s) proxy URL");
   }
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
@@ -344,10 +377,9 @@ async function runOffensiveTool({
   // spawn. Repeated flags all run in the container, so all are checked — a Map that
   // kept only the last value would let `-u <in-scope> -u <evil>` attack evil.
   const urlFlagNames = flagSpec && flagSpec.url ? new Set(flagSpec.url) : new Set();
-  // Fail CLOSED: scope-check every declared URL flag AND every value that LOOKS like
-  // an http(s) URL — so an undeclared URL-bearing flag can't slip out-of-scope
-  // traffic past an incomplete flagSpec.url.
-  const looksLikeUrl = (v) => /^https?:\/\//i.test(String(v));
+  // Fail CLOSED: scope-check every declared URL flag AND every value that looks like
+  // a URL (scheme or protocol-relative) — an undeclared URL-bearing flag can't slip
+  // out-of-scope traffic past an incomplete flagSpec.url.
   for (const { flag, value } of argvPairs) {
     if (urlFlagNames.has(flag) || looksLikeUrl(value)) {
       assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
@@ -383,8 +415,8 @@ async function runOffensiveTool({
     return blocked(domain, toolId, "blocked_by_infra", reservation.reason);
   }
 
-  // 5) Create the filesystem scratch (post-reservation) + verify it's confined.
-  assertSessionDirReal(domain); // reject a symlinked session root before writing through it
+  // 5) Create the filesystem scratch (post-reservation) + verify it's confined (the
+  // symlinked-root reject already ran up-front, before the reservation wrote).
   fs.mkdirSync(scratchDir, { recursive: true });
   assertDirUnderSession(domain, scratchDir);
   fs.mkdirSync(dockerConfigDir, { recursive: true });
@@ -398,6 +430,7 @@ async function runOffensiveTool({
   try {
     docker.networkCreate(runId, env);
   } catch (e) {
+    try { docker.networkRm(runId, env); } catch {} // tear down a partially-created network
     cleanupScratch();
     return blocked(domain, toolId, "blocked_by_infra", "offensive_network_create_failed", { failure_reason: e.message || String(e) });
   }
