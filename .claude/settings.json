@@ -76,6 +76,7 @@
       "Glob",
       "Grep",
       "mcp__hacker-bob__bob_http_idor_confirm",
+      "mcp__hacker-bob__bob_http_xss_reflect",
       "mcp__hacker-bob__bob_start_next_wave",
       "mcp__hacker-bob__bob_start_wave",
       "mcp__hacker-bob__bob_route_surfaces",

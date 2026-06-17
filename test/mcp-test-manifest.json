@@ -102,6 +102,7 @@
   "test/oss-evidence-reference.test.js",
   "test/offensive-proof-contract.test.js",
   "test/offensive-idor-producer.test.js",
+  "test/offensive-reflect-producer.test.js",
   "test/offensive-run-freeze-completeness.test.js",
   "test/severity-rise-guard.test.js",
   "test/sarif-ingest.test.js",

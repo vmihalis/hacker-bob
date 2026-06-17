@@ -77,7 +77,7 @@ test("buildAndSignOffensiveRow refuses relationBooleans that override a reserved
 });
 
 test("buildAndSignOffensiveRow rejects a tool_id absent from the demonstrated-severity registry (registry-bound signer)", () => {
-  for (const bad of ["bob_http_xss_reflect", "bob_unknown", "", "BOB_HTTP_IDOR_CONFIRM", "bob_http_idor_confirm "]) {
+  for (const bad of ["bob_http_unregistered_producer", "bob_unknown", "", "BOB_HTTP_IDOR_CONFIRM", "bob_http_idor_confirm "]) {
     assert.throws(
       () => writer.buildAndSignOffensiveRow("d.test", buildArgs({ toolId: bad })),
       /unknown offensive tool_id/,
