@@ -19,6 +19,7 @@ const {
 } = require("../../mcp/lib/capability-playbooks.js");
 const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
 const { TOOL_REGISTRY } = require("../../mcp/lib/tool-registry.js");
+const { BRUTALIST_MCP_TOOL_NAMES } = require("../merge-claude-config.js");
 const { parseSkillText } = require("./skill-parser.js");
 
 // Y.8 Do step 0b — `@schema_ref` directive auto-injection. The
@@ -341,15 +342,15 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     color: "red",
     mcp_server: true,
     local_tools: Object.freeze(["Bash", "Read"]),
-    // External @brutalist/mcp tools for the adversarial roast layer.
-    // roast_cli_debate is intentionally excluded: the debate orchestrator
-    // spawns multiple CLI agents and is too time-expensive for a per-finding
-    // loop. Single-shot roast is the correct primitive here.
-    extra_mcp_tools: Object.freeze([
-      "mcp__brutalist__roast",
-      "mcp__brutalist__brutalist_discover",
-      "mcp__brutalist__cli_agent_roster",
-    ]),
+    // External @brutalist/mcp tools for the adversarial roast layer. Derived
+    // from the shared BRUTALIST_MCP_TOOL_NAMES registry so this list stays in
+    // lockstep with the OpenCode adapter's allow-list. roast_cli_debate is
+    // intentionally excluded there: the debate orchestrator spawns multiple CLI
+    // agents and is too time-expensive for a per-finding loop. Single-shot roast
+    // is the correct primitive here.
+    extra_mcp_tools: Object.freeze(
+      BRUTALIST_MCP_TOOL_NAMES.map((name) => `mcp__brutalist__${name}`),
+    ),
     // Brutalist MCP is optional \u2014 registered for availability but not gated.
     // Graceful fallback when missing is the brutalist-verifier prompt's job.
     extra_mcp_servers: Object.freeze(["brutalist"]),

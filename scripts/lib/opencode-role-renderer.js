@@ -15,6 +15,7 @@ const {
   renderCapabilityPlaybookAppendix,
 } = require("../../mcp/lib/capability-playbooks.js");
 const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+const { BRUTALIST_MCP_TOOL_NAMES } = require("../merge-claude-config.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
@@ -55,6 +56,23 @@ const BRUTALIST_ALLOWED_ROLE_IDS = Object.freeze(["brutalist-verifier"]);
 // difference would simply deny the read (fail-safe).
 const STATUS_UPDATE_CACHE_COMMAND =
   'node -e "const update=require(\'./mcp/lib/update-check.js\'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));"';
+
+// Side-effect-free bash locators the read-only /bob-status and /bob-debug agents
+// share for session enumeration / mtime inspection under ~/hacker-bob-sessions.
+// Single source of truth so the two specs cannot drift. `find` is intentionally
+// excluded: OpenCode resolves bash patterns as `.*`-style globs where `*`
+// swallows spaces and flags, and `find`'s `-exec`/`-delete` flags live in the
+// SAME command node as the locator (no separate spawned-shell node to re-deny),
+// so a `find *` allow would let these no-write/no-edit readers run arbitrary
+// shell or delete files from target-influenced data. ls/stat/test carry no
+// exec/delete primitive (and any compound `;`/`&&` continuation is parsed into a
+// separate node that the `"*": "deny"` baseline re-denies), and recursive
+// enumeration is covered by the always-on `glob` tool plus the MCP readers.
+const READ_ONLY_SESSION_LOCATOR_BASH = Object.freeze({
+  "ls *": "allow",
+  "stat *": "allow",
+  "test *": "allow",
+});
 
 // Cross-cutting Bob roles -> OpenCode subagent specs. The orchestrator is the
 // single `mode: primary` agent; every other role is a `mode: subagent` reached
@@ -185,10 +203,9 @@ const OPENCODE_TRAILING_SPECS = Object.freeze({
         // cannot run other Node code. Kept in lockstep with the body via the
         // shared STATUS_UPDATE_CACHE_COMMAND constant.
         [STATUS_UPDATE_CACHE_COMMAND]: "allow",
-        "find *": "allow",
-        "ls *": "allow",
-        "stat *": "allow",
-        "test *": "allow",
+        // Side-effect-free session locators (deliberately no `find` — see
+        // READ_ONLY_SESSION_LOCATOR_BASH for why).
+        ...READ_ONLY_SESSION_LOCATOR_BASH,
       }),
     }),
     description: "Bob status reader (read-only) — renders the latest or selected Hacker Bob session's status from read-only MCP summaries. Bound to /bob-status.",
@@ -200,10 +217,9 @@ const OPENCODE_TRAILING_SPECS = Object.freeze({
     permission: Object.freeze({
       bash: Object.freeze({
         "*": "deny",
-        "find *": "allow",
-        "ls *": "allow",
-        "stat *": "allow",
-        "test *": "allow",
+        // Side-effect-free session locators (deliberately no `find` — see
+        // READ_ONLY_SESSION_LOCATOR_BASH for why).
+        ...READ_ONLY_SESSION_LOCATOR_BASH,
       }),
     }),
     description: "Bob debug reader (read-only) — diagnoses the latest or selected run from read-only telemetry/verification MCP readers. Bound to /bob-debug.",
@@ -306,13 +322,24 @@ function renderFrontmatter(spec, roleId) {
   // Registry-driven MCP gating: deny the whole hacker-bob server, then re-allow
   // exactly this role's bundle. The specific `hacker-bob_bob_*` allow keys are
   // emitted AFTER the `hacker-bob_*` deny glob so last-matching-rule precedence
-  // lets them win. The external @brutalist/mcp server is opened only for the
-  // verifier role that owns the roast contract.
+  // lets them win.
   lines.push(`  "${BOB_MCP_SERVER_KEY}_*": false`);
   for (const toolName of mcpToolNamesForRole(roleId)) {
     lines.push(`  ${BOB_MCP_SERVER_KEY}_${toolName}: true`);
   }
-  lines.push(`  "${BRUTALIST_MCP_SERVER_KEY}_*": ${BRUTALIST_ALLOWED_ROLE_IDS.includes(roleId)}`);
+  // The external @brutalist/mcp server gets the same deny-glob-then-allow shape:
+  // deny the whole namespace, then re-allow ONLY the reviewed roast tools
+  // (BRUTALIST_MCP_TOOL_NAMES, shared with the Claude adapter) for the verifier
+  // role. A blanket `"brutalist_*": true` would instead open the entire external
+  // namespace — including `brutalist_roast_cli_debate` (banned as too expensive)
+  // and any future tool — to prompt-influenced verification data; the permission
+  // map, not the prompt prose, is the real boundary.
+  lines.push(`  "${BRUTALIST_MCP_SERVER_KEY}_*": false`);
+  if (BRUTALIST_ALLOWED_ROLE_IDS.includes(roleId)) {
+    for (const toolName of BRUTALIST_MCP_TOOL_NAMES) {
+      lines.push(`  ${BRUTALIST_MCP_SERVER_KEY}_${toolName}: true`);
+    }
+  }
   // Optional granular permission block (task allow-listing / bash scoping).
   if (spec.permission) lines.push(...renderPermissionBlock(spec.permission));
   lines.push("---");

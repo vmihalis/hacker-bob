@@ -147,9 +147,20 @@ test("opencode subagent frontmatter gates MCP tools to each role's registry bund
     assert.doesNotMatch(grader, /hacker-bob_bob_finalize_report/);
     assert.doesNotMatch(grader, /hacker-bob_bob_write_wave_handoff/);
 
-    // The external @brutalist/mcp server is open only for the brutalist verifier.
-    assert.match(frontmatterOf("bob-brutalist-verifier.md"), /^  "brutalist_\*": true$/m);
+    // The external @brutalist/mcp server is denied wholesale, then ONLY the three
+    // reviewed roast tools are re-allowed for the brutalist verifier (mirrors the
+    // hacker-bob deny-glob-then-allow shape). A blanket `"brutalist_*": true`
+    // would open brutalist_roast_cli_debate (banned as too expensive) and any
+    // future external tool to prompt-influenced verification data.
+    const brutalistVerifier = frontmatterOf("bob-brutalist-verifier.md");
+    assert.match(brutalistVerifier, /^  "brutalist_\*": false$/m);
+    assert.match(brutalistVerifier, /^  brutalist_roast: true$/m);
+    assert.match(brutalistVerifier, /^  brutalist_brutalist_discover: true$/m);
+    assert.match(brutalistVerifier, /^  brutalist_cli_agent_roster: true$/m);
+    assert.doesNotMatch(brutalistVerifier, /brutalist_roast_cli_debate/);
+    // Non-verifier roles carry only the wildcard deny — no brutalist tool allows.
     assert.match(grader, /^  "brutalist_\*": false$/m);
+    assert.doesNotMatch(grader, /^  brutalist_\w+: true$/m);
     assert.match(frontmatterOf("bob-orchestrator.md"), /^  "brutalist_\*": false$/m);
 
     // The orchestrator never writes evaluator handoffs.
@@ -205,6 +216,14 @@ test("opencode frontmatter denies tools by default and locks down orchestrator +
         `${file} must not allow any Bob write/lifecycle tool`,
       );
       assert.match(fm, /^permission:\n  bash:\n    "\*": deny$/m, `${file} must scope bash deny-by-default`);
+      // `find *` must NOT be allowed: OpenCode resolves bash patterns as
+      // `.*`-style globs where `*` swallows flags, so a single `find` node could
+      // carry an `-exec sh -c '...'` / `-delete` payload past this read-only
+      // boundary. The side-effect-free locators stay.
+      assert.doesNotMatch(fm, /"find \*": allow/, `${file} must not allow find *`);
+      assert.match(fm, /^    "ls \*": allow$/m, `${file} must allow ls *`);
+      assert.match(fm, /^    "stat \*": allow$/m, `${file} must allow stat *`);
+      assert.match(fm, /^    "test \*": allow$/m, `${file} must allow test *`);
     }
 
     // /bob-status's bash allow-list is pinned to the exact passive update-cache
@@ -463,6 +482,26 @@ test("opencode uninstall preserves a non-Bob-managed hacker-bob entry", () => {
     const cfg = readJson(path.join(workspace, "opencode.json"));
     assert.deepEqual(cfg.mcp["hacker-bob"].command, ["node", "/somewhere/else/server.js"]);
     assert.ok(result.skipped.some((s) => s.path === "opencode.json"));
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("opencode uninstall removes a Bob-managed hacker-bob entry the operator disabled", () => {
+  const workspace = makeWorkspace();
+  try {
+    // The operator left Bob's hacker-bob entry pointing at THIS install's
+    // mcp/server.js but flipped enabled:false. Ownership is classified from the
+    // command path (not byte-equality including the toggle), so uninstall must
+    // still remove it instead of leaving a stale entry at the deleted server.
+    installInto(workspace);
+    const cfgPath = path.join(workspace, "opencode.json");
+    const cfg = readJson(cfgPath);
+    cfg.mcp["hacker-bob"].enabled = false;
+    fs.writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+
+    opencode.uninstall({ targetAbs: workspace, dryRun: false });
+    assert.ok(!fs.existsSync(cfgPath), "Bob-only config with a disabled hacker-bob entry should be fully removed");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

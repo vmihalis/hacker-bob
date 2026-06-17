@@ -398,6 +398,19 @@ const BRUTALIST_MCP_SERVER = Object.freeze({
   args: ["-y", "@brutalist/mcp@1.14.7"],
 });
 
+// The reviewed @brutalist/mcp tool names (raw, server-prefix-free) the
+// brutalist-verifier role is allowed to call. Single source of truth shared by
+// the Claude and OpenCode renderers so the per-adapter allow-lists cannot drift.
+// `roast_cli_debate` is intentionally absent: the debate orchestrator spawns
+// multiple CLI agents and is too expensive for a per-finding loop (see
+// prompts/roles/brutalist-verifier.md). Claude consumes these as
+// `mcp__brutalist__<name>`; OpenCode as `brutalist_<name>` permission keys.
+const BRUTALIST_MCP_TOOL_NAMES = Object.freeze([
+  "roast",
+  "brutalist_discover",
+  "cli_agent_roster",
+]);
+
 function mergeMcp(existing, serverPath) {
   const migrated = migrateLegacyMcp(existing).value;
   const next = migrated && typeof migrated === "object" && !Array.isArray(migrated)
@@ -445,6 +458,7 @@ if (require.main === module) {
 
 module.exports = {
   BRUTALIST_MCP_SERVER,
+  BRUTALIST_MCP_TOOL_NAMES,
   CANONICAL_SERVER_KEY,
   CANONICAL_TOOL_NAME_PREFIX,
   LEGACY_HOOK_COMMAND_REWRITES,

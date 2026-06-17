@@ -122,8 +122,20 @@ function expectedBobEntry(targetAbs) {
   return bobMcpEntry(path.join(targetAbs, "mcp", "server.js"));
 }
 
+// A `hacker-bob` entry is Bob-managed when it launches THIS install's
+// mcp/server.js via the same `node <target>/mcp/server.js` command Bob writes.
+// Ownership is classified from the command path alone — NOT byte-equality of the
+// whole entry. The operator may have toggled `enabled: false` (or carry
+// incidental extra keys), and uninstall must still remove Bob's own entry rather
+// than leave it dangling at a now-deleted server. An entry the operator
+// REPOINTED at a different server.js has a different command and is correctly
+// preserved. Mirrors the command-based, enabled-agnostic recognizer used for the
+// brutalist key.
 function bobEntryMatches(entry, targetAbs) {
-  return JSON.stringify(entry) === JSON.stringify(expectedBobEntry(targetAbs));
+  if (!isPlainObject(entry) || !Array.isArray(entry.command)) return false;
+  const expectedCommand = expectedBobEntry(targetAbs).command;
+  return entry.command.length === expectedCommand.length
+    && entry.command.every((token, index) => token === expectedCommand[index]);
 }
 
 // The /bob-evaluate command routes to the bob-orchestrator primary agent (whose

@@ -26,7 +26,6 @@ tools:
 permission:
   bash:
     "*": deny
-    "find *": allow
     "ls *": allow
     "stat *": allow
     "test *": allow

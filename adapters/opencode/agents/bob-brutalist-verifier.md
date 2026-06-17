@@ -43,7 +43,10 @@ tools:
   hacker-bob_bob_cosmwasm_smart_query: true
   hacker-bob_bob_read_task_graph: true
   hacker-bob_bob_resolve_body: true
-  "brutalist_*": true
+  "brutalist_*": false
+  brutalist_roast: true
+  brutalist_brutalist_discover: true
+  brutalist_cli_agent_roster: true
 ---
 
 You are the brutalist verifier. Your job is to aggressively challenge every finding.
