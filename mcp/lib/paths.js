@@ -522,10 +522,14 @@ const AUDIT_GRADED_PATHS = Object.freeze({
 //
 // SCOPE: the audit_graded_* sub-sets below are re-exported BY REFERENCE from
 // AUDIT_GRADED_PATHS, so a new audit-graded basename/pattern/dir is closed
-// automatically. HOOK_MCP_OWNED_BASENAMES is a HAND-MAINTAINED list and is NOT
-// derived from the path-function inventory; the full MCP-owned basename
-// inventory cross-check is a separate follow-up (the complementary
-// plain-MCP-owned surface is out of this registry's closure guarantee).
+// automatically. HOOK_MCP_OWNED_BASENAMES is a HAND-MAINTAINED list, but it is
+// no longer allowed to drift from the path-function inventory: every basename a
+// session-root path function in this file produces must classify into exactly
+// one write-guard class, and `scripts/check-mcp-owned-basename-inventory.js`
+// (wired into `npm run test:prompts`) fails on any unclassified basename. A new
+// MCP-owned path function therefore turns the inventory check RED until its
+// basename is added here (or to an MCP-owned dir/pattern), closing both the
+// hand-maintained drift and the `*.txt`-before-MCP-owned precedence gap.
 const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "state.json",
   "coverage.jsonl",
@@ -550,6 +554,34 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "static-scan-results.jsonl",
   "pipeline-events.jsonl",
   ".handoff-signing-key.json",
+  // T8 inventory closure — MCP-owned session-root artifacts the path-function
+  // inventory produces. These were silently relying on the default-block; now
+  // they are explicitly MCP-owned so the inventory check is closed against the
+  // resolver set (and so none is shadowed by the agent-writable *.txt allow).
+  ".session.lock",
+  "session-nucleus.json",
+  "session-events.jsonl",
+  "bob-spec.json",
+  "queue-policy.json",
+  "task-queue.json",
+  "task-graph.json",
+  "surface-index.json",
+  "symbol-surface-index.json",
+  "surface-leads.json",
+  "surface-graph.jsonl",
+  "agent-runs.jsonl",
+  "scheduler-decisions.jsonl",
+  "frontier-events.jsonl",
+  "composition-results.jsonl",
+  "claims.jsonl",
+  "claim-clusters.jsonl",
+  "chain-tree.jsonl",
+  "audit-reports.jsonl",
+  "invariant-runs.jsonl",
+  "schema-contracts.jsonl",
+  "doc-delta-results.json",
+  "auth-differential-results.json",
+  "evm-role-table-results.json",
 ]);
 // NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
 // diff-impact are intentionally NOT repeated here — they are already in
@@ -566,8 +598,17 @@ const HOOK_MCP_OWNED_FILENAME_PATTERNS = Object.freeze([
 
 // Whole directories that are MCP-owned regardless of filename (matched by
 // session-RELATIVE path component, same as MCP_OWNED_DIRS in the hook today).
+// T8 inventory closure: belief-scratch (MCP-internal belief outputs, written
+// only by the belief samplers), and repo-runs / repo-work / repo-checkouts
+// (docker-run capture + S14 control checkouts, already read-blocked by the
+// session-read-guard) are MCP-owned dirs so their contents are classified by
+// dir and the inventory check is closed against the path-function inventory.
 const HOOK_MCP_OWNED_DIRS = Object.freeze([
   "static-imports",
+  "belief-scratch",
+  "repo-runs",
+  "repo-work",
+  "repo-checkouts",
 ]);
 
 // Compact scratch / discovery / report-INPUT artifacts the agent may Write.
@@ -761,7 +802,77 @@ function auditGradedWriterClosure(declaredWriterNames) {
   return { ok: orphans.length === 0 && undeclared.length === 0, orphans, undeclared };
 }
 
+// T8 (CR-2) — session-root path-function inventory. Source of truth for
+// `scripts/check-mcp-owned-basename-inventory.js`, which classifies every
+// session-root path a resolver produces and fails on any that is not in exactly
+// one write-guard class. Keeping the resolver enumeration here (rather than in
+// the check script) makes it registry-driven: a NEW exported *Path/*Paths/*Dir/
+// *Jsonl* resolver is picked up automatically, so its basename must be
+// classified or the inventory check goes RED.
+
+// Constant dummy domain — deterministic, no Date/random. The probe wave/agent/
+// round/artifact tokens are constants so the produced basenames are stable.
+const INVENTORY_PROBE_DOMAIN = "example.com";
+
+// Resolvers that DO NOT produce a session-root path (homedir telemetry roots,
+// path predicates that take an absolute path, the session root itself). They are
+// excluded from the inventory by name so the enumeration is explicit, not
+// best-effort.
+const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
+  "sessionDir",
+  "sessionsRoot",
+  "legacySessionsRoot",
+  "telemetryDir",
+  "telemetryToolInvocationsJsonlPath",
+  "isAuditGradedPath",
+  "resolveEvidencePath",
+]);
+
+// Resolvers with arity > 1: the extra args needed to produce a concrete path.
+// Dynamic-token resolvers (handoff/live-dead-ends/wave-assignments) get tokens
+// that exercise the per-wave/agent filename patterns. verificationRoundPaths
+// fans out over every round value.
+const SESSION_ROOT_RESOLVER_EXTRA_ARGS = Object.freeze({
+  liveDeadEndsJsonlPath: ["w1", "a3"],
+  staticArtifactPath: ["SA-1"],
+  waveAssignmentsPath: [1],
+});
+
+// Returns every session-root path a resolver in this module produces, as
+// { resolver, abs } records. `verificationRoundPaths` fans out over all rounds.
+// Resolvers returning an object (`*Paths`) contribute each string value.
+function sessionRootPathInventory(domain = INVENTORY_PROBE_DOMAIN) {
+  const records = [];
+  const isResolverName = (n) => /Path$|Paths$|Dir$/.test(n) || /Jsonl/.test(n);
+  const push = (resolver, value) => {
+    if (typeof value === "string" && value) records.push({ resolver, abs: value });
+  };
+  for (const [name, fn] of Object.entries(module.exports)) {
+    if (typeof fn !== "function") continue;
+    if (!isResolverName(name)) continue;
+    if (SESSION_ROOT_NON_INVENTORY_RESOLVERS.includes(name)) continue;
+    if (name === "verificationRoundPaths") {
+      for (const round of VERIFICATION_ROUND_VALUES) {
+        const out = fn(domain, round);
+        // `out.round` is the round label, not a path — only json/markdown are paths.
+        push(name, out.json);
+        push(name, out.markdown);
+      }
+      continue;
+    }
+    const extra = SESSION_ROOT_RESOLVER_EXTRA_ARGS[name] || [];
+    const out = fn(domain, ...extra);
+    if (typeof out === "string") push(name, out);
+    else if (out && typeof out === "object") for (const v of Object.values(out)) push(name, v);
+  }
+  return records;
+}
+
 module.exports = {
+  INVENTORY_PROBE_DOMAIN,
+  SESSION_ROOT_NON_INVENTORY_RESOLVERS,
+  SESSION_ROOT_RESOLVER_EXTRA_ARGS,
+  sessionRootPathInventory,
   AUDIT_GRADED_PATHS,
   AUDIT_GRADED_WRITER_TOOLS,
   AUDIT_GRADED_WRITER_ALIASES,

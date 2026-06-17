@@ -58,14 +58,42 @@
     "static-analysis-index.jsonl",
     "static-scan-results.jsonl",
     "pipeline-events.jsonl",
-    ".handoff-signing-key.json"
+    ".handoff-signing-key.json",
+    ".session.lock",
+    "session-nucleus.json",
+    "session-events.jsonl",
+    "bob-spec.json",
+    "queue-policy.json",
+    "task-queue.json",
+    "task-graph.json",
+    "surface-index.json",
+    "symbol-surface-index.json",
+    "surface-leads.json",
+    "surface-graph.jsonl",
+    "agent-runs.jsonl",
+    "scheduler-decisions.jsonl",
+    "frontier-events.jsonl",
+    "composition-results.jsonl",
+    "claims.jsonl",
+    "claim-clusters.jsonl",
+    "chain-tree.jsonl",
+    "audit-reports.jsonl",
+    "invariant-runs.jsonl",
+    "schema-contracts.jsonl",
+    "doc-delta-results.json",
+    "auth-differential-results.json",
+    "evm-role-table-results.json"
   ],
   "mcp_owned_filename_patterns": [
     "^wave-[0-9]+-assignments\\.json$",
     "^live-dead-ends-w[0-9]+-a[0-9]+\\.jsonl$"
   ],
   "mcp_owned_dirs": [
-    "static-imports"
+    "static-imports",
+    "belief-scratch",
+    "repo-runs",
+    "repo-work",
+    "repo-checkouts"
   ],
   "agent_writable_basenames": [
     "attack_surface.json",
