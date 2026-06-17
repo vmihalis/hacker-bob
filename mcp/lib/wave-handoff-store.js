@@ -341,6 +341,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const readiness = buildWaveReadiness(artifacts, { domain });
 
   const receivedAgents = [];
+  const runContexts = [];
   const invalidAgents = [];
   const invalidHandoffs = [];
   const completedSurfaceIds = [];
@@ -426,6 +427,16 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
 
       receivedAgents.push(assignment.agent);
       provenance.verified_agents.push(assignment.agent);
+      runContexts.push({
+        // run_id/node_id: the validated payload may omit them; fall back to the
+        // SAME deterministic run key the findings loop uses at the runKey above.
+        run_id: payload.run_id
+          || `${artifacts.wave}\u0000${assignment.agent}\u0000${assignment.surface_id}`,
+        node_id: payload.node_id || assignment.surface_id,
+        // RAW handoff JSON — carries ranked_leads[] for handoff_ledger_diff.
+        // NOT the validated `payload` (its summary is a flattened string).
+        handoff_summary: handoffJson,
+      });
       if (payload.surface_status === "complete") {
         completedSurfaceIds.push(assignment.surface_id);
         if (effectiveSurfaceType === "smart_contract") {
@@ -518,6 +529,9 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       bypass_attempts_grouped: groupBypassAttempts(bypassAttempts),
       suspicion_flags: suspicionFlags,
       provenance,
+      // CR-3/I4: per-run coordinates the server-side friction mechanization
+      // needs (run_id/node_id + the RAW handoff JSON, which carries ranked_leads).
+      run_contexts: runContexts,
     },
   };
 }
