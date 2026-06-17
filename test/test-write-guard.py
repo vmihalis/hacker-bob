@@ -94,12 +94,12 @@ TESTS = [
     ("Write to MCP-owned state.json → block",
      {"tool_input": {"file_path": f"{SESSION}/state.json", "content": "test"}},
      2),
-    ("Write to agent-owned report.md → allow",
+    ("Write to audit-graded report.md → block",
      {"tool_input": {"file_path": f"{SESSION}/report.md", "content": "test"}},
-     0),
-    ("Write to agent-owned chains.md → allow",
+     2),
+    ("Write to audit-graded chains.md → block",
      {"tool_input": {"file_path": f"{SESSION}/chains.md", "content": "test"}},
-     0),
+     2),
     ("Write to agent-owned attack_surface.json → allow",
      {"tool_input": {"file_path": f"{SESSION}/attack_surface.json", "content": "test"}},
      0),
@@ -212,8 +212,11 @@ TESTS = [
     ("python3 -c open() to MCP-owned → block",
      {"tool_input": {"command": f"python3 -c \"open('{SESSION}/brutalist.json','w').write('{{}}')\""}},
      2),
-    ("python3 -c open() to agent-owned → allow",
+    ("python3 -c open() to audit-graded report.md → block",
      {"tool_input": {"command": f"python3 -c \"open('{SESSION}/report.md','w').write('test')\""}},
+     2),
+    ("python3 -c open() to agent-writable subdomains.txt → allow",
+     {"tool_input": {"command": f"python3 -c \"open('{SESSION}/subdomains.txt','w').write('x')\""}},
      0),
     ("python3 heredoc open() to MCP-owned → block",
      {"tool_input": {"command": f"python3 - <<'PY'\nwith open('{SESSION}/grade.json','w') as f:\n    f.write('{{}}')\nPY"}},
@@ -232,9 +235,9 @@ TESTS = [
     ("pathlib Path().write_text() to MCP-owned → block",
      {"tool_input": {"command": f"python3 -c \"from pathlib import Path; Path('{SESSION}/brutalist.json').write_text('{{}}')\""}},
      2),
-    ("pathlib Path().write_text() to agent-owned → allow",
+    ("pathlib Path().write_text() to audit-graded report.md → block",
      {"tool_input": {"command": f"python3 -c \"from pathlib import Path; Path('{SESSION}/report.md').write_text('test')\""}},
-     0),
+     2),
     ("open() outside session dir → allow",
      {"tool_input": {"command": "python3 -c \"open('/tmp/test.json','w').write('test')\""}},
      0),
@@ -245,6 +248,32 @@ TESTS = [
     # --- shlex.split ValueError must block, not silently allow ---
     ("Bash with unterminated quote blocks (shlex ValueError)",
      {"tool_input": {"command": f"rm '{SESSION}/findings.jsonl"}},
+     2),
+
+    # --- regex parity: paths.js .source compiled under Python re ---
+    # The manifest's exported handoff pattern is the paths.js .source
+    # (^handoff-w[1-9][0-9]*-a[1-9][0-9]*\.json$). Prove Python re matches it.
+    ("Write to audit-graded handoff-w1-a1.json → block",
+     {"tool_input": {"file_path": f"{SESSION}/handoff-w1-a1.json", "content": "x"}},
+     2),
+    ("Write to audit-graded handoff-w1-a1.md → block",
+     {"tool_input": {"file_path": f"{SESSION}/handoff-w1-a1.md", "content": "x"}},
+     2),
+    # Boundary: the stricter [1-9][0-9]* form rejects w0/a0. It then falls
+    # through to default-block anyway (unknown file in session dir), so the
+    # observable verdict is still block — assert it so the semantics are pinned.
+    ("Write to handoff-w0-a1.json → block (default-block; pattern rejects w0)",
+     {"tool_input": {"file_path": f"{SESSION}/handoff-w0-a1.json", "content": "x"}},
+     2),
+    # The agent-writable *.txt pattern (^.*\.txt$) must compile under re and
+    # ALLOW a plain scratch .txt at the session root.
+    ("Write to agent-writable foo.txt → allow",
+     {"tool_input": {"file_path": f"{SESSION}/foo.txt", "content": "x"}},
+     0),
+    # Audit-graded RELATIVE DIR prefix — a file under verification-attempts/
+    # blocks regardless of basename (parity with isAuditGradedPath).
+    ("Write under audit-graded verification-attempts/ → block",
+     {"tool_input": {"file_path": f"{SESSION}/verification-attempts/round-1.json", "content": "x"}},
      2),
 ]
 
@@ -267,6 +296,36 @@ def main():
             print(f"         expected exit {expected}, got {result.returncode}")
             if result.stderr.strip():
                 print(f"         stderr: {result.stderr.strip()}")
+            failed += 1
+        else:
+            passed += 1
+
+    # Liveness: a missing/unreadable manifest must FAIL CLOSED (block), not
+    # silently allow. The hook sets WRITE_GUARD_TABLES_FILE to
+    # "$(dirname "$0")/write-guard-tables.json", so copy the hook into a temp dir
+    # with NO manifest beside it; the load then fails and the write is blocked.
+    import tempfile
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        hook_copy = os.path.join(tmp, "session-write-guard.sh")
+        shutil.copyfile(HOOK, hook_copy)
+        # No write-guard-tables.json beside hook_copy → fail closed.
+        live = subprocess.run(
+            ["bash", hook_copy],
+            input=json.dumps(
+                {"tool_input": {"file_path": f"{SESSION}/anything.json", "content": "x"}}
+            ),
+            capture_output=True,
+            text=True,
+        )
+        desc = "Manifest missing → fail closed (block)"
+        ok = live.returncode == 2
+        status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
+        print(f"  {status}: {desc}")
+        if not ok:
+            print(f"         expected exit 2, got {live.returncode}")
+            if live.stderr.strip():
+                print(f"         stderr: {live.stderr.strip()}")
             failed += 1
         else:
             passed += 1
