@@ -716,6 +716,7 @@ module.exports = {
   isLoginRedirect,
   responseLooksLikeLoginPage,
   isResourceShapedResponse,
+  contentTypeOf,
   responseIsSharedCacheable,
   cacheInPathWithoutProvenMiss,
   auditConfirmRequest,

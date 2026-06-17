@@ -85,6 +85,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_http_confirm: "scoped_http_network",
   bob_http_idor_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
+  bob_http_xss_reflect: "scoped_http_network",
   bob_import_http_traffic: "scoped_http_network",
   bob_import_static_artifact: "initialized_session_mutation",
   bob_ingest_audit_report: "initialized_session_mutation",
