@@ -75,6 +75,17 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-export.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-check-update.js")));
+    // CR-2: the write-guard classification manifest must be installed beside the
+    // hook, or the hook's fail-closed branch blocks every session write.
+    assert.ok(
+      fs.existsSync(path.join(workspace, ".claude", "hooks", "write-guard-tables.json")),
+      "write-guard-tables.json must be installed beside session-write-guard.sh",
+    );
+    // And it must NOT be executable (it is hook DATA, not a hook).
+    {
+      const m = fs.statSync(path.join(workspace, ".claude", "hooks", "write-guard-tables.json")).mode;
+      assert.equal(m & 0o111, 0, "write-guard-tables.json must not be executable");
+    }
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update-lib.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "update-check.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "bob-export.js")));

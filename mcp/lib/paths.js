@@ -503,6 +503,106 @@ const AUDIT_GRADED_PATHS = Object.freeze({
   filename_patterns: AUDIT_GRADED_FILENAME_PATTERNS,
 });
 
+// CR-2: single source of truth for the external PreToolUse write-guard hooks
+// (.claude/hooks/session-write-guard.sh and adapters/kimi/hooks/session-write-guard.sh).
+// The hooks MUST NOT hand-maintain their own classification tables; they read
+// the rendered projection produced by scripts/generate-write-guard-tables.js,
+// which is asserted equal to this data by `npm run test:prompts`.
+//
+// Three sets, evaluated in this precedence inside the hook:
+//   1. AUDIT_GRADED  -> block (MCP renders these server-side; never agent Write)
+//   2. MCP_OWNED     -> block (structured state the agent must write via MCP tools)
+//   3. AGENT_WRITABLE-> allow (compact scratch / discovery / report-input)
+//   default          -> block (unknown file in session dir)
+//
+// report.md and chains.md are DELIBERATELY ABSENT from AGENT_WRITABLE: they are
+// in AUDIT_GRADED_BASENAMES (MCP-rendered via bob_compose_report /
+// bob_write_chain_rollup). Listing them as agent-writable was the classification
+// contradiction this registry closes.
+//
+// SCOPE: the audit_graded_* sub-sets below are re-exported BY REFERENCE from
+// AUDIT_GRADED_PATHS, so a new audit-graded basename/pattern/dir is closed
+// automatically. HOOK_MCP_OWNED_BASENAMES is a HAND-MAINTAINED list and is NOT
+// derived from the path-function inventory; the full MCP-owned basename
+// inventory cross-check is a separate follow-up (the complementary
+// plain-MCP-owned surface is out of this registry's closure guarantee).
+const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
+  "state.json",
+  "coverage.jsonl",
+  "technique-attempts.jsonl",
+  "technique-pack-reads.jsonl",
+  "findings.jsonl",
+  "findings.md",
+  "SESSION_HANDOFF.md",
+  "auth.json",
+  "http-audit.jsonl",
+  "traffic.jsonl",
+  "public-intel.json",
+  "Dockerfile.bob",
+  "repo-checks.jsonl",
+  "repo-command-runs.jsonl",
+  "repo-env.json",
+  "repo-inventory.json",
+  "surface-routes.json",
+  "static-artifacts.jsonl",
+  "static-analysis-results.jsonl",
+  "static-analysis-index.jsonl",
+  "static-scan-results.jsonl",
+  "pipeline-events.jsonl",
+  ".handoff-signing-key.json",
+]);
+// NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
+// diff-impact are intentionally NOT repeated here — they are already in
+// AUDIT_GRADED_BASENAMES and enter the BLOCK set via audit_graded_basenames.
+// Repeating them would re-introduce drift; the class test asserts the two sets
+// are disjoint, so an accidental duplicate is caught.
+
+// MCP-owned by basename-pattern (per-wave artifacts at the session root).
+const HOOK_MCP_OWNED_FILENAME_PATTERNS = Object.freeze([
+  /^wave-[0-9]+-assignments\.json$/,
+  /^live-dead-ends-w[0-9]+-a[0-9]+\.jsonl$/,
+  // handoff-w<N>-a<N>.json|md is already covered by AUDIT_GRADED_FILENAME_PATTERNS.
+]);
+
+// Whole directories that are MCP-owned regardless of filename (matched by
+// session-RELATIVE path component, same as MCP_OWNED_DIRS in the hook today).
+const HOOK_MCP_OWNED_DIRS = Object.freeze([
+  "static-imports",
+]);
+
+// Compact scratch / discovery / report-INPUT artifacts the agent may Write.
+// report.md and chains.md are NOT here — they are audit-graded.
+const HOOK_AGENT_WRITABLE_BASENAMES = Object.freeze([
+  "attack_surface.json",
+  "deep-summary.json",
+  "surface-discovery-summary.json",
+  "scope-warnings.log",
+  "deny-list.txt",
+]);
+
+const HOOK_AGENT_WRITABLE_FILENAME_PATTERNS = Object.freeze([
+  /^.*\.txt$/,
+]);
+
+// The projection both the generator and any in-process guard consume. The
+// audit-graded sets are re-exported by reference so a new audit-graded basename
+// automatically becomes a hook BLOCK with no second edit. regex `.source` is
+// exported (string form) so the JSON manifest is serializable and the Python
+// hooks can compile identical patterns.
+const WRITE_GUARD_TABLES = Object.freeze({
+  // BLOCK precedence 1: audit-graded (MCP-rendered). Reuses AUDIT_GRADED_PATHS.
+  audit_graded_basenames: AUDIT_GRADED_BASENAMES,
+  audit_graded_filename_patterns: AUDIT_GRADED_FILENAME_PATTERNS.map((re) => re.source),
+  audit_graded_relative_dirs: AUDIT_GRADED_RELATIVE_DIRS,
+  // BLOCK precedence 2: MCP-owned structured state.
+  mcp_owned_basenames: HOOK_MCP_OWNED_BASENAMES,
+  mcp_owned_filename_patterns: HOOK_MCP_OWNED_FILENAME_PATTERNS.map((re) => re.source),
+  mcp_owned_dirs: HOOK_MCP_OWNED_DIRS,
+  // ALLOW precedence 3: agent-writable scratch.
+  agent_writable_basenames: HOOK_AGENT_WRITABLE_BASENAMES,
+  agent_writable_filename_patterns: HOOK_AGENT_WRITABLE_FILENAME_PATTERNS.map((re) => re.source),
+});
+
 // Y.3 Stage c (Y-P14b / O4) — threshold above which a cited response body MUST
 // be bound to an MCP-owned import handle (`bob_import_http_traffic`,
 // `bob_resolve_body`, or `bob_static_scan`) rather than referenced as a raw
@@ -565,6 +665,7 @@ function isAuditGradedPath(absolutePath, target_domain) {
 
 module.exports = {
   AUDIT_GRADED_PATHS,
+  WRITE_GUARD_TABLES,
   LARGE_BODY_THRESHOLD_BYTES,
   TELEMETRY_DIR_NAME,
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,

@@ -1,0 +1,80 @@
+{
+  "audit_graded_basenames": [
+    "report.md",
+    "chains.md",
+    "evidence-packs.md",
+    "evidence-packs.json",
+    "proof-bundles.md",
+    "proof-bundles.json",
+    "grade.md",
+    "grade.json",
+    "claim-freeze.json",
+    "verification-manifest.json",
+    "verification-input-snapshot.json",
+    "verification-adjudication.json",
+    "report-snapshots.jsonl",
+    "report-amendments.jsonl",
+    "chain-attempts.jsonl",
+    "composition-verified.jsonl",
+    "repro-verified.jsonl",
+    "diff-impact.json",
+    "brutalist.json",
+    "brutalist.md",
+    "balanced.json",
+    "balanced.md",
+    "verified-final.json",
+    "verified-final.md"
+  ],
+  "audit_graded_filename_patterns": [
+    "^handoff-w[1-9][0-9]*-a[1-9][0-9]*\\.json$",
+    "^handoff-w[1-9][0-9]*-a[1-9][0-9]*\\.md$"
+  ],
+  "audit_graded_relative_dirs": [
+    "verification-attempts",
+    "verification-replay-leases",
+    "wave-handoffs",
+    "claim-freeze"
+  ],
+  "mcp_owned_basenames": [
+    "state.json",
+    "coverage.jsonl",
+    "technique-attempts.jsonl",
+    "technique-pack-reads.jsonl",
+    "findings.jsonl",
+    "findings.md",
+    "SESSION_HANDOFF.md",
+    "auth.json",
+    "http-audit.jsonl",
+    "traffic.jsonl",
+    "public-intel.json",
+    "Dockerfile.bob",
+    "repo-checks.jsonl",
+    "repo-command-runs.jsonl",
+    "repo-env.json",
+    "repo-inventory.json",
+    "surface-routes.json",
+    "static-artifacts.jsonl",
+    "static-analysis-results.jsonl",
+    "static-analysis-index.jsonl",
+    "static-scan-results.jsonl",
+    "pipeline-events.jsonl",
+    ".handoff-signing-key.json"
+  ],
+  "mcp_owned_filename_patterns": [
+    "^wave-[0-9]+-assignments\\.json$",
+    "^live-dead-ends-w[0-9]+-a[0-9]+\\.jsonl$"
+  ],
+  "mcp_owned_dirs": [
+    "static-imports"
+  ],
+  "agent_writable_basenames": [
+    "attack_surface.json",
+    "deep-summary.json",
+    "surface-discovery-summary.json",
+    "scope-warnings.log",
+    "deny-list.txt"
+  ],
+  "agent_writable_filename_patterns": [
+    "^.*\\.txt$"
+  ]
+}
