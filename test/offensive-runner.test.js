@@ -74,11 +74,13 @@ test("scrubbedDockerEnv: FIXED PATH (not inherited) + only PATH/HOME/DOCKER_CONF
   assert.equal(env.HTTPS_PROXY, undefined);
 });
 
-test("parseAllowlistedArgv: boolean vs value flags, bare-arg smuggling closed (F9)", () => {
+test("parseAllowlistedArgv: boolean vs value flags, bare-arg smuggling closed, repeats preserved (F9)", () => {
   const spec = { boolean: ["-silent"], value: ["-u"] };
-  // value flag captures its value
-  assert.deepEqual([...parseAllowlistedArgv(["httpx", "-u", "https://x"], spec)], [["-u", "https://x"]]);
-  assert.deepEqual([...parseAllowlistedArgv(["httpx", "-u=https://x"], spec)], [["-u", "https://x"]]);
+  // value flag captures its value (array of {flag,value} pairs)
+  assert.deepEqual(parseAllowlistedArgv(["httpx", "-u", "https://x"], spec), [{ flag: "-u", value: "https://x" }]);
+  assert.deepEqual(parseAllowlistedArgv(["httpx", "-u=https://x"], spec), [{ flag: "-u", value: "https://x" }]);
+  // repeated value flags are NOT deduped (the container runs all of them)
+  assert.deepEqual(parseAllowlistedArgv(["httpx", "-u", "a", "-u", "b"], spec), [{ flag: "-u", value: "a" }, { flag: "-u", value: "b" }]);
   // boolean flag consumes NO value → a following bare token is NOT authorized (the bug)
   assert.throws(() => parseAllowlistedArgv(["httpx", "-silent", "roguebare"], spec), /bare argument/);
   // bare arg / -- / unknown flag / boolean-with-value / value-without-value all rejected
@@ -102,6 +104,17 @@ test("scope-gate operates on the COMMAND's URL flag value, before any docker cal
     (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
   );
   assert.ok(noLifecycle(docker), "no docker lifecycle on an out-of-scope target");
+}));
+
+test("scope-gate checks EVERY repeated URL flag — in-scope-then-out-of-scope is still blocked", () => withTempHome(async () => {
+  const domain = "runner-repeated.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, { toolArgv: ["httpx", "-u", `https://${domain}/`, "-u", "https://evil.example.com/"], docker })),
+    (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
+  );
+  assert.ok(noLifecycle(docker), "a repeated out-of-scope URL flag must block before docker");
 }));
 
 test("flag allowlist: an unlisted flag blocks before any docker call (full lifecycle zero)", () => withTempHome(async () => {

@@ -118,7 +118,10 @@ function parseAllowlistedArgv(toolArgv, spec) {
   }
   const booleanFlags = spec && spec.boolean ? new Set(spec.boolean) : new Set();
   const valueFlags = spec && spec.value ? new Set(spec.value) : new Set();
-  const values = new Map();
+  // A LIST (not a Map) so EVERY occurrence of a repeated value flag is preserved —
+  // the container runs all of them, so the scope gate must see all of them (a Map
+  // would keep only the last value while `-u in-scope -u evil` still attacks evil).
+  const pairs = [];
   let i = 1; // toolArgv[0] is the binary name
   while (i < toolArgv.length) {
     const tok = toolArgv[i];
@@ -136,21 +139,21 @@ function parseAllowlistedArgv(toolArgv, spec) {
     }
     if (valueFlags.has(flagName)) {
       if (inlineValue !== null) {
-        values.set(flagName, inlineValue);
+        pairs.push({ flag: flagName, value: inlineValue });
         i += 1;
       } else {
         const next = toolArgv[i + 1];
         if (next === undefined || (typeof next === "string" && next.startsWith("-"))) {
           rejectInvalid(`value flag ${flagName} requires a value`, { code: "offensive_value_flag_missing" });
         }
-        values.set(flagName, next);
+        pairs.push({ flag: flagName, value: next });
         i += 2;
       }
       continue;
     }
     rejectInvalid(`flag ${flagName} is not in the tool flag allowlist`, { code: "offensive_flag_not_allowlisted" });
   }
-  return values;
+  return pairs;
 }
 
 // F3 (fail-closed): count prior offensive container runs from http-audit. On a read
@@ -229,11 +232,15 @@ const defaultOffensiveDocker = Object.freeze({
       child.stderr.on("data", (c) => cappedWrite(errFd, c, errRef));
       // Single-settle guard: `error` and `close` can both fire on one child — close
       // the fds and resolve exactly once (no double-close EBADF, no double-resolve).
+      // Also clear the deferred SIGKILL so it can't fire on a closed/reused pid or
+      // keep the event loop alive after the child has already exited.
       let settled = false;
+      let killTimer = null;
       const finish = (result) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         try { fs.closeSync(outFd); } catch {}
         try { fs.closeSync(errFd); } catch {}
         resolve(result);
@@ -242,7 +249,7 @@ const defaultOffensiveDocker = Object.freeze({
         killed = true;
         try { if (child.pid) process.kill(-child.pid, "SIGTERM"); } catch {}
         defaultOffensiveDocker.kill(containerName, env); // F1: kill the CONTAINER, not just the client
-        setTimeout(() => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} }, 5_000);
+        killTimer = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} }, 5_000);
       }, timeoutMs);
       child.on("error", (e) => finish({ exit_code: null, timed_out: killed, spawn_error: e.code === "ENOENT" ? "docker_not_in_path" : (e.message || String(e)) }));
       child.on("close", (code) => finish({ exit_code: killed ? null : code, timed_out: killed, out_bytes: outRef.n, err_bytes: errRef.n }));
@@ -280,22 +287,34 @@ async function runOffensiveTool({
   }
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
-  // 1) Flag allowlist (fail-closed) → parsed value-flag map.
-  const valueFlags = parseAllowlistedArgv(toolArgv, flagSpec);
-  // 2) AIM-CHECK: scope-gate the URLs ACTUALLY in the command (the values of the
-  // spec's URL flags), BEFORE any spawn. Decoupled-list drift is impossible.
+  // 1) Flag allowlist (fail-closed) → parsed (flag,value) pairs (repeats preserved).
+  const argvPairs = parseAllowlistedArgv(toolArgv, flagSpec);
+  // 2) AIM-CHECK: scope-gate EVERY URL-flag value ACTUALLY in the command, BEFORE any
+  // spawn. Repeated flags all run in the container, so all are checked — a Map that
+  // kept only the last value would let `-u <in-scope> -u <evil>` attack evil.
   const urlFlagNames = flagSpec && flagSpec.url ? new Set(flagSpec.url) : new Set();
-  for (const [flag, value] of valueFlags) {
-    if (urlFlagNames.has(flag)) {
-      assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
-    }
+  for (const { flag, value } of argvPairs) {
+    if (urlFlagNames.has(flag)) assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
   }
 
-  // 3) Reserve a run budget slot ATOMICALLY under the session lock (count +
+  // 3) Build the docker argv NOW — it validates imageDigest / workTmpfsBytes /
+  // command / names, so an invalid call throws BEFORE a budget slot is consumed.
+  // Path STRINGS only here; no filesystem yet.
+  const runId = mintRunId();
+  const scratchDir = repoRunsDir(domain);
+  const stdoutPath = path.join(scratchDir, `${runId}.stdout`);
+  const stderrPath = path.join(scratchDir, `${runId}.stderr`);
+  const cidfilePath = path.join(scratchDir, `${runId}.cid`);
+  const dockerConfigDir = path.join(scratchDir, `${runId}.dockercfg`);
+  const env = scrubbedDockerEnv(dockerConfigDir);
+  const command = [toolArgv[0], ...forcedFlags, ...toolArgv.slice(1)];
+  const { args } = buildOffensiveDockerRunArgv({ imageDigest, command, containerName: runId, networkName: runId, cidfilePath, workTmpfsBytes, egressProxyUrl });
+
+  // 4) Reserve a run budget slot ATOMICALLY under the session lock (count +
   // audit-record write together), fail-closed on over-budget / audit failure.
   const startedAt = Date.now();
-  const primaryUrl = [...valueFlags].find(([f]) => urlFlagNames.has(f));
-  const auditUrl = primaryUrl ? String(primaryUrl[1]) : `https://${domain}/`;
+  const primaryUrl = argvPairs.find((p) => urlFlagNames.has(p.flag));
+  const auditUrl = primaryUrl ? String(primaryUrl.value) : `https://${domain}/`;
   const reservation = withSessionLock(domain, () => {
     if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) return { ok: false, reason: "offensive_run_budget_exhausted" };
     const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProxyUrl ? "proxy" : null, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
@@ -306,20 +325,10 @@ async function runOffensiveTool({
     return blocked(domain, toolId, "blocked_by_infra", reservation.reason);
   }
 
-  const runId = mintRunId();
-  const scratchDir = repoRunsDir(domain);
+  // 5) Create the filesystem scratch (post-reservation) + verify it's confined.
   fs.mkdirSync(scratchDir, { recursive: true });
   assertDirUnderSession(domain, scratchDir);
-  const stdoutPath = path.join(scratchDir, `${runId}.stdout`);
-  const stderrPath = path.join(scratchDir, `${runId}.stderr`);
-  const cidfilePath = path.join(scratchDir, `${runId}.cid`);
-  const dockerConfigDir = path.join(scratchDir, `${runId}.dockercfg`);
   fs.mkdirSync(dockerConfigDir, { recursive: true });
-  const env = scrubbedDockerEnv(dockerConfigDir);
-
-  // Container command: tool + runner-FORCED flags (trusted) + the allowlisted tail.
-  const command = [toolArgv[0], ...forcedFlags, ...toolArgv.slice(1)];
-  const { args } = buildOffensiveDockerRunArgv({ imageDigest, command, containerName: runId, networkName: runId, cidfilePath, workTmpfsBytes, egressProxyUrl });
 
   const cleanupScratch = () => {
     for (const p of [stdoutPath, stderrPath, cidfilePath]) { try { fs.rmSync(p, { force: true }); } catch {} }
@@ -341,9 +350,11 @@ async function runOffensiveTool({
     stdoutBytes = secureReadCaptureBytes(stdoutPath);
     stderrBytes = secureReadCaptureBytes(stderrPath);
   } finally {
-    docker.kill(runId, env);        // F1: ensure the container is gone on every path
-    docker.networkRm(runId, env);
-    cleanupScratch();               // F7-cleanup: raw output never lingers on disk
+    // Teardown must never skip scratch deletion: a throwing (injectable) kill /
+    // networkRm cannot leave raw output lingering on disk.
+    try { docker.kill(runId, env); } catch {}        // F1: ensure the container is gone
+    try { docker.networkRm(runId, env); } catch {}
+    cleanupScratch();                                 // F7-cleanup: guaranteed last
   }
 
   if (runResult.spawn_error) return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
@@ -370,7 +381,10 @@ async function runOffensiveTool({
   }
   const verdict = classify({ exitCode: runResult.exit_code, stdoutText, stderrText });
   if (!verdict || verdict.positive !== true) {
-    return blocked(domain, toolId, "blocked_by_defense", (verdict && verdict.reason) || "oracle_negative");
+    // Cap the classifier's reason — it is returned to the agent and must not relay
+    // unbounded (or raw-output-bearing) text.
+    const reason = verdict && typeof verdict.reason === "string" ? verdict.reason.slice(0, 120) : "oracle_negative";
+    return blocked(domain, toolId, "blocked_by_defense", reason);
   }
   // Defense-in-depth: re-validate the oracle's target is in-scope before it is signed
   // into a durable row — even a server-side classify cannot sign an off-scope target.
