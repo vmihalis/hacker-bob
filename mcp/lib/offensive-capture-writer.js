@@ -27,6 +27,14 @@ const {
   canonicalJson,
 } = require("./verification-contracts.js");
 
+// The proof-contract fields buildAndSignOffensiveRow controls; relationBooleans
+// may never override any of these before the row is signed.
+const RESERVED_ROW_KEYS = new Set([
+  "version", "target_domain", "run_id", "tool_id", "target", "offensive_outcome",
+  "dry_run", "timed_out", "command_hash", "exit_code", "stdout_hash", "stderr_hash",
+  "demonstrated_severity", "surface_id", "row_mac",
+]);
+
 // run_id is a single clean [A-Za-z0-9-] segment so sha256OffensiveCaptureSecure
 // (claim-freeze.js) accepts it as a direct child leaf of offensive-runs/.
 function newRunId(prefix) {
@@ -105,8 +113,14 @@ function resolveCaptureDirSecure(domain) {
 // projectExploitRunObservedRef re-hashes at freeze.
 function writeCaptureAndHash(captureDir, runId, suffix, contentBytes) {
   const leaf = path.join(captureDir, `${runId}.${suffix}`);
-  // Exclusive create defeats a pre-planted symlink at the leaf path.
-  const fd = fs.openSync(leaf, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+  // Exclusive create + O_NOFOLLOW defeats a pre-planted symlink at the leaf path
+  // (O_EXCL already fails on an existing link; O_NOFOLLOW makes the intent explicit
+  // and matches sha256OfFileFd / appendSignedRowHardened).
+  const fd = fs.openSync(
+    leaf,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0),
+    0o600,
+  );
   try {
     fs.writeFileSync(fd, contentBytes);
     fs.fsyncSync(fd);
@@ -175,6 +189,30 @@ function buildAndSignOffensiveRow(domain, {
   stderrContent,
   relationBooleans = {},
 }) {
+  // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a
+  // generic caller must not be able to smuggle a traversal segment into the
+  // capture/ledger write. The IDOR producer hardcoded "idor-"; re-impose that
+  // single-clean-segment guarantee here for EVERY producer. (suffix is internal —
+  // only "stdout"/"stderr" — and the low-level helpers are no longer exported.)
+  if (typeof runIdPrefix !== "string" || !/^[a-z][a-z0-9]*$/.test(runIdPrefix)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `runIdPrefix must be a lowercase [a-z][a-z0-9]* token: ${runIdPrefix}`,
+    );
+  }
+  // relationBooleans is spread into the row LAST (to document extra legs), so it
+  // must not be able to override a reserved proof-contract field before signing —
+  // otherwise a caller could clobber demonstrated_severity / *_hash / outcome on
+  // the MAC-signed row.
+  for (const key of Object.keys(relationBooleans)) {
+    if (RESERVED_ROW_KEYS.has(key)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `relationBooleans may not override reserved offensive-row field: ${key}`,
+      );
+    }
+  }
+
   const runId = newRunId(runIdPrefix);
 
   // run_id single-use guard (mint condition #25): refuse to re-emit a run_id
@@ -225,11 +263,11 @@ function buildAndSignOffensiveRow(domain, {
   return row;
 }
 
+// Only the high-level build+sign+append entry point is public. The low-level
+// capture/hash/append helpers stay module-internal so a producer mints a signed
+// offensive-runs row ONLY through the disciplined build path — and a row is still
+// not a finding until a candidate claim cites it through the record-time proof
+// gate + per-tool demonstrated-severity ceiling + #111 surface binding.
 module.exports = {
-  newRunId,
-  commandHashOf,
-  resolveCaptureDirSecure,
-  writeCaptureAndHash,
-  appendSignedRowHardened,
   buildAndSignOffensiveRow,
 };
