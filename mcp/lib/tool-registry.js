@@ -406,6 +406,20 @@ function toolNamesForRoleBundle(roleBundle) {
     .map((tool) => tool.name);
 }
 
+// A role bundle is "usable" iff it is a declared member of VALID_ROLE_BUNDLES
+// AND at least one non-alias tool surfaces it. A bundle that passes the first
+// check but not the second is a dead bundle: derivation maps a capability pack
+// onto it and silently yields an empty tool set. Conformance tests (and any
+// pack->bundle source-of-truth introduced later) import this single predicate
+// rather than re-deriving the conjunction, so "what makes a bundle usable"
+// stays single-sourced in the registry.
+function roleBundleResolvesToTools(roleBundle) {
+  return (
+    VALID_ROLE_BUNDLES.includes(roleBundle) &&
+    toolNamesForRoleBundle(roleBundle).length > 0
+  );
+}
+
 function isAliasName(toolName) {
   const tool = TOOL_BY_NAME.get(toolName);
   return !!(tool && tool.alias_of);
@@ -452,5 +466,6 @@ module.exports = {
   getRegisteredTool,
   isAliasName,
   primaryToolName,
+  roleBundleResolvesToTools,
   toolNamesForRoleBundle,
 };
