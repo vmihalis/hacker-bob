@@ -632,6 +632,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_compose_report",
+  writes_audit_graded: true,
   description:
     "Render the canonical session report.md from structured sections (Y-D15b / Y-P13). Agents emit closed-shape input; MCP renders markdown server-side, prepends the operator-edit-warning banner (Y-P13a), enforces provenance on bob_verified sections (Y-P13c — at least one evidence_ref must resolve to a verification_round result_id with reportable=true), caps prose per Y-P13b. Subsequent calls re-render with current report-amendments.jsonl appended (Y-P13a). bob_finalize_report still binds the hash-bound ReportSnapshot on top.",
   inputSchema: {

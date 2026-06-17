@@ -5,6 +5,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_verification_round",
+  writes_audit_graded: true,
   aliases: ["bounty_write_verification_round"],
   description:
     "Write one verifier round to authoritative JSON plus a markdown mirror.",

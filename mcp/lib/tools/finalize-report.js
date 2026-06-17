@@ -118,6 +118,7 @@ function handler(args) {
 
 module.exports = wrapWriteTool({
   name: "bob_finalize_report",
+  writes_audit_graded: true,
   description:
     "Finalize the canonical session report.md by appending a hash-bound " +
     "ReportSnapshot row to report-snapshots.jsonl. Resolves four upstream " +

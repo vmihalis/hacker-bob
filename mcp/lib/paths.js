@@ -628,7 +628,15 @@ function resolveEvidencePath(domain, evidenceRef) {
 }
 
 // Predicate consumed by:
-//   * `_write-base.js` for defense-in-depth (future use)
+//   * `belief/authority.js` via assertAgentWriteAllowed (Y-P13, fail-closed
+//     in-process). This guards MCP-INTERNAL writes only (belief outputs + the
+//     audit-graded composers) as defense-in-depth; it is NOT on the harness
+//     agent Write tool path. The harness Write tool is fenced by the PreToolUse
+//     hook (.claude/hooks/session-write-guard.sh), which is rendered from
+//     WRITE_GUARD_TABLES — hook↔paths agreement is enforced by
+//     `npm run check:write-guard-tables`. An in-process predicate cannot survive
+//     a stripped hook for agent Write; the hook is that enforcement surface.
+//   * `_write-base.js` for the FLAG↔WHITELIST closure on MCP-composer specs.
 //   * `scripts/check-single-spawner-topology` Y-P13d frontmatter guard (Y.8)
 //   * Y.9 subtest D-2 mechanical negative-grep
 //
@@ -663,8 +671,103 @@ function isAuditGradedPath(absolutePath, target_domain) {
   return false;
 }
 
+// Y-P13 (T4) — MCP-composer whitelist. The ONLY tool names permitted to emit an
+// audit-graded path through an in-process write decision. Every entry MUST
+// correspond to a wrapWriteTool() spec that sets `writes_audit_graded: true`.
+// This registry is closed by two legs: (1) the FLAG↔WHITELIST bijection
+// (auditGradedWriterClosure + the wrap-time throws in _write-base.js), and
+// (2) the GROUND-TRUTH anchor in scripts/check-audit-graded-writers.js, which
+// independently derives the writer set from the audit-graded path helpers each
+// caller reaches and asserts equality with this list.
+const AUDIT_GRADED_WRITER_TOOLS = Object.freeze([
+  "bob_write_verification_round",
+  "bob_write_evidence_packs",
+  "bob_write_grade_verdict",
+  "bob_write_wave_handoff",
+  "bob_write_chain_attempt",
+  "bob_finalize_report",
+  "bob_compose_report",
+  "bob_write_chain_rollup",
+  "bob_amend_report",
+  "bob_write_proof_bundle",
+]);
+
+// Y-P13 (T4) — alias→canonical. Six audit-graded writers ship a `bounty_*`
+// alias; a caller identity arriving under an alias normalizes to its canonical
+// name before the whitelist membership check, so an alias-dispatch is not
+// falsely denied. (amend/compose/chain-rollup/finalize have no alias.)
+const AUDIT_GRADED_WRITER_ALIASES = Object.freeze({
+  bounty_write_verification_round: "bob_write_verification_round",
+  bounty_write_evidence_packs: "bob_write_evidence_packs",
+  bounty_write_grade_verdict: "bob_write_grade_verdict",
+  bounty_write_wave_handoff: "bob_write_wave_handoff",
+  bounty_write_chain_attempt: "bob_write_chain_attempt",
+  bounty_write_proof_bundle: "bob_write_proof_bundle",
+});
+
+function canonicalWriterName(toolName) {
+  if (toolName == null) return null;
+  return AUDIT_GRADED_WRITER_ALIASES[toolName] || toolName;
+}
+
+// Y-P13 (T4) — in-process fail-closed audit-graded write predicate. Throws when
+// a NON-whitelisted caller targets an audit-graded path. `callerToolName ===
+// null` denotes a write with no MCP composer identity (e.g. belief outputs) and
+// is ALWAYS rejected for an audit-graded target — the fail-closed default. A
+// whitelisted MCP composer (canonical or alias) is allowed through.
+//
+// SCOPE (honest): this predicate guards IN-PROCESS / MCP-INTERNAL writes only
+// (belief outputs and the audit-graded composers) as defense-in-depth. It is
+// NOT on the harness agent Write tool path — that tool is intercepted only by
+// the PreToolUse hook (.claude/hooks/session-write-guard.sh), which runs in a
+// separate process and is rendered from WRITE_GUARD_TABLES (agreement enforced
+// by `npm run check:write-guard-tables`). T4 does NOT make audit-graded
+// enforcement survive a stripped hook for agent Write; the hook is that surface.
+//
+// Returns the resolved absolute path on success (mirrors assertBeliefScratch
+// WritePath's return contract). Throws Error on denial; callers wrap in their
+// own ToolError envelope.
+function assertAgentWriteAllowed(absolutePath, target_domain, callerToolName = null) {
+  if (typeof absolutePath !== "string" || !absolutePath) {
+    throw new Error("assertAgentWriteAllowed requires an absolute file path");
+  }
+  const resolved = path.resolve(absolutePath);
+  if (!isAuditGradedPath(resolved, target_domain)) {
+    // Not an audit-graded target — no gate applies here.
+    return resolved;
+  }
+  const canonical = canonicalWriterName(callerToolName);
+  if (canonical != null && AUDIT_GRADED_WRITER_TOOLS.includes(canonical)) {
+    return resolved;
+  }
+  throw new Error(
+    `audit-graded path '${path.basename(resolved)}' is MCP-composer-owned (Y-P13); ` +
+    `the Write tool and non-whitelisted callers cannot write it. ` +
+    `Use the owning bob_* composer instead.`,
+  );
+}
+
+// Y-P13 (T4) — FLAG↔WHITELIST closure leg for AUDIT_GRADED_WRITER_TOOLS. Given
+// the set of wrapWriteTool specs that declare writes_audit_graded:true, asserts
+// a bijection with AUDIT_GRADED_WRITER_TOOLS: no whitelisted name lacks a
+// declaring spec (orphan), and no declaring spec is missing from the whitelist
+// (undeclared). This is the internal-consistency leg ONLY; the ground-truth
+// anchor is scripts/check-audit-graded-writers.js.
+function auditGradedWriterClosure(declaredWriterNames) {
+  const declared = new Set(declaredWriterNames);
+  const whitelisted = new Set(AUDIT_GRADED_WRITER_TOOLS);
+  const orphans = [...whitelisted].filter((n) => !declared.has(n));
+  const undeclared = [...declared].filter((n) => !whitelisted.has(n));
+  return { ok: orphans.length === 0 && undeclared.length === 0, orphans, undeclared };
+}
+
 module.exports = {
   AUDIT_GRADED_PATHS,
+  AUDIT_GRADED_WRITER_TOOLS,
+  AUDIT_GRADED_WRITER_ALIASES,
+  canonicalWriterName,
+  assertAgentWriteAllowed,
+  auditGradedWriterClosure,
   WRITE_GUARD_TABLES,
   LARGE_BODY_THRESHOLD_BYTES,
   TELEMETRY_DIR_NAME,

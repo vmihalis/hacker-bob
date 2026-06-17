@@ -10,7 +10,7 @@ const {
 const {
   beliefScratchDir,
   beliefSignalsJsonlPath,
-  isAuditGradedPath,
+  assertAgentWriteAllowed,
   sessionDir,
 } = require("../paths.js");
 
@@ -111,7 +111,12 @@ function assertBeliefScratchWritePath({ target_domain, file_path }) {
   const root = path.resolve(sessionDir(targetDomain));
   const scratch = path.resolve(beliefScratchDir(targetDomain));
   const resolved = path.resolve(file_path);
-  if (isAuditGradedPath(resolved, targetDomain)) {
+  // Y-P13 (T4): single in-process audit-graded decision. Belief has no composer
+  // identity, so a null callerToolName fail-closes any audit-graded target.
+  // Re-message to keep the belief-specific guidance.
+  try {
+    assertAgentWriteAllowed(resolved, targetDomain, null);
+  } catch {
     throw new Error("belief outputs are advisory scratch and cannot write audit-graded artifacts");
   }
   if (resolved !== scratch && !resolved.startsWith(`${scratch}${path.sep}`)) {

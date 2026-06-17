@@ -12,6 +12,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_proof_bundle",
+  writes_audit_graded: true,
   aliases: ["bounty_write_proof_bundle"],
   description:
     "Write machine-checkable proof bundles for final reportable findings to authoritative JSON plus a markdown mirror. Stores replay, invariant, or C10 differential run handles; never executes proof commands.",

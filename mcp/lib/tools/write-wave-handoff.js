@@ -12,6 +12,7 @@ const { wrapWriteTool } = require("./_write-base.js");
 
 module.exports = wrapWriteTool({
   name: "bob_write_wave_handoff",
+  writes_audit_graded: true,
   aliases: ["bounty_write_wave_handoff"],
   description:
     "Evaluator-final writer for one structured wave handoff as markdown plus authoritative JSON.",
