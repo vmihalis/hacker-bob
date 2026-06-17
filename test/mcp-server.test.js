@@ -38,6 +38,10 @@ const {
   TOOL_HANDLERS,
 } = require("../mcp/lib/dispatch.js");
 const {
+  SHADOW_ACK_ENV,
+  SHADOW_ACK_TOKEN,
+} = require("../mcp/lib/enforcement-attest.js");
+const {
   buildToolRegistry,
   capabilityToolMapFromRegistry,
   defineTool,
@@ -2715,7 +2719,10 @@ test("central session authority shadow mode is bounded to missing read-only sess
   });
 
   await withTempHome(async () => {
-    await withEnv({ BOB_SESSION_AUTHORITY_MODE: "shadow" }, async () => {
+    await withEnv({
+      BOB_SESSION_AUTHORITY_MODE: "shadow",
+      [SHADOW_ACK_ENV]: SHADOW_ACK_TOKEN,
+    }, async () => {
       const readOnly = await executeTool("bob_read_session_state", {
         target_domain: "shadow-missing.example.com",
       });

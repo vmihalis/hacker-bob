@@ -18,6 +18,9 @@ const {
 const {
   normalizeSessionStateDocument,
 } = require("./session-state-contracts.js");
+const {
+  enforcementLiveness,
+} = require("./enforcement-attest.js");
 
 const AUTHORITY_VERSION = 1;
 const AUTHORITY_MODE_ENV = "BOB_SESSION_AUTHORITY_MODE";
@@ -257,8 +260,6 @@ const SHADOW_MISSING_SESSION_CLASSES = new Set([
   "cross_session_read",
 ]);
 
-let shadowWarningEmitted = false;
-
 // Cycle O.1: REPO_TARGET_DOMAIN_PATTERN identifies the synthetic
 // `repo-<safeName>-<sha8>` slug minted by initRepoSession. This is the
 // hook the bootstrap rule uses to skip DNS validation (assertHttpScopeDomain
@@ -289,7 +290,10 @@ function safeArgumentTargetDomain(args) {
 }
 
 function authorityMode(env = process.env) {
-  return env[AUTHORITY_MODE_ENV] === "shadow" ? "shadow" : "enforce";
+  // Honor shadow ONLY when the operator has acked the degraded posture.
+  // An un-acked shadow request reports "enforce" so the kernel fails LOUD
+  // (real missing-session block) instead of silently downgrading.
+  return enforcementLiveness(env).shadow_active ? "shadow" : "enforce";
 }
 
 function classForTool(toolName) {
@@ -478,6 +482,7 @@ function makeDecision({
   authority_session_present: sessionPresent = null,
   authority_match: match = null,
   authority_shadowed: shadowed = false,
+  operator_ack: operatorAck = null,
 } = {}) {
   return {
     authority_version: AUTHORITY_VERSION,
@@ -492,6 +497,7 @@ function makeDecision({
     authority_session_present: sessionPresent,
     authority_match: match,
     authority_shadowed: shadowed === true,
+    operator_ack: operatorAck === true ? true : (operatorAck === false ? false : null),
   };
 }
 
@@ -560,14 +566,14 @@ function shadowDecision(error, tool, rule) {
   if (!canShadowMissingSession(tool, rule)) {
     return null;
   }
-  if (!shadowWarningEmitted) {
-    shadowWarningEmitted = true;
-    process.stderr.write("WARNING: BOB_SESSION_AUTHORITY_MODE=shadow is allowing a missing-session read-only authority block.\n");
-  }
   return {
     ...error.authority,
     authority_result: "shadow_blocked",
     authority_shadowed: true,
+    // The ack is now a recorded fact on the audit-graded decision, not a
+    // discardable stderr line. canShadowMissingSession only returns true when
+    // authorityMode()==="shadow", which implies operator_ack.
+    operator_ack: true,
   };
 }
 
