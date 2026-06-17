@@ -183,6 +183,8 @@ test("htmlContextAt classifies executable vs safe reflection contexts (fail-clos
     // inert <template> + legacy <plaintext> contents are non-executable → raw-text
     ["<template><div>NONCE", "rawtext"],
     ["<plaintext>NONCE", "rawtext"],
+    // <plaintext> is TERMINAL: a literal </plaintext> does NOT exit it
+    ["<plaintext>x</plaintext>NONCE", "rawtext"],
     // a reflection inside a <!doctype>/<!…> declaration or <?…> PI is inert
     ["<!doctype html PUBLIC NONCE", "declaration"],
     ["<body><!ENTITY x NONCE", "declaration"],

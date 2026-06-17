@@ -131,10 +131,16 @@ const MAX_PARAM_LOCUS = 256;
 // Raw-text + RCDATA elements: inside these, a `<` does NOT start a tag, so a
 // surviving `<>` is NOT a tag-injection sink. Reflections here fail closed.
 // `template` (an inert document fragment — its contents are NOT executed unless
-// separate page code clones it) and `plaintext` (everything after it is literal
-// text) are NOT rawtext per spec, but their contents are likewise non-executable
-// for this oracle, so they are grouped here to fail closed (codex).
-const RAWTEXT_ELEMENTS = Object.freeze(new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "template", "plaintext"]));
+// separate page code clones it) is NOT raw-text per spec, but its contents are
+// likewise non-executable for this oracle, so it is grouped here to fail closed.
+const RAWTEXT_ELEMENTS = Object.freeze(new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "template"]));
+
+// `<plaintext>` is TERMINAL: once opened, EVERYTHING after it (including a literal
+// `</plaintext>`) is raw text forever — the browser never leaves the state. It
+// must NOT be grouped with the raw-text elements above, whose state exits on a
+// real matching end tag; doing so would mis-classify a reflection after a literal
+// `</plaintext>` as an executable text node (CodeRabbit).
+const TERMINAL_INERT_ELEMENTS = Object.freeze(new Set(["plaintext"]));
 const RCDATA_ELEMENTS = Object.freeze(new Set(["title", "textarea"]));
 
 // The reflection CONTEXTS in which a surviving raw `<>` is HTML-executable: a text
@@ -271,6 +277,7 @@ function htmlContextAt(html, idx) {
   let tagIsClosing = false;
   let i = 0;
   const closeTagState = () => {
+    if (!tagIsClosing && TERMINAL_INERT_ELEMENTS.has(tagName)) return "plaintext";
     if (!tagIsClosing && RAWTEXT_ELEMENTS.has(tagName)) return "rawtext";
     if (!tagIsClosing && RCDATA_ELEMENTS.has(tagName)) return "rcdata";
     return "text";
@@ -313,6 +320,12 @@ function htmlContextAt(html, idx) {
       // <!doctype …> / <!…> bogus comment / <?…> PI: consume until the closing ">".
       if (c === ">") { state = "text"; i += 1; continue; }
       i += 1;
+      continue;
+    }
+    if (state === "plaintext") {
+      // Terminal: everything to EOF is literal text — never exits, even on a
+      // literal </plaintext> (CodeRabbit).
+      i = limit;
       continue;
     }
     if (state === "tag") {
@@ -360,6 +373,7 @@ function htmlContextAt(html, idx) {
     case "cdata": return "cdata";
     case "declaration": return "declaration";
     case "rawtext": return "rawtext";
+    case "plaintext": return "rawtext";
     case "rcdata": return "rcdata";
     default: return "unknown";
   }
