@@ -23,6 +23,10 @@ const {
   missingReachabilityStampsForReportableFindings,
 } = require("./reachability-ceiling.js");
 
+// I6 (CR-4): lifecycle reopenability. The CLAIM_FREEZE/VERIFY/GRADE/REPORT ->
+// OPEN_FRONTIER back-edges are load-bearing operator re-entry, NOT redundancy.
+// Registry: mcp/lib/invariant-registry.js REGISTRY["I6"]. Removing a back-edge
+// is a breaking change; update the registry entry in the same commit.
 const ALLOWED_TRANSITIONS = Object.freeze({
   SETUP: Object.freeze(["OPEN_FRONTIER"]),
   OPEN_FRONTIER: Object.freeze(["CLAIM_FREEZE"]),
