@@ -1116,7 +1116,6 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
     runIdPrefix: "idor",
     toolId: TOOL_ID,
-    demonstratedSeverity: IDOR_ORACLE_DEMONSTRATED_CEILING.differential_response,
     method, canonicalTarget, surfaceId,
     identityTag: "B-as-A",
     stdoutContent: p2BodyForCapture,

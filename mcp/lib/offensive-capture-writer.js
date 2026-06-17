@@ -10,6 +10,7 @@ const {
 } = require("./envelope.js");
 const {
   readOffensiveRunRecords,
+  OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("./claims.js");
 const {
   signOffensiveRunRow,
@@ -176,11 +177,16 @@ function appendSignedRowHardened(domain, row) {
 
 // Build + sign + persist the offensive row. Captures FIRST, recompute the THREE
 // hashes from on-disk bytes, build the 14-field row, sign LAST, atomic append.
-// Returns the persisted row (signed). Caller wraps in withSessionLock.
+// Returns the persisted row (signed).
+//
+// CONCURRENCY CONTRACT: the run_id single-use guard (read-then-append) is only
+// race-safe under the per-session lock, so the caller MUST invoke this inside
+// withSessionLock(domain) (the IDOR producer does). Moving the lock into this
+// primitive is the planned hardening for the next producer (it needs a re-entrancy
+// check across both call sites); until then the contract is stated.
 function buildAndSignOffensiveRow(domain, {
   runIdPrefix,
   toolId,
-  demonstratedSeverity,
   method,
   canonicalTarget,
   surfaceId,
@@ -200,15 +206,33 @@ function buildAndSignOffensiveRow(domain, {
       `runIdPrefix must be a lowercase [a-z][a-z0-9]* token: ${runIdPrefix}`,
     );
   }
-  // relationBooleans is spread into the row LAST (to document extra legs), so it
-  // must not be able to override a reserved proof-contract field before signing —
-  // otherwise a caller could clobber demonstrated_severity / *_hash / outcome on
-  // the MAC-signed row.
-  for (const key of Object.keys(relationBooleans)) {
+  // demonstrated_severity is DERIVED from the per-tool registry, NEVER accepted from
+  // the caller — a producer cannot drift its signed severity by convention, and an
+  // unregistered tool_id cannot mint a row at all (fail-closed; stronger than the
+  // record gate's ?? "info" cap, which still applies downstream).
+  const demonstratedSeverity = OFFENSIVE_TOOL_DEMONSTRATED_CEILING[toolId];
+  if (typeof demonstratedSeverity !== "string" || !demonstratedSeverity) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `unknown offensive tool_id (absent from the demonstrated-severity registry): ${toolId}`,
+    );
+  }
+  // relationBooleans is spread into the row LAST (to document extra legs). It is
+  // MAC-covered proof material, not a free-form bag, so it must neither override a
+  // reserved proof-contract field NOR carry a non-boolean value — otherwise a caller
+  // could clobber demonstrated_severity / *_hash / outcome, or smuggle arbitrary
+  // signed data, before the MAC.
+  for (const [key, value] of Object.entries(relationBooleans)) {
     if (RESERVED_ROW_KEYS.has(key)) {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
         `relationBooleans may not override reserved offensive-row field: ${key}`,
+      );
+    }
+    if (typeof value !== "boolean") {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `relationBooleans.${key} must be a boolean (MAC-covered proof material), got ${typeof value}`,
       );
     }
   }

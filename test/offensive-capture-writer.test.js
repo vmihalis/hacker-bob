@@ -19,8 +19,10 @@ const writer = require("../mcp/lib/offensive-capture-writer.js");
 function buildArgs(over = {}) {
   return {
     runIdPrefix: "reflect",
-    toolId: "bob_http_xss_reflect",
-    demonstratedSeverity: "medium",
+    // a tool_id that IS in OFFENSIVE_TOOL_DEMONSTRATED_CEILING, so the prefix /
+    // reserved-key / boolean guards (which run after the registry check) are reached
+    // by the tests that exercise them.
+    toolId: "bob_http_idor_confirm",
     method: "GET",
     canonicalTarget: "https://app.example.test/api/x",
     surfaceId: "surface:x",
@@ -70,6 +72,26 @@ test("buildAndSignOffensiveRow refuses relationBooleans that override a reserved
       () => writer.buildAndSignOffensiveRow("d.test", buildArgs({ relationBooleans: { [reserved]: "x" } })),
       /reserved offensive-row field/,
       `must reject relationBooleans override of ${reserved}`,
+    );
+  }
+});
+
+test("buildAndSignOffensiveRow rejects a tool_id absent from the demonstrated-severity registry (registry-bound signer)", () => {
+  for (const bad of ["bob_http_xss_reflect", "bob_unknown", "", "BOB_HTTP_IDOR_CONFIRM", "bob_http_idor_confirm "]) {
+    assert.throws(
+      () => writer.buildAndSignOffensiveRow("d.test", buildArgs({ toolId: bad })),
+      /unknown offensive tool_id/,
+      `must reject unregistered tool_id ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test("buildAndSignOffensiveRow refuses a non-boolean relationBooleans value (MAC-covered proof material)", () => {
+  for (const value of ["true", 1, 0, null, {}, ["x"], "../etc"]) {
+    assert.throws(
+      () => writer.buildAndSignOffensiveRow("d.test", buildArgs({ relationBooleans: { p0_stable: value } })),
+      /must be a boolean/,
+      `must reject non-boolean relation value ${JSON.stringify(value)}`,
     );
   }
 });
