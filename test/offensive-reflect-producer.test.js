@@ -121,6 +121,7 @@ const SCRIPT_WRAP = (r) => `<!doctype html><html><head><script>var term = "${r}"
 const COMMENT_WRAP = (r) => `<!doctype html><html><body><!-- last query: ${r} --></body></html>`;
 const CDATA_WRAP = (r) => `<!doctype html><html><body><svg><![CDATA[ ${r} ]]></svg></body></html>`;
 const TITLE_WRAP = (r) => `<!doctype html><html><head><title>${r}</title></head><body></body></html>`;
+const TEMPLATE_WRAP = (r) => `<!doctype html><html><body><template><div>${r}</div></template></body></html>`;
 
 // The producer-minted canary value always carries the "bxr" nonce prefix, so the
 // fetch_fn finds the injected param by that marker rather than a hardcoded name
@@ -177,6 +178,11 @@ test("htmlContextAt classifies executable vs safe reflection contexts (fail-clos
     ["<script>x</script><p>NONCE", "text_node"],
     // a closed quoted attribute returns to tag (unquoted) context
     ["<a href=\"x\" NONCE", "unquoted_attr"],
+    // a non-matching end-tag PREFIX does NOT exit raw-text (</scripture> != </script>)
+    ["<script>var s=\"</scripture>\"; NONCE", "rawtext"],
+    // inert <template> + legacy <plaintext> contents are non-executable → raw-text
+    ["<template><div>NONCE", "rawtext"],
+    ["<plaintext>NONCE", "rawtext"],
   ];
   for (const [tpl, want] of cases) {
     const idx = tpl.indexOf("NONCE");
@@ -261,6 +267,7 @@ const NEGATIVE_CASES = [
   ["reflection inside an HTML comment", { wrap: COMMENT_WRAP }, "safe_context"],
   ["reflection inside CDATA", { wrap: CDATA_WRAP }, "safe_context"],
   ["reflection inside RCDATA <title>", { wrap: TITLE_WRAP }, "safe_context"],
+  ["reflection inside an inert <template>", { wrap: TEMPLATE_WRAP }, "safe_context"],
   ["JSON response + nosniff", { contentType: "application/json", extraHeaders: { "x-content-type-options": "nosniff" } }, "content_type_not_html"],
   // exact-essence match: a non-rendered html-ish subtype must NOT be treated as html.
   ["non-exact html content-type (sandboxed subtype)", { contentType: "text/html-sandboxed" }, "content_type_not_html"],
@@ -326,6 +333,45 @@ test("negative: a non-adjacent < and > in the bounded window is NOT read as a su
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, false, JSON.stringify(result));
   assert.equal(result.reason, "metachars_escaped");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("negative: a </scriptPREFIX> inside <script> does NOT exit raw-text → mints NOTHING (false-positive guard)", () => withTempHome(async () => {
+  // The page reflects our value inside a <script> whose body contains the substring
+  // "</scripture>" BEFORE the reflection. A prefix-only end-tag check would wrongly
+  // exit raw-text and treat the (non-executable) script reflection as a text node.
+  const domain = "reflect-neg-scriptprefix.example.test";
+  setupSession(domain);
+  const fetch_fn = reflectFetchFn({
+    wrap: (r) => `<!doctype html><html><head><script>var s = "</scripture>"; var t = ${r};</script></head><body></body></html>`,
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "safe_context");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("host binding: a relative endpoint on a subdomain surface signs the SUBDOMAIN target, not the session apex", () => withTempHome(async () => {
+  // Session target is the apex; the surface was recorded on a subdomain with a
+  // RELATIVE query endpoint. The signed row target must be the subdomain it was
+  // recorded on, never the apex (resolveSurfaceOrigins lists the apex first).
+  const domain = "reflect-hostbind.example.test";
+  setupSession(domain, { hosts: [`api.${domain}`], endpoints: [`/search?${LOCUS}=test`] });
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target, `https://api.${domain}/search`);
+}));
+
+test("pii safety: a percent-encoded PII shape in a recorded path segment blocks the signed row", () => withTempHome(async () => {
+  // The recorded endpoint PATH carries an email, percent-encoded (%40 = @). The
+  // canonical-target screen must decode it and refuse to persist it into a signed row.
+  const domain = "reflect-pii-path.example.test";
+  setupSession(domain, { endpoints: [`https://${domain}/u/alice%40corp.com/search?${LOCUS}=test`] });
+  const result = await run(domain);
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "proof_target_contains_sensitive_value");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 

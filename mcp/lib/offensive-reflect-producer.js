@@ -130,7 +130,11 @@ const MAX_PARAM_LOCUS = 256;
 
 // Raw-text + RCDATA elements: inside these, a `<` does NOT start a tag, so a
 // surviving `<>` is NOT a tag-injection sink. Reflections here fail closed.
-const RAWTEXT_ELEMENTS = Object.freeze(new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "noscript"]));
+// `template` (an inert document fragment — its contents are NOT executed unless
+// separate page code clones it) and `plaintext` (everything after it is literal
+// text) are NOT rawtext per spec, but their contents are likewise non-executable
+// for this oracle, so they are grouped here to fail closed (codex).
+const RAWTEXT_ELEMENTS = Object.freeze(new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "template", "plaintext"]));
 const RCDATA_ELEMENTS = Object.freeze(new Set(["title", "textarea"]));
 
 // The reflection CONTEXTS in which a surviving raw `<>` is HTML-executable: a text
@@ -222,8 +226,30 @@ function isAttachmentDisposition(response) {
   return cd.split(";")[0].trim().toLowerCase() === "attachment";
 }
 
+// Percent-decode to a fixed point so a percent-encoded secret / PII shape in a
+// PATH segment cannot slip past the literal-ASCII regexes below. Per-triplet decode
+// (a whole-string decodeURIComponent throws on a stray `%`); bounded iterations
+// catch double-encoding.
+function percentDecodeToFixedPoint(value) {
+  let current = String(value);
+  for (let i = 0; i < 4; i += 1) {
+    const next = current.replace(/%[0-9a-fA-F]{2}/g, (m) => {
+      try { return decodeURIComponent(m); } catch { return m; }
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
 function sensitiveShapesPresent(text) {
-  const s = typeof text === "string" ? text : canonicalJson(text);
+  const raw = typeof text === "string" ? text : canonicalJson(text);
+  // Screen the raw form AND its percent-decoded form: a recorded path segment can
+  // carry a secret / PII shape percent-encoded (e.g. /u/alice%40corp.com or
+  // /reset/sk%2Dlive_…) that the literal regexes would otherwise miss before the
+  // value persists into the durable signed row target (brutalist).
+  const decoded = percentDecodeToFixedPoint(raw);
+  const s = decoded === raw ? raw : `${raw}\n${decoded}`;
   if (detectPiiShapes(s).length > 0) return true;
   return SECRET_SHAPE_RES.some((re) => re.test(s));
 }
@@ -296,12 +322,18 @@ function htmlContextAt(html, idx) {
       continue;
     }
     if (state === "rawtext" || state === "rcdata") {
-      // exit ONLY on the matching </tagName (case-insensitive)
+      // Exit ONLY on a REAL matching end tag: </tagName followed by a valid
+      // delimiter (whitespace, `/`, `>`, or EOF). A prefix-only match would exit
+      // raw-text on `</scripture>` and mis-classify a reflection that is actually
+      // still inside the block (a safe context) as an executable text node (codex).
       if (c === "<" && html.slice(i, i + 2 + tagName.length).toLowerCase() === `</${tagName}`) {
-        state = "tag";
-        tagIsClosing = true;
-        i += 2 + tagName.length;
-        continue;
+        const after = html[i + 2 + tagName.length];
+        if (after === undefined || after === ">" || after === "/" || /\s/.test(after)) {
+          state = "tag";
+          tagIsClosing = true;
+          i += 2 + tagName.length;
+          continue;
+        }
       }
       i += 1;
       continue;
@@ -425,11 +457,24 @@ async function runProbe({
 // from those recorded URLs.
 function resolveQueryLocusEndpoint(domain, surface, state) {
   const stateOrigin = originFromState(domain, state, TOOL_ID);
-  const origins = resolveSurfaceOrigins(surface, stateOrigin);
+  const allOrigins = resolveSurfaceOrigins(surface, stateOrigin);
+  // Bind a RELATIVE endpoint to the surface's OWN host(s) — never the session apex,
+  // which resolveSurfaceOrigins lists first. Resolving a subdomain surface's
+  // relative endpoint against the apex would sign a row whose target host drifts
+  // from surface_id (codex). The apex is used only when the surface declares no
+  // host of its own. Collect ALL distinct query-bearing candidates (no break on the
+  // first origin) so the single-endpoint guard below refuses host ambiguity instead
+  // of silently picking one.
+  const ownOrigins = allOrigins.filter((origin) => origin !== stateOrigin);
+  const relativeOrigins = ownOrigins.length > 0 ? ownOrigins : [stateOrigin];
   const seen = new Set();
   const matches = [];
   for (const endpoint of candidateSurfaceEndpoints(surface)) {
-    for (const origin of origins) {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value).trim());
+    // urlFromEndpoint ignores `origin` for an absolute endpoint (it carries its own
+    // host); a relative endpoint binds to the surface's own host(s).
+    const originsForEndpoint = isAbsolute ? [stateOrigin] : relativeOrigins;
+    for (const origin of originsForEndpoint) {
       let candidate;
       try {
         candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
@@ -443,10 +488,9 @@ function resolveQueryLocusEndpoint(domain, surface, state) {
       }
       if ([...candidate.searchParams.keys()].length === 0) continue;
       const key = candidate.toString();
-      if (seen.has(key)) break;
+      if (seen.has(key)) continue;
       seen.add(key);
       matches.push(candidate);
-      break;
     }
   }
   return matches;
