@@ -197,13 +197,13 @@ function checkCanonicalPack(rootPackage) {
   // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
   // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
   // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
-  // Raised again to 3.2 MB for the CVSS v3.1 + CWE annotation surfaces, now
+  // Raised to 3.3 MB alongside the capability-layer + native-fuzz surfaces,
   // measured against the lean tarball (mcp/node_modules excluded from the pack).
   // Mirrors the test/package.test.js ceiling.
-  if (canonical.size < 3200000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.2 MB`);
+  if (canonical.size < 3300000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.3 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.2 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.3 MB`);
   }
 
   let foundDisallowed = false;
