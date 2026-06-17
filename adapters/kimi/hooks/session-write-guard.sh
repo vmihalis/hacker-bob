@@ -9,7 +9,7 @@ export WRITE_GUARD_INPUT="$INPUT"
 # CR-2: classification tables are rendered from mcp/lib/paths.js
 # WRITE_GUARD_TABLES — never hand-edit. Regenerate with
 # `node scripts/generate-write-guard-tables.js`. The manifest travels beside
-# this hook (kimi install wiring is a separate task).
+# this hook (the kimi install copies it into .kimi/hooks/).
 export WRITE_GUARD_TABLES_FILE="$(dirname "$0")/write-guard-tables.json"
 
 python3 - <<'PY'
@@ -239,13 +239,43 @@ def check_mutating_path_commands(command):
 
 
 # Main
+raw_input = os.environ.get("WRITE_GUARD_INPUT", "")
 payload = {}
 try:
-    payload = json.loads(os.environ.get("WRITE_GUARD_INPUT", ""))
+    payload = json.loads(raw_input)
 except Exception:
     payload = {}
 
-tool_input = payload.get("tool_input", {})
+if not isinstance(payload, dict):
+    payload = {}
+
+tool_input = payload.get("tool_input")
+if not isinstance(tool_input, dict):
+    tool_input = {}
+
+# LOUD fail-open guard. This script parses the Claude Code PreToolUse envelope
+# (tool_input.{file_path,command}). The Kimi CLI's stdin payload shape and tool
+# names are NOT pinned to this guard's assumptions: Kimi may emit Shell/WriteFile
+# tool-names and a different envelope key. If the payload is non-empty but we
+# cannot find any recognizable field, we must NOT silently exit 0 (that converts
+# a parse miss into an invisible enforcement gap). Emit a LOUD stderr warning and
+# allow, so the operator sees that enforcement did not engage rather than getting
+# false confidence. Kimi is never bricked — we still exit 0.
+_recognized = (
+    ("file_path" in tool_input)
+    or ("command" in tool_input)
+)
+if raw_input.strip() and not _recognized:
+    print(
+        "WARNING: hacker-bob session-write-guard received a non-empty PreToolUse "
+        "payload it does not recognize (no tool_input.file_path or "
+        "tool_input.command). The guard expects the Claude Code envelope; your "
+        "CLI (e.g. Kimi) may use a different tool-name/payload shape. Write "
+        "enforcement did NOT engage for this call (fail-OPEN). Verify the guard "
+        "against your CLI version before relying on Y-P13 enforcement.",
+        file=sys.stderr,
+    )
+    raise SystemExit(0)
 
 # Detect Write tool vs Bash tool
 if "file_path" in tool_input:
