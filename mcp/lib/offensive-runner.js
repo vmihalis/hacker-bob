@@ -1,35 +1,47 @@
 "use strict";
 
 // offensive-runner.js — runs ONE offensive tool inside the hardened wide-open
-// container (offensive-sandbox.js), captures+caps+redacts its output, and signs an
+// container (offensive-sandbox.js), captures+scans+redacts its output, and signs an
 // offensive-runs row ONLY on a classified positive. PR5a foundation: NO MCP tool
-// surface, NO arsenal tool, NO oracle — `classify` defaults to null (never signs in
+// surface, NO arsenal tool, NO oracle — `classify` defaults to null (NEVER signs in
 // production); the sign path is exercised only by tests with an injected stub.
 //
-// HOST-SIDE GUARDS (folded in from the PR5a adversarial review — PR5b wires a live
+// HOST-SIDE GUARDS (folded in from two adversarial-review rounds — PR5b wires a live
 // tool directly on top and inherits this posture):
-//   F1  container lifecycle: --name/--cidfile + `docker kill`/`rm -f` on timeout
-//       (killing the docker CLI client alone orphans a --rm wide-open container) +
-//       a startup sweep of stale bob-off-* containers/networks.
-//   F2  the runner spawns `docker` with a SCRUBBED env (PATH/HOME + clean
-//       DOCKER_CONFIG only), dropping DOCKER_HOST/DOCKER_CONTEXT/DOCKER_TLS_*/
-//       *_PROXY so a poisoned host env can't redirect the client to a hostile daemon.
-//   F3  per-session run budget checked BEFORE spawn + each run recorded to
-//       http-audit so the circuit-breaker counts container traffic it can't see.
-//   F7  live stdout/stderr stream to a scratch dir (repo-runs), read back with the
-//       O_NOFOLLOW discipline, then handed to buildAndSignOffensiveRow which
-//       exclusively (O_EXCL) owns offensive-runs/ — no capture-path collision.
-//   F8  a throwaway per-run user-defined network (created/removed per run) so the
-//       container can't reach docker0 neighbours (still wide-open OUTBOUND).
-//   F9  fail-closed flag ALLOWLIST over the tool argv + runner-injected FORCED flags.
+//   F1  container lifecycle: --name/--cidfile + `docker kill`/`rm -f` on timeout AND
+//       on every exit path (killing the docker CLI client alone orphans a --rm
+//       wide-open container).
+//   F2  the runner spawns `docker` with a SCRUBBED env — a FIXED minimal PATH (not
+//       the inherited one, so a poisoned PATH can't redirect the docker binary),
+//       HOME + a clean DOCKER_CONFIG only, dropping DOCKER_HOST/CONTEXT/TLS/*_PROXY.
+//   F3  per-session run budget RESERVED under the session lock BEFORE spawn (so
+//       concurrent agents can't all pass a stale count), fail-closed on a read error,
+//       fail-closed if the audit write fails (a run invisible to the breaker is not
+//       allowed); each run is recorded to http-audit (method CONTAINER_RUN, which
+//       survives the normalization that strips `tool`) so the breaker counts it.
+//   F7/F10 stdout/stderr stream to a realpath-verified scratch dir with
+//       O_EXCL|O_NOFOLLOW, are read back with the O_NOFOLLOW/regular-file/nlink
+//       discipline, the FULL capture is secret-scanned, and the scratch is DELETED
+//       on every exit path so raw output (and any secret in it) never lingers.
+//   F9  fail-closed flag ALLOWLIST that distinguishes BOOLEAN flags (consume no
+//       value) from VALUE flags (consume exactly one) — a boolean flag does not
+//       authorize the next token; bare args and `--` are rejected; runner-injected
+//       FORCED flags are trusted.
+//   AIM the scope gate operates on the URLs ACTUALLY IN THE COMMAND — the values of
+//       the spec's URL flags parsed out of toolArgv — never a separate parallel list
+//       the caller could mis-map.
 //   F11 surfaceId/canonicalTarget for the signed row are server-derived by the
-//       CALLER from the routed, scope-validated target — never agent free-input
-//       (the record gate does not prove the row attacked that surface).
+//       caller (verdict), never agent free-input.
 //
-// ACCEPTED RESIDUAL (operator-locked, documented — not fixed here): wide-open
-// OUTBOUND egress, cloud-metadata/LAN reachability, DNS exfil, kernel-0-day
-// breakout. Mitigations are redaction-before-agent (here), the count/boolean oracle
-// default (PR5b), and OOB-only SSRF proof (PR6).
+// DEFERRED to PR5b (the sign path is DEAD here, classify=null): binding the signed
+// row's command_hash to the ACTUAL container command (the stub `sign` call below
+// uses placeholder method/prefix); PR5b's registry-bound oracle supplies the real
+// command-bound signing. `classify` in PR5b MUST be keyed on tool_id server-side,
+// never a parameter crossing the MCP boundary.
+//
+// ACCEPTED RESIDUAL (operator-locked): wide-open OUTBOUND egress, cloud-metadata/LAN
+// reachability, DNS exfil, kernel-0-day breakout. Mitigations: redaction-before-agent
+// (here), the count/boolean oracle default (PR5b), OOB-only SSRF proof (PR6).
 
 const crypto = require("crypto");
 const fs = require("fs");
@@ -37,57 +49,45 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
 const { ERROR_CODES, ToolError } = require("./envelope.js");
-const { repoRunsDir } = require("./paths.js");
+const { repoRunsDir, sessionDir } = require("./paths.js");
 const { withSessionLock } = require("./storage.js");
 const { validateNoSensitiveMaterial } = require("./sensitive-material.js");
 const { assertSafeRequestUrl } = require("./safe-fetch.js");
 const { SCOPE_VALIDATION_OPTS, auditConfirmRequest } = require("./offensive-http-common.js");
 const { readHttpAuditRecordsFromJsonl } = require("./http-records.js");
 const { buildAndSignOffensiveRow } = require("./offensive-capture-writer.js");
-const { buildOffensiveDockerRunArgv, BOB_OFF_NAME_RE } = require("./offensive-sandbox.js");
+const { buildOffensiveDockerRunArgv } = require("./offensive-sandbox.js");
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 5_000;
-// Per-session cap on offensive container runs (fail-closed). A wide-open container
-// can fire unbounded requests, so the number of runs a session may launch is
-// bounded; each run is recorded to http-audit so the breaker also sees the traffic.
+// Per-session cap on offensive container runs (fail-closed, global across tools).
 const MAX_OFFENSIVE_RUNS = 200;
-// http-audit normalization STRIPS the `tool` field, so offensive container runs are
-// marked + counted by a distinctive `method` token that survives normalization.
-// This makes the budget GLOBAL across offensive tools (the per-session intent).
+// http-audit normalization STRIPS `tool`, so offensive runs are marked + counted by
+// a distinctive `method` token that survives normalization.
 const OFFENSIVE_RUN_AUDIT_METHOD = "CONTAINER_RUN";
-// Only the first slice of each capture is read back for the redaction scan + the
-// (PR5b) oracle. The on-disk stream is independently capped by the spawn writer.
-const CAPTURE_READ_CAP_BYTES = 2 * 1024 * 1024;
+// On-disk stream cap per stream; the FULL captured slice up to this is secret-scanned
+// (no unscanned-but-persisted tail), so the read cap == the stream cap.
 const STREAM_CAP_BYTES = 16 * 1024 * 1024;
+const CAPTURE_READ_CAP_BYTES = STREAM_CAP_BYTES;
+// A FIXED minimal PATH for the docker client — never the inherited PATH (F2).
+const FIXED_DOCKER_PATH = "/usr/local/bin:/usr/bin:/bin";
 
 function rejectInvalid(message, details = null) {
   throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, details);
 }
 
 function mintRunId() {
-  // bob-off-<24 hex> — matches BOB_OFF_NAME_RE; the container name, network name,
-  // and capture/cid leaves all derive from it.
   return `bob-off-${crypto.randomBytes(12).toString("hex")}`;
 }
 
-// F2: the env handed to the `docker` CLIENT. A curated allowlist only — never the
-// inherited process env — so DOCKER_HOST / DOCKER_CONTEXT / DOCKER_TLS_VERIFY /
-// DOCKER_CERT_PATH / *_PROXY cannot redirect the client to a hostile daemon, and a
-// poisoned ~/.docker/config.json default context is bypassed via a clean
-// DOCKER_CONFIG dir.
+// F2: the env handed to the `docker` CLIENT — a fixed allowlist only.
 function scrubbedDockerEnv(dockerConfigDir) {
-  return {
-    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
-    HOME: dockerConfigDir,
-    DOCKER_CONFIG: dockerConfigDir,
-  };
+  return { PATH: FIXED_DOCKER_PATH, HOME: dockerConfigDir, DOCKER_CONFIG: dockerConfigDir };
 }
 
 // F7/F10: read a capture leaf with the O_NOFOLLOW / regular-file / single-link
-// discipline (a same-uid container/agent must not redirect the read via a symlink),
-// bounded to CAPTURE_READ_CAP_BYTES.
+// discipline, bounded to CAPTURE_READ_CAP_BYTES.
 function secureReadCaptureBytes(filePath) {
   const noFollow = fs.constants.O_NOFOLLOW || 0;
   let fd;
@@ -109,67 +109,90 @@ function secureReadCaptureBytes(filePath) {
   }
 }
 
-// F9: every flag token (a token starting with "-") must be in the allowlist; a
-// value token is accepted only when it follows an allowlisted flag. Reject the "--"
-// pass-through separator. forcedFlags the runner injects are exempt (it owns them).
-function assertToolArgvAllowed(toolArgv, flagAllowlist) {
+// F9: parse + allowlist the tool argv. `spec` distinguishes boolean flags (no value)
+// from value flags (exactly one value). Bare args + the `--` separator are rejected.
+// Returns a Map of value-flag → value (so URL-flag values can be scope-checked).
+function parseAllowlistedArgv(toolArgv, spec) {
   if (!Array.isArray(toolArgv) || toolArgv.length === 0 || !toolArgv.every((t) => typeof t === "string" && t.length > 0)) {
     rejectInvalid("toolArgv must be a non-empty array of non-empty strings");
   }
-  const allow = flagAllowlist instanceof Set ? flagAllowlist : new Set(flagAllowlist || []);
-  let prevWasAllowedFlag = false;
-  // toolArgv[0] is the tool binary name (no leading dash) — skip it.
-  for (let i = 1; i < toolArgv.length; i += 1) {
+  const booleanFlags = spec && spec.boolean ? new Set(spec.boolean) : new Set();
+  const valueFlags = spec && spec.value ? new Set(spec.value) : new Set();
+  const values = new Map();
+  let i = 1; // toolArgv[0] is the binary name
+  while (i < toolArgv.length) {
     const tok = toolArgv[i];
     if (tok === "--") rejectInvalid("toolArgv must not contain the '--' pass-through separator");
-    if (tok.startsWith("-")) {
-      const flagName = tok.split("=")[0];
-      if (!allow.has(flagName)) {
-        rejectInvalid(`flag ${flagName} is not in the tool flag allowlist`, { code: "offensive_flag_not_allowlisted" });
-      }
-      prevWasAllowedFlag = !tok.includes("=");
-    } else if (!prevWasAllowedFlag) {
-      rejectInvalid(`bare argument ${JSON.stringify(tok)} is not permitted (must follow an allowlisted flag)`, { code: "offensive_bare_arg" });
-    } else {
-      prevWasAllowedFlag = false;
+    if (!tok.startsWith("-")) {
+      rejectInvalid(`bare argument ${JSON.stringify(tok)} is not permitted (every value must follow an allowlisted value flag)`, { code: "offensive_bare_arg" });
     }
+    const eq = tok.indexOf("=");
+    const flagName = eq >= 0 ? tok.slice(0, eq) : tok;
+    const inlineValue = eq >= 0 ? tok.slice(eq + 1) : null;
+    if (booleanFlags.has(flagName)) {
+      if (inlineValue !== null) rejectInvalid(`boolean flag ${flagName} must not take a value`, { code: "offensive_bool_flag_value" });
+      i += 1;
+      continue;
+    }
+    if (valueFlags.has(flagName)) {
+      if (inlineValue !== null) {
+        values.set(flagName, inlineValue);
+        i += 1;
+      } else {
+        const next = toolArgv[i + 1];
+        if (next === undefined || (typeof next === "string" && next.startsWith("-"))) {
+          rejectInvalid(`value flag ${flagName} requires a value`, { code: "offensive_value_flag_missing" });
+        }
+        values.set(flagName, next);
+        i += 2;
+      }
+      continue;
+    }
+    rejectInvalid(`flag ${flagName} is not in the tool flag allowlist`, { code: "offensive_flag_not_allowlisted" });
   }
+  return values;
 }
 
-// F3: count prior offensive container runs for this (session, tool) from http-audit
-// and fail closed at the cap. (PR5b can generalise to a global offensive count.)
+// F3 (fail-closed): count prior offensive container runs from http-audit. On a read
+// error return Infinity so the budget check blocks (never fail open).
 function offensiveRunCount(domain) {
   let records;
   try {
     records = readHttpAuditRecordsFromJsonl(domain);
   } catch {
-    return 0;
+    return Number.POSITIVE_INFINITY;
   }
-  if (!Array.isArray(records)) return 0;
+  if (!Array.isArray(records)) return Number.POSITIVE_INFINITY;
   return records.filter((r) => r && r.method === OFFENSIVE_RUN_AUDIT_METHOD && r.scope_decision === "allowed").length;
 }
 
+// Realpath-verify a session-internal dir is actually under the session dir (defends
+// a symlinked scratch dir, beyond the per-leaf O_NOFOLLOW).
+function assertDirUnderSession(domain, dir) {
+  const sessionReal = fs.realpathSync(sessionDir(domain));
+  const dirReal = fs.realpathSync(dir);
+  if (dirReal !== sessionReal && !dirReal.startsWith(sessionReal + path.sep)) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, "offensive scratch dir escaped the session directory");
+  }
+}
+
 // The default docker exec interface. Injectable so tests drive the runner with NO
-// real docker. Network/kill/sweep use spawnSync (short, best-effort); run streams.
+// real docker. NOTE: the per-run startup sweep is intentionally NOT called from
+// runOffensiveTool — a per-run `docker rm -f` of every bob-off-* would kill
+// concurrent sessions' containers; `sweep` is exported for a session-INIT caller.
 const defaultOffensiveDocker = Object.freeze({
   sweep(env) {
-    // Best-effort cleanup of stragglers from a crashed prior run.
     try {
-      const ps = spawnSync("docker", ["ps", "-aq", "--filter", "name=bob-off-"], { env, timeout: 10_000, encoding: "utf8" });
+      const ps = spawnSync("docker", ["ps", "-aq", "--filter", "name=^bob-off-"], { env, timeout: 10_000, encoding: "utf8" });
       const ids = (ps.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean);
       if (ids.length) spawnSync("docker", ["rm", "-f", ...ids], { env, timeout: 30_000 });
-      const nets = spawnSync("docker", ["network", "ls", "-q", "--filter", "name=bob-off-"], { env, timeout: 10_000, encoding: "utf8" });
-      const netIds = (nets.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean);
-      for (const n of netIds) spawnSync("docker", ["network", "rm", n], { env, timeout: 10_000 });
     } catch {}
   },
   networkCreate(name, env) {
     const r = spawnSync("docker", ["network", "create", "--internal=false", name], { env, timeout: 20_000, encoding: "utf8" });
     if (r.status !== 0) throw new ToolError(ERROR_CODES.STATE_CONFLICT, `docker network create failed: ${(r.stderr || "").trim() || r.status}`);
   },
-  networkRm(name, env) {
-    try { spawnSync("docker", ["network", "rm", name], { env, timeout: 10_000 }); } catch {}
-  },
+  networkRm(name, env) { try { spawnSync("docker", ["network", "rm", name], { env, timeout: 10_000 }); } catch {} },
   kill(name, env) {
     try { spawnSync("docker", ["kill", name], { env, timeout: 10_000 }); } catch {}
     try { spawnSync("docker", ["rm", "-f", name], { env, timeout: 10_000 }); } catch {}
@@ -178,8 +201,7 @@ const defaultOffensiveDocker = Object.freeze({
     return new Promise((resolve) => {
       const noFollow = fs.constants.O_NOFOLLOW || 0;
       const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow;
-      let outFd;
-      let errFd;
+      let outFd; let errFd;
       try {
         outFd = fs.openSync(stdoutPath, flags, 0o600);
         errFd = fs.openSync(stderrPath, flags, 0o600);
@@ -188,10 +210,7 @@ const defaultOffensiveDocker = Object.freeze({
         resolve({ exit_code: null, timed_out: false, spawn_error: `capture open failed: ${e.message || String(e)}` });
         return;
       }
-      let outBytes = 0;
-      let errBytes = 0;
-      let killed = false;
-      let child;
+      let killed = false; let child;
       try {
         child = spawn("docker", args, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       } catch (e) {
@@ -199,50 +218,50 @@ const defaultOffensiveDocker = Object.freeze({
         resolve({ exit_code: null, timed_out: false, spawn_error: e.message || String(e) });
         return;
       }
-      const cappedWrite = (fd, chunk, countRef) => {
-        if (countRef.n >= STREAM_CAP_BYTES) return;
-        const room = STREAM_CAP_BYTES - countRef.n;
-        const slice = chunk.length > room ? chunk.subarray(0, room) : chunk;
+      const cappedWrite = (fd, chunk, ref) => {
+        if (ref.n >= STREAM_CAP_BYTES) return;
+        const slice = chunk.length > STREAM_CAP_BYTES - ref.n ? chunk.subarray(0, STREAM_CAP_BYTES - ref.n) : chunk;
         try { fs.writeSync(fd, slice); } catch {}
-        countRef.n += slice.length;
+        ref.n += slice.length;
       };
-      const outRef = { n: 0 };
-      const errRef = { n: 0 };
+      const outRef = { n: 0 }; const errRef = { n: 0 };
       child.stdout.on("data", (c) => cappedWrite(outFd, c, outRef));
       child.stderr.on("data", (c) => cappedWrite(errFd, c, errRef));
+      // Single-settle guard: `error` and `close` can both fire on one child — close
+      // the fds and resolve exactly once (no double-close EBADF, no double-resolve).
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { fs.closeSync(outFd); } catch {}
+        try { fs.closeSync(errFd); } catch {}
+        resolve(result);
+      };
       const timer = setTimeout(() => {
         killed = true;
-        // F1: kill the docker CLIENT process group AND the CONTAINER (the --rm
-        // container outlives a client-only kill; the daemon owns its lifecycle).
         try { if (child.pid) process.kill(-child.pid, "SIGTERM"); } catch {}
-        defaultOffensiveDocker.kill(containerName, env);
+        defaultOffensiveDocker.kill(containerName, env); // F1: kill the CONTAINER, not just the client
         setTimeout(() => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch {} }, 5_000);
       }, timeoutMs);
-      child.on("error", (e) => {
-        clearTimeout(timer);
-        try { fs.closeSync(outFd); fs.closeSync(errFd); } catch {}
-        resolve({ exit_code: null, timed_out: killed, spawn_error: e.code === "ENOENT" ? "docker_not_in_path" : (e.message || String(e)) });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        try { fs.closeSync(outFd); fs.closeSync(errFd); } catch {}
-        resolve({ exit_code: killed ? null : code, timed_out: killed, out_bytes: outRef.n, err_bytes: errRef.n });
-      });
+      child.on("error", (e) => finish({ exit_code: null, timed_out: killed, spawn_error: e.code === "ENOENT" ? "docker_not_in_path" : (e.message || String(e)) }));
+      child.on("close", (code) => finish({ exit_code: killed ? null : code, timed_out: killed, out_bytes: outRef.n, err_bytes: errRef.n }));
     });
   },
 });
 
-// Run one offensive tool. Returns a MASKED result (booleans/counts/run_id only,
-// never raw response bytes). `classify`/`sign` are injectable; in production
-// classify is null (PR5a never signs).
+function blocked(domain, toolId, outcome, reason, extra = {}) {
+  return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: outcome, reason, row_written: false, ...extra };
+}
+
+// Run one offensive tool. Returns a MASKED result (booleans/counts/run_id only).
 async function runOffensiveTool({
   domain,
   toolId,
   imageDigest,
   toolArgv,
-  flagAllowlist = [],
+  flagSpec = {},
   forcedFlags = [],
-  scopeUrlArgs = [],
   egressProxyUrl = null,
   workTmpfsBytes,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -252,99 +271,121 @@ async function runOffensiveTool({
 }) {
   if (typeof domain !== "string" || !domain.trim()) rejectInvalid("domain is required");
   if (typeof toolId !== "string" || !toolId.trim()) rejectInvalid("toolId is required");
+  // forcedFlags are TRUSTED, server/spec-defined tokens the runner injects (e.g.
+  // --max-redirs 0, -disable-update-check) — NEVER agent-supplied. They bypass the
+  // tool-argv allowlist by design, so assert each is a flag token: a bare arg or a
+  // command cannot be smuggled through the exemption.
+  if (!Array.isArray(forcedFlags) || !forcedFlags.every((f) => typeof f === "string" && f.startsWith("-"))) {
+    rejectInvalid("forcedFlags must be server-defined flag tokens (each starting with '-')");
+  }
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
-  // 1) Aim-check: scope-gate EVERY externally-reachable URL arg BEFORE any spawn.
-  for (const url of scopeUrlArgs) {
-    assertSafeRequestUrl(String(url), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
+  // 1) Flag allowlist (fail-closed) → parsed value-flag map.
+  const valueFlags = parseAllowlistedArgv(toolArgv, flagSpec);
+  // 2) AIM-CHECK: scope-gate the URLs ACTUALLY in the command (the values of the
+  // spec's URL flags), BEFORE any spawn. Decoupled-list drift is impossible.
+  const urlFlagNames = flagSpec && flagSpec.url ? new Set(flagSpec.url) : new Set();
+  for (const [flag, value] of valueFlags) {
+    if (urlFlagNames.has(flag)) {
+      assertSafeRequestUrl(String(value), domain, SCOPE_VALIDATION_OPTS); // throws SCOPE_BLOCKED out of scope
+    }
   }
-  // 2) Flag allowlist (fail-closed) over the agent/caller-supplied tool argv.
-  assertToolArgvAllowed(toolArgv, flagAllowlist);
-  // 3) Run budget (fail-closed) BEFORE spawn.
-  if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_by_infra", reason: "offensive_run_budget_exhausted", row_written: false };
+
+  // 3) Reserve a run budget slot ATOMICALLY under the session lock (count +
+  // audit-record write together), fail-closed on over-budget / audit failure.
+  const startedAt = Date.now();
+  const primaryUrl = [...valueFlags].find(([f]) => urlFlagNames.has(f));
+  const auditUrl = primaryUrl ? String(primaryUrl[1]) : `https://${domain}/`;
+  const reservation = withSessionLock(domain, () => {
+    if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) return { ok: false, reason: "offensive_run_budget_exhausted" };
+    const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProxyUrl ? "proxy" : null, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
+    if (auditOk === false) return { ok: false, reason: "offensive_run_audit_failed" };
+    return { ok: true };
+  });
+  if (!reservation.ok) {
+    return blocked(domain, toolId, "blocked_by_infra", reservation.reason);
   }
 
   const runId = mintRunId();
   const scratchDir = repoRunsDir(domain);
   fs.mkdirSync(scratchDir, { recursive: true });
+  assertDirUnderSession(domain, scratchDir);
   const stdoutPath = path.join(scratchDir, `${runId}.stdout`);
   const stderrPath = path.join(scratchDir, `${runId}.stderr`);
   const cidfilePath = path.join(scratchDir, `${runId}.cid`);
   const dockerConfigDir = path.join(scratchDir, `${runId}.dockercfg`);
   fs.mkdirSync(dockerConfigDir, { recursive: true });
   const env = scrubbedDockerEnv(dockerConfigDir);
-  const startedAt = Date.now();
 
-  // The full container command: tool + runner-FORCED flags (F9, e.g. --max-redirs 0,
-  // -disable-update-check) + the caller's allowlisted argv tail.
+  // Container command: tool + runner-FORCED flags (trusted) + the allowlisted tail.
   const command = [toolArgv[0], ...forcedFlags, ...toolArgv.slice(1)];
-  const { args } = buildOffensiveDockerRunArgv({
-    imageDigest, command, containerName: runId, networkName: runId, cidfilePath, workTmpfsBytes, egressProxyUrl,
-  });
+  const { args } = buildOffensiveDockerRunArgv({ imageDigest, command, containerName: runId, networkName: runId, cidfilePath, workTmpfsBytes, egressProxyUrl });
 
-  // F3 write: record the run to http-audit (redacted target) so the breaker counts
-  // it. Use the primary scope-gated target as the audit url (or the session apex).
-  const auditUrl = scopeUrlArgs.length ? String(scopeUrlArgs[0]) : `https://${domain}/`;
-  auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProxyUrl ? "proxy" : null, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
+  const cleanupScratch = () => {
+    for (const p of [stdoutPath, stderrPath, cidfilePath]) { try { fs.rmSync(p, { force: true }); } catch {} }
+    try { fs.rmSync(dockerConfigDir, { recursive: true, force: true }); } catch {}
+  };
 
-  // F1/F8: best-effort sweep, then a throwaway per-run network; run; always tear down.
-  docker.sweep(env);
   let runResult;
   try {
     docker.networkCreate(runId, env);
   } catch (e) {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_by_infra", reason: "offensive_network_create_failed", failure_reason: e.message || String(e), row_written: false };
+    cleanupScratch();
+    return blocked(domain, toolId, "blocked_by_infra", "offensive_network_create_failed", { failure_reason: e.message || String(e) });
   }
+  let stdoutBytes = Buffer.alloc(0);
+  let stderrBytes = Buffer.alloc(0);
   try {
     runResult = await docker.run({ args, env, timeoutMs: cappedTimeout, stdoutPath, stderrPath, containerName: runId });
+    // Read the captures back (O_NOFOLLOW) BEFORE teardown deletes them.
+    stdoutBytes = secureReadCaptureBytes(stdoutPath);
+    stderrBytes = secureReadCaptureBytes(stderrPath);
   } finally {
-    docker.kill(runId, env); // F1: ensure the container is gone even on a clean exit path
+    docker.kill(runId, env);        // F1: ensure the container is gone on every path
     docker.networkRm(runId, env);
+    cleanupScratch();               // F7-cleanup: raw output never lingers on disk
   }
 
-  if (runResult.spawn_error) {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_by_infra", reason: "offensive_spawn_failed", failure_reason: runResult.spawn_error, row_written: false };
-  }
-  if (runResult.timed_out) {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_by_infra", reason: "offensive_run_timed_out", row_written: false };
-  }
+  if (runResult.spawn_error) return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
+  if (runResult.timed_out) return blocked(domain, toolId, "blocked_by_infra", "offensive_run_timed_out");
 
-  // F7/F10: read the captured bytes back with the O_NOFOLLOW discipline.
-  const stdoutBytes = secureReadCaptureBytes(stdoutPath);
-  const stderrBytes = secureReadCaptureBytes(stderrPath);
   const stdoutText = stdoutBytes.toString("utf8");
   const stderrText = stderrBytes.toString("utf8");
-
-  // F4 redaction backstop: the captured output must never carry secrets/credentials
-  // into the agent-facing return or a signed row. Fail closed (no row) if it does.
+  // F4 redaction backstop: scan the FULL capture (large cap so a real tool's output
+  // is scanned, not rejected for length). Fail closed (no row, masked block) if it
+  // carries secrets/credentials.
   try {
-    validateNoSensitiveMaterial(stdoutText, "offensive_stdout");
-    validateNoSensitiveMaterial(stderrText, "offensive_stderr");
+    validateNoSensitiveMaterial(stdoutText, "offensive_stdout", { maxTextChars: STREAM_CAP_BYTES });
+    validateNoSensitiveMaterial(stderrText, "offensive_stderr", { maxTextChars: STREAM_CAP_BYTES });
   } catch {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_operator_pii", reason: "offensive_output_contains_sensitive_value", row_written: false };
+    return blocked(domain, toolId, "blocked_operator_pii", "offensive_output_contains_sensitive_value");
   }
 
   // PR5a: no oracle → never sign. PR5b supplies a registry-bound classify.
   if (typeof classify !== "function") {
     return {
-      confirmed: false, target_domain: domain, tool_id: toolId,
-      offensive_outcome: runResult.exit_code === 0 ? "blocked_by_design" : "blocked_by_defense",
-      reason: "no_oracle_classifier", row_written: false,
+      ...blocked(domain, toolId, runResult.exit_code === 0 ? "blocked_by_design" : "blocked_by_defense", "no_oracle_classifier"),
       masked_summary: { exit_code: runResult.exit_code, stdout_bytes: runResult.out_bytes || 0, stderr_bytes: runResult.err_bytes || 0 },
     };
   }
-
   const verdict = classify({ exitCode: runResult.exit_code, stdoutText, stderrText });
   if (!verdict || verdict.positive !== true) {
-    return { confirmed: false, target_domain: domain, tool_id: toolId, offensive_outcome: "blocked_by_defense", reason: (verdict && verdict.reason) || "oracle_negative", row_written: false };
+    return blocked(domain, toolId, "blocked_by_defense", (verdict && verdict.reason) || "oracle_negative");
+  }
+  // Defense-in-depth: re-validate the oracle's target is in-scope before it is signed
+  // into a durable row — even a server-side classify cannot sign an off-scope target.
+  try {
+    assertSafeRequestUrl(String(verdict.canonicalTarget), domain, SCOPE_VALIDATION_OPTS);
+  } catch {
+    return blocked(domain, toolId, "blocked_by_design", "oracle_target_out_of_scope");
   }
 
-  // F11: surfaceId/canonicalTarget MUST be server-derived by the caller (verdict),
-  // never agent free-input. Sign under the session lock; the signer re-hashes from
-  // its own O_EXCL-owned offensive-runs/ leaves (NOT these scratch files).
+  // F11: surfaceId/canonicalTarget are server-derived by the caller (verdict). The
+  // signer re-hashes from its OWN O_EXCL-owned offensive-runs/ leaves.
+  // DEFERRED (PR5b): bind the row's command_hash to the actual container command —
+  // the placeholder method/prefix here are inert because classify is null in prod.
   const row = withSessionLock(domain, () => sign(domain, {
-    runIdPrefix: "reflect", // placeholder; PR5b passes a per-tool prefix
+    runIdPrefix: "reflect",
     toolId,
     method: "GET",
     canonicalTarget: verdict.canonicalTarget,
@@ -356,8 +397,7 @@ async function runOffensiveTool({
   }));
 
   return {
-    confirmed: true, target_domain: domain, tool_id: row.tool_id,
-    offensive_outcome: "exploited_safely", row_written: true,
+    confirmed: true, target_domain: domain, tool_id: row.tool_id, offensive_outcome: "exploited_safely", row_written: true,
     run_id: row.run_id, target: row.target, demonstrated_severity: row.demonstrated_severity,
     command_hash: row.command_hash, stdout_hash: row.stdout_hash, stderr_hash: row.stderr_hash, exit_code: row.exit_code,
     masked_summary: { relation: verdict.relationBooleans || {}, fragment_hash: row.stdout_hash },
@@ -366,8 +406,7 @@ async function runOffensiveTool({
 
 module.exports = {
   runOffensiveTool,
-  // exported for unit tests / PR5b
-  assertToolArgvAllowed,
+  parseAllowlistedArgv,
   scrubbedDockerEnv,
   secureReadCaptureBytes,
   offensiveRunCount,
@@ -375,4 +414,5 @@ module.exports = {
   defaultOffensiveDocker,
   MAX_OFFENSIVE_RUNS,
   MAX_TIMEOUT_MS,
+  OFFENSIVE_RUN_AUDIT_METHOD,
 };

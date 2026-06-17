@@ -97,12 +97,12 @@ test("cidfile + workTmpfsBytes are validated", () => {
   assert.throws(() => argvOf({ workTmpfsBytes: -1 }), /positive workTmpfsBytes/);
 });
 
-test("egress proxy: --env only when a proxy url is supplied (never baked into the image)", () => {
+test("egress proxy: ALL proxy vars present iff a proxy url is supplied (never baked into the image)", () => {
+  const PROXY_VARS = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"];
   const without = argvOf();
-  assert.ok(!without.some((t) => t.startsWith("http_proxy=")), "no proxy env by default");
+  for (const v of PROXY_VARS) assert.ok(!without.some((t) => t.startsWith(`${v}=`)), `no ${v} by default`);
   const withProxy = argvOf({ egressProxyUrl: "http://egress.local:8080" });
-  assert.ok(withProxy.some((t) => t === "http_proxy=http://egress.local:8080"));
-  assert.ok(withProxy.some((t) => t === "HTTPS_PROXY=http://egress.local:8080"));
+  for (const v of PROXY_VARS) assert.ok(withProxy.includes(`${v}=http://egress.local:8080`), `${v} present with proxy`);
 });
 
 test("assertNoForbiddenDockerFlags: fail-closed backstop catches a dangerous argv", () => {
