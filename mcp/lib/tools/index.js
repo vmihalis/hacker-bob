@@ -44,6 +44,7 @@ const TOOL_MODULES = Object.freeze([
   require("./repo-prepare-env.js"),
   require("./repo-docker-run.js"),
   require("./repo-check.js"),
+  require("./import-harness.js"),
   require("./read-session-state.js"),
   require("./read-session-nucleus.js"),
   require("./advance-session.js"),

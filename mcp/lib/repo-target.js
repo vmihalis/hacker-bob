@@ -57,6 +57,7 @@ const {
   writeSessionStateDocument,
 } = require("./session-state-store.js");
 const { ensureHandoffSigningKey } = require("./handoff-signing-key.js");
+const { hasAcquiredHarness } = require("./harness-store.js");
 const {
   readSessionNucleus,
 } = require("./governance-store.js");
@@ -1367,7 +1368,11 @@ function buildInventoryProjection(domain, repoRoot, files) {
   }
 
   const nfsShape = detectNfsXdrShape(repoRoot, files);
-  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files);
+  // A repo with no in-tree harness still gets the native-fuzz lane when a harness has
+  // been imported for the session via bob_import_harness (harnesses commonly live in
+  // OSS-Fuzz, not the project repo). The recipe stages the imported harness into the
+  // build at run time.
+  const nativeFuzzShape = detectNativeFuzzShape(repoRoot, files) || hasAcquiredHarness(domain);
   const residualHuntTargets = detectResidualHuntTargets(repoRoot, files, modules);
   const seedCorpus = buildSeedCorpusSummary(seedCorpusEntries);
   const seedCorpusCount = seedCorpusEntries.size;

@@ -38,6 +38,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_init_repo_session
   - mcp__hacker-bob__bob_repo_inventory
   - mcp__hacker-bob__bob_repo_prepare_env
+  - mcp__hacker-bob__bob_import_harness
   - mcp__hacker-bob__bob_read_session_state
   - mcp__hacker-bob__bob_read_session_nucleus
   - mcp__hacker-bob__bob_advance_session

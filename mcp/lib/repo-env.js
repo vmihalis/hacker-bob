@@ -46,6 +46,7 @@ const {
 } = require("./validation.js");
 const {
   assertSafeDomain,
+  harnessImportDir,
   repoCommandRunsJsonlPath,
   repoCheckoutDir,
   repoInventoryPath,
@@ -157,12 +158,23 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
   "libtool",
   "unzip",
   "zlib1g-dev",
+  // afl++ provides the strong input-to-state engine (CmpLog/RedQueen substitutes
+  // observed comparison operands directly into the input, solving magic-bytes and
+  // checksum gates that libFuzzer's -use_value_profile can only nibble at) plus
+  // laf-intel split-compares. The bundled libAFLDriver.a consumes the same
+  // LLVMFuzzerTestOneInput harness unchanged, so the cmplog arm reuses the harness
+  // bob already detects. apt ships it built against the distro LLVM; the recipe
+  // probes `command -v afl-clang-fast` and degrades to a no-op when absent, so the
+  // libFuzzer+value_profile floor still runs on hosts where afl++ is unavailable.
+  "afl++",
 ]);
 
 const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
-const NATIVE_LIBFUZZER_DEFINITION_PERL = shellQuote(
-  "s{/\\*.*?\\*/}{}gs; s{//[^\\n]*}{}g; s/\"(?:\\\\.|[^\"\\\\])*\"/\"\"/gs; s/'(?:\\\\.|[^'\\\\])*'/''/gs; exit(/\\b(?:extern\\s+(?:\"C\"|\"\"|'C'|'')\\s+)?(?:int|auto)\\s+LLVMFuzzerTestOneInput\\s*\\([^;{}]*\\)\\s*(?:\\{|try\\b)/s ? 0 : 1)",
-);
+// The afl++ CmpLog campaign runs as a SEPARATE recommended command (its own docker
+// run), so it does not share the libFuzzer arm's wall clock. Budget leaves headroom
+// under the default docker run timeout for the two afl-clang-fast builds (base +
+// cmplog) that precede the campaign.
+const NATIVE_FUZZ_AFL_TOTAL_TIME_SECONDS = 180;
 const FUZZ_STATS_NULL = Object.freeze({
   cov: null,
   ft: null,
@@ -269,6 +281,22 @@ function firstSeedCorpus(seedCorpus) {
   return null;
 }
 
+// The multi-TU fuzz builder is image-baked (see buildDockerfileBob) so it stays off
+// the 2048-char/token recipe budget AND runs byte-identically on the vuln and
+// upstream-fix trees — the differential repro gate re-runs the same command array on
+// both, so the build must be deterministic across checkouts. It builds the project's
+// library with coverage instrumentation via the project's own build system (cmake ->
+// autotools -> make -> compile-all fallback) and links the discovered
+// LLVMFuzzerTestOneInput harness against it, closing the single-TU wall where
+// `clang ... -o h -- "$HARNESS"` could not link a multi-file library (undefined
+// symbols) and instrumented only the harness (no library coverage).
+const BOB_MULTITU_BUILD_SH = fs.readFileSync(
+  path.join(__dirname, "fuzz", "bob-multitu-build.sh"),
+  "utf8",
+);
+const BOB_MULTITU_BUILD_SH_B64 = Buffer.from(BOB_MULTITU_BUILD_SH, "utf8").toString("base64");
+const BOB_MULTITU_BUILD_PATH = "/usr/local/bin/bob-multitu-build.sh";
+
 function cNativeFuzzRecipe(seedCorpusEntry) {
   const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
   const seedIsZip = seedCorpusEntry && seedCorpusEntry.has_zip === true;
@@ -289,15 +317,24 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     "rm -rf /work/repo /work/out",
     "mkdir -p /work/repo /work/out/corpus",
     "cp -a --no-preserve=ownership /src/. /work/repo/",
+    // Stage a session-imported harness (bob_import_harness) into the tree as a
+    // *_fuzzer.* so the builder's discovery finds it first. /harness is the read-only
+    // mount repoDockerRun attaches only when the session has an imported harness; this
+    // is a no-op (stays deterministic) for repos that already ship their own harness.
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
     "cd /work/repo",
-    "if [ -x ./configure ]; then ./configure; fi",
-    `HARNESS=$({ find . -type f \\( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \\) -print 2>/dev/null | sort; find . -type f \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print 2>/dev/null | sort; } | awk '!seen[$0]++' | while IFS= read -r f; do perl -0ne ${NATIVE_LIBFUZZER_DEFINITION_PERL} -- "$f" && { printf '%s\\n' "$f"; break; }; done)`,
-    "test -n \"$HARNESS\"",
-    "CC=clang-18",
-    "case \"$HARNESS\" in *.cc|*.cpp|*.cxx) CC=clang++-18 ;; esac",
+    // The image-baked builder discovers the harness, builds the project library with
+    // coverage instrumentation (fuzzer-no-link), and links the harness with the
+    // libFuzzer driver -> /work/out/h. Multi-TU libraries now link; library coverage
+    // is instrumented. Replaces the old single-TU `clang ... -o h -- "$HARNESS"`.
+    `ENGINE=libfuzzer ${BOB_MULTITU_BUILD_PATH}`,
     ...seedSetup,
-    "\"$CC\" -fsanitize=address,undefined,fuzzer -g -O1 -I. -Iinclude -Isrc -Ilib -o /work/out/h -- \"$HARNESS\"",
-    `/work/out/h -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
+    // -use_value_profile=1 is the always-on, zero-dependency input-to-state floor:
+    // clang-18/compiler-rt already ship the trace-cmp interceptors, so libFuzzer
+    // rewards partial progress on multi-byte comparisons (climbing magic checks a
+    // byte at a time). It is the weak form of input-to-state; the afl++ CmpLog arm
+    // is the strong form. Fully arch-portable, so it runs on every host.
+    `/work/out/h -use_value_profile=1 -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }
 
@@ -310,6 +347,78 @@ function boundedNativeFuzzRecipe(seedEntry) {
   }
   if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     throw new Error(`native fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
+  }
+  return { seedEntry: effectiveSeedEntry, recipe };
+}
+
+// afl++ CmpLog/RedQueen campaign over the SAME discovered LLVMFuzzerTestOneInput
+// harness. This is the strong input-to-state arm: CmpLog observes concrete
+// comparison operands at run time and substitutes them into the input, cracking
+// magic-byte and checksum gates that -use_value_profile only nibbles at.
+//
+// Portability contract: the recipe probes `command -v afl-clang-fast` and exits 0
+// (clean no-op) when afl++ is absent, so a host without the engine still completes
+// the libFuzzer+value_profile arm. afl-clang-fast (LLVM-pass mode) is chosen over
+// afl-clang-lto so distro/clang LLVM-version skew degrades to trace-pc rather than
+// failing the build. Crashes are NOT trusted from afl directly — each is replayed
+// through the ASAN/libFuzzer-built h_afl binary so the banner is produced by the
+// gate-trusted path (sanitizer-report.js) and routes into the differential repro
+// gate exactly like a libFuzzer crash. No new crash parser is introduced.
+function aflCmplogRecipe(seedCorpusEntry) {
+  const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
+  const seedShellPath = seedRel ? `./${seedRel}` : null;
+  const seedStage = seedRel
+    ? [
+        `SEED=${shellQuote(seedShellPath)}`,
+        "SEED_REAL=$(realpath -m -- \"$SEED\")",
+        "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo seed-escapes-repo >&2; exit 2 ;; esac",
+        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/ 2>/dev/null || true; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+      ]
+    : [];
+  return [
+    "set -eu",
+    "rm -rf /work/repo /work/out",
+    "mkdir -p /work/repo /work/out/corpus /work/out/afl",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
+    // Stage a session-imported harness (bob_import_harness) into the tree as a
+    // *_fuzzer.* so the builder's discovery finds it first. /harness is the read-only
+    // mount repoDockerRun attaches only when the session has an imported harness; this
+    // is a no-op (stays deterministic) for repos that already ship their own harness.
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
+    "cd /work/repo",
+    // The image-baked builder discovers the harness, probes afl-clang-fast (echoes
+    // BOB_AFL_UNAVAILABLE + exits 0 when absent), builds the project library twice
+    // (AFL_USE_ASAN -> h_afl, AFL_LLVM_CMPLOG -> h_cmplog) and links the harness +
+    // libAFLDriver.a against each. h_afl is the ASAN-instrumented fuzz/replay binary;
+    // h_cmplog drives RedQueen input-to-state. Multi-TU libraries now link.
+    `ENGINE=afl ${BOB_MULTITU_BUILD_PATH}`,
+    // If the builder produced no binaries (afl-clang-fast unavailable), no-op cleanly
+    // — the libFuzzer+value_profile arm remains the floor. Self-contained if/fi so the
+    // exit is scoped, never masking an upstream build failure.
+    "if [ ! -x /work/out/h_afl ] || [ ! -x /work/out/h_cmplog ]; then echo BOB_AFL_SKIPPED >&2; exit 0; fi",
+    "printf bob > /work/out/corpus/s0",
+    ...seedStage,
+    // Brace-grouped so `|| true` (tolerate afl-fuzz's non-zero exit on timeout or
+    // first crash) stays scoped to afl-fuzz and cannot swallow an upstream build
+    // failure earlier in the && chain.
+    // AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: the host core_pattern is not namespaced,
+    // so afl-fuzz would otherwise refuse to start under --cap-drop ALL when the host
+    // pipes cores to a handler (e.g. apport). ASAN catches the crash in-process, so
+    // afl's external core capture is not relied upon.
+    `{ AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_BENCH_UNTIL_CRASH=1 afl-fuzz -m none -i /work/out/corpus -o /work/out/afl -c /work/out/h_cmplog -V ${NATIVE_FUZZ_AFL_TOTAL_TIME_SECONDS} -- /work/out/h_afl @@ >/dev/null 2>&1 || true; }`,
+    "for c in /work/out/afl/default/crashes/id*; do [ -e \"$c\" ] || continue; echo \"=== BOB_AFL_REPLAY $c ===\"; /work/out/h_afl \"$c\" 2>&1 | head -40; done",
+  ].join(" && ");
+}
+
+function boundedAflCmplogRecipe(seedEntry) {
+  let effectiveSeedEntry = seedEntry;
+  let recipe = aflCmplogRecipe(effectiveSeedEntry);
+  if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    effectiveSeedEntry = null;
+    recipe = aflCmplogRecipe(null);
+  }
+  if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    throw new Error(`afl cmplog base recipe (no-seed) exceeds token limit: ${recipe.length}`);
   }
   return { seedEntry: effectiveSeedEntry, recipe };
 }
@@ -452,6 +561,21 @@ function recommendedCommandsFor(
       };
       if (seedRel) fuzzCommand.seed_path = seedRel;
       commands.push(fuzzCommand);
+
+      // Strong input-to-state arm: afl++ CmpLog/RedQueen over the same harness.
+      // Emitted as a separate fuzz command (its own token budget and docker run);
+      // the recipe self-probes afl-clang-fast and no-ops when afl++ is absent, so
+      // hosts without the engine simply skip it while keeping the libFuzzer arm.
+      const { seedEntry: aflSeedEntry, recipe: aflRecipe } = boundedAflCmplogRecipe(seedEntry);
+      const aflSeedRel = aflSeedEntry && aflSeedEntry.rel_path;
+      const aflCommand = {
+        id: "fuzz_cmplog",
+        description: "Build the same native libFuzzer harness with afl-clang-fast + a CmpLog binary and run an afl++ input-to-state campaign; replay any crashes through the ASAN build so they route into the differential repro gate. No-op when afl++ is unavailable.",
+        command: ["sh", "-lc", aflRecipe],
+        role: "fuzz",
+      };
+      if (aflSeedRel) aflCommand.seed_path = aflSeedRel;
+      commands.push(aflCommand);
     } else if (seedEntry) {
       const seedRel = seedEntry.rel_path;
       const quotedSeedRel = shellQuote(seedRel);
@@ -536,6 +660,28 @@ function buildDockerfileBob({
         // the unversioned name so crash frames resolve to source:line without the
         // harness having to export ASAN_SYMBOLIZER_PATH.
         lines.push("RUN ln -sf \"$(command -v llvm-symbolizer-18)\" /usr/local/bin/llvm-symbolizer");
+        // afl-clang-fast is built against the distro's afl++ LLVM (clang-17 on
+        // ubuntu:24.04), which differs from the clang-18 used by the libFuzzer arm.
+        // AFL_USE_ASAN then links against that LLVM's compiler-rt, so install the
+        // matching libclang-rt-<v>-dev. The version is DERIVED from afl-clang-fast
+        // (not hardcoded) so it tracks the engine across base images, and the step
+        // is tolerant (`|| :`) so a missing package degrades only the afl arm — the
+        // libFuzzer+value_profile floor and the shared image still build.
+        lines.push(
+          "RUN AFLV=$(afl-clang-fast --version 2>/dev/null | sed -n 's/.*clang version \\([0-9]*\\).*/\\1/p' | head -1) \\",
+        );
+        lines.push(
+          "    && if [ -n \"$AFLV\" ]; then { apt-get update && apt-get install -y --no-install-recommends \"libclang-rt-$AFLV-dev\" && rm -rf /var/lib/apt/lists/*; } || :; fi",
+        );
+        // Bake the multi-TU fuzz builder into the image (base64 so the script's perl
+        // one-liner + nested quotes survive Dockerfile embedding without heredoc/
+        // expansion hazards). It drives the project's build system to produce an
+        // instrumented library and links the discovered harness — what makes the fuzz
+        // arms work on a real multi-file C/C++ library, not just a single-TU harness.
+        lines.push(
+          `RUN printf %s ${shellQuote(BOB_MULTITU_BUILD_SH_B64)} | base64 -d > ${BOB_MULTITU_BUILD_PATH} \\`,
+        );
+        lines.push(`    && chmod 0755 ${BOB_MULTITU_BUILD_PATH}`);
       }
     } else {
       lines.push(`# apt-get install skipped (allow_network=false). Packages would be: ${packages.join(" ")}`);
@@ -1372,6 +1518,7 @@ function buildDockerRunArgv({
   allowNetwork,
   repoMountMode,
   egressProfile,
+  harnessDir,
 }) {
   if (!repoRoot || !workDir || !imageTag || !Array.isArray(command) || command.length === 0) {
     throw new Error("buildDockerRunArgv requires repoRoot, workDir, imageTag, command");
@@ -1415,6 +1562,12 @@ function buildDockerRunArgv({
   const mountSuffix = repoMountMode === "read_write" ? "rw" : "ro";
   args.push("-v", `${repoRoot}:/src:${mountSuffix}`);
   args.push("-v", `${workDir}:/work:rw`);
+  // A session-imported harness (bob_import_harness) is mounted read-only at /harness
+  // so the recipe can stage it into /work/repo. Top-level mount (not nested under
+  // /work) to avoid overlay subtleties. Absent for sessions with no import.
+  if (harnessDir) {
+    args.push("-v", `${harnessDir}:/harness:ro`);
+  }
   // Proxy: --env (run-time), NEVER ENV in the image. Skipping these
   // when allow_network=false keeps the offline path airtight.
   if (allowNetwork) {
@@ -1894,6 +2047,18 @@ async function repoDockerRun({
       }
     : null;
 
+  // Mount a session-imported harness read-only at /harness when one exists, so the
+  // fuzz recipe can stage it into the build (the repo itself may ship no harness).
+  let harnessDir = null;
+  try {
+    const hDir = harnessImportDir(domain);
+    if (fs.existsSync(hDir) && fs.readdirSync(hDir).some((f) => /\.(c|cc|cpp|cxx)$/.test(f))) {
+      harnessDir = hDir;
+    }
+  } catch {
+    harnessDir = null;
+  }
+
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
   const argv = buildDockerRunArgv({
@@ -1904,6 +2069,7 @@ async function repoDockerRun({
     allowNetwork: normalizedAllowNetwork,
     repoMountMode: normalizedMountMode,
     egressProfile: egressProfileResolved,
+    harnessDir,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
   const replayCommandHash = normalizedInputCommand

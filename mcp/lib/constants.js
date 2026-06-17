@@ -106,6 +106,11 @@ const STATIC_ARTIFACT_ID_RE = /^SA-([1-9]\d*)$/;
 const STATIC_ARTIFACT_TYPE_VALUES = ["evm_token_contract", "solana_token_contract"];
 const STATIC_ARTIFACT_MAX_CHARS = 200_000;
 const STATIC_ARTIFACT_LOG_MAX_RECORDS = 500;
+// Imported fuzz harnesses (bob_import_harness). Session-owned, MCP-write-only scratch
+// (not audit-graded). One harness is a small source file; the cap matches static imports.
+const HARNESS_ID_RE = /^H-([1-9]\d*)$/;
+const HARNESS_MAX_CHARS = 200_000;
+const HARNESS_LOG_MAX_RECORDS = 200;
 const STATIC_SCAN_RESULTS_MAX_RECORDS = 1_000;
 const STATIC_SCAN_FINDING_MAX_ITEMS = 100;
 const STATIC_SCAN_HINT_MAX_ITEMS = 10;
@@ -189,6 +194,9 @@ module.exports = {
   SESSION_PUBLIC_STATE_FIELDS,
   SEVERITY_VALUES,
   SIGNATURE_VERIFICATION_STATUS_VALUES,
+  HARNESS_ID_RE,
+  HARNESS_LOG_MAX_RECORDS,
+  HARNESS_MAX_CHARS,
   STATIC_ARTIFACT_ID_RE,
   STATIC_ARTIFACT_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_MAX_CHARS,

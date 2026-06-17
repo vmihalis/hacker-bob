@@ -98,6 +98,7 @@
       "mcp__hacker-bob__bob_repo_prepare_env",
       "mcp__hacker-bob__bob_repo_docker_run",
       "mcp__hacker-bob__bob_repo_check",
+      "mcp__hacker-bob__bob_import_harness",
       "mcp__hacker-bob__bob_advance_session",
       "mcp__hacker-bob__bob_apply_wave_merge",
       "mcp__hacker-bob__bob_write_handoff",

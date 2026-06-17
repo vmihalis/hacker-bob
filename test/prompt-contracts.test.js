@@ -1108,8 +1108,9 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // The composition-experiment surface adds bob_run_path_composition_experiment
   // and bob_read_composition_telemetry to the orchestrator bundle (+2 generated
   // allowed-tools lines). The SC1 live verifier adds bob_verify_composition_path
-  // (+1 generated allowed-tools line).
-  assert.ok(lines <= 395, `bob-evaluate-runner skill is ${lines} lines (cap 395)`);
+  // (+1 generated allowed-tools line). bob_import_harness (OSS harness acquisition)
+  // adds +1 generated allowed-tools line.
+  assert.ok(lines <= 396, `bob-evaluate-runner skill is ${lines} lines (cap 396)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,

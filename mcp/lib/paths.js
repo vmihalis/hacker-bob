@@ -3,6 +3,7 @@
 const os = require("os");
 const path = require("path");
 const {
+  HARNESS_ID_RE,
   SESSION_LOCK_NAME,
   STATIC_ARTIFACT_ID_RE,
   VERIFICATION_ROUND_FILE_MAP,
@@ -223,6 +224,30 @@ function staticArtifactPath(domain, artifactId) {
 
 function staticArtifactsJsonlPath(domain) {
   return path.join(sessionDir(domain), "static-artifacts.jsonl");
+}
+
+// Imported fuzz harnesses (bob_import_harness). Session-owned scratch, MCP-write-only
+// (the agent Write tool is fenced from harnesses/ — provenance flows only through the
+// tool). NOT audit-graded. Stored as .cc so the recipe's harness discovery treats it
+// as a C++ TU (works for both c and cpp harnesses).
+function assertHarnessId(harnessId) {
+  const normalized = assertNonEmptyString(harnessId, "harness_id");
+  if (!HARNESS_ID_RE.test(normalized)) {
+    throw new Error("harness_id must match H-N");
+  }
+  return normalized;
+}
+
+function harnessImportDir(domain) {
+  return path.join(sessionDir(domain), "harnesses");
+}
+
+function harnessPath(domain, harnessId) {
+  return path.join(harnessImportDir(domain), `${assertHarnessId(harnessId)}.cc`);
+}
+
+function harnessesJsonlPath(domain) {
+  return path.join(sessionDir(domain), "harnesses.jsonl");
 }
 
 function schemaContractsJsonlPath(domain) {
@@ -549,6 +574,7 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "repo-inventory.json",
   "surface-routes.json",
   "static-artifacts.jsonl",
+  "harnesses.jsonl",
   "static-analysis-results.jsonl",
   "static-analysis-index.jsonl",
   "static-scan-results.jsonl",
@@ -605,6 +631,7 @@ const HOOK_MCP_OWNED_FILENAME_PATTERNS = Object.freeze([
 // dir and the inventory check is closed against the path-function inventory.
 const HOOK_MCP_OWNED_DIRS = Object.freeze([
   "static-imports",
+  "harnesses",
   "belief-scratch",
   "repo-runs",
   "repo-work",
@@ -835,6 +862,7 @@ const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
 const SESSION_ROOT_RESOLVER_EXTRA_ARGS = Object.freeze({
   liveDeadEndsJsonlPath: ["w1", "a3"],
   staticArtifactPath: ["SA-1"],
+  harnessPath: ["H-1"],
   waveAssignmentsPath: [1],
 });
 
@@ -883,6 +911,7 @@ module.exports = {
   LARGE_BODY_THRESHOLD_BYTES,
   TELEMETRY_DIR_NAME,
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
+  assertHarnessId,
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
@@ -951,6 +980,9 @@ module.exports = {
   staticArtifactImportDir,
   staticArtifactPath,
   staticArtifactsJsonlPath,
+  harnessImportDir,
+  harnessPath,
+  harnessesJsonlPath,
   staticAnalysisIndexPath,
   staticAnalysisResultsJsonlPath,
   staticScanResultsJsonlPath,

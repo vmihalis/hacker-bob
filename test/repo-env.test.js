@@ -248,24 +248,47 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
     seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
   });
   const fuzzCommands = commands.filter((command) => command.role === "fuzz");
-  assert.equal(fuzzCommands.length, 1);
-  const fuzz = fuzzCommands[0];
-  assert.equal(fuzz.id, "fuzz_asan_ubsan");
+  assert.equal(fuzzCommands.length, 2);
+  const fuzz = fuzzCommands.find((command) => command.id === "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "fuzz/corpus");
-  assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput/);
-  assert.match(fuzz.command[2], /find \. -type f/);
-  assert.match(fuzz.command[2], /\*_fuzzer\.c/);
-  assert.match(fuzz.command[2], /perl -0ne/);
-  assert.match(fuzz.command[2], /find \. -type f .*'\*\.cpp'/);
-  assert.match(fuzz.command[2], /LLVMFuzzerTestOneInput\\s\*/);
-  assert.doesNotMatch(fuzz.command[2], /grep -RIl/);
-  assert.match(fuzz.command[2], /clang(?:\+\+)?-18/);
-  assert.match(fuzz.command[2], /-fsanitize=address,undefined,fuzzer/);
-  assert.match(fuzz.command[2], /-o \/work\/out\/h -- "\$HARNESS"/);
-  assert.match(fuzz.command[2], /-Iinclude/);
+  // The build (harness discovery + multi-TU library link + instrumentation) is in the
+  // image-baked builder, not the recipe; the recipe stages /src, invokes the builder,
+  // stages seeds, and runs. This is what lets the arm work on a multi-file library.
+  assert.match(fuzz.command[2], /cp -a --no-preserve=ownership \/src\/\. \/work\/repo\//);
+  assert.match(fuzz.command[2], /ENGINE=libfuzzer \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  // Seed staging stays in the recipe (the builder does not handle seeds).
+  assert.match(fuzz.command[2], /SEED='\.\/fuzz\/corpus'/);
   assert.match(fuzz.command[2], /-max_total_time=240/);
+  // Always-on input-to-state floor (works even where afl++ is unavailable).
+  assert.match(fuzz.command[2], /\/work\/out\/h -use_value_profile=1/);
+  // Build details belong to the builder script, NOT the recipe token.
+  assert.doesNotMatch(fuzz.command[2], /-o \/work\/out\/h -- "\$HARNESS"/);
   assert.ok(fuzz.command[2].length <= 2048, "native fuzz recipe token must stay within docker-run limit");
   assert.equal(commands.some((command) => command.id === "fuzz_seed_probe"), false);
+});
+
+test("recommendedCommandsFor c emits an afl++ CmpLog input-to-state arm alongside the libFuzzer arm", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
+  });
+  const afl = commands.find((command) => command.id === "fuzz_cmplog");
+  assert.ok(afl, "expected a fuzz_cmplog command when native fuzz shape is present");
+  assert.equal(afl.role, "fuzz");
+  assert.equal(afl.seed_path, "fuzz/corpus");
+  // The afl build (harness discovery, afl-clang-fast probe, AFL_USE_ASAN h_afl +
+  // CmpLog h_cmplog, multi-TU library link, libAFLDriver.a) lives in the builder.
+  assert.match(afl.command[2], /ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  // Guard: if the builder produced no binaries (afl-clang-fast absent), no-op cleanly
+  // — the value_profile floor remains. Scoped if/fi, never masks an upstream failure.
+  assert.match(afl.command[2], /if \[ ! -x \/work\/out\/h_afl \] \|\| \[ ! -x \/work\/out\/h_cmplog \]; then echo BOB_AFL_SKIPPED >&2; exit 0; fi/);
+  assert.match(afl.command[2], /afl-fuzz -m none .* -c \/work\/out\/h_cmplog .* -- \/work\/out\/h_afl @@/);
+  // Crashes replay through the ASAN binary (no new crash parser).
+  assert.match(afl.command[2], /BOB_AFL_REPLAY/);
+  assert.match(afl.command[2], /\/work\/out\/h_afl "\$c"/);
+  // Build details belong to the builder script, NOT the recipe token.
+  assert.doesNotMatch(afl.command[2], /AFL_LLVM_CMPLOG=1/);
+  assert.ok(afl.command[2].length <= 2048, "afl cmplog recipe token must stay within docker-run limit");
 });
 
 test("recommendedCommandsFor c can emit only the native fuzz recipe for promoted polyglot repos", () => {
@@ -276,7 +299,7 @@ test("recommendedCommandsFor c can emit only the native fuzz recipe for promoted
   assert.equal(commands.some((command) => command.id === "build_and_test"), false);
   assert.deepEqual(
     commands.map((command) => command.id),
-    ["fuzz_asan_ubsan"],
+    ["fuzz_asan_ubsan", "fuzz_cmplog"],
   );
 });
 
@@ -325,9 +348,11 @@ test("recommendedCommandsFor c guards dash-prefixed seed corpus paths", () => {
 });
 
 test("recommendedCommandsFor c drops overlong seed setup to keep native fuzz recipe executable", () => {
+  // Image-baking the builder gave the recipe large headroom, so the bounded-drop now
+  // triggers only at an extreme seed path; this still exercises that safety net.
   const commands = recommendedCommandsFor("c", {
     nativeFuzzShape: true,
-    seedCorpus: [{ rel_path: `${"deep/".repeat(40)}corpus` }],
+    seedCorpus: [{ rel_path: `${"deep/".repeat(400)}corpus` }],
   });
   const fuzz = commands.find((command) => command.id === "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, undefined);
@@ -474,15 +499,52 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
     "C images must keep the unversioned clang wrapper while pinning clang-18 for the fuzz recipe",
   );
   for (const pkg of NATIVE_FUZZ_EXTRA_APT_PACKAGES) {
-    assert.match(withFuzz, new RegExp(`\\b${pkg.replace(/[-]/g, "\\-")}\\b`),
-      `native fuzz package ${pkg} missing`);
+    // Literal containment (packages include regex-special chars like the `+` in afl++).
+    assert.ok(withFuzz.includes(pkg), `native fuzz package ${pkg} missing`);
   }
+  // The strong input-to-state engine must be baked into the session image.
+  assert.ok(withFuzz.includes("afl++"), "afl++ must be in the native-fuzz apt layer");
+  // afl-clang-fast's matching compiler-rt is installed by DERIVING its clang version
+  // (so AFL_USE_ASAN can link), not hardcoded — tracks the engine across base images.
+  assert.match(withFuzz, /afl-clang-fast --version[\s\S]*libclang-rt-\$AFLV-dev/);
   // The fuzz image must expose the unversioned `llvm-symbolizer` so ASAN
   // auto-symbolizes crash frames to source:line (the reproduction gate refuses an
   // unsymbolized, /src-less backtrace). The non-fuzz image must not.
   assert.match(withFuzz, /ln -sf\s+"\$\(command -v llvm-symbolizer-18\)"\s+\/usr\/local\/bin\/llvm-symbolizer/,
     "native fuzz image must symlink llvm-symbolizer for ASAN auto-symbolization");
   assert.doesNotMatch(withoutFuzz, /llvm-symbolizer/);
+  // The multi-TU fuzz builder is baked into the image (base64-decoded), only when
+  // nativeFuzzShape — it is what lets the fuzz arms build a multi-file library.
+  assert.match(withFuzz, /base64 -d > \/usr\/local\/bin\/bob-multitu-build\.sh/,
+    "native fuzz image must bake the multi-TU builder");
+  assert.match(withFuzz, /chmod 0755 \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.doesNotMatch(withoutFuzz, /bob-multitu-build\.sh/);
+  // The baked base64 must decode to the on-disk builder script verbatim (no drift).
+  const m = withFuzz.match(/printf %s '([A-Za-z0-9+/=]+)' \| base64 -d > \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.ok(m, "expected a base64 builder payload in the Dockerfile");
+  const decoded = Buffer.from(m[1], "base64").toString("utf8");
+  const onDisk = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  assert.equal(decoded, onDisk, "baked builder must match mcp/lib/fuzz/bob-multitu-build.sh byte-for-byte");
+});
+
+test("the multi-TU builder script holds the instrumentation split + layered build invariants", () => {
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  // Instrumentation split: library carries coverage (fuzzer-no-link), harness link
+  // adds the libFuzzer driver/main (fuzzer, no -no-link) exactly once.
+  assert.ok(sh.includes("-fsanitize=address,undefined,fuzzer-no-link"), "library must be built with fuzzer-no-link coverage");
+  assert.ok(sh.includes("-fsanitize=address,undefined,fuzzer "), "harness must link the libFuzzer driver (fuzzer, no -no-link)");
+  // Project-build-system-first layers + compile-all fallback, all observable.
+  assert.match(sh, /cmake -S \. -B/);
+  assert.match(sh, /\.\/configure --disable-shared --enable-static/);
+  assert.match(sh, /BOB_MULTITU_LAYER=/);
+  // Static linkage so ASAN+coverage state is baked into the harness binary.
+  assert.match(sh, /BUILD_SHARED_LIBS=OFF/);
+  // afl arm: ASAN-instrumented h_afl + CmpLog h_cmplog, both linking libAFLDriver.a.
+  assert.match(sh, /AFL_USE_ASAN=1/);
+  assert.match(sh, /AFL_LLVM_CMPLOG=1/);
+  assert.match(sh, /libAFLDriver\.a/);
+  // compile-all fallback must skip TUs that define their own main().
+  assert.ok(sh.includes("int[[:space:]]+main"), "compile-all must guard against TUs with their own main()");
 });
 
 test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () => {
@@ -878,9 +940,11 @@ test("prepareRepoEnv reads native_fuzz_shape from repo-inventory.json and emits 
     const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
     assert.equal(repoEnv.detection.native_fuzz_shape, true);
     const fuzzCommands = repoEnv.recommended_commands.filter((command) => command.role === "fuzz");
-    assert.equal(fuzzCommands.length, 1);
-    assert.equal(fuzzCommands[0].id, "fuzz_asan_ubsan");
-    assert.match(fuzzCommands[0].command[2], /-fsanitize=address,undefined,fuzzer/);
+    assert.deepEqual(fuzzCommands.map((command) => command.id), ["fuzz_asan_ubsan", "fuzz_cmplog"]);
+    // Both arms invoke the image-baked multi-TU builder (build details live there).
+    assert.match(fuzzCommands[0].command[2], /ENGINE=libfuzzer \/usr\/local\/bin\/bob-multitu-build\.sh/);
+    assert.match(fuzzCommands[0].command[2], /-use_value_profile=1/);
+    assert.match(fuzzCommands[1].command[2], /ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
   });
 });
 

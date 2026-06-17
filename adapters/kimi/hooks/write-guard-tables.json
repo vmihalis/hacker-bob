@@ -54,6 +54,7 @@
     "repo-inventory.json",
     "surface-routes.json",
     "static-artifacts.jsonl",
+    "harnesses.jsonl",
     "static-analysis-results.jsonl",
     "static-analysis-index.jsonl",
     "static-scan-results.jsonl",
@@ -90,6 +91,7 @@
   ],
   "mcp_owned_dirs": [
     "static-imports",
+    "harnesses",
     "belief-scratch",
     "repo-runs",
     "repo-work",

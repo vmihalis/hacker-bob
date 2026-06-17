@@ -159,7 +159,11 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
     // now measured against the lean tarball — mcp/node_modules is excluded from
     // the pack, so this budget tracks shipped source/docs only.
-    assert.ok(pack.size < 3200000, `npm pack size ${pack.size} exceeds 3.2 MB threshold`);
+    // Raised to 3.3 MB for the OSS multi-TU fuzz foundation: the image-baked builder
+    // (mcp/lib/fuzz/bob-multitu-build.sh), bob_import_harness (mcp/lib/harness-store.js
+    // + tools/import-harness.js), and packing the .claude/hooks write-guard table the
+    // runtime write-guard hooks read.
+    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

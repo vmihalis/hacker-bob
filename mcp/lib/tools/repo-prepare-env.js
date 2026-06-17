@@ -25,7 +25,11 @@ module.exports = Object.freeze({
     "Generate a per-session Dockerfile.bob + repo-env.json for an OSS repo session (Plane O O.3). " +
     "Detects language from manifests, picks a sandbox-friendly base image, and emits recommended " +
     "build/test/fuzz/compose commands. dry_run is the default; build_image: true exec's docker build " +
-    "with O-P3 sandbox flags and an O-D6 ARG SESSION_ID cache-bust. Never bakes proxy/secret into ENV.",
+    "with O-P3 sandbox flags and an O-D6 ARG SESSION_ID cache-bust. Never bakes proxy/secret into ENV. " +
+    "Native C/C++ fuzz sessions emit two input-to-state arms over the discovered LLVMFuzzerTestOneInput " +
+    "harness: a libFuzzer+ASAN/UBSAN recipe with the always-on -use_value_profile=1 floor, and an afl++ " +
+    "CmpLog/RedQueen campaign (afl++ baked into the session image when allow_network:true) that replays " +
+    "crashes through the ASAN binary into the differential repro gate; the afl arm no-ops where afl++ is absent.",
   inputSchema: {
     type: "object",
     properties: {

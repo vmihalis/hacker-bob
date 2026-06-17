@@ -443,6 +443,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_repo_prepare_env",
   "bob_repo_docker_run",
   "bob_repo_check",
+  "bob_import_harness",
   "bob_read_session_state",
   "bob_read_session_nucleus",
   "bob_advance_session",
@@ -16504,6 +16505,55 @@ test("bob_import_static_artifact stores redacted session-owned content and rejec
     const stored = fs.readFileSync(staticArtifactPath(domain, "SA-1"), "utf8");
     assert.match(stored, /REDACTED/);
     assert.doesNotMatch(stored, /super-secret-token-value|\/tmp\/RugToken/);
+  });
+});
+
+test("bob_import_harness stores a session-owned harness, rejects unsafe imports, and flips native_fuzz_shape", () => {
+  withTempHome(() => {
+    const { importHarness, hasAcquiredHarness, readHarnessRecordsFromJsonl } = require("../mcp/lib/harness-store.js");
+    const { harnessPath, harnessesJsonlPath } = require("../mcp/lib/paths.js");
+    const { initRepoSession, buildRepoInventory } = require("../mcp/lib/repo-target.js");
+    const { loadNativeFuzzShape } = require("../mcp/lib/repo-env.js");
+    const harness = "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*d,unsigned long n){ char k[]=\"api_key=supersecretvalue123\"; (void)k; return n>0&&d[0]; }";
+
+    // content-only: filesystem path imports are rejected.
+    assert.throws(() => importHarness({ target_domain: "x", file_path: "/tmp/h.cc", content: harness }),
+      /Path imports are not supported/);
+    // a usable libFuzzer harness must define the entry point.
+    assert.throws(() => importHarness({ target_domain: "x", content: "int main(){return 0;}" }),
+      /must define LLVMFuzzerTestOneInput/);
+    // cap is enforced.
+    assert.throws(() => importHarness({ target_domain: "x", content: "LLVMFuzzerTestOneInput" + "x".repeat(200001) }),
+      /exceeds harness cap/);
+
+    // Set up a real repo session with NO in-tree harness.
+    const rawRepoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-harness-fixture-"));
+    const repoRoot = fs.realpathSync.native ? fs.realpathSync.native(rawRepoRoot) : fs.realpathSync(rawRepoRoot);
+    fs.writeFileSync(path.join(repoRoot, "CMakeLists.txt"), "project(x)\n");
+    fs.mkdirSync(path.join(repoRoot, "src"));
+    fs.writeFileSync(path.join(repoRoot, "src", "lib.c"), "int add(int a,int b){return a+b;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+    const domain = init.target_domain;
+    buildRepoInventory({ target_domain: domain });
+    assert.equal(loadNativeFuzzShape(domain), false, "no harness in repo -> native_fuzz_shape false");
+    assert.equal(hasAcquiredHarness(domain), false);
+
+    // import the harness.
+    const imported = importHarness({ target_domain: domain, language: "cpp", source: "operator", content: harness });
+    assert.equal(imported.harness_id, "H-1");
+    assert.equal(imported.harness_path, harnessPath(domain, "H-1"));
+    assert.ok(fs.existsSync(harnessPath(domain, "H-1")));
+    assert.ok(fs.existsSync(harnessesJsonlPath(domain)));
+    assert.equal(readHarnessRecordsFromJsonl(domain).length, 1);
+    assert.equal(hasAcquiredHarness(domain), true);
+
+    // secret in the harness is redacted at rest.
+    const stored = fs.readFileSync(harnessPath(domain, "H-1"), "utf8");
+    assert.doesNotMatch(stored, /supersecretvalue123/);
+
+    // re-inventory: native_fuzz_shape now flips true even though the repo ships none.
+    buildRepoInventory({ target_domain: domain });
+    assert.equal(loadNativeFuzzShape(domain), true, "imported harness flips native_fuzz_shape true");
   });
 });
 

@@ -517,8 +517,13 @@ test("readAssignmentBrief accepts routed OSS brief_profile and emits OSS techniq
   assert.equal(fuzzCommand.command[1], "-lc");
   assert.ok(fuzzCommand.command[2].length > 400, "native fuzz recipe should not be clipped at the old argv cap");
   assert.ok(fuzzCommand.command[2].length <= 2048, "native fuzz recipe token must remain bounded by brief cap");
-  assert.match(fuzzCommand.command[2], /-fsanitize=address,undefined,fuzzer/);
-  assert.match(fuzzCommand.command[2], /\/work\/out\/h -max_total_time=240 \/work\/out\/corpus/);
+  // The build (multi-TU library link + instrumentation) is in the image-baked builder.
+  assert.match(fuzzCommand.command[2], /ENGINE=libfuzzer \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.match(fuzzCommand.command[2], /\/work\/out\/h -use_value_profile=1 -max_total_time=240 \/work\/out\/corpus/);
+  // The brief also exposes the afl++ CmpLog input-to-state arm over the same harness.
+  const aflCommand = brief.repo_env_recommendations.recommended_commands.find((command) => command.id === "fuzz_cmplog");
+  assert.ok(aflCommand, "brief must expose the afl++ cmplog arm alongside the libFuzzer arm");
+  assert.match(aflCommand.command[2], /ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
   assert.ok(brief.technique_packs.selected.some((pack) => pack.id === "oss_native_code"));
   assert.ok(brief.technique_packs.root_cause_families.some((family) => family.family === "validate_vs_consume"));
   assert.ok(brief.technique_packs.root_cause_families.some((family) => family.family === "crypto_ordering"));
