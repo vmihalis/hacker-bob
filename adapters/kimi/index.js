@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const config = require("./config.js");
@@ -14,6 +15,115 @@ const id = "kimi";
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
 const { BOB_SKILLS, LEGACY_BOB_SKILLS } = config;
+
+// Functional PreToolUse guards copied under <target>/.kimi/hooks/ and registered
+// in ~/.kimi/config.toml. scope-guard.sh is a deliberate no-op and is treated as
+// STALE (never registered), mirroring the Claude adapter.
+const HOOK_FILES = Object.freeze([
+  "session-read-guard.sh",
+  "session-write-guard.sh",
+]);
+
+// All copied .sh guards are executable. Kept as its own list for parity with the
+// Claude adapter's EXECUTABLE_HOOKS, even though here it equals HOOK_FILES.
+const EXECUTABLE_HOOKS = Object.freeze([
+  "session-read-guard.sh",
+  "session-write-guard.sh",
+]);
+
+// Non-executable data the guards READ. write-guard-tables.json is the generated
+// allow/deny manifest (rendered from mcp/lib/paths.js AUDIT_GRADED_PATHS). It must
+// land beside the guards so $(dirname "$0")/write-guard-tables.json resolves. Kept
+// separate from HOOK_FILES so it never enters EXECUTABLE_HOOKS / the chmod loop /
+// the doctor executable-bit check. Mirrors the Claude HOOK_DATA_FILES.
+const HOOK_DATA_FILES = Object.freeze([
+  "write-guard-tables.json",
+]);
+
+// scope-guard.sh ships under adapters/kimi/hooks/ but is a no-op; sweep it from
+// any prior hand-install so it cannot mislead. Mirrors STALE_HOOK_FILES on Claude.
+const STALE_HOOK_FILES = Object.freeze([
+  "scope-guard.sh",
+]);
+
+// Sentinel-fenced Bob block inside ~/.kimi/config.toml. The upsert/remove key.
+// [[hooks]] is a TOML array-of-tables (identical headers), so a header-keyed
+// upsert would corrupt operator hooks; the sentinel block is the safe boundary.
+const KIMI_HOOK_BLOCK_BEGIN = "# >>> hacker-bob managed hooks (do not edit) >>>";
+const KIMI_HOOK_BLOCK_END = "# <<< hacker-bob managed hooks <<<";
+// Wide matcher regexes: Kimi's tool names are not pinned (docs show Shell/WriteFile;
+// Claude emits Bash/Write/Read). Erring wide is fail-safer — a name Kimi never emits
+// is harmless, a missed name is a silent fail-open.
+const KIMI_WRITE_MATCHER = "Shell|Bash|Write|WriteFile|Edit|MultiEdit";
+const KIMI_READ_MATCHER = "Shell|Bash|Read|ReadFile|Cat";
+
+function kimiHome() {
+  // KIMI_SHARE_DIR is Kimi CLI's documented override for the ~/.kimi data dir
+  // (holds config.toml/sessions/logs). Honoring it gives parity with the live
+  // CLI and lets install-smoke redirect the home write into a temp dir, exactly
+  // as the Codex test redirects CODEX_HOME.
+  return path.resolve(process.env.KIMI_SHARE_DIR || path.join(os.homedir(), ".kimi"));
+}
+
+function kimiConfigPath(home = kimiHome()) {
+  return path.join(home, "config.toml");
+}
+
+function tomlString(value) {
+  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+}
+
+function renderKimiHookBlock(targetAbs) {
+  const writeCmd = `bash ${tomlString(path.join(targetAbs, ".kimi", "hooks", "session-write-guard.sh"))}`;
+  const readCmd = `bash ${tomlString(path.join(targetAbs, ".kimi", "hooks", "session-read-guard.sh"))}`;
+  return [
+    KIMI_HOOK_BLOCK_BEGIN,
+    "[[hooks]]",
+    'event = "PreToolUse"',
+    `matcher = ${tomlString(KIMI_WRITE_MATCHER)}`,
+    `command = ${tomlString(writeCmd)}`,
+    "timeout = 5",
+    "",
+    "[[hooks]]",
+    'event = "PreToolUse"',
+    `matcher = ${tomlString(KIMI_READ_MATCHER)}`,
+    `command = ${tomlString(readCmd)}`,
+    "timeout = 5",
+    KIMI_HOOK_BLOCK_END,
+  ].join("\n");
+}
+
+// Idempotent merge-not-clobber: replace the sentinel block in place, or append it.
+function upsertKimiHookBlock(text, targetAbs) {
+  const block = renderKimiHookBlock(targetAbs);
+  const normalized = (text || "").replace(/\r\n/g, "\n");
+  const begin = normalized.indexOf(KIMI_HOOK_BLOCK_BEGIN);
+  if (begin === -1) {
+    const base = normalized.replace(/\n*$/g, "");
+    const sep = base === "" ? "" : "\n\n";
+    return `${base}${sep}${block}\n`;
+  }
+  const endMarker = normalized.indexOf(KIMI_HOOK_BLOCK_END, begin);
+  const end = endMarker === -1 ? normalized.length : endMarker + KIMI_HOOK_BLOCK_END.length;
+  return `${normalized.slice(0, begin)}${block}${normalized.slice(end)}`.replace(/\n*$/g, "") + "\n";
+}
+
+function removeKimiHookBlock(text) {
+  const normalized = (text || "").replace(/\r\n/g, "\n");
+  const begin = normalized.indexOf(KIMI_HOOK_BLOCK_BEGIN);
+  if (begin === -1) return text;
+  const endMarker = normalized.indexOf(KIMI_HOOK_BLOCK_END, begin);
+  const end = endMarker === -1 ? normalized.length : endMarker + KIMI_HOOK_BLOCK_END.length;
+  // Also swallow a single leading blank-line separator if present.
+  let cut = begin;
+  if (cut >= 1 && normalized[cut - 1] === "\n" && (cut < 2 || normalized[cut - 2] === "\n")) cut -= 1;
+  const result = `${normalized.slice(0, cut)}${normalized.slice(end)}`.replace(/\n*$/g, "");
+  return result === "" ? "" : `${result}\n`;
+}
+
+function hasKimiHookBlock(text) {
+  return typeof text === "string" && text.includes(KIMI_HOOK_BLOCK_BEGIN);
+}
 
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -33,6 +143,9 @@ function managedFiles(sourceRoot) {
   return [
     ...BOB_SKILLS.map((skill) => path.join(".kimi", "skills", skill, "SKILL.md")),
     ...LEGACY_BOB_SKILLS.map((skill) => path.join(".kimi", "skills", skill, "SKILL.md")),
+    ...HOOK_FILES.map((name) => path.join(".kimi", "hooks", name)),
+    ...HOOK_DATA_FILES.map((name) => path.join(".kimi", "hooks", name)),
+    ...STALE_HOOK_FILES.map((name) => path.join(".kimi", "hooks", name)),
     path.join(".kimi", "bob", "VERSION"),
     path.join(".kimi", "bob", "install.json"),
     path.join(".kimi", "mcp.json"),
@@ -45,6 +158,7 @@ function managedDirs() {
   return [
     ...skillDirs,
     path.join(".kimi", "skills"),
+    path.join(".kimi", "hooks"),
     path.join(".kimi", "bob"),
     path.join(".kimi"),
   ];
@@ -121,6 +235,29 @@ function install({
     }
   }
 
+  // Sweep no-op/stale hooks from prior hand-installs so they cannot mislead.
+  for (const stale of STALE_HOOK_FILES) {
+    safeFs.removePath(path.join(kimiDir, "hooks", stale));
+  }
+  safeFs.mkdirp(path.join(kimiDir, "hooks"));
+  for (const hook of HOOK_FILES) {
+    const source = path.join(sourceRoot, "adapters", "kimi", "hooks", hook);
+    const dest = path.join(kimiDir, "hooks", hook);
+    if (fs.existsSync(source)) {
+      // Executable bit, mirroring the Claude EXECUTABLE_HOOKS chmod.
+      safeFs.copyFile(source, dest, 0o755);
+    }
+  }
+  // Non-executable manifest the write-guard reads via $(dirname "$0")/<name>.
+  // Source is the generated artifact emitted under .claude/hooks/ in the tree.
+  for (const dataFile of HOOK_DATA_FILES) {
+    const source = path.join(sourceRoot, ".claude", "hooks", dataFile);
+    const dest = path.join(kimiDir, "hooks", dataFile);
+    if (fs.existsSync(source)) {
+      safeFs.copyFile(source, dest);
+    }
+  }
+
   const mcpPath = path.join(targetAbs, ".kimi", "mcp.json");
   const existingMcp = safeFs.readJsonIfExists(mcpPath, {}, {
     kind: ".kimi/mcp.json",
@@ -159,9 +296,39 @@ function install({
     commit_sha: commitSha || null,
   });
 
+  // Register PreToolUse guards in ~/.kimi/config.toml (KIMI_SHARE_DIR-aware).
+  // Best-effort: never throw out of install() — a missing/locked home config
+  // must not fail the whole install (mirrors Codex maybeActivateCodexPlugin's
+  // try/catch). The [[hooks]] array-of-tables is merged via the sentinel block,
+  // so operator hooks and other sections are preserved.
+  let hookRegistration = { ok: false, skipped: true, reason: "not attempted" };
+  try {
+    const home = kimiHome();
+    const homeFs = createSafeInstallFs(home, { label: "KIMI_SHARE_DIR", createRoot: true });
+    const configPath = kimiConfigPath(home);
+    const existing = homeFs.readTextIfExists(configPath, "", {
+      kind: "Kimi config",
+      symlink: "reject",
+    });
+    const next = upsertKimiHookBlock(existing, targetAbs);
+    homeFs.writeTextFile(configPath, next, {
+      kind: "Kimi config",
+      rejectExistingSymlink: true,
+    });
+    hookRegistration = { ok: true, configPath };
+  } catch (error) {
+    hookRegistration = {
+      ok: false,
+      skipped: false,
+      reason: error && error.message ? error.message : String(error),
+    };
+  }
+
   return {
     kimiDir,
     skills: BOB_SKILLS.length,
+    hooks: HOOK_FILES.length,
+    hookRegistration,
   };
 }
 
@@ -274,6 +441,61 @@ function doctor({ targetAbs }) {
     addCheck(checks, "error", "kimi_mcp_json", ".kimi/mcp.json is missing");
   }
 
+  // Hook files present + executable.
+  const missingHooks = HOOK_FILES
+    .map((name) => path.join(".kimi", "hooks", name))
+    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
+  if (missingHooks.length === 0) {
+    addCheck(checks, "ok", "kimi_hook_files", "Bob PreToolUse guard scripts are installed");
+  } else {
+    addCheck(checks, "error", "kimi_hook_files", "Bob PreToolUse guard scripts are missing", { missing: missingHooks });
+  }
+
+  const nonExecHooks = EXECUTABLE_HOOKS
+    .map((name) => path.join(kimiDir, "hooks", name))
+    .filter((p) => fileExists(p) && (fs.statSync(p).mode & 0o111) === 0);
+  if (nonExecHooks.length === 0) {
+    addCheck(checks, "ok", "kimi_hook_modes", "Bob guard scripts have executable mode");
+  } else {
+    addCheck(checks, "error", "kimi_hook_modes", "Some Bob guard scripts are not executable", { files: nonExecHooks });
+  }
+
+  // T3 manifest present beside the guards.
+  const missingData = HOOK_DATA_FILES
+    .map((name) => path.join(".kimi", "hooks", name))
+    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
+  if (missingData.length === 0) {
+    addCheck(checks, "ok", "kimi_hook_manifest", "write-guard-tables.json is installed beside the guards");
+  } else {
+    addCheck(checks, "warn", "kimi_hook_manifest",
+      "write-guard-tables.json is missing; guards fall back to fail-closed default-block tables", { missing: missingData });
+  }
+
+  // config.toml registration present and points at THIS project's guards.
+  const configPath = kimiConfigPath();
+  const configText = fileExists(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  const expectWrite = path.join(targetAbs, ".kimi", "hooks", "session-write-guard.sh");
+  const expectRead = path.join(targetAbs, ".kimi", "hooks", "session-read-guard.sh");
+  if (configText.includes(KIMI_HOOK_BLOCK_BEGIN)
+      && configText.includes(expectWrite) && configText.includes(expectRead)) {
+    addCheck(checks, "ok", "kimi_hook_registration",
+      "~/.kimi/config.toml registers Bob PreToolUse guards for this project", { configPath });
+  } else if (configText.includes(KIMI_HOOK_BLOCK_BEGIN)) {
+    addCheck(checks, "warn", "kimi_hook_registration",
+      "~/.kimi/config.toml has a Bob hook block, but it points at a different project (a different Bob install owns the shared global config)", { configPath });
+  } else {
+    addCheck(checks, "error", "kimi_hook_registration",
+      "~/.kimi/config.toml does not register Bob PreToolUse guards", { configPath });
+  }
+
+  // MANDATORY best-effort caveat — surfaced regardless of the above, because the
+  // Kimi tool-name strings and stdin payload shape are not pinned to the
+  // installed Kimi CLI version. This is a warn (never fails doctor) but is always
+  // visible: T9 wires registration faithfully but does NOT assert runtime Y-P13
+  // enforcement on Kimi.
+  addCheck(checks, "warn", "kimi_hook_best_effort",
+    "Kimi hook registration is best-effort: the matcher tool-names and PreToolUse payload shape are not pinned to your Kimi CLI version. Verify a guard actually fires (e.g. attempt a blocked write) before relying on Y-P13 enforcement on Kimi.");
+
   const kimiOnPath = spawnSync("sh", ["-c", "command -v kimi"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -352,6 +574,27 @@ function maybeRemoveEmptyDir(targetAbs, relativePath, result) {
   if (!result.dry_run) fs.rmdirSync(dirPath);
 }
 
+function removeKimiHookRegistration(targetAbs, result) {
+  const home = kimiHome();
+  const configPath = kimiConfigPath(home);
+  if (!fileExists(configPath)) return;
+  let original;
+  try {
+    original = fs.readFileSync(configPath, "utf8");
+  } catch (error) {
+    result.skipped.push({ type: "config", path: configPath, reason: `unreadable: ${error.message || String(error)}` });
+    return;
+  }
+  if (!hasKimiHookBlock(original)) return; // not Bob-managed / already gone
+  const next = removeKimiHookBlock(original);
+  if (next === original) return;
+  const removeFile = next.trim() === "";
+  result.actions.push({ type: removeFile ? "remove_kimi_config" : "update_kimi_config", path: configPath });
+  if (result.dry_run) return;
+  if (removeFile) fs.rmSync(configPath, { force: true });
+  else fs.writeFileSync(configPath, next, "utf8");
+}
+
 function uninstall({ sourceRoot, targetAbs, dryRun = true, preserveMcpConfig = false }) {
   const result = {
     ok: true,
@@ -362,6 +605,7 @@ function uninstall({ sourceRoot, targetAbs, dryRun = true, preserveMcpConfig = f
     skipped: [],
   };
   if (!preserveMcpConfig) removeMcpConfig(targetAbs, result);
+  removeKimiHookRegistration(targetAbs, result);
   for (const relativePath of managedFiles(sourceRoot)) {
     maybeRemoveFile(targetAbs, relativePath, result);
   }
@@ -380,4 +624,13 @@ module.exports = {
   managedFiles,
   managedDirs,
   mergeConfig,
+  kimiHome,
+  kimiConfigPath,
+  upsertKimiHookBlock,
+  removeKimiHookBlock,
+  renderKimiHookBlock,
+  HOOK_FILES,
+  HOOK_DATA_FILES,
+  EXECUTABLE_HOOKS,
+  STALE_HOOK_FILES,
 };

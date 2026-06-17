@@ -42,14 +42,20 @@ Adapters own host-specific packaging and ergonomics:
 - Codex adapter: direct `$bob-*` skills in `~/.codex/skills`, Codex plugin
   metadata, plugin command wrappers, `.codex` configuration, repo-local plugin
   marketplace metadata, Codex cache/config activation, and MCP config.
-- Kimi adapter: `.kimi/skills`, `.kimi/mcp.json`, and `.kimi/bob`
+- Kimi adapter: `.kimi/skills`, `.kimi/hooks`, `.kimi/mcp.json`, and `.kimi/bob`
   compatibility metadata. Kimi skills are invoked as `/skill:bob-evaluate`,
   `/skill:bob-status`, `/skill:bob-debug`, `/skill:bob-update`,
-  `/skill:bob-export`, and `/skill:bob-egress`. The Kimi adapter does not
-  install PreToolUse hooks; session enforcement currently relies on prompt
-  discipline plus MCP-side validation, matching the Codex adapter's model.
-  Kimi hook source files live under `adapters/kimi/hooks/` for a future PR
-  that wires them via `~/.kimi/config.toml`.
+  `/skill:bob-export`, and `/skill:bob-egress`. The Kimi adapter installs the
+  PreToolUse guard scripts under `.kimi/hooks/` (with the executable bit and the
+  generated `write-guard-tables.json` allow/deny manifest) and registers them in
+  `~/.kimi/config.toml` as a sentinel-fenced `[[hooks]]` block (honoring
+  `KIMI_SHARE_DIR`, merge-not-clobber with operator hooks). This wiring is
+  best-effort: the Kimi tool-name strings and PreToolUse payload shape are not
+  pinned to a Kimi CLI version, so enforcement is present-but-unverified rather
+  than hard Y-P13. The write-guard emits a loud stderr warning (then allows) when
+  it receives a payload it cannot parse, so a fail-open is visible. `doctor`
+  always surfaces a `kimi_hook_best_effort` warning telling operators to verify a
+  real blocked write against their Kimi CLI version.
 - Generic MCP adapter: MCP server configuration and prompt documentation only.
 
 Adapters may generate files from a shared role and policy model, but generated

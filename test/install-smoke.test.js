@@ -611,6 +611,11 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
   const workspace = path.join(tempRoot, "workspace");
   fs.mkdirSync(workspace, { recursive: true });
   const serverPath = path.join(workspace, "mcp", "server.js");
+  // Redirect the Kimi home (config.toml) into the temp dir so the install never
+  // mutates the developer's real ~/.kimi — mirrors the Codex CODEX_HOME override.
+  const originalKimiShare = process.env.KIMI_SHARE_DIR;
+  process.env.KIMI_SHARE_DIR = path.join(tempHome, ".kimi");
+  const cfgPath = path.join(tempHome, ".kimi", "config.toml");
 
   try {
     // Base install lays down the shared runtime (mcp/server.js); then exercise
@@ -628,7 +633,41 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
       manifest: { version: PACKAGE_VERSION, name: "hacker-bob" },
     });
     assert.equal(install.skills, 6);
+    assert.equal(install.hooks, 2);
     assert.ok(install.kimiDir);
+
+    // PreToolUse guard scripts copied + executable; scope-guard.sh (no-op) swept.
+    for (const hook of ["session-write-guard.sh", "session-read-guard.sh"]) {
+      const hp = path.join(workspace, ".kimi", "hooks", hook);
+      assert.ok(fs.existsSync(hp), `${hook} must be installed`);
+      assert.ok((fs.statSync(hp).mode & 0o111) !== 0, `${hook} must be executable`);
+    }
+    assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "hooks", "scope-guard.sh")),
+      "no-op scope-guard.sh must not be installed");
+
+    // The generated allow/deny manifest lands beside the guards (non-executable).
+    const manifestPath = path.join(workspace, ".kimi", "hooks", "write-guard-tables.json");
+    assert.ok(fs.existsSync(manifestPath), "write-guard-tables.json must be copied beside the guards");
+    assert.equal(fs.statSync(manifestPath).mode & 0o111, 0, "manifest must not be executable");
+
+    // ~/.kimi/config.toml registered, one Bob block, points at THIS project.
+    assert.ok(fs.existsSync(cfgPath), "kimi config.toml must be created/updated");
+    let cfg = fs.readFileSync(cfgPath, "utf8");
+    assert.match(cfg, /\[\[hooks\]\]/);
+    assert.match(cfg, /event = "PreToolUse"/);
+    assert.ok(cfg.includes(path.join(workspace, ".kimi", "hooks", "session-write-guard.sh")));
+    assert.ok(cfg.includes(path.join(workspace, ".kimi", "hooks", "session-read-guard.sh")));
+    assert.equal((cfg.match(/# >>> hacker-bob managed hooks/g) || []).length, 1,
+      "exactly one Bob hook block");
+
+    // Idempotent + merge-not-clobber: seed an operator hook, reinstall, assert
+    // preserved & no duplicate Bob block.
+    fs.writeFileSync(cfgPath, `[[hooks]]\nevent = "Stop"\ncommand = "echo operator"\n\n${cfg}`);
+    KIMI_ADAPTER.install({ sourceRoot: ROOT, targetAbs: workspace, serverPath, manifest: { version: PACKAGE_VERSION, name: "hacker-bob" } });
+    cfg = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(cfg.includes('command = "echo operator"'), "operator hook preserved across reinstall");
+    assert.equal((cfg.match(/# >>> hacker-bob managed hooks/g) || []).length, 1,
+      "reinstall must not duplicate the Bob block");
     for (const skill of ["bob-evaluate", "bob-status", "bob-debug", "bob-update", "bob-export", "bob-egress"]) {
       assert.ok(fs.existsSync(path.join(workspace, ".kimi", "skills", skill, "SKILL.md")), `${skill} SKILL.md missing`);
     }
@@ -650,6 +689,12 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
     assert.ok(doctor.checks.some((check) => check.id === "kimi_mcp_server_config" && check.status === "ok"));
     assert.ok(doctor.checks.some((check) => check.id === "kimi_mcp_brutalist_optional"));
     assert.ok(doctor.checks.some((check) => check.id === "kimi_cli_on_path"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_hook_files" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_hook_modes" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_hook_manifest" && check.status === "ok"));
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_hook_registration" && check.status === "ok"));
+    // The best-effort caveat must always surface (warn never fails doctor).
+    assert.ok(doctor.checks.some((check) => check.id === "kimi_hook_best_effort" && check.status === "warn"));
     // No cross-adapter check leakage.
     assert.ok(!doctor.checks.some((check) => check.id.startsWith("claude_") || check.id.startsWith("codex_")));
 
@@ -700,7 +745,16 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
     // `.kimi/` is a Bob-owned directory (it is created by the Kimi install and
     // listed in managedFiles), so uninstall removes the whole `.kimi/mcp.json`.
     assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "mcp.json")), ".kimi/mcp.json should be removed on uninstall");
+
+    // Hook isolation: uninstall removed the Bob block (config preserved because
+    // the operator hook keeps it non-empty) and the copied guard scripts.
+    const afterConfig = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(!afterConfig.includes("# >>> hacker-bob managed hooks"), "Bob hook block removed on uninstall");
+    assert.ok(afterConfig.includes('command = "echo operator"'), "operator hook survives uninstall");
+    assert.ok(!fs.existsSync(path.join(workspace, ".kimi", "hooks", "session-write-guard.sh")), "guard removed on uninstall");
   } finally {
+    if (originalKimiShare === undefined) delete process.env.KIMI_SHARE_DIR;
+    else process.env.KIMI_SHARE_DIR = originalKimiShare;
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
