@@ -27,6 +27,12 @@ const {
 const {
   appendHttpAuditRecord,
 } = require("./http-records.js");
+const {
+  detectPiiShapes,
+} = require("./pii-detector.js");
+const {
+  canonicalJson,
+} = require("./verification-contracts.js");
 const { redactUrlSensitiveValues } = require("../redaction.js");
 
 // The REAL safety boundary against "confirm emits a state-changing GET against
@@ -698,8 +704,113 @@ function assertNoForbiddenInputs(args, toolName, extraFields = []) {
   }
 }
 
+// Resolve the in-scope recorded endpoint(s) of the surface that carry a query string —
+// the SERVER-DERIVED injection-locus source for the reflected-XSS family (bob_http_xss_reflect
+// proves one param; bob_offensive_dalfox finds across the endpoint's params). Returns an
+// array of candidate URL objects (callers refuse 0 = no locus, >1 = ambiguous host).
+// NEVER derives a locus from agent input: candidates come from the surface record only. A
+// RELATIVE endpoint binds to the surface's OWN host(s), never the session apex (which would
+// drift row.target from surface_id). `toolId` is only for the originFromState attribution.
+function resolveQueryLocusEndpoint(domain, surface, state, toolId) {
+  const stateOrigin = originFromState(domain, state, toolId);
+  const allOrigins = resolveSurfaceOrigins(surface, stateOrigin);
+  const ownOrigins = allOrigins.filter((origin) => origin !== stateOrigin);
+  const relativeOrigins = ownOrigins.length > 0 ? ownOrigins : [stateOrigin];
+  const seen = new Set();
+  const matches = [];
+  for (const endpoint of candidateSurfaceEndpoints(surface)) {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value).trim());
+    const originsForEndpoint = isAbsolute ? [stateOrigin] : relativeOrigins;
+    for (const origin of originsForEndpoint) {
+      let candidate;
+      try {
+        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      if ([...candidate.searchParams.keys()].length === 0) continue;
+      const key = candidate.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(candidate);
+    }
+  }
+  return matches;
+}
+
+// The deterministically sorted, de-duplicated recorded query-param NAMES of the endpoint.
+// An ordinal (param_locus) indexes into this stable list — the reflected-XSS PROVER and the
+// dalfox FINDER MUST share this derivation so a finder lead's ordinal means the same param
+// to the prover.
+function recordedQueryParamNames(url) {
+  const names = [];
+  const seen = new Set();
+  for (const name of url.searchParams.keys()) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names.sort();
+}
+
+// ── shared PII / credential screening for the signed-row producers ───────────
+// Extracted VERBATIM from offensive-reflect-producer.js so every signed-row
+// producer (reflect + the browser-execution XSS confirm) screens the durable
+// row target + captures with byte-identical logic — security screening must not
+// drift between two copies. The hex nonce/end-marker tokens the producers mint
+// match NONE of these shapes; the screen guards a recorded PATH segment that a
+// surface might carry into the durable row target.
+const SECRET_SHAPE_RES = Object.freeze([
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, // jwt
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,                                // aws access key
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/,                     // pem
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,                               // github token
+  /\bgithub_pat_[A-Za-z0-9_]{30,}/,                               // github fine-grained PAT
+  /\bglpat-[A-Za-z0-9_-]{15,}/,                                   // gitlab
+  /\bAIza[0-9A-Za-z_-]{35}\b/,                                    // google api key
+  /\b[rs]k_live_[A-Za-z0-9]{16,}/,                                // stripe
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/,                            // openai
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,                               // slack
+]);
+
+// Percent-decode to a fixed point so a percent-encoded secret / PII shape in a
+// PATH segment cannot slip past the literal-ASCII regexes below. Per-triplet
+// decode (a whole-string decodeURIComponent throws on a stray `%`); bounded
+// iterations catch double-encoding.
+function percentDecodeToFixedPoint(value) {
+  let current = String(value);
+  for (let i = 0; i < 4; i += 1) {
+    const next = current.replace(/%[0-9a-fA-F]{2}/g, (m) => {
+      try { return decodeURIComponent(m); } catch { return m; }
+    });
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function sensitiveShapesPresent(text) {
+  const raw = typeof text === "string" ? text : canonicalJson(text);
+  // Screen the raw form AND its percent-decoded form: a recorded path segment
+  // can carry a secret / PII shape percent-encoded (e.g. /u/alice%40corp.com or
+  // /reset/sk%2Dlive_…) that the literal regexes would otherwise miss before the
+  // value persists into the durable signed row target.
+  const decoded = percentDecodeToFixedPoint(raw);
+  const s = decoded === raw ? raw : `${raw}\n${decoded}`;
+  if (detectPiiShapes(s).length > 0) return true;
+  return SECRET_SHAPE_RES.some((re) => re.test(s));
+}
+
 module.exports = {
   rejectInvalidArguments,
+  resolveQueryLocusEndpoint,
+  recordedQueryParamNames,
+  sensitiveShapesPresent,
   decodePathSegments,
   escapeRegExp,
   capturedIdSegmentIsSafe,

@@ -763,13 +763,19 @@ const CLAIM_EXPLOIT_SEVERITY_RANK = Object.freeze(
 //   bob_http_xss_reflect: the find-axis MVP reflected-canary XSS finder. A reflected-CONTEXT
 //   survival (a benign nonce+inert-metachar sentinel survives UNESCAPED into an HTML-executable
 //   sink) is reflection-context survival, NOT proven script execution, so it caps at MEDIUM by
-//   construction. The browser-execution confirm that proves HIGH is a deferred follow-up tool.
+//   construction.
+//   bob_http_xss_confirm: the browser-EXECUTION reflected-XSS confirm. It drives Bob's own
+//   headless browser and proves a benign nonce-keyed marker ACTUALLY EXECUTES (a control/probe
+//   differential), which is proven script execution — so it caps at HIGH. It is the deferred
+//   browser-execution follow-up the reflect finder anticipated; it is the FIRST HIGH-ceiling
+//   signed producer (the #108 in-process-key residual now bounds a fabricated HIGH).
 // DELIBERATELY ABSENT: bob_http_confirm (real, but NEGATIVE-ONLY — mints no signed row in
 //   production; mapping it would grant a signable ceiling to a tool that must never sign).
 const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
   Object.assign(Object.create(null), {
     bob_http_idor_confirm: "medium",
     bob_http_xss_reflect: "medium",
+    bob_http_xss_confirm: "high",
   }),
 );
 

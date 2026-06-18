@@ -1349,6 +1349,11 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // verifier/evidence role inherits this signed-row producer). It is
   // opaque-context (server-derived request, no brief surfacing); web budget bumps
   // by +1 (web 47→48), SC unchanged.
+  // Browser-execution confirm adds bob_http_xss_confirm to evaluator-web ONLY
+  // (same narrow grant; the FIRST HIGH-ceiling signed producer). It drives Bob's
+  // own headless browser but is opaque-context (server-derived request, masked
+  // oracle return, no brief surfacing); web budget bumps by +1 (web 48→49), SC
+  // unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1358,7 +1363,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 48 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 49 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

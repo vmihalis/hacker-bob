@@ -69,14 +69,13 @@ const {
 } = require("./validation.js");
 const {
   findRoutedSurface,
-  candidateSurfaceEndpoints,
-  resolveSurfaceOrigins,
-  originFromState,
-  urlFromEndpoint,
+  resolveQueryLocusEndpoint,
+  recordedQueryParamNames,
   assertReadOnlyPath,
   auditConfirmRequest,
   assertNoForbiddenInputs,
   contentTypeOf,
+  sensitiveShapesPresent,
   SCOPE_VALIDATION_OPTS,
 } = require("./offensive-http-common.js");
 const {
@@ -91,9 +90,6 @@ const {
 const {
   canonicalJson,
 } = require("./verification-contracts.js");
-const {
-  detectPiiShapes,
-} = require("./pii-detector.js");
 
 const TOOL_ID = "bob_http_xss_reflect";
 // GET-only by construction (idempotent, read-only-safe, re-hashable). POST/form
@@ -148,23 +144,6 @@ const RCDATA_ELEMENTS = Object.freeze(new Set(["title", "textarea"]));
 // `>` breaks the tag → tag-break). Every other / ambiguous context is non-positive
 // and fails closed.
 const POSITIVE_CONTEXTS = Object.freeze(new Set(["text_node", "unquoted_attr"]));
-
-// Focused credential-shape detector for the SIGNED capture bytes (defense in
-// depth; the captured fragment is the producer's own nonce+sentinel rendering, so
-// this should never fire, but a recorded endpoint PATH segment persisted into the
-// row target could carry one). The hex nonce/end-marker match NONE of these.
-const SECRET_SHAPE_RES = Object.freeze([
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, // jwt
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,                                // aws access key
-  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/,                     // pem
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,                               // github token
-  /\bgithub_pat_[A-Za-z0-9_]{30,}/,                               // github fine-grained PAT
-  /\bglpat-[A-Za-z0-9_-]{15,}/,                                   // gitlab
-  /\bAIza[0-9A-Za-z_-]{35}\b/,                                    // google api key
-  /\b[rs]k_live_[A-Za-z0-9]{16,}/,                                // stripe
-  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/,                            // openai
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,                               // slack
-]);
 
 // ── small helpers ──────────────────────────────────────────────────────────
 
@@ -230,34 +209,6 @@ function isAttachmentDisposition(response) {
     ? String(response.headers.get("content-disposition") || "")
     : "";
   return cd.split(";")[0].trim().toLowerCase() === "attachment";
-}
-
-// Percent-decode to a fixed point so a percent-encoded secret / PII shape in a
-// PATH segment cannot slip past the literal-ASCII regexes below. Per-triplet decode
-// (a whole-string decodeURIComponent throws on a stray `%`); bounded iterations
-// catch double-encoding.
-function percentDecodeToFixedPoint(value) {
-  let current = String(value);
-  for (let i = 0; i < 4; i += 1) {
-    const next = current.replace(/%[0-9a-fA-F]{2}/g, (m) => {
-      try { return decodeURIComponent(m); } catch { return m; }
-    });
-    if (next === current) break;
-    current = next;
-  }
-  return current;
-}
-
-function sensitiveShapesPresent(text) {
-  const raw = typeof text === "string" ? text : canonicalJson(text);
-  // Screen the raw form AND its percent-decoded form: a recorded path segment can
-  // carry a secret / PII shape percent-encoded (e.g. /u/alice%40corp.com or
-  // /reset/sk%2Dlive_…) that the literal regexes would otherwise miss before the
-  // value persists into the durable signed row target (brutalist).
-  const decoded = percentDecodeToFixedPoint(raw);
-  const s = decoded === raw ? raw : `${raw}\n${decoded}`;
-  if (detectPiiShapes(s).length > 0) return true;
-  return SECRET_SHAPE_RES.some((re) => re.test(s));
 }
 
 // ── the conservative, fail-closed, context-aware HTML reflection classifier ──
@@ -476,65 +427,6 @@ async function runProbe({
   return response;
 }
 
-// Resolve the SINGLE in-scope recorded endpoint of the surface that carries a
-// query string (the server-derived locus source). Returns { url } or null. NEVER
-// derives a locus from agent-supplied data: the candidate endpoints come from the
-// surface record (surface.uri + surface.endpoints[]), and the query params come
-// from those recorded URLs.
-function resolveQueryLocusEndpoint(domain, surface, state) {
-  const stateOrigin = originFromState(domain, state, TOOL_ID);
-  const allOrigins = resolveSurfaceOrigins(surface, stateOrigin);
-  // Bind a RELATIVE endpoint to the surface's OWN host(s) — never the session apex,
-  // which resolveSurfaceOrigins lists first. Resolving a subdomain surface's
-  // relative endpoint against the apex would sign a row whose target host drifts
-  // from surface_id (codex). The apex is used only when the surface declares no
-  // host of its own. Collect ALL distinct query-bearing candidates (no break on the
-  // first origin) so the single-endpoint guard below refuses host ambiguity instead
-  // of silently picking one.
-  const ownOrigins = allOrigins.filter((origin) => origin !== stateOrigin);
-  const relativeOrigins = ownOrigins.length > 0 ? ownOrigins : [stateOrigin];
-  const seen = new Set();
-  const matches = [];
-  for (const endpoint of candidateSurfaceEndpoints(surface)) {
-    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value).trim());
-    // urlFromEndpoint ignores `origin` for an absolute endpoint (it carries its own
-    // host); a relative endpoint binds to the surface's own host(s).
-    const originsForEndpoint = isAbsolute ? [stateOrigin] : relativeOrigins;
-    for (const origin of originsForEndpoint) {
-      let candidate;
-      try {
-        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
-      } catch {
-        continue;
-      }
-      try {
-        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
-      } catch {
-        continue;
-      }
-      if ([...candidate.searchParams.keys()].length === 0) continue;
-      const key = candidate.toString();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      matches.push(candidate);
-    }
-  }
-  return matches;
-}
-
-// The deterministically sorted, de-duplicated recorded query-param NAMES of the
-// endpoint. The ordinal param_locus indexes into this stable list.
-function recordedQueryParamNames(url) {
-  const names = [];
-  const seen = new Set();
-  for (const name of url.searchParams.keys()) {
-    if (seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names.sort();
-}
-
 // The full oracle. `fetch_fn` is injectable so seeded tests need no live target;
 // with no fetch_fn the MCP dispatcher drives the LIVE arm via safeFetch.
 async function reflectXss(args = {}, { fetch_fn = null } = {}) {
@@ -567,7 +459,7 @@ async function reflectXss(args = {}, { fetch_fn = null } = {}) {
   // Resolve + route the surface, then derive the injection locus SERVER-SIDE from
   // a recorded query param (never an agent-supplied URL/name).
   const { surface } = findRoutedSurface(domain, surfaceId);
-  const locusEndpoints = resolveQueryLocusEndpoint(domain, surface, state);
+  const locusEndpoints = resolveQueryLocusEndpoint(domain, surface, state, TOOL_ID);
   if (locusEndpoints.length === 0) {
     // The surface records no in-scope query-bearing endpoint, so there is no
     // server-derived locus. STOP — never invent an agent-supplied URL path.
