@@ -160,9 +160,12 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // measured against the lean tarball — mcp/node_modules is excluded from the
     // pack, so this budget tracks shipped source/docs only. Raised again to
     // 3.3 MB so the opencode adapter family (adapters/opencode/* per-role
-    // subagents) fits alongside those surfaces. Mirrors the
-    // scripts/release-check.js ceiling.
-    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
+    // subagents) fits alongside those surfaces. Raised to 3.4 MB after
+    // rebasing onto upstream main absorbed the offensive-runner family
+    // (docker/*.Dockerfile now in files[], docs/OFFENSIVE_IMAGE.md,
+    // mcp/lib/offensive-{image,runner,sandbox}.js) on top of those surfaces.
+    // Mirrors the scripts/release-check.js ceiling.
+    assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

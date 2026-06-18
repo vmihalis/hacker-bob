@@ -200,12 +200,15 @@ function checkCanonicalPack(rootPackage) {
   // Raised to 3.2 MB for the CVSS v3.1 + CWE annotation surfaces, measured
   // against the lean tarball (mcp/node_modules excluded from the pack), then to
   // 3.3 MB so the opencode adapter family (adapters/opencode/* per-role
-  // subagents) fits alongside those surfaces.
+  // subagents) fits alongside those surfaces. Raised to 3.4 MB after rebasing
+  // onto upstream main absorbed the offensive-runner family (docker/*.Dockerfile
+  // now in files[], docs/OFFENSIVE_IMAGE.md, mcp/lib/offensive-{image,runner,
+  // sandbox}.js) on top of the opencode adapter surfaces.
   // Mirrors the test/package.test.js ceiling.
-  if (canonical.size < 3300000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.3 MB`);
+  if (canonical.size < 3400000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.4 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.3 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.4 MB`);
   }
 
   let foundDisallowed = false;
