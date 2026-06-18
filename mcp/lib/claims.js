@@ -769,13 +769,25 @@ const CLAIM_EXPLOIT_SEVERITY_RANK = Object.freeze(
 //   differential), which is proven script execution — so it caps at HIGH. It is the deferred
 //   browser-execution follow-up the reflect finder anticipated; it is the FIRST HIGH-ceiling
 //   signed producer (the #108 in-process-key residual now bounds a fabricated HIGH).
+//   bob_oob_poll: the out-of-band interaction confirm (PR6). A target-backend callback carrying
+//   the server-minted token to Bob's OWN sink proves server-side request egress reachability
+//   (blind SSRF / SSTI / RCE-callback) — limited confidentiality, NOT proven RCE/exfil, and NOT
+//   isolated to the bound surface (an intermediary unfurler / proxy / SIEM-scanner in the target's
+//   request path can also fetch the token), so it caps at MEDIUM. The signed row's target is the
+//   IN-SCOPE injection endpoint resolved at mint, NEVER the constant OOB host (the OOB host + token
+//   live only in the capture). A data-returning OOB oracle that could justify HIGH is a separate
+//   deferred tool, out of PR6 scope.
 // DELIBERATELY ABSENT: bob_http_confirm (real, but NEGATIVE-ONLY — mints no signed row in
-//   production; mapping it would grant a signable ceiling to a tool that must never sign).
+//   production; mapping it would grant a signable ceiling to a tool that must never sign) AND
+//   bob_oob_mint (the OOB token allocator — it mints/returns a token + writes the token->surface
+//   binding but NEVER signs a row; only bob_oob_poll signs, so mapping mint would grant a signable
+//   ceiling to a non-signing tool).
 const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
   Object.assign(Object.create(null), {
     bob_http_idor_confirm: "medium",
     bob_http_xss_reflect: "medium",
     bob_http_xss_confirm: "high",
+    bob_oob_poll: "medium",
   }),
 );
 

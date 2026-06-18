@@ -104,6 +104,7 @@
   "test/offensive-idor-producer.test.js",
   "test/offensive-reflect-producer.test.js",
   "test/offensive-xss-exec-producer.test.js",
+  "test/offensive-oob-collector.test.js",
   "test/offensive-run-freeze-completeness.test.js",
   "test/severity-rise-guard.test.js",
   "test/sarif-ingest.test.js",
