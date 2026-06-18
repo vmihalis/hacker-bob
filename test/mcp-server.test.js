@@ -406,6 +406,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_http_xss_confirm",
   "bob_oob_mint",
   "bob_oob_poll",
+  "bob_nuclei_scan",
   "bob_read_http_audit",
   "bob_start_next_wave",
   "bob_start_wave",

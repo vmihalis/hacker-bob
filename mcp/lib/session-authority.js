@@ -105,6 +105,11 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // bundle for _write-base.js auto-emit on INVALID_ARGUMENTS retry success.
   bob_emit_runtime_drift: "initialized_session_mutation",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR7 nuclei detection scan — runs in the wide-open offensive container and issues
+  // target traffic, so same scoped_http_network class as the other offensive producers
+  // (it needs an initialized session + an in-scope target_url). DETECTION-only: never
+  // signs a row.
+  bob_nuclei_scan: "scoped_http_network",
   // PR6 OOB collector. Same class as the other offensive HTTP producers + the
   // scope-exempt bob_public_intel: mint writes the binding (no network), poll is
   // the one aim-exempt egress to the constant Bob-owned sink.

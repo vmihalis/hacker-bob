@@ -159,7 +159,12 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
     // now measured against the lean tarball — mcp/node_modules is excluded from
     // the pack, so this budget tracks shipped source/docs only.
-    assert.ok(pack.size < 3200000, `npm pack size ${pack.size} exceeds 3.2 MB threshold`);
+    // Raised to 3.3 MB for PR7 — the first container-runner-backed offensive tool
+    // surface (mcp/lib/offensive-nuclei-producer.js + mcp/lib/tools/bob-nuclei-scan.js
+    // + the runner detection channel) plus its regenerated agent/skill/settings
+    // surfaces. The lean tarball had fallen to ~5 KB of headroom under 3.2 MB; this
+    // restores a comfortable margin (lean pack ~3.20 MB) without trimming assets.
+    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

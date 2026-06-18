@@ -1358,6 +1358,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // mint is a non-signing allocator, poll is the MEDIUM-ceiling OOB signed-row
   // producer). Both are opaque-context (server-derived/server-minted, masked oracle
   // return, no brief surfacing); web budget bumps by +2 (web 49→51), SC unchanged.
+  // PR7 adds bob_nuclei_scan to evaluator-web ONLY (same narrow grant; the FIRST
+  // container-runner-backed tool — DETECTION-only, never signs). Opaque-context
+  // (masked lead summary, no brief surfacing); web budget bumps by +1 (web 51→52),
+  // SC unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1367,7 +1371,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 51 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 52 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
