@@ -84,6 +84,12 @@ const OFFENSIVE_RUN_AUDIT_METHOD = "CONTAINER_RUN";
 // — far more than a count/boolean oracle needs; output past it is truncated.
 const STREAM_CAP_BYTES = 4 * 1024 * 1024;
 const CAPTURE_READ_CAP_BYTES = STREAM_CAP_BYTES;
+// PR7 DETECTION channel: a non-signing (DETECTION-only) classify may return a bounded
+// `detection` lead summary that surfaces to the agent on the NEGATIVE path (leads, never
+// a signed row). The runner is the redaction-before-agent boundary, so the serialized
+// summary is length-capped to this and secret-scanned, and DROPPED fail-closed on any
+// trip. 16 KiB is ample for a capped counts/template-id/endpoint summary.
+const DETECTION_SUMMARY_MAX_BYTES = 16 * 1024;
 // A FIXED minimal PATH for the docker client — never the inherited PATH (F2).
 const FIXED_DOCKER_PATH = "/usr/local/bin:/usr/bin:/bin";
 
@@ -361,6 +367,21 @@ const defaultOffensiveDocker = Object.freeze({
       if (ids.length) spawnSync("docker", ["rm", "-f", ...ids], { env, timeout: 30_000 });
     } catch {}
   },
+  // Read-only local-store presence check for the fail-closed image preflight
+  // (assertOffensiveImagePresent). `--pull=never` needs the digest already present, so a
+  // handler resolves the pinned digest then calls this before a run. Builds its OWN
+  // scrubbed env (FIXED PATH, no inherited PATH/DOCKER_HOST/proxy — the F2 posture) so a
+  // poisoned PATH can't redirect the docker client. Returns Promise<boolean>; any error
+  // (daemon down, bad digest) resolves false → the preflight fails closed.
+  inspectImage(imageDigest) {
+    try {
+      const env = scrubbedDockerEnv(path.join(process.env.HOME || "/tmp", ".docker"));
+      const r = spawnSync("docker", ["image", "inspect", imageDigest], { env, timeout: 15_000, stdio: "ignore" });
+      return Promise.resolve(r.status === 0);
+    } catch {
+      return Promise.resolve(false);
+    }
+  },
   networkCreate(name, env) {
     const r = spawnSync("docker", ["network", "create", "--internal=false", name], { env, timeout: 20_000, encoding: "utf8" });
     if (r.status !== 0) throw new ToolError(ERROR_CODES.STATE_CONFLICT, `docker network create failed: ${(r.stderr || "").trim() || r.status}`);
@@ -626,7 +647,26 @@ async function runOffensiveTool({
     // Cap the classifier's reason — it is returned to the agent and must not relay
     // unbounded (or raw-output-bearing) text.
     const reason = verdict && typeof verdict.reason === "string" ? verdict.reason.slice(0, 120) : "oracle_negative";
-    return blocked(domain, toolId, "blocked_by_defense", reason);
+    const result = blocked(domain, toolId, "blocked_by_defense", reason);
+    result.masked_summary = { exit_code: runResult.exit_code, stdout_bytes: runResult.out_bytes || 0, stderr_bytes: runResult.err_bytes || 0 };
+    // PR7 DETECTION channel: a non-signing classify (a DETECTION-only tool — leads,
+    // never a signed row) MAY return a bounded `detection` summary built from the
+    // already-secret-scanned stdout. The runner re-serializes, length-caps, and
+    // secret-scans it (redaction-before-agent), DROPPING it fail-closed on any trip.
+    // No row is EVER written on this path (positive !== true), so a detection summary
+    // can never become proof — it is a lead only.
+    if (verdict && verdict.detection != null && typeof verdict.detection === "object") {
+      try {
+        const serialized = JSON.stringify(verdict.detection);
+        if (typeof serialized === "string" && serialized.length <= DETECTION_SUMMARY_MAX_BYTES) {
+          validateNoSensitiveMaterial(serialized, "offensive_detection_summary", { maxTextChars: DETECTION_SUMMARY_MAX_BYTES });
+          result.masked_summary.detection = JSON.parse(serialized);
+        }
+      } catch {
+        // fail-closed: keep the negative result + byte counts, drop the summary
+      }
+    }
+    return result;
   }
   // Defense-in-depth: re-validate the oracle's target is in-scope before it is signed
   // into a durable row — even a server-side classify cannot sign an off-scope target.

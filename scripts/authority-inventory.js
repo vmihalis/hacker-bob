@@ -97,6 +97,8 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // caller bundle for _write-base.js auto-emit.
   bob_emit_runtime_drift: "initialized_session_mutation",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR7 nuclei detection scan (mirror of session-authority.js).
+  bob_nuclei_scan: "scoped_http_network",
   // PR6 OOB collector (mirror of session-authority.js).
   bob_oob_mint: "scoped_http_network",
   bob_oob_poll: "scoped_http_network",

@@ -15,7 +15,7 @@
 # ONE-TIME PREREQS: Docker running + `docker login ghcr.io` (PAT with the write:packages scope).
 #
 # Usage — from each project's releases page, copy the linux archive URL for your arch + its sha256:
-#   HTTPX_URL=...  HTTPX_SHA256=...  DALFOX_URL=...  DALFOX_SHA256=...  scripts/build-offensive-image.sh
+#   HTTPX_URL=...  HTTPX_SHA256=...  DALFOX_URL=...  DALFOX_SHA256=...  NUCLEI_URL=...  NUCLEI_SHA256=...  scripts/build-offensive-image.sh
 #   ... same env ... scripts/build-offensive-image.sh --stage-only     # fetch+verify+stage, no docker
 #
 # Override knobs (env): OFFENSIVE_REGISTRY, OFFENSIVE_ARCH, BASE_IMAGE
@@ -27,6 +27,13 @@ HTTPX_URL="${HTTPX_URL:?set HTTPX_URL to the httpx linux release archive (github
 HTTPX_SHA256="${HTTPX_SHA256:?set HTTPX_SHA256 to the published sha256 of HTTPX_URL}"
 DALFOX_URL="${DALFOX_URL:?set DALFOX_URL to the dalfox linux release archive (github.com/hahwul/dalfox/releases)}"
 DALFOX_SHA256="${DALFOX_SHA256:?set DALFOX_SHA256 to the published sha256 of DALFOX_URL}"
+NUCLEI_URL="${NUCLEI_URL:?set NUCLEI_URL to the nuclei linux release archive (github.com/projectdiscovery/nuclei/releases)}"
+NUCLEI_SHA256="${NUCLEI_SHA256:?set NUCLEI_SHA256 to the published sha256 of NUCLEI_URL}"
+# NOTE — nuclei templates: bob_nuclei_scan forces -disable-update-check, so nuclei never fetches
+# templates at runtime; it needs a nuclei-templates corpus already present in the image. Staging a
+# pinned templates corpus is part of the DEFERRED live-arm provisioning (alongside the OOB sink +
+# Bob-owned domain). Until it is staged, a provisioned scan exits non-zero and bob_nuclei_scan
+# reports reason "nuclei_scan_error" (never a false "no leads") — see classifyNucleiDetection.
 
 REGISTRY="${OFFENSIVE_REGISTRY:-ghcr.io/bobnetsec/bob-offense}"
 BASE_IMAGE="${BASE_IMAGE:-gcr.io/distroless/base-debian12:nonroot}"
@@ -108,6 +115,7 @@ mkdir -p "${BIN_DIR}"
 
 fetch_bin httpx  "${HTTPX_URL}"  "${HTTPX_SHA256}"
 fetch_bin dalfox "${DALFOX_URL}" "${DALFOX_SHA256}"
+fetch_bin nuclei "${NUCLEI_URL}" "${NUCLEI_SHA256}"
 chmod 0755 "${BIN_DIR}"/*
 echo ">> staged binaries:"; ls -l "${BIN_DIR}"
 
@@ -139,7 +147,7 @@ echo ">> pulling by digest so --pull=never can resolve it locally: ${DIGEST}"
 docker pull "${DIGEST}" >/dev/null
 
 # write the lockfile (the SOLE source of runOffensiveTool's imageDigest) as JSON DATA (operator-local; gitignored).
-printf '{\n  "image_digest": "%s",\n  "base_image": "%s",\n  "built_platform": "%s",\n  "tools": { "httpx_sha256": "%s", "dalfox_sha256": "%s" }\n}\n' \
-  "${DIGEST}" "${BASE_DIGEST}" "${PLATFORM}" "${HTTPX_SHA256}" "${DALFOX_SHA256}" > "${LOCKFILE}"
+printf '{\n  "image_digest": "%s",\n  "base_image": "%s",\n  "built_platform": "%s",\n  "tools": { "httpx_sha256": "%s", "dalfox_sha256": "%s", "nuclei_sha256": "%s" }\n}\n' \
+  "${DIGEST}" "${BASE_DIGEST}" "${PLATFORM}" "${HTTPX_SHA256}" "${DALFOX_SHA256}" "${NUCLEI_SHA256}" > "${LOCKFILE}"
 echo ">> wrote ${LOCKFILE}:"; cat "${LOCKFILE}"
 echo ">> DONE. The lockfile is operator-local (gitignored) — pick it up with ./install.sh <runtime>; do not commit it."

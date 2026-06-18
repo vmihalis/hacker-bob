@@ -778,10 +778,15 @@ const CLAIM_EXPLOIT_SEVERITY_RANK = Object.freeze(
 //   live only in the capture). A data-returning OOB oracle that could justify HIGH is a separate
 //   deferred tool, out of PR6 scope.
 // DELIBERATELY ABSENT: bob_http_confirm (real, but NEGATIVE-ONLY — mints no signed row in
-//   production; mapping it would grant a signable ceiling to a tool that must never sign) AND
+//   production; mapping it would grant a signable ceiling to a tool that must never sign);
 //   bob_oob_mint (the OOB token allocator — it mints/returns a token + writes the token->surface
 //   binding but NEVER signs a row; only bob_oob_poll signs, so mapping mint would grant a signable
-//   ceiling to a non-signing tool).
+//   ceiling to a non-signing tool); AND bob_nuclei_scan (PR7 — a DETECTION-only nuclei lead
+//   generator: a template match is a heuristic, not a categorical witness, so it must never mint a
+//   signed row. Its oracle always returns positive:false AND its absence here is the belt-and-braces
+//   second lock — a future positive verdict would throw "unknown offensive tool_id" rather than sign.
+//   An OOB/XSS/IDOR lead it surfaces is re-proven through bob_oob_poll / bob_http_xss_confirm /
+//   bob_http_idor_confirm, which DO carry honest ceilings).
 const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
   Object.assign(Object.create(null), {
     bob_http_idor_confirm: "medium",
