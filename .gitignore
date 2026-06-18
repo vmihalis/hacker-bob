@@ -30,3 +30,7 @@ docker/offensive-context/
 # operator-minted image digest — deployment-specific (points at the operator's registry push), so it is
 # NOT committed/shipped; install.js copies the local file into the runtime. Each operator mints their own.
 mcp/lib/offensive-image.json
+
+# Local issue drafts and planning artifacts (not framework source)
+ISSUE-DRAFT-installer-hoisting.md
+bob-evaluate-feedback-consolidated.md
