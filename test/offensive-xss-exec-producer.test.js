@@ -98,6 +98,7 @@ function makeDriver(opts = {}) {
     wafStatus = null,
     navError = null,
     startReturnsNoSession = false,
+    finalUrl = null,
   } = opts;
   const calls = { started: 0, navigate: [], evaluate: [], closed: false };
   let lastUrl = null;
@@ -109,7 +110,7 @@ function makeDriver(opts = {}) {
       lastUrl = url;
       calls.navigate.push(url);
       if (navError) throw navError;
-      return { status: wafStatus || 200, final_url: url };
+      return { status: wafStatus || 200, final_url: finalUrl || url };
     },
     evaluate: async (_sessionId, expression) => {
       calls.evaluate.push(expression);
@@ -223,6 +224,20 @@ test("negative: control marker already present (page default) → control_marker
   const result = await run(domain, { driver: makeDriver({ controlMarker: "preexisting" }) });
   assert.equal(result.confirmed, false, JSON.stringify(result));
   assert.equal(result.reason, "control_marker_present");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("negative: an off-origin redirect (final_url leaves the surface) → redirect_off_surface, session closed", () => withTempHome(async () => {
+  const domain = "xss-exec-neg-redirect.example.test";
+  setupSession(domain);
+  // The navigation succeeds (200) but the page ends on a different origin — the
+  // marker must not be attributed to this surface; fail closed before reading it.
+  const driver = makeDriver({ finalUrl: "https://evil.example.test/landing" });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "redirect_off_surface");
+  assert.equal(result.row_written, false);
+  assert.equal(driver.calls.closed, true);
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 

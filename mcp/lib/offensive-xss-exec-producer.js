@@ -35,8 +35,12 @@
 // agent-controlled URL / param name / value / nonce / payload (assertNoForbiddenInputs
 // + a server-minted nonce), GET-only, scope- + read-only-revalidated URLs, and a
 // fail-closed differential. The injected URL is scope-checked twice — synchronously
-// here before any browser spawn, and again (DNS-resolved) inside the driver's own
-// navigate guard (mcp/browser-driver.js).
+// here before any browser spawn (first-party host + read-only), and again by the
+// driver's own navigate guard (mcp/browser-driver.js). NOTE: with block_internal_hosts
+// OFF (the only mode this producer runs — it refuses when ON), the driver's recheck is
+// a host-string scope check, NOT a DNS / internal-IP resolution; that resolution is the
+// documented SSRF residual on the browser path. The producer also re-checks each
+// navigation's final_url stays on the surface origin (fail closed on an off-origin redirect).
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): this is the FIRST tool that signs a
 // HIGH offensive-runs row, so the #108 in-process-key boundary is now load-bearing
@@ -112,9 +116,12 @@ const {
 const crypto = require("crypto");
 
 const TOOL_ID = "bob_http_xss_confirm";
-// GET-only by construction (idempotent, read-only-safe, re-producible). POST/form
-// execution is a deferred oracle_kind.
-const READ_ONLY_METHODS = Object.freeze(["GET"]);
+// GET-only by construction (idempotent, read-only-safe, re-producible). The tool
+// accepts NO method input — the inputSchema is additionalProperties:false with no
+// `method` property — so the HTTP method is fixed here rather than read from args
+// (a `normalizeMethod(args.method)` would be a ghost input the schema rejects).
+// POST/form execution is a deferred oracle_kind.
+const HTTP_METHOD = "GET";
 const ORACLE_KIND_VALUES = Object.freeze(["script_execution"]);
 // param_locus is a non-negative ordinal selecting among the surface's recorded
 // query params; bound it so a wild value cannot index unboundedly.
@@ -136,11 +143,6 @@ const XSS_EXEC_DEMONSTRATED_CEILING = Object.freeze({ script_execution: "high" }
 
 function rejectInvalidArguments(message, details = null) {
   throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, details);
-}
-
-function normalizeMethod(value) {
-  const method = value == null ? "GET" : assertRequiredText(value, "method").toUpperCase();
-  return assertEnumValue(method, READ_ONLY_METHODS, "method");
 }
 
 function normalizeOracleKind(value) {
@@ -173,6 +175,22 @@ function isWafStatus(nav) {
   return !!(nav && typeof nav.status === "number" && WAF_STATUSES.has(nav.status));
 }
 
+// page.goto follows server redirects, so the page the marker is observed on may
+// differ from the requested URL. Fail closed if a navigation's final_url leaves the
+// surface origin (the signed row's target must name the origin the script ran on,
+// and an off-origin redirect must never be attributed to this surface). A missing
+// final_url is treated as "no redirect observed" — the requested URL was already
+// scope-validated upfront and re-checked by the driver; an unparseable one fails closed.
+function finalUrlEscapesOrigin(nav, baseOrigin) {
+  const finalUrl = nav && typeof nav.final_url === "string" ? nav.final_url : null;
+  if (!finalUrl) return false;
+  try {
+    return new URL(finalUrl).origin !== baseOrigin;
+  } catch {
+    return true;
+  }
+}
+
 // The LIVE browser driver. confirmXssExecution accepts an injectable `driver` so
 // seeded tests need no Chromium; with no driver the MCP dispatcher binds this one.
 // callBrowser(command, sessionId, args) reorders to sendCommand(sessionId, command,
@@ -200,7 +218,7 @@ function blocked(outcome, reason, extra = {}) {
 }
 
 // Drive ONE navigation and audit it so the circuit breaker / request budget count
-// the live traffic (the driver also scope-checks the URL with a DNS resolve). A
+// the live traffic (the driver also re-checks the URL host against scope). A
 // swallowed audit-write aborts the run closed — this producer signs a durable
 // proof row, so it must not fire un-audited live navigations.
 async function navigateAndAudit(drv, {
@@ -261,7 +279,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const oracleKind = normalizeOracleKind(args.oracle_kind);
-  const method = normalizeMethod(args.method);
+  const method = HTTP_METHOD;
   const paramLocus = normalizeParamLocus(args.param_locus);
 
   const { state } = readSessionStateStrict(domain);
@@ -340,8 +358,9 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
   probeUrl.searchParams.set(paramName, probeValue);
 
   // Re-validate the FINAL injected URLs (path + query) synchronously BEFORE any
-  // browser spawn, and re-assert the origin. The driver re-checks (DNS-resolved)
-  // at navigate time; this is the fail-fast + read-only guard the driver omits.
+  // browser spawn, and re-assert the origin. The driver re-checks the host against
+  // scope at navigate time; this upfront pass is the fail-fast + read-only guard
+  // the driver omits.
   for (const u of [controlUrl, probeUrl]) {
     assertSafeRequestUrl(u.toString(), domain, SCOPE_VALIDATION_OPTS);
     assertReadOnlyPath(u.toString(), TOOL_ID);
@@ -374,6 +393,9 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     if (isWafStatus(controlNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
     }
+    if (finalUrlEscapesOrigin(controlNav, baseUrl.origin)) {
+      return fail("blocked_by_defense", "redirect_off_surface");
+    }
     const controlMarker = await readMarker(drv, sessionId, markerKey);
     if (controlMarker !== null) {
       // The marker is present WITHOUT our executing payload → not a clean witness.
@@ -384,6 +406,9 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     const probeNav = await navigateAndAudit(drv, { ...auditBase, sessionId, url: probeUrl.toString() });
     if (isWafStatus(probeNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
+    }
+    if (finalUrlEscapesOrigin(probeNav, baseUrl.origin)) {
+      return fail("blocked_by_defense", "redirect_off_surface");
     }
     const probeMarker = await readMarker(drv, sessionId, markerKey);
     if (probeMarker !== nonce) {
@@ -459,7 +484,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
         relation: relationBooleans,
         observation_hash: row.stdout_hash,
       },
-      egress_profile: egressProfileName,
+      ...identity,
       ...internalHostPolicy,
     };
   } catch (error) {
@@ -487,7 +512,6 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
 module.exports = {
   TOOL_ID,
   ORACLE_KIND_VALUES,
-  READ_ONLY_METHODS,
   XSS_EXEC_DEMONSTRATED_CEILING,
   confirmXssExecution,
   // Exported for unit tests (seeded driver, no live browser).
