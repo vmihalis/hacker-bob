@@ -472,6 +472,25 @@ test("a timeout CONSUMES the run budget (the container ran) — NOT counted as i
   assert.equal(offensiveInfraFailureCount(domain), 0, "a timeout is not an infra failure");
 }));
 
+test("the infra slot is HELD during the run + RELEASED on a genuine outcome — caps concurrency (#124-3)", () => withTempHome(async () => {
+  // The pessimistic reservation is what enforces MAX_OFFENSIVE_INFRA_FAILURES under a
+  // concurrent burst: each in-flight run holds an infra slot from BEFORE docker spawns
+  // until it completes, so the cap can't be overshot by parallel calls passing a stale
+  // count. A genuine outcome then releases the slot.
+  const domain = "runner-infrahold.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  const inner = docker.run;
+  let infraDuringRun = null;
+  docker.run = async (opts) => {
+    infraDuringRun = offensiveInfraFailureCount(domain); // slot is held while the container "runs"
+    return inner(opts);
+  };
+  await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(infraDuringRun, 1, "an in-flight run holds an infra slot (bounds concurrency before any docker failure)");
+  assert.equal(offensiveInfraFailureCount(domain), 0, "a genuine outcome releases the infra slot");
+}));
+
 test("infra-failure budget exhausted blocks new runs (separate cap) (#124-3)", () => withTempHome(async () => {
   const domain = "runner-infracap.example.test";
   setup(domain);

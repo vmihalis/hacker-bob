@@ -256,30 +256,36 @@ function offensiveInfraFailureCount(domain) {
   return readCounterFile(offensiveInfraFailurePath(domain));
 }
 
+// Atomically bump a monotonic counter by delta (caller holds the session lock), clamped
+// at >= 0. Fail-closed on a corrupt (non-finite) read: leave the file untouched so it
+// keeps failing CLOSED at the reservation gate rather than being reset to a finite value.
+function bumpCounterFile(domain, filePath, delta) {
+  const cur = readCounterFile(filePath);
+  if (!Number.isFinite(cur)) return false;
+  return writeCounterFile(domain, filePath, Math.max(0, cur + delta));
+}
+
 // Reserve one run by incrementing the monotonic counter (the caller holds the session
 // lock). Returns false (fail closed) if the reservation can't be read or persisted.
 function incrementOffensiveRun(domain) {
-  const next = offensiveRunCount(domain) + 1;
-  if (!Number.isFinite(next)) return false;
-  return writeCounterFile(domain, offensiveRunBudgetPath(domain), next);
+  return bumpCounterFile(domain, offensiveRunBudgetPath(domain), 1);
 }
 
-// #124-3: REFUND a previously-reserved run slot (the container never ran — an infra
-// failure) and record it in the separate infra-failure counter. The caller holds the
-// session lock so the decrement + increment are atomic w.r.t. concurrent reservations.
-// Conservative: if the run counter can't be read as a finite value we leave the slot
-// consumed (never refund MORE than was reserved); if the infra counter is corrupt
-// (non-finite) we leave it — it already fails CLOSED at the reservation gate and must
-// not be silently reset to a finite value.
-function refundOffensiveRunAsInfraFailure(domain) {
-  const runCount = offensiveRunCount(domain);
-  if (Number.isFinite(runCount) && runCount > 0) {
-    writeCounterFile(domain, offensiveRunBudgetPath(domain), runCount - 1);
-  }
-  const infra = offensiveInfraFailureCount(domain);
-  if (Number.isFinite(infra)) {
-    writeCounterFile(domain, offensiveInfraFailurePath(domain), infra + 1);
-  }
+// #124-3: the infra-failure counter is reserved PESSIMISTICALLY at reservation time
+// (every attempt holds an infra slot BEFORE docker is spawned) so the cap is enforced
+// UNDER CONCURRENCY — a burst of N parallel runs each takes a slot under the lock, so at
+// most MAX_OFFENSIVE_INFRA_FAILURES run concurrently and at most that many infra failures
+// are ever recorded (no stale-count overshoot). A GENUINE run (the container started)
+// RELEASES its slot; an infra failure (the container never ran) KEEPS it as the recorded
+// failure. Net per outcome: genuine → run+1/infra+0; infra failure → run+0/infra+1.
+function incrementOffensiveInfra(domain) {
+  return bumpCounterFile(domain, offensiveInfraFailurePath(domain), 1);
+}
+function decrementOffensiveRun(domain) {
+  return bumpCounterFile(domain, offensiveRunBudgetPath(domain), -1);
+}
+function decrementOffensiveInfra(domain) {
+  return bumpCounterFile(domain, offensiveInfraFailurePath(domain), -1);
 }
 
 // A legitimate session dir is a real directory Bob created — never a symlink. A
@@ -474,12 +480,16 @@ async function runOffensiveTool({
   const auditUrl = primaryUrl ? String(primaryUrl.value) : `https://${domain}/`;
   const reservation = withSessionLock(domain, () => {
     if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) return { ok: false, reason: "offensive_run_budget_exhausted" };
-    // #124-3: infra failures are refunded from the run budget, so cap them separately to
-    // keep the total-attempts bound the reserve-before-spawn used to provide.
+    // #124-3: the infra cap is checked AND reserved under this SAME lock (pessimistically,
+    // before spawn) so it holds under concurrency — a burst of parallel runs can't all
+    // pass a stale count and overshoot the cap. A genuine run releases its infra slot
+    // once docker has started.
     if (offensiveInfraFailureCount(domain) >= MAX_OFFENSIVE_INFRA_FAILURES) return { ok: false, reason: "offensive_infra_failure_budget_exhausted" };
     const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProfileName, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
     if (auditOk === false) return { ok: false, reason: "offensive_run_audit_failed" };
     if (!incrementOffensiveRun(domain)) return { ok: false, reason: "offensive_run_budget_write_failed" };
+    // pessimistically take an infra slot too; roll back the run slot if it can't persist.
+    if (!incrementOffensiveInfra(domain)) { decrementOffensiveRun(domain); return { ok: false, reason: "offensive_infra_budget_write_failed" }; }
     return { ok: true };
   });
   if (!reservation.ok) {
@@ -503,8 +513,9 @@ async function runOffensiveTool({
   } catch (e) {
     try { docker.networkRm(runId, env); } catch {} // tear down a partially-created network
     cleanupScratch();
-    // #124-3: the container never ran — refund the reserved run slot + count it as infra.
-    withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain));
+    // #124-3: the container never ran — refund the run slot; the pessimistically-reserved
+    // infra slot STAYS (it is now the recorded infra failure).
+    withSessionLock(domain, () => decrementOffensiveRun(domain));
     return blocked(domain, toolId, "blocked_by_infra", "offensive_network_create_failed", { failure_reason: e.message || String(e) });
   }
   let stdoutBytes = Buffer.alloc(0);
@@ -523,12 +534,16 @@ async function runOffensiveTool({
   }
 
   if (runResult.spawn_error) {
-    // #124-3: docker never started the container — refund the slot + count it as infra.
-    withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain));
+    // #124-3: docker never started the container — refund the run slot; the pessimistic
+    // infra slot STAYS as the recorded infra failure.
+    withSessionLock(domain, () => decrementOffensiveRun(domain));
     return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
   }
-  // A timeout is NOT refunded: the container actually RAN (consumed CPU/net + a real
-  // slot) and only failed to FINISH — a genuine run, not an infra failure (#124-3).
+  // #124-3: the container STARTED — every outcome from here on is a GENUINE run (it
+  // consumed a real slot), so RELEASE the pessimistically-reserved infra slot exactly
+  // once. This single release covers ALL genuine returns below, INCLUDING a timeout (the
+  // container ran and only failed to FINISH — not an infra failure).
+  withSessionLock(domain, () => decrementOffensiveInfra(domain));
   if (runResult.timed_out) return blocked(domain, toolId, "blocked_by_infra", "offensive_run_timed_out");
 
   const stdoutText = stdoutBytes.toString("utf8");
