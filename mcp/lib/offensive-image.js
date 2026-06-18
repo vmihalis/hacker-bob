@@ -27,7 +27,8 @@ const { IMAGE_DIGEST_RE } = require("./offensive-sandbox.js");
 
 const LOCK_BASENAME = "offensive-image.json";
 
-// Operator-minted lockfile committed next to this module; install.js copies it. ABSENT until minted.
+// Operator-minted lockfile next to this module — OPERATOR-LOCAL (gitignored; the digest is deployment-specific,
+// so it is NOT committed/shipped). install.js copies it into the runtime if present; ABSENT until minted.
 function offensiveImageLockPath() {
   return path.join(__dirname, LOCK_BASENAME);
 }

@@ -25,16 +25,16 @@ docker login ghcr.io                       # username = your GitHub handle; pass
 HTTPX_URL=... HTTPX_SHA256=... DALFOX_URL=... DALFOX_SHA256=... ./scripts/build-offensive-image.sh
 #    (add --stage-only to fetch+verify+stage the binaries without Docker)
 
-# 4. Commit the generated lockfile:
-git add mcp/lib/offensive-image.json && git commit -m "chore(offense): pin offensive arsenal image digest"
+# 4. The lockfile is operator-local (gitignored) — DON'T commit it. Refresh your runtime so it's picked up:
+./install.sh <your-runtime>          # install copies the local mcp/lib/offensive-image.json into the runtime
 ```
 
-The script fetches `httpx` + `dalfox` release binaries **on the host**, verifies each against its official
-GitHub release checksums file, stages them, builds a hermetic image (no in-build network), pushes to
-`ghcr.io/bobnetsec/bob-offense`, pulls the result **by digest** so the local store can resolve `--pull=never`,
-and writes the digest to `mcp/lib/offensive-image.json` (the **sole source** of `runOffensiveTool`'s
-`imageDigest`). The lockfile is JSON **data** — read fresh with `fs.readFileSync` + `JSON.parse`, never
-executed — and `install.js` copies it explicitly (the `mcp/lib` copy is `.js`-only).
+The script fetches the `httpx` + `dalfox` archives **on the host** from the URLs you supply, verifies each
+against the sha256 you supply, stages them, builds a hermetic image (no in-build network), pushes to your
+`OFFENSIVE_REGISTRY` (default `ghcr.io/bobnetsec/bob-offense`), pulls the result **by digest** so the local
+store can resolve `--pull=never`, and writes the digest to `mcp/lib/offensive-image.json` (the **sole source**
+of `runOffensiveTool`'s `imageDigest`). The lockfile is JSON **data** — read fresh with `fs.readFileSync` +
+`JSON.parse`, never executed — operator-local (gitignored); `install.js` copies it into the runtime if present.
 
 > **You supply the exact archive URL + sha256 per tool** (`HTTPX_URL`+`HTTPX_SHA256`,
 > `DALFOX_URL`+`DALFOX_SHA256`) — all required, no defaults. Copy the linux archive URL for your arch and
@@ -72,6 +72,5 @@ Until the lockfile is minted, both fail closed — an offensive container run is
 
 ## Bumping the image
 
-Edit the pinned versions in `scripts/build-offensive-image.sh`, re-run it, commit the regenerated
-`mcp/lib/offensive-image.json`, and re-run `./install.sh <runtime>` so the operational runtime picks up the
-new digest.
+Re-run the mint (step 3) with the new release URLs + sha256s, then re-run `./install.sh <runtime>` so your
+runtime picks up the regenerated `mcp/lib/offensive-image.json`. The lockfile stays operator-local — don't commit it.

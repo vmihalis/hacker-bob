@@ -91,12 +91,12 @@ fetch_bin() {
   [ "${want}" = "${got}" ] || { echo "CHECKSUM MISMATCH ${name}: expected ${want} got ${got}" >&2; exit 3; }
   echo ">> ${name}: sha256 OK (${got})" >&2
   case "${url}" in
-    *.zip)          ( cd "${tmp}" && unzip -oq archive ) ;;
+    *.zip)          unzip -ojq "${tmp}/archive" -d "${tmp}" ;;  # -j junks paths (no zip-slip traversal)
     *.tar.gz|*.tgz) tar -xzf "${tmp}/archive" -C "${tmp}" ;;
     *.tar.xz)       tar -xJf "${tmp}/archive" -C "${tmp}" ;;
     *) echo "unsupported archive type for ${url} (want .zip / .tar.gz / .tgz / .tar.xz)" >&2; exit 3 ;;
   esac
-  found="$(find "${tmp}" -type f -name "${name}" | head -1)"
+  found="$(find "${tmp}" -type f -name "${name}" | sort | head -1)"  # sort => deterministic pick
   [ -n "${found}" ] || { echo "binary '${name}' not found inside ${url}" >&2; exit 3; }
   cp "${found}" "${BIN_DIR}/${name}"
 }
@@ -117,7 +117,7 @@ docker version >/dev/null 2>&1 || { echo "Docker daemon not running — start Do
 
 # resolve the base image to an immutable digest so the build is reproducible (recorded in the lockfile)
 echo ">> resolving base image digest for ${BASE_IMAGE}"
-docker pull "${BASE_IMAGE}" >/dev/null
+docker pull --platform "${PLATFORM}" "${BASE_IMAGE}" >/dev/null
 BASE_DIGEST="$(repo_digest_for "${BASE_IMAGE}" "$(bare_repo "${BASE_IMAGE}")")"
 [ -n "${BASE_DIGEST}" ] || { echo "could not resolve a digest for base image ${BASE_IMAGE}" >&2; exit 5; }
 echo ">> base pinned: ${BASE_DIGEST}"
@@ -132,11 +132,14 @@ docker push "${TAG}"
 # bind the pinned digest to the registry we just pushed to (never blindly take RepoDigests[0])
 DIGEST="$(repo_digest_for "${TAG}" "$(bare_repo "${REGISTRY}")")"
 [ -n "${DIGEST}" ] || { echo "could not resolve ${REGISTRY}@sha256:<digest> after push" >&2; docker inspect --format '{{json .RepoDigests}}' "${TAG}" >&2; exit 5; }
+# the runtime sandbox (offensive-sandbox.js IMAGE_DIGEST_RE) rejects any colon before @sha256 — fail loud
+# here rather than write a lockfile the runner can't load (e.g. a ported OFFENSIVE_REGISTRY host:port/...).
+[[ "${DIGEST}" =~ ^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || { echo "resolved digest ${DIGEST} is not accepted by the runtime image pin (e.g. a registry port) — use a colon-free OFFENSIVE_REGISTRY" >&2; exit 5; }
 echo ">> pulling by digest so --pull=never can resolve it locally: ${DIGEST}"
 docker pull "${DIGEST}" >/dev/null
 
-# write the lockfile (the SOLE source of runOffensiveTool's imageDigest) as JSON DATA — commit it.
+# write the lockfile (the SOLE source of runOffensiveTool's imageDigest) as JSON DATA (operator-local; gitignored).
 printf '{\n  "image_digest": "%s",\n  "base_image": "%s",\n  "built_platform": "%s",\n  "tools": { "httpx_sha256": "%s", "dalfox_sha256": "%s" }\n}\n' \
   "${DIGEST}" "${BASE_DIGEST}" "${PLATFORM}" "${HTTPX_SHA256}" "${DALFOX_SHA256}" > "${LOCKFILE}"
 echo ">> wrote ${LOCKFILE}:"; cat "${LOCKFILE}"
-echo ">> DONE. Commit mcp/lib/offensive-image.json."
+echo ">> DONE. The lockfile is operator-local (gitignored) — pick it up with ./install.sh <runtime>; do not commit it."
