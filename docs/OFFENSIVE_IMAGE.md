@@ -20,8 +20,10 @@ is registry-specific, which is also why the base image is pulled from `gcr.io`, 
 # 2. Authenticate to ghcr.io with a PAT carrying the write:packages scope:
 docker login ghcr.io                       # username = your GitHub handle; password = the PAT
 
-# 3. Build + push + pull-by-digest + write the lockfile (pin the CURRENT release versions — required):
-HTTPX_VERSION=<current> DALFOX_VERSION=<current> ./scripts/build-offensive-image.sh   # --stage-only skips docker
+# 3. Build + push + pull-by-digest + write the lockfile. Copy each tool's linux release ARCHIVE URL for
+#    your arch + its published sha256 from the releases page, and pass all four (required):
+HTTPX_URL=... HTTPX_SHA256=... DALFOX_URL=... DALFOX_SHA256=... ./scripts/build-offensive-image.sh
+#    (add --stage-only to fetch+verify+stage the binaries without Docker)
 
 # 4. Commit the generated lockfile:
 git add mcp/lib/offensive-image.json && git commit -m "chore(offense): pin offensive arsenal image digest"
@@ -34,18 +36,16 @@ and writes the digest to `mcp/lib/offensive-image.json` (the **sole source** of 
 `imageDigest`). The lockfile is JSON **data** — read fresh with `fs.readFileSync` + `JSON.parse`, never
 executed — and `install.js` copies it explicitly (the `mcp/lib` copy is `.js`-only).
 
-> **Tool versions are required** (`HTTPX_VERSION` / `DALFOX_VERSION`) — there is no shipped default (a
-> hardcoded guess can 404). Pin the current release tags from
-> [httpx](https://github.com/projectdiscovery/httpx/releases) /
-> [dalfox](https://github.com/hahwul/dalfox/releases); the script fails closed if they're unset, and a
-> tampered asset fails the checksum gate.
+> **You supply the exact archive URL + sha256 per tool** (`HTTPX_URL`+`HTTPX_SHA256`,
+> `DALFOX_URL`+`DALFOX_SHA256`) — all required, no defaults. Copy the linux archive URL for your arch and
+> its published sha256 from the releases pages
+> ([httpx](https://github.com/projectdiscovery/httpx/releases) /
+> [dalfox](https://github.com/hahwul/dalfox/releases)). This avoids guessing release asset names (which
+> differ per tool/version) and pins each binary to the published hash — no trust-on-first-use; a mismatch
+> fails the checksum gate.
 >
-> **Pin the binary SHA256s in-repo for release-tamper protection.** The first mint is TOFU — the asset is
-> verified against the release's *own* checksums file (same channel) and the computed SHA is printed. Set
-> `HTTPX_SHA256` / `DALFOX_SHA256` (env or at the top of the script) to those values so a later compromised
-> upstream release fails against the in-repo reference. (The base image is auto-resolved to an immutable
-> `@sha256:` digest at mint time and recorded in the lockfile's `base_image`; override `BASE_IMAGE` to pin a
-> different base.)
+> The base image is auto-resolved to an immutable `@sha256:` digest at mint time and recorded in the
+> lockfile's `base_image`; override `BASE_IMAGE` with a `@sha256:` ref to pin a different base.
 
 ## Runtime behavior (fail-closed)
 

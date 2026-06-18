@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-#
 # offensive.Dockerfile — the digest-pinned image for Hacker Bob's wide-open offensive
 # container runner (mcp/lib/offensive-runner.js + offensive-sandbox.js). It carries the
 # arsenal binaries the find-axis tools invoke (httpx for the smoke; dalfox for the first
@@ -20,15 +18,18 @@
 # This image only needs to (a) hold the static binaries world-executable and (b) point HOME at
 # a writable tmpfs path so the tools never write a read-only $HOME.
 
-# distroless/base carries glibc (safer than :static for PD release binaries that may use the
-# cgo resolver). Pin to a digest in BASE_IMAGE for a fully reproducible rebuild.
+# distroless/base carries glibc (safer than :static for release binaries that may use the cgo resolver).
+# The DEFAULT below is a mutable tag; scripts/build-offensive-image.sh resolves it to an immutable
+# @sha256: digest and passes --build-arg BASE_IMAGE=...@sha256:. A direct `docker build` WITHOUT that arg
+# is NOT digest-pinned — override BASE_IMAGE with a @sha256: ref to pin a standalone build.
 ARG BASE_IMAGE=gcr.io/distroless/base-debian12:nonroot
 
 FROM ${BASE_IMAGE}
 
-# Arsenal binaries staged under ./bin by scripts/build-offensive-image.sh. World read+exec so
-# the runner's forced --user 1000:1000 (not the image's default nonroot uid) can execute them.
-COPY --chmod=0755 bin/ /usr/local/bin/
+# Arsenal binaries staged under ./bin by scripts/build-offensive-image.sh as 0755; COPY preserves the host
+# mode (world read+exec) so the runner's forced --user 1000:1000 (not the image's default nonroot uid) can
+# execute them. No `--chmod` => no BuildKit external-frontend pull from Docker Hub.
+COPY bin/ /usr/local/bin/
 
 # The fs is read-only at run time except /tmp + /work (tmpfs). Point HOME + the XDG dirs at /work
 # so httpx/dalfox never try to write a read-only $HOME. (-disable-update-check / -silent are forced
@@ -36,6 +37,10 @@ COPY --chmod=0755 bin/ /usr/local/bin/
 ENV HOME=/work \
     XDG_CONFIG_HOME=/work/.config \
     XDG_CACHE_HOME=/work/.cache
+
+# Start in the writable /work tmpfs (the rootfs is --read-only at runtime) so tools that write to their CWD
+# (temp files, crash dumps, relative output) don't hit a read-only /.
+WORKDIR /work
 
 # Fixed non-root uid so the image stays non-root even when run directly (the manual smoke, or any use
 # outside the sandbox's forced --user 1000:1000) — defense-in-depth, independent of which BASE_IMAGE is used.
