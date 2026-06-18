@@ -62,6 +62,11 @@ const MAX_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 5_000;
 // Per-session cap on offensive container runs (fail-closed, global across tools).
 const MAX_OFFENSIVE_RUNS = 200;
+// #124-3: cap on infra failures (network-create / spawn errors — the container never
+// ran). These are REFUNDED from the run budget (an infra failure must not burn a
+// genuine-run slot), so they need their own bound, or a daemon/target that fails every
+// spawn could spin unbounded docker attempts. Fail-closed like the run budget.
+const MAX_OFFENSIVE_INFRA_FAILURES = 50;
 // http-audit normalization STRIPS `tool`, so offensive runs are marked + counted by
 // a distinctive `method` token that survives normalization.
 const OFFENSIVE_RUN_AUDIT_METHOD = "CONTAINER_RUN";
@@ -141,9 +146,22 @@ function parseAllowlistedArgv(toolArgv, spec) {
   }
   // toolArgv[0] is the container binary the runner executes — constrain it to a bare
   // binary-name token (no path separators / metacharacters) so an arbitrary in-image
-  // binary or path can't be run. PR5b binds it to the tool spec's declared binary.
+  // binary or path can't be run.
   if (!/^[a-zA-Z0-9._-]+$/.test(toolArgv[0])) {
     rejectInvalid("toolArgv[0] (the container binary name) must be a bare [a-zA-Z0-9._-] token", { code: "offensive_bad_binary" });
+  }
+  // #124-1: bind toolArgv[0] to the tool spec's DECLARED binary. PR5b's registry sets
+  // spec.binary per tool_id from server-side config (never agent input), so a live
+  // caller forwarding agent-influenced argv cannot run a DIFFERENT in-image binary
+  // (sh, curl) under the claimed tool_id. When no binary is declared (the PR5a inert
+  // path) only the bare-token shape check above constrains it.
+  if (spec && spec.binary != null) {
+    if (typeof spec.binary !== "string" || !/^[a-zA-Z0-9._-]+$/.test(spec.binary)) {
+      rejectInvalid("flagSpec.binary must be a bare [a-zA-Z0-9._-] binary name", { code: "offensive_bad_spec_binary" });
+    }
+    if (toolArgv[0] !== spec.binary) {
+      rejectInvalid(`toolArgv[0] ${JSON.stringify(toolArgv[0])} does not match the tool's declared binary ${JSON.stringify(spec.binary)}`, { code: "offensive_binary_mismatch" });
+    }
   }
   const booleanFlags = spec && spec.boolean ? new Set(spec.boolean) : new Set();
   const valueFlags = spec && spec.value ? new Set(spec.value) : new Set();
@@ -189,28 +207,53 @@ function offensiveRunBudgetPath(domain) {
   return path.join(sessionDir(domain), "offensive-run-budget");
 }
 
-// F3 (fail-closed): the per-session offensive-run count is a MONOTONIC counter in a
-// dedicated session file — NOT derived from http-audit.jsonl, which is trimmed to the
-// last HTTP_AUDIT_LOG_MAX_RECORDS (5000) and would let early CONTAINER_RUN rows evict
-// so the budget silently resets and permits unlimited wide-open runs. Missing file =
-// 0 (fresh session); an unreadable / malformed value fails CLOSED (Infinity → blocks).
-// (The run is STILL recorded to http-audit for circuit-breaker visibility; that write
-// is just no longer the budget source.) O(1) read, so the count under the lock no
-// longer re-parses a growing log.
-function offensiveRunCount(domain) {
+// #124-3: infra failures (container never ran) are counted in their OWN session file so
+// they can be capped + refunded independently of the genuine-run budget.
+function offensiveInfraFailurePath(domain) {
+  return path.join(sessionDir(domain), "offensive-infra-failures");
+}
+
+// Read a fail-closed MONOTONIC counter file: missing = 0 (fresh session); an unreadable
+// or malformed value fails CLOSED (Infinity → blocks). Strict digits-only — parseInt
+// would accept "7x" / "0x10" / "7\ntrailing" and under-count, so a tampered/malformed
+// counter must fail CLOSED, not parse low.
+function readCounterFile(filePath) {
   let raw;
   try {
-    raw = fs.readFileSync(offensiveRunBudgetPath(domain), "utf8");
+    raw = fs.readFileSync(filePath, "utf8");
   } catch (e) {
     if (e && e.code === "ENOENT") return 0;
     return Number.POSITIVE_INFINITY;
   }
-  // Strict digits-only — parseInt would accept "7x" / "0x10" / "7\ntrailing" and
-  // under-count, so a tampered/malformed counter must fail CLOSED, not parse low.
   const trimmed = String(raw).trim();
   if (!/^\d+$/.test(trimmed)) return Number.POSITIVE_INFINITY;
   const n = Number.parseInt(trimmed, 10);
   return Number.isInteger(n) && n >= 0 ? n : Number.POSITIVE_INFINITY;
+}
+
+function writeCounterFile(domain, filePath, value) {
+  try {
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.writeFileSync(filePath, String(value), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// F3 (fail-closed): the per-session offensive-run count is a MONOTONIC counter in a
+// dedicated session file — NOT derived from http-audit.jsonl, which is trimmed to the
+// last HTTP_AUDIT_LOG_MAX_RECORDS (5000) and would let early CONTAINER_RUN rows evict
+// so the budget silently resets and permits unlimited wide-open runs. (The run is STILL
+// recorded to http-audit for circuit-breaker visibility; that write is just no longer
+// the budget source.) O(1) read, so the count under the lock no longer re-parses a
+// growing log.
+function offensiveRunCount(domain) {
+  return readCounterFile(offensiveRunBudgetPath(domain));
+}
+
+function offensiveInfraFailureCount(domain) {
+  return readCounterFile(offensiveInfraFailurePath(domain));
 }
 
 // Reserve one run by incrementing the monotonic counter (the caller holds the session
@@ -218,12 +261,24 @@ function offensiveRunCount(domain) {
 function incrementOffensiveRun(domain) {
   const next = offensiveRunCount(domain) + 1;
   if (!Number.isFinite(next)) return false;
-  try {
-    fs.mkdirSync(sessionDir(domain), { recursive: true });
-    fs.writeFileSync(offensiveRunBudgetPath(domain), String(next), { mode: 0o600 });
-    return true;
-  } catch {
-    return false;
+  return writeCounterFile(domain, offensiveRunBudgetPath(domain), next);
+}
+
+// #124-3: REFUND a previously-reserved run slot (the container never ran — an infra
+// failure) and record it in the separate infra-failure counter. The caller holds the
+// session lock so the decrement + increment are atomic w.r.t. concurrent reservations.
+// Conservative: if the run counter can't be read as a finite value we leave the slot
+// consumed (never refund MORE than was reserved); if the infra counter is corrupt
+// (non-finite) we leave it — it already fails CLOSED at the reservation gate and must
+// not be silently reset to a finite value.
+function refundOffensiveRunAsInfraFailure(domain) {
+  const runCount = offensiveRunCount(domain);
+  if (Number.isFinite(runCount) && runCount > 0) {
+    writeCounterFile(domain, offensiveRunBudgetPath(domain), runCount - 1);
+  }
+  const infra = offensiveInfraFailureCount(domain);
+  if (Number.isFinite(infra)) {
+    writeCounterFile(domain, offensiveInfraFailurePath(domain), infra + 1);
   }
 }
 
@@ -342,6 +397,7 @@ async function runOffensiveTool({
   flagSpec = {},
   forcedFlags = [],
   egressProxyUrl = null,
+  egressProfileName = null,
   workTmpfsBytes,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   docker = defaultOffensiveDocker,
@@ -368,6 +424,18 @@ async function runOffensiveTool({
   // well-formed http(s) proxy URL before it is handed to `docker --env`.
   if (egressProxyUrl != null && (typeof egressProxyUrl !== "string" || !/^https?:\/\/[^\s]+$/i.test(egressProxyUrl))) {
     rejectInvalid("egressProxyUrl must be an http(s) proxy URL");
+  }
+  // #124-2: record the RESOLVED named egress profile (not the literal "proxy"). PR5b
+  // resolves session-bound named profiles via resolveAndAssertSessionEgressIdentity and
+  // passes the profile name here; the runner stamps THAT into the audit row's
+  // egress_profile so circuit-breaker / report consumers can tell which egress the
+  // wide-open container used. A proxied run MUST name its profile — an anonymous proxy
+  // (the old literal "proxy") is rejected.
+  if (egressProfileName != null && (typeof egressProfileName !== "string" || !/^[a-zA-Z0-9_.-]{1,64}$/.test(egressProfileName))) {
+    rejectInvalid("egressProfileName must be a short [a-zA-Z0-9_.-] profile name");
+  }
+  if (egressProxyUrl != null && egressProfileName == null) {
+    rejectInvalid("egressProxyUrl requires egressProfileName (the resolved egress profile identity)");
   }
   const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS);
 
@@ -406,7 +474,10 @@ async function runOffensiveTool({
   const auditUrl = primaryUrl ? String(primaryUrl.value) : `https://${domain}/`;
   const reservation = withSessionLock(domain, () => {
     if (offensiveRunCount(domain) >= MAX_OFFENSIVE_RUNS) return { ok: false, reason: "offensive_run_budget_exhausted" };
-    const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProxyUrl ? "proxy" : null, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
+    // #124-3: infra failures are refunded from the run budget, so cap them separately to
+    // keep the total-attempts bound the reserve-before-spawn used to provide.
+    if (offensiveInfraFailureCount(domain) >= MAX_OFFENSIVE_INFRA_FAILURES) return { ok: false, reason: "offensive_infra_failure_budget_exhausted" };
+    const auditOk = auditConfirmRequest({ domain, surfaceId: null, method: OFFENSIVE_RUN_AUDIT_METHOD, url: auditUrl, egressProfile: egressProfileName, status: null, scopeDecision: "allowed", error: null, startedAt, toolId });
     if (auditOk === false) return { ok: false, reason: "offensive_run_audit_failed" };
     if (!incrementOffensiveRun(domain)) return { ok: false, reason: "offensive_run_budget_write_failed" };
     return { ok: true };
@@ -432,6 +503,8 @@ async function runOffensiveTool({
   } catch (e) {
     try { docker.networkRm(runId, env); } catch {} // tear down a partially-created network
     cleanupScratch();
+    // #124-3: the container never ran — refund the reserved run slot + count it as infra.
+    withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain));
     return blocked(domain, toolId, "blocked_by_infra", "offensive_network_create_failed", { failure_reason: e.message || String(e) });
   }
   let stdoutBytes = Buffer.alloc(0);
@@ -449,7 +522,13 @@ async function runOffensiveTool({
     cleanupScratch();                                 // F7-cleanup: guaranteed last
   }
 
-  if (runResult.spawn_error) return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
+  if (runResult.spawn_error) {
+    // #124-3: docker never started the container — refund the slot + count it as infra.
+    withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain));
+    return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
+  }
+  // A timeout is NOT refunded: the container actually RAN (consumed CPU/net + a real
+  // slot) and only failed to FINISH — a genuine run, not an infra failure (#124-3).
   if (runResult.timed_out) return blocked(domain, toolId, "blocked_by_infra", "offensive_run_timed_out");
 
   const stdoutText = stdoutBytes.toString("utf8");
@@ -529,9 +608,12 @@ module.exports = {
   secureReadCaptureBytes,
   offensiveRunCount,
   offensiveRunBudgetPath,
+  offensiveInfraFailureCount,
+  offensiveInfraFailurePath,
   mintRunId,
   defaultOffensiveDocker,
   MAX_OFFENSIVE_RUNS,
+  MAX_OFFENSIVE_INFRA_FAILURES,
   MAX_TIMEOUT_MS,
   OFFENSIVE_RUN_AUDIT_METHOD,
 };

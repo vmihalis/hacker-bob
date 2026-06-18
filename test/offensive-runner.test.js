@@ -12,10 +12,13 @@ const {
   scrubbedDockerEnv,
   offensiveRunCount,
   offensiveRunBudgetPath,
+  offensiveInfraFailureCount,
+  offensiveInfraFailurePath,
   MAX_OFFENSIVE_RUNS,
+  MAX_OFFENSIVE_INFRA_FAILURES,
 } = require("../mcp/lib/offensive-runner.js");
 const { initSession } = require("../mcp/lib/session-state.js");
-const { repoRunsDir } = require("../mcp/lib/paths.js");
+const { repoRunsDir, httpAuditJsonlPath } = require("../mcp/lib/paths.js");
 
 const DIGEST = "ghcr.io/bobnetsec/bob-offense@sha256:" + "b".repeat(64);
 
@@ -55,12 +58,18 @@ const baseRun = (domain, overrides = {}) => ({
   toolId: "bob_offensive_test",
   imageDigest: DIGEST,
   toolArgv: ["httpx", "-silent", "-u", `https://${domain}/`],
-  flagSpec: { boolean: ["-silent"], value: ["-u"], url: ["-u"] },
+  flagSpec: { binary: "httpx", boolean: ["-silent"], value: ["-u"], url: ["-u"] },
   ...overrides,
 });
 
 const noLifecycle = (d) => d.calls.run.length === 0 && d.calls.networkCreate.length === 0 && d.calls.kill.length === 0;
 const stdoutLeaves = (domain) => { try { return fs.readdirSync(repoRunsDir(domain)).filter((f) => f.endsWith(".stdout")); } catch { return []; } };
+// the most recent CONTAINER_RUN audit record (the runner stamps each offensive run with
+// method=CONTAINER_RUN; the normalizer drops `tool` but keeps `method` + egress_profile).
+const lastContainerRunAudit = (domain) => {
+  const lines = fs.readFileSync(httpAuditJsonlPath(domain), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return lines.reverse().find((r) => r.method === "CONTAINER_RUN");
+};
 
 // ───────────────────────── pure helpers ─────────────────────────
 
@@ -95,6 +104,19 @@ test("parseAllowlistedArgv: boolean vs value flags, bare-arg smuggling closed, r
   assert.throws(() => parseAllowlistedArgv(["rm;reboot", "-silent"], spec), /bare \[a-zA-Z0-9._-\] token/);
 });
 
+test("parseAllowlistedArgv: binds toolArgv[0] to spec.binary when declared (#124-1)", () => {
+  const spec = { binary: "dalfox", boolean: ["-silent"], value: ["-u"] };
+  // the declared binary matches → accepted
+  assert.doesNotThrow(() => parseAllowlistedArgv(["dalfox", "-u", "https://x"], spec));
+  // a DIFFERENT in-image binary under the same spec → rejected (the sh/curl scenario)
+  assert.throws(() => parseAllowlistedArgv(["sh", "-u", "https://x"], spec), /does not match the tool's declared binary/);
+  assert.throws(() => parseAllowlistedArgv(["httpx", "-silent"], spec), /declared binary/);
+  // a malformed declared binary fails closed (can't smuggle a path as the declared binary)
+  assert.throws(() => parseAllowlistedArgv(["x", "-silent"], { binary: "/bin/sh", boolean: ["-silent"] }), /bare \[a-zA-Z0-9._-\] binary name/);
+  // no binary declared → only the bare-token shape check (PR5a inert back-compat)
+  assert.doesNotThrow(() => parseAllowlistedArgv(["anybin", "-silent"], { boolean: ["-silent"] }));
+});
+
 // ───────────────────────── safety gates (NO docker lifecycle reached) ─────────────────────────
 
 test("scope-gate operates on the COMMAND's URL flag value, before any docker call (AIM)", () => withTempHome(async () => {
@@ -124,7 +146,7 @@ test("flag allowlist: an unlisted flag blocks before any docker call (full lifec
   setup(domain);
   const docker = makeStubDocker();
   await assert.rejects(
-    runOffensiveTool(baseRun(domain, { toolArgv: ["httpx", "-exec", "id"], flagSpec: { boolean: ["-silent"], value: ["-u"], url: ["-u"] }, docker })),
+    runOffensiveTool(baseRun(domain, { toolArgv: ["httpx", "-exec", "id"], flagSpec: { binary: "httpx", boolean: ["-silent"], value: ["-u"], url: ["-u"] }, docker })),
     /not in the tool flag allowlist/,
   );
   assert.ok(noLifecycle(docker));
@@ -181,6 +203,11 @@ test("PR5a default (no classifier): runs, never signs, scratch deleted, masked, 
   assert.equal(JSON.stringify(r).includes("matched: 0"), false);
   // F3 reserve: the run wrote one CONTAINER_RUN audit record
   assert.equal(offensiveRunCount(domain), 1);
+  // #124-2: a non-proxied run records the normalized "default" egress — NEVER the old
+  // literal "proxy" (the normalizer coerces an absent egress_profile to "default").
+  const audit = lastContainerRunAudit(domain);
+  assert.equal(audit.egress_profile, "default");
+  assert.notEqual(audit.egress_profile, "proxy");
 }));
 
 test("large benign output (>4KB) is scanned, not rejected for length (C)", () => withTempHome(async () => {
@@ -301,7 +328,7 @@ test("scope-gate fails CLOSED on a URL-shaped value of an UNDECLARED url flag", 
   await assert.rejects(
     runOffensiveTool(baseRun(domain, {
       toolArgv: ["httpx", "-u", `https://${domain}/`, "-H", "https://evil.example.com/"],
-      flagSpec: { boolean: ["-silent"], value: ["-u", "-H"], url: ["-u"] },
+      flagSpec: { binary: "httpx", boolean: ["-silent"], value: ["-u", "-H"], url: ["-u"] },
       docker,
     })),
     (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
@@ -316,7 +343,7 @@ test("scope-gate also catches a protocol-relative URL value (//host) on an undec
   await assert.rejects(
     runOffensiveTool(baseRun(domain, {
       toolArgv: ["httpx", "-u", `https://${domain}/`, "-x", "//evil.example.com/"],
-      flagSpec: { boolean: ["-silent"], value: ["-u", "-x"], url: ["-u"] },
+      flagSpec: { binary: "httpx", boolean: ["-silent"], value: ["-u", "-x"], url: ["-u"] },
       docker,
     })),
     (e) => /scope|blocked/i.test(e.message) || e.code === "SCOPE_BLOCKED" || e.scope_decision === "blocked",
@@ -363,4 +390,94 @@ test("signed content is secret-scanned: a classify returning secret stdoutConten
   }));
   assert.equal(r.reason, "offensive_signed_content_contains_sensitive_value");
   assert.equal(signed, false);
+}));
+
+// ───────────────────────── #124 runner mutations ─────────────────────────
+
+test("declared binary mismatch: toolArgv[0] != flagSpec.binary blocks before any docker call (#124-1)", () => withTempHome(async () => {
+  const domain = "runner-binary.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  // baseRun declares binary "httpx"; a live caller forwarding agent argv that names a
+  // different in-image binary (curl) under the same tool_id must be rejected.
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, { toolArgv: ["curl", "-u", `https://${domain}/`], docker })),
+    /does not match the tool's declared binary/,
+  );
+  assert.ok(noLifecycle(docker));
+}));
+
+test("egressProxyUrl WITHOUT egressProfileName is rejected — no anonymous proxy (#124-2)", () => withTempHome(async () => {
+  const domain = "runner-egressname.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, { egressProxyUrl: "http://proxy.internal:8080", docker })),
+    /requires egressProfileName/,
+  );
+  assert.ok(noLifecycle(docker));
+}));
+
+test("a malformed egressProfileName is rejected before any docker call (#124-2)", () => withTempHome(async () => {
+  const domain = "runner-egressbad.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, { egressProxyUrl: "http://proxy.internal:8080", egressProfileName: "bad name!", docker })),
+    /profile name/,
+  );
+  assert.ok(noLifecycle(docker));
+}));
+
+test("egressProfileName is recorded in the CONTAINER_RUN audit row, not the literal 'proxy' (#124-2)", () => withTempHome(async () => {
+  const domain = "runner-egressrec.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  await runOffensiveTool(baseRun(domain, { egressProxyUrl: "http://proxy.internal:8080", egressProfileName: "corp-eu", docker }));
+  const audit = lastContainerRunAudit(domain);
+  assert.equal(audit.egress_profile, "corp-eu");
+  assert.notEqual(audit.egress_profile, "proxy");
+  // the proxy env actually reached the container argv (sandbox sets *_proxy env tokens)
+  const { args } = docker.calls.run[0];
+  assert.ok(args.some((t) => t === "https_proxy=http://proxy.internal:8080"));
+}));
+
+test("networkCreate failure REFUNDS the run budget + bumps the infra-failure counter (#124-3)", () => withTempHome(async () => {
+  const domain = "runner-infrarefund.example.test";
+  setup(domain);
+  const docker = makeStubDocker();
+  docker.networkCreate = (name) => { docker.calls.networkCreate.push(name); throw new Error("boom"); };
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_network_create_failed");
+  assert.equal(offensiveRunCount(domain), 0, "infra failure did NOT consume a genuine-run slot");
+  assert.equal(offensiveInfraFailureCount(domain), 1, "infra failure counted separately");
+}));
+
+test("spawn error REFUNDS the run budget + bumps the infra counter (#124-3)", () => withTempHome(async () => {
+  const domain = "runner-spawnrefund.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ runResult: { exit_code: null, timed_out: false, spawn_error: "docker_not_in_path" } });
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_spawn_failed");
+  assert.equal(offensiveRunCount(domain), 0, "spawn error refunded");
+  assert.equal(offensiveInfraFailureCount(domain), 1);
+}));
+
+test("a timeout CONSUMES the run budget (the container ran) — NOT counted as infra (#124-3)", () => withTempHome(async () => {
+  const domain = "runner-timeoutbudget.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ runResult: { exit_code: null, timed_out: true } });
+  await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(offensiveRunCount(domain), 1, "a timeout ran → consumes a slot");
+  assert.equal(offensiveInfraFailureCount(domain), 0, "a timeout is not an infra failure");
+}));
+
+test("infra-failure budget exhausted blocks new runs (separate cap) (#124-3)", () => withTempHome(async () => {
+  const domain = "runner-infracap.example.test";
+  setup(domain);
+  fs.writeFileSync(offensiveInfraFailurePath(domain), String(MAX_OFFENSIVE_INFRA_FAILURES));
+  const docker = makeStubDocker();
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_infra_failure_budget_exhausted");
+  assert.ok(noLifecycle(docker));
 }));
