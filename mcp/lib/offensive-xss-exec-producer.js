@@ -179,43 +179,54 @@ function isWafStatus(nav) {
   return !!(nav && typeof nav.status === "number" && WAF_STATUSES.has(nav.status));
 }
 
-// page.goto follows server redirects, so the page the marker is observed on may
-// differ from the requested URL. Fail closed if a navigation's final_url LEFT the
-// recorded endpoint — a different ORIGIN or a different PATH (e.g. /search -> /logout):
-// the signed row's target must name the exact endpoint the script ran on, a
-// same-origin redirect to a mutation path must never be trusted, and an off-origin
-// redirect must never be attributed to this surface. Compared at origin+pathname
-// granularity so a benign query re-normalization is not a false "redirect". A missing
-// final_url means no redirect was observed (the requested URL was scope-validated
-// upfront and re-checked by the driver); an unparseable one fails closed. NOTE: this
-// is a POST-navigation refusal — it stops the tool from SIGNING (or reading the marker)
-// on a redirect, but the browser driver has already issued the redirected hop; full
-// pre-emptive redirect interception is a shared browser-driver change deferred to the
-// browser-hardening / offensive-sandbox PR (mitigated here: block_internal_hosts ON
-// refuses the whole run, the requested URL is server-derived + scope-validated, and no
-// signed positive can be forged across a redirect that drops the nonce payload).
-function navigationLeftEndpoint(nav, baseUrl) {
+// page.goto follows server redirects, so the page the marker is observed on may differ
+// from the requested URL. Validate the LANDED url exactly as the requested url was
+// validated upfront — the same scope (assertSafeRequestUrl) + read-only (assertReadOnlyPath)
+// guards, pinned to the recorded endpoint's origin+pathname, and no fragment — and fail
+// closed on ANY drift. This catches an off-origin redirect, a same-origin redirect to a
+// different path (/search -> /logout), AND a same-path redirect that adds a
+// mutation-shaped query or fragment (?_method=DELETE, #/settings/delete) the upfront
+// guard never saw. A missing final_url means no redirect was observed; an unparseable
+// one fails closed. NOTE: this is a POST-navigation refusal — it stops the tool from
+// reading the marker or SIGNING on a redirect, but the browser driver has already issued
+// the redirected hop; pre-emptive redirect interception is a shared browser-driver
+// change deferred to the browser-hardening / offensive-sandbox PR (mitigated here:
+// block_internal_hosts ON refuses the run, the requested URL is server-derived +
+// scope-validated, and no signed positive can be forged across a payload-dropping redirect).
+function finalNavUnsafe(nav, baseUrl, domain) {
   const finalUrl = nav && typeof nav.final_url === "string" ? nav.final_url : null;
   if (!finalUrl) return false;
+  let f;
   try {
-    const f = new URL(finalUrl);
-    return f.origin !== baseUrl.origin || f.pathname !== baseUrl.pathname;
+    f = new URL(finalUrl);
   } catch {
     return true;
   }
+  if (f.hash) return true;
+  if (f.origin !== baseUrl.origin || f.pathname !== baseUrl.pathname) return true;
+  try {
+    assertSafeRequestUrl(finalUrl, domain, SCOPE_VALIDATION_OPTS);
+    assertReadOnlyPath(finalUrl, TOOL_ID);
+  } catch {
+    return true;
+  }
+  return false;
 }
 
 // A browser/Playwright error message commonly embeds the full navigated URL, which
-// preserves the surface's non-locus recorded query params (token=, session=). This
-// tool is sensitive_output:true, so strip every embedded http(s) URL down to
-// origin+path (drop query/fragment/userinfo) and cap the length before returning the
-// failure reason to the agent.
+// preserves the surface's non-locus recorded query params (token=, session=) AND its
+// path (which may carry a reset token / PII segment). This tool is sensitive_output:true
+// and the error also flows into the http-audit record, so strip every embedded http(s)
+// URL down to its ORIGIN only (drop path/query/fragment/userinfo), cap the length, and —
+// as a backstop for any known PII/secret shape surviving in the free text — fall back to
+// a generic reason.
 function redactedBrowserFailure(error) {
   const raw = error && error.message ? String(error.message) : String(error);
   const stripped = raw.replace(/https?:\/\/[^\s"'<>]+/gi, (u) => {
-    try { const p = new URL(u); return `${p.origin}${p.pathname}`; } catch { return "[url]"; }
-  });
-  return stripped.slice(0, 300);
+    try { return new URL(u).origin; } catch { return "[url]"; }
+  }).slice(0, 300);
+  if (sensitiveShapesPresent(stripped)) return "browser navigation error (redacted)";
+  return stripped;
 }
 
 // The LIVE browser driver. confirmXssExecution accepts an injectable `driver` so
@@ -268,7 +279,10 @@ async function navigateAndAudit(drv, {
     egressProfile,
     status: nav ? nav.status : null,
     scopeDecision: scopeBlocked ? "blocked" : null,
-    error: error ? (error.message || String(error)) : null,
+    // Redact before it reaches http-audit.jsonl: normalizeHttpAuditRecord redacts the
+    // url field but NOT error, and bob_read_http_audit returns error to agents — a raw
+    // Playwright error embeds the full URL (with recorded token=/session= params).
+    error: error ? redactedBrowserFailure(error) : null,
     startedAt,
     toolId: TOOL_ID,
   });
@@ -425,7 +439,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     if (isWafStatus(controlNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
     }
-    if (navigationLeftEndpoint(controlNav, baseUrl)) {
+    if (finalNavUnsafe(controlNav, baseUrl, domain)) {
       return fail("blocked_by_defense", "redirect_off_surface");
     }
     const controlMarker = await readMarker(drv, sessionId, markerKey);
@@ -439,7 +453,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     if (isWafStatus(probeNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
     }
-    if (navigationLeftEndpoint(probeNav, baseUrl)) {
+    if (finalNavUnsafe(probeNav, baseUrl, domain)) {
       return fail("blocked_by_defense", "redirect_off_surface");
     }
     const probeMarker = await readMarker(drv, sessionId, markerKey);

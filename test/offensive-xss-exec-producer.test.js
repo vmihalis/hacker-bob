@@ -24,7 +24,7 @@ const {
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+const { attackSurfacePath, offensiveRunsJsonlPath, httpAuditJsonlPath } = require("../mcp/lib/paths.js");
 const {
   appendCandidateClaim,
   readCandidateClaims,
@@ -268,15 +268,49 @@ test("scope safety: a recorded endpoint fragment (#/logout) is stripped before n
   }
 }));
 
-test("output safety: a browser error embedding a URL with a secret query param is redacted in failure_reason", () => withTempHome(async () => {
+test("output safety: a browser error is redacted to origin (path + query secrets stripped) in BOTH the response and the http-audit record", () => withTempHome(async () => {
   const domain = "xss-exec-redact.example.test";
   setupSession(domain);
-  const navError = new Error(`net::ERR_TIMED_OUT at https://${domain}/search?${LOCUS}=x&token=SECRET123456`);
+  // The error embeds a URL whose PATH carries a reset token and whose QUERY carries
+  // another secret. Neither may reach the agent via failure_reason OR the audit record.
+  const navError = new Error(`net::ERR_TIMED_OUT at https://${domain}/reset/PATHSECRET9999/search?${LOCUS}=x&token=QUERYSECRET8888`);
   const result = await run(domain, { driver: makeDriver({ navError }) });
   assert.equal(result.confirmed, false, JSON.stringify(result));
   assert.equal(result.reason, "browser_error");
-  assert.ok(!String(result.failure_reason).includes("SECRET123456"), `must not leak the token: ${result.failure_reason}`);
-  assert.ok(!String(result.failure_reason).includes("token="), "must strip the query from the embedded URL");
+  const fr = String(result.failure_reason);
+  assert.ok(!fr.includes("PATHSECRET9999"), `must not leak the path token: ${fr}`);
+  assert.ok(!fr.includes("QUERYSECRET8888"), `must not leak the query token: ${fr}`);
+  assert.ok(!fr.includes("/reset/"), `must strip the path: ${fr}`);
+  // #271: the http-audit record's error field is redacted too (normalizeHttpAuditRecord
+  // redacts url but not error; bob_read_http_audit returns error to agents).
+  const auditPath = httpAuditJsonlPath(domain);
+  if (fs.existsSync(auditPath)) {
+    for (const line of fs.readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean)) {
+      const blob = JSON.stringify(JSON.parse(line));
+      assert.ok(!blob.includes("PATHSECRET9999"), `audit must not leak the path token: ${blob}`);
+      assert.ok(!blob.includes("QUERYSECRET8888"), `audit must not leak the query token: ${blob}`);
+    }
+  }
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("negative: a same-path redirect adding a mutation query (?_method=DELETE) → redirect_off_surface", () => withTempHome(async () => {
+  const domain = "xss-exec-neg-redirect-mutq.example.test";
+  setupSession(domain);
+  const driver = makeDriver({ finalUrl: `https://${domain}/search?${LOCUS}=x&_method=DELETE` });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "redirect_off_surface");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("negative: a same-path redirect adding a fragment (#/settings/delete) → redirect_off_surface", () => withTempHome(async () => {
+  const domain = "xss-exec-neg-redirect-frag.example.test";
+  setupSession(domain);
+  const driver = makeDriver({ finalUrl: `https://${domain}/search?${LOCUS}=x#/settings/delete` });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "redirect_off_surface");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
