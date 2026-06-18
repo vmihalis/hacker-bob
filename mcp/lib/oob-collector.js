@@ -271,16 +271,26 @@ function resolveBinding(domain, tokenHandle) {
   return { binding, consume };
 }
 
-function countLiveBindings(domain) {
+// A binding counts toward the per-session cap only if it is BOTH unconsumed AND
+// not yet expired. An expired binding is unpollable (oobPoll returns token_expired
+// before signing), so counting it would let a normal mint-without-callback session
+// permanently brick new mints once 64 dead tokens accumulate. Needs the clock.
+function countLiveBindings(domain, clock = Date.now) {
+  const now = clock();
   const consumed = new Set();
-  const bindings = new Set();
+  const bindings = new Map();
   for (const r of readOobTokenRecords(domain)) {
     if (!r || typeof r.token_handle !== "string") continue;
-    if (r.kind === "binding") bindings.add(r.token_handle);
+    if (r.kind === "binding") bindings.set(r.token_handle, r);
     else if (r.kind === "consume") consumed.add(r.token_handle);
   }
   let live = 0;
-  for (const h of bindings) if (!consumed.has(h)) live += 1;
+  for (const [handle, b] of bindings) {
+    if (consumed.has(handle)) continue;
+    const ttl = typeof b.ttl_ms === "number" ? b.ttl_ms : OOB_TOKEN_TTL_MS;
+    if (typeof b.minted_at === "number" && now - b.minted_at > ttl) continue;
+    live += 1;
+  }
   return live;
 }
 
@@ -390,7 +400,7 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
     return notConfirmed("blocked_operator_pii", "proof_target_contains_sensitive_value", { minted: false });
   }
 
-  if (countLiveBindings(domain) >= MAX_LIVE_OOB_TOKENS) {
+  if (countLiveBindings(domain, clock) >= MAX_LIVE_OOB_TOKENS) {
     return notConfirmed("blocked_by_infra", "oob_token_cap_reached", { minted: false });
   }
 
@@ -408,7 +418,7 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
   };
   // The binding write + the cap read are only race-safe under the session lock.
   withSessionLock(domain, () => {
-    if (countLiveBindings(domain) >= MAX_LIVE_OOB_TOKENS) {
+    if (countLiveBindings(domain, clock) >= MAX_LIVE_OOB_TOKENS) {
       throw new ToolError(ERROR_CODES.STATE_CONFLICT, "oob_token_cap_reached");
     }
     appendOobTokenRecordHardened(domain, binding);
@@ -647,6 +657,7 @@ module.exports = {
   loadOobConfig,
   readOobTokenRecords,
   resolveBinding,
+  countLiveBindings,
   // NOTE: buildAndSignOffensiveRow (offensive-capture-writer.js) is intentionally
   // NOT re-exported — it signs+writes a row WITHOUT the oracle gates above, so
   // re-exporting it would give an internal caller a gate-bypassing signed-row path.

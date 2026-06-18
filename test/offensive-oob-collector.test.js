@@ -22,6 +22,7 @@ const {
   loadOobConfig,
   resolveBinding,
   readOobTokenRecords,
+  countLiveBindings,
   POLL_TOOL_ID,
   MINT_TOOL_ID,
 } = require("../mcp/lib/oob-collector.js");
@@ -210,6 +211,19 @@ test("mint: per-session token cap is enforced", () => withTempHome(async () => {
   }
   assert.ok(lastBlocked, "cap must eventually block minting");
   assert.equal(lastBlocked.reason, "oob_token_cap_reached");
+}));
+
+test("mint cap: expired bindings do NOT count toward the live cap (no permanent brick)", () => withTempHome(async () => {
+  const domain = "oob-expire.example.test";
+  setupSession(domain);
+  const T0 = 1_000_000;
+  for (let i = 0; i < 3; i += 1) {
+    await oobMint(mintArgs(domain), { config: CONFIG, clock: () => T0 });
+  }
+  assert.equal(countLiveBindings(domain, () => T0), 3);
+  // After TTL the same bindings are unpollable (token_expired), so they must not
+  // count as live — otherwise a mint-without-callback session bricks new mints.
+  assert.equal(countLiveBindings(domain, () => T0 + 49 * 60 * 60 * 1000), 0);
 }));
 
 test("forbidden inputs: mint and poll reject server-controlled fields", () => withTempHome(async () => {
