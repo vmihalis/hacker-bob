@@ -160,6 +160,7 @@
   "test/offensive-capture-writer.test.js",
   "test/offensive-sandbox.test.js",
   "test/offensive-runner.test.js",
+  "test/offensive-image.test.js",
   "test/lifecycle-state-drift.test.js",
   "test/evidence-gate-lifecycle.test.js"
 ]

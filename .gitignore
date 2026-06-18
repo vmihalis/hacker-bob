@@ -25,3 +25,8 @@ __pycache__/
 .secrets
 test/act-run.log
 test/act-mock-api.log
+# offensive arsenal image build staging (host-fetched binaries; never committed)
+docker/offensive-context/
+# operator-minted image digest — deployment-specific (points at the operator's registry push), so it is
+# NOT committed/shipped; install.js copies the local file into the runtime. Each operator mints their own.
+mcp/lib/offensive-image.json
