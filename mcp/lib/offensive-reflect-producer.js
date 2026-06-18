@@ -75,6 +75,7 @@ const {
   auditConfirmRequest,
   assertNoForbiddenInputs,
   contentTypeOf,
+  sensitiveShapesPresent,
   SCOPE_VALIDATION_OPTS,
 } = require("./offensive-http-common.js");
 const {
@@ -89,9 +90,6 @@ const {
 const {
   canonicalJson,
 } = require("./verification-contracts.js");
-const {
-  detectPiiShapes,
-} = require("./pii-detector.js");
 
 const TOOL_ID = "bob_http_xss_reflect";
 // GET-only by construction (idempotent, read-only-safe, re-hashable). POST/form
@@ -146,23 +144,6 @@ const RCDATA_ELEMENTS = Object.freeze(new Set(["title", "textarea"]));
 // `>` breaks the tag → tag-break). Every other / ambiguous context is non-positive
 // and fails closed.
 const POSITIVE_CONTEXTS = Object.freeze(new Set(["text_node", "unquoted_attr"]));
-
-// Focused credential-shape detector for the SIGNED capture bytes (defense in
-// depth; the captured fragment is the producer's own nonce+sentinel rendering, so
-// this should never fire, but a recorded endpoint PATH segment persisted into the
-// row target could carry one). The hex nonce/end-marker match NONE of these.
-const SECRET_SHAPE_RES = Object.freeze([
-  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, // jwt
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,                                // aws access key
-  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/,                     // pem
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,                               // github token
-  /\bgithub_pat_[A-Za-z0-9_]{30,}/,                               // github fine-grained PAT
-  /\bglpat-[A-Za-z0-9_-]{15,}/,                                   // gitlab
-  /\bAIza[0-9A-Za-z_-]{35}\b/,                                    // google api key
-  /\b[rs]k_live_[A-Za-z0-9]{16,}/,                                // stripe
-  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/,                            // openai
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,                               // slack
-]);
 
 // ── small helpers ──────────────────────────────────────────────────────────
 
@@ -228,34 +209,6 @@ function isAttachmentDisposition(response) {
     ? String(response.headers.get("content-disposition") || "")
     : "";
   return cd.split(";")[0].trim().toLowerCase() === "attachment";
-}
-
-// Percent-decode to a fixed point so a percent-encoded secret / PII shape in a
-// PATH segment cannot slip past the literal-ASCII regexes below. Per-triplet decode
-// (a whole-string decodeURIComponent throws on a stray `%`); bounded iterations
-// catch double-encoding.
-function percentDecodeToFixedPoint(value) {
-  let current = String(value);
-  for (let i = 0; i < 4; i += 1) {
-    const next = current.replace(/%[0-9a-fA-F]{2}/g, (m) => {
-      try { return decodeURIComponent(m); } catch { return m; }
-    });
-    if (next === current) break;
-    current = next;
-  }
-  return current;
-}
-
-function sensitiveShapesPresent(text) {
-  const raw = typeof text === "string" ? text : canonicalJson(text);
-  // Screen the raw form AND its percent-decoded form: a recorded path segment can
-  // carry a secret / PII shape percent-encoded (e.g. /u/alice%40corp.com or
-  // /reset/sk%2Dlive_…) that the literal regexes would otherwise miss before the
-  // value persists into the durable signed row target (brutalist).
-  const decoded = percentDecodeToFixedPoint(raw);
-  const s = decoded === raw ? raw : `${raw}\n${decoded}`;
-  if (detectPiiShapes(s).length > 0) return true;
-  return SECRET_SHAPE_RES.some((re) => re.test(s));
 }
 
 // ── the conservative, fail-closed, context-aware HTML reflection classifier ──
