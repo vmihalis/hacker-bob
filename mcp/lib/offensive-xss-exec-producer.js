@@ -415,6 +415,16 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     }
   }
 
+  // Screen the value-blind proof target for PII / secret shapes BEFORE any live
+  // navigation. A recorded PATH segment (/u/alice@corp.com, /reset/<token>) must never
+  // reach a live audited request: navigateAndAudit writes the URL into http-audit.jsonl,
+  // so this screen has to run first, not only on the post-execution success path.
+  // canonicalizeExploitTarget strips the query to origin+path.
+  const canonicalTarget = canonicalizeExploitTarget(probeUrl.toString());
+  if (sensitiveShapesPresent(canonicalTarget)) {
+    return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
+  }
+
   if (!drv.isAvailable()) {
     return fail("blocked_by_infra", "browser_unavailable");
   }
@@ -462,12 +472,8 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
       return fail("blocked_by_defense", "script_did_not_execute");
     }
 
-    // ── build the canonical proof (value-blind target, PII-screened) ──
-    const canonicalTarget = canonicalizeExploitTarget(probeUrl.toString());
-    if (sensitiveShapesPresent(canonicalTarget)) {
-      return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
-    }
-
+    // ── build the canonical proof (canonicalTarget was value-blind PII-screened
+    // before navigation; the capture below carries ONLY the nonce-keyed observation) ──
     // The capture carries ONLY the nonce-keyed observation — NEVER page bytes.
     const stdoutContent = canonicalJson({
       param: paramName,

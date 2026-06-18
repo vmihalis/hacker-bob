@@ -359,12 +359,20 @@ test("ssrf safety: block_internal_hosts on → refuses (fails closed), no sessio
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
-test("pii safety: a percent-encoded PII shape in a recorded path segment blocks the signed row", () => withTempHome(async () => {
+test("pii safety: a PII path segment is screened BEFORE any navigation (no session, no nav, no audit leak)", () => withTempHome(async () => {
   const domain = "xss-exec-pii-path.example.test";
   setupSession(domain, { endpoints: [`https://${domain}/u/alice%40corp.com/search?${LOCUS}=test`] });
-  const result = await run(domain);
+  const driver = makeDriver();
+  const result = await run(domain, { driver });
   assert.equal(result.confirmed, false, JSON.stringify(result));
   assert.equal(result.reason, "proof_target_contains_sensitive_value");
+  // The target PII screen runs before the browser work, so no live audited request fires.
+  assert.equal(driver.calls.started, 0, "must not start a browser session for a PII-path surface");
+  assert.equal(driver.calls.navigate.length, 0, "must not navigate (or audit) a PII-path surface");
+  const auditPath = httpAuditJsonlPath(domain);
+  if (fs.existsSync(auditPath)) {
+    assert.ok(!fs.readFileSync(auditPath, "utf8").includes("alice"), "PII path must not reach http-audit.jsonl");
+  }
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
