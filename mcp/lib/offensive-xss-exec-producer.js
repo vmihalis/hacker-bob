@@ -39,8 +39,12 @@
 // driver's own navigate guard (mcp/browser-driver.js). NOTE: with block_internal_hosts
 // OFF (the only mode this producer runs — it refuses when ON), the driver's recheck is
 // a host-string scope check, NOT a DNS / internal-IP resolution; that resolution is the
-// documented SSRF residual on the browser path. The producer also re-checks each
-// navigation's final_url stays on the surface origin (fail closed on an off-origin redirect).
+// documented SSRF residual on the browser path. The producer strips the endpoint
+// fragment, and re-checks each navigation's final_url stays on the recorded endpoint
+// (fail closed on any redirect to a different origin OR path) so a signed HIGH is never
+// attributed to a page the script did not run on. Pre-emptive redirect interception
+// (the browser already issued the redirected hop) is a shared browser-driver change
+// deferred to the browser-hardening / offensive-sandbox PR.
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): this is the FIRST tool that signs a
 // HIGH offensive-runs row, so the #108 in-process-key boundary is now load-bearing
@@ -176,19 +180,42 @@ function isWafStatus(nav) {
 }
 
 // page.goto follows server redirects, so the page the marker is observed on may
-// differ from the requested URL. Fail closed if a navigation's final_url leaves the
-// surface origin (the signed row's target must name the origin the script ran on,
-// and an off-origin redirect must never be attributed to this surface). A missing
-// final_url is treated as "no redirect observed" — the requested URL was already
-// scope-validated upfront and re-checked by the driver; an unparseable one fails closed.
-function finalUrlEscapesOrigin(nav, baseOrigin) {
+// differ from the requested URL. Fail closed if a navigation's final_url LEFT the
+// recorded endpoint — a different ORIGIN or a different PATH (e.g. /search -> /logout):
+// the signed row's target must name the exact endpoint the script ran on, a
+// same-origin redirect to a mutation path must never be trusted, and an off-origin
+// redirect must never be attributed to this surface. Compared at origin+pathname
+// granularity so a benign query re-normalization is not a false "redirect". A missing
+// final_url means no redirect was observed (the requested URL was scope-validated
+// upfront and re-checked by the driver); an unparseable one fails closed. NOTE: this
+// is a POST-navigation refusal — it stops the tool from SIGNING (or reading the marker)
+// on a redirect, but the browser driver has already issued the redirected hop; full
+// pre-emptive redirect interception is a shared browser-driver change deferred to the
+// browser-hardening / offensive-sandbox PR (mitigated here: block_internal_hosts ON
+// refuses the whole run, the requested URL is server-derived + scope-validated, and no
+// signed positive can be forged across a redirect that drops the nonce payload).
+function navigationLeftEndpoint(nav, baseUrl) {
   const finalUrl = nav && typeof nav.final_url === "string" ? nav.final_url : null;
   if (!finalUrl) return false;
   try {
-    return new URL(finalUrl).origin !== baseOrigin;
+    const f = new URL(finalUrl);
+    return f.origin !== baseUrl.origin || f.pathname !== baseUrl.pathname;
   } catch {
     return true;
   }
+}
+
+// A browser/Playwright error message commonly embeds the full navigated URL, which
+// preserves the surface's non-locus recorded query params (token=, session=). This
+// tool is sensitive_output:true, so strip every embedded http(s) URL down to
+// origin+path (drop query/fragment/userinfo) and cap the length before returning the
+// failure reason to the agent.
+function redactedBrowserFailure(error) {
+  const raw = error && error.message ? String(error.message) : String(error);
+  const stripped = raw.replace(/https?:\/\/[^\s"'<>]+/gi, (u) => {
+    try { const p = new URL(u); return `${p.origin}${p.pathname}`; } catch { return "[url]"; }
+  });
+  return stripped.slice(0, 300);
 }
 
 // The LIVE browser driver. confirmXssExecution accepts an injectable `driver` so
@@ -311,6 +338,11 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     return fail("blocked_by_design", "ambiguous_query_endpoint");
   }
   const baseUrl = locusEndpoints[0];
+  // Strip any fragment: it is never sent to the server, and the read-only guard only
+  // inspects path+query — a recorded SPA fragment (#/logout, #/settings/delete) could
+  // otherwise drive a client-side mutation route in the browser. Both the control and
+  // probe URLs are built from baseUrl, so clearing it here clears it on both.
+  baseUrl.hash = "";
   assertReadOnlyPath(baseUrl.toString(), TOOL_ID);
 
   const paramNames = recordedQueryParamNames(baseUrl);
@@ -393,7 +425,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     if (isWafStatus(controlNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
     }
-    if (finalUrlEscapesOrigin(controlNav, baseUrl.origin)) {
+    if (navigationLeftEndpoint(controlNav, baseUrl)) {
       return fail("blocked_by_defense", "redirect_off_surface");
     }
     const controlMarker = await readMarker(drv, sessionId, markerKey);
@@ -407,7 +439,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
     if (isWafStatus(probeNav)) {
       return fail("blocked_by_defense", "waf_or_rate_limit");
     }
-    if (finalUrlEscapesOrigin(probeNav, baseUrl.origin)) {
+    if (navigationLeftEndpoint(probeNav, baseUrl)) {
       return fail("blocked_by_defense", "redirect_off_surface");
     }
     const probeMarker = await readMarker(drv, sessionId, markerKey);
@@ -495,7 +527,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
       target_domain: domain,
       surface_id: surfaceId,
       oracle_kind: oracleKind,
-      failure_reason: error && error.message ? error.message : String(error),
+      failure_reason: redactedBrowserFailure(error),
       ...internalHostPolicy,
     });
   } finally {

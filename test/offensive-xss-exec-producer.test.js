@@ -241,6 +241,45 @@ test("negative: an off-origin redirect (final_url leaves the surface) → redire
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("negative: a same-origin redirect to a different path (e.g. /logout) → redirect_off_surface", () => withTempHome(async () => {
+  const domain = "xss-exec-neg-sameorigin-redirect.example.test";
+  setupSession(domain);
+  // 200, but the page ended on a different PATH of the SAME origin (a mutation route).
+  // The origin check alone would pass; the marker must not be attributed to /search.
+  const driver = makeDriver({ finalUrl: `https://${domain}/logout?${LOCUS}=x` });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "redirect_off_surface");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("scope safety: a recorded endpoint fragment (#/logout) is stripped before navigation", () => withTempHome(async () => {
+  const domain = "xss-exec-fragment.example.test";
+  setupSession(domain, { endpoint: `https://${domain}/search?${LOCUS}=test#/logout` });
+  const driver = makeDriver();
+  const result = await run(domain, { driver });
+  // Still confirms (the fragment is irrelevant to the server reflection)...
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  // ...and NO navigated URL carries the client-side fragment route.
+  assert.ok(driver.calls.navigate.length > 0);
+  for (const u of driver.calls.navigate) {
+    assert.ok(!u.includes("#"), `navigated URL must carry no fragment: ${u}`);
+  }
+}));
+
+test("output safety: a browser error embedding a URL with a secret query param is redacted in failure_reason", () => withTempHome(async () => {
+  const domain = "xss-exec-redact.example.test";
+  setupSession(domain);
+  const navError = new Error(`net::ERR_TIMED_OUT at https://${domain}/search?${LOCUS}=x&token=SECRET123456`);
+  const result = await run(domain, { driver: makeDriver({ navError }) });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "browser_error");
+  assert.ok(!String(result.failure_reason).includes("SECRET123456"), `must not leak the token: ${result.failure_reason}`);
+  assert.ok(!String(result.failure_reason).includes("token="), "must strip the query from the embedded URL");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 test("negative: WAF status on navigation → waf_or_rate_limit", () => withTempHome(async () => {
   const domain = "xss-exec-neg-waf.example.test";
   setupSession(domain);
