@@ -31,6 +31,9 @@
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { runOffensiveTool, defaultOffensiveDocker } = require("./offensive-runner.js");
 const { resolveOffensiveImageDigest, assertOffensiveImagePresent } = require("./offensive-image.js");
+const { readSessionStateStrict } = require("./session-state-store.js");
+const { blockInternalHostsPolicyFields } = require("./session-state-contracts.js");
+const { redactUrlSensitiveValues } = require("../redaction.js");
 
 const NUCLEI_TOOL_ID = "bob_nuclei_scan";
 
@@ -47,16 +50,26 @@ const NUCLEI_FLAG_SPEC = Object.freeze({
   url: Object.freeze(["-u"]),
 });
 
-// Runner-injected (TRUSTED) control flags — never agent-suppliable. -no-interactsh forces
-// nuclei's OAST fully OFF (the structural-soundness fix above). The rest make the run
-// non-interactive and machine-parseable for the detection classify. None carry a URL value
-// (the runner rejects a forced flag with a URL value).
+// Runner-injected (TRUSTED) control flags — never agent-suppliable. None carry a URL value
+// (the runner rejects a forced flag with a URL value); value-bearing caps use the `=` form
+// because forcedFlags are single tokens, not flag+value pairs.
 const NUCLEI_FORCED_FLAGS = Object.freeze([
-  "-no-interactsh",        // disable nuclei's interactsh/OAST entirely (no correlation attempted)
-  "-disable-update-check", // no startup template/engine update fetch
-  "-jsonl",                // JSONL findings — the classify oracle parses these
-  "-silent",               // findings only (no banner / progress)
-  "-no-color",             // no ANSI in captured stdout
+  // machine output — the classify oracle parses JSONL
+  "-jsonl",
+  "-silent",                       // findings only (no banner / progress)
+  "-no-color",                     // no ANSI in captured stdout
+  "-disable-update-check",         // no startup template/engine update fetch
+  // OAST hard-off — the structural-soundness fix above (nuclei interactsh is incompatible
+  // with Bob's OOB sink; no correlation is attempted, so no false OAST signal can arise)
+  "-no-interactsh",
+  // scope + aggression bounds: one MCP call must not become an invasive full-corpus sweep
+  // that bypasses the per-session run budget, follow redirects off-scope, or fire mutating
+  // templates. The runner scope-gates only the initial -u, so redirects are forced OFF.
+  "-disable-redirects",                  // nuclei templates can follow up to 10 redirects → off-scope egress
+  "-exclude-tags=intrusive,dos,fuzz",    // drop the most aggressive / mutating template classes (detection-only)
+  "-rate-limit=50",                      // cap req/s (nuclei default 150) — responsible scanning + WAF-safety
+  "-concurrency=10",                     // cap parallel templates (default 25)
+  "-timeout=10",                         // per-request timeout (seconds)
 ]);
 
 // How many parsed JSONL lines to walk (bounds classify work on a huge capture) and how many
@@ -131,7 +144,11 @@ function summarizeNucleiJsonl(stdoutText) {
     const tid = obj["template-id"] || obj.templateID || obj.template_id || obj.template;
     if (typeof tid === "string" && tid && templateIds.size < MAX_TRACKED) templateIds.add(clampStr(tid));
     const at = obj["matched-at"] || obj.matched || obj.host;
-    if (typeof at === "string" && at && matched.size < MAX_TRACKED) matched.add(clampStr(at));
+    // Redact sensitive query/credential values in the matched-at URL before surfacing it
+    // as a lead — a matched-at can carry auth-callback codes, signed-URL params, or opaque
+    // ids that the runner's pattern-based secret scan won't catch. Use Bob's canonical URL
+    // redaction (same helper the audit log uses).
+    if (typeof at === "string" && at && matched.size < MAX_TRACKED) matched.add(clampStr(redactUrlSensitiveValues(String(at))));
   }
   if (findingsCount > MAX_TRACKED) truncated = true;
 
@@ -171,6 +188,26 @@ async function runNucleiScan(args, deps = {}) {
   if (!targetUrl) rejectInvalid("target_url is required");
   const severity = normalizeSeverityList(a.severity);
   const tags = normalizeTagList(a.tags);
+
+  // The offensive container is operator-locked WIDE-OPEN egress (no proxy / no gate), so it
+  // CANNOT honor a session block_internal_hosts policy. If the operator set it, fail closed
+  // rather than send wide-open traffic that could reach internal/metadata hosts — mirroring
+  // the in-process producers' refuse-when-internal-blocking-cannot-be-honored convention.
+  const { state } = readSessionStateStrict(domain);
+  if (blockInternalHostsPolicyFields(state).block_internal_hosts === true) {
+    return {
+      tool: "nuclei",
+      tool_id: NUCLEI_TOOL_ID,
+      target_domain: domain,
+      ran: false,
+      confirmed: false,
+      row_written: false,
+      offensive_outcome: "blocked_by_design",
+      reason: "block_internal_hosts_unsupported_in_wide_open_container",
+      leads: null,
+      note: NUCLEI_DETECTION_NOTE,
+    };
+  }
 
   // Resolve + preflight the digest-pinned arsenal image. An unpinned/absent image is an
   // operator-setup condition (the image must be re-minted to include nuclei) → a clean
@@ -214,7 +251,12 @@ async function runNucleiScan(args, deps = {}) {
   });
 
   const masked = result && typeof result.masked_summary === "object" ? result.masked_summary : null;
-  const ran = !!result && result.offensive_outcome !== "blocked_by_infra";
+  // A timed-out run DID execute — the container consumed a real run-budget slot (the runner
+  // labels a timeout blocked_by_infra, but its own comment notes the container actually ran).
+  // Only the pre-spawn infra blocks (budget / network / spawn / container-failed-to-start)
+  // mean nuclei never ran, so treat everything EXCEPT a non-timeout infra block as having run
+  // — keeping `ran` consistent with the run-budget accounting.
+  const ran = !!result && (result.offensive_outcome !== "blocked_by_infra" || result.reason === "offensive_run_timed_out");
   return {
     tool: "nuclei",
     tool_id: NUCLEI_TOOL_ID,

@@ -150,12 +150,33 @@ test("bob_nuclei_scan is DELIBERATELY ABSENT from the demonstrated-severity ceil
   );
 });
 
-test("forced flags hard-disable nuclei OAST (-no-interactsh) + force JSONL/silent", () => {
+test("forced flags hard-disable OAST + redirects + cap aggression (detection-only posture)", () => {
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-no-interactsh"));
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-jsonl"));
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-silent"));
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-disable-redirects"), "redirects forced off (off-scope egress)");
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-exclude-tags=intrusive,dos,fuzz"), "intrusive/mutating templates excluded");
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-rate-limit=50"), "rate cap");
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-concurrency=10"), "concurrency cap");
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-timeout=10"), "per-request timeout cap");
+  // Every forced flag is a single token starting with '-' and carries no URL value (the
+  // runner rejects forced flags that are bare args, the '--' separator, or URL-bearing).
+  for (const f of NUCLEI_FORCED_FLAGS) {
+    assert.ok(typeof f === "string" && f.startsWith("-") && f !== "--", `forced flag ${f} is a flag token`);
+    const inline = f.includes("=") ? f.slice(f.indexOf("=") + 1) : "";
+    assert.ok(!/^([a-z][a-z0-9+.-]*:)?\/\//i.test(inline), `forced flag ${f} carries no URL value`);
+  }
   // The allowlist names every target-bearing flag so the runner AIM-check scope-gates it.
   assert.deepEqual([...NUCLEI_FLAG_SPEC.url], ["-u"]);
+});
+
+test("summarizeNucleiJsonl: redacts query values in matched-at endpoints (no secret leaks as a lead)", () => {
+  const out = jsonlFinding("oauth-leak", "high", "https://x.example/cb?code=SECRETAUTHCODE&state=abc");
+  const s = summarizeNucleiJsonl(out);
+  const joined = s.matched_endpoints.join(" ");
+  assert.ok(!joined.includes("SECRETAUTHCODE"), "sensitive query value must be redacted from the lead");
+  assert.ok(joined.includes("REDACTED"), "redaction marker present");
+  assert.ok(joined.includes("x.example/cb"), "endpoint locus preserved");
 });
 
 // ───────────────────────── runNucleiScan end-to-end (real runner + stub docker) ─────────────────────────
@@ -251,6 +272,29 @@ test("image not present locally: inspectImage→false → blocked_by_infra, no r
   assert.equal(docker.calls.run.length, 0, "no run after a failed preflight");
 }));
 
+test("ran reflects execution: a timed-out run is ran:true (container executed + burned a budget slot)", () => withTempHome(async () => {
+  const domain = "nuclei-timeout.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ runResult: { exit_code: null, timed_out: true } });
+  const r = await runNucleiScan({ target_domain: domain, target_url: `https://${domain}/` }, { docker, resolveDigest: () => DIGEST });
+  assert.equal(r.offensive_outcome, "blocked_by_infra");
+  assert.equal(r.reason, "offensive_run_timed_out");
+  assert.equal(r.ran, true, "a timed-out container DID run (vs a pre-spawn infra block)");
+  assert.equal(offensiveRunCount(domain), 1, "a timeout is a genuine run — the budget slot is NOT refunded");
+}));
+
+test("fails closed when block_internal_hosts is set (the wide-open container can't honor it)", () => withTempHome(async () => {
+  const domain = "nuclei-internal.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/`, block_internal_hosts: true }));
+  const docker = makeStubDocker({ writeStdout: "" });
+  const r = await runNucleiScan({ target_domain: domain, target_url: `https://${domain}/` }, { docker, resolveDigest: () => DIGEST });
+  assert.equal(r.ran, false);
+  assert.equal(r.offensive_outcome, "blocked_by_design");
+  assert.equal(r.reason, "block_internal_hosts_unsupported_in_wide_open_container");
+  assert.equal(docker.calls.run.length, 0, "no container ran under block_internal_hosts");
+  assert.equal(offensiveRunCount(domain), 0, "no budget slot consumed");
+}));
+
 test("redaction backstop: secret-shaped nuclei output blocks, surfaces no leads, signs nothing", () => withTempHome(async () => {
   const domain = "nuclei-secret.example.test";
   setup(domain);
@@ -272,5 +316,8 @@ test("redaction backstop: secret-shaped nuclei output blocks, surfaces no leads,
 
 test("module hygiene: the producer does NOT spawn processes itself (container exec goes through the runner)", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "offensive-nuclei-producer.js"), "utf8");
-  assert.ok(!/require\(["']child_process["']\)/.test(src), "producer must not require child_process directly");
+  // Catch a child_process require/import in ALL forms: node: prefix, single/double quotes,
+  // surrounding whitespace, ESM `from`, and dynamic import().
+  const cpImport = /(?:require|import)\s*\(\s*["'](?:node:)?child_process["']\s*\)|from\s+["'](?:node:)?child_process["']/;
+  assert.ok(!cpImport.test(src), "producer must not require/import child_process directly");
 });
