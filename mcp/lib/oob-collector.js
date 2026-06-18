@@ -91,7 +91,6 @@ const {
 } = require("./verification-contracts.js");
 const {
   oobTokensJsonlPath,
-  oobInteractionsJsonlPath,
   sessionsRoot,
   assertSafeDomain,
 } = require("./paths.js");
@@ -195,17 +194,57 @@ function notConfirmed(outcome, reason, extra = {}) {
   return { confirmed: false, offensive_outcome: outcome, row_written: false, reason, ...extra };
 }
 
-// Read the append-only token ledger, fail-closed on a torn/corrupt line exactly
-// like readOffensiveRunRecords (a partial line must never be silently skipped).
-function readOobTokenRecords(domain) {
-  const file = oobTokensJsonlPath(domain);
-  let raw;
+// Read the audit-graded token ledger with the SAME realpath / O_NOFOLLOW / nlink
+// discipline as the append path. The ledger BINDS each token to its in-scope
+// surface + canonical_target, and bob_oob_poll trusts that binding to stamp the
+// signed row — so a plain readFileSync would let an evaluator (with a Bash `ln`
+// the Write-tool guard does not cover) plant oob-tokens.jsonl as a symlink to a
+// chosen binding and drive a signed row with an attacker-picked target. Returns
+// null when the ledger does not exist yet.
+function readOobTokensRawHardened(domain) {
+  const nominalDir = path.dirname(oobTokensJsonlPath(domain));
+  let realDir;
   try {
-    raw = fs.readFileSync(file, "utf8");
+    realDir = fs.realpathSync(nominalDir);
   } catch (err) {
-    if (err && err.code === "ENOENT") return [];
+    if (err && err.code === "ENOENT") return null;
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `unable to resolve oob-tokens.jsonl dir: ${err.message}`);
+  }
+  const expectedDir = path.join(fs.realpathSync(sessionsRoot()), assertSafeDomain(domain));
+  if (realDir !== expectedDir) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `oob-tokens.jsonl dir must stay inside its session root without symlinks: ${nominalDir}`);
+  }
+  const realLeaf = path.join(realDir, "oob-tokens.jsonl");
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  let fd = null;
+  try {
+    fd = fs.openSync(realLeaf, fs.constants.O_RDONLY | noFollow);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    if (err && (err.code === "ELOOP" || err.code === "EMLINK")) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `oob-tokens.jsonl must not be a symlink: ${realLeaf}`);
+    }
     throw new ToolError(ERROR_CODES.STATE_CONFLICT, `unable to read oob-tokens.jsonl: ${err.message}`);
   }
+  try {
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `oob-tokens.jsonl must be a regular file: ${realLeaf}`);
+    }
+    if (stats.nlink !== 1) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `oob-tokens.jsonl must not be hard-linked: ${realLeaf}`);
+    }
+    return fs.readFileSync(fd, "utf8");
+  } finally {
+    try { fs.closeSync(fd); } catch {}
+  }
+}
+
+// Parse the hardened ledger read, fail-closed on a torn/corrupt line exactly like
+// readOffensiveRunRecords (a partial line must never be silently skipped).
+function readOobTokenRecords(domain) {
+  const raw = readOobTokensRawHardened(domain);
+  if (raw == null) return [];
   const records = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -290,42 +329,38 @@ function appendOobTokenRecordHardened(domain, record) {
   }
 }
 
-// Best-effort, non-audit-graded debug mirror of the fetched interactions. Never
-// fails the poll; carries only the token + interaction metadata (no raw bytes).
-function mirrorInteractionsBestEffort(domain, record) {
-  try {
-    fs.appendFileSync(oobInteractionsJsonlPath(domain), `${JSON.stringify(record)}\n`, { mode: 0o600 });
-  } catch {
-    // telemetry only — a mirror write failure must never block a poll
-  }
-}
-
 // Resolve the surface's representative IN-SCOPE recorded endpoint (the first
 // candidate that resolves + passes the scope check). Unlike the IDOR oracle,
 // OOB has no {id} resource-read semantic — the bound proof target is simply an
 // in-scope endpoint of the routed surface, so this does NOT require a
 // path_template / {id} slot. The query is stripped downstream by
 // canonicalizeExploitTarget so the bound target is value-blind.
+// Returns { ok:true, url } or { ok:false, reason }. SINGLE-endpoint / single-host
+// HARD SCOPE (mirrors the IDOR producer's single-endpoint guard): mint gives the
+// agent only surface_id, so a multi-endpoint or multi-host surface would let the
+// agent inject into one endpoint while poll stamps row.target with a DIFFERENT
+// in-scope endpoint of the same surface — a wrong-target attribution that still
+// passes the surface-id proof gates. Refuse the ambiguity (multi-endpoint OOB
+// binding is deferred).
 function resolveInScopeEndpoint(domain, surface, state) {
   const stateOrigin = originFromState(domain, state, MINT_TOOL_ID);
   const origins = resolveSurfaceOrigins(surface, stateOrigin);
-  for (const endpoint of candidateSurfaceEndpoints(surface)) {
-    for (const origin of origins) {
-      let candidate;
-      try {
-        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
-      } catch {
-        continue;
-      }
-      try {
-        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
-      } catch {
-        continue;
-      }
-      return candidate;
-    }
+  const endpoints = candidateSurfaceEndpoints(surface);
+  if (endpoints.length !== 1 || origins.length !== 1) {
+    return { ok: false, reason: "oob_surface_not_single_endpoint" };
   }
-  rejectInvalidArguments("surface_id has no in-scope recorded endpoint to bind the OOB proof target");
+  let candidate;
+  try {
+    candidate = urlFromEndpoint(endpoints[0].value, origins[0], endpoints[0].field);
+  } catch {
+    return { ok: false, reason: "oob_surface_endpoint_unresolvable" };
+  }
+  try {
+    assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+  } catch {
+    return { ok: false, reason: "oob_surface_endpoint_out_of_scope" };
+  }
+  return { ok: true, url: candidate };
 }
 
 // ── bob_oob_mint ──────────────────────────────────────────────────────────────
@@ -346,8 +381,11 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
   // from at poll — NEVER the OOB host.
   const { state } = readSessionStateStrict(domain);
   const { surface } = findRoutedSurface(domain, surfaceId);
-  const baseline = resolveInScopeEndpoint(domain, surface, state);
-  const canonicalTarget = canonicalizeExploitTarget(baseline.toString());
+  const resolved = resolveInScopeEndpoint(domain, surface, state);
+  if (!resolved.ok) {
+    return notConfirmed("blocked_by_design", resolved.reason, { minted: false });
+  }
+  const canonicalTarget = canonicalizeExploitTarget(resolved.url.toString());
   if (sensitiveShapesPresent(canonicalTarget)) {
     return notConfirmed("blocked_operator_pii", "proof_target_contains_sensitive_value", { minted: false });
   }
@@ -385,7 +423,10 @@ async function oobMint(args, { config = OOB_CONFIG, clock = Date.now } = {}) {
     // token is a Bob nonce returned BY DESIGN so the agent can place it; it is not
     // target-sensitive.
     payload_dns: `${token}.${config.host}`,
-    payload_http: `https://${config.host}/${token}`,
+    // http:// (not https://) — the reference sink's callback listener is plain
+    // HTTP; the DNS payload is scheme-agnostic and the primary detector. (The
+    // poll API Bob queries is separately HTTPS; that is Bob->sink, not target->sink.)
+    payload_http: `http://${config.host}/${token}`,
     oracle_kind: ORACLE_KIND_VALUES[0],
     note: "Inject payload_dns or payload_http into the target via a target-facing tool, then call bob_oob_poll with this token_handle.",
   };
@@ -456,7 +497,6 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
 
   // Exact-token match ONLY. Stray / non-minted interactions are dropped → no row.
   const matched = normalizeInteractions(parsed).filter((i) => i.token === binding.token);
-  mirrorInteractionsBestEffort(domain, { token_handle: tokenHandle, matched: matched.length, at: clock() });
   if (matched.length === 0) {
     return notConfirmed("blocked_by_infra", "no_matching_interaction");
   }
@@ -474,10 +514,14 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   // (source = resolver), so DNS hits are never withheld on this basis.
   let sourceDistinct = true;
   if (httpHit && config.selfEgressIp && typeof httpHit.source_ip === "string") {
-    if (httpHit.source_ip === config.selfEgressIp) {
+    // Normalize IPv4-mapped IPv6 (a Node server on :: reports IPv4 clients as
+    // "::ffff:203.0.113.99") so the documented plain-IPv4 config still matches.
+    const norm = (ip) => String(ip).replace(/^::ffff:/i, "");
+    const sameEgress = norm(httpHit.source_ip) === norm(config.selfEgressIp);
+    if (sameEgress) {
       return notConfirmed("blocked_by_design", "self_hit_suspected");
     }
-    sourceDistinct = httpHit.source_ip !== config.selfEgressIp;
+    sourceDistinct = !sameEgress;
   }
 
   // CAPTURE: Bob's OWN observation ONLY — token + constant host + protocol + ts +
@@ -516,7 +560,10 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
     dns_only_attribution_weak: dnsOnly,
-    control_no_preinjection_hit: true,
+    // NOTE: we do NOT stamp a "no pre-injection hit" control — no pre-injection
+    // poll is performed, so asserting it in the signed MAC would claim an
+    // observation that never happened. Freshness of the 128-bit token is already
+    // covered by token_minted_server_side (it cannot collide with a prior hit).
   };
 
   // Sign LAST + the token-consumed double-sign guard, BOTH under the SAME session

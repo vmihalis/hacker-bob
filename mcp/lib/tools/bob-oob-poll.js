@@ -39,5 +39,5 @@ module.exports = Object.freeze({
   sensitive_output: true,
   // Deliberately NOT http-audit.jsonl — the sink is Bob's own host, not the target,
   // so OOB polling stays out of target telemetry / circuit-breaker accounting.
-  session_artifacts_written: ["offensive-runs.jsonl", "offensive-runs/", "oob-interactions.jsonl"],
+  session_artifacts_written: ["offensive-runs.jsonl", "offensive-runs/"],
 });

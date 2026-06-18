@@ -162,7 +162,8 @@ test("mint: writes ONE in-scope binding + returns benign token payloads + no off
   assert.equal(result.minted, true);
   assert.ok(result.token_handle, "must return a token_handle");
   assert.equal(result.payload_dns.endsWith(`.${OOB_HOST}`), true, result.payload_dns);
-  assert.equal(result.payload_http.startsWith(`https://${OOB_HOST}/`), true, result.payload_http);
+  // payload_http is http:// (the reference sink callback is plain HTTP).
+  assert.equal(result.payload_http.startsWith(`http://${OOB_HOST}/`), true, result.payload_http);
 
   const bindings = readOobTokenRecords(domain).filter((r) => r.kind === "binding");
   assert.equal(bindings.length, 1);
@@ -173,6 +174,30 @@ test("mint: writes ONE in-scope binding + returns benign token payloads + no off
   assert.notEqual(new URL(binding.canonical_target).host, OOB_HOST);
   // mint is non-signing: no offensive-runs row.
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("mint: refuses an ambiguous multi-endpoint surface (single-endpoint hard scope)", () => withTempHome(async () => {
+  const domain = "oob-multi.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: SURFACE_ID,
+      title: "Multi-endpoint surface",
+      surface_type: "web",
+      hosts: [domain],
+      endpoints: [`https://${domain}/api/fetch`, `https://${domain}/api/proxy`],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    }],
+  }, null, 2)}\n`, "utf8");
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+  ensureHandoffSigningKey(domain);
+
+  const result = await oobMint(mintArgs(domain), { config: CONFIG });
+  assert.equal(result.minted, false);
+  assert.equal(result.reason, "oob_surface_not_single_endpoint");
+  assert.equal(fs.existsSync(oobTokensJsonlPath(domain)), false);
 }));
 
 test("mint: per-session token cap is enforced", () => withTempHome(async () => {

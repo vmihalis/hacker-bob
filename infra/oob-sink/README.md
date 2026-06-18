@@ -23,7 +23,7 @@ listing endpoint**, so tokens are read-isolated across sessions.
 1. **Own a registrable domain** and delegate an authoritative subdomain zone to this host:
    - `NS  oob.example.com  ->  <this VPS public IP>`
    - `A/AAAA  *.oob.example.com  ->  <this VPS public IP>`  (wildcard, so any `<token>.oob.example.com` resolves here)
-2. **Open the firewall**: inbound `udp/tcp 53` (DNS), `tcp 80` (HTTP callback), and the poll port (default `8443`).
+2. **Open the firewall**: inbound `udp 53` (DNS — UDP only; tiny A answers need no TCP fallback), `tcp 80` (HTTP callback), and the poll port (default `8443`).
 3. **TLS for the poll API**: obtain a cert for the poll host (e.g. Let's Encrypt). The MCP polls
    `https://` only, so `OOB_POLL_TLS_CERT` + `OOB_POLL_TLS_KEY` are **required in production**.
 4. **Run the daemon** (see the systemd unit). DNS/HTTP callbacks need no TLS (the target chooses the scheme).

@@ -15,8 +15,11 @@
 // are read-isolated across sessions).
 //
 // Three listeners (all plain JSON, no interactsh wire-protocol / client crypto):
-//   * DNS  (UDP+TCP :53)          — authoritative responder for *.<ZONE>; logs the
+//   * DNS  (UDP :53)              — authoritative responder for *.<ZONE>; logs the
 //                                    queried FQDN's leftmost label as the token.
+//                                    UDP only: the A answer is tiny, so TCP fallback
+//                                    is not required for OOB detection; a TCP :53
+//                                    listener is an optional operator hardening.
 //   * HTTP (:80, the callback)    — logs Host/path -> token; body is never read.
 //   * Poll (HTTPS :8443 by default)— GET /poll?token=<token> -> {interactions:[...]}.
 //
@@ -53,9 +56,14 @@ if (!ZONE) {
   process.exit(2);
 }
 
-// token -> [{ protocol, source_ip, first_seen_ts }]
+// token -> [{ protocol, source_ip, first_seen_ts }] (insertion-ordered Map).
 const interactions = new Map();
 const TOKEN_RE = /^[a-z0-9-]{8,128}$/;
+// Cap on DISTINCT tracked tokens — without it an internet client could spray
+// unique labels/paths and grow the Map unbounded for the whole TTL window (a
+// trivial memory-exhaustion DoS). The per-token list cap below bounds only one
+// token's interactions, not the number of tokens.
+const MAX_TRACKED_TOKENS = 4096;
 
 function nowMs() {
   return Date.now();
@@ -63,7 +71,15 @@ function nowMs() {
 
 function record(token, protocol, sourceIp) {
   if (typeof token !== "string" || !TOKEN_RE.test(token)) return;
-  if (!interactions.has(token)) interactions.set(token, []);
+  if (!interactions.has(token)) {
+    if (interactions.size >= MAX_TRACKED_TOKENS) {
+      // Evict the oldest tracked token (Map preserves insertion order) to bound
+      // memory under a unique-token spray.
+      const oldest = interactions.keys().next().value;
+      if (oldest !== undefined) interactions.delete(oldest);
+    }
+    interactions.set(token, []);
+  }
   const list = interactions.get(token);
   // Cap per-token interactions so a flood cannot exhaust memory.
   if (list.length < 256) {
@@ -106,7 +122,13 @@ function parseDnsQuestionName(buf) {
     labels.push(buf.toString("ascii", offset + 1, offset + 1 + len));
     offset += 1 + len;
   }
-  return { name: labels.join("."), questionEnd: offset };
+  // The question section is QNAME + QTYPE(2) + QCLASS(2); questionEnd must include
+  // those 4 trailing bytes, else the echoed question is malformed and the appended
+  // answer is parsed at the wrong offset (RFC 1035 §4.1.2).
+  if (offset + 4 > buf.length) {
+    throw new Error("truncated DNS question (missing QTYPE/QCLASS)");
+  }
+  return { name: labels.join("."), questionEnd: offset + 4 };
 }
 
 function buildDnsAnswer(query, questionEnd) {
