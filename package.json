@@ -41,6 +41,7 @@
     ".hacker-bob/knowledge/**/*",
     "adapters/**/*",
     "bin/**/*.js",
+    "docker/**/*.Dockerfile",
     "docs/**/*.md",
     "!docs/refactor-*.md",
     "!docs/plane-delta/detail/**/*",

@@ -12,28 +12,28 @@
 # clean) and sha256-verified. PREFER an IN-REPO pinned SHA (HTTPX_SHA256/DALFOX_SHA256 below) so a
 # compromised upstream release fails against an in-repo reference; otherwise the FIRST mint is TOFU
 # (verified against the release's own checksums file — same channel — with a loud warning + the
-# computed SHA printed for you to pin).
+# computed SHA printed for you to pin). The base image is resolved to a digest before the build so the
+# build is reproducible, and the final image digest is bound to ${REGISTRY} (never RepoDigests[0]).
 #
 # ONE-TIME OPERATOR PREREQS (the script refuses to push without them):
 #   1. Docker Desktop running.
 #   2. docker login ghcr.io   (Personal Access Token with the write:packages scope)
 #
 # Usage:
-#   scripts/build-offensive-image.sh                # full: fetch+verify+stage -> build -> push -> pin
-#   scripts/build-offensive-image.sh --stage-only   # fetch+verify+stage binaries only (no docker)
+#   HTTPX_VERSION=x.y.z DALFOX_VERSION=x.y.z scripts/build-offensive-image.sh                # full mint
+#   HTTPX_VERSION=x.y.z DALFOX_VERSION=x.y.z scripts/build-offensive-image.sh --stage-only   # no docker
 #
-# Override knobs (env): HTTPX_VERSION, DALFOX_VERSION, HTTPX_SHA256, DALFOX_SHA256,
-#                       OFFENSIVE_REGISTRY, OFFENSIVE_ARCH, BASE_IMAGE
+# Override knobs (env): HTTPX_SHA256, DALFOX_SHA256, OFFENSIVE_REGISTRY, OFFENSIVE_ARCH, BASE_IMAGE
 set -euo pipefail
 
-# --- pinned arsenal versions — VERIFY against the current GitHub releases before a real run ---
-# A wrong version fails loudly at download (404); a tampered asset fails at the checksum gate.
-HTTPX_VERSION="${HTTPX_VERSION:-1.6.10}"
-DALFOX_VERSION="${DALFOX_VERSION:-2.9.6}"
+# --- pinned arsenal versions (REQUIRED — no default: a hardcoded guess can 404, and there is no
+#     'current' version that stays valid). Look up + pin the exact release tags:
+#       httpx:  https://github.com/projectdiscovery/httpx/releases
+#       dalfox: https://github.com/hahwul/dalfox/releases
+HTTPX_VERSION="${HTTPX_VERSION:?set HTTPX_VERSION to a current httpx release (see github.com/projectdiscovery/httpx/releases)}"
+DALFOX_VERSION="${DALFOX_VERSION:?set DALFOX_VERSION to a current dalfox release (see github.com/hahwul/dalfox/releases)}"
 
-# --- in-repo pinned SHA256 of each downloaded asset (release-tamper protection) ---
-# Leave empty for the FIRST mint (TOFU). Then pin the printed value here (or via env) so a later
-# compromised upstream release fails against this in-repo reference, not a same-channel checksums file.
+# --- in-repo pinned SHA256 of each downloaded asset (release-tamper protection); empty => TOFU 1st mint ---
 HTTPX_SHA256="${HTTPX_SHA256:-}"
 DALFOX_SHA256="${DALFOX_SHA256:-}"
 
@@ -76,6 +76,16 @@ fi
 
 upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 
+# strip a tag/digest off an image ref -> bare repo (handles an optional registry :port)
+bare_repo() { local r="${1%@*}"; printf '%s' "${r%:*}"; }
+
+# pick the RepoDigest bound to a given repo (never blindly index 0 across registries).
+# args: image_ref repo_prefix -> echoes repo@sha256:<64hex> (empty if none match)
+repo_digest_for() {
+  docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$1" |
+    awk -v p="$2@sha256:" 'index($0,p)==1 && length($0)==length(p)+64 && substr($0,length(p)+1) ~ /^[0-9a-f]{64}$/ {print; exit}'
+}
+
 # clean up all temp dirs on exit
 TMPDIRS=()
 cleanup() { local d; for d in "${TMPDIRS[@]:-}"; do [ -n "${d}" ] && rm -rf "${d}"; done; }
@@ -106,7 +116,9 @@ fetch_verify() {
   echo "${tmp}/${asset}"
 }
 
-rm -rf "${BIN_DIR:?}"     # atomic reset — clears dotfiles too so nothing stale sneaks into `COPY bin/`
+# reset the WHOLE build context — `docker build "${CONTEXT_DIR}"` uploads the entire dir to the daemon,
+# so nothing stale/secret elsewhere under the gitignored context should ever be sent. Only bin/ remains.
+rm -rf "${CONTEXT_DIR:?}"
 mkdir -p "${BIN_DIR}"
 
 # httpx (projectdiscovery) — .zip containing the bare `httpx` binary
@@ -124,25 +136,28 @@ if [ "${STAGE_ONLY}" = "1" ]; then echo "stage-only: skipping docker build/push/
 
 docker version >/dev/null 2>&1 || { echo "Docker daemon not running — start Docker Desktop" >&2; exit 4; }
 
+# resolve the base image to an immutable digest so the build is reproducible (recorded in the lockfile)
+echo ">> resolving base image digest for ${BASE_IMAGE}"
+docker pull "${BASE_IMAGE}" >/dev/null
+BASE_DIGEST="$(repo_digest_for "${BASE_IMAGE}" "$(bare_repo "${BASE_IMAGE}")")"
+[ -n "${BASE_DIGEST}" ] || { echo "could not resolve a digest for base image ${BASE_IMAGE}" >&2; exit 5; }
+echo ">> base pinned: ${BASE_DIGEST}"
+
 TAG="${REGISTRY}:$(date -u +%Y%m%d)-${ARCH}-httpx${HTTPX_VERSION}-dalfox${DALFOX_VERSION}"
-echo ">> building ${TAG} (${PLATFORM}, base ${BASE_IMAGE})"
-docker build --platform "${PLATFORM}" --build-arg "BASE_IMAGE=${BASE_IMAGE}" -f "${DOCKERFILE}" -t "${TAG}" "${CONTEXT_DIR}"
+echo ">> building ${TAG} (${PLATFORM}, base ${BASE_DIGEST})"
+docker build --platform "${PLATFORM}" --build-arg "BASE_IMAGE=${BASE_DIGEST}" -f "${DOCKERFILE}" -t "${TAG}" "${CONTEXT_DIR}"
 
 echo ">> pushing ${TAG}  (needs: docker login ghcr.io with write:packages)"
 docker push "${TAG}"
 
-DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "${TAG}")"
-[ -n "${DIGEST}" ] || { echo "could not resolve RepoDigest after push" >&2; exit 5; }
-# validate the digest shape before writing it into the lockfile (offensive-image.js also fail-closes on read)
-case "${DIGEST}" in
-  *@sha256:*) : ;;
-  *) echo "resolved digest is not name@sha256:<digest>: ${DIGEST}" >&2; exit 5 ;;
-esac
+# bind the pinned digest to the registry we just pushed to (never blindly take RepoDigests[0])
+DIGEST="$(repo_digest_for "${TAG}" "$(bare_repo "${REGISTRY}")")"
+[ -n "${DIGEST}" ] || { echo "could not resolve ${REGISTRY}@sha256:<digest> after push" >&2; docker inspect --format '{{json .RepoDigests}}' "${TAG}" >&2; exit 5; }
 echo ">> pulling by digest so --pull=never can resolve it locally: ${DIGEST}"
 docker pull "${DIGEST}" >/dev/null
 
 # write the lockfile (the SOLE source of runOffensiveTool's imageDigest) as JSON DATA — commit it.
 printf '{\n  "image_digest": "%s",\n  "base_image": "%s",\n  "built_platform": "%s",\n  "tools": { "httpx": "%s", "dalfox": "%s" }\n}\n' \
-  "${DIGEST}" "${BASE_IMAGE}" "${PLATFORM}" "${HTTPX_VERSION}" "${DALFOX_VERSION}" > "${LOCKFILE}"
+  "${DIGEST}" "${BASE_DIGEST}" "${PLATFORM}" "${HTTPX_VERSION}" "${DALFOX_VERSION}" > "${LOCKFILE}"
 echo ">> wrote ${LOCKFILE}:"; cat "${LOCKFILE}"
 echo ">> DONE. Commit mcp/lib/offensive-image.json."
