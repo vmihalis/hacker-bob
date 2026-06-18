@@ -37,6 +37,10 @@ ENV HOME=/work \
     XDG_CONFIG_HOME=/work/.config \
     XDG_CACHE_HOME=/work/.cache
 
+# Fixed non-root uid so the image stays non-root even when run directly (the manual smoke, or any use
+# outside the sandbox's forced --user 1000:1000) — defense-in-depth, independent of which BASE_IMAGE is used.
+USER 1000:1000
+
 # No entrypoint: the runner supplies the full tool argv as the container command. CMD is only the
 # default smoke — a no-network, read-only invocation proving the image+digest+--pull=never plumbing.
 ENTRYPOINT []

@@ -15,19 +15,17 @@ const {
 
 const GOOD = "ghcr.io/bobnetsec/bob-offense@sha256:" + "a".repeat(64);
 
-// create a temp lockfile path; pass `contents` (a `.js` module body) to write the file, omit to
-// leave it absent. Each call uses a fresh temp dir so require()-cache never collides across cases.
+// create a temp lockfile path; pass `contents` (JSON text) to write the file, omit to leave it absent.
 function tmpLock(contents) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-offimg-"));
-  const p = path.join(dir, "offensive-image-lock.js");
+  const p = path.join(dir, "offensive-image.json");
   if (contents !== undefined) fs.writeFileSync(p, contents);
   return p;
 }
-const lockModule = (obj) => `module.exports = ${JSON.stringify(obj)};\n`;
 
-test("offensiveImageLockPath resolves to mcp/lib/offensive-image-lock.js", () => {
-  assert.equal(OFFENSIVE_IMAGE_LOCK_BASENAME, "offensive-image-lock.js");
-  assert.ok(offensiveImageLockPath().endsWith(path.join("mcp", "lib", "offensive-image-lock.js")));
+test("offensiveImageLockPath resolves to mcp/lib/offensive-image.json", () => {
+  assert.equal(OFFENSIVE_IMAGE_LOCK_BASENAME, "offensive-image.json");
+  assert.ok(offensiveImageLockPath().endsWith(path.join("mcp", "lib", "offensive-image.json")));
 });
 
 test("resolveOffensiveImageDigest: fail-closed when the lockfile is absent", () => {
@@ -35,24 +33,34 @@ test("resolveOffensiveImageDigest: fail-closed when the lockfile is absent", () 
   assert.throws(() => resolveOffensiveImageDigest({ lockPath: p }), /not pinned/);
 });
 
-test("resolveOffensiveImageDigest: fail-closed on an unloadable lockfile", () => {
-  assert.throws(() => resolveOffensiveImageDigest({ lockPath: tmpLock("this is }{ not js") }), /not loadable/);
+test("resolveOffensiveImageDigest: fail-closed on invalid JSON", () => {
+  assert.throws(() => resolveOffensiveImageDigest({ lockPath: tmpLock("not json{") }), /not valid JSON/);
 });
 
-test("resolveOffensiveImageDigest: rejects a non-digest image_digest (mutable tag, short, empty, missing)", () => {
+test("resolveOffensiveImageDigest: rejects non-object and non-digest lockfiles", () => {
   for (const bad of [
-    lockModule({ image_digest: "ghcr.io/x/bob-offense:latest" }),
-    lockModule({ image_digest: "ghcr.io/x/bob-offense@sha256:short" }),
-    lockModule({ image_digest: "" }),
-    lockModule({ notdigest: GOOD }),
+    "null",
+    "5",
+    JSON.stringify({ image_digest: "ghcr.io/x/bob-offense:latest" }),
+    JSON.stringify({ image_digest: "ghcr.io/x/bob-offense@sha256:short" }),
+    JSON.stringify({ image_digest: "" }),
+    JSON.stringify({ notdigest: GOOD }),
   ]) {
     assert.throws(() => resolveOffensiveImageDigest({ lockPath: tmpLock(bad) }), /no valid name@sha256/);
   }
 });
 
 test("resolveOffensiveImageDigest: returns a valid pinned digest", () => {
-  const p = tmpLock(lockModule({ image_digest: GOOD, tools: { httpx: "1.0.0" } }));
+  const p = tmpLock(JSON.stringify({ image_digest: GOOD, tools: { httpx: "1.0.0" } }));
   assert.equal(resolveOffensiveImageDigest({ lockPath: p }), GOOD);
+});
+
+test("resolveOffensiveImageDigest: reads fresh each call (no require cache — picks up a bump)", () => {
+  const p = tmpLock(JSON.stringify({ image_digest: GOOD }));
+  assert.equal(resolveOffensiveImageDigest({ lockPath: p }), GOOD);
+  const BUMPED = "ghcr.io/bobnetsec/bob-offense@sha256:" + "b".repeat(64);
+  fs.writeFileSync(p, JSON.stringify({ image_digest: BUMPED }));
+  assert.equal(resolveOffensiveImageDigest({ lockPath: p }), BUMPED);
 });
 
 test("assertOffensiveImagePresent: requires a digest-pinned image (rejects a mutable tag)", async () => {
@@ -84,14 +92,14 @@ test("assertOffensiveImagePresent: fail-closed when the image is absent", async 
   );
 });
 
-test("assertOffensiveImagePresent: fail-closed (not a leak) when inspect throws", async () => {
+test("assertOffensiveImagePresent: fail-closed AND surfaces the docker error when inspect throws", async () => {
   await assert.rejects(
     () =>
       assertOffensiveImagePresent(GOOD, {
         inspectImage: async () => {
-          throw new Error("boom");
+          throw new Error("daemon down");
         },
       }),
-    /not present in the local docker store/
+    (e) => /not present in the local docker store/.test(e.message) && /daemon down/.test(e.message)
   );
 });

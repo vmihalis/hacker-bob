@@ -24,25 +24,31 @@ docker login ghcr.io                       # username = your GitHub handle; pass
 ./scripts/build-offensive-image.sh         # add --stage-only to fetch+verify binaries without docker
 
 # 4. Commit the generated lockfile:
-git add mcp/lib/offensive-image-lock.js && git commit -m "chore(offense): pin offensive arsenal image digest"
+git add mcp/lib/offensive-image.json && git commit -m "chore(offense): pin offensive arsenal image digest"
 ```
 
 The script fetches `httpx` + `dalfox` release binaries **on the host**, verifies each against its official
 GitHub release checksums file, stages them, builds a hermetic image (no in-build network), pushes to
 `ghcr.io/bobnetsec/bob-offense`, pulls the result **by digest** so the local store can resolve `--pull=never`,
-and writes the digest to `mcp/lib/offensive-image-lock.js` (the **sole source** of `runOffensiveTool`'s
-`imageDigest`). It is a generated `.js` module so `install.js`'s `mcp/lib` `.js` copy carries it to the
-operational runtime (a `.json` data file would be silently dropped by that copy).
+and writes the digest to `mcp/lib/offensive-image.json` (the **sole source** of `runOffensiveTool`'s
+`imageDigest`). The lockfile is JSON **data** — read fresh with `fs.readFileSync` + `JSON.parse`, never
+executed — and `install.js` copies it explicitly (the `mcp/lib` copy is `.js`-only).
 
 > **Verify the pinned tool versions** (`HTTPX_VERSION` / `DALFOX_VERSION` at the top of the script) against
 > the current upstream releases before a real run — a stale version 404s at download; a tampered asset fails
 > the checksum gate. Override per-run with env vars, e.g. `HTTPX_VERSION=1.6.10 ./scripts/build-offensive-image.sh`.
+>
+> **Pin the binary SHA256s in-repo for release-tamper protection.** The first mint is TOFU — the asset is
+> verified against the release's *own* checksums file (same channel) and the computed SHA is printed. Set
+> `HTTPX_SHA256` / `DALFOX_SHA256` (env or at the top of the script) to those values so a later compromised
+> upstream release fails against the in-repo reference. For full base provenance, also set `BASE_IMAGE` to a
+> `gcr.io/distroless/...@sha256:` digest (recorded in the lockfile's `base_image`).
 
 ## Runtime behavior (fail-closed)
 
 `mcp/lib/offensive-image.js`:
-- `resolveOffensiveImageDigest()` loads + validates the lockfile; **throws** if absent (not yet minted),
-  unloadable, or carrying a non-`name@sha256` digest.
+- `resolveOffensiveImageDigest()` reads + validates the lockfile fresh each call; **throws** if absent (not
+  yet minted), unparseable, or carrying a non-`name@sha256` digest.
 - `assertOffensiveImagePresent(digest, docker)` runs `docker image inspect <digest>` before a run; **throws**
   with a clear "run `scripts/build-offensive-image.sh`" message if the image is not in the local store, so
   `--pull=never` never fails cryptically.
@@ -63,5 +69,5 @@ Until the lockfile is minted, both fail closed — an offensive container run is
 ## Bumping the image
 
 Edit the pinned versions in `scripts/build-offensive-image.sh`, re-run it, commit the regenerated
-`mcp/lib/offensive-image-lock.js`, and re-run `./install.sh <runtime>` so the operational runtime picks up the
+`mcp/lib/offensive-image.json`, and re-run `./install.sh <runtime>` so the operational runtime picks up the
 new digest.

@@ -6,44 +6,55 @@
 // The sandbox (offensive-sandbox.js) runs with `--pull=never` + `name@sha256:<digest>`, so the
 // arsenal image MUST be (1) digest-pinned and (2) already in the local docker store. A purely-local
 // `docker build` has no RepoDigest, so the digest is minted by scripts/build-offensive-image.sh
-// (build -> push to ghcr.io -> pull-by-digest) which writes the lockfile mcp/lib/offensive-image-lock.js
-// (a generated `.js` module so install.js's mcp/lib `.js` copy picks it up automatically; a `.json`
-// data file would be silently dropped by that copy). This module loads that lockfile and fail-closes
-// when it is absent/unloadable (the image hasn't been minted yet), when the pinned digest is not a
-// valid name@sha256, or when it is not in the local store (so `--pull=never` would otherwise fail
-// cryptically).
+// (build -> push to ghcr.io -> pull-by-digest) which writes the lockfile mcp/lib/offensive-image.json.
+//
+// The lockfile is JSON read FRESH with fs.readFileSync + JSON.parse on every call — it is DATA, never
+// executed. (An earlier `.js` + require() form was rejected in review: require() caches by resolved path,
+// so a live MCP process would keep serving a stale digest after an image bump; and a generated `.js`
+// lockfile executes arbitrary code before any validation — a broken trust boundary. JSON closes both.)
+// Because install.js's mcp/lib copy is `.js`-only, install.js copies this `.json` lockfile explicitly.
+//
+// Fail-closed when the lockfile is absent (not minted yet), unparseable, or carries a non-name@sha256
+// digest; and when the pinned digest is not in the local store (so `--pull=never` won't fail cryptically).
 //
 // PR-IMAGE lands + unit-tests these functions; no production code calls them yet (no tool is wired in
 // this PR). PR5b-tool's handler resolves the digest via resolveOffensiveImageDigest() and gates the run
 // via assertOffensiveImagePresent().
 
+const fs = require("fs");
 const path = require("path");
 const { IMAGE_DIGEST_RE } = require("./offensive-sandbox.js");
 
-// Generated lockfile, committed next to this module so it travels with mcp/lib on install. It is
-// operator-minted (scripts/build-offensive-image.sh) and ABSENT until then.
-const LOCK_BASENAME = "offensive-image-lock.js";
+const LOCK_BASENAME = "offensive-image.json";
 
+// Operator-minted lockfile committed next to this module; install.js copies it. ABSENT until minted.
 function offensiveImageLockPath() {
   return path.join(__dirname, LOCK_BASENAME);
 }
 
-// Load + validate the pinned digest. Fail-closed: a missing lockfile, an unloadable lockfile, or a
-// non-digest image_digest throws — the image has not been minted, or the lockfile was tampered.
+// Load + validate the pinned digest, reading the lockfile FRESH each call (no module cache, so an image
+// bump is picked up by a live process). Fail-closed on absent / unparseable / non-object / non-digest.
 function resolveOffensiveImageDigest({ lockPath = offensiveImageLockPath() } = {}) {
-  let lock;
+  let raw;
   try {
-    lock = require(lockPath);
+    raw = fs.readFileSync(lockPath, "utf8");
   } catch (err) {
-    if (err && err.code === "MODULE_NOT_FOUND") {
+    if (err && err.code === "ENOENT") {
       throw new Error(
         `offensive image not pinned: ${lockPath} is absent. Run scripts/build-offensive-image.sh ` +
           `(start Docker + 'docker login ghcr.io') to build, push, and pin the arsenal image.`
       );
     }
-    throw new Error(`offensive image lockfile is not loadable (${lockPath}): ${err && err.message}`);
+    throw err;
   }
-  const digest = lock && typeof lock.image_digest === "string" ? lock.image_digest : "";
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`offensive image lockfile is not valid JSON: ${lockPath}`);
+  }
+  const digest =
+    parsed && typeof parsed === "object" && typeof parsed.image_digest === "string" ? parsed.image_digest : "";
   if (!IMAGE_DIGEST_RE.test(digest)) {
     throw new Error(`offensive image lockfile has no valid name@sha256:<digest> image_digest: ${lockPath}`);
   }
@@ -52,7 +63,8 @@ function resolveOffensiveImageDigest({ lockPath = offensiveImageLockPath() } = {
 
 // Fail-closed preflight: with `--pull=never` the digest MUST already be in the local image store.
 // `docker.inspectImage(digest) -> Promise<boolean>` is injectable so tests drive it without docker.
-// Any non-true result (absent, or inspect error) blocks the run with a clear remediation message.
+// On a false/error result the run is blocked; the underlying docker error (e.g. daemon down vs image
+// absent) is surfaced in the message for diagnosis while still failing closed.
 async function assertOffensiveImagePresent(imageDigest, docker) {
   if (typeof imageDigest !== "string" || !IMAGE_DIGEST_RE.test(imageDigest)) {
     throw new Error("assertOffensiveImagePresent requires a digest-pinned image (name@sha256:<64 hex>)");
@@ -61,14 +73,17 @@ async function assertOffensiveImagePresent(imageDigest, docker) {
     throw new Error("assertOffensiveImagePresent requires a docker.inspectImage(digest) function");
   }
   let present = false;
+  let inspectError = null;
   try {
     present = await docker.inspectImage(imageDigest);
-  } catch {
+  } catch (err) {
+    inspectError = err;
     present = false;
   }
   if (present !== true) {
+    const why = inspectError ? ` (docker inspect failed: ${inspectError.message})` : "";
     throw new Error(
-      `offensive image ${imageDigest} is not present in the local docker store. ` +
+      `offensive image ${imageDigest} is not present in the local docker store${why}. ` +
         `Run scripts/build-offensive-image.sh to build/push/pull-by-digest before an offensive run.`
     );
   }

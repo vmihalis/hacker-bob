@@ -367,6 +367,12 @@ function installProject(projectDir, options = {}) {
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
   copyDirFiles(path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
+  // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
+  // The mcp/lib copy above is .js-only, so copy this .json explicitly. Absent until the image is pinned.
+  const offensiveImageLock = path.join(sourceRoot, "mcp", "lib", "offensive-image.json");
+  if (fs.existsSync(offensiveImageLock)) {
+    copyFile(offensiveImageLock, path.join(mcpDir, "lib", "offensive-image.json"));
+  }
   const sourceToolsDir = path.join(sourceRoot, "mcp", "lib", "tools");
   const targetToolsDir = path.join(mcpDir, "lib", "tools");
   if (path.resolve(sourceToolsDir) !== path.resolve(targetToolsDir)) {
