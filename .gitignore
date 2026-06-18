@@ -25,3 +25,5 @@ __pycache__/
 .secrets
 test/act-run.log
 test/act-mock-api.log
+# offensive arsenal image build staging (host-fetched binaries; never committed)
+docker/offensive-context/
