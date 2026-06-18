@@ -284,12 +284,13 @@ test("output safety: a browser error is redacted to origin (path + query secrets
   // #271: the http-audit record's error field is redacted too (normalizeHttpAuditRecord
   // redacts url but not error; bob_read_http_audit returns error to agents).
   const auditPath = httpAuditJsonlPath(domain);
-  if (fs.existsSync(auditPath)) {
-    for (const line of fs.readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean)) {
-      const blob = JSON.stringify(JSON.parse(line));
-      assert.ok(!blob.includes("PATHSECRET9999"), `audit must not leak the path token: ${blob}`);
-      assert.ok(!blob.includes("QUERYSECRET8888"), `audit must not leak the query token: ${blob}`);
-    }
+  assert.ok(fs.existsSync(auditPath), "expected an http-audit record to be written for the failed navigation");
+  const lines = fs.readFileSync(auditPath, "utf8").trim().split("\n").filter(Boolean);
+  assert.ok(lines.length > 0, "expected a non-empty http-audit record");
+  for (const line of lines) {
+    const blob = JSON.stringify(JSON.parse(line));
+    assert.ok(!blob.includes("PATHSECRET9999"), `audit must not leak the path token: ${blob}`);
+    assert.ok(!blob.includes("QUERYSECRET8888"), `audit must not leak the query token: ${blob}`);
   }
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
