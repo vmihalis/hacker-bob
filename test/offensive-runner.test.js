@@ -472,23 +472,30 @@ test("a timeout CONSUMES the run budget (the container ran) — NOT counted as i
   assert.equal(offensiveInfraFailureCount(domain), 0, "a timeout is not an infra failure");
 }));
 
-test("the infra slot is HELD during the run + RELEASED on a genuine outcome — caps concurrency (#124-3)", () => withTempHome(async () => {
-  // The pessimistic reservation is what enforces MAX_OFFENSIVE_INFRA_FAILURES under a
-  // concurrent burst: each in-flight run holds an infra slot from BEFORE docker spawns
-  // until it completes, so the cap can't be overshot by parallel calls passing a stale
-  // count. A genuine outcome then releases the slot.
-  const domain = "runner-infrahold.example.test";
+test("a symlinked counter leaf fails CLOSED + is never written through (O_NOFOLLOW) (#124 P1)", () => withTempHome(async (home) => {
+  // A same-UID stale artifact pre-creating a counter as a symlink must not (a) reset the
+  // budget by pointing it at a "0" file, nor (b) let the counter write clobber the target.
+  const domain = "runner-symlink.example.test";
+  setup(domain);
+  const evil = path.join(home, "evil-target.txt");
+  fs.writeFileSync(evil, "untouched");
+  fs.symlinkSync(evil, offensiveRunBudgetPath(domain)); // counter leaf is now a symlink
+  const docker = makeStubDocker();
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_run_budget_exhausted", "a symlinked counter reads fail-closed (Infinity)");
+  assert.ok(noLifecycle(docker));
+  assert.equal(fs.readFileSync(evil, "utf8"), "untouched", "the write must not follow the symlink to the target");
+}));
+
+test("egressProfileName 'default' is rejected when a proxy URL is set — no direct/proxy misbinding (#124-2)", () => withTempHome(async () => {
+  const domain = "runner-egressdefault.example.test";
   setup(domain);
   const docker = makeStubDocker();
-  const inner = docker.run;
-  let infraDuringRun = null;
-  docker.run = async (opts) => {
-    infraDuringRun = offensiveInfraFailureCount(domain); // slot is held while the container "runs"
-    return inner(opts);
-  };
-  await runOffensiveTool(baseRun(domain, { docker }));
-  assert.equal(infraDuringRun, 1, "an in-flight run holds an infra slot (bounds concurrency before any docker failure)");
-  assert.equal(offensiveInfraFailureCount(domain), 0, "a genuine outcome releases the infra slot");
+  await assert.rejects(
+    runOffensiveTool(baseRun(domain, { egressProxyUrl: "http://proxy.internal:8080", egressProfileName: "default", docker })),
+    /reserved 'default'/,
+  );
+  assert.ok(noLifecycle(docker));
 }));
 
 test("infra-failure budget exhausted blocks new runs (separate cap) (#124-3)", () => withTempHome(async () => {
