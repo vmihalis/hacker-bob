@@ -698,8 +698,64 @@ function assertNoForbiddenInputs(args, toolName, extraFields = []) {
   }
 }
 
+// Resolve the in-scope recorded endpoint(s) of the surface that carry a query string —
+// the SERVER-DERIVED injection-locus source for the reflected-XSS family (bob_http_xss_reflect
+// proves one param; bob_offensive_dalfox finds across the endpoint's params). Returns an
+// array of candidate URL objects (callers refuse 0 = no locus, >1 = ambiguous host).
+// NEVER derives a locus from agent input: candidates come from the surface record only. A
+// RELATIVE endpoint binds to the surface's OWN host(s), never the session apex (which would
+// drift row.target from surface_id). `toolId` is only for the originFromState attribution.
+function resolveQueryLocusEndpoint(domain, surface, state, toolId) {
+  const stateOrigin = originFromState(domain, state, toolId);
+  const allOrigins = resolveSurfaceOrigins(surface, stateOrigin);
+  const ownOrigins = allOrigins.filter((origin) => origin !== stateOrigin);
+  const relativeOrigins = ownOrigins.length > 0 ? ownOrigins : [stateOrigin];
+  const seen = new Set();
+  const matches = [];
+  for (const endpoint of candidateSurfaceEndpoints(surface)) {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value).trim());
+    const originsForEndpoint = isAbsolute ? [stateOrigin] : relativeOrigins;
+    for (const origin of originsForEndpoint) {
+      let candidate;
+      try {
+        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      if ([...candidate.searchParams.keys()].length === 0) continue;
+      const key = candidate.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(candidate);
+    }
+  }
+  return matches;
+}
+
+// The deterministically sorted, de-duplicated recorded query-param NAMES of the endpoint.
+// An ordinal (param_locus) indexes into this stable list — the reflected-XSS PROVER and the
+// dalfox FINDER MUST share this derivation so a finder lead's ordinal means the same param
+// to the prover.
+function recordedQueryParamNames(url) {
+  const names = [];
+  const seen = new Set();
+  for (const name of url.searchParams.keys()) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names.sort();
+}
+
 module.exports = {
   rejectInvalidArguments,
+  resolveQueryLocusEndpoint,
+  recordedQueryParamNames,
   decodePathSegments,
   escapeRegExp,
   capturedIdSegmentIsSafe,

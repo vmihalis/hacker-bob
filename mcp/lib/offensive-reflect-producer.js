@@ -69,10 +69,8 @@ const {
 } = require("./validation.js");
 const {
   findRoutedSurface,
-  candidateSurfaceEndpoints,
-  resolveSurfaceOrigins,
-  originFromState,
-  urlFromEndpoint,
+  resolveQueryLocusEndpoint,
+  recordedQueryParamNames,
   assertReadOnlyPath,
   auditConfirmRequest,
   assertNoForbiddenInputs,
@@ -476,65 +474,6 @@ async function runProbe({
   return response;
 }
 
-// Resolve the SINGLE in-scope recorded endpoint of the surface that carries a
-// query string (the server-derived locus source). Returns { url } or null. NEVER
-// derives a locus from agent-supplied data: the candidate endpoints come from the
-// surface record (surface.uri + surface.endpoints[]), and the query params come
-// from those recorded URLs.
-function resolveQueryLocusEndpoint(domain, surface, state) {
-  const stateOrigin = originFromState(domain, state, TOOL_ID);
-  const allOrigins = resolveSurfaceOrigins(surface, stateOrigin);
-  // Bind a RELATIVE endpoint to the surface's OWN host(s) — never the session apex,
-  // which resolveSurfaceOrigins lists first. Resolving a subdomain surface's
-  // relative endpoint against the apex would sign a row whose target host drifts
-  // from surface_id (codex). The apex is used only when the surface declares no
-  // host of its own. Collect ALL distinct query-bearing candidates (no break on the
-  // first origin) so the single-endpoint guard below refuses host ambiguity instead
-  // of silently picking one.
-  const ownOrigins = allOrigins.filter((origin) => origin !== stateOrigin);
-  const relativeOrigins = ownOrigins.length > 0 ? ownOrigins : [stateOrigin];
-  const seen = new Set();
-  const matches = [];
-  for (const endpoint of candidateSurfaceEndpoints(surface)) {
-    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value).trim());
-    // urlFromEndpoint ignores `origin` for an absolute endpoint (it carries its own
-    // host); a relative endpoint binds to the surface's own host(s).
-    const originsForEndpoint = isAbsolute ? [stateOrigin] : relativeOrigins;
-    for (const origin of originsForEndpoint) {
-      let candidate;
-      try {
-        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
-      } catch {
-        continue;
-      }
-      try {
-        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
-      } catch {
-        continue;
-      }
-      if ([...candidate.searchParams.keys()].length === 0) continue;
-      const key = candidate.toString();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      matches.push(candidate);
-    }
-  }
-  return matches;
-}
-
-// The deterministically sorted, de-duplicated recorded query-param NAMES of the
-// endpoint. The ordinal param_locus indexes into this stable list.
-function recordedQueryParamNames(url) {
-  const names = [];
-  const seen = new Set();
-  for (const name of url.searchParams.keys()) {
-    if (seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names.sort();
-}
-
 // The full oracle. `fetch_fn` is injectable so seeded tests need no live target;
 // with no fetch_fn the MCP dispatcher drives the LIVE arm via safeFetch.
 async function reflectXss(args = {}, { fetch_fn = null } = {}) {
@@ -567,7 +506,7 @@ async function reflectXss(args = {}, { fetch_fn = null } = {}) {
   // Resolve + route the surface, then derive the injection locus SERVER-SIDE from
   // a recorded query param (never an agent-supplied URL/name).
   const { surface } = findRoutedSurface(domain, surfaceId);
-  const locusEndpoints = resolveQueryLocusEndpoint(domain, surface, state);
+  const locusEndpoints = resolveQueryLocusEndpoint(domain, surface, state, TOOL_ID);
   if (locusEndpoints.length === 0) {
     // The surface records no in-scope query-bearing endpoint, so there is no
     // server-derived locus. STOP — never invent an agent-supplied URL path.
