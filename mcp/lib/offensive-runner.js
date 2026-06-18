@@ -62,11 +62,19 @@ const MAX_TIMEOUT_MS = 600_000;
 const MIN_TIMEOUT_MS = 5_000;
 // Per-session cap on offensive container runs (fail-closed, global across tools).
 const MAX_OFFENSIVE_RUNS = 200;
-// #124-3: cap on infra failures (network-create / spawn errors — the container never
-// ran). These are REFUNDED from the run budget (an infra failure must not burn a
-// genuine-run slot), so they need their own bound, or a daemon/target that fails every
-// spawn could spin unbounded docker attempts. Fail-closed like the run budget.
+// #124-3: cap on infra failures (network-create / spawn errors / docker "couldn't start
+// the container" exits — the container never ran). These are REFUNDED from the run budget
+// (an infra failure must not burn a genuine-run slot), so they need their own bound, or a
+// daemon/target that fails every spawn could spin unbounded docker attempts. Fail-closed
+// like the run budget.
 const MAX_OFFENSIVE_INFRA_FAILURES = 50;
+// A legit monotonic counter is a few digits; a larger leaf is tampered → fail closed (the
+// WHOLE file is validated, never just a prefix that a padded "0…0<junk>" could spoof to 0).
+const OFFENSIVE_COUNTER_MAX_BYTES = 32;
+// docker exit codes meaning the daemon/exec could NOT run the container (the tool never
+// executed): 125 daemon run error (e.g. a --pull=never image miss), 126 not executable,
+// 127 not found. Treated as infra failures (refund + count), NOT genuine runs.
+const OFFENSIVE_CONTAINER_FAILED_EXIT_CODES = Object.freeze([125, 126, 127]);
 // http-audit normalization STRIPS `tool`, so offensive runs are marked + counted by
 // a distinctive `method` token that survives normalization.
 const OFFENSIVE_RUN_AUDIT_METHOD = "CONTAINER_RUN";
@@ -213,27 +221,35 @@ function offensiveInfraFailurePath(domain) {
   return path.join(sessionDir(domain), "offensive-infra-failures");
 }
 
-// Read a fail-closed MONOTONIC counter file with O_NOFOLLOW + regular-file discipline:
-// missing = 0 (fresh session); a SYMLINKED / hardlinked / irregular / unreadable /
-// malformed leaf fails CLOSED (Infinity → blocks). The O_NOFOLLOW open refuses to read
-// THROUGH a symlink a same-UID stale artifact could pre-create to point the counter at an
-// attacker-chosen file (e.g. one containing "0" to silently reset the budget). Strict
-// digits-only — parseInt would accept "7x" / "0x10" / "7\ntrailing" and under-count.
+// Read a fail-closed MONOTONIC counter file with O_NOFOLLOW + O_NONBLOCK + regular-file
+// discipline. missing = 0 (fresh session). A SYMLINKED (O_NOFOLLOW → ELOOP), FIFO/device
+// (O_NONBLOCK so the open can't HANG while we hold the session lock; the fstat then
+// rejects it), hardlinked (nlink≠1), OVERSIZED (a few digits is the only legit shape — a
+// larger leaf is tampered), unreadable, or malformed leaf all fail CLOSED (Infinity →
+// blocks). The WHOLE file is validated (not a 32-byte prefix), so a padded "0…0<junk>"
+// leaf can't be trusted as 0 and silently reset the budget. Strict digits-only — parseInt
+// would accept "7x" / "0x10" / "7\ntrailing" and under-count.
 function readCounterFile(filePath) {
   const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const nonBlock = fs.constants.O_NONBLOCK || 0;
   let fd;
   try {
-    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow | nonBlock);
   } catch (e) {
     if (e && e.code === "ENOENT") return 0;
-    return Number.POSITIVE_INFINITY; // ELOOP (symlinked leaf) / any open error → fail closed
+    return Number.POSITIVE_INFINITY; // ELOOP (symlink) / ENXIO / any open error → fail closed
   }
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.nlink !== 1) return Number.POSITIVE_INFINITY;
-    const buf = Buffer.alloc(32); // a counter is a few digits; bound the read
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    const trimmed = buf.subarray(0, n).toString("utf8").trim();
+    if (!st.isFile() || st.nlink !== 1 || st.size > OFFENSIVE_COUNTER_MAX_BYTES) return Number.POSITIVE_INFINITY;
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < st.size) {
+      const n = fs.readSync(fd, buf, off, st.size - off, off);
+      if (n <= 0) break;
+      off += n;
+    }
+    const trimmed = buf.subarray(0, off).toString("utf8").trim(); // validates the WHOLE file
     if (!/^\d+$/.test(trimmed)) return Number.POSITIVE_INFINITY;
     const v = Number.parseInt(trimmed, 10);
     return Number.isInteger(v) && v >= 0 ? v : Number.POSITIVE_INFINITY;
@@ -242,20 +258,21 @@ function readCounterFile(filePath) {
   }
 }
 
-// Write a counter with O_NOFOLLOW + regular-file/nlink discipline so the write can never
-// be redirected THROUGH a symlinked or hardlinked leaf to a path outside Bob's session
-// files (a same-UID stale artifact pre-creating the counter as a symlink must not turn a
-// counter write into a write-where primitive). nlink is checked BEFORE truncating so a
-// hardlinked target is never clobbered. Returns false on any failure (caller treats a
-// failed reserve as fail-closed).
+// Write a counter with O_NOFOLLOW + O_NONBLOCK + regular-file/nlink discipline so the write
+// can never be redirected THROUGH a symlinked/FIFO/hardlinked leaf to a path outside Bob's
+// session files (a same-UID stale artifact must not turn a counter write into a write-where
+// primitive, nor hang the open on a FIFO with no reader → ENXIO). nlink is checked BEFORE
+// truncating so a hardlinked target is never clobbered. Returns false on any failure
+// (caller treats a failed reserve as fail-closed).
 function writeCounterFile(domain, filePath, value) {
   const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const nonBlock = fs.constants.O_NONBLOCK || 0;
   let fd;
   try {
     fs.mkdirSync(sessionDir(domain), { recursive: true });
-    fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | noFollow, 0o600);
+    fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT | noFollow | nonBlock, 0o600);
   } catch {
-    return false; // ELOOP (symlinked leaf) / any open error → refuse the write
+    return false; // ELOOP (symlink) / ENXIO (FIFO, no reader) / any open error → refuse
   }
   try {
     const st = fs.fstatSync(fd);
@@ -571,6 +588,15 @@ async function runOffensiveTool({
     // failure (best-effort; fail-fast lock-miss must not mask the spawn error).
     try { withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain)); } catch {}
     return blocked(domain, toolId, "blocked_by_infra", "offensive_spawn_failed", { failure_reason: runResult.spawn_error });
+  }
+  // #124-3: docker CLI ran but the daemon/exec could NOT run the container (exit
+  // 125/126/127 — e.g. a --pull=never image miss, esp. likely before the operator mints
+  // the image). The tool never executed, so this is an infra failure (refund + count),
+  // NOT a genuine run that should burn the 200-run budget. (A non-zero exit OTHER than
+  // these is a real run whose tool exited non-zero — handled as a genuine outcome below.)
+  if (OFFENSIVE_CONTAINER_FAILED_EXIT_CODES.includes(runResult.exit_code)) {
+    try { withSessionLock(domain, () => refundOffensiveRunAsInfraFailure(domain)); } catch {}
+    return blocked(domain, toolId, "blocked_by_infra", "offensive_container_failed_to_start", { exit_code: runResult.exit_code });
   }
   // A timeout is NOT refunded and NOT an infra failure: the container actually RAN
   // (consumed CPU/net + a real slot) and only failed to FINISH — a genuine run (#124-3).

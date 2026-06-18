@@ -472,19 +472,39 @@ test("a timeout CONSUMES the run budget (the container ran) — NOT counted as i
   assert.equal(offensiveInfraFailureCount(domain), 0, "a timeout is not an infra failure");
 }));
 
-test("a symlinked counter leaf fails CLOSED + is never written through (O_NOFOLLOW) (#124 P1)", () => withTempHome(async (home) => {
-  // A same-UID stale artifact pre-creating a counter as a symlink must not (a) reset the
-  // budget by pointing it at a "0" file, nor (b) let the counter write clobber the target.
+test("a symlinked counter leaf fails CLOSED via O_NOFOLLOW (not the target's value) (#124 P1)", () => withTempHome(async (home) => {
+  // Point the symlink at a VALID low count: if the reader FOLLOWED it, it would read "0"
+  // and the run would proceed. Since the run is blocked, O_NOFOLLOW refused to follow.
   const domain = "runner-symlink.example.test";
   setup(domain);
-  const evil = path.join(home, "evil-target.txt");
-  fs.writeFileSync(evil, "untouched");
-  fs.symlinkSync(evil, offensiveRunBudgetPath(domain)); // counter leaf is now a symlink
+  const target = path.join(home, "counter-target");
+  fs.writeFileSync(target, "0");
+  fs.symlinkSync(target, offensiveRunBudgetPath(domain));
   const docker = makeStubDocker();
   const r = await runOffensiveTool(baseRun(domain, { docker }));
-  assert.equal(r.reason, "offensive_run_budget_exhausted", "a symlinked counter reads fail-closed (Infinity)");
+  assert.equal(r.reason, "offensive_run_budget_exhausted", "O_NOFOLLOW fails closed (Infinity), NOT the target's 0");
   assert.ok(noLifecycle(docker));
-  assert.equal(fs.readFileSync(evil, "utf8"), "untouched", "the write must not follow the symlink to the target");
+}));
+
+test("an oversized/padded counter file fails CLOSED — whole-file validation, not a prefix (#124 P1)", () => withTempHome(async () => {
+  const domain = "runner-oversize.example.test";
+  setup(domain);
+  // a 32-zero prefix + junk: a prefix-only reader would parse "0" and reset the budget
+  fs.writeFileSync(offensiveRunBudgetPath(domain), "0".repeat(32) + "999");
+  const docker = makeStubDocker();
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_run_budget_exhausted", "a padded counter must not parse as its 32-zero prefix");
+  assert.ok(noLifecycle(docker));
+}));
+
+test("docker exit 125 (container failed to start) is an infra failure: refunded + counted (#124-3)", () => withTempHome(async () => {
+  const domain = "runner-exit125.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ runResult: { exit_code: 125, timed_out: false } });
+  const r = await runOffensiveTool(baseRun(domain, { docker }));
+  assert.equal(r.reason, "offensive_container_failed_to_start");
+  assert.equal(offensiveRunCount(domain), 0, "exit 125 refunds the run slot (container never ran)");
+  assert.equal(offensiveInfraFailureCount(domain), 1, "exit 125 counts as infra");
 }));
 
 test("egressProfileName 'default' is rejected when a proxy URL is set — no direct/proxy misbinding (#124-2)", () => withTempHome(async () => {
