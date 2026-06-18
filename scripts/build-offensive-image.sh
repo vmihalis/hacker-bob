@@ -29,6 +29,11 @@ DALFOX_URL="${DALFOX_URL:?set DALFOX_URL to the dalfox linux release archive (gi
 DALFOX_SHA256="${DALFOX_SHA256:?set DALFOX_SHA256 to the published sha256 of DALFOX_URL}"
 NUCLEI_URL="${NUCLEI_URL:?set NUCLEI_URL to the nuclei linux release archive (github.com/projectdiscovery/nuclei/releases)}"
 NUCLEI_SHA256="${NUCLEI_SHA256:?set NUCLEI_SHA256 to the published sha256 of NUCLEI_URL}"
+# NOTE — nuclei templates: bob_nuclei_scan forces -disable-update-check, so nuclei never fetches
+# templates at runtime; it needs a nuclei-templates corpus already present in the image. Staging a
+# pinned templates corpus is part of the DEFERRED live-arm provisioning (alongside the OOB sink +
+# Bob-owned domain). Until it is staged, a provisioned scan exits non-zero and bob_nuclei_scan
+# reports reason "nuclei_scan_error" (never a false "no leads") — see classifyNucleiDetection.
 
 REGISTRY="${OFFENSIVE_REGISTRY:-ghcr.io/bobnetsec/bob-offense}"
 BASE_IMAGE="${BASE_IMAGE:-gcr.io/distroless/base-debian12:nonroot}"

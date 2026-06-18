@@ -135,11 +135,20 @@ test("normalizeTagList: pattern-filters, dedupes, caps, joins; null on empty/inv
 });
 
 test("classifyNucleiDetection: ALWAYS positive:false even with findings (can never sign)", () => {
-  const v = classifyNucleiDetection({ stdoutText: jsonlFinding("cve-x", "critical", "https://x.example/") });
+  const v = classifyNucleiDetection({ exitCode: 0, stdoutText: jsonlFinding("cve-x", "critical", "https://x.example/") });
   assert.equal(v.positive, false);
   assert.equal(v.reason, "detection_only");
   assert.equal(v.detection.findings_count, 1);
   assert.equal(v.detection.by_severity.critical, 1);
+  assert.equal(v.detection.scan_ok, true);
+});
+
+test("classifyNucleiDetection: a non-zero nuclei exit is a scan error, not a false no-leads", () => {
+  const v = classifyNucleiDetection({ exitCode: 1, stdoutText: "" });
+  assert.equal(v.positive, false);
+  assert.equal(v.reason, "nuclei_scan_error");
+  assert.equal(v.detection.scan_ok, false);
+  assert.equal(v.detection.exit_code, 1);
 });
 
 test("bob_nuclei_scan is DELIBERATELY ABSENT from the demonstrated-severity ceiling registry", () => {
@@ -153,6 +162,7 @@ test("bob_nuclei_scan is DELIBERATELY ABSENT from the demonstrated-severity ceil
 test("forced flags hard-disable OAST + redirects + cap aggression (detection-only posture)", () => {
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-no-interactsh"));
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-jsonl"));
+  assert.ok(NUCLEI_FORCED_FLAGS.includes("-omit-raw"), "raw req/resp omitted from JSONL");
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-silent"));
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-disable-redirects"), "redirects forced off (off-scope egress)");
   assert.ok(NUCLEI_FORCED_FLAGS.includes("-exclude-tags=intrusive,dos,fuzz"), "intrusive/mutating templates excluded");
@@ -223,7 +233,7 @@ test("forced OAST-off + scope-gated target reach the container command", () => w
   const argv = docker.calls.run[0].args;
   assert.ok(argv.includes("nuclei"), "binary present");
   assert.ok(argv.includes("-no-interactsh"), "nuclei OAST forced off");
-  assert.ok(argv.includes("-jsonl") && argv.includes("-silent"), "machine output forced");
+  assert.ok(argv.includes("-jsonl") && argv.includes("-silent") && argv.includes("-omit-raw"), "machine output forced, raw omitted");
   assert.ok(argv.includes(`https://${domain}/app`), "in-scope target reached the command");
   assert.ok(argv.includes("-severity") && argv.includes("high"), "severity flag passed");
   assert.ok(argv.includes("-tags") && argv.includes("ssrf,cve"), "tags flag passed");
@@ -239,6 +249,27 @@ test("scope gate: an out-of-scope target_url is rejected before any container sp
   );
   assert.equal(docker.calls.run.length, 0, "no container ran for an out-of-scope target");
   assert.equal(offensiveRunCount(domain), 0, "no budget slot consumed");
+}));
+
+test("rejects target_url credentials (userinfo) before building argv", () => withTempHome(async () => {
+  const domain = "nuclei-creds.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ writeStdout: "" });
+  await assert.rejects(
+    runNucleiScan({ target_domain: domain, target_url: `https://user:pass@${domain}/` }, { docker, resolveDigest: () => DIGEST }),
+    /credentials|userinfo/,
+  );
+  assert.equal(docker.calls.run.length, 0, "no container ran for a credentialed URL");
+}));
+
+test("strips the URL fragment before it reaches the container argv", () => withTempHome(async () => {
+  const domain = "nuclei-frag.example.test";
+  setup(domain);
+  const docker = makeStubDocker({ writeStdout: "" });
+  await runNucleiScan({ target_domain: domain, target_url: `https://${domain}/p#access_token=SECRETFRAG` }, { docker, resolveDigest: () => DIGEST });
+  const argv = docker.calls.run[0].args;
+  assert.ok(!argv.some((x) => typeof x === "string" && x.includes("SECRETFRAG")), "fragment secret must not reach the argv");
+  assert.ok(argv.includes(`https://${domain}/p`), "the fragment-stripped URL is used");
 }));
 
 test("image not pinned: resolveDigest throws → blocked_by_infra, no run, no budget", () => withTempHome(async () => {

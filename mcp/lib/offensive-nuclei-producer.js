@@ -56,6 +56,9 @@ const NUCLEI_FLAG_SPEC = Object.freeze({
 const NUCLEI_FORCED_FLAGS = Object.freeze([
   // machine output — the classify oracle parses JSONL
   "-jsonl",
+  "-omit-raw",                     // exclude request/response pairs from JSONL (included by default) —
+                                   // the lead summary never needs them, and raw target bodies on
+                                   // authed pages can carry session/CSRF tokens into the captured stream
   "-silent",                       // findings only (no banner / progress)
   "-no-color",                     // no ANSI in captured stdout
   "-disable-update-check",         // no startup template/engine update fetch
@@ -161,13 +164,21 @@ function summarizeNucleiJsonl(stdoutText) {
   };
 }
 
-// The DETECTION oracle: ALWAYS returns positive:false (this tool can never sign). The
-// bounded summary rides the runner's detection channel; the runner secret-scans + caps it.
-function classifyNucleiDetection({ stdoutText } = {}) {
+// The DETECTION oracle: ALWAYS returns positive:false (this tool can never sign). The bounded
+// summary rides the runner's detection channel; the runner secret-scans + caps it. A non-zero
+// nuclei exit AFTER the container started (Docker startup codes 125/126/127 are infra and never
+// reach here) means the scan did not complete correctly — e.g. a missing/stale template corpus
+// or a runtime config error — so it is surfaced as a scan error, NOT a false negative-detection
+// (which an evaluator could otherwise record as a real "no leads" result for a scan that failed).
+function classifyNucleiDetection({ exitCode, stdoutText } = {}) {
+  const detection = summarizeNucleiJsonl(stdoutText);
+  const scanOk = exitCode === 0;
+  detection.scan_ok = scanOk;
+  detection.exit_code = typeof exitCode === "number" ? exitCode : null;
   return {
     positive: false,
-    reason: "detection_only",
-    detection: summarizeNucleiJsonl(stdoutText),
+    reason: scanOk ? "detection_only" : "nuclei_scan_error",
+    detection,
   };
 }
 
@@ -186,6 +197,22 @@ async function runNucleiScan(args, deps = {}) {
   const targetUrl = typeof a.target_url === "string" ? a.target_url.trim() : "";
   if (!domain) rejectInvalid("target_domain is required");
   if (!targetUrl) rejectInvalid("target_url is required");
+  // Reject credentials (userinfo) and strip any fragment BEFORE the URL reaches the docker/
+  // nuclei argv — `https://user:pass@host/` or a `#access_token=...` fragment copied from an
+  // auth callback would otherwise be visible via process listings / `docker inspect` and bypass
+  // the audit + lead redaction paths.
+  let cleanTargetUrl;
+  try {
+    const parsedUrl = new URL(targetUrl);
+    if (parsedUrl.username || parsedUrl.password) {
+      rejectInvalid("target_url must not contain credentials (userinfo)", { code: "nuclei_target_url_userinfo" });
+    }
+    parsedUrl.hash = "";
+    cleanTargetUrl = parsedUrl.toString();
+  } catch (err) {
+    if (err instanceof ToolError) throw err;
+    rejectInvalid("target_url must be a valid absolute URL", { code: "nuclei_target_url_invalid" });
+  }
   const severity = normalizeSeverityList(a.severity);
   const tags = normalizeTagList(a.tags);
 
@@ -204,6 +231,25 @@ async function runNucleiScan(args, deps = {}) {
       row_written: false,
       offensive_outcome: "blocked_by_design",
       reason: "block_internal_hosts_unsupported_in_wide_open_container",
+      leads: null,
+      note: NUCLEI_DETECTION_NOTE,
+    };
+  }
+  // The wide-open container is direct-egress, so a non-default (proxy/VPN) egress_profile cannot
+  // be honored either — refuse rather than leak the operator's real egress for an attribution-
+  // bound session. (Init forbids block_internal_hosts + a proxy profile together, so this is the
+  // proxy-only case.)
+  const egressProfile = typeof state.egress_profile === "string" ? state.egress_profile.trim() : "";
+  if (egressProfile && egressProfile !== "default") {
+    return {
+      tool: "nuclei",
+      tool_id: NUCLEI_TOOL_ID,
+      target_domain: domain,
+      ran: false,
+      confirmed: false,
+      row_written: false,
+      offensive_outcome: "blocked_by_design",
+      reason: "session_egress_profile_unsupported_in_wide_open_container",
       leads: null,
       note: NUCLEI_DETECTION_NOTE,
     };
@@ -234,7 +280,7 @@ async function runNucleiScan(args, deps = {}) {
 
   // Server-controlled argv: binary + producer-allowlisted flags ONLY. The runner injects
   // the forced control flags and scope-gates every -u value before any container spawn.
-  const toolArgv = ["nuclei", "-u", targetUrl];
+  const toolArgv = ["nuclei", "-u", cleanTargetUrl];
   if (severity) toolArgv.push("-severity", severity);
   if (tags) toolArgv.push("-tags", tags);
 
