@@ -105,6 +105,11 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // bundle for _write-base.js auto-emit on INVALID_ARGUMENTS retry success.
   bob_emit_runtime_drift: "initialized_session_mutation",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR6 OOB collector. Same class as the other offensive HTTP producers + the
+  // scope-exempt bob_public_intel: mint writes the binding (no network), poll is
+  // the one aim-exempt egress to the constant Bob-owned sink.
+  bob_oob_mint: "scoped_http_network",
+  bob_oob_poll: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   bob_propose_friction_promotion: "initialized_session_mutation",
   // Plane Y Cycle Y.7 — adversarial transcript scan (Y-D6 + Y-P9). Pure

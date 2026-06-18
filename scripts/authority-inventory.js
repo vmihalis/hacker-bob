@@ -97,6 +97,9 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // caller bundle for _write-base.js auto-emit.
   bob_emit_runtime_drift: "initialized_session_mutation",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR6 OOB collector (mirror of session-authority.js).
+  bob_oob_mint: "scoped_http_network",
+  bob_oob_poll: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
   // Orchestrator-only at the role-bundle layer; threads friction_history

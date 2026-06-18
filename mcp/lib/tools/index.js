@@ -6,6 +6,8 @@ const TOOL_MODULES = Object.freeze([
   require("./bob-http-idor-confirm.js"),
   require("./bob-http-xss-reflect.js"),
   require("./bob-http-xss-confirm.js"),
+  require("./bob-oob-mint.js"),
+  require("./bob-oob-poll.js"),
   require("./read-http-audit.js"),
   require("./start-next-wave.js"),
   require("./start-wave.js"),

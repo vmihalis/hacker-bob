@@ -358,6 +358,15 @@ function offensiveRunsDir(domain) {
   return path.join(sessionDir(domain), "offensive-runs");
 }
 
+// PR6 OOB collector — the token->surface binding ledger. AUDIT-GRADED (see
+// AUDIT_GRADED_BASENAMES): each row binds a server-minted OOB token to the
+// in-scope canonical_target + surface_id resolved at mint time, and bob_oob_poll
+// re-reads it to stamp the signed row's target/surface, so an agent Write here
+// would be the OOB analogue of the #111 cross-surface laundering vector.
+function oobTokensJsonlPath(domain) {
+  return path.join(sessionDir(domain), "oob-tokens.jsonl");
+}
+
 // Cycle O.4: repo-runs/<run_id>.{stdout,stderr} are the bounded (16 MB
 // each) capture files for each docker run. Lives under sessionDir so
 // session-read-guard.sh can extend BLOCKED_DIRS to it in cycle O.7.
@@ -442,6 +451,12 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // audit-graded; offensive-runs.jsonl is both because exploit-proof claims
   // are structurally rejected unless backed by a real row in this ledger.
   "offensive-runs.jsonl",
+  // PR6: the OOB token->surface binding ledger. Audit-graded because bob_oob_poll
+  // re-reads it to stamp the signed row's in-scope target + surface_id; an agent
+  // Write would forge that binding (the OOB analogue of the #111 surface gate). The
+  // ledger READ is additionally O_NOFOLLOW/realpath-hardened in oob-collector.js so
+  // a Bash-planted symlink cannot smuggle a binding either.
+  "oob-tokens.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -556,6 +571,7 @@ module.exports = {
   publicIntelPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,
+  oobTokensJsonlPath,
   queuePolicyPath,
   reportMarkdownPath,
   resolveEvidencePath,
