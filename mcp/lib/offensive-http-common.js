@@ -275,8 +275,12 @@ function candidateSurfaceEndpoints(surface) {
   return candidates;
 }
 
-function resolveSurfaceOrigins(surface, stateOrigin) {
-  const origins = new Set([stateOrigin]);
+// Origins the SURFACE itself declares — parsed from its absolute endpoints and its hosts[] —
+// WITHOUT the unconditional session-apex seed that resolveSurfaceOrigins adds. Used to bind a
+// RELATIVE endpoint to a host the surface actually names (so api.example.com's "/v1/data" is not
+// silently resolved against the session apex example.com).
+function surfaceDeclaredOrigins(surface, stateOrigin) {
+  const origins = new Set();
   for (const { value } of candidateSurfaceEndpoints(surface)) {
     try {
       const parsed = new URL(value);
@@ -298,6 +302,13 @@ function resolveSurfaceOrigins(surface, stateOrigin) {
   return Array.from(origins);
 }
 
+// Apex-seeded origin list (session origin FIRST, then the surface's declared origins). Identical
+// output to the previous inline form; unchanged callers (resolveBaselineFromSurface) keep their
+// apex-first preference.
+function resolveSurfaceOrigins(surface, stateOrigin) {
+  return Array.from(new Set([stateOrigin, ...surfaceDeclaredOrigins(surface, stateOrigin)]));
+}
+
 function originFromState(domain, state, toolName = "bob_http_confirm") {
   const targetUrl = state && state.target_url;
   if (typeof targetUrl !== "string" || !targetUrl.trim()) {
@@ -317,11 +328,15 @@ function urlFromEndpoint(endpoint, origin, fieldName) {
   const raw = assertRequiredText(endpoint, fieldName);
   try {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return new URL(raw);
-    if (raw.startsWith("/")) return new URL(raw, origin);
+    // A path-absolute reference is a single "/" + path. A leading "//" is a network-path
+    // (protocol-relative) reference: new URL("//host/x", origin) resolves to a DIFFERENT host,
+    // escaping the surface-host binding and signing a row for the wrong asset. Mirror the
+    // normalizePathTemplate guard and reject it here (it falls through to the reject below).
+    if (raw.startsWith("/") && !raw.startsWith("//")) return new URL(raw, origin);
   } catch {
     rejectInvalidArguments(`${fieldName} could not be resolved as a URL`);
   }
-  rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path`);
+  rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path (not a // network-path reference)`);
 }
 
 function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName = "bob_http_confirm" }) {
@@ -355,6 +370,71 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, tool
     }
   }
   rejectInvalidArguments("path_template path shape does not match any recorded endpoint for surface_id");
+}
+
+// Resolve a representative, scope-validated endpoint URL for a surface — for header-policy
+// provers (e.g. bob_http_cors_confirm) that probe an endpoint's RESPONSE policy and need no
+// {id}/query path template. Returns the first recorded endpoint that resolves + passes scope,
+// with query + fragment stripped (a CORS/header policy is keyed on origin+path, not query).
+// Fails closed (no in-scope endpoint) rather than invent an agent-supplied path.
+function resolveSurfaceEndpoint({ domain, surface, state, toolName = "bob_http_confirm" }) {
+  const stateOrigin = originFromState(domain, state, toolName);
+  // A RELATIVE endpoint binds to the surface's OWN declared host(s) — never the session apex (P1):
+  // a surface for api.example.com with "/v1/data" must be probed against (and signed for)
+  // api.example.com, not example.com, or the MAC-backed row mis-attributes the misconfiguration.
+  // A relative endpoint that resolves in-scope against MORE THAN ONE declared host is AMBIGUOUS —
+  // silently picking one risks signing the wrong asset, so we fail closed. An ABSOLUTE endpoint
+  // carries its own host (unambiguous). With no declared host, a relative endpoint is the apex.
+  const declaredOrigins = surfaceDeclaredOrigins(surface, stateOrigin);
+  const stripped = (url) => { url.search = ""; url.hash = ""; return url; };
+  let sawAmbiguousRelative = false;
+
+  for (const endpoint of candidateSurfaceEndpoints(surface)) {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value || "").trim());
+
+    if (isAbsolute) {
+      let candidate;
+      // The origin arg is ignored by urlFromEndpoint for an absolute URL (host is in the value).
+      try {
+        candidate = urlFromEndpoint(endpoint.value, stateOrigin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      return stripped(candidate);
+    }
+
+    // Relative endpoint: resolve against each declared host (or the apex if none declared) and
+    // collect the in-scope candidates by distinct origin.
+    const relHosts = declaredOrigins.length ? declaredOrigins : [stateOrigin];
+    const inScopeByOrigin = new Map();
+    for (const origin of relHosts) {
+      let candidate;
+      try {
+        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      if (!inScopeByOrigin.has(candidate.origin)) inScopeByOrigin.set(candidate.origin, stripped(candidate));
+    }
+    if (inScopeByOrigin.size === 1) return inScopeByOrigin.values().next().value;
+    if (inScopeByOrigin.size > 1) { sawAmbiguousRelative = true; continue; }
+    // size 0 → try the next candidate endpoint
+  }
+
+  if (sawAmbiguousRelative) {
+    rejectInvalidArguments(`relative endpoint is ambiguous across multiple in-scope declared hosts for surface_id (${toolName}); record an absolute endpoint to disambiguate`);
+  }
+  rejectInvalidArguments(`no in-scope recorded endpoint resolves for surface_id (${toolName})`);
 }
 
 function isAuthChallenge(response) {
@@ -823,6 +903,7 @@ module.exports = {
   originFromState,
   urlFromEndpoint,
   resolveBaselineFromSurface,
+  resolveSurfaceEndpoint,
   isAuthChallenge,
   isLoginRedirect,
   responseLooksLikeLoginPage,

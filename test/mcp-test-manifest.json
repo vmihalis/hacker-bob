@@ -106,6 +106,7 @@
   "test/offensive-xss-exec-producer.test.js",
   "test/offensive-oob-collector.test.js",
   "test/offensive-nuclei-producer.test.js",
+  "test/offensive-cors-producer.test.js",
   "test/auth-provenance-stamp.test.js",
   "test/offensive-run-freeze-completeness.test.js",
   "test/severity-rise-guard.test.js",

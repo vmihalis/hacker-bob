@@ -75,6 +75,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_get_context_budget: "mode_dependent_session",
   bob_halmos_run: "smart_contract_contextual",
   bob_http_confirm: "scoped_http_network",
+  bob_http_cors_confirm: "scoped_http_network",
   bob_http_idor_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
   bob_http_xss_confirm: "scoped_http_network",
