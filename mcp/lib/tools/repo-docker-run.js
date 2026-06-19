@@ -15,6 +15,7 @@ async function handler(args) {
     replay_context: args.replay_context,
     blocked_harness_run_id: args.blocked_harness_run_id,
     egress_profile: args.egress_profile,
+    checkout_patch: args.checkout_patch,
   });
   return JSON.stringify({
     version: 1,
@@ -61,6 +62,11 @@ module.exports = Object.freeze({
         required: ["ref", "kind"],
         additionalProperties: false,
         description: "Optional S14 differential checkout provenance. Refuses shallow or absent local history before docker argv construction.",
+      },
+      checkout_patch: {
+        type: "string",
+        maxLength: 200000,
+        description: "Optional unified diff applied with git apply after the checkout is materialized — enables self_patch and instrumented upstream_fix differentials. Redacted for secrets and written to <session>/repo-work/patch.diff before the checkout is built; the patch content hash is bound into the run ledger.",
       },
       dry_run: {
         type: "boolean",

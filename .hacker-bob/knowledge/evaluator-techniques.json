@@ -214,7 +214,8 @@
         "Review length-prefixed buffers, opaque fields, arrays, strings, and allocation-size math for signed/unsigned truncation, wraparound, and missing bounds checks.",
         "For protocol clients, treat malicious server replies as attacker-controlled; for servers, treat client requests and exported paths as attacker-controlled.",
         "Check ownership/lifetime around async callbacks, PDU queues, reference counters, and cleanup paths for use-after-free, double-free, and stale pointer use.",
-        "Prefer ASAN/UBSAN, existing unit tests, or a minimal harness command; if repro is blocked, record the exact build or input blocker instead of overstating proof."
+        "Prefer ASAN/UBSAN, existing unit tests, or a minimal harness command; if repro is blocked, record the exact build or input blocker instead of overstating proof.",
+        "Invariant-from-diff oracle (known-fix / regression targets ONLY): read both the vuln source and the upstream-fix source, identify the invariant the fix enforces (e.g. a top-only guard becoming a check-all loop => 'every value-stack entry is a float'), then craft two minimal unified diffs that insert the SAME invariant check at the semantically-equivalent result site in each tree (vuln-anchored + fix-anchored). On a violation the check must trigger a REAL ASAN fault rooted in the repo source — use a heap OOB (malloc(1) then write well past it), which reliably faults at -O1, NOT a small stack-array OOB (often optimized away) and NOT a bare abort()/custom marker (the regex matches the ASAN banner, not abort); the verdict requires a repo-attributable /src frame. Supply each patch via the OE1 checkout_patch param. Out of scope: inferring an invariant for an unknown bug with no fix diff."
       ],
       "payload_hints": [
         "Large XDR length: 0xffffffff or 0x80000000 against string/opaque/array fields",

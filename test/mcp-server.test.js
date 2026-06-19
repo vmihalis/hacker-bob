@@ -444,6 +444,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_repo_docker_run",
   "bob_repo_check",
   "bob_import_harness",
+  "bob_import_seed_corpus",
   "bob_read_session_state",
   "bob_read_session_nucleus",
   "bob_advance_session",
@@ -536,6 +537,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_run_path_composition_experiment",
   "bob_verify_composition_path",
   "bob_verify_repro_reproduction",
+  "bob_verify_oracle_differential",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",
@@ -16554,6 +16556,51 @@ test("bob_import_harness stores a session-owned harness, rejects unsafe imports,
     // re-inventory: native_fuzz_shape now flips true even though the repo ships none.
     buildRepoInventory({ target_domain: domain });
     assert.equal(loadNativeFuzzShape(domain), true, "imported harness flips native_fuzz_shape true");
+  });
+});
+
+test("bob_import_seed_corpus stores a batch of grammar-generated seeds and resolves the newest corpus dir", () => {
+  withTempHome(() => {
+    const { importSeedCorpus, hasAcquiredSeedCorpus, newestSeedCorpusDir, readSeedCorpusRecordsFromJsonl } = require("../mcp/lib/seed-corpus-store.js");
+    const { seedCorpusEntryDir, seedCorpusJsonlPath } = require("../mcp/lib/paths.js");
+    const domain = "example.com";
+
+    // content-only: path imports rejected.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, dir: "/tmp/corpus", seeds: ["1+2"] }),
+      /Path imports are not supported/);
+    // non-empty batch required.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: [] }), /non-empty array/);
+    // per-seed cap.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: ["x".repeat(65537)] }), /per-seed cap/);
+    // session must exist.
+    assert.throws(() => importSeedCorpus({ target_domain: domain, seeds: ["1+2"] }), /Missing session state:/);
+    assert.equal(JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` })).created, true);
+
+    assert.equal(hasAcquiredSeedCorpus(domain), false);
+    // import a batch of diverse grammar-spanning seeds (with a secret to verify redaction).
+    const r = importSeedCorpus({
+      target_domain: domain,
+      source: "grammar_gen",
+      label: "text-grammar/value-state",
+      seeds: ['("hi"),3', "sin(1)+2", "max(1,2,3)", 'strlen("ab")', "api_key=supersecretvalue123"],
+    });
+    assert.equal(r.corpus_id, "SC-1");
+    assert.equal(r.seed_count, 5);
+    assert.equal(r.corpus_path, seedCorpusEntryDir(domain, "SC-1"));
+    assert.ok(fs.existsSync(seedCorpusJsonlPath(domain)));
+    assert.equal(fs.readdirSync(seedCorpusEntryDir(domain, "SC-1")).length, 5);
+    assert.equal(readSeedCorpusRecordsFromJsonl(domain).length, 1);
+    assert.equal(hasAcquiredSeedCorpus(domain), true);
+    assert.equal(newestSeedCorpusDir(domain), seedCorpusEntryDir(domain, "SC-1"));
+    // each seed is a numbered raw file; the secret is redacted at rest.
+    const files = fs.readdirSync(seedCorpusEntryDir(domain, "SC-1")).sort();
+    assert.match(files[0], /^seed-0{6}$/);
+    const all = files.map((f) => fs.readFileSync(seedCorpusEntryDir(domain, "SC-1") + "/" + f, "utf8")).join("\n");
+    assert.doesNotMatch(all, /supersecretvalue123/);
+    // a second import gets SC-2 and becomes the newest.
+    const r2 = importSeedCorpus({ target_domain: domain, seeds: ["(1),(2)"] });
+    assert.equal(r2.corpus_id, "SC-2");
+    assert.equal(newestSeedCorpusDir(domain), seedCorpusEntryDir(domain, "SC-2"));
   });
 });
 

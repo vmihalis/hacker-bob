@@ -77,6 +77,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_http_scan: "scoped_http_network",
   bob_import_harness: "initialized_session_mutation",
   bob_import_http_traffic: "scoped_http_network",
+  bob_import_seed_corpus: "initialized_session_mutation",
   bob_import_static_artifact: "initialized_session_mutation",
   bob_ingest_audit_report: "initialized_session_mutation",
   bob_ingest_schema_doc: "initialized_session_mutation",
@@ -177,6 +178,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_repo_check: "initialized_session_mutation",
   bob_repo_docker_run: "initialized_session_mutation",
   bob_verify_repro_reproduction: "initialized_session_mutation",
+  bob_verify_oracle_differential: "initialized_session_mutation",
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   // Plane X Cycle X.7: bob_resolve_body is read-only — bodies are

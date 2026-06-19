@@ -17,6 +17,7 @@
     "chain-attempts.jsonl",
     "composition-verified.jsonl",
     "repro-verified.jsonl",
+    "lab-authorization.json",
     "diff-impact.json",
     "brutalist.json",
     "brutalist.md",
@@ -55,6 +56,7 @@
     "surface-routes.json",
     "static-artifacts.jsonl",
     "harnesses.jsonl",
+    "seed-corpus.jsonl",
     "static-analysis-results.jsonl",
     "static-analysis-index.jsonl",
     "static-scan-results.jsonl",
@@ -92,6 +94,7 @@
   "mcp_owned_dirs": [
     "static-imports",
     "harnesses",
+    "seed-corpus",
     "belief-scratch",
     "repo-runs",
     "repo-work",

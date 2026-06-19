@@ -28,6 +28,20 @@ const LIBFUZZER_RE = /ERROR:\s*libFuzzer:\s*(?<klass>[A-Za-z][A-Za-z -]+?)(?:\s*
 const FRAME_HEAD_RE = /^\s*#(?<idx>\d+)\s+0x[0-9a-fA-F]+\s+(?:in\s+)?(?<rest>.*\S)\s*$/;
 // Frame tail with a source location: "<func> /src/path:line[:col]".
 const FRAME_SRC_RE = /^(?<func>.+?)\s+(?<file>\/\S+?):(?<line>\d+)(?::\d+)?$/;
+
+// A crash frame is "repo-attributable" only when its source path is NOT a system
+// header, libc, or sanitizer-runtime location. The authoritative root-cause frame
+// (src_frame) is the first repo-attributable frame, so a crash rooted only in
+// /usr/include or the ASan runtime cannot masquerade as a repo bug.
+const SYSTEM_FRAME_DENYLIST = [
+  /^\/usr\//,
+  /^\/lib\//,
+  /\/compiler-rt\//,
+  /\/llvm-project\//,
+];
+function isRepoAttributableFrame(sourcePath) {
+  return typeof sourcePath === "string" && !SYSTEM_FRAME_DENYLIST.some((re) => re.test(sourcePath));
+}
 // Frame tail in a shared object: "<func> (/lib/x86_64-linux-gnu/libc.so.6+0x2083f)".
 const FRAME_LIB_RE = /^(?<func>.+?)\s+\((?<module>[^)]+)\)$/;
 
@@ -82,9 +96,10 @@ function parseFramesAfter(lines, bannerIdx) {
 // purely from captured bytes. Sanitizers write to stderr; stdout is scanned as a
 // fallback. Returns:
 //   { crashed, sanitizer, crash_class, top_frames[], src_frame }
-// crash_class is lowercased for the §4.3 type gate. src_frame is the first frame
-// carrying a /src-resolved source_path (a convenience; the verifier applies its own
-// allocator/intrinsic denylist walk for the authoritative root-cause frame).
+// crash_class is lowercased for the §4.3 type gate. src_frame is the first
+// REPO-ATTRIBUTABLE source frame (the allocator/intrinsic/system-header denylist
+// walk above skips /usr, libc, and sanitizer-runtime frames) — the authoritative
+// root-cause frame, so a crash rooted only in system code yields src_frame=null.
 function parseSanitizerReport(stderrText, stdoutText) {
   const text = `${typeof stderrText === "string" ? stderrText : ""}\n${typeof stdoutText === "string" ? stdoutText : ""}`;
   const lines = text.split("\n");
@@ -110,7 +125,7 @@ function parseSanitizerReport(stderrText, stdoutText) {
   }
 
   const topFrames = bannerIdx === null ? [] : parseFramesAfter(lines, bannerIdx);
-  const srcFrame = topFrames.find((f) => typeof f.source_path === "string") || null;
+  const srcFrame = topFrames.find((f) => isRepoAttributableFrame(f.source_path)) || null;
 
   return {
     // A crash is real only with a structured banner; a bare MEMORY_SAFETY_SIGNAL

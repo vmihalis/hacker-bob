@@ -45,6 +45,7 @@ const TOOL_MODULES = Object.freeze([
   require("./repo-docker-run.js"),
   require("./repo-check.js"),
   require("./import-harness.js"),
+  require("./import-seed-corpus.js"),
   require("./read-session-state.js"),
   require("./read-session-nucleus.js"),
   require("./advance-session.js"),
@@ -160,6 +161,12 @@ const TOOL_MODULES = Object.freeze([
   // quiet on fix). Defeats the printf-forged-banner gap in the O-P4 claim contract;
   // writes the audit-graded repro-verified.jsonl the gate grades on.
   require("./verify-repro-reproduction.js"),
+  // OE4 — the invariant-from-diff sibling of verify-repro-reproduction. For
+  // ASAN-INVISIBLE value-state findings: re-runs the SAME command on the
+  // vuln-patched + fix-patched trees and mints value_state_confirmed only on a
+  // sound flip (repo-rooted probe faults on vuln, quiet on fix). Same
+  // audit-graded repro-verified.jsonl ledger + hash-binding as the repro gate.
+  require("./verify-oracle-differential.js"),
   // Plane X Cycle X.4 — Contract schema + attach with pre-dispatch
   // satisfiability check. Backed by mcp/lib/contracts.js (the X-D4 7-witness
   // schema + the X-D11 satisfiability gate). The attach tool emits

@@ -40,6 +40,7 @@ const {
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
+  REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES,
   REPO_MOUNT_MODE_VALUES,
 } = require("../mcp/lib/repo-env.js");
 const {
@@ -866,6 +867,201 @@ test("repoDockerRun self_patch aborts if patch.diff changes before materializati
     assert.ok(patchReads >= 2, "patch.diff should be rechecked at materialization time");
     const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
     assert.equal(rows.length, 0, "mutated self_patch runs must not land rows");
+  });
+});
+
+test("repoDockerRun checkout_patch writes /work/patch.diff and applies it for self_patch (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const patchBody = [
+      "diff --git a/file.txt b/file.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/file.txt",
+      "@@ -0,0 +1 @@",
+      "+patched",
+      "",
+    ].join("\n");
+    // No pre-written patch.diff: the agent supplies it via checkout_patch and
+    // the handler must write it to /work/patch.diff before materialization.
+    const workDir = repoWorkDir(init.target_domain);
+    assert.equal(fs.existsSync(path.join(workDir, "patch.diff")), false);
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "patched replay\n");
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 5,
+          timed_out: false,
+          stdout_bytes: 15,
+          stderr_bytes: 0,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "self_patch" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+
+    assert.equal(
+      fs.readFileSync(path.join(workDir, "patch.diff"), "utf8"),
+      patchBody,
+      "checkout_patch must be written to the Bob-owned /work/patch.diff",
+    );
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
+    assert.ok(fs.existsSync(path.join(checkoutDir, "file.txt")), "supplied patch must be git-applied to the checkout");
+    assert.equal(result.checkout_kind, "self_patch");
+    assert.equal(result.checkout_patch_hash, sha256Hex(patchBody));
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
+  });
+});
+
+test("repoDockerRun checkout_patch applies a supplied diff on an upstream_fix checkout (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    // first only has package.json; the patch adds an instrumentation file on
+    // top of the upstream_fix ref — the generalized materializer must apply it.
+    const patchBody = [
+      "diff --git a/instrument.txt b/instrument.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/instrument.txt",
+      "@@ -0,0 +1 @@",
+      "+patched",
+      "",
+    ].join("\n");
+
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "instrumented fix\n");
+        fs.writeFileSync(stderrPath, "");
+        return {
+          exit_code: 0,
+          signal: null,
+          duration_ms: 5,
+          timed_out: false,
+          stdout_bytes: 17,
+          stderr_bytes: 0,
+          stdout_truncated: false,
+          stderr_truncated: false,
+        };
+      },
+    };
+
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "upstream_fix" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+
+    const checkoutDir = path.join(repoCheckoutDir(init.target_domain), result.run_id, "repo");
+    assert.ok(
+      fs.existsSync(path.join(checkoutDir, "package.json")),
+      "upstream_fix ref must still be archived + extracted",
+    );
+    assert.ok(
+      fs.existsSync(path.join(checkoutDir, "instrument.txt")),
+      "supplied checkout_patch must be applied on top of the upstream_fix ref",
+    );
+    assert.equal(result.checkout_kind, "upstream_fix");
+    assert.equal(result.checkout_patch_hash, sha256Hex(patchBody));
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[0].checkout_patch_hash, sha256Hex(patchBody));
+  });
+});
+
+test("repoDockerRun checkout_patch refuses to apply without a checkout (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout_patch: "diff --git a/x b/x\n",
+        command: ["true"],
+        dry_run: true,
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "checkout_patch_requires_checkout",
+    );
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows.length, 0, "checkout_patch without a checkout must not land a row");
+  });
+});
+
+test("repoDockerRun checkout_patch redacts embedded secrets before write and binds the redacted bytes (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const AWS = "AKIAIOSFODNN7EXAMPLE";
+    const patchBody = [
+      "diff --git a/secret.txt b/secret.txt",
+      "new file mode 100644",
+      "index 0000000..2d6a07d",
+      "--- /dev/null",
+      "+++ b/secret.txt",
+      "@@ -0,0 +1 @@",
+      `+key=${AWS}`,
+      "",
+    ].join("\n");
+    const runtime = {
+      execFile: async () => ({ stdout: "Docker version 25.0", stderr: "" }),
+      run: async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(stdoutPath, "");
+        fs.writeFileSync(stderrPath, "");
+        return { exit_code: 0, signal: null, duration_ms: 5, timed_out: false, stdout_bytes: 0, stderr_bytes: 0, stdout_truncated: false, stderr_truncated: false };
+      },
+    };
+    const result = await repoDockerRun({
+      target_domain: init.target_domain,
+      checkout: { ref: first, kind: "self_patch" },
+      checkout_patch: patchBody,
+      command: ["true"],
+      dry_run: false,
+      runtime,
+    });
+    const written = fs.readFileSync(path.join(repoWorkDir(init.target_domain), "patch.diff"), "utf8");
+    assert.ok(!written.includes(AWS), "embedded AWS key must be redacted out of the on-disk patch.diff");
+    assert.ok(written.includes("REDACTED_AWS_ACCESS_KEY"), "redaction placeholder must be present");
+    assert.equal(result.checkout_patch_hash, sha256Hex(written), "checkout_patch_hash must bind the REDACTED bytes, not the raw secret");
+    assert.notEqual(result.checkout_patch_hash, sha256Hex(patchBody), "hash must not bind the raw (unredacted) patch");
+  });
+});
+
+test("repoDockerRun checkout_patch over the size cap is refused (OE1)", async () => {
+  await withTempHome(async () => {
+    const { repoRoot, first } = makeGitRepo();
+    const init = initRepoSession({ repo_path: repoRoot });
+    const huge = `diff --git a/x b/x\n+${"A".repeat(REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES + 1)}`;
+    await assert.rejects(
+      () => repoDockerRun({
+        target_domain: init.target_domain,
+        checkout: { ref: first, kind: "self_patch" },
+        checkout_patch: huge,
+        command: ["true"],
+        dry_run: true,
+      }),
+      (error) => error && error.details && error.details.repo_error_code === "checkout_patch_too_large",
+    );
   });
 });
 

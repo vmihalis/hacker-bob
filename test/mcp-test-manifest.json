@@ -16,6 +16,7 @@
   "test/repo-docker-run.test.js",
   "test/sanitizer-report.test.js",
   "test/repro-replay-verifier.test.js",
+  "test/oracle-differential-verifier.test.js",
   "test/verify-repro-reproduction-tool.test.js",
   "test/oss-container-substrate-invariants.test.js",
   "test/repo-check.test.js",
@@ -180,5 +181,6 @@
   "test/belief-differential-tester.test.js",
   "test/belief-elicitation.test.js",
   "test/belief-recalibration.test.js",
-  "test/composition-experiment-harness.test.js"
+  "test/composition-experiment-harness.test.js",
+  "test/lab-target-attest.test.js"
 ]

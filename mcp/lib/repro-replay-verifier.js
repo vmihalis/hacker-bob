@@ -63,6 +63,60 @@ function verdictFromRun(run) {
   return parseSanitizerReport(run && run.stderr_text, run && run.stdout_text);
 }
 
+// Shared differential adjudication for both the repro gate and the OE4 oracle
+// differential. Given the verifier's OWN two re-runs — the tree on which the
+// invariant must FAIL (vuln) and the tree on which it must HOLD (control/fix) —
+// derive the verdict. This is the single sound differential rule both gates use:
+// the invariant FAILS on the vuln tree (an attributable memory-safety crash with
+// a /src frame) and HOLDS on the control tree (clean, zero-exit). Anything that
+// fires identically on both trees (a printf-forged banner, an over-broad PoC, an
+// env crash) shows NO FLIP and is refuted; a degraded run or a false-quiet control
+// is inconclusive. controlLabel only changes the human-facing reason text so the
+// repro gate ("upstream-fix tree") and the oracle gate ("oracle-fix tree") read
+// correctly; the rule is byte-identical.
+function adjudicateDifferential({ vulnRun, controlRun, controlLabel = "upstream-fix" }) {
+  const vulnDegraded = runDegradation(vulnRun);
+  const controlDegraded = runDegradation(controlRun);
+  const vulnVerdict = verdictFromRun(vulnRun);
+  const controlVerdict = verdictFromRun(controlRun);
+
+  let result;
+  let reason;
+  if (vulnDegraded || controlDegraded) {
+    result = RESULT_INCONCLUSIVE;
+    reason = `degraded re-execution (vuln:${vulnDegraded || "ok"}, control:${controlDegraded || "ok"})`;
+  } else if (!vulnVerdict.crashed) {
+    // The claimed PoC does not reproduce on independent re-execution.
+    result = RESULT_REFUTED;
+    reason = "vuln-tree re-execution did not crash (claimed reproduction not reproduced)";
+  } else if (!vulnVerdict.src_frame) {
+    // A crash with no /src-resolved root-cause frame is not attributable to the repo.
+    result = RESULT_REFUTED;
+    reason = "vuln-tree crash has no /src-resolved root-cause frame (unattributable)";
+  } else if (controlVerdict.crashed) {
+    // No flip: the same command crashes the FIXED tree too. A printf-forged banner
+    // fires identically on both trees and dies exactly here; so does an env/always-crash.
+    result = RESULT_REFUTED;
+    reason = `no differential flip: the command also crashes the ${controlLabel} tree (forged/over-broad/non-attributable)`;
+  } else if (controlRun.exit_code !== 0) {
+    // The fix tree neither crashed NOR completed cleanly (non-zero exit, no crash
+    // banner). The most likely cause is that the command FAILED TO BUILD/RUN the
+    // harness on the fixed source (e.g. the fix changed an API the harness calls),
+    // so the absence of a crash proves nothing — the bug may simply never have been
+    // exercised. Treat as inconclusive rather than minting a verified_pass off a
+    // false-quiet control. (The reproduction idiom is: crash -> non-zero + banner;
+    // clean -> exit 0. A clean control MUST be a zero-exit completion.)
+    result = RESULT_INCONCLUSIVE;
+    reason = `control (${controlLabel}) tree did not crash but exited ${controlRun.exit_code} with no sanitizer banner — cannot distinguish a genuine fix from a failed build/run; differential inconclusive`;
+  } else {
+    // Real, attributable, flipping crash: vuln crashes with a /src frame; fix builds,
+    // runs the harness, and is quiet (exit 0).
+    result = RESULT_VERIFIED_PASS;
+    reason = `differential reproduction: crashes the vulnerable tree, quiet on the ${controlLabel} tree`;
+  }
+  return { result, reason, vulnVerdict, controlVerdict };
+}
+
 // verifyReproReproduction — re-run the PoC command on the vuln + fix trees, derive a
 // differential crash verdict, and mint a verified_pass only on a real flip.
 //
@@ -101,46 +155,27 @@ async function verifyReproReproduction(input, deps = {}) {
   const vulnRun = await deps.repoDockerRunFn({ ...baseArgs });
   const controlRun = await deps.repoDockerRunFn({ ...baseArgs, checkout: { ref: input.control_ref, kind: controlKind } });
 
-  const vulnDegraded = runDegradation(vulnRun);
-  const controlDegraded = runDegradation(controlRun);
-  const vulnVerdict = verdictFromRun(vulnRun);
-  const controlVerdict = verdictFromRun(controlRun);
+  const { result, reason, vulnVerdict, controlVerdict } = adjudicateDifferential({
+    vulnRun, controlRun, controlLabel: "upstream-fix",
+  });
 
-  let result;
-  let reason;
-  if (vulnDegraded || controlDegraded) {
-    result = RESULT_INCONCLUSIVE;
-    reason = `degraded re-execution (vuln:${vulnDegraded || "ok"}, control:${controlDegraded || "ok"})`;
-  } else if (!vulnVerdict.crashed) {
-    // The claimed PoC does not reproduce on independent re-execution.
-    result = RESULT_REFUTED;
-    reason = "vuln-tree re-execution did not crash (claimed reproduction not reproduced)";
-  } else if (!vulnVerdict.src_frame) {
-    // A crash with no /src-resolved root-cause frame is not attributable to the repo.
-    result = RESULT_REFUTED;
-    reason = "vuln-tree crash has no /src-resolved root-cause frame (unattributable)";
-  } else if (controlVerdict.crashed) {
-    // No flip: the same command crashes the FIXED tree too. A printf-forged banner
-    // fires identically on both trees and dies exactly here; so does an env/always-crash.
-    result = RESULT_REFUTED;
-    reason = "no differential flip: the command also crashes the upstream-fix tree (forged/over-broad/non-attributable)";
-  } else if (controlRun.exit_code !== 0) {
-    // The fix tree neither crashed NOR completed cleanly (non-zero exit, no crash
-    // banner). The most likely cause is that the command FAILED TO BUILD/RUN the
-    // harness on the fixed source (e.g. the fix changed an API the harness calls),
-    // so the absence of a crash proves nothing — the bug may simply never have been
-    // exercised. Treat as inconclusive rather than minting a verified_pass off a
-    // false-quiet control. (The reproduction idiom is: crash -> non-zero + banner;
-    // clean -> exit 0. A clean control MUST be a zero-exit completion.)
-    result = RESULT_INCONCLUSIVE;
-    reason = `control (upstream-fix) tree did not crash but exited ${controlRun.exit_code} with no sanitizer banner — cannot distinguish a genuine fix from a failed build/run; differential inconclusive`;
-  } else {
-    // Real, attributable, flipping crash: vuln crashes with a /src frame; fix builds,
-    // runs the harness, and is quiet (exit 0).
-    result = RESULT_VERIFIED_PASS;
-    reason = "differential reproduction: crashes the vulnerable tree, quiet on the upstream-fix tree";
-  }
+  return mintDifferentialRecord({
+    targetDomain, findingId, command: input.command, result, reason,
+    vulnRun, controlRun, vulnVerdict, controlVerdict,
+    extra: { control_ref: input.control_ref, control_kind: controlKind },
+  });
+}
 
+// Mint the audit-graded record on the SAME ledger with the SAME hash-binding both
+// gates share: a stable body is hashed (command_hash over the argv, results_hash
+// over the body) and appended under the session lock to the MCP-write-only,
+// agent-Write-blocked repro-verified.jsonl. The O-P4 claim gate grades off this
+// ledger and cannot tell — nor need it — which mode minted a verified_pass; both
+// are sound differentials. extra carries the mode-specific provenance fields.
+function mintDifferentialRecord({
+  targetDomain, findingId, command, result, reason,
+  vulnRun, controlRun, vulnVerdict, controlVerdict, extra = {},
+}) {
   const body = {
     version: REPRO_VERIFIED_VERSION,
     target_domain: targetDomain,
@@ -148,9 +183,8 @@ async function verifyReproReproduction(input, deps = {}) {
     finding_id: findingId,
     result,
     reason,
-    command_hash: hashCanonicalJson(input.command),
-    control_ref: input.control_ref,
-    control_kind: controlKind,
+    command_hash: hashCanonicalJson(command),
+    ...extra,
     vuln_run_id: (vulnRun && vulnRun.run_id) || null,
     control_run_id: (controlRun && controlRun.run_id) || null,
     crash_class: vulnVerdict.crash_class,
@@ -177,6 +211,93 @@ async function verifyReproReproduction(input, deps = {}) {
     crash_class: record.crash_class,
     results_hash: record.results_hash,
   };
+}
+
+// verifyOracleDifferential (OE4) — the SOUND oracle differential. Where
+// verifyReproReproduction re-runs the claimed PoC on the vuln tree (no checkout)
+// vs. the upstream-fix ref, this re-runs the SAME command across two EXPLICITLY
+// patched trees so the invariant's flip is observed against a precise pair:
+//
+//   oracle-vuln = checkout {kind:"self_patch", checkout_patch: vuln_patch}
+//                 -> the bug-bearing source -> the command must FAULT with a /src frame.
+//   oracle-fix  = checkout {ref: fix_ref, kind:"upstream_fix", checkout_patch: fix_patch}
+//                 -> the fixed source -> the command must be CLEAN (exit 0, no banner).
+//
+// The verdict rule and the ledger/hash-binding are byte-identical to the repro gate
+// (adjudicateDifferential + mintDifferentialRecord), so a verified_pass minted here
+// is indistinguishable to — and as sound as — the existing gate's: the invariant
+// FAILS on the vuln tree and HOLDS on the fix tree. oracle-vuln clean -> refuted;
+// both fault or a fix-build-degraded/false-quiet -> inconclusive.
+//
+// input: { target_domain, finding_id, command (argv[]), vuln_patch (unified diff),
+//          fix_ref (fix commit), fix_patch (unified diff), vuln_ref?, vuln_kind?,
+//          fix_kind?, image_tag?, allow_network? }
+// deps:  { repoDockerRunFn }  (same contract as verifyReproReproduction)
+async function verifyOracleDifferential(input, deps = {}) {
+  if (input == null || typeof input !== "object") {
+    throw new TypeError("input must be { target_domain, finding_id, command, vuln_patch, fix_ref, fix_patch }");
+  }
+  const targetDomain = assertSafeDomain(input.target_domain);
+  const findingId = typeof input.finding_id === "string" ? input.finding_id : null;
+  if (!findingId) throw new Error("finding_id is required");
+  if (!Array.isArray(input.command) || input.command.length === 0) {
+    throw new Error("command must be a non-empty argv array");
+  }
+  if (typeof input.vuln_patch !== "string" || !input.vuln_patch.trim()) {
+    throw new Error("vuln_patch (the unified diff that materializes the vulnerable tree) is required");
+  }
+  if (typeof input.fix_ref !== "string" || !input.fix_ref) {
+    throw new Error("fix_ref (the upstream-fix commit) is required for the oracle differential");
+  }
+  if (typeof input.fix_patch !== "string" || !input.fix_patch.trim()) {
+    throw new Error("fix_patch (the unified diff that materializes the fixed tree) is required");
+  }
+  if (typeof deps.repoDockerRunFn !== "function") {
+    throw new TypeError("deps.repoDockerRunFn must be a function");
+  }
+  // self_patch applies vuln_patch onto a base ref; default that base to fix_ref so
+  // the vuln tree is the precise inverse of the fix tree (apply the bug-bearing diff
+  // to the fixed source). An operator may override with vuln_ref/vuln_kind.
+  const vulnKind = typeof input.vuln_kind === "string" && input.vuln_kind ? input.vuln_kind : "self_patch";
+  const fixKind = typeof input.fix_kind === "string" && input.fix_kind ? input.fix_kind : DEFAULT_CONTROL_KIND;
+  const vulnRef = typeof input.vuln_ref === "string" && input.vuln_ref ? input.vuln_ref : input.fix_ref;
+  const baseArgs = {
+    target_domain: targetDomain,
+    command: input.command,
+    dry_run: false,
+    allow_network: input.allow_network === true,
+  };
+  if (typeof input.image_tag === "string" && input.image_tag) baseArgs.image_tag = input.image_tag;
+
+  // The verifier owns both executions; the evaluator cannot pre-bake the outputs.
+  const vulnRun = await deps.repoDockerRunFn({
+    ...baseArgs,
+    checkout: { ref: vulnRef, kind: vulnKind },
+    checkout_patch: input.vuln_patch,
+  });
+  const controlRun = await deps.repoDockerRunFn({
+    ...baseArgs,
+    checkout: { ref: input.fix_ref, kind: fixKind },
+    checkout_patch: input.fix_patch,
+  });
+
+  const { result, reason, vulnVerdict, controlVerdict } = adjudicateDifferential({
+    vulnRun, controlRun, controlLabel: "oracle-fix",
+  });
+
+  return mintDifferentialRecord({
+    targetDomain, findingId, command: input.command, result, reason,
+    vulnRun, controlRun, vulnVerdict, controlVerdict,
+    extra: {
+      mode: "oracle_differential",
+      control_ref: input.fix_ref,
+      control_kind: fixKind,
+      vuln_ref: vulnRef,
+      vuln_kind: vulnKind,
+      vuln_patch_hash: hashCanonicalJson(input.vuln_patch),
+      fix_patch_hash: hashCanonicalJson(input.fix_patch),
+    },
+  });
 }
 
 // Summarize the reproduction-gate ledger — the AUTHORITATIVE O-P4 signal. Reads the
@@ -216,5 +337,6 @@ module.exports = {
   RESULT_REFUTED,
   RESULT_INCONCLUSIVE,
   verifyReproReproduction,
+  verifyOracleDifferential,
   readReproVerifiedSummary,
 };

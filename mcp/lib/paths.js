@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const {
   HARNESS_ID_RE,
+  SEED_CORPUS_ID_RE,
   SESSION_LOCK_NAME,
   STATIC_ARTIFACT_ID_RE,
   VERIFICATION_ROUND_FILE_MAP,
@@ -250,6 +251,29 @@ function harnessesJsonlPath(domain) {
   return path.join(sessionDir(domain), "harnesses.jsonl");
 }
 
+// Imported grammar-generated seed corpora (bob_import_seed_corpus). Session-owned
+// scratch, MCP-write-only (agent Write fenced; provenance flows only through the tool).
+// NOT audit-graded. One import -> seed-corpus/<SC-N>/ holding many raw seed files.
+function assertSeedCorpusId(corpusId) {
+  const normalized = assertNonEmptyString(corpusId, "corpus_id");
+  if (!SEED_CORPUS_ID_RE.test(normalized)) {
+    throw new Error("corpus_id must match SC-N");
+  }
+  return normalized;
+}
+
+function seedCorpusDir(domain) {
+  return path.join(sessionDir(domain), "seed-corpus");
+}
+
+function seedCorpusEntryDir(domain, corpusId) {
+  return path.join(seedCorpusDir(domain), assertSeedCorpusId(corpusId));
+}
+
+function seedCorpusJsonlPath(domain) {
+  return path.join(sessionDir(domain), "seed-corpus.jsonl");
+}
+
 function schemaContractsJsonlPath(domain) {
   return path.join(sessionDir(domain), "schema-contracts.jsonl");
 }
@@ -393,6 +417,16 @@ function repoInventoryPath(domain) {
   return path.join(sessionDir(domain), "repo-inventory.json");
 }
 
+// Operator-attested lab/private-target authorization. Written ONCE by
+// bob_init_session (lab-target-attest.recordLabAuthorization) when the operator
+// attests ownership of a loopback/RFC1918 target. Audit-graded (see
+// AUDIT_GRADED_BASENAMES) so an agent cannot forge it via the Write tool to
+// self-grant a private-target scan. The scope kernel reads it to permit the
+// otherwise-rejected private target_domain.
+function labAuthorizationPath(domain) {
+  return path.join(sessionDir(domain), "lab-authorization.json");
+}
+
 // Cycle O.S4 — diff-impact.json is written by bob_summarize_diff_impact after
 // diff impact analysis. Records which files/line-ranges were touched by the
 // diff and which surface IDs they map to. This is MCP-owned; agents MUST NOT
@@ -496,6 +530,10 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // MCP-write-only so a reproduction verdict cannot be hand-forged; the O-P4
   // claim gate grades on it.
   "repro-verified.jsonl",
+  // Operator-attested lab/private-target authorization. MCP-write-only (written
+  // only by bob_init_session) so a prompt-injected agent cannot forge it via the
+  // Write tool to self-grant a loopback/RFC1918 scan past the public-DNS gate.
+  "lab-authorization.json",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -575,6 +613,7 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "surface-routes.json",
   "static-artifacts.jsonl",
   "harnesses.jsonl",
+  "seed-corpus.jsonl",
   "static-analysis-results.jsonl",
   "static-analysis-index.jsonl",
   "static-scan-results.jsonl",
@@ -632,6 +671,7 @@ const HOOK_MCP_OWNED_FILENAME_PATTERNS = Object.freeze([
 const HOOK_MCP_OWNED_DIRS = Object.freeze([
   "static-imports",
   "harnesses",
+  "seed-corpus",
   "belief-scratch",
   "repo-runs",
   "repo-work",
@@ -863,6 +903,7 @@ const SESSION_ROOT_RESOLVER_EXTRA_ARGS = Object.freeze({
   liveDeadEndsJsonlPath: ["w1", "a3"],
   staticArtifactPath: ["SA-1"],
   harnessPath: ["H-1"],
+  seedCorpusEntryDir: ["SC-1"],
   waveAssignmentsPath: [1],
 });
 
@@ -912,6 +953,7 @@ module.exports = {
   TELEMETRY_DIR_NAME,
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
   assertHarnessId,
+  assertSeedCorpusId,
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
@@ -939,6 +981,7 @@ module.exports = {
   repoDockerfilePath,
   repoEnvPath,
   repoInventoryPath,
+  labAuthorizationPath,
   repoRunsDir,
   repoWorkDir,
   scopeWarningsPath,
@@ -983,6 +1026,9 @@ module.exports = {
   harnessImportDir,
   harnessPath,
   harnessesJsonlPath,
+  seedCorpusDir,
+  seedCorpusEntryDir,
+  seedCorpusJsonlPath,
   staticAnalysisIndexPath,
   staticAnalysisResultsJsonlPath,
   staticScanResultsJsonlPath,

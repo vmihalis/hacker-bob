@@ -54,6 +54,7 @@ const {
   repoWorkDir,
   sessionDir,
 } = require("./paths.js");
+const { newestSeedCorpusDir } = require("./seed-corpus-store.js");
 const {
   ERROR_CODES,
   ToolError,
@@ -65,7 +66,11 @@ const {
 const {
   appendJsonlLine,
   withSessionLock,
+  writeFileAtomic,
 } = require("./storage.js");
+const {
+  redactStaticArtifactContent,
+} = require("./static-artifacts.js");
 const {
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
@@ -329,6 +334,9 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     // is instrumented. Replaces the old single-TU `clang ... -o h -- "$HARNESS"`.
     `ENGINE=libfuzzer ${BOB_MULTITU_BUILD_PATH}`,
     ...seedSetup,
+    // Stage a session-imported grammar-generated seed corpus (the grammar arm) into the
+    // libFuzzer corpus; additive to any discovered seeds, no-op when none mounted.
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
     // -use_value_profile=1 is the always-on, zero-dependency input-to-state floor:
     // clang-18/compiler-rt already ship the trace-cmp interceptors, so libFuzzer
     // rewards partial progress on multi-byte comparisons (climbing magic checks a
@@ -397,6 +405,9 @@ function aflCmplogRecipe(seedCorpusEntry) {
     // exit is scoped, never masking an upstream build failure.
     "if [ ! -x /work/out/h_afl ] || [ ! -x /work/out/h_cmplog ]; then echo BOB_AFL_SKIPPED >&2; exit 0; fi",
     "printf bob > /work/out/corpus/s0",
+    // Stage a session-imported grammar-generated seed corpus (the grammar arm); afl
+    // explores from valid grammar-spanning inputs. No-op when none mounted.
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
     ...seedStage,
     // Brace-grouped so `|| true` (tolerate afl-fuzz's non-zero exit on timeout or
     // first crash) stays scoped to afl-fuzz and cannot swallow an upstream build
@@ -1136,6 +1147,10 @@ const REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS = 300_000;
 const REPO_DOCKER_RUN_MAX_TIMEOUT_MS = 600_000;
 const DIFFERENTIAL_MATERIALIZER_TIMEOUT_MS = 30_000;
 const REPO_DOCKER_RUN_MAX_OUTPUT_BYTES = 16 * 1024 * 1024; // 16 MB per stream
+// OE1: cap on an agent-supplied checkout_patch unified diff. Mirrors the
+// tool inputSchema maxLength so the handler enforces the same ceiling the
+// schema advertises.
+const REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES = 200_000;
 const REPO_DOCKER_RUN_MAX_COMMAND_TOKENS = 64;
 const REPO_DOCKER_RUN_MAX_TOKEN_LENGTH = 2048;
 const REPO_WORK_MOUNT_MODE = "read_write";
@@ -1433,33 +1448,27 @@ async function materializeDifferentialCheckoutTree({
   mkdirDifferentialRunDirectory(checkoutDir, 0o755);
   assertRunScopedPathBoundary(path.resolve(checkoutRoot), checkoutDir);
 
-  if (kind !== "self_patch") {
-    try {
-      await execDifferentialMaterializer(
-        "git",
-        ["-C", repoRoot, "archive", "--format=tar", `--output=${checkoutTar}`, archiveRef],
-        "git archive",
-      );
-      await execDifferentialMaterializer("tar", ["-x", "-f", checkoutTar, "-C", checkoutDir], "tar extract");
-    } finally {
-      fs.rmSync(checkoutTar, { force: true });
-    }
-    return { checkout_path: checkoutDir };
-  }
-
+  // OE1: every checkout kind first git-archives the kind's ref and
+  // tar-extracts it, then applies the Bob-owned /work/patch.diff IF present.
+  // The patch is required for self_patch (the original semantics — archive
+  // the base/vuln ref, then apply) and optional for upstream_fix /
+  // pre_introduction (archive that ref, then apply if a patch was supplied),
+  // enabling instrumented differentials on the fix/pre-introduction side.
   const patchBuffer = readSelfPatchBuffer(workDir, sessionRoot);
   const observedPatchHash = patchBuffer ? sha256Hex(patchBuffer) : null;
-  if (!observedPatchHash) {
+  if (kind === "self_patch" && !observedPatchHash) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "self_patch checkout requires /work/patch.diff before bob_repo_docker_run",
       { repo_error_code: "missing_differential_patch" },
     );
   }
+  // Patch-hash binding (checkout_patch_hash): the patch must not have changed
+  // between the handler's hash and this materialization.
   if (expectedPatchHash && observedPatchHash !== expectedPatchHash) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      "self_patch checkout patch changed during differential materialization",
+      "differential checkout patch changed during differential materialization",
       { repo_error_code: "differential_patch_changed" },
     );
   }
@@ -1469,14 +1478,18 @@ async function materializeDifferentialCheckoutTree({
   const baseTar = runScopedHostPath(checkoutRoot, sessionRoot, runId, "base.tar");
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   try {
-    fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
+    if (patchBuffer) {
+      fs.writeFileSync(patchSnapshot, patchBuffer, { mode: 0o600 });
+    }
     await execDifferentialMaterializer(
       "git",
       ["-C", repoRoot, "archive", "--format=tar", `--output=${baseTar}`, archiveRef],
       "git archive",
     );
     await execDifferentialMaterializer("tar", ["-x", "-f", baseTar, "-C", checkoutDir], "tar extract");
-    await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
+    if (patchBuffer) {
+      await execDifferentialMaterializer("git", ["-C", checkoutDir, "apply", patchSnapshot], "git apply");
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(baseTar, { force: true });
@@ -1519,6 +1532,7 @@ function buildDockerRunArgv({
   repoMountMode,
   egressProfile,
   harnessDir,
+  seedsDir,
 }) {
   if (!repoRoot || !workDir || !imageTag || !Array.isArray(command) || command.length === 0) {
     throw new Error("buildDockerRunArgv requires repoRoot, workDir, imageTag, command");
@@ -1567,6 +1581,12 @@ function buildDockerRunArgv({
   // /work) to avoid overlay subtleties. Absent for sessions with no import.
   if (harnessDir) {
     args.push("-v", `${harnessDir}:/harness:ro`);
+  }
+  // A session-imported grammar-generated seed corpus (bob_import_seed_corpus) is
+  // mounted read-only at /seeds so the fuzz recipe can stage it into the libFuzzer
+  // corpus. Additive to any repo-discovered seed corpus; absent when none imported.
+  if (seedsDir) {
+    args.push("-v", `${seedsDir}:/seeds:ro`);
   }
   // Proxy: --env (run-time), NEVER ENV in the image. Skipping these
   // when allow_network=false keeps the offline path airtight.
@@ -1937,6 +1957,7 @@ async function repoDockerRun({
   replay_context: replayContextRaw = null,
   blocked_harness_run_id: blockedHarnessRunIdRaw = null,
   egress_profile: egressProfileNameOverride = null,
+  checkout_patch: checkoutPatchRaw = null,
   runtime = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
@@ -1959,6 +1980,57 @@ async function repoDockerRun({
   let checkoutHistory = null;
   if (normalizedCheckout) {
     checkoutHistory = assertHistoryAvailableForRef(repoRoot, normalizedCheckout.ref);
+  }
+
+  // OE1: an agent-supplied unified diff is written to the Bob-owned
+  // /work/patch.diff (the path readSelfPatchBuffer reads) BEFORE any patch
+  // hashing or differential materialization runs. The patch is redacted for
+  // embedded secrets and capped, then materialized atomically into the
+  // boundary-validated repo-work dir so the materializer git-applies it for
+  // ANY checkout kind (self_patch, upstream_fix, pre_introduction).
+  if (checkoutPatchRaw != null) {
+    if (!normalizedCheckout) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "checkout_patch requires a checkout to apply the diff against",
+        { repo_error_code: "checkout_patch_requires_checkout" },
+      );
+    }
+    // A unified diff is newline-sensitive (git reports "corrupt patch" if the
+    // trailing newline is stripped), so we type-check without trimming the
+    // body — only reject a string that is empty or whitespace-only.
+    if (typeof checkoutPatchRaw !== "string" || !checkoutPatchRaw.trim()) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "checkout_patch must be a non-empty unified diff string",
+        { repo_error_code: "invalid_checkout_patch" },
+      );
+    }
+    const rawPatch = checkoutPatchRaw;
+    if (rawPatch.length > REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `checkout_patch exceeds the ${REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES}-char cap`,
+        { repo_error_code: "checkout_patch_too_large" },
+      );
+    }
+    const redactedPatch = redactStaticArtifactContent(rawPatch).content;
+    // assertRepoWorkDirBoundary refuses a symlinked repo-work before we
+    // commit the patch bytes to disk; the atomic write keeps the Bob-owned
+    // /work/patch.diff consistent for the hash + materialize stages below.
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+    fs.mkdirSync(workDir, { recursive: true });
+    writeFileAtomic(path.join(workDir, "patch.diff"), redactedPatch);
+  } else if (normalizedCheckout && normalizedCheckout.kind !== "self_patch") {
+    // OE1 hygiene: OE1 generalized the materializer so upstream_fix/pre_introduction
+    // also git-apply /work/patch.diff when present. That opened a cross-run bleed —
+    // a patchless upstream_fix run silently inheriting a stale diff from a prior
+    // self_patch run on the same session. Clear it so OE1's patch-on-non-self_patch
+    // only ever applies a diff explicitly supplied via checkout_patch THIS run.
+    // self_patch is untouched (its pre-OE1 contract: a patch is mandatory, supplied
+    // via checkout_patch or pre-staged, else materialization fails closed).
+    assertRepoWorkDirBoundary(workDir, sessionRoot);
+    try { fs.rmSync(path.join(workDir, "patch.diff"), { force: true }); } catch { /* absent is fine */ }
   }
   const checkoutSrcRoot = normalizedCheckout
     ? runScopedHostPath(checkoutRoot, sessionRoot, runId, "repo")
@@ -2059,6 +2131,18 @@ async function repoDockerRun({
     harnessDir = null;
   }
 
+  // Mount the newest session-imported grammar-generated seed corpus at /seeds when one
+  // exists, so the fuzz recipe stages it into the libFuzzer corpus (the grammar arm).
+  let seedsDir = null;
+  try {
+    const sDir = newestSeedCorpusDir(domain);
+    if (sDir && fs.existsSync(sDir) && fs.readdirSync(sDir).length > 0) {
+      seedsDir = sDir;
+    }
+  } catch {
+    seedsDir = null;
+  }
+
   // Build the argv deterministically before any I/O so dry-run and
   // live-run paths share the exact same flags.
   const argv = buildDockerRunArgv({
@@ -2070,6 +2154,7 @@ async function repoDockerRun({
     repoMountMode: normalizedMountMode,
     egressProfile: egressProfileResolved,
     harnessDir,
+    seedsDir,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
   const replayCommandHash = normalizedInputCommand
@@ -2079,10 +2164,14 @@ async function repoDockerRun({
   const runsDir = repoRunsDir(domain);
   const stdoutPath = path.join(runsDir, `${runId}.stdout`);
   const stderrPath = path.join(runsDir, `${runId}.stderr`);
-  if (normalizedCheckout && normalizedCheckout.kind === "self_patch") {
+  // OE1: hash /work/patch.diff for any checkout that carries one. For
+  // self_patch the patch is mandatory; for upstream_fix / pre_introduction it
+  // is optional, so a null hash there simply means "no patch supplied". The
+  // hash binds into the ledger row and is re-verified during materialization.
+  if (normalizedCheckout) {
     assertRepoWorkDirBoundary(workDir, sessionRoot);
   }
-  const checkoutPatchHash = normalizedCheckout && normalizedCheckout.kind === "self_patch"
+  const checkoutPatchHash = normalizedCheckout
     ? hashSelfPatchFile(workDir, sessionRoot)
     : null;
   if (normalizedCheckout && normalizedCheckout.kind === "self_patch" && !checkoutPatchHash) {
@@ -2120,7 +2209,7 @@ async function repoDockerRun({
     if (normalizedCheckout) {
       planRow.checkout_ref = normalizedCheckout.ref;
       planRow.checkout_kind = normalizedCheckout.kind;
-      if (normalizedCheckout.kind === "self_patch") {
+      if (checkoutPatchHash) {
         planRow.checkout_patch_hash = checkoutPatchHash;
       }
       if (checkoutHistory) {
@@ -2169,7 +2258,7 @@ async function repoDockerRun({
           checkout_object: checkoutHistory.checkout_object,
           checkout_object_format: checkoutHistory.checkout_object_format,
         } : {}),
-        ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+        ...(checkoutPatchHash ? { checkout_patch_hash: checkoutPatchHash } : {}),
       } : {}),
     };
   }
@@ -2292,7 +2381,7 @@ async function repoDockerRun({
       liveRow.checkout_object = checkoutHistory.checkout_object;
       liveRow.checkout_object_format = checkoutHistory.checkout_object_format;
     }
-    if (normalizedCheckout.kind === "self_patch") {
+    if (checkoutPatchHash) {
       liveRow.checkout_patch_hash = checkoutPatchHash;
     }
   }
@@ -2348,7 +2437,7 @@ async function repoDockerRun({
         checkout_object: checkoutHistory.checkout_object,
         checkout_object_format: checkoutHistory.checkout_object_format,
       } : {}),
-      ...(normalizedCheckout.kind === "self_patch" ? { checkout_patch_hash: checkoutPatchHash } : {}),
+      ...(checkoutPatchHash ? { checkout_patch_hash: checkoutPatchHash } : {}),
     } : {}),
   };
 }
@@ -2383,6 +2472,7 @@ module.exports = {
   RECOMMENDED_COMMAND_ROLES,
   REPO_DOCKER_RUN_DEFAULT_TIMEOUT_MS,
   REPO_DOCKER_RUN_FIRST_LINE_MAX_CHARS,
+  REPO_DOCKER_RUN_MAX_CHECKOUT_PATCH_BYTES,
   REPO_DOCKER_RUN_MAX_OUTPUT_BYTES,
   REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
   REPO_DOCKER_RUN_VERSION,

@@ -1109,8 +1109,14 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // and bob_read_composition_telemetry to the orchestrator bundle (+2 generated
   // allowed-tools lines). The SC1 live verifier adds bob_verify_composition_path
   // (+1 generated allowed-tools line). bob_import_harness (OSS harness acquisition)
-  // adds +1 generated allowed-tools line.
-  assert.ok(lines <= 396, `bob-evaluate-runner skill is ${lines} lines (cap 396)`);
+  // adds +1 generated allowed-tools line. bob_import_seed_corpus (grammar-arm seed
+  // import) adds +1 generated allowed-tools line. The native-fuzz grammar-arm SETUP
+  // stanza (per-target harness-contract perception + class-aware arm routing) adds +1.
+  // OE2+OE3 invariant-from-diff oracle SETUP stanza (known-fix/regression: read both
+  // trees, derive the fix's invariant, craft two minimal checkout_patch diffs whose
+  // violation triggers a real /src-framed ASAN fault — not a bare abort) adds +2
+  // (content line + blank separator). Cap bumped 399 → 401.
+  assert.ok(lines <= 401, `bob-evaluate-runner skill is ${lines} lines (cap 401)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1378,7 +1384,10 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // The OSS reproduction gate adds bob_verify_repro_reproduction so a
   // verification round can re-run the differential PoC replay (vuln tree vs
   // upstream-fix tree) and confirm the minted verified_pass without a
-  // claim-writing tool.
+  // claim-writing tool. OE4 adds bob_verify_oracle_differential — the
+  // invariant-from-diff sibling that re-runs the vuln-patched vs fix-patched
+  // trees to confirm an ASAN-invisible value_state_confirmed, same audit-graded
+  // ledger, also without a claim-writing tool.
   assert.deepEqual(
     mutating.sort(),
     [
@@ -1386,6 +1395,7 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
+      "bob_verify_oracle_differential",
       "bob_verify_repro_reproduction",
       "bob_write_verification_round",
     ].sort(),
