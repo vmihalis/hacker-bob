@@ -395,7 +395,11 @@ function circuitBreakerRecordKey(record) {
   // heal a per-egress block reached through another.
   const method = (typeof record.method === "string" && record.method ? record.method : "GET").toUpperCase();
   const egress = (typeof record.egress_profile === "string" && record.egress_profile) ? record.egress_profile : "default";
-  return `${host} ${method} ${path} ${egress}`;
+  // The egress IDENTITY hash (not just the profile NAME) is part of the key: two different proxy
+  // identities can share a profile name (reconfigured/legacy), and a success through one identity
+  // must not heal a block reached through another.
+  const egressId = (typeof record.egress_profile_identity_hash === "string" && record.egress_profile_identity_hash) ? record.egress_profile_identity_hash : "";
+  return `${host} ${method} ${path} ${egress} ${egressId}`;
 }
 
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {
@@ -484,8 +488,10 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
   );
   // Auditable, separate channel: unauthenticated 403s that a later authed success healed. Surfaced
   // (never hidden) but NOT counted toward the breaker.
-  const authChallengeHosts = Array.from(authChallengeByHost.values()).sort((a, b) => a.host.localeCompare(b.host));
-  const authChallengeCount = authChallengeHosts.reduce((sum, h) => sum + h.auth_challenge_403, 0);
+  const authChallengeAll = Array.from(authChallengeByHost.values()).sort((a, b) => a.host.localeCompare(b.host));
+  const authChallengeCount = authChallengeAll.reduce((sum, h) => sum + h.auth_challenge_403, 0);
+  // Keep the full scalar count, but cap the returned host list so the response stays bounded.
+  const authChallengeHosts = authChallengeAll.slice(0, HTTP_AUDIT_SUMMARY_MAX_ITEMS);
 
   return {
     threshold,

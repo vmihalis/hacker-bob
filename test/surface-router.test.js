@@ -18,6 +18,7 @@ const {
   SURFACE_ROUTE_VERSION,
 } = require("../mcp/lib/surface-router.js");
 const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
 const { surfaceRoutesPath } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
@@ -103,6 +104,15 @@ test("reader STILL fails hard on unrecoverable top-level shape (version mismatch
 test("validateSurfaceRoute rejects an empty evaluator_agent (the validate-on-write guard's mechanism)", () => {
   assert.throws(() => validateSurfaceRoute(staleHunterRoute("s1"), 0, "routes.json"), /evaluator_agent must be a non-empty string/);
 });
+
+test("findRoutedSurface rejects a surface whose route was quarantined even if a valid duplicate exists (no split authority)", () => withTempHome(() => {
+  const domain = "router-splitauth.example.test";
+  // surface:api appears twice: a valid route + a stale (hunter_agent) duplicate. The reader keeps
+  // the valid one and quarantines the stale one. findRoutedSurface must REJECT (mirroring
+  // getContextBudget) — the file is corrupt, so an offensive probe must not proceed on it.
+  writeRoutesFile(domain, [validWebRoute("surface:api"), staleHunterRoute("surface:api")]);
+  assert.throws(() => findRoutedSurface(domain, "surface:api"), /malformed route/);
+}));
 
 test("happy path: routeSurfacesInternal writes valid routes that read back cleanly (validate-on-write passes)", () => withTempHome(() => {
   const domain = "router-roundtrip.example.test";

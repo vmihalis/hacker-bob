@@ -85,6 +85,13 @@ test("SAFETY — egress mismatch: a success on a different egress profile does n
   assert.equal(s.auth_challenge_403_count, 0);
 });
 
+test("SAFETY — egress IDENTITY mismatch: same profile name, different identity hash, does not heal", () => {
+  const a403 = (ts) => rec({ status: 403, auth_profile: null, egress_profile: "default", egress_profile_identity_hash: "id-A", ts });
+  const s = summary([a403(T0), a403(T0), a403(T0), rec({ status: 200, auth_profile: "attacker", egress_profile: "default", egress_profile_identity_hash: "id-B", ts: T1 })]);
+  assert.equal(s.tripped_count, 1, "a success via a different egress identity must not heal a per-identity block");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
 test("SAFETY — an offensive-confirmer 403 (tool stamped, auth_profile lost) is never healed", () => {
   // An authenticated offensive probe records auth_profile:null but stamps `tool`; its genuine block
   // must not be reclassified by a later bob_http_scan authed 2xx on the same key.
