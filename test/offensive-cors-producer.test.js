@@ -391,6 +391,33 @@ test("a RELATIVE endpoint binds to the surface's declared host, NOT the session 
   assert.equal(rows[0].target, canonicalizeExploitTarget(`https://${surfaceHost}/api/data`));
 }));
 
+test("a relative endpoint ambiguous across multiple declared hosts is rejected (fail closed, no row)", () => withTempHome(async () => {
+  const domain = "cors-multihost.example.test";
+  // Two declared hosts + a single RELATIVE endpoint: which host owns "/shared/config"? Silently
+  // picking one would risk signing a row attributed to the wrong asset, so fail closed.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: SURFACE_ID,
+      title: "Multi-host surface with a relative endpoint",
+      surface_type: "web",
+      hosts: [`api.${domain}`, `admin.${domain}`],
+      endpoints: ["/shared/config"],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+  ensureHandoffSigningKey(domain);
+
+  await assert.rejects(
+    () => corsConfirm(baseArgs(domain), { fetch_fn: reflectingFetch }),
+    /ambiguous across multiple in-scope declared hosts/i,
+  );
+  assert.equal(readRows(domain).length, 0);
+}));
+
 test("a protocol-relative '//host' endpoint is rejected (never resolves to a foreign host)", () => withTempHome(async () => {
   const domain = "cors-protorel.example.test";
   // The endpoint value is a network-path reference pointing at an IN-SCOPE subdomain. Without the

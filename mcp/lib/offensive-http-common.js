@@ -379,19 +379,40 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, tool
 // Fails closed (no in-scope endpoint) rather than invent an agent-supplied path.
 function resolveSurfaceEndpoint({ domain, surface, state, toolName = "bob_http_confirm" }) {
   const stateOrigin = originFromState(domain, state, toolName);
-  // Bind RELATIVE endpoints to the surface's OWN declared host(s) — never the session apex. A
-  // surface for api.example.com with a relative "/v1/data" must be probed against (and signed
-  // for) api.example.com, not example.com: resolving against the apex would mint a MAC-backed row
-  // that mis-attributes the CORS misconfiguration to the wrong asset. An ABSOLUTE endpoint already
-  // carries its own host, so urlFromEndpoint ignores the origin arg. Fall back to the apex only
-  // when the surface declares no host of its own (it IS the apex).
+  // A RELATIVE endpoint binds to the surface's OWN declared host(s) — never the session apex (P1):
+  // a surface for api.example.com with "/v1/data" must be probed against (and signed for)
+  // api.example.com, not example.com, or the MAC-backed row mis-attributes the misconfiguration.
+  // A relative endpoint that resolves in-scope against MORE THAN ONE declared host is AMBIGUOUS —
+  // silently picking one risks signing the wrong asset, so we fail closed. An ABSOLUTE endpoint
+  // carries its own host (unambiguous). With no declared host, a relative endpoint is the apex.
   const declaredOrigins = surfaceDeclaredOrigins(surface, stateOrigin);
+  const stripped = (url) => { url.search = ""; url.hash = ""; return url; };
+  let sawAmbiguousRelative = false;
+
   for (const endpoint of candidateSurfaceEndpoints(surface)) {
     const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value || "").trim());
-    const origins = isAbsolute
-      ? [stateOrigin] // ignored by urlFromEndpoint for an absolute URL
-      : (declaredOrigins.length ? declaredOrigins : [stateOrigin]);
-    for (const origin of origins) {
+
+    if (isAbsolute) {
+      let candidate;
+      // The origin arg is ignored by urlFromEndpoint for an absolute URL (host is in the value).
+      try {
+        candidate = urlFromEndpoint(endpoint.value, stateOrigin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      return stripped(candidate);
+    }
+
+    // Relative endpoint: resolve against each declared host (or the apex if none declared) and
+    // collect the in-scope candidates by distinct origin.
+    const relHosts = declaredOrigins.length ? declaredOrigins : [stateOrigin];
+    const inScopeByOrigin = new Map();
+    for (const origin of relHosts) {
       let candidate;
       try {
         candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
@@ -403,10 +424,15 @@ function resolveSurfaceEndpoint({ domain, surface, state, toolName = "bob_http_c
       } catch {
         continue;
       }
-      candidate.search = "";
-      candidate.hash = "";
-      return candidate;
+      if (!inScopeByOrigin.has(candidate.origin)) inScopeByOrigin.set(candidate.origin, stripped(candidate));
     }
+    if (inScopeByOrigin.size === 1) return inScopeByOrigin.values().next().value;
+    if (inScopeByOrigin.size > 1) { sawAmbiguousRelative = true; continue; }
+    // size 0 → try the next candidate endpoint
+  }
+
+  if (sawAmbiguousRelative) {
+    rejectInvalidArguments(`relative endpoint is ambiguous across multiple in-scope declared hosts for surface_id (${toolName}); record an absolute endpoint to disambiguate`);
   }
   rejectInvalidArguments(`no in-scope recorded endpoint resolves for surface_id (${toolName})`);
 }
