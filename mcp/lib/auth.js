@@ -45,6 +45,34 @@ function buildHeaderProfile(headers, cookies, storage) {
   return profile;
 }
 
+// The canonical set of profile keys that are Bob-LOCAL metadata, NEVER HTTP request
+// headers: credentials + browser storage + the PR-PROV synthetic-identity provenance
+// flags and synthetic mailbox + expiry hints. SINGLE source of truth for every consumer
+// that reads a raw profile from resolveAuthProfile and must not emit/surface these: the
+// outbound-header merge (applyAuthProfileHeaders, used by bob_http_scan), the
+// bob_list_auth_profiles summary (summarizeAuthProfile), and the IDOR producer's outbound
+// strip (offensive-idor-producer.js imports this). One set means a future provenance key
+// cannot leak through a reader that forgot to add it.
+const PROFILE_METADATA_KEYS = Object.freeze(new Set([
+  "credentials", "local_storage", "session_storage",
+  "synthetic", "email_origin", "provisioned_via", "email",
+  "expires_at", "expiresAt", "expiry", "expires",
+]));
+
+// Merge a resolved auth profile's HEADER fields into an outbound header map, skipping the
+// Bob-local metadata above so the synthetic mailbox + provenance fingerprint (and
+// credentials/storage) never reach the TARGET as request headers. resolveAuthProfile
+// returns the RAW profile, so this is the required chokepoint for any outbound consumer.
+// Existing headers are never clobbered (matches the prior bob_http_scan `!headers[k]`).
+function applyAuthProfileHeaders(headers, profile) {
+  if (!profile || typeof profile !== "object") return headers;
+  for (const [k, v] of Object.entries(profile)) {
+    if (PROFILE_METADATA_KEYS.has(k)) continue;
+    if (!headers[k]) headers[k] = v;
+  }
+  return headers;
+}
+
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
   // Cycle P.2: scan the canonical `~/hacker-bob-sessions/` root for the
   // legacy-fallback discovery path. Sessions copied from
@@ -287,23 +315,15 @@ function profileExpiryHint(profile, mtimeMs) {
   };
 }
 
-// Keys excluded from the bob_list_auth_profiles `header_keys` summary: the existing
-// non-header metadata (credentials/storage) PLUS the PR-PROV synthetic-identity
-// provenance flags + synthetic mailbox that bob_auto_signup stamps. Mirrors the
-// producer's outbound-strip set (offensive-idor-producer.js PROFILE_METADATA_KEYS,
-// :154-158) — keep in sync. Without this, a signup-stamped profile would surface
-// synthetic/email_origin/provisioned_via as bogus "header_keys" and leak the synthetic
-// mailbox into the summary JSON. The producer reads the RAW profile, not this summary,
-// so excluding them here is operator-visibility hygiene only, never a gate change.
-const SUMMARY_EXCLUDED_KEYS = new Set([
-  "credentials", "local_storage", "session_storage",
-  "synthetic", "email_origin", "provisioned_via", "email",
-]);
-
+// bob_list_auth_profiles must not surface the Bob-local metadata keys (credentials/
+// storage + the PR-PROV provenance flags + synthetic mailbox) as bogus `header_keys` or
+// leak the mailbox into the summary JSON. Uses the canonical PROFILE_METADATA_KEYS so it
+// can never drift from the outbound-header merge + the producer strip. The producer reads
+// the RAW profile, not this summary, so this is operator-visibility hygiene only.
 function summarizeAuthProfile(name, profile, fileStats) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
   const headerKeys = Object.keys(normalizedProfile)
-    .filter((key) => !SUMMARY_EXCLUDED_KEYS.has(key))
+    .filter((key) => !PROFILE_METADATA_KEYS.has(key))
     .sort();
   const credentials = normalizedProfile.credentials && typeof normalizedProfile.credentials === "object"
     ? normalizedProfile.credentials
@@ -356,11 +376,13 @@ function listAuthProfiles(args) {
 }
 
 module.exports = {
+  applyAuthProfileHeaders,
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
   listAuthProfiles,
   migrateAuthJson,
+  PROFILE_METADATA_KEYS,
   readAuthJson,
   resolveAuthJsonPath,
   resolveAuthProfile,

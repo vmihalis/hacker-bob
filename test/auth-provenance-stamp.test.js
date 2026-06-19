@@ -20,10 +20,12 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  applyAuthProfileHeaders,
   authStore,
   resolveAuthProfile,
   resolveAuthJsonPath,
   listAuthProfiles,
+  PROFILE_METADATA_KEYS,
 } = require("../mcp/lib/auth.js");
 const { profileHasProvenance } = require("../mcp/lib/offensive-idor-producer.js");
 const { executeTool } = require("../mcp/lib/dispatch.js");
@@ -196,4 +198,65 @@ test("bob_list_auth_profiles does not surface provenance flags or the synthetic 
   assert.equal(prof.header_keys.includes("Cookie"), true);
   // The synthetic mailbox must not appear anywhere in the summary JSON.
   assert.doesNotMatch(JSON.stringify(summary), /eval_x@example\.test/);
+}));
+
+// ───────────────────────── B1: outbound-header leak fix ─────────────────────────
+// PR-PROV newly persists 4 top-level keys onto profiles; bob_http_scan's outbound merge
+// (http-scan.js) copies profile keys into request headers. These tests lock that the
+// canonical metadata strip prevents the synthetic mailbox + provenance fingerprint from
+// reaching the target.
+
+test("applyAuthProfileHeaders strips provenance/mailbox/credentials/storage from outbound headers (B1)", () => {
+  const profile = {
+    Authorization: "Bearer eyJatoken",
+    Cookie: "sid=abc",
+    synthetic: true,
+    email_origin: "temp_email",
+    provisioned_via: "bob_auto_signup",
+    email: "eval_x@example.test",
+    credentials: { email: "eval_x@example.test", password: "p" },
+    local_storage: { k: "v" },
+  };
+  const out = applyAuthProfileHeaders({}, profile);
+  // Real headers pass through.
+  assert.equal(out.Authorization, "Bearer eyJatoken");
+  assert.equal(out.Cookie, "sid=abc");
+  // None of the Bob-local metadata reaches the outbound header map.
+  for (const k of ["synthetic", "email_origin", "provisioned_via", "email", "credentials", "local_storage"]) {
+    assert.equal(k in out, false, `${k} must not be emitted as an outbound header`);
+  }
+  assert.doesNotMatch(JSON.stringify(out), /eval_x@example\.test/);
+});
+
+test("applyAuthProfileHeaders never clobbers a header the caller already set", () => {
+  const out = applyAuthProfileHeaders(
+    { Authorization: "Bearer caller" },
+    { Authorization: "Bearer profile", "X-Trace": "1" },
+  );
+  assert.equal(out.Authorization, "Bearer caller");
+  assert.equal(out["X-Trace"], "1");
+});
+
+test("PROFILE_METADATA_KEYS contains every PR-PROV provenance key (leak-set regression lock)", () => {
+  for (const k of ["synthetic", "email_origin", "provisioned_via", "email", "credentials"]) {
+    assert.equal(PROFILE_METADATA_KEYS.has(k), true, `${k} must be in the canonical metadata strip set`);
+  }
+});
+
+test("end-to-end: a stamped profile resolved from disk emits no provenance/mailbox headers (B1)", () => withTempHome(() => {
+  const domain = "prov-stamp-leak-e2e.test";
+  seedSession(domain);
+  authStore({
+    target_domain: domain,
+    profile_name: "attacker",
+    headers: { Authorization: "Bearer eyJatoken" },
+  }, { provenance: SYNTH });
+  // Exact path bob_http_scan uses: resolveAuthProfile -> applyAuthProfileHeaders.
+  const resolved = resolveAuthProfile("attacker", `https://${domain}/`, domain);
+  const out = applyAuthProfileHeaders({}, resolved);
+  assert.equal(out.Authorization, "Bearer eyJatoken");
+  for (const k of ["synthetic", "email_origin", "provisioned_via", "email"]) {
+    assert.equal(k in out, false, `${k} must not leak to the target`);
+  }
+  assert.doesNotMatch(JSON.stringify(out), /eval_x@example\.test/);
 }));

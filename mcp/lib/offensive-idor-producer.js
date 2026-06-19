@@ -97,6 +97,7 @@ const {
 const {
   resolveAuthProfile,
   buildHeaderProfile,
+  PROFILE_METADATA_KEYS,
 } = require("./auth.js");
 const {
   withSessionLock,
@@ -143,19 +144,15 @@ const REQUIRED_PROVENANCE = Object.freeze({
   provisioned_via: "bob_auto_signup",
 });
 
-// An auth profile object co-mingles real HTTP headers (Authorization, Cookie,
-// X-*) with Bob-LOCAL metadata: credentials/local_storage/session_storage (the
-// summarizeAuthProfile exclusions) PLUS the PR-PROV provenance flags this
-// producer requires (synthetic/email_origin/provisioned_via) and the synthetic
-// mailbox (email) + expiry hints. buildHeaderProfile Object.assigns its first arg
-// verbatim into the outbound header map, so the full profile must NEVER be passed
-// as headers — that would leak Bob-local provenance and the synthetic mailbox to
-// the TARGET. These keys are stripped before building outbound headers.
-const PROFILE_METADATA_KEYS = Object.freeze(new Set([
-  "credentials", "local_storage", "session_storage",
-  "synthetic", "email_origin", "provisioned_via", "email",
-  "expires_at", "expiresAt", "expiry", "expires",
-]));
+// An auth profile object co-mingles real HTTP headers (Authorization, Cookie, X-*) with
+// Bob-LOCAL metadata: credentials/storage PLUS the PR-PROV provenance flags this producer
+// requires (synthetic/email_origin/provisioned_via) and the synthetic mailbox (email) +
+// expiry hints. buildHeaderProfile Object.assigns its first arg verbatim into the outbound
+// header map, so the full profile must NEVER be passed as headers — that would leak
+// Bob-local provenance and the synthetic mailbox to the TARGET. These keys are stripped
+// (resolveIdentity, below) before building outbound headers. The strip set is the canonical
+// PROFILE_METADATA_KEYS imported from auth.js — shared with bob_http_scan's outbound merge
+// and the bob_list_auth_profiles summary so no reader can drift and leak a future key.
 
 // Outbound HEADER names (lowercased) that must NEVER be sent on a read probe even if a
 // stored/imported auth profile carries them: method/verb overrides turn the producer's
@@ -447,6 +444,11 @@ function resolveIdentity(profileName, url, domain, label) {
 // so this can never be satisfied on the merged transport.
 function profileHasProvenance(profile) {
   if (!profile || typeof profile !== "object") return false;
+  // SECURITY-LOAD-BEARING: STRICT === against the frozen literals, and `synthetic` must be
+  // boolean true. Auth-profile HEADER values are schema-coerced to strings, so an agent
+  // that injects a header literally named `synthetic` (value "true") via bob_auth_store
+  // yields "true" !== true and the gate stays closed. Do NOT relax to ==/truthy or accept
+  // string "true" — that would open a forge onto a real (non-synthetic) identity.
   return profile.synthetic === REQUIRED_PROVENANCE.synthetic
     && profile.email_origin === REQUIRED_PROVENANCE.email_origin
     && profile.provisioned_via === REQUIRED_PROVENANCE.provisioned_via;
