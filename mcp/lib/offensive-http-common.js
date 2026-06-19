@@ -275,8 +275,12 @@ function candidateSurfaceEndpoints(surface) {
   return candidates;
 }
 
-function resolveSurfaceOrigins(surface, stateOrigin) {
-  const origins = new Set([stateOrigin]);
+// Origins the SURFACE itself declares — parsed from its absolute endpoints and its hosts[] —
+// WITHOUT the unconditional session-apex seed that resolveSurfaceOrigins adds. Used to bind a
+// RELATIVE endpoint to a host the surface actually names (so api.example.com's "/v1/data" is not
+// silently resolved against the session apex example.com).
+function surfaceDeclaredOrigins(surface, stateOrigin) {
+  const origins = new Set();
   for (const { value } of candidateSurfaceEndpoints(surface)) {
     try {
       const parsed = new URL(value);
@@ -296,6 +300,13 @@ function resolveSurfaceOrigins(surface, stateOrigin) {
     }
   }
   return Array.from(origins);
+}
+
+// Apex-seeded origin list (session origin FIRST, then the surface's declared origins). Identical
+// output to the previous inline form; unchanged callers (resolveBaselineFromSurface) keep their
+// apex-first preference.
+function resolveSurfaceOrigins(surface, stateOrigin) {
+  return Array.from(new Set([stateOrigin, ...surfaceDeclaredOrigins(surface, stateOrigin)]));
 }
 
 function originFromState(domain, state, toolName = "bob_http_confirm") {
@@ -364,8 +375,18 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, tool
 // Fails closed (no in-scope endpoint) rather than invent an agent-supplied path.
 function resolveSurfaceEndpoint({ domain, surface, state, toolName = "bob_http_confirm" }) {
   const stateOrigin = originFromState(domain, state, toolName);
-  const origins = resolveSurfaceOrigins(surface, stateOrigin);
+  // Bind RELATIVE endpoints to the surface's OWN declared host(s) — never the session apex. A
+  // surface for api.example.com with a relative "/v1/data" must be probed against (and signed
+  // for) api.example.com, not example.com: resolving against the apex would mint a MAC-backed row
+  // that mis-attributes the CORS misconfiguration to the wrong asset. An ABSOLUTE endpoint already
+  // carries its own host, so urlFromEndpoint ignores the origin arg. Fall back to the apex only
+  // when the surface declares no host of its own (it IS the apex).
+  const declaredOrigins = surfaceDeclaredOrigins(surface, stateOrigin);
   for (const endpoint of candidateSurfaceEndpoints(surface)) {
+    const isAbsolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(String(endpoint.value || "").trim());
+    const origins = isAbsolute
+      ? [stateOrigin] // ignored by urlFromEndpoint for an absolute URL
+      : (declaredOrigins.length ? declaredOrigins : [stateOrigin]);
     for (const origin of origins) {
       let candidate;
       try {

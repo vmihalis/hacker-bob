@@ -18,7 +18,8 @@ const {
   headerValue,
   acaoEchoes,
   allowsCredentials,
-  mintOrigin,
+  mintCanaryOriginPair,
+  crossSiteFetchHeaders,
   CORS_DEMONSTRATED_CEILING,
 } = require("../mcp/lib/offensive-cors-producer.js");
 const { OFFENSIVE_TOOL_DEMONSTRATED_CEILING, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
@@ -109,11 +110,24 @@ test("allowsCredentials is true ONLY for the case-sensitive literal 'true' (Fetc
   assert.equal(allowsCredentials({ headers: {} }), false);
 });
 
-test("mintOrigin produces a unique, unguessable https origin each call", () => {
-  const a = mintOrigin();
-  const b = mintOrigin();
+test("mintCanaryOriginPair produces two structurally-dissimilar unguessable origins", () => {
+  const [a, b] = mintCanaryOriginPair();
+  // Different TLD AND label arrangement so a single suffix/prefix allowlist cannot match both.
   assert.match(a, /^https:\/\/bob-cors-[0-9a-f]{32}\.example$/);
+  assert.match(b, /^https:\/\/[0-9a-f]{32}-bobcanary\.test$/);
   assert.notEqual(a, b);
+  // Unguessable + non-repeating across calls.
+  const [c, d] = mintCanaryOriginPair();
+  assert.notEqual(a, c);
+  assert.notEqual(b, d);
+});
+
+test("crossSiteFetchHeaders emulates a real cross-site credentialed fetch (Origin + Sec-Fetch-*)", () => {
+  const h = crossSiteFetchHeaders("https://o.example");
+  assert.equal(h.Origin, "https://o.example");
+  assert.equal(h["Sec-Fetch-Site"], "cross-site");
+  assert.equal(h["Sec-Fetch-Mode"], "cors");
+  assert.equal(h["Sec-Fetch-Dest"], "empty");
 });
 
 test("CORS ceiling is a frozen hard medium, in lockstep with the claims registry", () => {
@@ -280,5 +294,88 @@ test("partial probe failure: if the second probe errors, no row is written and t
     });
   };
   await assert.rejects(() => corsConfirm(baseArgs(domain), { fetch_fn: failSecond }), /network boom/);
+  assert.equal(readRows(domain).length, 0);
+}));
+
+// ───────────────────────── host-binding (P1) ───────────────────────────────
+
+test("a RELATIVE endpoint binds to the surface's declared host, NOT the session apex", () => withTempHome(async () => {
+  const domain = "cors-hostbind.example.test";
+  const surfaceHost = `api.${domain}`; // a DIFFERENT (sub)host than the session apex
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: SURFACE_ID,
+      title: "Surface whose host differs from the session apex",
+      surface_type: "web",
+      hosts: [surfaceHost],
+      endpoints: ["/api/data"], // RELATIVE — must resolve against surfaceHost, not the apex
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+  ensureHandoffSigningKey(domain);
+
+  let probedUrl = null;
+  const captureFetch = ({ url, headers }) => {
+    probedUrl = url;
+    return Promise.resolve({
+      status: 200,
+      headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+    });
+  };
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: captureFetch });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  // The probe + the signed row target are bound to the SURFACE host, not the apex.
+  assert.equal(probedUrl, `https://${surfaceHost}/api/data`);
+  const rows = readRows(domain);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target, canonicalizeExploitTarget(`https://${surfaceHost}/api/data`));
+}));
+
+// ───────────────────────── Fetch-Metadata defense (P2-a) ───────────────────
+
+test("a target that blocks cross-site Sec-Fetch-Site (Fetch Metadata) mints nothing", () => withTempHome(async () => {
+  const domain = "cors-fetchmeta.example.test";
+  setupSession(domain);
+  let sawCrossSite = false;
+  // Reflects ACAO+ACAC for a 2xx, BUT a Fetch-Metadata defense 403s a cross-site request — the
+  // exact case where a non-browser Origin-only probe would FALSELY confirm. Our probe sends
+  // Sec-Fetch-Site: cross-site, so it is blocked just like the browser → 2xx gate fails closed.
+  const fetchMetaFetch = ({ headers }) => {
+    if (headers["Sec-Fetch-Site"] === "cross-site") sawCrossSite = true;
+    const blocked = headers["Sec-Fetch-Site"] === "cross-site";
+    return Promise.resolve({
+      status: blocked ? 403 : 200,
+      headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+    });
+  };
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: fetchMetaFetch });
+  assert.equal(sawCrossSite, true, "probe must carry Sec-Fetch-Site: cross-site");
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_2xx_response_not_browser_readable");
+  assert.equal(readRows(domain).length, 0);
+}));
+
+// ───────────────────── dissimilar canaries (P2-b) ──────────────────────────
+
+test("a single-suffix allowlist (reflects only *.example) is NOT arbitrary reflection → no row", () => withTempHome(async () => {
+  const domain = "cors-suffix.example.test";
+  setupSession(domain);
+  // Server reflects ONLY origins ending in ".example" (a narrow suffix allowlist). The first
+  // canary (.example) echoes; the second (.test) does not → the both-must-echo gate fails closed.
+  const suffixFetch = ({ headers }) => {
+    const origin = headers.Origin;
+    const echo = /\.example$/.test(origin) ? origin : "https://app.example";
+    return Promise.resolve({
+      status: 200,
+      headers: { "access-control-allow-origin": echo, "access-control-allow-credentials": "true" },
+    });
+  };
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: suffixFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "acao_does_not_reflect_arbitrary_origin");
   assert.equal(readRows(domain).length, 0);
 }));

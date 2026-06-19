@@ -3,15 +3,19 @@
 // bob_http_cors_confirm — CORS-misconfiguration signed-row PRODUCER (in-process, LIVE).
 //
 // THE ORACLE (sound, #110-clean): the producer sends two GET probes to a routed in-scope
-// endpoint, each carrying a DISTINCT server-minted `Origin: https://bob-cors-<32hex>.example`
-// the target has NEVER seen. The POSITIVE is BOTH responses echoing their OWN distinct origin
-// in `Access-Control-Allow-Origin` AND setting `Access-Control-Allow-Credentials: true`. A
-// server cannot guess two unguessable 32-hex origins, so echoing each is a DETERMINISTIC
-// witness that the server reflects ARBITRARY origins with credentials — i.e. a malicious
-// cross-origin page can read the victim's AUTHENTICATED responses. This is the reflected-canary
-// soundness class (the minted origin is the canary): a deterministic/static server cannot
-// fabricate it, so it is not the #110 server-noise trap. Two distinct origins (not one)
-// distinguish true reflection from a coincidentally-matching static ACAO.
+// endpoint, each carrying a DISTINCT, structurally-dissimilar server-minted `Origin` the target
+// has NEVER seen (different reserved TLD + label, e.g. `https://bob-cors-<32hex>.example` and
+// `https://<32hex>-bobcanary.test`). Each probe also carries the browser cross-site fetch metadata
+// (`Sec-Fetch-Site: cross-site`, `-Mode: cors`, `-Dest: empty`) so it is a faithful emulation of a
+// malicious credentialed `fetch()`. The POSITIVE is BOTH responses (a) being a browser-readable
+// 2xx, (b) echoing their OWN distinct origin in `Access-Control-Allow-Origin`, AND (c) setting
+// `Access-Control-Allow-Credentials: true`. A server cannot guess two unguessable 32-hex origins,
+// so echoing each is a DETERMINISTIC witness that the server reflects ARBITRARY origins with
+// credentials — i.e. a malicious cross-origin page can read the victim's AUTHENTICATED responses.
+// This is the reflected-canary soundness class (the minted origin is the canary): a
+// deterministic/static server cannot fabricate it, so it is not the #110 server-noise trap. Two
+// dissimilar origins (not one, not two of the same shape) distinguish true arbitrary reflection
+// from a coincidentally-matching static ACAO or a single-suffix/prefix allowlist.
 //
 // SEVERITY: HARD MEDIUM by construction, stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING in
 // buildAndSignOffensiveRow (NEVER from here, NEVER agent-supplied). The MISCONFIGURATION is
@@ -94,12 +98,31 @@ function rejectInvalidArguments(message, details = null) {
   throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, details);
 }
 
-// A unique, syntactically-valid origin the server has NEVER seen. The 32-hex random label
-// means the server cannot pre-configure or guess it — echoing it back in
-// Access-Control-Allow-Origin is therefore a SOUND deterministic witness of arbitrary-origin
-// reflection. Server-minted, never agent-supplied.
-function mintOrigin() {
-  return `https://bob-cors-${crypto.randomBytes(16).toString("hex")}.example`;
+// Two STRUCTURALLY-DISSIMILAR canary origins the server has NEVER seen: different reserved TLD
+// (.example / .test) AND different label arrangement (bob-cors-<hex> / <hex>-bobcanary). A server
+// that allowlists a single suffix (e.g. *.example) or prefix (bob-cors-*) can match AT MOST ONE,
+// so it fails the both-must-echo gate — only GENUINE arbitrary-origin reflection echoes two
+// UNRELATED unguessable origins. The 32-hex random label makes each unguessable; server-minted,
+// never agent-supplied. Both TLDs are RFC-reserved (.example RFC 2606, .test RFC 6761): they are
+// non-routable and carried ONLY as the Origin request HEADER (never connected to), so no
+// attacker-controllability of these names is implied or required for the soundness argument.
+function mintCanaryOriginPair() {
+  const hex = () => crypto.randomBytes(16).toString("hex");
+  return [`https://bob-cors-${hex()}.example`, `https://${hex()}-bobcanary.test`];
+}
+
+// The browser metadata a REAL cross-site credentialed `fetch(url, {credentials:"include"})`
+// carries. Browsers attach Sec-Fetch-* themselves (page JS cannot forge them), so sending them
+// makes the probe a faithful emulation of the attack we claim: if the target defends with Fetch
+// Metadata (blocks Sec-Fetch-Site: cross-site), it returns non-2xx and the 2xx gate fails closed,
+// so we never sign a row for a credentialed read the browser path cannot actually exercise.
+function crossSiteFetchHeaders(origin) {
+  return {
+    Origin: origin,
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+  };
 }
 
 // Read a single response header case-insensitively from either a SafeFetchHeaders/Headers
@@ -204,6 +227,9 @@ async function runProbe({
   if (auditOk === false) {
     const auditErr = new ToolError(ERROR_CODES.STATE_CONFLICT, "probe http-audit write failed");
     auditErr.probe_audit_failed = true;
+    // Preserve the underlying network error (if any) so a same-call probe failure + audit-write
+    // failure does not bury the real root cause in telemetry/stack traces.
+    if (error) auditErr.cause = error;
     throw auditErr;
   }
   if (error) throw error;
@@ -266,17 +292,19 @@ async function corsConfirm(args = {}, { fetch_fn = null } = {}) {
   const agent = createProxyAgent(egressProfile.proxy_url);
   const egressProfileName = identity.egress_profile || requestedEgressProfile;
 
-  // Two DISTINCT server-minted origins. Reflecting BOTH (each its own unique value) proves the
-  // server echoes ARBITRARY origins — not a static ACAO that coincidentally matched one.
-  const origin1 = mintOrigin();
-  const origin2 = mintOrigin();
+  // Two DISTINCT, structurally-dissimilar server-minted origins. Reflecting BOTH (each its own
+  // unique value, unrelated TLD + label) proves the server echoes ARBITRARY origins — not a
+  // static ACAO that coincidentally matched one, nor a single-suffix/prefix allowlist.
+  const [origin1, origin2] = mintCanaryOriginPair();
   const url = endpointUrl.toString();
   const probeBase = {
     fetchFn: fetch_fn, url, domain, surfaceId, egressProfile: egressProfileName, blockInternalHosts, agent,
   };
 
-  const resp1 = await runProbe({ ...probeBase, headers: { Origin: origin1 } });
-  const resp2 = await runProbe({ ...probeBase, headers: { Origin: origin2 } });
+  // Each probe carries the FULL cross-site credentialed-fetch metadata (Origin + Sec-Fetch-*), so
+  // a Fetch-Metadata defense blocks it (→ non-2xx → fail closed) exactly as it would the browser.
+  const resp1 = await runProbe({ ...probeBase, headers: crossSiteFetchHeaders(origin1) });
+  const resp2 = await runProbe({ ...probeBase, headers: crossSiteFetchHeaders(origin2) });
 
   if (!isReadableResourceResponse(resp1) || !isReadableResourceResponse(resp2)) {
     // Not a browser-readable 2xx resource response (3xx opaque redirect, or 4xx/5xx error
@@ -361,7 +389,8 @@ module.exports = {
   headerValue,
   acaoEchoes,
   allowsCredentials,
-  mintOrigin,
+  mintCanaryOriginPair,
+  crossSiteFetchHeaders,
   TOOL_ID,
   CORS_DEMONSTRATED_CEILING,
 };
