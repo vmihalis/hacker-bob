@@ -399,7 +399,12 @@ function circuitBreakerRecordKey(record) {
   // identities can share a profile name (reconfigured/legacy), and a success through one identity
   // must not heal a block reached through another.
   const egressId = (typeof record.egress_profile_identity_hash === "string" && record.egress_profile_identity_hash) ? record.egress_profile_identity_hash : "";
-  return `${host} ${method} ${path} ${egress} ${egressId}`;
+  // Newline-delimited (not space): a free-form egress_profile name may contain a literal space, which
+  // under a space-join could let two distinct (host, method, path, egress, egressId) tuples collapse to
+  // one key and cross-heal. No component (hostname, HTTP method, parsed pathname, profile name, hex
+  // identity hash) can contain a newline, so this is collision-proof. The key is only ever a Map key
+  // within a single summary computation — never persisted or parsed back — so the format is free to change.
+  return [host, method, path, egress, egressId].join("\n");
 }
 
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {

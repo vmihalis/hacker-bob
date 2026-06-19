@@ -171,6 +171,17 @@ function readSurfaceRoutesStrict(domain) {
     try {
       normalized = validateSurfaceRoute(route, index, filePath);
     } catch (error) {
+      // Only a DATA problem (a stale/malformed route) is quarantine-able. validateSurfaceRoute and
+      // every helper it calls (assertNonEmptyString, getCapabilityPack, normalizeContextBudget) signal
+      // a data-validation failure with a plain `Error`. A JS error SUBCLASS
+      // (TypeError/RangeError/ReferenceError/SyntaxError/EvalError/URIError) can therefore only come
+      // from a PROGRAMMING regression inside the validator (a null deref, a renamed import). Masking
+      // that as a quarantined "stale route" behind a "re-run bob_route_surfaces" hint would hide the
+      // bug, so re-throw it loudly. (This also pins the convention: data validation throws plain Error.)
+      if (error instanceof TypeError || error instanceof RangeError || error instanceof ReferenceError
+        || error instanceof SyntaxError || error instanceof EvalError || error instanceof URIError) {
+        throw error;
+      }
       malformedRoutes.push({
         index,
         surface_id: (route && typeof route === "object" && route.surface_id) || null,

@@ -105,6 +105,20 @@ test("validateSurfaceRoute rejects an empty evaluator_agent (the validate-on-wri
   assert.throws(() => validateSurfaceRoute(staleHunterRoute("s1"), 0, "routes.json"), /evaluator_agent must be a non-empty string/);
 });
 
+test("validateSurfaceRoute signals DATA failures with a PLAIN Error (premise of the quarantine-vs-rethrow guard)", () => {
+  // readSurfaceRoutesStrict quarantines a plain Error (stale/malformed DATA) but RE-THROWS a JS error
+  // subclass (TypeError/RangeError/…), which can only come from a validator CODE bug. That discriminator
+  // is only safe while every data-validation failure is a plain Error — pin it here, so a future refactor
+  // that threw e.g. a TypeError on bad data (which the guard would then wrongly re-throw and re-brick the
+  // read) fails this test loudly instead.
+  try {
+    validateSurfaceRoute(staleHunterRoute("s1"), 0, "routes.json");
+    assert.fail("expected validateSurfaceRoute to throw on a stale route");
+  } catch (error) {
+    assert.equal(error.constructor, Error, "a data-validation failure must be a plain Error (so it is quarantined, not re-thrown)");
+  }
+});
+
 test("findRoutedSurface rejects a surface whose route was quarantined even if a valid duplicate exists (no split authority)", () => withTempHome(() => {
   const domain = "router-splitauth.example.test";
   // surface:api appears twice: a valid route + a stale (hunter_agent) duplicate. The reader keeps

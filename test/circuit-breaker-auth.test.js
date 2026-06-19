@@ -92,6 +92,18 @@ test("SAFETY — egress IDENTITY mismatch: same profile name, different identity
   assert.equal(s.auth_challenge_403_count, 0);
 });
 
+test("SAFETY — space-join collision: a success whose key only collides under a SPACE delimiter does not heal a different block", () => {
+  // Two DISTINCT (host, method, path, egress) tuples that collapse to one string under a space-join —
+  // the realistic trigger is a literal space in a free-form egress_profile name. Block: path "/x",
+  // egress "y z". Heal-attempt: path "/x y", egress "z". Space-join → both "api.example.test GET /x y z ";
+  // newline-join → distinct. The block must stay tripped (this case heals under the old space key).
+  const block = (ts) => rec({ status: 403, auth_profile: null, path: "/x", egress_profile: "y z", ts });
+  const heal = rec({ status: 200, auth_profile: "attacker", path: "/x y", egress_profile: "z", ts: T1 });
+  const s = summary([block(T0), block(T0), block(T0), heal]);
+  assert.equal(s.tripped_count, 1, "a different-tuple success must not heal this block (no space-join collision)");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
 test("SAFETY — an offensive-confirmer 403 (tool stamped, auth_profile lost) is never healed", () => {
   // An authenticated offensive probe records auth_profile:null but stamps `tool`; its genuine block
   // must not be reclassified by a later bob_http_scan authed 2xx on the same key.
