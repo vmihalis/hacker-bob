@@ -16,6 +16,11 @@ const {
   isFirstPartyHost,
   safeUrlObject,
 } = require("./url-surface.js");
+const {
+  labTargetEligibleHost,
+  labTargetPermitted,
+  labAuthorizationForTarget,
+} = require("./lab-target-attest.js");
 
 const PSL_OVERLAY_FILE_ENV = "BOB_PSL_OVERLAY_FILE";
 let publicSuffixOverlayCache = {
@@ -193,7 +198,7 @@ function makeScopeBlockedError(message, details = {}) {
   return error;
 }
 
-function assertHttpScopeDomain(targetDomain) {
+function assertHttpScopeDomain(targetDomain, opts = {}) {
   const raw = assertSafeDomain(targetDomain);
   let host;
   try {
@@ -204,6 +209,21 @@ function assertHttpScopeDomain(targetDomain) {
 
   const address = host.replace(/^\[|\]$/g, "");
   if (host.includes(":") || net.isIP(address) || isBlockedInternalHost(host)) {
+    // Operator-attested lab/private-target escape (OFF by default, fail-closed).
+    // A loopback/RFC1918 IPv4 host whose session carries a valid operator
+    // attestation bypasses the public-DNS requirement. Cloud metadata,
+    // link-local, IPv6, and .internal/.local names are NOT eligible even under
+    // attestation. The attestation is supplied explicitly (opts.labAuthorization,
+    // the init bootstrap before state is persisted) or read from the persisted
+    // audit-graded session artifact. See lab-target-attest.js.
+    if (labTargetEligibleHost(host)) {
+      const authorization = opts.labAuthorization != null
+        ? opts.labAuthorization
+        : labAuthorizationForTarget(host);
+      if (labTargetPermitted(host, { authorization })) {
+        return host;
+      }
+    }
     throw new Error(`target_domain is not a public DNS domain: ${targetDomain}`);
   }
 
@@ -215,7 +235,7 @@ function assertHttpScopeDomain(targetDomain) {
   return host;
 }
 
-function validateHttpScanScope(url, targetDomain) {
+function validateHttpScanScope(url, targetDomain, opts = {}) {
   const parsed = safeUrlObject(url);
   if (!parsed) {
     throw makeScopeBlockedError("Invalid URL");
@@ -228,13 +248,40 @@ function validateHttpScanScope(url, targetDomain) {
   }
   let domain;
   try {
-    domain = assertHttpScopeDomain(targetDomain);
+    domain = assertHttpScopeDomain(targetDomain, opts);
   } catch (error) {
     throw makeScopeBlockedError(error.message || String(error));
   }
   if (!domain) {
     throw makeScopeBlockedError("target_domain is required for scoped HTTP scans");
   }
+
+  // Lab-attested private target: scope is pinned to the EXACT attested host.
+  // Reaching here with a lab-eligible domain means assertHttpScopeDomain already
+  // confirmed a valid attestation (else it threw). A private host has no
+  // registrable domain / public suffix, so first-party == exact host match —
+  // this prevents an attested 192.168.1.53 session from pivoting to any other
+  // private host (e.g. 169.254.169.254 or a neighbor on the LAN).
+  if (labTargetEligibleHost(domain)) {
+    if (host !== domain) {
+      throw makeScopeBlockedError(
+        `URL host ${host} is outside attested lab target ${domain}`,
+        { host, target_domain: domain },
+      );
+    }
+    return {
+      allowed: true,
+      scope_decision: "allowed",
+      reason: "lab_attested_private_target",
+      host,
+      target_domain: domain,
+      registrable_domain: null,
+      public_suffix: null,
+      public_suffix_source: "lab_attested_private_target",
+      psl_overlay_file: null,
+    };
+  }
+
   if (!isFirstPartyHost(host, domain)) {
     const domainSuffixInfo = publicSuffixInfoForHost(domain);
     throw makeScopeBlockedError(

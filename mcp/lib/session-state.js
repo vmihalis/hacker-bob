@@ -65,6 +65,10 @@ const {
   validateHttpScanScope,
 } = require("./scope.js");
 const {
+  parseLabAuthorization,
+  recordLabAuthorization,
+} = require("./lab-target-attest.js");
+const {
   assertOperatorNote,
   blockInternalHostsPolicyFields,
   buildInitialSessionState,
@@ -189,15 +193,25 @@ function resolveAndAssertSessionEgressIdentity(domain, requestedProfile = "defau
 }
 
 function initSession(args) {
+  // Operator-attested lab/private-target authorization (OFF by default,
+  // fail-closed). When present, a loopback/RFC1918 target_domain that the
+  // public-DNS gate would reject is permitted for this session only.
+  const labAuthorization = parseLabAuthorization(args.lab_authorization);
+  if (labAuthorization && args.block_internal_hosts === true) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "lab_authorization cannot be combined with block_internal_hosts: an attested private target requires internal-host egress to be reachable",
+    );
+  }
   let domain;
   try {
-    domain = assertHttpScopeDomain(args.target_domain);
+    domain = assertHttpScopeDomain(args.target_domain, { labAuthorization });
   } catch (error) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
   }
   const targetUrl = assertNonEmptyString(args.target_url, "target_url");
   try {
-    validateHttpScanScope(targetUrl, domain);
+    validateHttpScanScope(targetUrl, domain, { labAuthorization });
   } catch (error) {
     throw new ToolError(ERROR_CODES.SCOPE_BLOCKED, error.message || String(error), error.details);
   }
@@ -207,7 +221,10 @@ function initSession(args) {
     internalHostPolicy = deriveBlockInternalHostsPolicy({
       checkpointMode: args.checkpoint_mode,
       blockInternalHosts: args.block_internal_hosts,
-      allowInternalHosts: args.allow_internal_hosts,
+      // A lab attestation implies internal-host egress is allowed for the
+      // attested private target; layer-2 (isBlockedInternalHost) must not
+      // re-block what the operator explicitly authorized.
+      allowInternalHosts: labAuthorization ? true : args.allow_internal_hosts,
       legacyDefault: false,
     });
   } catch (error) {
@@ -266,6 +283,12 @@ function initSession(args) {
       blockInternalHostsPolicy: sessionNucleus.scope_policy,
     });
     writeSessionStateDocument(domain, {}, state);
+    // Persist the operator attestation as an audit-graded session artifact, so
+    // the scope kernel can read it on later scoped calls and an agent cannot
+    // forge it via the Write tool. No-op when no attestation was supplied.
+    if (labAuthorization) {
+      recordLabAuthorization(domain, labAuthorization);
+    }
     // Provision the handoff signing key at session creation so every later path
     // (wave assignment, handoff validation, the SubagentStop attestation hook)
     // finds it. Idempotent: creates it exclusively-atomically if absent, reads
@@ -278,6 +301,9 @@ function initSession(args) {
       checkpoint_mode: state.checkpoint_mode,
       block_internal_hosts: state.block_internal_hosts,
       block_internal_hosts_source: state.block_internal_hosts_source,
+      // Audit trail: record whether this session was operator-authorized to
+      // scope a private (loopback/RFC1918) target past the public-DNS gate.
+      lab_authorized: labAuthorization ? true : false,
       ...egressFields,
     }, buildGovernanceContextFromNucleus(sessionNucleus));
 
