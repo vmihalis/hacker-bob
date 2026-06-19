@@ -449,9 +449,14 @@ function profileHasProvenance(profile) {
   // that injects a header literally named `synthetic` (value "true") via bob_auth_store
   // yields "true" !== true and the gate stays closed. Do NOT relax to ==/truthy or accept
   // string "true" — that would open a forge onto a real (non-synthetic) identity.
+  // A non-empty `email` (the synthetic mailbox) is required so the gate matches the full
+  // four-field stamp authStore writes AND so mint condition #17 (allowedEmails, :NNN) always
+  // has this identity's mailbox for the piiScan allowlist — a 3-marker profile lacking email
+  // must not pass, or the allowlist would be silently short an entry.
   return profile.synthetic === REQUIRED_PROVENANCE.synthetic
     && profile.email_origin === REQUIRED_PROVENANCE.email_origin
-    && profile.provisioned_via === REQUIRED_PROVENANCE.provisioned_via;
+    && profile.provisioned_via === REQUIRED_PROVENANCE.provisioned_via
+    && typeof profile.email === "string" && profile.email.length > 0;
 }
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────

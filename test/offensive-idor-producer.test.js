@@ -305,8 +305,13 @@ test("piiScan EXACT-matches provisioned mailboxes only (no eval_* prefix hole), 
   assert.ok(piiScan({ phone: "+1 (415) 555-0142" }, []).length >= 1);
 });
 
-test("profileHasProvenance requires all three synthetic flags", () => {
-  assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" }), true);
+test("profileHasProvenance requires all three synthetic flags AND the synthetic mailbox", () => {
+  const full = { synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup", email: "eval_a@example.test" };
+  assert.equal(profileHasProvenance(full), true);
+  // The three markers without the synthetic mailbox must NOT pass — mint condition #17
+  // (allowedEmails) depends on profile.email, so the gate requires the full four-field stamp.
+  assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" }), false);
+  assert.equal(profileHasProvenance({ ...full, email: "" }), false);
   assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email" }), false);
   assert.equal(profileHasProvenance({}), false);
   assert.equal(profileHasProvenance(null), false);

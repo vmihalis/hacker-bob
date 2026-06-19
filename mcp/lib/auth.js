@@ -59,18 +59,21 @@ const PROFILE_METADATA_KEYS = Object.freeze(new Set([
   "expires_at", "expiresAt", "expiry", "expires",
 ]));
 
-// Merge a resolved auth profile's HEADER fields into an outbound header map, skipping the
-// Bob-local metadata above so the synthetic mailbox + provenance fingerprint (and
-// credentials/storage) never reach the TARGET as request headers. resolveAuthProfile
-// returns the RAW profile, so this is the required chokepoint for any outbound consumer.
-// Existing headers are never clobbered (matches the prior bob_http_scan `!headers[k]`).
+// Build an outbound header map from a base header set plus a resolved auth profile's HEADER
+// fields, skipping the Bob-local metadata above so the synthetic mailbox + provenance
+// fingerprint (and credentials/storage) never reach the TARGET as request headers.
+// resolveAuthProfile returns the RAW profile, so this is the required chokepoint for any
+// outbound consumer. PURE: returns a NEW object and never mutates the caller's `headers`.
+// A caller-supplied key is preserved by PRESENCE (so an intentional empty-string header is
+// NOT overwritten from the profile), not by truthiness.
 function applyAuthProfileHeaders(headers, profile) {
-  if (!profile || typeof profile !== "object") return headers;
+  const merged = headers && typeof headers === "object" ? { ...headers } : {};
+  if (!profile || typeof profile !== "object") return merged;
   for (const [k, v] of Object.entries(profile)) {
     if (PROFILE_METADATA_KEYS.has(k)) continue;
-    if (!headers[k]) headers[k] = v;
+    if (!(k in merged)) merged[k] = v;
   }
-  return headers;
+  return merged;
 }
 
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {

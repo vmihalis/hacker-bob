@@ -187,7 +187,7 @@ async function httpScan(args) {
     });
   }
 
-  const headers = args.headers || {};
+  let headers = args.headers || {};
   const body = args.body || undefined;
   const followRedirects = args.follow_redirects ?? false;
   const timeoutMs = args.timeout_ms || 10000;
@@ -199,8 +199,9 @@ async function httpScan(args) {
     if (auth) {
       // Merge only the profile's HEADER fields; the canonical PROFILE_METADATA_KEYS strip
       // (credentials/storage + PR-PROV synthetic provenance flags + synthetic mailbox)
-      // ensures Bob-local secrets never reach the target as request headers.
-      applyAuthProfileHeaders(headers, auth);
+      // ensures Bob-local secrets never reach the target as request headers. Pure helper:
+      // returns a new map, so reassign.
+      headers = applyAuthProfileHeaders(headers, auth);
     } else {
       audit({
         status: null,
