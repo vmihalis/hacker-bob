@@ -56,6 +56,12 @@ const BROWSER_BUNDLES = Object.freeze([
 ]);
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
+// Real-browser tests run only where a headless driver session can actually be
+// hosted: a Chromium binary must be present AND the environment must not have
+// opted out via BOB_SKIP_BROWSER_TESTS (CI that ships Chrome but can't start a
+// headless session sets this — a present binary doesn't prove a session works).
+const BROWSER_LAUNCHABLE =
+  !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
 const PATCHRIGHT_SKIP_REASON =
   "patchright optional dependency not installed; install via `npm install` + `npx patchright install chromium` to enable this test";
 
@@ -272,7 +278,7 @@ test("every bob_browser_* tool returns a structured patchright_unavailable error
 
 // ── Concurrency cap (per-domain) ──
 
-test("startSession refuses a 4th concurrent session per target_domain", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("startSession refuses a 4th concurrent session per target_domain", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   const domain = "example.com";
   const url = "https://example.com/";
   const opened = [];
@@ -302,7 +308,7 @@ test("startSession refuses a 4th concurrent session per target_domain", { skip: 
 
 // ── Smoke: spawn, navigate, snapshot, evaluate, close ──
 
-test("smoke: start → navigate → snapshot → evaluate(1+1) → close all succeed", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("smoke: start → navigate → snapshot → evaluate(1+1) → close all succeed", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   // example.com is the canonical in-scope smoke target. We navigate first
   // because the default about:blank page has an empty accessibility tree on
   // some Chromium builds, which would fail the snapshot assertion below.
@@ -351,7 +357,7 @@ test("bob_browser_evaluate declares an optional timeout_ms in its input schema",
   assert.ok(!mod.inputSchema.required.includes("timeout_ms"), "timeout_ms must stay optional");
 });
 
-test("bob_browser_evaluate honors timeout_ms and returns code evaluate_timeout for a never-settling expression", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("bob_browser_evaluate honors timeout_ms and returns code evaluate_timeout for a never-settling expression", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   // End-to-end through the public tool: proves the wrapper forwards timeout_ms,
   // the driver bounds page.evaluate, and the distinct evaluate_timeout code
   // surfaces in the envelope. No navigation needed (about:blank).
@@ -381,7 +387,7 @@ test("bob_browser_evaluate honors timeout_ms and returns code evaluate_timeout f
   }
 });
 
-test("off-scope navigate is refused with a structured scope error", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("off-scope navigate is refused with a structured scope error", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   const start = await callTool("bob_browser_session_start", {
     target_domain: "example.com",
     target_url: "https://example.com",
@@ -405,7 +411,7 @@ test("off-scope navigate is refused with a structured scope error", { skip: !PAT
   }
 });
 
-test("off-scope fetch inside evaluate is refused (sandbox blocks before scope)", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("off-scope fetch inside evaluate is refused (sandbox blocks before scope)", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   const start = await callTool("bob_browser_session_start", {
     target_domain: "example.com",
     target_url: "https://example.com",
@@ -431,7 +437,7 @@ test("off-scope fetch inside evaluate is refused (sandbox blocks before scope)",
 
 // ── Idle-timeout reaping ──
 
-test("idle timeout closes the subprocess", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("idle timeout closes the subprocess", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   // Shrink the idle timeout so we don't wait 5 minutes for the reaper. The
   // setter is the test-harness path; production constants stay at 5/30 min.
   browserSessions.setTimeoutsForTesting({ idleTimeoutMs: 250 });
