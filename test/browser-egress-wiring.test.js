@@ -667,6 +667,61 @@ test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when 
   }
 });
 
+// ── driver-side per-operation timeout bounds ──
+
+test("browser-driver clamps non-positive timeout_ms to the per-operation default", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  // The clamp must guard timeout_ms with a `> 0` check so an agent-supplied 0
+  // (which Playwright treats as "no timeout") cannot disable the op bound.
+  assert.match(driverSrc, /function resolveOpTimeout\(args, defaultMs\)/);
+  assert.match(driverSrc, /Number\.isFinite\(requested\)\s*&&\s*requested\s*>\s*0/);
+  // navigate and wait_for must route their timeout through the clamp.
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_NAVIGATE_TIMEOUT_MS\)/);
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_WAIT_FOR_TIMEOUT_MS\)/);
+});
+
+test("browser-driver bounds page.evaluate with a wall-clock race", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  // page.evaluate takes no Playwright timeout, so it must be raced against a
+  // timer or a runaway expression pins the session to the 90s IPC ceiling.
+  assert.match(driverSrc, /Promise\.race\(\[\s*evalPromise/);
+  assert.match(driverSrc, /evaluate_timeout after \$\{timeout\}ms/);
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_EVALUATE_TIMEOUT_MS\)/);
+});
+
+test("browser-driver passes an explicit timeout to page.screenshot", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  assert.match(driverSrc, /\.screenshot\(\{[^}]*timeout:\s*DEFAULT_SCREENSHOT_TIMEOUT_MS/);
+});
+
+test("browser-driver evaluate returns a fast evaluate_timeout for a never-resolving expression", { skip: !PATCHRIGHT_AVAILABLE }, async () => {
+  // Real Chromium; no navigation needed — the initial page is about:blank.
+  const session = await browserSessions.startSession({
+    targetDomain: "example.com",
+    targetUrl: "https://example.com",
+    headless: true,
+  });
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      () => browserSessions.sendCommand(
+        session.session_id,
+        "evaluate",
+        { expression: "new Promise(function(){})", timeout_ms: 400 },
+      ),
+      (err) => {
+        assert.match(err.message, /evaluate_timeout|evaluate_failed/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - start;
+    // The driver race fires at ~400ms; the 90s IPC ceiling is never reached.
+    assert.ok(elapsed < 6000, `expected fast evaluate timeout, took ${elapsed}ms`);
+  } finally {
+    await browserSessions.closeSession(session.session_id).catch(() => {});
+  }
+});
+
 // ── browser-driver source-level contracts (no Chromium required) ──
 
 test("browser-driver.js threads proxy into chromium.launch({ proxy }) (source check)", () => {
