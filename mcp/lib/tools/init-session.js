@@ -68,6 +68,22 @@ module.exports = Object.freeze({
         "type": "string",
         "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
         "description": "Egress profile to bind to this session. Defaults to default."
+      },
+      "lab_authorization": {
+        "type": "object",
+        "description": "OFF BY DEFAULT. Operator attestation that target_domain is a private host you OWN and are AUTHORIZED to test (IPv4 loopback 127.0.0.0/8 or RFC1918: 10/8, 172.16/12, 192.168/16). Required to scope a session to a private IP literal; without it the public-DNS gate rejects non-public targets. Cloud-metadata, link-local, IPv6, and .internal/.local hosts are never eligible. Recorded as an audit-graded artifact and implies allow_internal_hosts for this session; cannot be combined with block_internal_hosts.",
+        "properties": {
+          "private_targets": {
+            "type": "boolean",
+            "description": "Must be true to attest a private target."
+          },
+          "ack": {
+            "type": "string",
+            "description": "Exact attestation token (verbatim): i-own-and-am-authorized-to-test-these-private-targets"
+          }
+        },
+        "required": ["private_targets", "ack"],
+        "additionalProperties": false
       }
     },
     "required": [
@@ -83,5 +99,5 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: ["state.json"],
+  session_artifacts_written: ["state.json", "lab-authorization.json"],
 });
