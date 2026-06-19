@@ -164,3 +164,28 @@ test("lab_authorization cannot be combined with block_internal_hosts", () => {
     );
   });
 });
+
+test("lab_authorization requires the default (direct) egress profile, not a proxy", () => {
+  withTempHome(() => {
+    const { initSession } = require("../mcp/lib/session-state.js");
+    // A proxy-backed egress would scan the attested private target from the
+    // proxy's network rather than the operator's lab network — reject it.
+    assert.throws(
+      () => initSession({
+        target_domain: "192.168.1.53",
+        target_url: "http://192.168.1.53/",
+        lab_authorization: GOOD,
+        egress_profile: "some-proxy",
+      }),
+      /requires the default \(direct\) egress profile/,
+    );
+    // The explicit default profile is fine (direct egress from the lab network).
+    const ok = initSession({
+      target_domain: "192.168.1.54",
+      target_url: "http://192.168.1.54/",
+      lab_authorization: GOOD,
+      egress_profile: "default",
+    });
+    assert.equal(JSON.parse(ok).created, true);
+  });
+});
