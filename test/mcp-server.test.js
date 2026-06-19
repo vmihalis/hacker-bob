@@ -18679,11 +18679,19 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    assert.equal(
-      settings.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-      false,
-      "MCP tool hooks should not imply an external scope guard",
-    );
+    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
+    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
+    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
+    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
+    // scope/enforcement guard on an MCP tool remains forbidden.
+    const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    for (const entry of mcpEntries) {
+      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
+      assert.ok(
+        entry.hooks.every((hook) => /bob-http-write-confirm\.js/.test(hook.command)),
+        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
+      );
+    }
   }
 
   for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
@@ -18718,10 +18726,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.match(mergedHooksText, /session-write-guard\.sh/);
   assert.match(mergedHooksText, /session-read-guard\.sh/);
   assert.match(mergedHooksText, /echo existing/);
-  assert.equal(
-    merged.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-    false,
-    "stale MCP scope hook matchers should be removed when their only hook is stale",
+  // The stale scope-guard-mcp.sh hook is stripped (assert above). The bob_http_scan matcher survives
+  // the merge ONLY because `generated` (defaultClaudeSettings) contributes the non-stale write-confirm
+  // HITL hook — so the surviving MCP hook is exactly that gate, never the stripped scope guard.
+  const mergedScan = merged.hooks.PreToolUse.find((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
+  assert.ok(mergedScan, "the write-confirm gate matcher survives the merge via the canonical default");
+  assert.ok(
+    mergedScan.hooks.every((hook) => /bob-http-write-confirm\.js/.test(hook.command)),
+    "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
   );
 });
 

@@ -119,6 +119,20 @@ function defaultPreToolUseHooks() {
         },
       ],
     },
+    {
+      // Opt-in "ask before writing" gate: INERT unless BOB_HTTP_WRITE_CONFIRM is truthy, then a
+      // bob_http_scan call with a mutating method (POST/PUT/PATCH/DELETE) returns
+      // permissionDecision:"ask" so the operator confirms before Bob writes to the target. Read
+      // probes pass through. Ships everywhere (autonomous default preserved by the flag default-off).
+      matcher: "mcp__hacker-bob__bob_http_scan",
+      hooks: [
+        {
+          type: "command",
+          command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/bob-http-write-confirm.js"`,
+          timeout: 5,
+        },
+      ],
+    },
   ];
 }
 
