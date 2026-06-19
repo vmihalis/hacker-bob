@@ -166,9 +166,14 @@ async function requestOnce(url, options) {
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let deadlineTimer = null;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
       callback(value);
     };
 
@@ -239,15 +244,61 @@ async function requestOnce(url, options) {
       });
     });
 
+    // A WebSocket handshake is an HTTP request: GET + Connection/Upgrade
+    // headers, answered with `101 Switching Protocols`. Node's http client
+    // routes 101 to the 'upgrade' event, NOT the 'response' callback above, so
+    // without this handler the request promise never settles and the caller
+    // wedges forever on any WS-upgrade endpoint. Resolve with the 101 handshake
+    // (status + Sec-WebSocket-Accept and any bytes already buffered after the
+    // headers), then release the upgraded socket — this is a one-shot scan, not
+    // a live WS client.
+    req.on("upgrade", (res, socket, head) => {
+      const headBuffer = Buffer.isBuffer(head) ? head : Buffer.alloc(0);
+      const capped = headBuffer.length > maxResponseBytes
+        ? headBuffer.subarray(0, maxResponseBytes)
+        : headBuffer;
+      try { socket.destroy(); } catch { /* socket already gone */ }
+      finish(resolve, buildSafeFetchResponse({
+        res,
+        url,
+        body: capped,
+        receivedBytes: headBuffer.length,
+        truncated: headBuffer.length > maxResponseBytes,
+        redirected: options.redirected,
+        redirectCount: options.redirectCount,
+      }));
+    });
+
     req.on("error", (error) => {
       if (!settled) finish(reject, error);
     });
 
+    // The connection can close before the response stream ends (peer reset,
+    // premature half-close after a botched upgrade). Without this the promise
+    // would never settle. Resolve/reject paths above all run before req 'close'
+    // (response 'end' precedes it), so this only fires on a genuine unsettled
+    // close.
+    req.on("close", () => {
+      if (!settled) {
+        finish(reject, new Error("connection closed before response completed"));
+      }
+    });
+
+    // req.setTimeout is a socket-INACTIVITY timeout: a server that holds the
+    // connection open or trickles bytes (WS hold, slowloris, chunked keepalive)
+    // keeps resetting it, so it can never fire. Arm an absolute wall-clock
+    // deadline as the guaranteed backstop.
     req.setTimeout(timeoutMs, () => {
       const error = makeTimeoutError(timeoutMs);
       req.destroy(error);
       finish(reject, error);
     });
+
+    deadlineTimer = setTimeout(() => {
+      const error = makeTimeoutError(timeoutMs);
+      req.destroy(error);
+      finish(reject, error);
+    }, timeoutMs);
 
     if (bodyBuffer) {
       req.write(bodyBuffer);

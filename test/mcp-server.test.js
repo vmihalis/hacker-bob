@@ -16317,6 +16317,63 @@ test("safeFetch enforces response byte caps without buffering the full body", as
   });
 });
 
+test("safeFetch resolves a 101 WebSocket upgrade handshake instead of wedging", async () => {
+  const server = http.createServer();
+  // 101 is routed to 'upgrade', never the 'response' callback. The server holds
+  // the socket open like a real WS endpoint waiting for frames.
+  server.on("upgrade", (req, socket) => {
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const response = await safeFetch(`http://127.0.0.1:${port}/`, {
+      timeoutMs: 2000,
+      blockInternalHosts: false,
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+      },
+    });
+    assert.equal(response.status, 101);
+    assert.equal(response.headers.get("sec-websocket-accept"), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+  } finally {
+    server.close();
+  }
+});
+
+test("safeFetch enforces an absolute deadline against a connection-holding server", async () => {
+  // Trickle bytes spaced under the timeout: a socket-inactivity timer would keep
+  // resetting and never fire, so only an absolute wall-clock deadline can break
+  // out. Each chunk stays under the byte cap and the stream never ends.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/plain", "transfer-encoding": "chunked" });
+    const iv = setInterval(() => { try { res.write("."); } catch { clearInterval(iv); } }, 100);
+    if (iv.unref) iv.unref();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    await assert.rejects(
+      () => safeFetch(`http://127.0.0.1:${port}/`, { timeoutMs: 500, blockInternalHosts: false }),
+      (error) => {
+        assert.equal(error.name, "AbortError");
+        assert.match(error.message, /timeout after 500ms/);
+        return true;
+      },
+    );
+  } finally {
+    server.close();
+  }
+});
+
 test("bob_import_http_traffic validates, dedupes, stores session-local traffic, and briefs only relevant surface traffic", () => {
   withTempHome(() => {
     const domain = "example.com";
