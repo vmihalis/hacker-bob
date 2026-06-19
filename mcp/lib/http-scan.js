@@ -30,7 +30,7 @@ const {
   isFirstPartyHost,
   safeUrlObject,
 } = require("./url-surface.js");
-const { resolveAuthProfile } = require("./auth.js");
+const { applyAuthProfileHeaders, resolveAuthProfile } = require("./auth.js");
 const {
   resolveHttpScanTargetDomain,
 } = require("./scope.js");
@@ -187,7 +187,7 @@ async function httpScan(args) {
     });
   }
 
-  const headers = args.headers || {};
+  let headers = args.headers || {};
   const body = args.body || undefined;
   const followRedirects = args.follow_redirects ?? false;
   const timeoutMs = args.timeout_ms || 10000;
@@ -197,9 +197,11 @@ async function httpScan(args) {
     const auth = resolveAuthProfile(authProfile, url, targetDomain);
 
     if (auth) {
-      for (const [k, v] of Object.entries(auth)) {
-        if (k !== "credentials" && !headers[k]) headers[k] = v;
-      }
+      // Merge only the profile's HEADER fields; the canonical PROFILE_METADATA_KEYS strip
+      // (credentials/storage + PR-PROV synthetic provenance flags + synthetic mailbox)
+      // ensures Bob-local secrets never reach the target as request headers. Pure helper:
+      // returns a new map, so reassign.
+      headers = applyAuthProfileHeaders(headers, auth);
     } else {
       audit({
         status: null,

@@ -45,6 +45,37 @@ function buildHeaderProfile(headers, cookies, storage) {
   return profile;
 }
 
+// The canonical set of profile keys that are Bob-LOCAL metadata, NEVER HTTP request
+// headers: credentials + browser storage + the PR-PROV synthetic-identity provenance
+// flags and synthetic mailbox + expiry hints. SINGLE source of truth for every consumer
+// that reads a raw profile from resolveAuthProfile and must not emit/surface these: the
+// outbound-header merge (applyAuthProfileHeaders, used by bob_http_scan), the
+// bob_list_auth_profiles summary (summarizeAuthProfile), and the IDOR producer's outbound
+// strip (offensive-idor-producer.js imports this). One set means a future provenance key
+// cannot leak through a reader that forgot to add it.
+const PROFILE_METADATA_KEYS = Object.freeze(new Set([
+  "credentials", "local_storage", "session_storage",
+  "synthetic", "email_origin", "provisioned_via", "email",
+  "expires_at", "expiresAt", "expiry", "expires",
+]));
+
+// Build an outbound header map from a base header set plus a resolved auth profile's HEADER
+// fields, skipping the Bob-local metadata above so the synthetic mailbox + provenance
+// fingerprint (and credentials/storage) never reach the TARGET as request headers.
+// resolveAuthProfile returns the RAW profile, so this is the required chokepoint for any
+// outbound consumer. PURE: returns a NEW object and never mutates the caller's `headers`.
+// A caller-supplied key is preserved by PRESENCE (so an intentional empty-string header is
+// NOT overwritten from the profile), not by truthiness.
+function applyAuthProfileHeaders(headers, profile) {
+  const merged = headers && typeof headers === "object" ? { ...headers } : {};
+  if (!profile || typeof profile !== "object") return merged;
+  for (const [k, v] of Object.entries(profile)) {
+    if (PROFILE_METADATA_KEYS.has(k)) continue;
+    if (!(k in merged)) merged[k] = v;
+  }
+  return merged;
+}
+
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
   // Cycle P.2: scan the canonical `~/hacker-bob-sessions/` root for the
   // legacy-fallback discovery path. Sessions copied from
@@ -144,7 +175,7 @@ function persistAuthProfiles(domain, profilesByName) {
   return result;
 }
 
-function authStore(args) {
+function authStore(args, options = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   assertSafeDomain(domain);
   const profileName = assertNonEmptyString(args.profile_name, "profile_name");
@@ -155,6 +186,30 @@ function authStore(args) {
 
   const profile = buildHeaderProfile(headers, cookies, storage);
   if (credentials) profile.credentials = credentials;
+
+  // PR-PROV: stamp the synthetic-identity provenance the IDOR signed-row producer
+  // (bob_http_idor_confirm, mint condition #18) requires before it will sign. This is
+  // accepted ONLY from the second positional argument, which the MCP tool dispatcher
+  // never supplies — dispatch.js and tool-registry.js both invoke tool.handler(args)
+  // with ONE argument, the identical seam the producer itself uses (idorConfirm(args),
+  // "dispatcher always calls with NO second argument"). So the public bob_auth_store
+  // tool (operator-supplied, possibly a real victim's pasted cookie/JWT) can NEVER
+  // stamp provenance; only the in-process bob_auto_signup success path — downstream of
+  // assertSignupEmailAllowed (tempMailboxIsKnown + operator-denylist) — passes it. Each
+  // field is copied only on an exact match to the frozen REQUIRED_PROVENANCE contract
+  // (offensive-idor-producer.js:140-144), so even the trusted caller cannot persist an
+  // arbitrary provenance value. PR-PROV adds NO key isolation: the same-UID in-process
+  // forge boundary (BEDROCK) remains open until the deferred offensive-SANDBOX PR.
+  const provenance = options && typeof options === "object" && options.provenance
+    && typeof options.provenance === "object"
+    ? options.provenance
+    : null;
+  if (provenance) {
+    if (provenance.synthetic === true) profile.synthetic = true;
+    if (provenance.email_origin === "temp_email") profile.email_origin = "temp_email";
+    if (provenance.provisioned_via === "bob_auto_signup") profile.provisioned_via = "bob_auto_signup";
+    if (typeof provenance.email === "string" && provenance.email) profile.email = provenance.email;
+  }
 
   const authPath = resolveAuthJsonPath(domain);
   let persisted = null;
@@ -263,10 +318,15 @@ function profileExpiryHint(profile, mtimeMs) {
   };
 }
 
+// bob_list_auth_profiles must not surface the Bob-local metadata keys (credentials/
+// storage + the PR-PROV provenance flags + synthetic mailbox) as bogus `header_keys` or
+// leak the mailbox into the summary JSON. Uses the canonical PROFILE_METADATA_KEYS so it
+// can never drift from the outbound-header merge + the producer strip. The producer reads
+// the RAW profile, not this summary, so this is operator-visibility hygiene only.
 function summarizeAuthProfile(name, profile, fileStats) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
   const headerKeys = Object.keys(normalizedProfile)
-    .filter((key) => key !== "credentials" && key !== "local_storage" && key !== "session_storage")
+    .filter((key) => !PROFILE_METADATA_KEYS.has(key))
     .sort();
   const credentials = normalizedProfile.credentials && typeof normalizedProfile.credentials === "object"
     ? normalizedProfile.credentials
@@ -319,11 +379,13 @@ function listAuthProfiles(args) {
 }
 
 module.exports = {
+  applyAuthProfileHeaders,
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
   listAuthProfiles,
   migrateAuthJson,
+  PROFILE_METADATA_KEYS,
   readAuthJson,
   resolveAuthJsonPath,
   resolveAuthProfile,

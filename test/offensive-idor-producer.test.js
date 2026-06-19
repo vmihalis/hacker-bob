@@ -30,7 +30,7 @@ const {
 } = require("../mcp/lib/offensive-idor-producer.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
-const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/lib/auth.js");
+const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/lib/paths.js");
 const {
@@ -305,8 +305,13 @@ test("piiScan EXACT-matches provisioned mailboxes only (no eval_* prefix hole), 
   assert.ok(piiScan({ phone: "+1 (415) 555-0142" }, []).length >= 1);
 });
 
-test("profileHasProvenance requires all three synthetic flags", () => {
-  assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" }), true);
+test("profileHasProvenance requires all three synthetic flags AND the synthetic mailbox", () => {
+  const full = { synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup", email: "eval_a@example.test" };
+  assert.equal(profileHasProvenance(full), true);
+  // The three markers without the synthetic mailbox must NOT pass — mint condition #17
+  // (allowedEmails) depends on profile.email, so the gate requires the full four-field stamp.
+  assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email", provisioned_via: "bob_auto_signup" }), false);
+  assert.equal(profileHasProvenance({ ...full, email: "" }), false);
   assert.equal(profileHasProvenance({ synthetic: true, email_origin: "temp_email" }), false);
   assert.equal(profileHasProvenance({}), false);
   assert.equal(profileHasProvenance(null), false);
@@ -346,6 +351,41 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   // capture file on disk re-hashes to the row's stdout_hash (freeze re-hash path)
   const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
   assert.equal(observed.stdout_hash, row.stdout_hash);
+}));
+
+// PR-PROV end-to-end: arm the three identities through the REAL production stamp path
+// (authStore with the 2nd-arg provenance the bob_auto_signup seam passes) instead of the
+// raw file-writer `seedSyntheticProfiles`. Proves the stamp the producer's mint
+// condition #18 reads is exactly what authStore persists, so the production arming path
+// actually drives the signer.
+test("AC-6 via production stamp: identities armed by authStore(2nd-arg provenance) mint EXACTLY ONE signed medium row", () => withTempHome(async () => {
+  const domain = "idor-prov-stamp.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain));
+  for (const tag of ["a", "b", "c"]) {
+    authStore({
+      target_domain: domain,
+      profile_name: `identity_${tag}`,
+      headers: { Authorization: `Bearer eyJ${tag}token` },
+    }, {
+      provenance: {
+        synthetic: true,
+        email_origin: "temp_email",
+        provisioned_via: "bob_auto_signup",
+        email: `eval_${tag}@example.test`,
+      },
+    });
+  }
+  ensureHandoffSigningKey(domain);
+
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.offensive_outcome, "exploited_safely");
+  assert.equal(result.demonstrated_severity, "medium");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].row_mac && rows[0].row_mac.digest, "row must be MAC-signed");
 }));
 
 test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NOT block", () => withTempHome(async () => {
