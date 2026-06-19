@@ -43,6 +43,23 @@ TESTS = [
     ("flag on + HEAD -> allow", "1", scan("HEAD"), False),
     ("flag on + OPTIONS -> allow", "1", scan("OPTIONS"), False),
 
+    # --- enabled: a read method that SMUGGLES a write via method-override still asks ---
+    ("flag on + GET with ?_method=DELETE -> ask (query method-override)",
+     "1", scan("GET", "https://target.example/r?_method=DELETE"), True),
+    ("flag on + GET with X-HTTP-Method-Override: DELETE -> ask (header override)",
+     "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
+                                             "headers": {"X-HTTP-Method-Override": "DELETE"}}}, True),
+    ("flag on + GET with X-Method-Override: PUT -> ask (header override)",
+     "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
+                                             "headers": {"X-Method-Override": "PUT"}}}, True),
+    ("flag on + GET with _method=POST form body -> ask (body override)",
+     "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
+                                             "body": "a=1&_method=POST"}}, True),
+    ("flag on + GET with ?_method=GET (non-mutating) -> allow",
+     "1", scan("GET", "https://target.example/r?_method=GET"), False),
+    ("flag on + GET with unrelated query -> allow",
+     "1", scan("GET", "https://target.example/r?page=2"), False),
+
     # --- enabled: scope is bob_http_scan only ---
     ("flag on + non-scan tool with POST-ish input -> allow",
      "1", {"tool_name": "mcp__hacker-bob__bob_read_http_audit", "tool_input": {"method": "POST"}}, False),

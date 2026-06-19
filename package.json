@@ -33,6 +33,7 @@
     ".claude/hooks/agent-run-start.js",
     ".claude/hooks/agent-run-stop.js",
     ".claude/hooks/bob-http-write-confirm.sh",
+    ".claude/hooks/bob-http-write-confirm-impl.py",
     ".claude/hooks/session-read-guard.sh",
     ".claude/hooks/session-write-guard.sh",
     ".claude/rules/**/*",
