@@ -294,6 +294,49 @@ test("negative: a 204 No Content with reflected ACAO+ACAC writes nothing (no bod
   assert.equal(readRows(domain).length, 0);
 }));
 
+test("negative: a 200 with a KNOWN-empty body (bodyByteLength 0) writes nothing", () => withTempHome(async () => {
+  const domain = "cors-emptybody.example.test";
+  setupSession(domain);
+  // Simulate a live safeFetch response: 200 + reflected ACAO/ACAC but a zero-length body (the
+  // length is known; the content is never read). No readable content → fail closed.
+  const emptyBodyFetch = ({ headers }) => Promise.resolve({
+    status: 200,
+    bodyByteLength: 0,
+    headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+  });
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: emptyBodyFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "content_free_response_no_readable_body");
+  assert.equal(readRows(domain).length, 0);
+}));
+
+test("a sensitive shape in the resolved endpoint path blocks the row (no PII/secret persisted)", () => withTempHome(async () => {
+  const domain = "cors-piipath.example.test";
+  // A recorded endpoint whose PATH carries a synthetic secret shape (sk-live_…). The producer
+  // screens the canonical target and must fail closed BEFORE signing — a sensitive shape must
+  // never persist into the durable signed row.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: SURFACE_ID,
+      title: "Surface with a secret-shaped path segment",
+      surface_type: "web",
+      hosts: [domain],
+      endpoints: [`https://${domain}/data/sk-live_00000000000000000000abcd`],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+  ensureHandoffSigningKey(domain);
+
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: reflectingFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "proof_target_contains_sensitive_value");
+  assert.equal(readRows(domain).length, 0);
+}));
+
 test("partial probe failure: if the second probe errors, no row is written and the error propagates", () => withTempHome(async () => {
   const domain = "cors-partialfail.example.test";
   setupSession(domain);

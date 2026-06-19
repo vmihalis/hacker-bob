@@ -172,12 +172,18 @@ function isReadableResourceResponse(response) {
     && response.status < 300;
 }
 
-// 204 No Content / 205 Reset Content are 2xx but carry NO body, so there is nothing for a
-// victim page to read cross-origin — a reflected ACAO/ACAC on a content-free response is not a
-// meaningful credentialed READ. (A 200 with an empty body is indistinguishable without reading
-// the body, which we deliberately never do; 204/205 are the status-detectable content-free case.)
+// A 2xx that carries NO body exposes nothing for a victim page to read cross-origin — a reflected
+// ACAO/ACAC there is not a meaningful credentialed READ. Two detectable cases:
+//   - 204 No Content / 205 Reset Content: content-free by status.
+//   - any 2xx whose body length is KNOWN to be zero. safeFetch records bodyByteLength for live
+//     probes (a LENGTH only — the body content is never read or persisted), so a 200/201/202 with
+//     Content-Length: 0 is caught too. bodyByteLength is absent for seeded fetch_fn responses
+//     (unknown ≠ empty), so we reject only a KNOWN-zero length.
 function isContentFreeResponse(response) {
-  return !!response && (response.status === 204 || response.status === 205);
+  if (!response) return false;
+  if (response.status === 204 || response.status === 205) return true;
+  if (Number.isInteger(response.bodyByteLength) && response.bodyByteLength === 0) return true;
+  return false;
 }
 
 function blocked(outcome, reason, extra = {}) {
