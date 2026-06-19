@@ -16,6 +16,10 @@ SCAN_TOOL = "mcp__hacker-bob__bob_http_scan"
 READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OVERRIDE_HEADERS = {"x-http-method-override", "x-method-override", "x-http-method"}
+# Bound the read so a very large body can't saturate the 5s hook timeout (a SIGKILL/timeout is a non-2
+# exit Claude Code treats as non-blocking → another fail-open). 4 MiB covers any realistic captured
+# body; a larger payload truncates here, the JSON parse fails, and we fail CLOSED (ask).
+MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
 def allow():
@@ -76,16 +80,24 @@ def has_write_override(url, headers, body):
         for key, value in headers.items():
             if str(key).strip().lower() in OVERRIDE_HEADERS and str(value).strip().upper() in MUTATING_METHODS:
                 return True
-    # _method=<mutating> smuggled in a (form) body on a read-method request
-    if isinstance(body, str) and "_method" in body.lower():
+    # _method=<mutating> smuggled in a (form) body on a read-method request. Decode it: a urlencoded
+    # form value (e.g. _method=%44%45%4c%45%54%45, or _method=DELETE) must not evade a raw substring scan.
+    if isinstance(body, str) and body:
+        from urllib.parse import parse_qs, unquote_plus
+        try:
+            for value in parse_qs(body, keep_blank_values=True).get("_method", []):
+                if str(value).strip().upper() in MUTATING_METHODS:
+                    return True
+        except Exception:
+            return True  # unparseable form → fail closed
         import re
-        if re.search(r"(?:^|[?&\s;])_method=(?:post|put|patch|delete)\b", body, re.IGNORECASE):
+        if re.search(r"_method=\s*(?:post|put|patch|delete)\b", unquote_plus(body), re.IGNORECASE):
             return True
     return False
 
 
-def main():
-    raw = sys.stdin.read()
+def decide():
+    raw = sys.stdin.read(MAX_BODY_BYTES)
     try:
         payload = json.loads(raw or "{}")
     except Exception:
@@ -114,6 +126,16 @@ def main():
     if method in READ_METHODS and not has_write_override(url, headers, body):
         allow()
     ask(method or "UNKNOWN", url)
+
+
+def main():
+    # allow()/ask() raise SystemExit (a BaseException, not Exception), so they propagate as the normal
+    # exit-0 decision. Any OTHER error must fail CLOSED — ask rather than crash with a non-2 exit that
+    # Claude Code would treat as non-blocking. This keeps every path either exit-0-ask or exit-0-allow.
+    try:
+        decide()
+    except Exception:
+        ask("UNKNOWN", "(error inspecting request)")
 
 
 if __name__ == "__main__":

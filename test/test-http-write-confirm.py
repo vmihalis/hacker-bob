@@ -55,6 +55,9 @@ TESTS = [
     ("flag on + GET with _method=POST form body -> ask (body override)",
      "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
                                              "body": "a=1&_method=POST"}}, True),
+    ("flag on + GET with URL-encoded _method=DELETE form body -> ask (decoded override)",
+     "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
+                                             "body": "a=1&_method=%44%45%4C%45%54%45"}}, True),
     ("flag on + GET with ?_method=GET (non-mutating) -> allow",
      "1", scan("GET", "https://target.example/r?_method=GET"), False),
     ("flag on + GET with unrelated query -> allow",
@@ -72,6 +75,10 @@ TESTS = [
     ("flag on + malformed JSON payload -> ASK (fail closed; might be a write)", "1", "{not json", True),
     ("flag on + empty payload -> ASK (fail closed; no method to confirm a read)", "1", "{}", True),
     ("flag on + unknown method -> ASK (fail closed)", "1", scan("FROBNICATE"), True),
+    # oversized payload: the bounded read truncates beyond MAX_BODY_BYTES, the JSON parse fails, ask.
+    ("flag on + oversized payload (> read ceiling) -> ASK (fail closed, bounded read)",
+     "1", {"tool_name": SCAN, "tool_input": {"method": "GET", "url": "https://target.example/r",
+                                             "body": "x" * (5 * 1024 * 1024)}}, True),
 ]
 
 

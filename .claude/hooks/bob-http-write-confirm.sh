@@ -17,4 +17,12 @@ case "$flag" in
   *) exit 0 ;;                 # disabled — abstain (allow) with no interpreter spawn
 esac
 
+# Fail CLOSED on exec failure: if python3 is missing or not executable, a bare failed `exec` would exit
+# this non-interactive shell with 127/126 — a non-2 code Claude Code treats as NON-BLOCKING, silently
+# disabling the opt-in gate exactly when the operator believes writes require confirmation. `shopt -s
+# execfail` makes a failed exec RETURN instead of exiting, so the explicit `exit 2` (Claude Code's
+# block-with-error sentinel) runs. On exec SUCCESS the impl replaces this process and always exits 0
+# with an ask/allow decision (and a missing/broken impl makes python3 itself exit non-0 → still blocked).
+shopt -s execfail
 exec python3 "$(dirname "$0")/bob-http-write-confirm-impl.py"
+exit 2
