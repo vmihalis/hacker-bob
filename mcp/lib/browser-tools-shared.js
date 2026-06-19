@@ -208,10 +208,18 @@ function assertExpressionSandbox(expression) {
 // timeout fires first with a precise error and the IPC race is only the
 // backstop. Commands without an operation timeout keep the registry default.
 const IPC_DEADLINE_MARGIN_MS = 5_000;
+// Cap an agent-supplied timeout_ms so a pathological value (e.g. 2e9) cannot arm
+// the IPC deadline far beyond the session's useful life and reintroduce the
+// "agent wedges forever" class. The driver clamps the same ceiling for its own
+// per-operation timers (browser-driver.js resolveOpTimeout).
+const MAX_OPERATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 async function callBrowser(command, sessionId, args = {}) {
-  const opTimeout = args && Number.isFinite(args.timeout_ms) ? Number(args.timeout_ms) : null;
-  const options = opTimeout != null && opTimeout > 0
+  const requested = args && Number.isFinite(args.timeout_ms) ? Number(args.timeout_ms) : null;
+  const opTimeout = requested != null && requested > 0
+    ? Math.min(requested, MAX_OPERATION_TIMEOUT_MS)
+    : null;
+  const options = opTimeout != null
     ? { timeoutMs: opTimeout + IPC_DEADLINE_MARGIN_MS }
     : undefined;
   return browserSessions.sendCommand(sessionId, command, args, options);
