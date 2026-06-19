@@ -55,6 +55,36 @@ function isPatchrightAvailable() {
   }
 }
 
+// System Chrome locations the driver's channel:"chrome" launch resolves, by OS.
+const SYSTEM_CHROME_EXECUTABLES = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/snap/bin/chromium",
+];
+
+// A cheap local capability check: patchright resolves AND a Chromium binary the
+// driver could launch is present (bundled via `npx patchright install chromium`,
+// or a system Chrome). This is necessary but NOT sufficient — a binary can exist
+// yet fail to start a headless driver session (CI sandbox/deps), and that case
+// can't be told apart from outside without provisioning the runtime. So tests
+// pair this with an explicit env opt-out (BOB_SKIP_BROWSER_TESTS) for CI that
+// can't host a session. Test-only; production tools gate on isPatchrightAvailable().
+function isBrowserLaunchable() {
+  if (!isPatchrightAvailable()) return false;
+  try {
+    const { chromium } = require("patchright");
+    const bundled = chromium.executablePath();
+    if (typeof bundled === "string" && fs.existsSync(bundled)) return true;
+  } catch {
+    // executablePath() throws when no browser is registered — fall through.
+  }
+  return SYSTEM_CHROME_EXECUTABLES.some((p) => fs.existsSync(p));
+}
+
 function patchrightUnavailableError() {
   const err = new Error(
     "patchright_unavailable: optional dependency patchright is not installed. Run `npm install` and `npx patchright install chromium` to enable the browser-driver MCP tools.",
@@ -516,6 +546,7 @@ module.exports = {
   closeSession,
   flushRecordedRequests,
   getSession,
+  isBrowserLaunchable,
   isPatchrightAvailable,
   listActiveSessions,
   patchrightUnavailableError,

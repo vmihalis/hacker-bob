@@ -26,6 +26,13 @@ const browserSessions = require("../mcp/lib/browser-sessions.js");
 const browserToolsShared = require("../mcp/lib/browser-tools-shared.js");
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
+// Tests that launch a real browser run only where a headless driver session can
+// be hosted: a Chromium binary present AND no BOB_SKIP_BROWSER_TESTS opt-out
+// (CI that ships Chrome but can't start a headless session sets it). The
+// egress/stub tests below only need the package (they monkeypatch startSession),
+// so they stay on PATCHRIGHT_AVAILABLE.
+const BROWSER_LAUNCHABLE =
+  !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
 
 function loadHandler(toolName) {
   const moduleSlug = toolName.replace(/^bob_/, "").replace(/_/g, "-");
@@ -650,6 +657,12 @@ test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when 
     spawnFn: makeSpawnStub(captured), // ready handshake only; never answers commands
     patchrightCheck: () => true,
   });
+  // The stub child is a plain EventEmitter (no real OS handle) and
+  // raceWithTimeout's timer is unref'd, so nothing keeps the event loop alive
+  // while the 300ms deadline is pending — the loop can drain before it fires,
+  // leaving the promise unsettled (a flaky cancelledByParent in CI). Hold a
+  // ref'd handle until the rejection settles to make the timing deterministic.
+  const keepAlive = setInterval(() => {}, 1000);
   try {
     const start = Date.now();
     await assert.rejects(
@@ -663,6 +676,7 @@ test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when 
     // Proves the deadline honored the passed 300ms, not COMMAND_TIMEOUT_MS (90s).
     assert.ok(elapsed < 5000, `expected fast IPC timeout, took ${elapsed}ms`);
   } finally {
+    clearInterval(keepAlive);
     await browserSessions.closeSession(session.session_id).catch(() => {});
   }
 });
@@ -694,7 +708,7 @@ test("browser-driver passes an explicit timeout to page.screenshot", () => {
   assert.match(driverSrc, /\.screenshot\(\{[^}]*timeout:\s*DEFAULT_SCREENSHOT_TIMEOUT_MS/);
 });
 
-test("browser-driver evaluate returns a fast evaluate_timeout for a never-resolving expression", { skip: !PATCHRIGHT_AVAILABLE }, async () => {
+test("browser-driver evaluate returns a fast evaluate_timeout for a never-resolving expression", { skip: !BROWSER_LAUNCHABLE }, async () => {
   // Real Chromium; no navigation needed — the initial page is about:blank.
   const session = await browserSessions.startSession({
     targetDomain: "example.com",
@@ -781,7 +795,7 @@ test("bob_browser_session_start_recording inputSchema declares optional egress_p
 // refused). Anything else (e.g. successful navigation, off-target IP) would
 // mean the proxy config was dropped.
 
-test("patchright smoke: Chromium attempts to dial the configured proxy (connection error proves the proxy was honored)", { skip: !PATCHRIGHT_AVAILABLE }, async () => {
+test("patchright smoke: Chromium attempts to dial the configured proxy (connection error proves the proxy was honored)", { skip: !BROWSER_LAUNCHABLE }, async () => {
   await withDefaultEgressConfig({
     version: 1,
     profiles: [
