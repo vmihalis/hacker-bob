@@ -104,6 +104,26 @@ test("SAFETY — space-join collision: a success whose key only collides under a
   assert.equal(s.auth_challenge_403_count, 0);
 });
 
+test("SAFETY — port mismatch: a success on the default port does not heal a block on a non-default port (same host)", () => {
+  // Different services on the same hostname (a non-default port) block independently. The key is the
+  // URL ORIGIN (scheme://host:port), not bare hostname, so :8443 and :443 do not cross-heal.
+  const block = (ts) => rec({ status: 403, auth_profile: null, url: "https://api.example.test:8443/data", path: "/data", ts });
+  const heal = rec({ status: 200, auth_profile: "attacker", url: "https://api.example.test/data", path: "/data", ts: T1 });
+  const s = summary([block(T0), block(T0), block(T0), heal]);
+  assert.equal(s.tripped_count, 1, "a success on :443 must not heal a block on :8443");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
+test("SAFETY — a newline inside egress_profile cannot corrupt the key delimiter (JSON-encoded)", () => {
+  // The key is JSON-encoded, so an interior newline in a free-form egress_profile name is escaped and
+  // can never collapse two distinct tuples into one key. egress "p\nq" and "p" are distinct identities;
+  // a success on "p" must not heal a block reached through "p\nq".
+  const block = (ts) => rec({ status: 403, auth_profile: null, path: "/x", egress_profile: "p\nq", ts });
+  const heal = rec({ status: 200, auth_profile: "attacker", path: "/x", egress_profile: "p", ts: T1 });
+  const s = summary([block(T0), block(T0), block(T0), heal]);
+  assert.equal(s.tripped_count, 1, "a different egress_profile (even one containing a newline) must not heal");
+});
+
 test("SAFETY — an offensive-confirmer 403 (tool stamped, auth_profile lost) is never healed", () => {
   // An authenticated offensive probe records auth_profile:null but stamps `tool`; its genuine block
   // must not be reclassified by a later bob_http_scan authed 2xx on the same key.

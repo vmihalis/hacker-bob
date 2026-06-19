@@ -385,7 +385,11 @@ function isCircuitBreakerFailure(record) {
 }
 
 function circuitBreakerRecordKey(record) {
-  const host = record.host || hostnameFromUrl(record.url) || "unknown";
+  // Origin (scheme://host:port), not bare hostname: different services on the same host — a non-default
+  // port, or http vs https — block INDEPENDENTLY, so a success on one must not heal a block on another.
+  let origin = "";
+  try { origin = new URL(record.url).origin; } catch { origin = ""; }
+  if (!origin || origin === "null") origin = record.host || hostnameFromUrl(record.url) || "unknown";
   let path = typeof record.path === "string" && record.path ? record.path : "";
   if (!path) {
     try { path = new URL(record.url).pathname; } catch { path = ""; }
@@ -399,12 +403,11 @@ function circuitBreakerRecordKey(record) {
   // identities can share a profile name (reconfigured/legacy), and a success through one identity
   // must not heal a block reached through another.
   const egressId = (typeof record.egress_profile_identity_hash === "string" && record.egress_profile_identity_hash) ? record.egress_profile_identity_hash : "";
-  // Newline-delimited (not space): a free-form egress_profile name may contain a literal space, which
-  // under a space-join could let two distinct (host, method, path, egress, egressId) tuples collapse to
-  // one key and cross-heal. No component (hostname, HTTP method, parsed pathname, profile name, hex
-  // identity hash) can contain a newline, so this is collision-proof. The key is only ever a Map key
-  // within a single summary computation — never persisted or parsed back — so the format is free to change.
-  return [host, method, path, egress, egressId].join("\n");
+  // JSON-encode the tuple: JSON escapes any interior delimiter/quote/newline in a component (e.g. an
+  // egress_profile name containing a newline), so two distinct tuples can NEVER collapse to one key —
+  // no manual sanitization or "no component contains X" invariant required. The key is only ever a Map
+  // key within a single summary computation (never persisted or parsed back), so the format is free.
+  return JSON.stringify([origin, method, path, egress, egressId]);
 }
 
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {

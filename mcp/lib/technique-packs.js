@@ -1123,6 +1123,21 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     try {
       const routesInfo = readSurfaceRoutesStrict(domain);
       route = routesInfo.document.routes.find((entry) => entry.surface_id === surface.id) || null;
+      // readSurfaceRoutesStrict is now tolerant: a stale/duplicate route for this surface is QUARANTINED
+      // (kept out of document.routes) rather than throwing. If THIS surface's route was quarantined, the
+      // fallback below re-derives a current-schema pack — a sensible result — but surface a diagnostic so
+      // the operator knows the routing artifact is corrupt. Like prepare/finalize-node and unlike
+      // getContextBudget/findRoutedSurface, technique selection must NOT brick on a stale route
+      // (re-derivation is the safe path), so this degrades gracefully rather than rejecting.
+      if (!route && Array.isArray(routesInfo.malformed_routes)) {
+        const quarantined = routesInfo.malformed_routes.find((m) => m && m.surface_id === surface.id);
+        if (quarantined) {
+          process.stderr.write(
+            `WARNING: surface_id ${surface.id} has a quarantined route (${quarantined.reason}); `
+            + `bob_select_technique_packs is re-deriving its capability pack — re-run bob_route_surfaces to regenerate.\n`,
+          );
+        }
+      }
     } catch {}
   }
   if (!route) {
