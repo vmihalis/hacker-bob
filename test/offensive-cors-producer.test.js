@@ -100,9 +100,11 @@ test("acaoEchoes requires an EXACT echo (not wildcard, not static)", () => {
   assert.equal(acaoEchoes({ headers: {} }, "https://o.example"), false);
 });
 
-test("allowsCredentials is true ONLY for the literal 'true'", () => {
+test("allowsCredentials is true ONLY for the case-sensitive literal 'true' (Fetch Standard)", () => {
   assert.equal(allowsCredentials({ headers: { "access-control-allow-credentials": "true" } }), true);
-  assert.equal(allowsCredentials({ headers: { "access-control-allow-credentials": "TRUE" } }), true);
+  // Case-SENSITIVE per the Fetch Standard — browsers reject "TRUE", so we must too (else a
+  // signed row would represent a config a browser would not honor).
+  assert.equal(allowsCredentials({ headers: { "access-control-allow-credentials": "TRUE" } }), false);
   assert.equal(allowsCredentials({ headers: { "access-control-allow-credentials": "false" } }), false);
   assert.equal(allowsCredentials({ headers: {} }), false);
 });
@@ -237,4 +239,46 @@ test("no-leak: the masked return + the signed row carry only Bob's minted origin
   assert.equal(result.confirmed, true);
   const serialized = JSON.stringify(result) + JSON.stringify(readRows(domain));
   assert.doesNotMatch(serialized, /sk_live_should_never_be_captured|topsecretcookievalue/);
+}));
+
+test("negative: a 3xx REDIRECT with reflected ACAO+ACAC writes nothing (opaque, not browser-readable)", () => withTempHome(async () => {
+  const domain = "cors-redirect.example.test";
+  setupSession(domain);
+  const redirectFetch = ({ headers }) => Promise.resolve({
+    status: 302,
+    headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true", location: "/elsewhere" },
+  });
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: redirectFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_2xx_response_not_browser_readable");
+  assert.equal(readRows(domain).length, 0);
+}));
+
+test("negative: a 4xx error page with reflected ACAO+ACAC (global CORS middleware) writes nothing", () => withTempHome(async () => {
+  const domain = "cors-errpage.example.test";
+  setupSession(domain);
+  const errorFetch = ({ headers }) => Promise.resolve({
+    status: 401,
+    headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+  });
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: errorFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "non_2xx_response_not_browser_readable");
+  assert.equal(readRows(domain).length, 0);
+}));
+
+test("partial probe failure: if the second probe errors, no row is written and the error propagates", () => withTempHome(async () => {
+  const domain = "cors-partialfail.example.test";
+  setupSession(domain);
+  let calls = 0;
+  const failSecond = ({ headers }) => {
+    calls += 1;
+    if (calls === 2) return Promise.reject(new Error("network boom"));
+    return Promise.resolve({
+      status: 200,
+      headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+    });
+  };
+  await assert.rejects(() => corsConfirm(baseArgs(domain), { fetch_fn: failSecond }), /network boom/);
+  assert.equal(readRows(domain).length, 0);
 }));

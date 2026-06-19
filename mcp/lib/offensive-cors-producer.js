@@ -130,10 +130,23 @@ function acaoEchoes(response, origin) {
   return typeof value === "string" && value.trim() === origin;
 }
 
-// ACAC is the literal "true" (case-insensitive) — the dangerous credentialed case.
+// ACAC must be the literal lowercase "true" — the dangerous credentialed case. The Fetch
+// Standard is CASE-SENSITIVE here: browsers reject "TRUE"/"True", so a case-insensitive match
+// would mint a row for a config a browser would NOT honor (a false positive).
 function allowsCredentials(response) {
   const value = headerValue(response, "access-control-allow-credentials");
-  return typeof value === "string" && value.trim().toLowerCase() === "true";
+  return typeof value === "string" && value.trim() === "true";
+}
+
+// Only a 2xx RESOURCE response is readable cross-origin in a browser. A 3xx is an opaque
+// redirect (its headers are NOT exposed to JS under redirect:"manual"); a 4xx/5xx may carry
+// ACAO/ACAC from a global CORS middleware on an error page without the real resource
+// reflecting. Either way it is not a browser-exploitable credentialed read — fail closed.
+function isReadableResourceResponse(response) {
+  return !!response
+    && Number.isInteger(response.status)
+    && response.status >= 200
+    && response.status < 300;
 }
 
 function blocked(outcome, reason, extra = {}) {
@@ -151,8 +164,11 @@ function blocked(outcome, reason, extra = {}) {
 // probe so the circuit breaker / request budget count the live traffic; a swallowed audit
 // write aborts (the producer signs a durable proof row, so it must not fire un-audited probes).
 async function runProbe({
-  fetchFn, url, headers, domain, surfaceId, egressProfile, blockInternalHosts, agent, startedAt,
+  fetchFn, url, headers, domain, surfaceId, egressProfile, blockInternalHosts, agent,
 }) {
+  // Per-probe start time so each probe's audited latency is its own (a shared startedAt would
+  // inflate the second probe's logged latency by the first probe's duration).
+  const startedAt = Date.now();
   let response;
   let error;
   try {
@@ -199,12 +215,12 @@ async function runProbe({
 async function corsConfirm(args = {}, { fetch_fn = null } = {}) {
   // The request is server-derived. The agent may supply ONLY target_domain + surface_id —
   // never a raw URL, origin, header, marker, or severity.
+  // ("headers" and "url" are already in the base FORBIDDEN_INPUT_FIELDS — not repeated here.)
   assertNoForbiddenInputs(args, TOOL_ID, [
-    "origin", "origins", "header", "headers", "url", "endpoint",
+    "origin", "origins", "header", "endpoint",
     "marker", "acao", "acac", "credentials",
   ]);
 
-  const startedAt = Date.now();
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
 
@@ -256,12 +272,17 @@ async function corsConfirm(args = {}, { fetch_fn = null } = {}) {
   const origin2 = mintOrigin();
   const url = endpointUrl.toString();
   const probeBase = {
-    fetchFn: fetch_fn, url, domain, surfaceId, egressProfile: egressProfileName, blockInternalHosts, agent, startedAt,
+    fetchFn: fetch_fn, url, domain, surfaceId, egressProfile: egressProfileName, blockInternalHosts, agent,
   };
 
   const resp1 = await runProbe({ ...probeBase, headers: { Origin: origin1 } });
   const resp2 = await runProbe({ ...probeBase, headers: { Origin: origin2 } });
 
+  if (!isReadableResourceResponse(resp1) || !isReadableResourceResponse(resp2)) {
+    // Not a browser-readable 2xx resource response (3xx opaque redirect, or 4xx/5xx error
+    // page that a global CORS middleware may reflect on) → not a browser-exploitable read.
+    return fail("blocked_by_defense", "non_2xx_response_not_browser_readable");
+  }
   if (!acaoEchoes(resp1, origin1) || !acaoEchoes(resp2, origin2)) {
     // Static ACAO, wildcard "*", or no ACAO → not arbitrary-origin reflection.
     return fail("blocked_by_defense", "acao_does_not_reflect_arbitrary_origin");
