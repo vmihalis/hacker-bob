@@ -281,6 +281,19 @@ test("negative: a 4xx error page with reflected ACAO+ACAC (global CORS middlewar
   assert.equal(readRows(domain).length, 0);
 }));
 
+test("negative: a 204 No Content with reflected ACAO+ACAC writes nothing (no body to read)", () => withTempHome(async () => {
+  const domain = "cors-nocontent.example.test";
+  setupSession(domain);
+  const noContentFetch = ({ headers }) => Promise.resolve({
+    status: 204,
+    headers: { "access-control-allow-origin": headers.Origin, "access-control-allow-credentials": "true" },
+  });
+  const result = await corsConfirm(baseArgs(domain), { fetch_fn: noContentFetch });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "content_free_response_no_readable_body");
+  assert.equal(readRows(domain).length, 0);
+}));
+
 test("partial probe failure: if the second probe errors, no row is written and the error propagates", () => withTempHome(async () => {
   const domain = "cors-partialfail.example.test";
   setupSession(domain);

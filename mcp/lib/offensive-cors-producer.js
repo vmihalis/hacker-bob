@@ -172,6 +172,14 @@ function isReadableResourceResponse(response) {
     && response.status < 300;
 }
 
+// 204 No Content / 205 Reset Content are 2xx but carry NO body, so there is nothing for a
+// victim page to read cross-origin — a reflected ACAO/ACAC on a content-free response is not a
+// meaningful credentialed READ. (A 200 with an empty body is indistinguishable without reading
+// the body, which we deliberately never do; 204/205 are the status-detectable content-free case.)
+function isContentFreeResponse(response) {
+  return !!response && (response.status === 204 || response.status === 205);
+}
+
 function blocked(outcome, reason, extra = {}) {
   return {
     confirmed: false,
@@ -310,6 +318,11 @@ async function corsConfirm(args = {}, { fetch_fn = null } = {}) {
     // Not a browser-readable 2xx resource response (3xx opaque redirect, or 4xx/5xx error
     // page that a global CORS middleware may reflect on) → not a browser-exploitable read.
     return fail("blocked_by_defense", "non_2xx_response_not_browser_readable");
+  }
+  if (isContentFreeResponse(resp1) || isContentFreeResponse(resp2)) {
+    // 204/205: a 2xx with no body — reflected ACAO/ACAC here exposes no readable content to a
+    // cross-origin victim page, so it is not a meaningful credentialed read. Fail closed.
+    return fail("blocked_by_defense", "content_free_response_no_readable_body");
   }
   if (!acaoEchoes(resp1, origin1) || !acaoEchoes(resp2, origin2)) {
     // Static ACAO, wildcard "*", or no ACAO → not arbitrary-origin reflection.
