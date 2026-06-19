@@ -34,9 +34,30 @@ def allow():
     raise SystemExit(0)
 
 
+def redact_url(raw):
+    # Show origin+path only (drop userinfo/query/fragment) — the codebase's value-blind redaction. A
+    # write replay of an OAuth callback / signed URL / captured-traffic URL can carry token/code/id in
+    # the query or fragment, and the confirmation reason is surfaced (and may be transcribed), so opting
+    # into HITL must not expose captured secrets. Mirrors how bob_http_scan redacts persisted audit URLs.
+    text = str(raw or "")
+    if not text:
+        return "(unknown url)"
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(text)
+        if parts.scheme and parts.hostname:
+            host = parts.hostname
+            if parts.port:
+                host = f"{host}:{parts.port}"
+            return urlunsplit((parts.scheme, host, parts.path, "", ""))
+    except Exception:
+        pass
+    return "(redacted url)"
+
+
 def ask(method, url):
     reason = (
-        f"Bob is about to send a {method} (write) request to {url}. "
+        f"Bob is about to send a {method} (write) request to {redact_url(url)}. "
         "Confirm before it mutates the target. "
         "(This gate is on because BOB_HTTP_WRITE_CONFIRM is set; unset it to let writes run autonomously.)"
     )

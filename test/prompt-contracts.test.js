@@ -1523,11 +1523,15 @@ test("settings hooks register only the write-confirm HITL gate on MCP tools (nev
   // operator before a target-mutating bob_http_scan (inert unless BOB_HTTP_WRITE_CONFIRM is set) and
   // does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where a hook edit can't bypass
   // it. Any other MCP-tool matcher, or a scope/enforcement guard on an MCP tool, remains forbidden.
+  // Anchored exact-command match — a bare substring check would pass on a chained command, weakening
+  // this security contract; the only allowed MCP-tool hook command is exactly the write-confirm gate.
+  const isWriteConfirmOnlyCommand = (command) =>
+    /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
   const mcpEntries = (settings.hooks.PreToolUse || []).filter((e) => e.matcher.startsWith(MCP_PERMISSION_PREFIX));
   for (const entry of mcpEntries) {
     assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", `unexpected MCP-tool matcher ${entry.matcher} in settings`);
     assert.ok(
-      (entry.hooks || []).every((h) => h.command.includes("bob-http-write-confirm.sh")),
+      (entry.hooks || []).every((h) => isWriteConfirmOnlyCommand(h.command)),
       "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
     );
   }

@@ -18672,6 +18672,12 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
 
+  // Anchored exact-command match (^...$): a bare substring check would pass on a chained command like
+  // `bash ".../bob-http-write-confirm.sh" && evil`, weakening this security contract. The only allowed
+  // MCP-tool hook command is exactly a bash invocation of the write-confirm gate, nothing appended.
+  const isWriteConfirmOnlyCommand = (command) =>
+    /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+
   for (const settings of [generated, installed]) {
     const hooksText = JSON.stringify(settings.hooks.PreToolUse || []);
     assert.doesNotMatch(hooksText, /scope-guard/);
@@ -18688,7 +18694,7 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     for (const entry of mcpEntries) {
       assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
       assert.ok(
-        entry.hooks.every((hook) => /bob-http-write-confirm\.sh/.test(hook.command)),
+        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
         "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
       );
     }
@@ -18732,7 +18738,7 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   const mergedScan = merged.hooks.PreToolUse.find((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
   assert.ok(mergedScan, "the write-confirm gate matcher survives the merge via the canonical default");
   assert.ok(
-    mergedScan.hooks.every((hook) => /bob-http-write-confirm\.sh/.test(hook.command)),
+    mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
     "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
   );
 });
