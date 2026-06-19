@@ -343,6 +343,44 @@ test("smoke: start → navigate → snapshot → evaluate(1+1) → close all suc
   }
 });
 
+test("bob_browser_evaluate declares an optional timeout_ms in its input schema", () => {
+  const mod = require(path.join("..", "mcp", "lib", "tools", "browser-evaluate.js"));
+  const prop = mod.inputSchema.properties.timeout_ms;
+  assert.ok(prop, "bob_browser_evaluate must expose a timeout_ms property");
+  assert.equal(prop.type, "number");
+  assert.ok(!mod.inputSchema.required.includes("timeout_ms"), "timeout_ms must stay optional");
+});
+
+test("bob_browser_evaluate honors timeout_ms and returns code evaluate_timeout for a never-settling expression", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+  // End-to-end through the public tool: proves the wrapper forwards timeout_ms,
+  // the driver bounds page.evaluate, and the distinct evaluate_timeout code
+  // surfaces in the envelope. No navigation needed (about:blank).
+  const start = await callTool("bob_browser_session_start", {
+    target_domain: "example.com",
+    target_url: "https://example.com",
+    headless: true,
+  });
+  assert.equal(start.ok, true);
+  const sessionId = start.session_id;
+  try {
+    const startedAt = Date.now();
+    const response = await callTool("bob_browser_evaluate", {
+      target_domain: "example.com",
+      session_id: sessionId,
+      expression: "new Promise(function(){})",
+      timeout_ms: 400,
+    });
+    assert.equal(response.ok, false, `expected timeout, got ${JSON.stringify(response)}`);
+    assert.equal(response.error.code, "evaluate_timeout");
+    assert.ok(Date.now() - startedAt < 6000, "must bound at the forwarded 400ms, not the 90s IPC ceiling");
+  } finally {
+    await callTool("bob_browser_session_close", {
+      target_domain: "example.com",
+      session_id: sessionId,
+    });
+  }
+});
+
 test("off-scope navigate is refused with a structured scope error", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   const start = await callTool("bob_browser_session_start", {
     target_domain: "example.com",

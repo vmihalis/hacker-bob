@@ -561,11 +561,21 @@ class BrowserDriver {
       result = await Promise.race([
         evalPromise,
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`evaluate_timeout after ${timeout}ms`)), timeout);
+          timer = setTimeout(() => {
+            const e = new Error(
+              `evaluate_timeout after ${timeout}ms — expression did not settle. If it blocks the renderer (e.g. an infinite loop) the page is wedged; close this session and start a new one.`,
+            );
+            e.code = "evaluate_timeout";
+            reject(e);
+          }, timeout);
           if (timer && typeof timer.unref === "function") timer.unref();
         }),
       ]);
     } catch (err) {
+      // Preserve the evaluate_timeout code so the agent can tell a runaway /
+      // wedged expression apart from an ordinary evaluation error and recycle
+      // the session.
+      if (err && err.code === "evaluate_timeout") throw err;
       throw new Error(`evaluate_failed: ${err && err.message ? err.message : err}`);
     } finally {
       clearTimeout(timer);
