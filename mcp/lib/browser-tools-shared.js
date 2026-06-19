@@ -196,8 +196,25 @@ function assertExpressionSandbox(expression) {
   return expression;
 }
 
+// The IPC round-trip deadline (browser-sessions.js raceWithTimeout) must track
+// the command's own operation timeout, not sit at a flat 90s ceiling. Without
+// this: a command's documented timeout_ms can't shorten an IPC-level wedge
+// (subprocess stalled in Chromium before it ever replies), so an agent setting
+// a small timeout_ms to fail fast still holds the slot for the full ceiling;
+// and a timeout_ms LARGER than the ceiling is silently cut at 90s, orphaning
+// subprocess work that then blocks every later command on the same single-page
+// session. When the command carries an explicit positive timeout_ms, arm the
+// IPC deadline at timeout_ms + a margin so the driver's own per-operation
+// timeout fires first with a precise error and the IPC race is only the
+// backstop. Commands without an operation timeout keep the registry default.
+const IPC_DEADLINE_MARGIN_MS = 5_000;
+
 async function callBrowser(command, sessionId, args = {}) {
-  return browserSessions.sendCommand(sessionId, command, args);
+  const opTimeout = args && Number.isFinite(args.timeout_ms) ? Number(args.timeout_ms) : null;
+  const options = opTimeout != null && opTimeout > 0
+    ? { timeoutMs: opTimeout + IPC_DEADLINE_MARGIN_MS }
+    : undefined;
+  return browserSessions.sendCommand(sessionId, command, args, options);
 }
 
 function ensureSessionMatchesDomain(sessionId, targetDomain) {
@@ -237,6 +254,7 @@ function envelopeFromError(err) {
 
 module.exports = {
   FORBIDDEN_EVAL_PATTERN,
+  IPC_DEADLINE_MARGIN_MS,
   PLAYWRIGHT_PROXY_SCHEMES,
   assertExpressionSandbox,
   browserSessions,

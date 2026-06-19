@@ -617,6 +617,56 @@ test("browserSessions.startSession: no proxy → BOB_BROWSER_DRIVER_INIT carries
   await browserSessions.closeSession(session.session_id).catch(() => {});
 });
 
+// ── IPC deadline tracks the command's operation timeout ──
+
+test("callBrowser forwards an explicit positive timeout_ms to the IPC deadline (+ margin), and omits it otherwise", async () => {
+  const calls = [];
+  const original = browserSessions.sendCommand;
+  browserSessions.sendCommand = async (sessionId, command, args, options) => {
+    calls.push({ command, options });
+    return { ok: true };
+  };
+  try {
+    await browserToolsShared.callBrowser("navigate", "bs-x", { url: "https://example.com", timeout_ms: 8000 });
+    await browserToolsShared.callBrowser("snapshot", "bs-x", {});
+    await browserToolsShared.callBrowser("wait_for", "bs-x", { timeout_ms: 0 });
+  } finally {
+    browserSessions.sendCommand = original;
+  }
+  // navigate carried an explicit timeout → IPC deadline = timeout + margin.
+  assert.deepEqual(calls[0].options, { timeoutMs: 8000 + browserToolsShared.IPC_DEADLINE_MARGIN_MS });
+  // snapshot has no operation timeout → falls back to the registry default.
+  assert.equal(calls[1].options, undefined);
+  // timeout_ms: 0 (Playwright "disable") is not a positive bound → default.
+  assert.equal(calls[2].options, undefined);
+});
+
+test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when the subprocess never replies", async () => {
+  const captured = [];
+  const session = await browserSessions.startSession({
+    targetDomain: "example.com",
+    targetUrl: "https://example.com",
+    headless: true,
+    spawnFn: makeSpawnStub(captured), // ready handshake only; never answers commands
+    patchrightCheck: () => true,
+  });
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      () => browserSessions.sendCommand(session.session_id, "navigate", {}, { timeoutMs: 300 }),
+      (err) => {
+        assert.match(err.message, /browser_command_timeout:navigate/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - start;
+    // Proves the deadline honored the passed 300ms, not COMMAND_TIMEOUT_MS (90s).
+    assert.ok(elapsed < 5000, `expected fast IPC timeout, took ${elapsed}ms`);
+  } finally {
+    await browserSessions.closeSession(session.session_id).catch(() => {});
+  }
+});
+
 // ── browser-driver source-level contracts (no Chromium required) ──
 
 test("browser-driver.js threads proxy into chromium.launch({ proxy }) (source check)", () => {
