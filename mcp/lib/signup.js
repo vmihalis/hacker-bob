@@ -480,6 +480,22 @@ async function autoSignup(args) {
               headers: result.headers || {},
               local_storage: result.local_storage || {},
               credentials: { email, password },
+            }, {
+              // PR-PROV: stamp synthetic-identity provenance so the IDOR signed-row
+              // producer (bob_http_idor_confirm, mint condition #18) can use this
+              // identity. Sound to assert HERE because we are downstream of
+              // assertSignupEmailAllowed (signup.js:331 → tempMailboxIsKnown +
+              // emailMatchesOperatorDenylist): `email` (signup.js:329, the gated INPUT
+              // arg — never target-controlled result.*) is a live bob_temp_email mailbox
+              // this process itself minted, and is not an operator identifier. Passed as
+              // the 2nd positional arg, which the MCP tool dispatcher never supplies, so
+              // bob_auth_store can never forge these onto a real (operator-pasted) identity.
+              provenance: {
+                synthetic: true,
+                email_origin: "temp_email",
+                provisioned_via: "bob_auto_signup",
+                email,
+              },
             });
             result.auth_stored = true;
             result.auth_profile = profileName;

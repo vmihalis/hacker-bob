@@ -144,7 +144,7 @@ function persistAuthProfiles(domain, profilesByName) {
   return result;
 }
 
-function authStore(args) {
+function authStore(args, options = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   assertSafeDomain(domain);
   const profileName = assertNonEmptyString(args.profile_name, "profile_name");
@@ -155,6 +155,30 @@ function authStore(args) {
 
   const profile = buildHeaderProfile(headers, cookies, storage);
   if (credentials) profile.credentials = credentials;
+
+  // PR-PROV: stamp the synthetic-identity provenance the IDOR signed-row producer
+  // (bob_http_idor_confirm, mint condition #18) requires before it will sign. This is
+  // accepted ONLY from the second positional argument, which the MCP tool dispatcher
+  // never supplies — dispatch.js and tool-registry.js both invoke tool.handler(args)
+  // with ONE argument, the identical seam the producer itself uses (idorConfirm(args),
+  // "dispatcher always calls with NO second argument"). So the public bob_auth_store
+  // tool (operator-supplied, possibly a real victim's pasted cookie/JWT) can NEVER
+  // stamp provenance; only the in-process bob_auto_signup success path — downstream of
+  // assertSignupEmailAllowed (tempMailboxIsKnown + operator-denylist) — passes it. Each
+  // field is copied only on an exact match to the frozen REQUIRED_PROVENANCE contract
+  // (offensive-idor-producer.js:140-144), so even the trusted caller cannot persist an
+  // arbitrary provenance value. PR-PROV adds NO key isolation: the same-UID in-process
+  // forge boundary (BEDROCK) remains open until the deferred offensive-SANDBOX PR.
+  const provenance = options && typeof options === "object" && options.provenance
+    && typeof options.provenance === "object"
+    ? options.provenance
+    : null;
+  if (provenance) {
+    if (provenance.synthetic === true) profile.synthetic = true;
+    if (provenance.email_origin === "temp_email") profile.email_origin = "temp_email";
+    if (provenance.provisioned_via === "bob_auto_signup") profile.provisioned_via = "bob_auto_signup";
+    if (typeof provenance.email === "string" && provenance.email) profile.email = provenance.email;
+  }
 
   const authPath = resolveAuthJsonPath(domain);
   let persisted = null;
@@ -263,10 +287,23 @@ function profileExpiryHint(profile, mtimeMs) {
   };
 }
 
+// Keys excluded from the bob_list_auth_profiles `header_keys` summary: the existing
+// non-header metadata (credentials/storage) PLUS the PR-PROV synthetic-identity
+// provenance flags + synthetic mailbox that bob_auto_signup stamps. Mirrors the
+// producer's outbound-strip set (offensive-idor-producer.js PROFILE_METADATA_KEYS,
+// :154-158) — keep in sync. Without this, a signup-stamped profile would surface
+// synthetic/email_origin/provisioned_via as bogus "header_keys" and leak the synthetic
+// mailbox into the summary JSON. The producer reads the RAW profile, not this summary,
+// so excluding them here is operator-visibility hygiene only, never a gate change.
+const SUMMARY_EXCLUDED_KEYS = new Set([
+  "credentials", "local_storage", "session_storage",
+  "synthetic", "email_origin", "provisioned_via", "email",
+]);
+
 function summarizeAuthProfile(name, profile, fileStats) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
   const headerKeys = Object.keys(normalizedProfile)
-    .filter((key) => key !== "credentials" && key !== "local_storage" && key !== "session_storage")
+    .filter((key) => !SUMMARY_EXCLUDED_KEYS.has(key))
     .sort();
   const credentials = normalizedProfile.credentials && typeof normalizedProfile.credentials === "object"
     ? normalizedProfile.credentials
