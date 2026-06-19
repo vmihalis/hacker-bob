@@ -249,6 +249,15 @@ function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
+    // The reader quarantines a malformed route instead of bricking. If THIS surface's route was
+    // quarantined (e.g. a stale cross-version schema), surface the repairable reason rather than a
+    // misleading "unknown surface_id" — re-running bob_route_surfaces regenerates the file.
+    if (Array.isArray(routed.malformed_routes)) {
+      const malformed = routed.malformed_routes.find((entry) => entry.surface_id === surfaceId);
+      if (malformed) {
+        rejectInvalidArguments(`surface_id ${surfaceId} has a malformed route (re-run bob_route_surfaces): ${malformed.reason}`);
+      }
+    }
     rejectInvalidArguments(`unknown or unrouted surface_id ${surfaceId}`);
   }
   const surfaces = currentSurfaces(domain);

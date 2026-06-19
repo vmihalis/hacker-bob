@@ -71,6 +71,29 @@ test("SAFETY — temporal: an authed success BEFORE the unauth 403s does NOT hea
   assert.equal(s.auth_challenge_403_count, 0);
 });
 
+test("SAFETY — method mismatch: an authed GET 2xx does not heal blocked unauth POSTs on the same path", () => {
+  const post403 = (ts) => rec({ status: 403, auth_profile: null, method: "POST", ts });
+  const s = summary([post403(T0), post403(T0), post403(T0), rec({ status: 200, auth_profile: "attacker", method: "GET", ts: T1 })]);
+  assert.equal(s.tripped_count, 1, "GET success must not heal a POST block");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
+test("SAFETY — egress mismatch: a success on a different egress profile does not heal the block", () => {
+  const def403 = (ts) => rec({ status: 403, auth_profile: null, egress_profile: "default", ts });
+  const s = summary([def403(T0), def403(T0), def403(T0), rec({ status: 200, auth_profile: "attacker", egress_profile: "gr-residential", ts: T1 })]);
+  assert.equal(s.tripped_count, 1, "a success via a different egress must not heal a per-egress block");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
+test("SAFETY — an offensive-confirmer 403 (tool stamped, auth_profile lost) is never healed", () => {
+  // An authenticated offensive probe records auth_profile:null but stamps `tool`; its genuine block
+  // must not be reclassified by a later bob_http_scan authed 2xx on the same key.
+  const idor403 = (ts) => rec({ status: 403, auth_profile: null, tool: "bob_http_idor_confirm", ts });
+  const s = summary([idor403(T0), idor403(T0), idor403(T0), authed200(T1)]);
+  assert.equal(s.tripped_count, 1, "a tool-stamped confirmer 403 must stay a hard block");
+  assert.equal(s.auth_challenge_403_count, 0);
+});
+
 test("classifier split: hard-block vs unauthenticated-forbidden (back-compat preserved)", () => {
   assert.equal(isHardBlockFailure({ status: 429 }), true);
   assert.equal(isHardBlockFailure({ status: 403, auth_profile: "x" }), true);

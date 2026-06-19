@@ -127,6 +127,14 @@ function routeSurfacesInternal(domain, { attackSurfaceInfo = null } = {}) {
   };
 }
 
+// validateSurfaceRoute embeds the absolute surface-routes.json path in some error messages. Strip
+// it to the basename so a quarantine reason surfaced to a caller (getContextBudget, or the
+// malformed_routes returned to read-all consumers) never leaks the local session filesystem path.
+function sanitizeRouteReason(message, filePath) {
+  const text = typeof message === "string" ? message : String(message);
+  return filePath ? text.split(filePath).join("surface-routes.json") : text;
+}
+
 function readSurfaceRoutesStrict(domain) {
   const filePath = surfaceRoutesPath(domain);
   if (!fs.existsSync(filePath)) {
@@ -166,7 +174,7 @@ function readSurfaceRoutesStrict(domain) {
       malformedRoutes.push({
         index,
         surface_id: (route && typeof route === "object" && route.surface_id) || null,
-        reason: error.message || String(error),
+        reason: sanitizeRouteReason(error.message || String(error), filePath),
       });
       return;
     }

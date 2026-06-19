@@ -78,6 +78,11 @@ function normalizeHttpAuditRecord(record, { expectedDomain = null, lineNumber = 
       wave: record.wave == null ? null : parseWaveId(record.wave),
       agent: record.agent == null ? null : parseAgentId(record.agent),
       surface_id: normalizeOptionalText(record.surface_id, "surface_id"),
+      // The originating tool (auditConfirmRequest stamps this for the offensive confirmers; null for
+      // bob_http_scan). Persisted so the circuit breaker can tell a faithful-auth bob_http_scan 403
+      // (auth_profile truthful) from an offensive-confirmer probe (audited WITHOUT auth_profile, so a
+      // genuine authenticated block would otherwise look like a healable unauth challenge).
+      tool: normalizeOptionalText(record.tool, "tool"),
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       checkpoint_mode: normalizeOptionalText(record.checkpoint_mode, "checkpoint_mode"),
       block_internal_hosts: record.block_internal_hosts == null
@@ -385,7 +390,12 @@ function circuitBreakerRecordKey(record) {
   if (!path) {
     try { path = new URL(record.url).pathname; } catch { path = ""; }
   }
-  return `${host} ${path}`;
+  // Method + egress are part of the key so an authenticated GET 2xx cannot "heal" a blocked POST on
+  // the same path (method-specific WAF/CSRF/rate-limit), and a success on one egress profile cannot
+  // heal a per-egress block reached through another.
+  const method = (typeof record.method === "string" && record.method ? record.method : "GET").toUpperCase();
+  const egress = (typeof record.egress_profile === "string" && record.egress_profile) ? record.egress_profile : "default";
+  return `${host} ${method} ${path} ${egress}`;
 }
 
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {
@@ -415,9 +425,12 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
     const host = record.host || hostnameFromUrl(record.url) || "unknown";
 
     // Reclassify an unauthenticated 403 as an auth-challenge ONLY with positive, temporally-ordered
-    // evidence: a later authenticated 2xx on the same host+path. Hard blocks (429, timeouts, 403
-    // despite auth) are mutually exclusive with this and are never reclassified.
-    if (isUnauthenticatedForbidden(record)) {
+    // evidence: a later authenticated 2xx on the same host+path+method+egress. Hard blocks (429,
+    // timeouts, 403 despite auth) are never reclassified. The !record.tool gate restricts healing to
+    // the faithful-auth path (bob_http_scan records auth_profile truthfully); offensive confirmers
+    // audit via auditConfirmRequest WITHOUT an auth_profile but DO stamp tool, so a genuine
+    // AUTHENTICATED block from a confirmer (recorded auth_profile:null) is never healed.
+    if (isUnauthenticatedForbidden(record) && !record.tool) {
       const healedTs = latestAuthedSuccessTs.get(circuitBreakerRecordKey(record));
       const recordTs = Date.parse(record.ts);
       if (healedTs != null && !Number.isNaN(recordTs) && healedTs > recordTs) {
