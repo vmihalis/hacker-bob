@@ -75,6 +75,7 @@
       "Read",
       "Glob",
       "Grep",
+      "mcp__hacker-bob__bob_http_cors_confirm",
       "mcp__hacker-bob__bob_http_idor_confirm",
       "mcp__hacker-bob__bob_http_xss_reflect",
       "mcp__hacker-bob__bob_http_xss_confirm",

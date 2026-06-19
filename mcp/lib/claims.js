@@ -793,6 +793,7 @@ const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
     bob_http_xss_reflect: "medium",
     bob_http_xss_confirm: "high",
     bob_oob_poll: "medium",
+    bob_http_cors_confirm: "medium",
   }),
 );
 

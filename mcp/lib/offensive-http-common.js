@@ -357,6 +357,35 @@ function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, tool
   rejectInvalidArguments("path_template path shape does not match any recorded endpoint for surface_id");
 }
 
+// Resolve a representative, scope-validated endpoint URL for a surface — for header-policy
+// provers (e.g. bob_http_cors_confirm) that probe an endpoint's RESPONSE policy and need no
+// {id}/query path template. Returns the first recorded endpoint that resolves + passes scope,
+// with query + fragment stripped (a CORS/header policy is keyed on origin+path, not query).
+// Fails closed (no in-scope endpoint) rather than invent an agent-supplied path.
+function resolveSurfaceEndpoint({ domain, surface, state, toolName = "bob_http_confirm" }) {
+  const stateOrigin = originFromState(domain, state, toolName);
+  const origins = resolveSurfaceOrigins(surface, stateOrigin);
+  for (const endpoint of candidateSurfaceEndpoints(surface)) {
+    for (const origin of origins) {
+      let candidate;
+      try {
+        candidate = urlFromEndpoint(endpoint.value, origin, endpoint.field);
+      } catch {
+        continue;
+      }
+      try {
+        assertSafeRequestUrl(candidate.toString(), domain, SCOPE_VALIDATION_OPTS);
+      } catch {
+        continue;
+      }
+      candidate.search = "";
+      candidate.hash = "";
+      return candidate;
+    }
+  }
+  rejectInvalidArguments(`no in-scope recorded endpoint resolves for surface_id (${toolName})`);
+}
+
 function isAuthChallenge(response) {
   return response && (response.status === 401 || response.status === 403);
 }
@@ -823,6 +852,7 @@ module.exports = {
   originFromState,
   urlFromEndpoint,
   resolveBaselineFromSurface,
+  resolveSurfaceEndpoint,
   isAuthChallenge,
   isLoginRedirect,
   responseLooksLikeLoginPage,
