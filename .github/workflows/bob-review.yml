@@ -1,0 +1,230 @@
+###############################################################################
+# Bob Diff Review — reusable workflow (W1)
+#
+# Hosted in bobnetsec/bob-workflows. Target repos call it via:
+#
+#   jobs:
+#     bob-review:
+#       uses: bobnetsec/bob-workflows/.github/workflows/bob-review.yml@v1
+#       secrets: inherit
+#
+# CRITICAL: Callers from a different repository must declare permissions at
+# the workflow level (not job level — job-level permissions are not allowed
+# on workflow_call jobs). Add this to your caller workflow:
+#
+#   permissions:
+#     pull-requests: write
+#     checks: write
+#     contents: read
+#
+# Without this, GitHub raises startup_failure because the called workflow's
+# job declares permissions that the caller's token cannot provide.
+###############################################################################
+
+name: Bob Diff Review
+
+on:
+  workflow_call:
+    inputs:
+      anthropic-model:
+        description: >
+          Optional Anthropic model override forwarded to the claude subprocess as
+          ANTHROPIC_MODEL. Use a cost-optimised model (e.g. "claude-haiku-4-5")
+          to reduce API spend on high-volume repos. Leave empty to use the claude
+          CLI default.
+        required: false
+        default: ''
+        type: string
+
+      min-severity-for-failure:
+        description: >
+          Minimum finding severity that causes the Check Run to report failure.
+          Accepted values: critical, high, medium, low.
+        required: false
+        default: high
+        type: string
+
+      bob-workflows-ref:
+        description: >
+          Immutable ref used to check out the bob-workflows action source for
+          local action execution. Pin this to the same tag or full commit SHA as
+          the reusable workflow ref.
+        required: false
+        default: v1
+        type: string
+
+    secrets:
+      ANTHROPIC_OAUTH_TOKEN:
+        required: false
+        description: >
+          Anthropic OAuth token for the headless Claude diff-review session —
+          the RECOMMENDED auth path. Generate with `claude setup-token` and
+          store as an org-level secret named ANTHROPIC_OAUTH_TOKEN. At least one
+          of ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY must be provided; when
+          both are set, the OAuth token takes precedence.
+      ANTHROPIC_API_KEY:
+        required: false
+        description: >
+          Anthropic API key (pay-per-use fallback) for the headless Claude
+          diff-review session. Store as an org-level secret named
+          ANTHROPIC_API_KEY. At least one of ANTHROPIC_OAUTH_TOKEN or
+          ANTHROPIC_API_KEY must be provided; ANTHROPIC_OAUTH_TOKEN wins when
+          both are set.
+      BOB_INSTALL_TOKEN:
+        required: false
+        description: >
+          GitHub App installation token or fine-grained PAT with read:packages
+          and contents:read scopes. Used to install @bobnetsec/* packages.
+          Store as an org-level secret named BOB_INSTALL_TOKEN.
+
+jobs:
+  bob-diff-review:
+    name: Bob Diff Review
+    runs-on: ubuntu-latest
+
+    # -------------------------------------------------------------------------
+    # Permissions
+    # Composite actions cannot declare a permissions block — it must live here
+    # at the job level.
+    #   pull-requests:write — post inline review comments on the PR
+    #   checks:write        — create and update the "Bob Diff Review" Check Run
+    #   contents:read       — fetch the PR diff
+    #
+    # IMPORTANT for callers: When this reusable workflow is called from another
+    # repository, the caller must declare these permissions at the WORKFLOW level
+    # (not job level — job-level permissions are not allowed on workflow_call jobs).
+    # Add this block to the caller's workflow:
+    #   permissions:
+    #     pull-requests: write
+    #     checks: write
+    #     contents: read
+    # Without this, GitHub raises startup_failure because the called workflow's
+    # job declares permissions that exceed what the caller's token provides.
+    # -------------------------------------------------------------------------
+    permissions:
+      pull-requests: write
+      checks: write
+      contents: read
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Checkout
+      # Fetch full history so the diff computation covers the entire branch.
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check Bob Diff Review credentials
+        id: bob-secrets
+        shell: bash
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BOB_INSTALL_TOKEN: ${{ secrets.BOB_INSTALL_TOKEN }}
+        run: |
+          if [[ -n "$ANTHROPIC_OAUTH_TOKEN" || -n "$ANTHROPIC_API_KEY" ]]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Bob Diff Review because no Anthropic credential secret is configured."
+          fi
+          if [[ -n "$BOB_INSTALL_TOKEN" ]]; then
+            echo "has_install_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_install_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout Bob workflows source with install token
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: bobnetsec/bob-workflows
+          ref: ${{ inputs.bob-workflows-ref }}
+          path: .bob-workflows-source
+          token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          persist-credentials: false
+
+      - name: Checkout Bob workflows source with workflow token
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: bobnetsec/bob-workflows
+          ref: ${{ inputs.bob-workflows-ref }}
+          path: .bob-workflows-source
+          persist-credentials: false
+
+      # -----------------------------------------------------------------------
+      # C1 — Bob workspace cache
+      # Restores ~/bob-workspace keyed on runner OS and BOB_VERSION.
+      # On cache miss, installs claude CLI and copies the bundled bob-diff-review
+      # skill to ~/.claude/skills so that /bob-diff-review is available headlessly.
+      # On cache hit, restores everything and adds ~/bob-workspace/bin to PATH.
+      # -----------------------------------------------------------------------
+      - name: Restore Bob workspace cache (C1)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: cache-bob-workspace
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-workspace
+        with:
+          bob_version: ${{ vars.BOB_VERSION }}
+          bob_install_token: ${{ secrets.BOB_INSTALL_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # C2 — Bob session cache
+      # Restores the repo-derived ~/hacker-bob-sessions/repo-<safeName>-<sha8>
+      # directory keyed on the commit SHA. After an exact restore, checks for
+      # symbol-surface-index.json and sets cache-hit-symbol-index output.
+      # -----------------------------------------------------------------------
+      - name: Restore Bob session cache (C2)
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: cache-bob-session
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-session
+        with:
+          repository_id: ${{ github.repository_id }}
+          sha: ${{ github.sha }}
+          base_ref: ${{ github.base_ref }}
+
+      # -----------------------------------------------------------------------
+      # Bob Diff Review action
+      # Invokes the compiled node20 action that runs the headless Claude diff
+      # review pipeline.
+      #
+      # SKIP_SURFACE_BUILD is set from the C2 symbol-index detection output so
+      # the action can skip the S3 route-extraction + symbol-index build phase
+      # when a warm session with a valid index was restored from cache.
+      #
+      # ANTHROPIC_MODEL is forwarded from the workflow input to let callers
+      # override the model for cost optimisation (e.g. claude-haiku-4-5).
+      # -----------------------------------------------------------------------
+      - name: Run Bob Diff Review
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: bob-diff-review
+        uses: ./.bob-workflows-source/packages/bob-diff-review
+        env:
+          SKIP_SURFACE_BUILD: ${{ steps.cache-bob-session.outputs.cache-hit-symbol-index }}
+          ANTHROPIC_MODEL: ${{ inputs.anthropic-model }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          bob-install-token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          min-severity-for-failure: ${{ inputs.min-severity-for-failure }}
+
+      # -----------------------------------------------------------------------
+      # Surface action outputs for downstream steps / notifications.
+      # always() ensures this runs even if the review step sets a failure
+      # conclusion so callers can still read findings_count.
+      # -----------------------------------------------------------------------
+      - name: Log review outputs
+        if: always()
+        shell: bash
+        env:
+          FINDINGS_COUNT: ${{ steps.bob-diff-review.outputs.findings_count }}
+          CRITICAL_COUNT: ${{ steps.bob-diff-review.outputs.critical_count }}
+          REVIEW_URL: ${{ steps.bob-diff-review.outputs.review_url }}
+        run: |
+          echo "findings_count=${FINDINGS_COUNT}"
+          echo "critical_count=${CRITICAL_COUNT}"
+          echo "review_url=${REVIEW_URL}"

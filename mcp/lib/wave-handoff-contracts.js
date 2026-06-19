@@ -39,20 +39,17 @@ function assignmentRequiresToken(assignment) {
   return !!(assignment && (assignment.handoff_token_required === true || assignment.handoff_token_sha256));
 }
 
-function validateHandoffToken(assignment, token, { requireProvenance = false } = {}) {
+function validateHandoffToken(assignment, token) {
   // Tokenized assignments store only `handoff_token_sha256` on disk. The raw
   // token is handed to the assigned agent and checked only at write time.
-  // When the caller's session opts into provenance enforcement (v1.3.5+ via
-  // state.handoff_provenance_required), legacy assignments without tokens are
-  // rejected instead of being silently downgraded.
+  // Assignments without token metadata are rejected — the v1.3.5 legacy
+  // downgrade path was removed in v1.3.6 so the assignment-file-downgrade
+  // attack documented in R1-HIGH-#1 cannot be reached.
   if (!assignmentRequiresToken(assignment)) {
-    if (requireProvenance) {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        "wave assignment is missing handoff token metadata; this session requires signed handoffs (state.handoff_provenance_required). The assignment file may have been tampered, or this is a pre-v1.3.5 session that needs re-init.",
-      );
-    }
-    return "legacy_unverified";
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      "wave assignment is missing handoff token metadata; signed handoffs are required. The assignment file may have been tampered, or this is a pre-v1.3.5 session that needs re-init.",
+    );
   }
   if (typeof assignment.handoff_token_sha256 !== "string" || !assignment.handoff_token_sha256.trim()) {
     throw new ToolError(ERROR_CODES.STATE_CONFLICT, "wave assignment requires a handoff token but is missing handoff_token_sha256");
@@ -94,9 +91,11 @@ function handoffAssignmentProvenancePayload(assignment) {
     surface_type: assignment.surface_type || null,
     capability_pack: assignment.capability_pack || null,
     capability_pack_version: assignment.capability_pack_version || null,
-    hunter_agent: assignment.hunter_agent || null,
+    evaluator_agent: assignment.evaluator_agent || null,
     brief_profile: assignment.brief_profile || null,
     context_budget: assignment.context_budget || null,
+    task_lens: assignment.task_lens || null,
+    budget: assignment.budget || null,
     handoff_token_required: assignmentRequiresToken(assignment),
     handoff_token_sha256: assignment.handoff_token_sha256 || null,
   };
@@ -161,25 +160,20 @@ function verifyHandoffProvenanceSignature(payload, signingKey, { assignment } = 
   }
 }
 
-function validateHandoffProvenance(payload, assignment, { signingKey = null, requireProvenance = false } = {}) {
+function validateHandoffProvenance(payload, assignment, { signingKey = null } = {}) {
   // Tokenized handoffs are signed with a session-local MCP key after the raw
   // token is checked at write time. This verifies the persisted artifact
   // without storing raw tokens. It does not defend against a local actor with
   // direct read access to Bob's private session key.
   //
-  // When the caller's session opts into provenance enforcement (v1.3.5+ via
-  // state.handoff_provenance_required), legacy assignments without tokens are
-  // rejected: this closes the assignment-file-downgrade attack documented in
-  // R1-HIGH-#1 by forcing an attacker to also tamper state.json (which the
-  // orchestrator reads constantly, raising the bar for sustained tampering).
+  // The v1.3.5 legacy downgrade path was removed in v1.3.6 — assignments
+  // without token metadata are rejected outright, closing the assignment-
+  // file-downgrade attack documented in R1-HIGH-#1.
   if (!assignmentRequiresToken(assignment)) {
-    if (requireProvenance) {
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        "handoff provenance is required for this session but the assignment lacks token metadata; the assignment file may have been tampered, or this is a pre-v1.3.5 handoff that needs re-init.",
-      );
-    }
-    return "legacy_unverified";
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      "handoff provenance is required but the assignment lacks token metadata; the assignment file may have been tampered, or this is a pre-v1.3.5 handoff that needs re-init.",
+    );
   }
   if (payload.provenance !== "verified") {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff provenance is not verified for this tokenized assignment");
@@ -213,9 +207,9 @@ function normalizeChainNotes(value) {
   return notes;
 }
 
-// Runtime mirror of the bounty_write_wave_handoff JSON schema enum and the
+// Runtime mirror of the bob_write_wave_handoff JSON schema enum and the
 // renderer's BLOCKED_HARNESS_RUN_KINDS constant. Mismatch here would cause
-// SVM/Move/Substrate/CosmWasm hunters to fail finalization even though the
+// SVM/Move/Substrate/CosmWasm evaluators to fail finalization even though the
 // schema accepted their handoff. test/prompt-contracts.test.js enforces the
 // schema, renderer, and runtime invariant.
 const BLOCKED_HARNESS_KIND_VALUES = Object.freeze([
@@ -230,11 +224,15 @@ const BLOCKED_HARNESS_KIND_VALUES = Object.freeze([
   "symbolic_solver",
   "mock_dependency",
   "external_api",
+  "docker_unavailable",
+  "sanitizer_unavailable",
+  "static_analyzer_unavailable",
+  "cve_feed_stale",
   "other",
 ]);
 
 // Mirror of capability-packs-rendering.js BLOCKED_PREREQ_KINDS and the
-// bounty_write_wave_handoff schema enum for blocked_prereqs[].kind. Like
+// bob_write_wave_handoff schema enum for blocked_prereqs[].kind. Like
 // BLOCKED_HARNESS_KIND_VALUES this is a runtime guard that throws on unknown
 // kinds before the JSON schema would even check; mismatch with the renderer
 // constant or schema enum is caught by the parity test in
@@ -418,9 +416,19 @@ function normalizeBypassAttempts(value, { findingIds = null } = {}) {
 
 function assertBlockedHarnessConsistency(surfaceStatus, blockedHarnessRuns) {
   if (surfaceStatus === "complete" && blockedHarnessRuns.length > 0) {
+    // Plane O O.7: the gate must surface a stable, machine-checkable code so
+    // operators and reviewers can detect "surface marked complete despite
+    // blocked harnesses" without string-matching the message. The structured
+    // `details.code` reaches the MCP envelope as
+    // `{error: {code: "surface_complete_with_blocked_harness", ...}}`.
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       "surface_status cannot be 'complete' when blocked_harness_runs is non-empty; set surface_status to 'partial' or resolve the blocked harnesses first",
+      {
+        code: "surface_complete_with_blocked_harness",
+        surface_status: surfaceStatus,
+        blocked_harness_kinds: blockedHarnessRuns.map((entry) => entry.kind),
+      },
     );
   }
 }

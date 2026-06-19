@@ -7,10 +7,11 @@ function diffVerificationAttemptsHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_diff_verification_attempts",
+  name: "bob_diff_verification_attempts",
+  aliases: ["bounty_diff_verification_attempts"],
   capability_id: "X2_verification_attempt_diff",
   description:
-    "Compare two verification attempts for the same target. Each attempt_id is either an archive id from bounty_read_verification_context.archived_attempts[*].attempt_id, or the literal string \"current\" for the live attempt. Returns hash matches (snapshot, adjudication plan, final verification) plus a per-file diff (which files exist in only one side, which differ in content).",
+    "Compare two verification attempts for the same target. Each attempt_id is either an archive id from bob_read_verification_context.archived_attempts[*].attempt_id, or the literal string \"current\" for the live attempt. Returns hash matches (snapshot, adjudication plan, final verification) plus a per-file diff (which files exist in only one side, which differ in content).",
   inputSchema: {
     type: "object",
     properties: {

@@ -9,6 +9,7 @@ const {
 const {
   assertSafeDomain,
   sessionDir,
+  sessionsRoot,
 } = require("./paths.js");
 const {
   readJsonFile,
@@ -45,7 +46,10 @@ function buildHeaderProfile(headers, cookies, storage) {
 }
 
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
-  const sessionsDir = path.join(os.homedir(), "bounty-agent-sessions");
+  // Cycle P.2: scan the canonical `~/hacker-bob-sessions/` root for the
+  // legacy-fallback discovery path. Sessions copied from
+  // `~/bounty-agent-sessions/` by the migration shim land here.
+  const sessionsDir = sessionsRoot();
   if (targetDomain) {
     assertSafeDomain(targetDomain);
     return path.join(sessionDir(targetDomain), "auth.json");

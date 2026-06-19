@@ -21,6 +21,17 @@ const {
 const {
   writeFileAtomic,
 } = require("../mcp/lib/storage.js");
+const {
+  loadWaveAssignments,
+} = require("../mcp/lib/assignments.js");
+const {
+  ensureHandoffSigningKey,
+  readHandoffSigningKey,
+} = require("../mcp/lib/handoff-signing-key.js");
+const {
+  sha256Hex,
+  signHandoffProvenance,
+} = require("../mcp/lib/wave-handoff-contracts.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -38,17 +49,52 @@ function withTempHome(fn) {
   }
 }
 
-function writeAssignments(domain, waveNumber, assignments) {
+function seededHandoffToken(domain, waveNumber, agent) {
+  return `test-handoff-token:${domain}:w${waveNumber}:${agent}`;
+}
+
+function writeAssignments(
+  domain,
+  waveNumber,
+  assignments,
+  { ensureSigningKey = true, handoffTokensRequired = true } = {},
+) {
   fs.mkdirSync(sessionDir(domain), { recursive: true });
+  const persistedAssignments = assignments.map((assignment) => {
+    const persisted = { ...assignment };
+    const tokenRequired = persisted.handoff_token_required !== false;
+    if (tokenRequired && persisted.handoff_token_required == null) {
+      persisted.handoff_token_required = true;
+    }
+    if (tokenRequired && persisted.handoff_token_sha256 == null) {
+      persisted.handoff_token_sha256 = sha256Hex(
+        seededHandoffToken(domain, waveNumber, persisted.agent),
+      );
+    }
+    return persisted;
+  });
   writeFileAtomic(waveAssignmentsPath(domain, waveNumber), `${JSON.stringify({
     wave_number: waveNumber,
-    assignments,
+    handoff_tokens_required: handoffTokensRequired,
+    assignments: persistedAssignments,
   }, null, 2)}\n`);
+  if (ensureSigningKey) {
+    ensureHandoffSigningKey(domain);
+  }
+}
+
+function assignmentForHandoff(domain, waveNumber, agent) {
+  try {
+    return loadWaveAssignments(domain, waveNumber).assignmentByAgent.get(agent) || null;
+  } catch {
+    return null;
+  }
 }
 
 function writeHandoff(domain, wave, agent, surfaceId, fields = {}) {
   fs.mkdirSync(sessionDir(domain), { recursive: true });
-  writeFileAtomic(path.join(sessionDir(domain), `handoff-${wave}-${agent}.json`), `${JSON.stringify({
+  const waveNumber = Number(String(wave).replace(/^w/i, ""));
+  const payload = {
     target_domain: domain,
     wave,
     agent,
@@ -64,7 +110,24 @@ function writeHandoff(domain, wave, agent, surfaceId, fields = {}) {
     waf_blocked_endpoints: [],
     lead_surface_ids: [],
     ...fields,
-  }, null, 2)}\n`);
+  };
+  let document = payload;
+  const assignment = Number.isInteger(waveNumber) ? assignmentForHandoff(domain, waveNumber, agent) : null;
+  if (assignment) {
+    try {
+      document = signHandoffProvenance(
+        payload.provenance == null ? { ...payload, provenance: "verified" } : payload,
+        readHandoffSigningKey(domain),
+        { assignment },
+      );
+    } catch {
+      document = payload;
+    }
+  }
+  writeFileAtomic(
+    path.join(sessionDir(domain), `handoff-${wave}-${agent}.json`),
+    `${JSON.stringify(document, null, 2)}\n`,
+  );
 }
 
 test("wave handoff store readiness indexes structured JSON without parsing payloads", () => {
@@ -141,7 +204,7 @@ test("wave handoff store merge reads live dead-end logs through the shared path 
   });
 });
 
-test("wave handoff store preserves tokenized signing-key failure asymmetry", () => {
+test("wave handoff store rejects tokenized handoffs when the signing key is missing", () => {
   withTempHome(() => {
     const domain = "example.com";
     writeAssignments(domain, 3, [
@@ -151,8 +214,8 @@ test("wave handoff store preserves tokenized signing-key failure asymmetry", () 
         handoff_token_required: true,
         handoff_token_sha256: "a".repeat(64),
       },
-      { agent: "a2", surface_id: "surface-b" },
-    ]);
+      { agent: "a2", surface_id: "surface-b", handoff_token_required: false },
+    ], { ensureSigningKey: false, handoffTokensRequired: false });
     writeHandoff(domain, "w3", "a1", "surface-a");
     writeHandoff(domain, "w3", "a2", "surface-b");
 
@@ -162,9 +225,9 @@ test("wave handoff store preserves tokenized signing-key failure asymmetry", () 
     );
 
     const document = buildWaveHandoffsDocument(domain, [3]);
-    assert.deepEqual(document.handoffs.map((handoff) => handoff.agent), ["a2"]);
-    assert.equal(document.invalid_handoffs.length, 1);
-    assert.equal(document.invalid_handoffs[0].agent, "a1");
+    assert.deepEqual(document.handoffs, []);
+    assert.deepEqual(document.invalid_handoffs.map((handoff) => handoff.agent), ["a1", "a2"]);
     assert.match(document.invalid_handoffs[0].error, /Missing handoff signing key/);
+    assert.match(document.invalid_handoffs[1].error, /lacks token metadata/);
   });
 });

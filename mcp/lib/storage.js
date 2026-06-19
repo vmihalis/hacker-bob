@@ -19,6 +19,31 @@ const {
 
 const DEFAULT_ARTIFACT_READ_MAX_BYTES = 16 * 1024 * 1024;
 const activeSessionLocks = new Map();
+const sessionLockReleaseHooks = [];
+
+function registerSessionLockReleaseHook(callback) {
+  if (typeof callback !== "function") {
+    throw new Error("session-lock release hook must be a function");
+  }
+  if (!sessionLockReleaseHooks.includes(callback)) {
+    sessionLockReleaseHooks.push(callback);
+  }
+  return () => {
+    const index = sessionLockReleaseHooks.indexOf(callback);
+    if (index >= 0) sessionLockReleaseHooks.splice(index, 1);
+  };
+}
+
+function runSessionLockReleaseHooks(domain) {
+  // Best-effort fan-out: a misbehaving hook must not regress the producer or
+  // leave another hook unfired. Hooks run after the lock is released and
+  // re-acquire it themselves if they need it.
+  for (const hook of sessionLockReleaseHooks.slice()) {
+    try {
+      hook(domain);
+    } catch {}
+  }
+}
 
 function readFileUtf8(filePath, {
   label = path.basename(filePath),
@@ -353,16 +378,28 @@ function withSessionLock(domain, callback) {
 
   const release = acquireSessionLock(domain);
   activeSessionLocks.set(lockKey, 1);
+  let result;
+  let callbackFailed = false;
   try {
-    const result = callback();
+    result = callback();
     if (result && typeof result.then === "function") {
       throw new Error("withSessionLock callback must be synchronous");
     }
-    return result;
-  } finally {
+  } catch (error) {
+    callbackFailed = true;
     activeSessionLocks.delete(lockKey);
     release();
+    throw error;
   }
+  activeSessionLocks.delete(lockKey);
+  release();
+  if (!callbackFailed) {
+    // Outermost release: fire deferred hooks (e.g., frontier materialization
+    // debounce). Hooks run after the lock is released so they cannot deadlock;
+    // hooks that need the lock must re-acquire it themselves.
+    runSessionLockReleaseHooks(domain);
+  }
+  return result;
 }
 
 module.exports = {
@@ -375,6 +412,7 @@ module.exports = {
   loadJsonDocumentStrict,
   readFileUtf8,
   readJsonFile,
+  registerSessionLockReleaseHook,
   trimJsonlFile,
   readSessionLockSnapshot,
   removeStaleSessionLock,

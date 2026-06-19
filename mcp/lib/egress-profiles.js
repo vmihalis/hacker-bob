@@ -7,6 +7,9 @@ const { redactUrlSensitiveValues } = require("../redaction.js");
 const {
   readJsonFile,
 } = require("./storage.js");
+const {
+  projectRoot: runtimeProjectRoot,
+} = require("./runtime-resources.js");
 
 const EGRESS_PROFILES_VERSION = 1;
 const EGRESS_PROFILE_IDENTITY_VERSION = 1;
@@ -16,8 +19,8 @@ const SUPPORTED_PROXY_PROTOCOLS = Object.freeze(["http:", "https:", "socks5:", "
 const EGRESS_PROFILES_FILE = path.join(".claude", "bob", "egress-profiles.json");
 const EGRESS_PROFILES_EXAMPLE_FILE = path.join(".claude", "bob", "egress-profiles.example.json");
 
-function projectRootFromMcp() {
-  return path.resolve(__dirname, "..", "..");
+function projectRootFromMcp(env = process.env) {
+  return runtimeProjectRoot(env);
 }
 
 function egressProfilesPath(projectRoot = projectRootFromMcp()) {
@@ -187,28 +190,54 @@ function readEgressProfilesDocument(projectRoot = projectRootFromMcp()) {
   return normalizeEgressProfilesDocument(parsed);
 }
 
-function writeEgressProfilesDocument(projectRoot, document) {
+function writeEgressProfilesDocument(projectRoot, document, options = {}) {
   const normalized = normalizeEgressProfilesDocument(document);
   const filePath = egressProfilesPath(projectRoot);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  if (options.installFs) {
+    options.installFs.writeJson(filePath, normalized, {
+      kind: EGRESS_PROFILES_FILE,
+      rejectExistingSymlink: true,
+    });
+  } else {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  }
   return normalized;
 }
 
-function ensureEgressProfilesConfig(projectRoot = projectRootFromMcp()) {
+function ensureEgressProfilesConfig(projectRoot = projectRootFromMcp(), options = {}) {
   const filePath = egressProfilesPath(projectRoot);
+  if (options.installFs) {
+    const existing = options.installFs.readJsonIfExists(filePath, null, {
+      kind: EGRESS_PROFILES_FILE,
+      symlink: "reject",
+    });
+    if (existing == null) {
+      writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument(), options);
+      return { created: true, path: filePath };
+    }
+    normalizeEgressProfilesDocument(existing);
+    return { created: false, path: filePath };
+  }
   if (!fs.existsSync(filePath)) {
-    writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument());
+    writeEgressProfilesDocument(projectRoot, defaultEgressProfilesDocument(), options);
     return { created: true, path: filePath };
   }
   normalizeEgressProfilesDocument(readJsonFile(filePath, { label: EGRESS_PROFILES_FILE }));
   return { created: false, path: filePath };
 }
 
-function ensureEgressProfilesExample(projectRoot = projectRootFromMcp()) {
+function ensureEgressProfilesExample(projectRoot = projectRootFromMcp(), options = {}) {
   const filePath = egressProfilesExamplePath(projectRoot);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(exampleEgressProfilesDocument(), null, 2)}\n`, "utf8");
+  if (options.installFs) {
+    options.installFs.writeJson(filePath, exampleEgressProfilesDocument(), {
+      kind: EGRESS_PROFILES_EXAMPLE_FILE,
+      rejectExistingSymlink: true,
+    });
+  } else {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(exampleEgressProfilesDocument(), null, 2)}\n`, "utf8");
+  }
   return filePath;
 }
 

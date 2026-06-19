@@ -10,23 +10,23 @@ const {
 } = require("../../adapters/codex/role-specs.js");
 const {
   substituteCapabilityPackVerifierTable,
-  substituteCodexHunterPackCatalogue,
+  substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
 } = require("../../mcp/lib/capability-playbooks.js");
-const { hunterRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
-// Cross-cutting Codex worker contracts (recon/auth/chain/verifier/evidence/
-// grade/report). Per-chain hunter contracts are appended from HUNTER_ROLES
+// Cross-cutting Codex worker contracts (surface-discovery/auth/chain/verifier/evidence/
+// grade/report). Per-chain evaluator contracts are appended from EVALUATOR_ROLES
 // so adding a chain pack auto-extends this list without editing this file.
 const CODEX_CROSS_CUTTING_ROLE_IDS = Object.freeze([
-  "recon",
-  "deep-recon",
+  "surface-discovery",
+  "deep-surface-discovery",
   "surface-router",
-  "hunter",
+  "evaluator",
   "chain",
   "brutalist-verifier",
   "balanced-verifier",
@@ -37,16 +37,20 @@ const CODEX_CROSS_CUTTING_ROLE_IDS = Object.freeze([
 ]);
 const CODEX_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
   ...CODEX_CROSS_CUTTING_ROLE_IDS.slice(0, 4),
-  ...hunterRoleSpecs().map((role) => role.role_id),
+  ...evaluatorRoleSpecs().map((role) => role.role_id),
+  // Plane X Cycle X.10 — generic TaskGraph evaluator shell appended
+  // after the per-chain evaluator contracts so the appendix groups all
+  // evaluator family contracts together before the cross-cutting roles.
+  "evaluator-spawn",
   ...CODEX_CROSS_CUTTING_ROLE_IDS.slice(4),
 ]);
 
 const CODEX_SKILL_SPECS = Object.freeze({
-  hunt: Object.freeze({
+  evaluate: Object.freeze({
     role_id: "orchestrator",
-    output_path: path.join("adapters", "codex", "skills", "bob-hunt", "SKILL.md"),
-    name: "bob-hunt",
-    description: "Run or resume a Hacker Bob bug bounty hunt in Codex using the shared MCP runtime.",
+    output_path: path.join("adapters", "codex", "skills", "bob-evaluate", "SKILL.md"),
+    name: "bob-evaluate",
+    description: "Run or resume a Hacker Bob bug bounty evaluate in Codex using the shared MCP runtime.",
   }),
   status: Object.freeze({
     role_id: "status",
@@ -98,19 +102,19 @@ function workerLabel(roleId) {
 
 function codexLaunchTemplates() {
   return Object.freeze({
-    "{{SPAWN_RECON_AGENT}}": [
+    "{{SPAWN_SEED_DISCOVERY_AGENT}}": [
       "```text",
-      `Use Codex spawn_agent for ${workerLabel("recon")}.`,
+      `Use Codex spawn_agent for ${workerLabel("surface-discovery")}.`,
       "- agent_type: \"worker\"",
-      "- message: include `Bob role: recon-agent`, `DOMAIN=[domain]`, `SESSION=~/bounty-agent-sessions/[domain]`, and the full `recon` contract from Codex Worker Role Contracts below.",
+      "- message: include `Bob role: surface-discovery-agent`, `DOMAIN=[domain]`, `SESSION=~/hacker-bob-sessions/[domain]`, and the full `surface-discovery` contract from Codex Worker Role Contracts below.",
       "Wait with `wait_agent` before continuing. After reading the result and checking `attack_surface.json`, call `close_agent` for the host agent.",
       "```",
     ].join("\n"),
-    "{{SPAWN_DEEP_RECON_AGENT}}": [
+    "{{SPAWN_DEEP_SEED_DISCOVERY_AGENT}}": [
       "```text",
-      `Use Codex spawn_agent for ${workerLabel("deep-recon")}.`,
+      `Use Codex spawn_agent for ${workerLabel("deep-surface-discovery")}.`,
       "- agent_type: \"worker\"",
-      "- message: include `Bob role: deep-recon-agent`, `DOMAIN=[domain]`, `SESSION=~/bounty-agent-sessions/[domain]`, and the full `deep-recon` contract from Codex Worker Role Contracts below.",
+      "- message: include `Bob role: deep-surface-discovery-agent`, `DOMAIN=[domain]`, `SESSION=~/hacker-bob-sessions/[domain]`, and the full `deep-surface-discovery` contract from Codex Worker Role Contracts below.",
       "Wait with `wait_agent` before continuing. After reading the result, call `close_agent` for the host agent.",
       "```",
     ].join("\n"),
@@ -118,19 +122,19 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("surface-router")}.`,
       "- agent_type: \"worker\"",
-      "- message: include `Bob role: surface-router-agent`, `Domain: [domain]`, `Session: ~/bounty-agent-sessions/[domain]`, and instruct the worker to confirm `attack_surface.json` exists and call `bounty_route_surfaces({ target_domain: '[domain]' })`. Include the full `surface-router` contract from Codex Worker Role Contracts below.",
+      "- message: include `Bob role: surface-router-agent`, `Domain: [domain]`, `Session: ~/hacker-bob-sessions/[domain]`, and instruct the worker to confirm `attack_surface.json` exists and call `bob_route_surfaces({ target_domain: '[domain]' })`. Include the full `surface-router` contract from Codex Worker Role Contracts below.",
       "Wait with `wait_agent`. If routing fails or returns zero surfaces, report the error and stop. After reading the result, call `close_agent` for the host agent.",
       "```",
     ].join("\n"),
-    "{{SPAWN_HUNTER_AGENT}}": [
+    "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
-      `For each assignment, use Codex spawn_agent for the hunter family chosen by the MCP capability router (\`assignment.hunter_agent\` from wave-start result.data.assignments[] — one of hunter-agent or any of the per-pack hunters listed in the smart-contract pack catalogue: ${hunterRoleSpecs().map((role) => role.name).join(", ")}).`,
+      `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,
       "- agent_type: \"worker\"",
-      "- message: include the compact run header below plus the full contract for `assignment.hunter_agent` from Codex Worker Role Contracts.",
-      "- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Hunter agent: [assignment.hunter_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].",
-      "- First action inside the worker: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data.run_context.context_budget plus .data.technique_packs.selected when present.",
-      "- Pass the header egress_profile and block_internal_hosts values on every bounty_http_scan call. If strict internal-host blocking conflicts with a proxy-backed egress profile, record the blocked prerequisite instead of retrying.",
-      "- For web hunters, call bounty_read_technique_pack(mode=\"full\") only with target_domain/wave/agent/surface_id for relevant selected summaries, and bounty_log_technique_attempt for selections, skips, attempts, and outcomes. Before finalizing, ensure one completion-status technique attempt is logged for this surface.",
+      "- message: include the compact run header below plus the full contract for `assignment.evaluator_agent` from Codex Worker Role Contracts.",
+      "- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Evaluator agent: [assignment.evaluator_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].",
+      "- First action inside the worker: call bob_read_assignment_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data.run_context.context_budget plus .data.technique_packs.selected when present.",
+      "- Pass the header egress_profile and block_internal_hosts values on every bob_http_scan call. If strict internal-host blocking conflicts with a proxy-backed egress profile, record the blocked prerequisite instead of retrying.",
+      "- For web evaluators, call bob_read_technique_pack(mode=\"full\") only with target_domain/wave/agent/surface_id for relevant selected summaries, and bob_log_technique_attempt for selections, skips, attempts, and outcomes. Before finalizing, ensure one completion-status technique attempt is logged for this surface.",
       "- Track the local mapping `host_agent_id -> w[wave]/a[agent]/surface_id`; Bob's `aN` value is authoritative even if Codex displays a different nickname.",
       "- Respect Codex capacity. Launch only as many workers as the host accepts, keep the rest queued, and start queued assignments only after completed agents are closed.",
       "- Do not set `fork_context: true` when also setting `agent_type`; use a direct worker spawn unless Codex requires a different host default.",
@@ -141,7 +145,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("chain")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: chain-builder. Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. Pass both values on every bounty_http_scan call. Every bounty_write_chain_attempt call must include the required steps array.` Include the full `chain` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: chain-builder. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. Pass both values on every bob_http_scan call. Every bob_write_chain_attempt call must include the required steps array.` Include the full `chain` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, validate expected output, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -149,7 +153,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("brutalist-verifier")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: brutalist-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bounty_read_verification_context({ target_domain }); for v2 include current_attempt_id/snapshot_hash on writes and verification_replay context on replay tools. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `brutalist-verifier` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: brutalist-verifier. Session: ~/hacker-bob-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bob_read_verification_context({ target_domain }); for v2 include current_attempt_id/snapshot_hash on writes and verification_replay context on replay tools. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `brutalist-verifier` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -157,7 +161,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("balanced-verifier")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: balanced-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bounty_read_verification_context({ target_domain }). If v2, do not read brutalist or adjudication; use current_attempt_id/snapshot_hash and write the independent balanced round. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `balanced-verifier` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: balanced-verifier. Session: ~/hacker-bob-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bob_read_verification_context({ target_domain }). If v2, do not read brutalist or adjudication; use current_attempt_id/snapshot_hash and write the independent balanced round. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `balanced-verifier` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -165,7 +169,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("final-verifier")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bounty_read_verification_context({ target_domain }). If v2, consume adjudication_context.adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `final-verifier` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: final-verifier. Session: ~/hacker-bob-sessions/[domain]. Target: [domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bob_read_verification_context({ target_domain }). If v2, consume adjudication_context.adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `final-verifier` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -173,15 +177,15 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("grader")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: grader. Domain: [domain]. Session: ~/bounty-agent-sessions/[domain].` Include the full `grader` contract from Codex Worker Role Contracts.",
-      "Wait with `wait_agent`, read `bounty_read_grade_verdict.data`, then `close_agent`.",
+      "- message: `Bob role: grader. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain].` Include the full `grader` contract from Codex Worker Role Contracts.",
+      "Wait with `wait_agent`, read `bob_read_grade_verdict.data`, then `close_agent`.",
       "```",
     ].join("\n"),
     "{{SPAWN_REPORTER_AGENT}}": [
       "```text",
       `Use Codex spawn_agent for ${workerLabel("reporter")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Write the canonical ~/bounty-agent-sessions/[domain]/report.md before calling bounty_report_written.` Include the full `reporter` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Write the canonical ~/hacker-bob-sessions/[domain]/report.md before calling bounty_report_written.` Include the full `reporter` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the report, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -189,13 +193,13 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("evidence")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: evidence-agent. Session: ~/bounty-agent-sessions/[domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bounty_read_verification_context({ target_domain }); for v2 pass evidence_replay context and bind evidence to the current final_verification_hash. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `evidence` contract from Codex Worker Role Contracts.",
-      "Wait with `wait_agent`, read `bounty_read_evidence_packs.data`, then `close_agent`.",
+      "- message: `Bob role: evidence-agent. Session: ~/hacker-bob-sessions/[domain]. Egress profile: [egress_profile]. Block internal hosts: [block_internal_hosts]. First call bob_read_verification_context({ target_domain }); for v2 pass evidence_replay context and bind evidence to the current final_verification_hash. Pass egress_profile and block_internal_hosts on replay HTTP tools.` Include the full `evidence` contract from Codex Worker Role Contracts.",
+      "Wait with `wait_agent`, read `bob_read_evidence_packs.data`, then `close_agent`.",
       "```",
     ].join("\n"),
     // Smart-contract spawn templates render from the capability pack manifest.
-    // The Codex renderer fills the {{HUNTER_PACK_CATALOGUE}} placeholder via
-    // substituteCodexHunterPackCatalogue, which iterates
+    // The Codex renderer fills the {{EVALUATOR_PACK_CATALOGUE}} placeholder via
+    // substituteCodexEvaluatorPackCatalogue, which iterates
     // smartContractCapabilityPacks() and emits one entry per pack. Adding a
     // new chain pack auto-extends the catalogue here without editing this
     // file. Per-pack worker contracts still live in the role-contract
@@ -210,7 +214,7 @@ function applyCodexHostText(document) {
       "node -e \"const update=require('./mcp/lib/update-check.js'); console.log(JSON.stringify(update.readUpdateCache(process.cwd()) || null, null, 2));\"",
     )
     .replace(/Use host-normal agent permissions by default/g, "Use Codex worker-agent permissions by default")
-    .replace(/Hunter waves MUST use the host's asynchronous\/background worker mechanism when available\./g, "Hunter waves MUST use Codex `spawn_agent` workers and must respect host capacity.")
+    .replace(/Evaluator waves MUST use the host's asynchronous\/background worker mechanism when available\./g, "Evaluator waves MUST use Codex `spawn_agent` workers and must respect host capacity.")
     .replace(/host stop hooks are only adapter guardrails/g, "Codex has no Bob stop hook; MCP finalization is the correctness boundary")
     .replace(/Claude Code enforces `maxTurns` as a turn budget, not a raw tool-call budget\./g, "The host may enforce turn budgets differently from raw tool-call budgets.")
     .replace(/Paste in the current agent session\./g, "Paste in the current Codex session.")
@@ -222,12 +226,12 @@ function applyCodexHostText(document) {
     .replace(/Claude Code/g, "Codex")
     .replace(/Do not use the `Task` tool by default\./g, "Do not spawn agents by default.")
     .replace(/Do not use `Task`\./g, "Do not spawn agents.")
-    .replace(/\/bob-hunt/g, "$bob-hunt")
+    .replace(/\/bob-evaluate/g, "$bob-evaluate")
     .replace(/\/bob-status/g, "$bob-status")
     .replace(/\/bob-debug/g, "$bob-debug")
     .replace(/\/bob-update/g, "$bob-update")
     .replace(/\/bob-export/g, "$bob-export")
-    .replace(/\/bob:hunt/g, "$bob-hunt")
+    .replace(/\/bob:evaluate/g, "$bob-evaluate")
     .replace(/\/bob:status/g, "$bob-status")
     .replace(/\/bob:debug/g, "$bob-debug")
     .replace(/\/bob:update/g, "$bob-update")
@@ -247,7 +251,7 @@ function codexOrchestratorPreamble() {
     "## Codex Agent Mapping",
     "- Bob named roles are logical roles; Codex host agents are spawned as `worker` agents.",
     "- Bob `wN`, `aN`, `surface_id`, and `handoff_token` values are durable truth. Codex host agent IDs and nicknames are local execution metadata only.",
-    "- If Codex does not expose Bob MCP tools yet, use tool discovery for `bounty_*` tools before falling back to local artifact reads.",
+    "- If Codex does not expose Bob MCP tools yet, use tool discovery for `bob_*` tools before falling back to local artifact reads.",
     "- This workflow requires background worker agents. Proceed only when the operator's request clearly authorizes Hacker Bob or agent execution; otherwise ask before spawning.",
     "",
   ].join("\n");
@@ -266,9 +270,9 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       `BEGIN ${roleId} CONTRACT`,
       // Substitute the capability-pack verifier table and the handoff
       // field-limit table inside Codex worker contracts too — verifier/
-      // evidence prompts embed the verifier-table placeholder and hunter
+      // evidence prompts embed the verifier-table placeholder and evaluator
       // prompts embed the handoff-limits placeholder; Codex workers read
-      // both from the appendix in bob-hunt SKILL.md.
+      // both from the appendix in bob-evaluate SKILL.md.
       substituteHandoffFieldLimits(
         substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
       ),
@@ -279,20 +283,20 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
 }
 
 function codexWorkerLabelForPack(pack) {
-  // pack.hunter_agent is the Bob agent name (with the conventional
+  // pack.evaluator_agent is the Bob agent name (with the conventional
   // "-agent" suffix). The catalogue line surrounds this with adjacent
   // prose ("-> Codex worker ${label}"), so the label itself is just the
   // bob_role+agent_type pair. Multiple packs that share a role_id (e.g.
   // Move-family aptos+sui) resolve to the same Codex worker contract;
   // the renderer picks the role id by stripping "-agent" from
-  // pack.hunter_agent.
-  const roleId = pack.hunter_agent.replace(/-agent$/, "");
+  // pack.evaluator_agent.
+  const roleId = pack.evaluator_agent.replace(/-agent$/, "");
   // CODEX_WORKER_CONTRACT_ROLE_IDS holds the canonical role list. If a pack
   // is added without a matching codex role spec, fail loudly here rather
   // than silently rendering "undefined -> Codex undefined".
   if (!CODEX_WORKER_CONTRACT_ROLE_IDS.includes(roleId)) {
     throw new Error(
-      `pack ${pack.id} hunter_agent ${pack.hunter_agent} maps to roleId ${roleId} which is not in CODEX_WORKER_CONTRACT_ROLE_IDS; add the role spec before regenerating prompts`,
+      `pack ${pack.id} evaluator_agent ${pack.evaluator_agent} maps to roleId ${roleId} which is not in CODEX_WORKER_CONTRACT_ROLE_IDS; add the role spec before regenerating prompts`,
     );
   }
   return workerLabel(roleId);
@@ -302,7 +306,7 @@ function renderCodexPromptBody(roleId, body, options = {}) {
   let document = applyCodexHostText(body);
   document = replaceLaunchTemplates(document);
   document = substituteCapabilityPackVerifierTable(document);
-  document = substituteCodexHunterPackCatalogue(document, codexWorkerLabelForPack);
+  document = substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelForPack);
   document = substituteHandoffFieldLimits(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${codexOrchestratorPreamble()}## Hard Rules\n`);
@@ -351,7 +355,7 @@ function renderExportSkill() {
     "node -e \"const exporter=require('./mcp/lib/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));\"",
     "```",
     "",
-    "Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not hunt, resume sessions, or interact with targets.",
+    "Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not evaluate, resume sessions, or interact with targets.",
     "",
   ].join("\n");
 }
@@ -423,6 +427,7 @@ function updateCodexSkillFiles({ check = false, root = DEFAULT_ROOT, skillIds = 
 
 module.exports = {
   CODEX_SKILL_SPECS,
+  CODEX_WORKER_CONTRACT_ROLE_IDS,
   codexSkillOutputPath,
   renderCodexPromptBody,
   renderCodexSkill,

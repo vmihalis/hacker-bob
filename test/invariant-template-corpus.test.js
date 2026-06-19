@@ -5,7 +5,9 @@ const assert = require("node:assert/strict");
 
 const {
   TEMPLATES,
+  getMechanismTemplate,
   SUPPORTED_CLASSES,
+  loadMechanismTemplates,
   getTemplatesForClass,
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
@@ -112,4 +114,47 @@ test("template ids are unique", () => {
     assert.ok(!ids.has(template.id), `duplicate template id: ${template.id}`);
     ids.add(template.id);
   }
+});
+
+test("object_authorization mechanism template is closed, bounded, and maps to catalog CWE", () => {
+  const template = getMechanismTemplate("object_authorization");
+  assert.ok(template);
+  assert.equal(template.mechanism_id, "CWE-639");
+  assert.ok(template.required_entities.includes("principal"));
+  assert.ok(template.required_entities.includes("policy_gate"));
+  assert.ok(template.interventions.includes("principal_fixed_object_swap"));
+  assert.ok(template.positive_controls.includes("attacker_owned_object_allowed"));
+  assert.ok(template.negative_controls.includes("public_object_check"));
+  assert.ok(template.confounders.includes("public_object"));
+  assert.equal(template.evidence_predicate.kind, "differential_effect");
+  assert.equal(Object.isFrozen(template.required_entities), true);
+});
+
+test("mechanism template loader skips malformed records with bounded warnings", () => {
+  const result = loadMechanismTemplates([
+    {
+      id: "valid_object_auth",
+      mechanism_id: "CWE-639",
+      required_entities: ["principal", "object"],
+      interventions: ["object_swap"],
+      positive_controls: ["owned_object"],
+      negative_controls: ["public_object_check"],
+      confounders: ["public_object"],
+      evidence_predicate: { kind: "differential_effect" },
+    },
+    {
+      id: "bad",
+      mechanism_id: "CWE-999999",
+      required_entities: ["principal"],
+      interventions: [],
+      positive_controls: [],
+      negative_controls: [],
+      confounders: [],
+      evidence_predicate: null,
+    },
+  ]);
+  assert.equal(result.templates.length, 1);
+  assert.equal(result.templates[0].id, "valid_object_auth");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0].warnings.join(" "), /CWE-999999|evidence_predicate/);
 });

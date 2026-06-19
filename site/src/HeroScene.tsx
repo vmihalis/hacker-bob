@@ -32,7 +32,7 @@ import {
   type BufferGeometry as ThreeBufferGeometry,
 } from 'three';
 
-const stages = ['RECON', 'AUTH', 'HUNT', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'];
+const stages = ['SURFACE_DISCOVERY', 'AUTH', 'EVALUATE', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'];
 
 function createStageLabel(text: string, accent: string) {
   const canvas = document.createElement('canvas');

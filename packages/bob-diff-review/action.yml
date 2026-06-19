@@ -1,0 +1,161 @@
+name: 'Bob Diff Review'
+description: >
+  Run Hacker Bob's headless Claude-based diff review on an open pull request.
+  Posts inline PR review comments and a Check Run summarising findings by
+  severity. Requires at least one Anthropic credential — either
+  ANTHROPIC_OAUTH_TOKEN (recommended, from
+  `claude setup-token`) or ANTHROPIC_API_KEY. When both are supplied, the
+  OAuth token takes precedence. BOB_INSTALL_TOKEN is optional, but required
+  when package or source checkout access needs an authenticated token.
+
+branding:
+  color: 'orange'
+  icon: 'shield'
+
+# ---------------------------------------------------------------------------
+# INPUTS
+# Callers pass secrets via the with: block:
+#   with:
+#     github-token:         ${{ secrets.GITHUB_TOKEN }}
+#     anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}  # recommended
+#     anthropic-api-key:    ${{ secrets.ANTHROPIC_API_KEY }}       # optional fallback
+#     bob-install-token:    ${{ secrets.BOB_INSTALL_TOKEN }}
+# At least one of anthropic-oauth-token / anthropic-api-key must be provided.
+# When both are set, anthropic-oauth-token wins (the API key is not injected,
+# so it cannot silently shadow OAuth and exhaust pay-per-use credits).
+# Input names use hyphens to match getInput() calls in src/action-entrypoint.ts.
+# ---------------------------------------------------------------------------
+inputs:
+  github-token:
+    description: >
+      GitHub token used to post review comments on the pull request and to
+      create the "Bob Diff Review" Check Run. Must have pull-requests:write
+      and checks:write permissions. Declare those permissions in the calling
+      workflow:
+        permissions:
+          pull-requests: write
+          checks: write
+          contents: read
+    required: true
+
+  anthropic-oauth-token:
+    description: >
+      Anthropic OAuth token used to authenticate the claude headless runner —
+      the RECOMMENDED auth path. Generate a long-lived token with
+      `claude setup-token` and store it as the org-level secret
+      ANTHROPIC_OAUTH_TOKEN, passing it from the caller workflow via
+      secrets.ANTHROPIC_OAUTH_TOKEN.
+      Injected into the claude subprocess as CLAUDE_CODE_OAUTH_TOKEN. Optional,
+      but at least one of anthropic-oauth-token or anthropic-api-key must be
+      provided. When both are supplied this token takes precedence and the API
+      key is NOT injected.
+    required: false
+    default: ''
+
+  anthropic-api-key:
+    description: >
+      Anthropic API key (pay-per-use) used to authenticate the claude headless
+      runner. Store as the org-level secret ANTHROPIC_API_KEY and pass it from
+      the caller workflow via secrets.ANTHROPIC_API_KEY. Injected into the claude
+      subprocess as ANTHROPIC_API_KEY. Optional, but at least one of anthropic-oauth-token or
+      anthropic-api-key must be provided. PRECEDENCE: when anthropic-oauth-token
+      is also set, OAuth wins and this API key is NOT injected, so it cannot
+      silently shadow OAuth and exhaust pay-per-use credits. Prefer
+      anthropic-oauth-token where possible.
+    required: false
+    default: ''
+
+  bob-install-token:
+    description: >
+      GitHub App installation token (preferred) or fine-grained PAT with
+      read:packages and contents:read scopes. Used to authenticate npm
+      against npm.pkg.github.com for @bobnetsec/* packages. Store as the
+      org-level secret BOB_INSTALL_TOKEN and pass it from the caller workflow
+      via secrets.BOB_INSTALL_TOKEN when authenticated package or source
+      checkout access is needed. Optional for public/cached installs.
+    required: false
+    default: ''
+
+  min-severity-for-failure:
+    description: >
+      Minimum finding severity that causes the Check Run to report a failure
+      conclusion. Accepted values: "critical", "high", "medium", "low".
+      Defaults to "high" so that only critical or high findings block the PR
+      status badge.
+    required: false
+    default: 'high'
+
+  anthropic-model:
+    description: >
+      Optional Anthropic model identifier to pass to the claude CLI via the
+      ANTHROPIC_MODEL environment variable. When set, the claude subprocess uses
+      this model instead of the CLI default. Use a cost-optimised model (e.g.
+      "claude-haiku-4-5") for high-volume repositories or budget-constrained
+      environments. Leave empty to use the claude CLI default.
+    required: false
+    default: ''
+
+  pr-number:
+    description: >
+      Pull request number to review. Optional. On a pull_request event the PR is
+      read from the event payload and this input is ignored. For manual runs
+      (workflow_dispatch) or other non-PR events, set this so the action can
+      resolve the PR via the API. Must be a positive integer.
+    required: false
+    default: ''
+
+  mock-findings-json:
+    description: >
+      When set to a non-empty JSON string matching the DiffReviewFindings schema,
+      the action bypasses the Claude subprocess and uses these pre-seeded findings
+      instead. Intended only for integration testing environments where
+      ANTHROPIC_API_KEY is not funded. Ignored unless the runner environment sets
+      BOB_DIFF_REVIEW_ALLOW_MOCK_FINDINGS=true. Must never be set in production workflows.
+      After returning mock findings the action writes a placeholder
+      symbol-surface-index.json to the session directory so subsequent runs on
+      the same PR receive a C2 cache hit (SKIP_SURFACE_BUILD=true).
+    required: false
+    default: ''
+
+  mock-s3-delay-ms:
+    description: >
+      When mock-findings-json is set AND SKIP_SURFACE_BUILD is not 'true', sleep
+      for this many milliseconds before returning mock findings. This simulates
+      the S3 route-extraction and symbol-index build phase that takes 30–90 seconds
+      in production. On a cache-hit run (SKIP_SURFACE_BUILD=true) the delay is
+      skipped entirely, producing a measurable speedup that validates AC5.
+      Defaults to 45000 (45 seconds). Set to 0 to disable for faster test loops.
+    required: false
+    default: '45000'
+
+# ---------------------------------------------------------------------------
+# OUTPUTS
+# Values set by core.setOutput() calls in src/action-entrypoint.ts.
+# ---------------------------------------------------------------------------
+outputs:
+  findings_count:
+    description: >
+      Total number of findings recorded by the Bob diff review session across
+      all severity levels.
+
+  critical_count:
+    description: >
+      Number of critical-severity findings recorded by the Bob diff review
+      session. Used to determine Check Run conclusion when min-severity-for-failure
+      is set to "critical".
+
+  review_url:
+    description: >
+      HTML URL of the GitHub pull request review posted by this action. Empty
+      string if the review step was skipped or failed non-fatally.
+
+# ---------------------------------------------------------------------------
+# RUNS
+# node20 matches GitHub's current LTS runner support. dist/index.js is the
+# ncc-bundled single-file entrypoint produced by `npm run build`.
+# Permissions (pull-requests:write, checks:write, contents:read) must be
+# declared in the calling workflow — action.yml cannot set permissions.
+# ---------------------------------------------------------------------------
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

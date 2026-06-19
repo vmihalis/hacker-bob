@@ -7,6 +7,8 @@ const {
   CODEX_SKILL_SPECS,
   updateCodexSkillFiles,
 } = require("../../scripts/lib/codex-role-renderer.js");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
+const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
 
 const id = "codex";
 const PLUGIN_NAME = "hacker-bob";
@@ -20,14 +22,17 @@ const DIRECT_SKILL_NAMES = Object.freeze(
   Object.values(CODEX_SKILL_SPECS).map((spec) => spec.name),
 );
 const LEGACY_SKILL_DIRS = Object.freeze([
-  "hacker-bob-hunt",
+  "hacker-bob-evaluate",
   "hacker-bob-status",
   "hacker-bob-debug",
   "hacker-bob-update",
   "hacker-bob-export",
+  // v1.x hunt→evaluate rename leftover. Survives in ~/.codex/skills on
+  // workspaces that were installed before the rename; sweep on every install.
+  "bob-hunt",
 ]);
 const STALE_PLUGIN_SKILL_DIRS = Object.freeze([
-  "hunt",
+  "evaluate",
   "status",
   "debug",
   "update",
@@ -35,16 +40,18 @@ const STALE_PLUGIN_SKILL_DIRS = Object.freeze([
   ...DIRECT_SKILL_NAMES,
 ]);
 const STALE_COMMAND_FILES = Object.freeze([
-  "hunt.md",
+  "evaluate.md",
   "status.md",
   "debug.md",
   "update.md",
+  // v1.x hunt→evaluate rename leftover under .codex/plugins/hacker-bob/commands/.
+  "bob-hunt.md",
 ]);
 const COMMAND_SPECS = Object.freeze({
-  hunt: Object.freeze({
-    file: "bob-hunt.md",
-    skill: "bob-hunt",
-    description: "Run or resume a Hacker Bob bug bounty hunt.",
+  evaluate: Object.freeze({
+    file: "bob-evaluate.md",
+    skill: "bob-evaluate",
+    description: "Run or resume a Hacker Bob bug bounty evaluate.",
     argumentHint: "<target|resume target [force-merge]> [--no-auth|--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
   }),
   status: Object.freeze({
@@ -100,11 +107,6 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function writeText(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, value, "utf8");
-}
-
 function fileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile();
@@ -139,35 +141,6 @@ function sourceTreeFiles(sourceRoot, relativeDir) {
   return files.sort();
 }
 
-function copyTree(sourceDir, destinationDir) {
-  const copied = [];
-  const visit = (current) => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const source = path.join(current, entry.name);
-      const relative = path.relative(sourceDir, source);
-      const destination = path.join(destinationDir, relative);
-      if (entry.isDirectory()) {
-        fs.mkdirSync(destination, { recursive: true });
-        visit(source);
-      } else if (entry.isFile()) {
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.copyFileSync(source, destination);
-        copied.push(relative);
-      }
-    }
-  };
-  fs.mkdirSync(destinationDir, { recursive: true });
-  visit(sourceDir);
-  return copied.sort();
-}
-
-function removeDirContents(dirPath) {
-  if (!dirExists(dirPath)) return;
-  for (const entry of fs.readdirSync(dirPath)) {
-    fs.rmSync(path.join(dirPath, entry), { recursive: true, force: true });
-  }
-}
-
 function managedFiles(sourceRoot) {
   return [
     ...sourceTreeFiles(sourceRoot, PLUGIN_SOURCE_DIR)
@@ -192,19 +165,10 @@ function managedDirs() {
   ];
 }
 
-// External adversarial-roast MCP server consumed by the brutalist-verifier
-// role. Optional — registered alongside bountyagent but not required at
-// runtime. See prompts/roles/brutalist-verifier.md for the graceful-fallback
-// contract.
-const BRUTALIST_MCP_SERVER = Object.freeze({
-  command: "npx",
-  args: ["-y", "@brutalist/mcp@latest"],
-});
-
 function mergeConfig({ serverPath }) {
   return {
     mcpServers: {
-      bountyagent: {
+      "hacker-bob": {
         command: "node",
         args: [serverPath],
       },
@@ -251,9 +215,13 @@ function renderCommand(commandId) {
   ].join("\n");
 }
 
-function writeCommandFiles(pluginDir) {
+function writeCommandFiles(pluginDir, installFs) {
   for (const commandId of commandIds()) {
-    writeText(path.join(pluginDir, "commands", commandSpec(commandId).file), renderCommand(commandId));
+    installFs.writeTextFile(
+      path.join(pluginDir, "commands", commandSpec(commandId).file),
+      renderCommand(commandId),
+      { kind: "generated file" },
+    );
   }
 }
 
@@ -304,10 +272,16 @@ function mergeMarketplace(existing) {
   };
 }
 
-function installMarketplace(targetAbs) {
+function installMarketplace(targetAbs, installFs) {
   const marketplacePath = path.join(targetAbs, MARKETPLACE_PATH);
-  const existing = fileExists(marketplacePath) ? readJson(marketplacePath) : null;
-  writeJson(marketplacePath, mergeMarketplace(existing));
+  const existing = installFs.readJsonIfExists(marketplacePath, null, {
+    kind: MARKETPLACE_PATH,
+    symlink: "reject",
+  });
+  installFs.writeJson(marketplacePath, mergeMarketplace(existing), {
+    kind: MARKETPLACE_PATH,
+    rejectExistingSymlink: true,
+  });
 }
 
 function codexHome() {
@@ -326,30 +300,70 @@ function directSkillTargetPath(spec, home = codexHome()) {
   return path.join(directSkillTargetDir(spec, home), "SKILL.md");
 }
 
-function removeStalePluginSurfaces(pluginDir) {
-  fs.rmSync(path.join(pluginDir, "skills"), { recursive: true, force: true });
+function removeStalePluginSurfaces(pluginDir, installFs) {
+  installFs.removePath(path.join(pluginDir, "skills"), { recursive: true });
   for (const file of STALE_COMMAND_FILES) {
-    fs.rmSync(path.join(pluginDir, "commands", file), { force: true });
+    installFs.removePath(path.join(pluginDir, "commands", file));
   }
 }
 
-function removeLegacyDirectSkillDirs(home = codexHome()) {
+function removeLegacyDirectSkillDirs(home = codexHome(), installFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true })) {
   for (const dir of LEGACY_SKILL_DIRS) {
-    fs.rmSync(path.join(directSkillTargetRoot(home), dir), { recursive: true, force: true });
+    installFs.removePath(path.join(directSkillTargetRoot(home), dir), { recursive: true });
   }
 }
 
-function installDirectSkills(sourceRoot, home = codexHome()) {
+function installDirectSkills(sourceRoot, home = codexHome(), installFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true })) {
   const copied = [];
-  removeLegacyDirectSkillDirs(home);
+  removeLegacyDirectSkillDirs(home, installFs);
   for (const spec of Object.values(CODEX_SKILL_SPECS)) {
     const source = path.join(sourceRoot, spec.output_path);
     const destination = directSkillTargetPath(spec, home);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(source, destination);
+    installFs.copyFile(source, destination);
     copied.push(destination);
   }
   return copied.sort();
+}
+
+function directSkillFreshness(sourceRoot, home = codexHome()) {
+  const result = {
+    stale: [],
+    missingSource: [],
+  };
+  for (const spec of Object.values(CODEX_SKILL_SPECS)) {
+    const source = path.join(sourceRoot, spec.output_path);
+    const installed = directSkillTargetPath(spec, home);
+    if (!fileExists(source)) {
+      result.missingSource.push({
+        skill: spec.name,
+        reason: "source_missing",
+        source,
+        installed,
+      });
+      continue;
+    }
+    if (!fileExists(installed)) continue;
+    try {
+      const sourceText = fs.readFileSync(source, "utf8");
+      const installedText = fs.readFileSync(installed, "utf8");
+      if (sourceText === installedText) continue;
+      result.stale.push({
+        skill: spec.name,
+        reason: "content_mismatch",
+        source,
+        installed,
+      });
+    } catch (error) {
+      result.stale.push({
+        skill: spec.name,
+        reason: "read_error",
+        source,
+        installed,
+        error: error && error.message ? error.message : String(error),
+      });
+    }
+  }
+  return result;
 }
 
 function tomlString(value) {
@@ -410,17 +424,21 @@ function codexCacheRoot({ home = codexHome(), version }) {
   return path.join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME, version);
 }
 
-function activateCodexPlugin({ targetAbs, pluginDir }) {
+function activateCodexPlugin({ targetAbs, pluginDir, homeFs }) {
   const home = codexHome();
   const configPath = codexConfigPath(home);
   const version = pluginVersion(pluginDir);
   const cacheBase = path.join(home, "plugins", "cache", MARKETPLACE_NAME, PLUGIN_NAME);
   const cacheDir = codexCacheRoot({ home, version });
-  fs.mkdirSync(cacheBase, { recursive: true });
-  removeDirContents(cacheBase);
-  copyTree(pluginDir, cacheDir);
+  const safeHomeFs = homeFs || createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
+  safeHomeFs.mkdirp(cacheBase);
+  safeHomeFs.removeDirContents(cacheBase);
+  safeHomeFs.copyTree(pluginDir, cacheDir);
 
-  const existingConfig = fileExists(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+  const existingConfig = safeHomeFs.readTextIfExists(configPath, "", {
+    kind: "Codex config",
+    symlink: "reject",
+  });
   const withPlugin = upsertTomlSection(existingConfig, `[plugins.${tomlString(PLUGIN_CONFIG_ID)}]`, [
     "enabled = true",
   ]);
@@ -429,8 +447,10 @@ function activateCodexPlugin({ targetAbs, pluginDir }) {
     "source_type = \"local\"",
     `source = ${tomlString(targetAbs)}`,
   ]);
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, withMarketplace, "utf8");
+  safeHomeFs.writeTextFile(configPath, withMarketplace, {
+    kind: "Codex config",
+    rejectExistingSymlink: true,
+  });
   return {
     ok: true,
     cacheDir,
@@ -439,12 +459,12 @@ function activateCodexPlugin({ targetAbs, pluginDir }) {
   };
 }
 
-function maybeActivateCodexPlugin({ activate, targetAbs, pluginDir }) {
+function maybeActivateCodexPlugin({ activate, targetAbs, pluginDir, homeFs }) {
   if (!activate) {
     return { ok: false, skipped: true, reason: "activation disabled" };
   }
   try {
-    return activateCodexPlugin({ targetAbs, pluginDir });
+    return activateCodexPlugin({ targetAbs, pluginDir, homeFs });
   } catch (error) {
     return {
       ok: false,
@@ -479,20 +499,25 @@ function codexActivationStatus(targetAbs) {
   };
 }
 
-function install({ sourceRoot, targetAbs, serverPath, activate = false }) {
+function install({ sourceRoot, targetAbs, serverPath, activate = false, installFs }) {
+  const projectFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const home = codexHome();
+  const homeFs = createSafeInstallFs(home, { label: "CODEX_HOME", createRoot: true });
   const source = pluginSourceRoot(sourceRoot);
   const destination = pluginTargetRoot(targetAbs);
-  removeStalePluginSurfaces(destination);
-  const copied = copyTree(source, destination);
-  writeCommandFiles(destination);
-  writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }));
-  installMarketplace(targetAbs);
-  const directSkills = installDirectSkills(sourceRoot);
-  const activation = maybeActivateCodexPlugin({ activate, targetAbs, pluginDir: destination });
+  removeStalePluginSurfaces(destination, projectFs);
+  const copied = projectFs.copyTree(source, destination);
+  writeCommandFiles(destination, projectFs);
+  projectFs.writeJson(path.join(destination, ".mcp.json"), mergeConfig({ serverPath }), {
+    kind: "generated file",
+  });
+  installMarketplace(targetAbs, projectFs);
+  const directSkills = installDirectSkills(sourceRoot, home, homeFs);
+  const activation = maybeActivateCodexPlugin({ activate, targetAbs, pluginDir: destination, homeFs });
   return {
     activation,
     commands: commandIds().length,
-    codexSkillDir: directSkillTargetRoot(),
+    codexSkillDir: directSkillTargetRoot(home),
     pluginDir: destination,
     files: copied.length,
     skills: directSkills.length,
@@ -547,6 +572,21 @@ function doctor({ targetAbs }) {
     });
   } else {
     addCheck(checks, "error", "codex_global_skills", "Codex Bob skills are missing", { missing: missingSkills });
+  }
+
+  const skillFreshness = directSkillFreshness(targetAbs);
+  if (skillFreshness.stale.length > 0) {
+    addCheck(checks, "error", "codex_global_skills_fresh", "Codex Bob global skills are stale", {
+      stale: skillFreshness.stale,
+      reinstall: "node bin/hacker-bob.js install . --adapter codex",
+    });
+  } else if (skillFreshness.missingSource.length > 0) {
+    addCheck(checks, "warn", "codex_global_skills_fresh", "Codex Bob source skills are unavailable, so freshness comparison was skipped", {
+      missing_source: skillFreshness.missingSource,
+      skillRoot: directSkillTargetRoot(),
+    });
+  } else {
+    addCheck(checks, "ok", "codex_global_skills_fresh", "Codex Bob global skills match this install target");
   }
 
   const stalePluginSkills = STALE_PLUGIN_SKILL_DIRS
@@ -815,6 +855,7 @@ module.exports = {
   commandIds,
   commandSpec,
   directSkillSourceRoot,
+  directSkillFreshness,
   directSkillTargetPath,
   directSkillTargetRoot,
   doctor,

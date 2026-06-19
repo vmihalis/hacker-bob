@@ -6,8 +6,8 @@ const {
   VERIFICATION_ROUND_VALUES,
 } = require("./constants.js");
 const {
-  agentRunTelemetryPath,
-  readAgentRunTelemetryEvents,
+  toolInvocationTelemetryPath,
+  readToolInvocationTelemetryEvents,
   readToolTelemetryEvents,
   telemetryDir,
   toolTelemetryPath,
@@ -24,9 +24,9 @@ const {
 const {
   attackSurfacePath,
   chainAttemptsJsonlPath,
+  claimsJsonlPath,
   coverageJsonlPath,
   evidencePackPaths,
-  findingsJsonlPath,
   gradeArtifactPaths,
   httpAuditJsonlPath,
   pipelineEventsJsonlPath,
@@ -54,7 +54,7 @@ const BUNDLE_FILES = Object.freeze([
   "problem-clusters.json",
   "sessions.json",
   "tool-events.filtered.jsonl",
-  "agent-runs.filtered.jsonl",
+  "tool-invocations.filtered.jsonl",
   "source-paths.txt",
 ]);
 
@@ -145,17 +145,17 @@ function writeJsonl(filePath, events) {
 
 function readTelemetry(currentVersion, env) {
   const toolRead = readToolTelemetryEvents({ env });
-  const agentRunRead = readAgentRunTelemetryEvents({ env });
+  const toolInvocationRead = readToolInvocationTelemetryEvents({ env });
   const toolEvents = sortEvents(toolRead.events.filter((event) => versionMatches(event, currentVersion)));
-  const agentRuns = sortEvents(agentRunRead.events.filter((event) => versionMatches(event, currentVersion)));
+  const agentRuns = sortEvents(toolInvocationRead.events.filter((event) => versionMatches(event, currentVersion)));
   return {
     toolRead,
-    agentRunRead,
+    toolInvocationRead,
     toolEvents,
     agentRuns,
     exclusions: {
       tool_events: countByVersion(toolRead.events, currentVersion),
-      agent_runs: countByVersion(agentRunRead.events, currentVersion),
+      agent_runs: countByVersion(toolInvocationRead.events, currentVersion),
     },
   };
 }
@@ -244,7 +244,7 @@ function existingSourcePathEntries(targetDomain) {
     ["state", statePath(targetDomain)],
     ["attack_surface", attackSurfacePath(targetDomain)],
     ["pipeline_events", pipelineEventsJsonlPath(targetDomain)],
-    ["findings", findingsJsonlPath(targetDomain)],
+    ["claims", claimsJsonlPath(targetDomain)],
     ["coverage", coverageJsonlPath(targetDomain)],
     ["technique_attempts", techniqueAttemptsJsonlPath(targetDomain)],
     ["technique_pack_reads", techniquePackReadsJsonlPath(targetDomain)],
@@ -417,7 +417,7 @@ function buildMcpToolErrorClusters(toolEvents) {
   }));
 }
 
-function buildHunterBlockClusters(agentRuns) {
+function buildEvaluatorBlockClusters(agentRuns) {
   const groups = new Map();
   for (const event of agentRuns) {
     if (event.status !== "blocked") continue;
@@ -471,12 +471,12 @@ function buildMalformedArtifactClusters(sessions, telemetry) {
       errors: [`Malformed tool-events.jsonl lines: ${telemetry.toolRead.malformed_lines}`],
     });
   }
-  if (telemetry.agentRunRead.malformed_lines > 0) {
+  if (telemetry.toolInvocationRead.malformed_lines > 0) {
     clusters.push({
-      source: "agent-runs",
-      path: telemetry.agentRunRead.telemetry_path,
-      count: telemetry.agentRunRead.malformed_lines,
-      errors: [`Malformed agent-runs.jsonl lines: ${telemetry.agentRunRead.malformed_lines}`],
+      source: "tool-invocations",
+      path: telemetry.toolInvocationRead.telemetry_path,
+      count: telemetry.toolInvocationRead.malformed_lines,
+      errors: [`Malformed tool-invocations.jsonl lines: ${telemetry.toolInvocationRead.malformed_lines}`],
     });
   }
   for (const session of sessions) {
@@ -561,9 +561,9 @@ function buildEvidenceReportCoverageBlockers(sessions) {
         error: evidence.error || null,
       });
     }
-    if (artifacts.state && artifacts.state.phase === "REPORT" && artifacts.report && !artifacts.report.present) {
+    if (artifacts.state && artifacts.state.lifecycle_state === "REPORT" && artifacts.report && !artifacts.report.present) {
       addBlocker(groups, "report_missing", session, {
-        phase: artifacts.state.phase,
+        lifecycle_state: artifacts.state.lifecycle_state,
         findings_total: artifacts.findings ? artifacts.findings.total : 0,
         final_reportable_count: evidence.final_reportable_count || 0,
       });
@@ -651,7 +651,7 @@ function buildProblemClusters({ bob_version: currentVersion, generated_at: gener
     clusters: {
       pipeline_bottlenecks: buildPipelineBottleneckClusters(sessions),
       mcp_tool_errors: buildMcpToolErrorClusters(telemetry.toolEvents),
-      hunter_blocks: buildHunterBlockClusters(telemetry.agentRuns),
+      evaluator_blocks: buildEvaluatorBlockClusters(telemetry.agentRuns),
       malformed_artifacts: buildMalformedArtifactClusters(sessions, telemetry),
       evidence_report_coverage_blockers: buildEvidenceReportCoverageBlockers(sessions),
       version_exclusions: buildVersionExclusionClusters(manifestExclusions),
@@ -735,8 +735,8 @@ function renderSummary({ manifest, problemClusters, replaySnapshot }) {
     ),
     "",
     ...renderClusterLines(
-      "Hunter Blocks",
-      clusters.hunter_blocks,
+      "Evaluator Blocks",
+      clusters.evaluator_blocks,
       (cluster) => `${cluster.block_code}: ${cluster.count} blocked run${cluster.count === 1 ? "" : "s"}`,
     ),
     "",
@@ -747,7 +747,7 @@ function renderSummary({ manifest, problemClusters, replaySnapshot }) {
     ),
     "",
     ...renderReplayBudgetSection(replaySnapshot),
-    "This summary is deterministic telemetry clustering. It is not an assessment of target validity or exploitability.",
+    "This summary is deterministic telemetry clustering. It is not an assessment of target validity or impact viability.",
     "",
   ];
   return lines.join("\n");
@@ -757,7 +757,7 @@ function renderAgentPrompt({ manifest }) {
   return [
     "# Fresh Agent Prompt: Improve Hacker Bob From This Release Bundle",
     "",
-    `This bundle was generated for Hacker Bob version ${manifest.bob_version}. It is for improving Hacker Bob itself, not for hunting, resuming sessions, interacting with targets, or contacting third-party systems.`,
+    `This bundle was generated for Hacker Bob version ${manifest.bob_version}. It is for improving Hacker Bob itself, not for evaluating, resuming sessions, interacting with targets, or contacting third-party systems.`,
     "",
     "Start here, in order:",
     "1. Read `summary.md`.",
@@ -768,8 +768,9 @@ function renderAgentPrompt({ manifest }) {
     "",
     "Use `source-paths.txt` only when you need raw local session evidence. Target names, paths, logs, reports, and transcript-derived metadata are sensitive; preserve user privacy and avoid copying raw target data into public docs, commits, or issue text.",
     "",
-    "Compatibility storage paths are intentionally still used by this release:",
-    "- `~/bounty-agent-sessions`",
+    "Storage roots used by this release:",
+    "- `~/hacker-bob-sessions` (canonical session root)",
+    "- `~/bounty-agent-sessions` (legacy session root, read-fallback preserved until v2.1.0 `--purge-legacy-session-root`)",
     "- `~/bounty-agent-telemetry`",
     "",
     "Do not rename those storage roots as part of a routine improvement patch unless the operator explicitly asks for a storage migration.",
@@ -816,7 +817,7 @@ function buildManifest({
     output_files: BUNDLE_FILES.slice(),
     inputs: {
       tool_telemetry_path: toolTelemetryPath(env),
-      agent_run_telemetry_path: agentRunTelemetryPath(env),
+      tool_invocation_telemetry_path: toolInvocationTelemetryPath(env),
     },
     counts: {
       included_sessions: sessions.length,
@@ -824,7 +825,7 @@ function buildManifest({
       tool_events: telemetry.toolEvents.length,
       agent_runs: telemetry.agentRuns.length,
       malformed_tool_event_lines: telemetry.toolRead.malformed_lines,
-      malformed_agent_run_lines: telemetry.agentRunRead.malformed_lines,
+      malformed_tool_invocation_lines: telemetry.toolInvocationRead.malformed_lines,
       source_paths: sources.length,
       version_excluded_tool_events: telemetry.exclusions.tool_events.reduce((sum, row) => sum + row.count, 0),
       version_excluded_agent_runs: telemetry.exclusions.agent_runs.reduce((sum, row) => sum + row.count, 0),
@@ -850,7 +851,7 @@ function exportBobReleaseBundle(options = {}) {
   const sessionRead = readSessions(currentVersion, env);
   const sources = uniqueSourcePaths([
     { kind: "telemetry_tool_events", path: toolTelemetryPath(env) },
-    { kind: "telemetry_agent_runs", path: agentRunTelemetryPath(env) },
+    { kind: "telemetry_tool_invocations", path: toolInvocationTelemetryPath(env) },
     ...sessionRead.sourcePaths,
   ]);
   const manifest = buildManifest({
@@ -885,7 +886,7 @@ function exportBobReleaseBundle(options = {}) {
     problem_clusters: path.join(bundleDir, "problem-clusters.json"),
     sessions: path.join(bundleDir, "sessions.json"),
     tool_events: path.join(bundleDir, "tool-events.filtered.jsonl"),
-    agent_runs: path.join(bundleDir, "agent-runs.filtered.jsonl"),
+    agent_runs: path.join(bundleDir, "tool-invocations.filtered.jsonl"),
     source_paths: path.join(bundleDir, "source-paths.txt"),
   };
 

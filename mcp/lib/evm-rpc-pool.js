@@ -96,7 +96,7 @@ function resolveEvmRpcEndpoints(chainId) {
 }
 
 function summarizeRpcPoolForBrief(chainFamily, chainId) {
-  // Dispatch by chain_family so SVM/Aptos/Sui/Substrate/CosmWasm hunters
+  // Dispatch by chain_family so SVM/Aptos/Sui/Substrate/CosmWasm evaluators
   // receive their proper RPC ladders rather than the legacy evm-only
   // placeholder. Lazy-require family pools to avoid circular import
   // (svm-rpc-pool depends on this module's isPublicHttpsUrl helper indirectly
@@ -134,10 +134,10 @@ function summarizeRpcPoolForBrief(chainFamily, chainId) {
   } catch {
     endpoints = [];
   }
-  // Cap the brief view at 6 endpoints (matches HUNTER_BRIEF_SURFACE_ARRAY_LIMITS.fork_rpc_pool).
+  // Cap the brief view at 6 endpoints (matches ASSIGNMENT_BRIEF_SURFACE_ARRAY_LIMITS.fork_rpc_pool).
   const trimmed = endpoints.slice(0, 6).map(redactRpcEndpoint);
   const note = endpoints.length === 0
-    ? `No default RPC ladder for chain_id ${numericChainId}. Hunters must pass 'endpoints' explicitly to bounty_evm_* tools and 'fork_urls' to bounty_foundry_run. Operators can set BOB_EVM_RPCS_${numericChainId}=url1,url2 in the MCP server env (before launch) for a default.`
+    ? `No default RPC ladder for chain_id ${numericChainId}. Evaluators must pass 'endpoints' explicitly to bob_evm_* tools and 'fork_urls' to bob_foundry_run. Operators can set BOB_EVM_RPCS_${numericChainId}=url1,url2 in the MCP server env (before launch) for a default.`
     : null;
   return {
     chain_family: chainFamily,

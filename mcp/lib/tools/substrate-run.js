@@ -17,8 +17,9 @@ async function handler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_substrate_run",
-  description: "Run `cargo test --exact <match_test>` on a local ink! contract harness, optionally pinned to a substrate network for harnesses that opt into mainnet-clone fixtures via BOB_SUBSTRATE_FORK_URL (e.g., chopsticks-fork or substrate-contracts-node replicas). Forks use direct public HTTPS RPC endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet RPC has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream cargo/harness socket. On RPC failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the hunter can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from cargo test output (test ... ok|FAILED|ignored). Requires `cargo` in PATH on the user's machine; if absent, returns reason: substrate_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
+  name: "bob_substrate_run",
+  aliases: ["bounty_substrate_run"],
+  description: "Run `cargo test --exact <match_test>` on a local ink! contract harness, optionally pinned to a substrate network for harnesses that opt into mainnet-clone fixtures via BOB_SUBSTRATE_FORK_URL (e.g., chopsticks-fork or substrate-contracts-node replicas). Forks use direct public HTTPS RPC endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet RPC has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream cargo/harness socket. On RPC failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the evaluator can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from cargo test output (test ... ok|FAILED|ignored). Requires `cargo` in PATH on the user's machine; if absent, returns reason: substrate_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -35,7 +36,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "harness_path", "match_test"]
   },
   handler,
-  role_bundles: ["hunter-substrate", "verifier", "evidence"],
+  role_bundles: ["evaluator-substrate", "verifier", "evidence"],
   mutating: false,
   global_preapproval: false,
   network_access: true,

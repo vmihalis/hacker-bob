@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { createSafeInstallFs } = require("../../scripts/lib/install-fs.js");
+const { BRUTALIST_MCP_SERVER } = require("../../scripts/merge-claude-config.js");
 
 const id = "generic-mcp";
 const PROMPT_SOURCE_DIR = path.join("adapters", "generic-mcp", "prompts");
@@ -36,19 +38,10 @@ function dirExists(dirPath) {
   }
 }
 
-// External adversarial-roast MCP server consumed by the brutalist-verifier
-// role. Optional — registered alongside bountyagent but not required at
-// runtime. See prompts/roles/brutalist-verifier.md for the graceful-fallback
-// contract.
-const BRUTALIST_MCP_SERVER = Object.freeze({
-  command: "npx",
-  args: ["-y", "@brutalist/mcp@latest"],
-});
-
 function mergeConfig({ serverPath }) {
   return {
     mcpServers: {
-      bountyagent: {
+      "hacker-bob": {
         command: "node",
         args: [serverPath],
       },
@@ -73,21 +66,25 @@ function managedDirs() {
   ];
 }
 
-function copyPromptDocs(sourceRoot, targetAbs) {
+function copyPromptDocs(sourceRoot, targetAbs, installFs) {
   let copied = 0;
   for (const name of PROMPT_FILES) {
     const source = path.join(sourceRoot, PROMPT_SOURCE_DIR, name);
     const destination = path.join(targetAbs, PROMPT_TARGET_DIR, name);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(source, destination);
+    installFs.copyFile(source, destination);
     copied += 1;
   }
   return copied;
 }
 
-function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists }) {
+function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists, installFs }) {
+  const safeFs = installFs || createSafeInstallFs(targetAbs, { label: "install target" });
+  const safeReadJsonIfExists = readJsonIfExists || ((filePath, fallback) => safeFs.readJsonIfExists(filePath, fallback, {
+    kind: "config file",
+    symlink: "reject",
+  }));
   const mcpPath = path.join(targetAbs, ".mcp.json");
-  const existing = readJsonIfExists ? readJsonIfExists(mcpPath, {}) : fileExists(mcpPath) ? readJson(mcpPath) : {};
+  const existing = safeReadJsonIfExists(mcpPath, {});
   const next = {
     ...existing,
     mcpServers: {
@@ -95,9 +92,12 @@ function install({ sourceRoot, targetAbs, serverPath, readJsonIfExists }) {
       ...mergeConfig({ serverPath }).mcpServers,
     },
   };
-  writeJson(mcpPath, next);
+  safeFs.writeJson(mcpPath, next, {
+    kind: ".mcp.json",
+    rejectExistingSymlink: true,
+  });
   return {
-    promptDocs: copyPromptDocs(sourceRoot, targetAbs),
+    promptDocs: copyPromptDocs(sourceRoot, targetAbs, safeFs),
     mcpPath,
   };
 }
@@ -129,10 +129,10 @@ function doctor({ targetAbs }) {
   } else {
     try {
       const mcp = readJson(mcpPath);
-      if (JSON.stringify(mcp.mcpServers && mcp.mcpServers.bountyagent) === JSON.stringify(expected.mcpServers.bountyagent)) {
-        addCheck(checks, "ok", "generic_mcp_config", ".mcp.json points bountyagent at this project's mcp/server.js");
+      if (JSON.stringify(mcp.mcpServers && mcp.mcpServers["hacker-bob"]) === JSON.stringify(expected.mcpServers["hacker-bob"])) {
+        addCheck(checks, "ok", "generic_mcp_config", ".mcp.json points hacker-bob at this project's mcp/server.js");
       } else {
-        addCheck(checks, "error", "generic_mcp_config", ".mcp.json is missing the Bob-managed bountyagent server entry");
+        addCheck(checks, "error", "generic_mcp_config", ".mcp.json is missing the Bob-managed hacker-bob server entry");
       }
       // brutalist MCP is optional — info-level only, never errors.
       const brutalistEntry = mcp.mcpServers && mcp.mcpServers.brutalist;
@@ -211,13 +211,25 @@ function removeMcpConfig(targetAbs, result) {
     return;
   }
   const expected = mergeConfig({ serverPath: path.join(targetAbs, "mcp", "server.js") });
-  if (!mcp || !mcp.mcpServers || !mcp.mcpServers.bountyagent) return;
-  if (JSON.stringify(mcp.mcpServers.bountyagent) !== JSON.stringify(expected.mcpServers.bountyagent)) {
-    result.skipped.push({ type: "config", path: ".mcp.json", reason: "bountyagent server entry is not Bob-managed" });
+  if (!mcp || !mcp.mcpServers) return;
+  // Uninstall must handle both the canonical `hacker-bob` server key and the
+  // legacy `bountyagent` key from v1.x installs that bypassed the migration
+  // shim (e.g. operator-deleted .mcp.json before reinstall).
+  const candidates = ["hacker-bob", "bountyagent"].filter((key) => key in mcp.mcpServers);
+  if (candidates.length === 0) return;
+  const mismatched = candidates.filter((key) => (
+    JSON.stringify(mcp.mcpServers[key]) !== JSON.stringify(expected.mcpServers["hacker-bob"])
+  ));
+  if (mismatched.length === candidates.length) {
+    result.skipped.push({ type: "config", path: ".mcp.json", reason: `${mismatched.join(", ")} server entry is not Bob-managed` });
     return;
   }
   const next = { ...mcp, mcpServers: { ...mcp.mcpServers } };
-  delete next.mcpServers.bountyagent;
+  for (const key of candidates) {
+    if (JSON.stringify(mcp.mcpServers[key]) === JSON.stringify(expected.mcpServers["hacker-bob"])) {
+      delete next.mcpServers[key];
+    }
+  }
   // Also remove the Bob-managed brutalist entry if present and unmodified.
   if (
     next.mcpServers.brutalist

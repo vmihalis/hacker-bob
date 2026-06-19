@@ -11,7 +11,8 @@ function ingestAuditReportHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_ingest_audit_report",
+  name: "bob_ingest_audit_report",
+  aliases: ["bounty_ingest_audit_report"],
   description:
     "Parse a markdown audit report into structured findings and persist them to audit-reports.jsonl. Idempotent by source_doc_hash; later ingestion of the same report is a no-op for unchanged content. Each finding gains a vulnerability_class label (reentrancy, access_control, arithmetic_overflow, oracle_manipulation, ...) so I5's invariant template corpus can suggest matching Foundry harnesses.",
   inputSchema: {

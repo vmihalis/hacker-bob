@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   SEVERITY_VALUES,
+  VERIFICATION_REASONING_DIVERGENCE_VALUES,
   VERIFICATION_ROUND_VALUES,
   VERIFY_QA_SAMPLE_MAX,
   VERIFY_SMALL_REPORTABLE_THRESHOLD,
@@ -14,6 +15,7 @@ const {
 } = require("./validation.js");
 const {
   evidencePackPaths,
+  proofBundlePaths,
   verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationManifestPath,
@@ -38,8 +40,8 @@ const {
   isPlainObject,
 } = require("./verification-contracts.js");
 const {
-  readFindingsFromJsonl,
-} = require("./finding-store.js");
+  findingIdSetForVerificationContext,
+} = require("./verification-finding-id-adapter.js");
 const {
   normalizeVerificationRoundDocument,
 } = require("./verification-round-store.js");
@@ -116,10 +118,14 @@ function readStateSafe(domain) {
   }
 }
 
-function safeAppendPipelineEvent(domain, type, fields) {
+function safeAppendPipelineEvent(domain, type, fields, governanceContext) {
   try {
-    pipelineEventsLib().safeAppendPipelineEventDirect(domain, type, fields);
+    pipelineEventsLib().safeAppendPipelineEventDirect(domain, type, fields, governanceContext);
   } catch {}
+}
+
+function governanceContextForDomain(domain) {
+  return require("./governance-context.js").safeGovernanceContextForDomain(domain);
 }
 
 function verificationSourceFiles(domain) {
@@ -136,6 +142,9 @@ function verificationSourceFiles(domain) {
   const evidence = evidencePackPaths(domain);
   files.push([path.basename(evidence.json), evidence.json]);
   files.push([path.basename(evidence.markdown), evidence.markdown]);
+  const proofBundles = proofBundlePaths(domain);
+  if (fs.existsSync(proofBundles.json)) files.push([path.basename(proofBundles.json), proofBundles.json]);
+  if (fs.existsSync(proofBundles.markdown)) files.push([path.basename(proofBundles.markdown), proofBundles.markdown]);
   return files;
 }
 
@@ -213,7 +222,7 @@ function pruneOldVerificationArchives(domain) {
       status: "pruned",
       source: "verification_v2",
       counts: { pruned: pruned.length },
-    });
+    }, governanceContextForDomain(domain));
   }
   if (fs.existsSync(dir)) return pruned;
   return pruned;
@@ -298,7 +307,7 @@ function archiveCurrentV2Attempt(domain, { attemptId, snapshotHash }) {
         files: Object.keys(files).length,
         missing_files: missingFiles.length,
       },
-    });
+    }, governanceContextForDomain(domain));
     pruneOldVerificationArchives(domain);
     return manifest;
   } catch (error) {
@@ -335,18 +344,21 @@ function prepareVerificationEntry(domain, state, { now = new Date() } = {}) {
 
   const enteredAt = now.toISOString();
   const attemptId = verificationAttemptId(now);
-  const snapshot = buildVerificationSnapshot(domain, { attemptId, createdAt: enteredAt });
+  const snapshot = buildVerificationSnapshot(domain, { attemptId, createdAt: enteredAt, now });
   writeFileAtomic(verificationSnapshotPath(domain), `${JSON.stringify(snapshot, null, 2)}\n`);
   safeAppendPipelineEvent(domain, "verification_snapshot_created", {
     phase: "VERIFY",
     status: "created",
-    source: "bounty_transition_phase",
+    source: "bob_advance_session",
     verification_attempt_id: attemptId,
     verification_snapshot_hash: snapshot.snapshot_hash,
+    claim_freeze_id: snapshot.claim_freeze_id,
     counts: {
-      findings: snapshot.finding_ids.length,
+      claims: Array.isArray(snapshot.claim_ids) ? snapshot.claim_ids.length : 0,
+      // LEGACY: removed in Plane D
+      findings: Array.isArray(snapshot.finding_ids) ? snapshot.finding_ids.length : 0,
     },
-  });
+  }, governanceContextForDomain(domain));
 
   return {
     schema_version: VERIFICATION_SCHEMA_V2,
@@ -434,7 +446,13 @@ function assertCurrentV2RoundDocument(domain, document, { expectedRound = null, 
 
 function loadCurrentV2Round(domain, round, { state = null, snapshot = null } = {}) {
   const document = loadJsonDocumentStrict(verificationRoundPaths(domain, round).json, `${round} verification round JSON`);
-  const findingIdSet = new Set((snapshot ? snapshot.finding_ids : readFindingsFromJsonl(domain).map((finding) => finding.id)));
+  // The snapshot is authoritative for claim membership when an attempt is
+  // active. We address claims by finding_id during the legacy dual-write
+  // window via the findingIdSetFromSnapshot projection.
+  const findingIdSet = findingIdSetForVerificationContext({
+    domain,
+    snapshot,
+  });
   const normalized = normalizeVerificationRoundDocument(document, {
     expectedDomain: domain,
     expectedRound: round,
@@ -463,20 +481,44 @@ function findingDiffs(a, b) {
   return diffs;
 }
 
+function artifactDivergence(rawB, rawC) {
+  const bReasons = rawB && Array.isArray(rawB.confidence_reasons) ? rawB.confidence_reasons : [];
+  const cReasons = rawC && Array.isArray(rawC.confidence_reasons) ? rawC.confidence_reasons : [];
+  if (!bReasons.includes("fresh_replay_passed") || !cReasons.includes("fresh_replay_passed")) {
+    return "none";
+  }
+  const bHashes = rawB && isPlainObject(rawB.artifact_hashes) ? rawB.artifact_hashes : {};
+  const cHashes = rawC && isPlainObject(rawC.artifact_hashes) ? rawC.artifact_hashes : {};
+  const bKeys = Object.keys(bHashes).sort((a, b) => a.localeCompare(b));
+  const cKeys = Object.keys(cHashes).sort((a, b) => a.localeCompare(b));
+  if (bKeys.length === 0 || cKeys.length === 0) return "none";
+
+  const cKeySet = new Set(cKeys);
+  const sharedKeys = bKeys.filter((key) => cKeySet.has(key));
+  if (sharedKeys.length === 0) return "artifact_key_divergence";
+  if (sharedKeys.some((key) => !Object.is(bHashes[key], cHashes[key]))) {
+    return "artifact_hash_divergence";
+  }
+  return "none";
+}
+
 function isHighOrCritical(severity) {
   return ["critical", "high"].includes(severity);
 }
 
-function replayReasonForResult(result) {
+function replayReasonsForResult(result) {
   const reasons = Array.isArray(result.confidence_reasons) ? result.confidence_reasons : [];
-  if (result.confidence === "low" || result.confidence === "medium") return "low_confidence";
-  if (reasons.includes("auth_expired")) return "auth";
-  if (reasons.includes("tooling_blocked")) return "tooling";
-  if (reasons.includes("disambiguation_failed")) return "disambiguation";
-  if (reasons.includes("roast_disagreement")) return "roast";
-  if (reasons.includes("manual_inference")) return "manual_inference";
-  if (reasons.includes("state_changed")) return "state_changed";
-  return null;
+  const replayReasons = [];
+  if (result.confidence === "low" || result.confidence === "medium") replayReasons.push("low_confidence");
+  if (reasons.includes("auth_expired")) replayReasons.push("auth");
+  if (reasons.includes("tooling_blocked")) replayReasons.push("tooling");
+  if (reasons.includes("disambiguation_failed")) replayReasons.push("disambiguation");
+  if (reasons.includes("roast_disagreement")) replayReasons.push("roast");
+  if (reasons.includes("manual_inference")) replayReasons.push("manual_inference");
+  if (reasons.includes("state_changed")) replayReasons.push("state_changed");
+  if (reasons.includes("unruled_confounder")) replayReasons.push("unruled_confounder");
+  if (reasons.includes("missing_control")) replayReasons.push("missing_control");
+  return replayReasons;
 }
 
 function deterministicQaSample(targetDomain, state, snapshot, candidates) {
@@ -521,6 +563,7 @@ function compactAdjudicationContextFromDocument(document, { current = true, stal
         replay_reasons: [],
         disagreement: false,
         disagreement_fields: [],
+        reasoning_divergence: "none",
         brutalist: null,
         balanced: null,
       });
@@ -558,6 +601,16 @@ function compactAdjudicationContextFromDocument(document, { current = true, stal
       : [];
   }
 
+  const reasoningDivergence = isPlainObject(document.reasoning_divergence)
+    ? document.reasoning_divergence
+    : {};
+  for (const item of byFinding.values()) {
+    const value = reasoningDivergence[item.finding_id];
+    if (VERIFICATION_REASONING_DIVERGENCE_VALUES.includes(value)) {
+      item.reasoning_divergence = value;
+    }
+  }
+
   return {
     current: true,
     stale: false,
@@ -589,6 +642,8 @@ function buildVerificationAdjudication(args) {
   const dispositionDiffs = [];
   const severityDiffs = [];
   const reportableDiffs = [];
+  const reasoningDivergence = {};
+  const reasoningDivergenceIds = new Set();
   const replayRequired = new Set();
   const replayReasons = {};
   const unionReportables = new Set();
@@ -618,6 +673,14 @@ function buildVerificationAdjudication(args) {
       if (diffs.includes("severity")) severityDiffs.push(findingId);
       if (diffs.includes("reportable")) reportableDiffs.push(findingId);
     }
+    if (diffs.length === 0) {
+      const rd = artifactDivergence(brutalistById.get(findingId), balancedById.get(findingId));
+      if (rd !== "none") {
+        reasoningDivergence[findingId] = rd;
+        reasoningDivergenceIds.add(findingId);
+        if (rd === "artifact_key_divergence") addReplay(findingId, "reasoning_divergence");
+      }
+    }
     if ((b.reportable || c.reportable) && (isHighOrCritical(b.severity) || isHighOrCritical(c.severity))) {
       addReplay(findingId, "agreed_high_or_critical_reportable");
     }
@@ -625,8 +688,9 @@ function buildVerificationAdjudication(args) {
       addReplay(findingId, "state_sensitive");
     }
     for (const result of [brutalistById.get(findingId), balancedById.get(findingId)]) {
-      const reason = replayReasonForResult(result || {});
-      if (reason) addReplay(findingId, reason);
+      for (const reason of replayReasonsForResult(result || {})) {
+        addReplay(findingId, reason);
+      }
     }
   }
 
@@ -639,6 +703,9 @@ function buildVerificationAdjudication(args) {
     .map((entry) => entry.finding_id);
   const qaSampledIds = deterministicQaSample(domain, state, snapshot, qaCandidates);
   for (const findingId of qaSampledIds) addReplay(findingId, "qa_sample");
+
+  const reasoningDivergenceEntries = Object.entries(reasoningDivergence)
+    .sort(([a], [b]) => a.localeCompare(b));
 
   const payload = {
     version: 1,
@@ -660,6 +727,8 @@ function buildVerificationAdjudication(args) {
     disposition_diffs: dispositionDiffs,
     severity_diffs: severityDiffs,
     reportable_diffs: reportableDiffs,
+    reasoning_divergence: Object.fromEntries(reasoningDivergenceEntries),
+    reasoning_divergence_ids: Array.from(reasoningDivergenceIds).sort((a, b) => a.localeCompare(b)),
     replay_required_ids: Array.from(replayRequired).sort((a, b) => a.localeCompare(b)),
     replay_reasons: Object.fromEntries(Object.entries(replayReasons).sort(([a], [b]) => a.localeCompare(b)).map(([id, reasons]) => [id, reasons.sort()])),
     replay_skipped_ids: Array.from(unionReportables).filter((id) => !replayRequired.has(id)).sort((a, b) => a.localeCompare(b)),
@@ -676,6 +745,7 @@ function buildVerificationAdjudication(args) {
       union_reportables: unionReportables.size,
       replay_required: replayRequired.size,
       qa_sampled: qaSampledIds.length,
+      reasoning_divergence: reasoningDivergenceIds.size,
     },
   };
   const adjudicationPlanHash = computeAdjudicationPlanHash(payload);
@@ -688,7 +758,7 @@ function buildVerificationAdjudication(args) {
   safeAppendPipelineEvent(domain, "verification_adjudication_built", {
     phase: "VERIFY",
     status: "built",
-    source: "bounty_build_verification_adjudication",
+    source: "bob_build_verification_adjudication",
     verification_attempt_id: state.verification_attempt_id,
     verification_snapshot_hash: state.verification_snapshot_hash,
     adjudication_plan_hash: adjudicationPlanHash,
@@ -697,8 +767,9 @@ function buildVerificationAdjudication(args) {
       disagreements: disagreements.length,
       replay_required: replayRequired.size,
       qa_sampled: qaSampledIds.length,
+      reasoning_divergence: reasoningDivergenceIds.size,
     },
-  });
+  }, governanceContextForDomain(domain));
   refreshVerificationManifest(domain);
   return JSON.stringify({
     version: 1,
@@ -1231,7 +1302,7 @@ function nextVerificationAction({ schemaVersion, state, rounds, adjudication, ev
   if (!state || !state.verification_attempt_id) return "transition CHAIN -> VERIFY to create v2 verification attempt";
   if (staleBlockers.length > 0) return "restart VERIFY/adjudication";
   if (!rounds.brutalist.current || !rounds.balanced.current) return "run independent brutalist and balanced verifier rounds";
-  if (!adjudication.current) return "call bounty_build_verification_adjudication";
+  if (!adjudication.current) return "call bob_build_verification_adjudication";
   if (!rounds.final.current) return "run final verifier with the current adjudication_plan_hash";
   if (!evidence.valid) return "write or repair evidence packs for current final verification";
   return "transition VERIFY -> GRADE";
@@ -1289,6 +1360,7 @@ module.exports = {
   VERIFICATION_REPLAY_LEASE_TTL_MS,
   VERIFICATION_SCHEMA_V1,
   VERIFICATION_SCHEMA_V2,
+  artifactDivergence,
   assertCurrentV2RoundDocument,
   assertEvidenceMatchesFinal,
   assertAdjudicationRoundInputsCurrent,

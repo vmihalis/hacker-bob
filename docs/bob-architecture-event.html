@@ -1,9 +1,16 @@
 <!doctype html>
+<!--
+  v1.x snapshot. These slides describe the legacy eight-phase FSM
+  (SURFACE_DISCOVERY -> AUTH -> ... -> EXPLORE) that the v2.0 frontier-topology
+  rewrite retired. The current lifecycle is the six-state SETUP ->
+  OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT machine; see
+  docs/releases/v2.0.0.md and CHANGELOG.md v2.0.0.
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hacker Bob Architecture Slides</title>
+  <title>Hacker Bob Architecture Slides (v1.x snapshot)</title>
   <style>
     :root {
       --ink: #111a16;
@@ -1204,14 +1211,14 @@
         <div class="content wide split reverse">
           <div>
             <p class="kicker">Bug bounty basics</p>
-            <h2>Permission to hunt, with a rulebook.</h2>
+            <h2>Permission to evaluate, with a rulebook.</h2>
             <p class="subtitle">A company publishes scope, rules, rewards, and a report form. You test only the allowed assets and submit reproducible evidence.</p>
             <div class="pill-row bounty-platforms">
               <span class="pill"><a href="https://www.hackerone.com/bug-bounty-programs">HackerOne</a></span>
               <span class="pill"><a href="https://www.bugcrowd.com/bug-bounty-list/">Bugcrowd</a></span>
               <span class="pill"><a href="https://www.intigriti.com/researchers/bug-bounty-programs">Intigriti</a></span>
               <span class="pill"><a href="https://www.yeswehack.com/edu/">YesWeHack</a></span>
-              <span class="pill"><a href="https://huntr.com/">huntr AI/ML</a></span>
+              <span class="pill"><a href="https://example.com/ai-ml-program">AI/ML program</a></span>
             </div>
           </div>
           <div class="mini-flow">
@@ -1260,23 +1267,23 @@
         <div class="foot"><span>Pattern</span><span>Identity, SaaS, and data access are primary targets</span></div>
       </section>
 
-      <section class="slide amber" data-title="April incidents exploitation">
+      <section class="slide amber" data-title="April incidents impact demonstration">
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content split">
           <div>
-            <p class="kicker">Recent incidents: exploitation</p>
+            <p class="kicker">Recent incidents: impact demonstration</p>
             <h2>Zero-days and exposed admin surfaces are still live fire.</h2>
-            <p class="subtitle">April reporting included active exploitation around Fortinet EMS, Microsoft Defender, Windows Shell, LiteLLM, Qinglong, cPanel/WHM, and WordPress plugin backdoors.</p>
+            <p class="subtitle">April reporting included active impact demonstration around Fortinet EMS, Microsoft Defender, Windows Shell, LiteLLM, Qinglong, cPanel/WHM, and WordPress plugin backdoors.</p>
           </div>
           <div class="funnel">
             <div class="funnel-row">Exposed management</div>
             <div class="funnel-row">Weak auth</div>
-            <div class="funnel-row">Known exploited flaws</div>
+            <div class="funnel-row">Known impact proofed flaws</div>
             <div class="funnel-row">Credential theft</div>
             <div class="funnel-row">Data impact</div>
           </div>
         </div>
-        <div class="foot"><span>Pattern</span><span>Attackers combine old gaps with fast exploitation</span></div>
+        <div class="foot"><span>Pattern</span><span>Attackers combine old gaps with fast impact demonstration</span></div>
       </section>
 
       <section class="slide phase-break dark" data-title="The big shift">
@@ -1336,8 +1343,8 @@
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content narrow">
           <p class="kicker">The problem</p>
-          <p class="big">Bug bounty hunting is not one task.</p>
-          <p class="subtitle">It is recon, auth, testing, chaining, verifying, collecting evidence, grading, and writing.</p>
+          <p class="big">Bug bounty evaluating is not one task.</p>
+          <p class="subtitle">It is surface-discovery, auth, testing, chaining, verifying, collecting evidence, grading, and writing.</p>
         </div>
         <div class="foot"><span>Start here</span><span>Bob is built around the workflow</span></div>
       </section>
@@ -1346,7 +1353,7 @@
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content narrow center">
           <p class="kicker">One sentence</p>
-          <p class="big">Bob turns the hunt into a <em>state machine with receipts.</em></p>
+          <p class="big">Bob turns the evaluate into a <em>state machine with receipts.</em></p>
           <p class="subtitle">Every phase leaves structured evidence behind.</p>
         </div>
         <div class="foot"><span>Simple mental model</span><span>State machine + artifacts</span></div>
@@ -1375,8 +1382,8 @@
           </div>
           <div class="code-card">
             <div class="code-title"><span>Common commands</span><span>Claude Code</span></div>
-            <pre>/bob-hunt target.com
-/bob-hunt resume target.com
+            <pre>/bob-evaluate target.com
+/bob-evaluate resume target.com
 /bob-status
 /bob-debug
 /bob-egress</pre>
@@ -1400,7 +1407,7 @@
             <p class="subtitle">It does not do random target testing. It delegates work and keeps the run on rails.</p>
           </div>
         </div>
-        <div class="foot"><span>Root skill: bob-hunt</span><span>Coordinates, delegates, resumes</span></div>
+        <div class="foot"><span>Root skill: bob-evaluate</span><span>Coordinates, delegates, resumes</span></div>
       </section>
 
       <section class="slide dark" data-title="MCP memory">
@@ -1425,8 +1432,8 @@
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content narrow">
           <p class="kicker">Context strategy</p>
-          <p class="big">Long hunts can drown the model.</p>
-          <p class="subtitle">Recon data, traffic, auth, findings, retries, dead ends, and evidence can quickly become too much for one chat to carry.</p>
+          <p class="big">Long runs can drown the model.</p>
+          <p class="subtitle">Surface-discovery data, traffic, auth, findings, retries, dead ends, and evidence can quickly become too much for one chat to carry.</p>
         </div>
         <div class="foot"><span>The challenge</span><span>Too much context causes drift</span></div>
       </section>
@@ -1453,7 +1460,7 @@
           <p class="kicker">Context strategy</p>
           <h2>Each agent gets a narrow slice.</h2>
           <div class="one-two-three role-slices">
-            <div class="tile"><span class="tag">Hunter</span><strong>One surface</strong><p>Enough detail to test one target area well.</p></div>
+            <div class="tile"><span class="tag">Evaluator</span><strong>One surface</strong><p>Enough detail to test one target area well.</p></div>
             <div class="tile"><span class="tag blue">Verifier</span><strong>One claim set</strong><p>Enough detail to replay and challenge findings.</p></div>
             <div class="tile"><span class="tag amber">Reporter</span><strong>Only survivors</strong><p>Enough detail to write from verified evidence.</p></div>
           </div>
@@ -1461,16 +1468,16 @@
         <div class="foot"><span>Strategic compression</span><span>Less context per agent, better focus</span></div>
       </section>
 
-      <section class="slide" data-title="Hunter brief">
+      <section class="slide" data-title="Evaluator brief">
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content split">
           <div>
             <p class="kicker">Context strategy</p>
-            <h2>The hunter brief is curated.</h2>
+            <h2>The evaluator brief is curated.</h2>
             <p class="subtitle">Bob does not paste the whole session. It builds a compact brief from MCP state.</p>
           </div>
           <div class="code-card">
-            <div class="code-title"><span>Example: hunter brief contents</span><span>high level</span></div>
+            <div class="code-title"><span>Example: evaluator brief contents</span><span>high level</span></div>
             <pre>{
   "assigned_surface": "API-1",
   "auth_hint": "attacker + victim",
@@ -1491,8 +1498,8 @@
             <div class="code-title"><span>Example: state.json</span><span>simplified</span></div>
             <pre>{
   "target": "example.com",
-  "phase": "HUNT",
-  "hunt_wave": 2,
+  "phase": "EVALUATE",
+  "evaluation_wave": 2,
   "pending_wave": null,
   "auth_status": "attacker_and_victim",
   "total_findings": 1
@@ -1513,16 +1520,16 @@
           <p class="kicker">The whole run</p>
           <h2>Seven phases, one direction.</h2>
           <div class="flow">
-            <div class="flow-step"><strong>RECON</strong><span>Find surfaces</span></div>
+            <div class="flow-step"><strong>SURFACE_DISCOVERY</strong><span>Find surfaces</span></div>
             <div class="flow-step"><strong>AUTH</strong><span>Get profiles</span></div>
-            <div class="flow-step"><strong>HUNT</strong><span>Test surfaces</span></div>
+            <div class="flow-step"><strong>EVALUATE</strong><span>Test surfaces</span></div>
             <div class="flow-step"><strong>CHAIN</strong><span>Combine impact</span></div>
             <div class="flow-step"><strong>VERIFY</strong><span>Replay claims</span></div>
             <div class="flow-step"><strong>GRADE</strong><span>Decide quality</span></div>
             <div class="flow-step"><strong>REPORT</strong><span>Write result</span></div>
           </div>
         </div>
-        <div class="foot"><span>FSM</span><span>RECON -> AUTH -> HUNT -> CHAIN -> VERIFY -> GRADE -> REPORT</span></div>
+        <div class="foot"><span>FSM</span><span>SURFACE_DISCOVERY -> AUTH -> EVALUATE -> CHAIN -> VERIFY -> GRADE -> REPORT</span></div>
       </section>
 
       <section class="slide phase-break dark" data-title="Phase 1">
@@ -1531,20 +1538,20 @@
           <div class="phase-number">01</div>
           <div>
             <p class="kicker">Pipeline step</p>
-            <div class="phase-name">RECON</div>
+            <div class="phase-name">SURFACE_DISCOVERY</div>
             <p class="phase-caption">Bob builds the map before anyone starts testing.</p>
           </div>
         </div>
         <div class="foot"><span>Phase 1 of 7</span><span>Output: attack_surface.json</span></div>
       </section>
 
-      <section class="slide" data-title="Recon">
+      <section class="slide" data-title="Surface-discovery">
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content split">
           <div>
-            <p class="phase-label">Phase 1: RECON</p>
+            <p class="phase-label">Phase 1: SURFACE_DISCOVERY</p>
             <h2>Bob first builds a map.</h2>
-            <p class="subtitle">Recon finds attack surfaces and gives each one a stable ID.</p>
+            <p class="subtitle">Surface-discovery finds attack surfaces and gives each one a stable ID.</p>
           </div>
           <div class="code-card">
             <div class="code-title"><span>Example: attack_surface.json</span><span>simplified</span></div>
@@ -1562,7 +1569,7 @@
 }</pre>
           </div>
         </div>
-        <div class="foot"><span>Output</span><span>Surfaces hunters can be assigned to</span></div>
+        <div class="foot"><span>Output</span><span>Surfaces evaluators can be assigned to</span></div>
       </section>
 
       <section class="slide phase-break dark" data-title="Phase 2">
@@ -1638,25 +1645,25 @@
           <div class="phase-number">03</div>
           <div>
             <p class="kicker">Pipeline step</p>
-            <div class="phase-name">HUNT</div>
+            <div class="phase-name">EVALUATE</div>
             <p class="phase-caption">Specialist agents test assigned surfaces in waves.</p>
           </div>
         </div>
         <div class="foot"><span>Phase 3 of 7</span><span>Output: findings, coverage, handoffs</span></div>
       </section>
 
-      <section class="slide" data-title="Hunt waves">
+      <section class="slide" data-title="Evaluation waves">
         <div class="topline"><div class="brand"><img src="hacker-bob.png" alt="Hacker Bob logo"> Hacker Bob</div><div class="slide-count"></div></div>
         <div class="content split">
           <div>
-            <p class="phase-label">Phase 3: HUNT</p>
-            <h2>Hunters work in waves.</h2>
-            <p class="subtitle">One hunter gets one surface. That keeps parallel testing focused.</p>
+            <p class="phase-label">Phase 3: EVALUATE</p>
+            <h2>Evaluators work in waves.</h2>
+            <p class="subtitle">One evaluator gets one surface. That keeps parallel testing focused.</p>
           </div>
           <div class="diagram">
             <div class="diagram-row">
               <div class="block"><span class="tag">Start</span><h3>Assign surfaces</h3><p>MCP writes wave assignments.</p></div>
-              <div class="block dark-block"><span class="tag blue">Run</span><h3>Spawn hunters</h3><p>Agents test in background.</p></div>
+              <div class="block dark-block"><span class="tag blue">Run</span><h3>Spawn evaluators</h3><p>Agents test in background.</p></div>
               <div class="block"><span class="tag amber">Merge</span><h3>Validate handoffs</h3><p>MCP updates session state.</p></div>
             </div>
           </div>
@@ -1669,7 +1676,7 @@
         <div class="content split">
           <div>
             <p class="kicker">JSON example</p>
-            <h2>A hunter leaves a handoff.</h2>
+            <h2>A evaluator leaves a handoff.</h2>
             <p class="subtitle">This tells Bob what happened to the assigned surface.</p>
           </div>
           <div class="code-card">
@@ -1708,7 +1715,7 @@
             <p class="subtitle">Bob records what was tested, blocked, promising, or needs auth.</p>
           </div>
         </div>
-        <div class="foot"><span>Coverage is durable</span><span>Hunters log meaningful tests through MCP</span></div>
+        <div class="foot"><span>Coverage is durable</span><span>Evaluators log meaningful tests through MCP</span></div>
       </section>
 
       <section class="slide" data-title="Finding example">
@@ -1915,7 +1922,7 @@
           </div>
           <div class="decision-list">
             <div class="decision"><span class="tag">SUBMIT</span><div><strong>Ready</strong><p>Verified, evidenced, and worth reporting.</p></div></div>
-            <div class="decision"><span class="tag amber">HOLD</span><div><strong>Needs more work</strong><p>Return to hunting with feedback.</p></div></div>
+            <div class="decision"><span class="tag amber">HOLD</span><div><strong>Needs more work</strong><p>Return to evaluating with feedback.</p></div></div>
             <div class="decision"><span class="tag red">SKIP</span><div><strong>Not reportable</strong><p>Close out with durable reasoning.</p></div></div>
           </div>
         </div>
@@ -2041,7 +2048,7 @@
 hacker-bob doctor /path/to/project
 
 # inside Claude Code
-/bob-hunt target.com</pre>
+/bob-evaluate target.com</pre>
           </div>
         </div>
         <div class="foot"><span>Canonical package</span><span>hacker-bob</span></div>

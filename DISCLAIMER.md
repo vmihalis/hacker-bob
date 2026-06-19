@@ -4,7 +4,7 @@ Hacker Bob is an autonomous security testing tool. Read this before using it.
 
 ## Authorization is your responsibility
 
-Bob will scan, probe, and attempt exploitation of any target you point him at. He may send real requests to third-party services, internal or private-network hosts, authentication providers, SaaS integrations, webhooks, CDNs, or cloud metadata-style hosts when instructed or when a chain depends on them. He does not verify that you have permission. **You are solely responsible for ensuring that:**
+Bob will scan, probe, and attempt impact demonstration of any target you point him at. He may send real requests to third-party services, internal or private-network hosts, authentication providers, SaaS integrations, webhooks, CDNs, or cloud metadata-style hosts when instructed or when a chain depends on them. He does not verify that you have permission. **You are solely responsible for ensuring that:**
 
 1. The target is in scope of an active bug bounty program, a written penetration testing agreement, or a system you own.
 2. The authorization permits the testing methods Bob may perform, including automated scanning, authenticated testing, account creation, signup flows, CAPTCHA-solving services, chaining, and PoC execution.
@@ -16,7 +16,7 @@ If you do not have explicit written authorization, do not run Bob.
 
 ## Bob does not enforce scope for you
 
-Bob's MCP-scoped HTTP tools enforce first-party target-host policy and write audit records through `bounty_http_scan`, while session guard hooks protect Bob-owned artifacts from accidental direct edits. Browser auto-signup uses Bob egress profiles and a target-host request guard, but refuses strict internal-host blocking because Chromium owns final DNS resolution. Bob does not install a shell or browser-wide network containment hook, and raw shell/browser/external recon is not Bob-enforced scope containment. These are operational aids only; they are not legal authorization controls and do not verify permission. The bug bounty program's policy or written testing agreement is the only source of truth.
+Bob's MCP-scoped HTTP tools enforce first-party target-host policy and write audit records through `bounty_http_scan`, while session guard hooks protect Bob-owned artifacts from accidental direct edits. Browser auto-signup uses Bob egress profiles and a target-host request guard, but refuses strict internal-host blocking because Chromium owns final DNS resolution. Bob does not install a shell or browser-wide network containment hook, and raw shell/browser/external surface-discovery is not Bob-enforced scope containment. These are operational aids only; they are not legal authorization controls and do not verify permission. The bug bounty program's policy or written testing agreement is the only source of truth.
 
 ## Legal context
 
@@ -37,7 +37,7 @@ Hacker Bob is provided "AS IS" under the Apache License, Version 2.0. See [`LICE
 
 The authors and contributors are not liable for:
 
-- Damage caused by Bob's scans, probes, or exploit attempts to in-scope, out-of-scope, or third-party systems.
+- Damage caused by Bob's scans, probes, or impact checks to in-scope, out-of-scope, or third-party systems.
 - Service disruption to a target.
 - Data loss, integrity issues, or downstream effects.
 - Legal action taken against you for unauthorized access.

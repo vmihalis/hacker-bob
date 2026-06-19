@@ -17,21 +17,44 @@ const ROOT = path.join(__dirname, "..");
 const AGENTS_DIR = path.join(ROOT, ".claude", "agents");
 
 const AGENT_TOOL_SPECS = Object.freeze({
-  "recon-agent.md": {
-    roleBundles: [],
-    extras: ["Bash", "Read", "Write", "Glob", "Grep"],
+  "surface-discovery-agent.md": {
+    // Cycle T.1 (Plane T) routes the bob_browser_* family through the
+    // surface-discovery role bundle plus the existing session-nucleus read.
+    // Defer to the shared Claude role renderer so the tools line matches the
+    // renderer's output exactly (extras → bundle tools → role mcp_tools).
+    roleId: "surface-discovery",
+    roleBundles: ["surface-discovery"],
+    extras: ["Bash", "Read", "Write", "Glob", "Grep", "mcp__hacker-bob__bob_read_session_nucleus"],
   },
-  "deep-recon-agent.md": {
-    roleBundles: [],
-    extras: ["Bash", "Read", "Write", "Glob", "Grep"],
+  "deep-surface-discovery-agent.md": {
+    roleId: "deep-surface-discovery",
+    roleBundles: ["deep-surface-discovery"],
+    extras: ["Bash", "Read", "Write", "Glob", "Grep", "mcp__hacker-bob__bob_read_session_nucleus"],
   },
   "surface-router-agent.md": {
     roleBundles: [],
-    extras: ["Read", "mcp__bountyagent__bounty_route_surfaces"],
+    extras: ["Read", "mcp__hacker-bob__bob_route_surfaces"],
   },
-  "hunter-agent.md": {
-    roleBundles: ["hunter-shared", "hunter-web"],
+  "evaluator-agent.md": {
+    roleBundles: ["evaluator-shared", "evaluator-web"],
     extras: ["Bash", "Read", "Grep", "Glob"],
+  },
+  // Plane X Cycle X.10 — generic TaskGraph evaluator shell. Rendered via
+  // CLAUDE_ROLE_SPECS (role-id-based path) so the tools line stays in
+  // lockstep with role-model.js's mcp_role_bundles union.
+  "evaluator-spawn.md": {
+    roleId: "evaluator-spawn",
+    roleBundles: [
+      "evaluator-shared",
+      "evaluator-spawn",
+      "evaluator-web",
+      "evaluator-evm",
+      "evaluator-svm",
+      "evaluator-move",
+      "evaluator-substrate",
+      "evaluator-cosmwasm",
+    ],
+    extras: ["Bash", "Read", "Write", "Grep", "Glob"],
   },
   "brutalist-verifier.md": {
     roleId: "brutalist-verifier",
@@ -49,6 +72,7 @@ const AGENT_TOOL_SPECS = Object.freeze({
     extras: ["Bash"],
   },
   "evidence-agent.md": {
+    roleId: "evidence",
     roleBundles: ["evidence"],
     extras: [],
   },

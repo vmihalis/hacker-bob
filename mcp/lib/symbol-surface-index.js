@@ -190,7 +190,7 @@ function lineInRanges(line, ranges) {
 function summarizeImpactedSurfacesForDiff({ target_domain, diff_files }) {
   const index = readSymbolSurfaceIndex(target_domain);
   if (index == null) {
-    return { impacted_entries: [], impacted_surface_ids: [], scanned_files: 0 };
+    return { impacted_entries: [], impacted_surface_ids: [], scanned_files: 0, path_used: "B" };
   }
   if (!Array.isArray(diff_files)) {
     throw new TypeError("diff_files must be an array of {file, line_ranges}");
@@ -217,6 +217,7 @@ function summarizeImpactedSurfacesForDiff({ target_domain, diff_files }) {
     impacted_entries: impactedEntries.sort((a, b) => `${a.file}:${a.line}`.localeCompare(`${b.file}:${b.line}`)),
     impacted_surface_ids: Array.from(impactedSurfaceIds).sort(),
     scanned_files: scannedFiles,
+    path_used: "A",
   };
 }
 

@@ -3,7 +3,8 @@
 const { startWave } = require("../waves.js");
 
 module.exports = Object.freeze({
-  name: "bounty_start_wave",
+  name: "bob_start_wave",
+  aliases: ["bounty_start_wave"],
   description: "Persist a new wave assignment file and set pending_wave in session state.",
   inputSchema: {
     type: "object",

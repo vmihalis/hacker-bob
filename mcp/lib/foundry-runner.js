@@ -20,7 +20,7 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 const RAW_EXCERPT_BYTES = 8 * 1024;
 const FORGE_TESTS_CAP = 100;
 
-// Allowlisted forge flags hunters may pass via `extra_args`. Anything not on
+// Allowlisted forge flags evaluators may pass via `extra_args`. Anything not on
 // this list is rejected to keep the subprocess surface narrow. NOT allowed:
 // --ffi (FFI = arbitrary host command execution), --rpc-url (would override
 // the public ladder), --evm-version (not relevant for Bob's read-only assertions),
@@ -56,7 +56,7 @@ function assertHarnessPath(harnessPath) {
   if (!fs.existsSync(resolved)) {
     throw new Error(`harness_path does not exist: ${resolved}`);
   }
-  // Symlink resolution: a hunter could plant $HOME/poc → /var/some/forge-tree.
+  // Symlink resolution: a evaluator could plant $HOME/poc → /var/some/forge-tree.
   // Lexical containment via path.resolve passes; statSync follows the link;
   // forge would then run in an off-home tree with vm.readFile cheatcodes
   // available against arbitrary files. Re-check containment on the realpath.
@@ -280,7 +280,7 @@ async function runFoundryTest({
     if (chainId != null || explicitForkUrls) {
       // Fail closed: the user asked for a forked run on a specific chain but
       // we have no endpoints. Silently running a local-only test would let a
-      // hunter record "tested" without ever touching the target chain.
+      // evaluator record "tested" without ever touching the target chain.
       return {
         ok: false,
         reason: "no_fork_endpoints_for_chain",
@@ -385,7 +385,7 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
   const envelope = {
     // ok requires: forge exited cleanly, parsed JSON, no failed tests, AND at
     // least one test ran. A run with summary.total === 0 is "no tests matched"
-    // — silently rubber-stamping it would let hunters record "tested" without
+    // — silently rubber-stamping it would let evaluators record "tested" without
     // any execution.
     ok: result.ok && parseResult.ok && summary.failed === 0 && summary.total > 0,
     timed_out: result.timed_out === true,

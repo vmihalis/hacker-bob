@@ -5,7 +5,8 @@ const {
 } = require("../tool-telemetry.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_tool_telemetry",
+  name: "bob_read_tool_telemetry",
+  aliases: ["bounty_read_tool_telemetry"],
   description:
     "Read diagnostic MCP tool-call telemetry summaries. Returns counts, success rates, latency percentiles, error histograms, authority decision aggregates, last calls, and recent failures without raw tool arguments or payloads.",
   inputSchema: {
@@ -21,7 +22,7 @@ module.exports = Object.freeze({
       },
       include_agent_runs: {
         type: "boolean",
-        description: "When true, include hunter SubagentStop run telemetry summaries.",
+        description: "When true, include evaluator SubagentStop run telemetry summaries.",
       },
       agent_run_type: { type: "string" },
       wave: { type: "string" },

@@ -10,7 +10,7 @@ This package is intentionally tiny: it ships a single `hacker-bob-codex` CLI shi
 npx -y hacker-bob-codex install /path/to/your/project
 ```
 
-The wrapper installs the full Hacker Bob framework into the target project under `.codex/plugins/`, `.hacker-bob/`, and Codex plugin MCP wiring. After installing, restart Codex in that project and use `$bob-hunt <target>`. Codex also exposes `$bob-status`, `$bob-debug`, `$bob-update`, `$bob-export`, and `$bob-egress`.
+The wrapper installs the full Hacker Bob framework into the target project under `.codex/plugins/`, `.hacker-bob/`, and Codex plugin MCP wiring. After installing, restart Codex in that project and use `$bob-evaluate <target>`. Codex also exposes `$bob-status`, `$bob-debug`, `$bob-update`, `$bob-export`, and `$bob-egress`.
 
 ## Other commands
 

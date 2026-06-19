@@ -1,0 +1,167 @@
+name: Cache Bob Workspace
+description: >
+  Restore ~/bob-workspace from cache keyed on runner OS and BOB_VERSION.
+  On cache miss, checks out hacker-bob at BOB_VERSION and runs install.sh
+  to populate ~/bob-workspace/node_modules. On cache hit, skips install
+  entirely so the job proceeds without re-downloading Bob.
+
+inputs:
+  bob_version:
+    description: >
+      The Bob version tag to install (e.g. "v1.2.3"). Must match
+      vars.BOB_VERSION set at the org level. Used to key the cache so
+      a version bump automatically busts the old cache entry.
+    required: true
+  bob_install_token:
+    description: >
+      Optional GitHub token used to check out the hacker-bob source repository
+      and authenticate npm against GitHub Packages on cache-miss installs.
+    required: false
+    default: ''
+
+outputs:
+  cache-hit:
+    description: "'true' when a matching cache entry was restored; 'false' on miss."
+    value: ${{ steps.cache-bob.outputs.cache-hit }}
+  mcp-server-path:
+    description: "Absolute path to the installed Hacker Bob MCP server."
+    value: ${{ steps.export-bob-runtime.outputs.mcp_server_path }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------
+    # 1. Guard: abort early if BOB_VERSION is empty.
+    #    An empty version string produces the key "<OS>-bob-workspace-"
+    #    which would match *any* cache entry from any Bob version.
+    # ------------------------------------------------------------------
+    - name: Validate BOB_VERSION is set
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.bob_version }}" ]]; then
+          echo "::error::BOB_VERSION (inputs.bob_version) is empty. Set vars.BOB_VERSION at the org or repo level."
+          exit 1
+        fi
+
+    # ------------------------------------------------------------------
+    # 2. Attempt to restore ~/bob-workspace from the Actions cache.
+    #    Key: runner.os-bob-workspace-<BOB_VERSION>-runtime-v2
+    #    Path: ~/bob-workspace  (absolute; not relative to GITHUB_WORKSPACE)
+    # ------------------------------------------------------------------
+    - name: Restore Bob workspace cache
+      id: cache-bob
+      uses: actions/cache@v4
+      with:
+        path: ~/bob-workspace
+        key: ${{ runner.os }}-bob-workspace-${{ inputs.bob_version }}-runtime-v2
+        # No restore-keys fallback — a partial/stale Bob install is worse
+        # than a clean one, so we always install on a version miss.
+
+    # ------------------------------------------------------------------
+    # 3. On cache miss: check out hacker-bob at the pinned version and
+    #    run install.sh targeting ~/bob-workspace.
+    #    The checkout path is under GITHUB_WORKSPACE because actions/checkout
+    #    rejects paths outside the workspace.
+    # ------------------------------------------------------------------
+    - name: Check out hacker-bob source with install token
+      if: steps.cache-bob.outputs.cache-hit != 'true' && inputs.bob_install_token != ''
+      uses: actions/checkout@v4
+      with:
+        repository: vmihalis/hacker-bob
+        ref: ${{ inputs.bob_version }}
+        path: .bob-workspace-source/hacker-bob-src
+        token: ${{ inputs.bob_install_token }}
+        persist-credentials: false
+
+    - name: Check out hacker-bob source with workflow token
+      if: steps.cache-bob.outputs.cache-hit != 'true' && inputs.bob_install_token == ''
+      uses: actions/checkout@v4
+      with:
+        repository: vmihalis/hacker-bob
+        ref: ${{ inputs.bob_version }}
+        path: .bob-workspace-source/hacker-bob-src
+        persist-credentials: false
+
+    - name: Install Bob into ~/bob-workspace
+      if: steps.cache-bob.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        BOB_INSTALL_TOKEN: ${{ inputs.bob_install_token }}
+      run: |
+        set -euo pipefail
+
+        INSTALL_TARGET="$HOME/bob-workspace"
+        SRC="$GITHUB_WORKSPACE/.bob-workspace-source/hacker-bob-src"
+
+        echo "Installing Bob ${{ inputs.bob_version }} into $INSTALL_TARGET"
+        mkdir -p "$INSTALL_TARGET"
+
+        if [[ -n "$BOB_INSTALL_TOKEN" ]]; then
+          {
+            echo "@bobnetsec:registry=https://npm.pkg.github.com"
+            echo "//npm.pkg.github.com/:_authToken=${BOB_INSTALL_TOKEN}"
+          } > "$SRC/.npmrc"
+        fi
+
+        (cd "$SRC" && npm ci)
+        rm -f "$SRC/.npmrc"
+
+        # install.sh expects an absolute target path as its first argument.
+        bash "$SRC/install.sh" "$INSTALL_TARGET"
+
+        CLAUDE_PREFIX="$INSTALL_TARGET/claude"
+        npm install --prefix "$CLAUDE_PREFIX" @anthropic-ai/claude-code@2.1.162
+        node "$CLAUDE_PREFIX/node_modules/@anthropic-ai/claude-code/install.cjs"
+        mkdir -p "$INSTALL_TARGET/bin"
+        ln -sf "$CLAUDE_PREFIX/node_modules/.bin/claude" "$INSTALL_TARGET/bin/claude"
+
+        # Sanity check: ensure node_modules was populated.
+        if [[ ! -d "$INSTALL_TARGET/node_modules" ]]; then
+          echo "::error::install.sh did not create $INSTALL_TARGET/node_modules — cache boundary broken."
+          exit 1
+        fi
+        if [[ ! -f "$INSTALL_TARGET/mcp/server.js" ]]; then
+          echo "::error::install.sh did not create $INSTALL_TARGET/mcp/server.js — Bob MCP server missing."
+          exit 1
+        fi
+        if ! "$INSTALL_TARGET/bin/claude" --version >/dev/null; then
+          echo "::error::Claude CLI is not executable from $INSTALL_TARGET/bin."
+          exit 1
+        fi
+
+        echo "Bob workspace ready at $INSTALL_TARGET"
+        echo "node_modules size: $(du -sh "$INSTALL_TARGET/node_modules" | cut -f1)"
+
+    - name: Export Bob runtime paths
+      id: export-bob-runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        INSTALL_TARGET="$HOME/bob-workspace"
+        MCP_SERVER_PATH="$INSTALL_TARGET/mcp/server.js"
+        SKILL_SRC="$INSTALL_TARGET/.claude/skills/bob-diff-review"
+        SKILL_DEST="$HOME/.claude/skills/bob-diff-review"
+
+        if [[ ! -f "$MCP_SERVER_PATH" ]]; then
+          echo "::error::Bob MCP server missing at $MCP_SERVER_PATH."
+          exit 1
+        fi
+        if [[ ! -f "$SKILL_SRC/SKILL.md" ]]; then
+          echo "::error::Bob diff-review skill missing at $SKILL_SRC."
+          exit 1
+        fi
+
+        mkdir -p "$(dirname "$SKILL_DEST")"
+        rm -rf "$SKILL_DEST"
+        ln -s "$SKILL_SRC" "$SKILL_DEST"
+        if [[ ! -f "$SKILL_DEST/SKILL.md" ]]; then
+          echo "::error::Bob diff-review skill is not discoverable at $SKILL_DEST."
+          exit 1
+        fi
+
+        echo "$INSTALL_TARGET/bin" >> "$GITHUB_PATH"
+        echo "$INSTALL_TARGET/node_modules/.bin" >> "$GITHUB_PATH"
+        echo "BOB_MCP_SERVER_PATH=$MCP_SERVER_PATH" >> "$GITHUB_ENV"
+        echo "mcp_server_path=$MCP_SERVER_PATH" >> "$GITHUB_OUTPUT"
+        echo "Bob diff-review skill linked at $SKILL_DEST"

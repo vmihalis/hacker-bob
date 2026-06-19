@@ -12,7 +12,8 @@ function queryAuditReportsHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_query_audit_reports",
+  name: "bob_query_audit_reports",
+  aliases: ["bounty_query_audit_reports"],
   description:
     "Query the persisted audit-report corpus for a target. Filters by severity (critical/high/medium/low/informational/info) and vulnerability_class (reentrancy, access_control, arithmetic_overflow, etc.). Use to enumerate audit findings before generating invariants for a Foundry harness.",
   inputSchema: {

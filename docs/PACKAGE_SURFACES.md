@@ -50,3 +50,7 @@ policy lives in `scripts/lib/package-policy.js` and is consumed by both
 `scripts/release-check.js` and `test/package.test.js`. Update the shared policy
 when changing packaged runtime surfaces, intentional support files, excluded
 generated artifacts, or wrapper package shape.
+
+Plane-Delta graph and verification docs may ship as support material; per-node
+detail docs under `docs/plane-delta/detail/` are internal planning notes and are
+excluded from npm packages.

@@ -95,16 +95,12 @@ test("tokenized assignments reject unsigned verified provenance claims", () => {
   );
 });
 
-test("legacy assignments remain explicitly unverified", () => {
-  assert.equal(validateHandoffProvenance(baseHandoff(), {}), "legacy_unverified");
-});
-
-test("legacy assignments are rejected when requireProvenance is set", () => {
-  // v1.3.5 sessions opt in to provenance via state.handoff_provenance_required.
-  // The validator must refuse to silently downgrade a tampered/legacy assignment
-  // when this flag is set, even if no token metadata is present.
+test("legacy assignments without token metadata are unconditionally rejected", () => {
+  // v1.3.6 removed the legacy_unverified downgrade path. Assignments missing
+  // handoff token metadata are refused regardless of session state, closing
+  // the assignment-file-downgrade attack documented in R1-HIGH-#1.
   assert.throws(
-    () => validateHandoffProvenance(baseHandoff(), {}, { requireProvenance: true }),
+    () => validateHandoffProvenance(baseHandoff(), {}),
     /assignment lacks token metadata.*pre-v1\.3\.5/,
   );
 });

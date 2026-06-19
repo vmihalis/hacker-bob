@@ -3,9 +3,10 @@
 const { readChainAttempts } = require("../chain-attempts.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_chain_attempts",
+  name: "bob_read_chain_attempts",
+  aliases: ["bounty_read_chain_attempts"],
   description:
-    "Read structured CHAIN-phase exploit-chain attempts and outcome counts from MCP-owned chain-attempts.jsonl.",
+    "Read structured CHAIN-phase impact proof-chain attempts and outcome counts from MCP-owned chain-attempts.jsonl.",
   inputSchema: {
     type: "object",
     properties: {

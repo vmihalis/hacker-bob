@@ -5,7 +5,20 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+// Trust-degradation marker for a finding whose source could not be
+// signature-verified. An absent (or unparseable, tolerantly dropped) marker is
+// read as signature-verified; the marker is never auto-materialized.
+const SIGNATURE_VERIFICATION_STATUS_VALUES = ["signed", "unsigned"];
+const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
+// X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
+// SURFACE_TYPE_VALUES (web/smart_contract is the finding-level technology
+// classification consumed by finding-contracts and the wave-scheduler);
+// SURFACE_KIND_VALUES is the node-kind discriminator persisted in
+// task-graph.json (X.2) and surface-index.json (X-P6: "transition nodes are
+// persisted as kind: \"transition\"" in surface-index). Initially shipped
+// with the 4 X.2 node kinds; growing the set requires a new cycle per X-P8.
+const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim"];
 const CHAIN_FAMILY_VALUES = ["evm", "svm", "aptos", "sui", "substrate", "cosmwasm"];
 const SVM_CLUSTER_VALUES = ["mainnet-beta", "devnet", "testnet"];
 // Aptos and Sui both identify networks by string name in tooling and RPC URLs.
@@ -44,7 +57,6 @@ const COSMWASM_NETWORK_VALUES = [
   "kava",
   "localnet",
 ];
-const PHASE_VALUES = ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"];
 const AUTH_STATUS_VALUES = ["pending", "authenticated", "unauthenticated"];
 const CHECKPOINT_MODE_VALUES = ["normal", "paranoid", "yolo"];
 const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
@@ -59,6 +71,13 @@ const VERIFICATION_CONFIDENCE_REASON_VALUES = [
   "roast_disagreement",
   "disambiguation_failed",
   "agreement_not_replayed",
+  "unruled_confounder",
+  "missing_control",
+];
+const VERIFICATION_REASONING_DIVERGENCE_VALUES = [
+  "none",
+  "artifact_key_divergence",
+  "artifact_hash_divergence",
 ];
 const VERIFICATION_REPLAY_PURPOSE_VALUES = ["verification_replay", "evidence_replay"];
 const VERIFY_SMALL_REPORTABLE_THRESHOLD = 5;
@@ -87,6 +106,18 @@ const STATIC_ARTIFACT_ID_RE = /^SA-([1-9]\d*)$/;
 const STATIC_ARTIFACT_TYPE_VALUES = ["evm_token_contract", "solana_token_contract"];
 const STATIC_ARTIFACT_MAX_CHARS = 200_000;
 const STATIC_ARTIFACT_LOG_MAX_RECORDS = 500;
+// Imported fuzz harnesses (bob_import_harness). Session-owned, MCP-write-only scratch
+// (not audit-graded). One harness is a small source file; the cap matches static imports.
+const HARNESS_ID_RE = /^H-([1-9]\d*)$/;
+const HARNESS_MAX_CHARS = 200_000;
+const HARNESS_LOG_MAX_RECORDS = 200;
+// Imported grammar-generated seed corpora (bob_import_seed_corpus). Session-owned,
+// MCP-write-only scratch (not audit-graded). A batch import is many small fuzz inputs.
+const SEED_CORPUS_ID_RE = /^SC-([1-9]\d*)$/;
+const SEED_CORPUS_IMPORT_MAX_SEEDS = 512;
+const SEED_CORPUS_IMPORT_MAX_SEED_CHARS = 65_536;
+const SEED_CORPUS_IMPORT_MAX_TOTAL_CHARS = 8_000_000;
+const SEED_CORPUS_LOG_MAX_RECORDS = 200;
 const STATIC_SCAN_RESULTS_MAX_RECORDS = 1_000;
 const STATIC_SCAN_FINDING_MAX_ITEMS = 100;
 const STATIC_SCAN_HINT_MAX_ITEMS = 10;
@@ -97,22 +128,25 @@ const SESSION_LOCK_STALE_MS = 300_000;
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
+  // Cycle O.1: repo sessions persist target_repo + repo_hash alongside the
+  // (nullable) target_url. URL sessions leave these null; the lifecycle
+  // contracts treat repo and url targets as mutually exclusive bindings.
+  "target_repo",
+  "repo_hash",
   "deep_mode",
   "checkpoint_mode",
   "block_internal_hosts",
   "block_internal_hosts_source",
   "phase",
-  "hunt_wave",
+  "lifecycle_state",
+  "evaluation_wave",
   "pending_wave",
   "total_findings",
-  "explored",
-  "terminally_blocked",
   "prereq_registry_snapshots",
   "blocked_prereq_history",
   "terminal_block_clear_history",
   "dead_ends",
   "waf_blocked_endpoints",
-  "lead_surface_ids",
   "scope_exclusions",
   "hold_count",
   "auth_status",
@@ -142,6 +176,7 @@ const VERIFICATION_ROUND_FILE_MAP = {
 module.exports = {
   AGENT_ID_RE,
   APTOS_NETWORK_VALUES,
+  ATTACK_VECTOR_VALUES,
   AUTH_STATUS_VALUES,
   CHAIN_ATTEMPT_OUTCOME_VALUES,
   CHAIN_ATTEMPT_TERMINAL_OUTCOME_VALUES,
@@ -159,13 +194,21 @@ module.exports = {
   GRADE_VERDICT_VALUES,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
-  PHASE_VALUES,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
   SESSION_LOCK_NAME,
   SESSION_LOCK_STALE_MS,
   SESSION_PUBLIC_STATE_FIELDS,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
+  HARNESS_ID_RE,
+  HARNESS_LOG_MAX_RECORDS,
+  HARNESS_MAX_CHARS,
+  SEED_CORPUS_ID_RE,
+  SEED_CORPUS_IMPORT_MAX_SEEDS,
+  SEED_CORPUS_IMPORT_MAX_SEED_CHARS,
+  SEED_CORPUS_IMPORT_MAX_TOTAL_CHARS,
+  SEED_CORPUS_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_ID_RE,
   STATIC_ARTIFACT_LOG_MAX_RECORDS,
   STATIC_ARTIFACT_MAX_CHARS,
@@ -178,6 +221,7 @@ module.exports = {
   TECHNIQUE_PACK_READ_LOG_MAX_RECORDS,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
+  SURFACE_KIND_VALUES,
   SURFACE_TYPE_VALUES,
   SVM_CLUSTER_VALUES,
   TRAFFIC_IMPORT_MAX_ENTRIES,
@@ -186,6 +230,7 @@ module.exports = {
   VERIFICATION_DISPOSITION_VALUES,
   VERIFICATION_CONFIDENCE_REASON_VALUES,
   VERIFICATION_CONFIDENCE_VALUES,
+  VERIFICATION_REASONING_DIVERGENCE_VALUES,
   VERIFICATION_REPLAY_PURPOSE_VALUES,
   VERIFICATION_ROUND_FILE_MAP,
   VERIFICATION_ROUND_VALUES,

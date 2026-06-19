@@ -4,7 +4,8 @@ const { httpScan } = require("../http-scan.js");
 const { REPLAY_CONTEXT_SCHEMA } = require("./replay-context-schema.js");
 
 module.exports = Object.freeze({
-  name: "bounty_http_scan",
+  name: "bob_http_scan",
+  aliases: ["bounty_http_scan"],
   description:
     "Make an HTTP request and auto-analyze for security issues. Returns status, headers, body, plus detected tech stack, leaked secrets, misconfigs, and endpoints.",
   inputSchema: {
@@ -41,7 +42,7 @@ module.exports = Object.freeze({
     required: ["method", "url", "target_domain"],
   },
   handler: httpScan,
-  role_bundles: ["hunter-web", "verifier", "auth", "chain", "evidence"],
+  role_bundles: ["evaluator-web", "verifier", "auth", "chain", "evidence"],
   mutating: true,
   global_preapproval: true,
   network_access: true,

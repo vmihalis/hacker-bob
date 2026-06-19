@@ -36,7 +36,8 @@ function readDocDeltaResultsHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_read_doc_delta_results",
+  name: "bob_read_doc_delta_results",
+  aliases: ["bounty_read_doc_delta_results"],
   capability_id: "C2_doc_vs_behavior",
   description:
     "Read the persisted doc-delta-results.json for a target. Pass summary_only: true to skip the per-contract array when only the divergence tally is needed.",

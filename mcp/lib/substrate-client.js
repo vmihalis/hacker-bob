@@ -15,7 +15,7 @@
 //
 // The pallet_contracts ContractInfoOf storage layout uses a Twox64Concat hasher
 // over the AccountId, so we expose getContractInfo as a convenience that
-// builds the storage key from the SS58 address. Hunters and verifiers who
+// builds the storage key from the SS58 address. Evaluators and verifiers who
 // need lower-level access can call rpcRequest directly with a raw key.
 
 const { resolveSubstrateRpcEndpoints } = require("./substrate-rpc-pool.js");
@@ -123,7 +123,7 @@ async function getStorage({ network, storageKey, blockHash, endpoints }) {
 async function getRuntimeVersion({ network, blockHash, endpoints }) {
   // state_getRuntimeVersion returns spec_name, spec_version, transaction_version,
   // and the auth/runtime API list. Verifiers use spec_version to confirm the
-  // chain hasn't been upgraded since the hunter recorded the bug.
+  // chain hasn't been upgraded since the evaluator recorded the bug.
   const params = blockHash != null ? [blockHash] : [];
   return rpcRequest({
     network,
@@ -164,7 +164,7 @@ async function getHeader({ network, blockHash, endpoints }) {
 async function getSystemChain({ network, endpoints }) {
   // system_chain returns the chain's spec_name (e.g., "Polkadot", "Kusama").
   // Verifier prompts use this as a cross-check that a substrate RPC endpoint
-  // actually serves the network the hunter claimed in chain_id.
+  // actually serves the network the evaluator claimed in chain_id.
   return rpcRequest({
     network,
     method: "system_chain",

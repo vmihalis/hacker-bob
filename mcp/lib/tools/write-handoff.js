@@ -3,7 +3,8 @@
 const { writeHandoff } = require("../waves.js");
 
 module.exports = Object.freeze({
-  name: "bounty_write_handoff",
+  name: "bob_write_handoff",
+  aliases: ["bounty_write_handoff"],
   description:
     "Write session handoff for context rotation.",
   inputSchema: {

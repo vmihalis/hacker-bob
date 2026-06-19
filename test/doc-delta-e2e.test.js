@@ -171,7 +171,7 @@ function seedAttackSurface(domain, baseUrl) {
   }, null, 2)}\n`);
 }
 
-test("bounty_run_doc_delta drives the real MCP tool against a local HTTP fixture", async () => {
+test("bob_run_doc_delta drives the real MCP tool against a local HTTP fixture", async () => {
   await withTempHome(async (tempHome) => {
     const server = createFixtureServer();
     const port = await listen(server);
@@ -180,14 +180,14 @@ test("bounty_run_doc_delta drives the real MCP tool against a local HTTP fixture
 
     try {
       await withDnsLookupOverride(domain, "127.0.0.1", async () => {
-        const init = await executeTool("bounty_init_session", {
+        const init = await executeTool("bob_init_session", {
           target_domain: domain,
           target_url: baseUrl,
         });
         assert.equal(init.ok, true, init.error && init.error.message);
         seedAttackSurface(domain, baseUrl);
 
-        const ingest = await executeTool("bounty_ingest_schema_doc", {
+        const ingest = await executeTool("bob_ingest_schema_doc", {
           target_domain: domain,
           raw_doc: openApiFixture(),
           source_uri: `${baseUrl}/openapi.json`,
@@ -202,14 +202,14 @@ test("bounty_run_doc_delta drives the real MCP tool against a local HTTP fixture
           block_internal_hosts: false,
         };
 
-        const run = await executeTool("bounty_run_doc_delta", guardedInput);
+        const run = await executeTool("bob_run_doc_delta", guardedInput);
         assert.equal(run.ok, true, run.error && run.error.message);
         assert.equal(run.data.summary.contracts_tested, 2);
         assert.equal(run.data.summary.fetch_errors, 0);
         assert.ok(run.data.summary.divergences_total >= 3);
         assert.equal(run.data.results_path, "doc-delta-results.json");
 
-        const resultsPath = path.join(tempHome, "bounty-agent-sessions", domain, "doc-delta-results.json");
+        const resultsPath = path.join(tempHome, "hacker-bob-sessions", domain, "doc-delta-results.json");
         assert.ok(fs.existsSync(resultsPath), "doc-delta-results.json was not written");
         const results = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
         assert.equal(results.summary.run_id, "doc-delta-e2e");

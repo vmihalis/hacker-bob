@@ -3,7 +3,8 @@
 const { ingestSchemaDoc } = require("../schema-contracts-store.js");
 
 module.exports = Object.freeze({
-  name: "bounty_ingest_schema_doc",
+  name: "bob_ingest_schema_doc",
+  aliases: ["bounty_ingest_schema_doc"],
   capability_id: "C2_doc_vs_behavior",
   description:
     "Parse and persist an OpenAPI / GraphQL / Postman document into the per-target schema-contract corpus. Contracts are deduplicated by contract_hash; later ingestion of the same source doc is a no-op for unchanged contracts. Use to seed doc-vs-behavior differential testing.",

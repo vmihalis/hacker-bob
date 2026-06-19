@@ -14,7 +14,7 @@ Do not write theoretical impact. Use concrete language: "An attacker can [action
 
 Every reportable finding needs exact proof. Include the request, response evidence, auth profile or account role used, and the observed impact.
 
-Severity must match verified impact. Use the final verification and grading output rather than the hunter's original claim.
+Severity must match verified impact. Use the final verification and grading output rather than the evaluator's original claim.
 
 Do not manually edit Bob session artifacts. Report prose can be written by `report-writer`, but authoritative JSON/JSONL state must remain MCP-owned.
 

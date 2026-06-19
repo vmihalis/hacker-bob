@@ -20,12 +20,12 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 const RAW_EXCERPT_BYTES = 8 * 1024;
 const ANCHOR_TESTS_CAP = 100;
 
-// Allowlisted anchor flags hunters may pass via `extra_args`. Anything not on
+// Allowlisted anchor flags evaluators may pass via `extra_args`. Anything not on
 // this list is rejected to keep the subprocess surface narrow. NOT allowed:
 // --provider.cluster (cluster comes from sc_evidence; allowing override would
-// let a hunter point a verifier at a private localnet that produces fake
+// let a evaluator point a verifier at a private localnet that produces fake
 // PASS), --provider.wallet (key file path could escape $HOME via path
-// traversal), and --skip-build with a hunter-supplied path.
+// traversal), and --skip-build with a evaluator-supplied path.
 const ANCHOR_EXTRA_ARG_ALLOWLIST = new Set([
   "--skip-build",
   "--skip-deploy",
@@ -50,7 +50,7 @@ function assertHarnessPath(harnessPath) {
   if (!fs.existsSync(resolved)) {
     throw new Error(`harness_path does not exist: ${resolved}`);
   }
-  // Symlink resolution: a hunter could plant $HOME/poc → /var/some/anchor-tree.
+  // Symlink resolution: a evaluator could plant $HOME/poc → /var/some/anchor-tree.
   // Lexical containment via path.resolve passes; statSync follows the link;
   // anchor would then run in an off-home tree. Re-check on realpath.
   const realResolved = fs.realpathSync(resolved);
@@ -254,7 +254,7 @@ async function runAnchorTest({
   }
 
   // Build args: anchor test transitively runs mocha; --skip-build keeps runs
-  // fast when the hunter has already compiled. The `--` separator passes
+  // fast when the evaluator has already compiled. The `--` separator passes
   // remaining args to the underlying test runner (mocha for TS suites).
   const baseArgs = ["test"];
   // Allowlist extra_args. Reject anything not in the allowlist. No
@@ -270,19 +270,19 @@ async function runAnchorTest({
   // Mocha is invoked by anchor's [scripts] test config (typically `ts-mocha`).
   // Passing args after `--` forwards them to mocha. JSON reporter is the only
   // reliable machine-parseable shape across mocha versions; --grep filters by
-  // test description so the hunter's match_test maps cleanly.
+  // test description so the evaluator's match_test maps cleanly.
   baseArgs.push("--", "--reporter", "json", "--grep", matchTest);
 
   const forkAttempts = [];
-  // Anchor can run against the embedded validator (no fork) OR a hunter-set-up
+  // Anchor can run against the embedded validator (no fork) OR a evaluator-set-up
   // mainnet-clone localnet. We don't shell out a separate solana-test-validator
-  // — that's the hunter's harness responsibility. We pass the cluster URL via
+  // — that's the evaluator's harness responsibility. We pass the cluster URL via
   // env so the test can read it via process.env if needed; if Anchor.toml in
   // the workdir already pins cluster, that wins.
   if (candidateForkUrls.length === 0) {
     if (cluster != null || explicitForkUrls) {
-      // Fail closed: the hunter declared a cluster but we have no endpoints.
-      // Silently running against localnet would let a hunter record "tested"
+      // Fail closed: the evaluator declared a cluster but we have no endpoints.
+      // Silently running against localnet would let a evaluator record "tested"
       // without the real cluster ever being touched.
       return {
         ok: false,
@@ -304,7 +304,7 @@ async function runAnchorTest({
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
-    // BOB_SVM_FORK_URL is read by the hunter's anchor harness if they choose
+    // BOB_SVM_FORK_URL is read by the evaluator's anchor harness if they choose
     // to fork at runtime (validator clone via solana-test-validator --url).
     // We don't pass a CLI flag to anchor itself — anchor doesn't accept one.
     const env = { BOB_SVM_FORK_URL: url, BOB_SVM_CLUSTER: cluster || "" };
@@ -429,7 +429,7 @@ function finalizeRun({ result, args, forkAttempts, forkSlot, fork_used, rpcPolic
   const envelope = {
     // ok requires: anchor exited cleanly, parsed JSON, no failed tests, AND
     // at least one test ran. summary.total === 0 ("no tests matched") would
-    // otherwise let a hunter record "tested" without execution.
+    // otherwise let a evaluator record "tested" without execution.
     ok: result.ok && parseResult.ok && summary.failed === 0 && summary.total > 0,
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,

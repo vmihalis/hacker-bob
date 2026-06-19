@@ -1,5 +1,9 @@
 "use strict";
 
+const {
+  assertValidCwe,
+} = require("./cwe-catalog.js");
+
 const TEMPLATES = Object.freeze([
   Object.freeze({
     id: "INV-REENTRANCY-CALLBACK-001",
@@ -108,6 +112,53 @@ const TEMPLATES = Object.freeze([
   }),
 ]);
 
+const OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE = Object.freeze({
+  id: "object_authorization",
+  mechanism_id: "CWE-639",
+  name: "Object authorization",
+  description: "A principal can cause an effect on an object they should not be authorized to access by changing an object selector, credential, or equivalent request binding.",
+  required_entities: Object.freeze([
+    "principal",
+    "credential",
+    "object",
+    "policy_gate",
+    "effect",
+  ]),
+  interventions: Object.freeze([
+    "principal_fixed_object_swap",
+    "credential_fixed_object_swap",
+    "victim_auth_same_object",
+  ]),
+  positive_controls: Object.freeze([
+    "attacker_owned_object_allowed",
+    "victim_object_denied_or_different_effect",
+  ]),
+  negative_controls: Object.freeze([
+    "public_object_check",
+    "nonexistent_object_check",
+    "stale_session_check",
+  ]),
+  confounders: Object.freeze([
+    "public_object",
+    "role_inheritance",
+    "cache_bleed",
+    "eventual_consistency",
+    "response_reflection",
+  ]),
+  evidence_predicate: Object.freeze({
+    kind: "differential_effect",
+    required_edges: Object.freeze([
+      "principal->policy_gate",
+      "policy_gate->effect",
+    ]),
+    required_cwe: "CWE-639",
+  }),
+});
+
+const MECHANISM_TEMPLATES = Object.freeze([
+  OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
+]);
+
 const TEMPLATES_BY_CLASS = (() => {
   const map = new Map();
   for (const template of TEMPLATES) {
@@ -121,6 +172,98 @@ const SUPPORTED_CLASSES = Object.freeze(Array.from(TEMPLATES_BY_CLASS.keys()).so
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringArray(value, fieldName, warnings) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some((item) => typeof item !== "string" || !item.trim())
+  ) {
+    warnings.push(`${fieldName} must be a non-empty string array`);
+    return null;
+  }
+  return Object.freeze(value.map((item) => item.trim()));
+}
+
+function normalizeMechanismTemplate(record) {
+  const warnings = [];
+  if (!isPlainObject(record)) {
+    return { template: null, warnings: ["record must be an object"] };
+  }
+  const id = typeof record.id === "string" && record.id.trim() ? record.id.trim() : null;
+  if (!id) warnings.push("id is required");
+  let mechanismId = null;
+  try {
+    mechanismId = assertValidCwe(record.mechanism_id);
+  } catch (error) {
+    warnings.push(error.message || String(error));
+  }
+  const requiredEntities = stringArray(record.required_entities, "required_entities", warnings);
+  const interventions = stringArray(record.interventions, "interventions", warnings);
+  const positiveControls = stringArray(record.positive_controls, "positive_controls", warnings);
+  const negativeControls = stringArray(record.negative_controls, "negative_controls", warnings);
+  const confounders = stringArray(record.confounders, "confounders", warnings);
+  const evidencePredicate = isPlainObject(record.evidence_predicate)
+    ? Object.freeze({ ...record.evidence_predicate })
+    : null;
+  if (!evidencePredicate) warnings.push("evidence_predicate must be an object");
+  if (warnings.length > 0) {
+    return { template: null, warnings };
+  }
+  return {
+    template: Object.freeze({
+      id,
+      mechanism_id: mechanismId,
+      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
+      description: typeof record.description === "string" ? record.description.trim() : "",
+      required_entities: requiredEntities,
+      interventions,
+      positive_controls: positiveControls,
+      negative_controls: negativeControls,
+      confounders,
+      evidence_predicate: evidencePredicate,
+    }),
+    warnings: [],
+  };
+}
+
+function loadMechanismTemplates(records) {
+  const input = Array.isArray(records) ? records : [];
+  const templates = [];
+  const warnings = [];
+  const seen = new Set();
+  for (const [index, record] of input.entries()) {
+    const normalized = normalizeMechanismTemplate(record);
+    if (!normalized.template) {
+      warnings.push({ index, warnings: normalized.warnings });
+      continue;
+    }
+    if (seen.has(normalized.template.id)) {
+      warnings.push({ index, warnings: [`duplicate mechanism template id: ${normalized.template.id}`] });
+      continue;
+    }
+    seen.add(normalized.template.id);
+    templates.push(normalized.template);
+  }
+  return {
+    templates: Object.freeze(templates),
+    warnings: Object.freeze(warnings),
+  };
+}
+
+const LOADED_MECHANISM_TEMPLATES = loadMechanismTemplates(MECHANISM_TEMPLATES);
+const MECHANISM_TEMPLATES_BY_ID = (() => {
+  const map = new Map();
+  for (const template of LOADED_MECHANISM_TEMPLATES.templates) {
+    map.set(template.id, template);
+  }
+  return map;
+})();
+
+function getMechanismTemplate(id) {
+  if (typeof id !== "string") return null;
+  return MECHANISM_TEMPLATES_BY_ID.get(id) || null;
 }
 
 function getTemplatesForClass(vulnerabilityClass) {
@@ -214,9 +357,14 @@ function suggestInvariantsForReport(parsedReport, options) {
 }
 
 module.exports = {
+  MECHANISM_TEMPLATES,
+  OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
   TEMPLATES,
   SUPPORTED_CLASSES,
   getTemplatesForClass,
+  getMechanismTemplate,
+  loadMechanismTemplates,
+  normalizeMechanismTemplate,
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
 };

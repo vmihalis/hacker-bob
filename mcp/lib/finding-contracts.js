@@ -6,9 +6,11 @@ const path = require("path");
 const crypto = require("crypto");
 const {
   APTOS_NETWORK_VALUES,
+  ATTACK_VECTOR_VALUES,
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
   SEVERITY_VALUES,
+  SIGNATURE_VERIFICATION_STATUS_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
   SURFACE_TYPE_VALUES,
@@ -16,6 +18,7 @@ const {
 } = require("./constants.js");
 const {
   assertBoolean,
+  assertCwe,
   assertEnumValue,
   assertNonEmptyString,
   assertRequiredText,
@@ -27,6 +30,9 @@ const {
 const {
   capabilityPackForLegacyFinding,
 } = require("./capability-packs.js");
+const {
+  normalizeCvssInputs,
+} = require("./cvss31.js");
 
 function normalizeEndpointForDedupe(endpoint) {
   const raw = String(endpoint || "").trim();
@@ -69,6 +75,97 @@ function normalizeSurfaceType(value) {
     throw new Error(`surface_type must be one of: ${SURFACE_TYPE_VALUES.join(", ")}`);
   }
   return trimmed;
+}
+
+// The structured PoC recipe an OSS native-code finding declares: the exact argv
+// the reproduction verifier re-runs on the vuln tree and the upstream-fix tree to
+// confirm a differential flip. Distinct from the free-text repro_command (a human
+// hint): this is the machine-runnable token array, shaped identically to
+// bob_verify_repro_reproduction's `command` parameter so a verified_pass binds to
+// it by command_hash. Excluded from computeFindingDedupeKey (allowlist), so adding
+// it never reshuffles finding ids.
+const REPRO_COMMAND_ARGV_MAX_TOKENS = 64;
+const REPRO_COMMAND_ARGV_MAX_TOKEN_LEN = 4096;
+
+function normalizeReproCommandArgv(value, fieldName = "repro_command_argv") {
+  if (value == null) return null;
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of command tokens`);
+  }
+  if (value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty argv array`);
+  }
+  if (value.length > REPRO_COMMAND_ARGV_MAX_TOKENS) {
+    throw new Error(`${fieldName} must have ${REPRO_COMMAND_ARGV_MAX_TOKENS} tokens or fewer`);
+  }
+  return value.map((token, index) => {
+    if (typeof token !== "string" || token.length === 0) {
+      throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+    }
+    if (token.length > REPRO_COMMAND_ARGV_MAX_TOKEN_LEN) {
+      throw new Error(`${fieldName}[${index}] must be ${REPRO_COMMAND_ARGV_MAX_TOKEN_LEN} characters or fewer`);
+    }
+    return token;
+  });
+}
+
+const REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES = Object.freeze(
+  ATTACK_VECTOR_VALUES.filter((value) => value !== "unknown"),
+);
+
+function normalizeReachabilityAssertion(value, fieldName = "reachability_assertion") {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  const attackVector = assertEnumValue(
+    value.attack_vector,
+    REACHABILITY_ASSERTION_ATTACK_VECTOR_VALUES,
+    `${fieldName}.attack_vector`,
+  );
+  const networkReachable = assertBoolean(value.network_reachable, `${fieldName}.network_reachable`);
+  if (attackVector === "network" && networkReachable !== true) {
+    throw new Error(`${fieldName}.network_reachable must be true when attack_vector is network`);
+  }
+  if (attackVector === "local" && networkReachable !== false) {
+    throw new Error(`${fieldName}.network_reachable must be false when attack_vector is local`);
+  }
+  const callPath = normalizeReachabilityCallPath(value.call_path, `${fieldName}.call_path`);
+  const justification = normalizeOptionalText(value.justification, `${fieldName}.justification`);
+  const normalized = {
+    attack_vector: attackVector,
+    network_reachable: networkReachable,
+    call_path: callPath,
+  };
+  if (justification) normalized.justification = justification;
+  return normalized;
+}
+
+function normalizeReachabilityCallPath(value, fieldName) {
+  const callPath = assertRequiredText(value, fieldName);
+  if (/[\r\n]/.test(callPath)) {
+    throw new Error(`${fieldName} must not contain line breaks`);
+  }
+  const segments = callPath.split("->").map((segment) => segment.trim());
+  if (segments.some((segment) => !segment)) {
+    throw new Error(`${fieldName} must not contain empty '->'-separated segments`);
+  }
+  if (segments.length < 3) {
+    throw new Error(`${fieldName} must cite an entrypoint-to-sink path with at least two '->' hops`);
+  }
+  return segments.join(" -> ");
+}
+
+function findingSupportsReachabilityAssertion(finding) {
+  return finding
+    && typeof finding.capability_pack === "string"
+    && finding.capability_pack === "oss_native_code";
+}
+
+function assertReachabilityAssertionScope(finding, fieldName = "reachability_assertion") {
+  if (!findingSupportsReachabilityAssertion(finding)) {
+    throw new Error(`${fieldName} is only allowed for oss_native_code findings`);
+  }
 }
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -389,7 +486,23 @@ function summarizeFindings(findings) {
   };
 }
 
-function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = null } = {}) {
+const CWE_REQUIRED_SEVERITIES = Object.freeze(["critical", "high", "medium"]);
+
+// Trust-degradation marker on a finding, present only when the finding's source
+// could not be signature-verified. Absent => signature-verified; the marker is
+// never auto-materialized, so signed findings stay byte-identical and the
+// claim-freeze hash of existing findings is unchanged. Strict on the write path
+// (throws on an invalid enum); tolerant on read-back projection (an unparseable
+// legacy value degrades to absent rather than dropping the whole finding).
+function normalizeSignatureVerificationStatus(value, { strict = false } = {}) {
+  if (value == null) return null;
+  if (strict) {
+    return assertEnumValue(value, SIGNATURE_VERIFICATION_STATUS_VALUES, "signature_verification_status");
+  }
+  return SIGNATURE_VERIFICATION_STATUS_VALUES.includes(value) ? value : null;
+}
+
+function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
     throw new Error(lineNumber == null
       ? "finding record must be an object"
@@ -397,13 +510,30 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
   }
 
   try {
+    const severity = assertEnumValue(record.severity, SEVERITY_VALUES, "severity");
+    // CWE is canonicalized + catalog-validated whenever present on the strict
+    // write path. Canonicalization is idempotent so an already-canonical CWE
+    // leaves computeFindingDedupeKey stable. Presence is enforced only on the
+    // strict write path (requireCwe) for reportable severities. Read-back
+    // projection passes requireCwe=false, which also relaxes present-CWE
+    // validation (strictPresent=false): a legacy row whose CWE is missing,
+    // unparseable, or outside the curated catalog degrades to null rather than
+    // throwing, so it still projects into summaries/handoffs/reports.
+    const cweRequired = requireCwe && CWE_REQUIRED_SEVERITIES.includes(severity);
     const finding = {
       id: parseFindingId(record.id, "id"),
       target_domain: assertNonEmptyString(record.target_domain, "target_domain"),
       title: assertRequiredText(record.title, "title"),
-      severity: assertEnumValue(record.severity, SEVERITY_VALUES, "severity"),
-      cwe: normalizeOptionalText(record.cwe, "cwe"),
+      severity,
+      cwe: assertCwe(record.cwe, "cwe", { required: cweRequired, strictPresent: requireCwe }),
       endpoint: assertRequiredText(record.endpoint, "endpoint"),
+      file_path: normalizeOptionalText(record.file_path, "file_path"),
+      symbol: normalizeOptionalText(record.symbol, "symbol"),
+      manifest: normalizeOptionalText(record.manifest, "manifest"),
+      affected_package: normalizeOptionalText(record.affected_package, "affected_package"),
+      affected_version_range: normalizeOptionalText(record.affected_version_range, "affected_version_range"),
+      repro_command: normalizeOptionalText(record.repro_command, "repro_command"),
+      repro_command_argv: normalizeReproCommandArgv(record.repro_command_argv, "repro_command_argv"),
       description: assertRequiredText(record.description, "description"),
       proof_of_concept: assertRequiredText(record.proof_of_concept, "proof_of_concept"),
       response_evidence: normalizeOptionalText(record.response_evidence, "response_evidence"),
@@ -414,13 +544,13 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       surface_id: normalizeOptionalText(record.surface_id, "surface_id"),
       surface_type: normalizeSurfaceType(record.surface_type),
       capability_pack: normalizeOptionalText(record.capability_pack, "capability_pack"),
-      hunter_agent: normalizeOptionalText(record.hunter_agent, "hunter_agent"),
+      evaluator_agent: normalizeOptionalText(record.evaluator_agent, "evaluator_agent"),
       brief_profile: normalizeOptionalText(record.brief_profile, "brief_profile"),
       sc_evidence: normalizeScEvidence(record.sc_evidence),
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
-    const missingRouting = !finding.capability_pack || !finding.hunter_agent || !finding.brief_profile;
+    const missingRouting = !finding.capability_pack || !finding.evaluator_agent || !finding.brief_profile;
     if (missingRouting) {
       const backfill = capabilityPackForLegacyFinding({
         surface_type: finding.surface_type,
@@ -428,9 +558,65 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       });
       if (backfill) {
         if (!finding.capability_pack) finding.capability_pack = backfill.capability_pack;
-        if (!finding.hunter_agent) finding.hunter_agent = backfill.hunter_agent;
+        if (!finding.evaluator_agent) finding.evaluator_agent = backfill.evaluator_agent;
         if (!finding.brief_profile) finding.brief_profile = backfill.brief_profile;
       }
+    }
+    const reachabilityAssertion = normalizeReachabilityAssertion(record.reachability_assertion);
+    if (reachabilityAssertion) {
+      assertReachabilityAssertionScope(finding);
+      finding.reachability_assertion = reachabilityAssertion;
+    }
+    // Structured CVSS v3.1 base inputs. Persisted as canonical
+    // long-name enums on the finding so they round-trip on read-back; the
+    // vector itself is NEVER persisted — it is re-derived server-side at report
+    // time. cvss_inputs is intentionally excluded from computeFindingDedupeKey,
+    // so adding/refining it never reshuffles existing finding ids.
+    // strict on the write path (requireCwe), tolerant on read-back projection so
+    // a persisted finding whose cvss_inputs predates/postdates the current spec
+    // still projects instead of being dropped by findingPayloadsFromClaims' catch.
+    const cvssInputs = normalizeCvssInputs(record.cvss_inputs, "cvss_inputs", { strict: requireCwe });
+    if (cvssInputs) {
+      finding.cvss_inputs = cvssInputs;
+    }
+    // OSS native-code contract: reachability_assertion is AUTHORITATIVE for the
+    // CVSS attack_vector (network -> AV:N, local -> AV:L). On the write path,
+    // reject a conflicting explicit cvss_inputs.attack_vector rather than letting
+    // the later derivation silently use the contradictory value (which would
+    // persist a self-contradictory finding). Then derive AV from reachability.
+    if (finding.reachability_assertion) {
+      const derivedAv = finding.reachability_assertion.attack_vector === "network"
+        ? "network"
+        : "local";
+      const explicitAv = finding.cvss_inputs && finding.cvss_inputs.attack_vector != null
+        ? finding.cvss_inputs.attack_vector
+        : null;
+      if (requireCwe && explicitAv != null && explicitAv !== derivedAv) {
+        throw new Error(
+          `cvss_inputs.attack_vector ${JSON.stringify(explicitAv)} conflicts with reachability_assertion.attack_vector ${JSON.stringify(finding.reachability_assertion.attack_vector)} (derives ${JSON.stringify(derivedAv)}); omit cvss_inputs.attack_vector so it is derived from reachability, or make them agree.`,
+        );
+      }
+      finding.cvss_inputs = { ...(finding.cvss_inputs || {}), attack_vector: derivedAv };
+    }
+    // Trust-degradation marker. Excluded from computeFindingDedupeKey so adding
+    // it never reshuffles finding ids; strict on write, tolerant on read-back.
+    // Deliberately not part of the agent-facing claim-tool input (so an agent
+    // cannot self-declare signature status): it is set only by a producer that
+    // persists a finding from a source it could not signature-verify, by writing
+    // it onto payload.finding directly. RESERVED: no such production producer
+    // exists today (the intended wave-merge producer was superseded), so the
+    // fail-closed audit-writer gates that read this marker are inert until a
+    // producer is added; this read path re-normalizes the marker when present.
+    const signatureStatus = normalizeSignatureVerificationStatus(
+      record.signature_verification_status,
+      { strict: requireCwe },
+    );
+    if (signatureStatus) {
+      finding.signature_verification_status = signatureStatus;
+      const signatureReason = normalizeOptionalText(record.signature_error_reason, "signature_error_reason");
+      if (signatureReason) finding.signature_error_reason = signatureReason;
+      const markedAt = normalizeOptionalText(record.degradation_marked_at, "degradation_marked_at");
+      if (markedAt) finding.degradation_marked_at = markedAt;
     }
     if (finding.surface_type === "smart_contract" && !finding.sc_evidence) {
       throw new Error("smart-contract findings must include sc_evidence");
@@ -467,9 +653,18 @@ function renderFindingMarkdownEntry(finding) {
     : (finding.surface_type ? `(${finding.surface_type})` : "");
   const surface = surfaceLabel ? `\n- **Surface:** ${surfaceLabel}` : "";
   const routing = finding.capability_pack
-    ? `\n- **Capability Pack:** ${finding.capability_pack}${finding.hunter_agent ? ` (${finding.hunter_agent})` : ""}`
+    ? `\n- **Capability Pack:** ${finding.capability_pack}${finding.evaluator_agent ? ` (${finding.evaluator_agent})` : ""}`
     : "";
   const authProfile = finding.auth_profile ? `\n- **Auth Profile:** ${finding.auth_profile}` : "";
+  const repoFields = [
+    finding.file_path ? `\n- **File:** ${finding.file_path}` : "",
+    finding.symbol ? `\n- **Symbol:** ${finding.symbol}` : "",
+    finding.manifest ? `\n- **Manifest:** ${finding.manifest}` : "",
+    finding.affected_package ? `\n- **Affected Package:** ${finding.affected_package}` : "",
+    finding.affected_version_range ? `\n- **Affected Version Range:** ${finding.affected_version_range}` : "",
+    finding.repro_command ? `\n- **Repro Command:** \`${finding.repro_command}\`` : "",
+    finding.repro_command_argv ? `\n- **Repro Argv:** \`${JSON.stringify(finding.repro_command_argv)}\`` : "",
+  ].join("");
   let scBlock = "";
   if (finding.sc_evidence) {
     const e = finding.sc_evidence;
@@ -519,6 +714,7 @@ function renderFindingMarkdownEntry(finding) {
     surface,
     routing,
     authProfile,
+    repoFields,
     scBlock,
     "---\n\n",
   ].join("\n");
@@ -528,6 +724,9 @@ module.exports = {
   computeFindingDedupeKey,
   normalizeBech32Address,
   normalizeFindingRecord,
+  normalizeReachabilityAssertion,
+  normalizeSignatureVerificationStatus,
+  findingSupportsReachabilityAssertion,
   normalizeScEvidence,
   normalizeSs58Address,
   renderFindingMarkdownEntry,

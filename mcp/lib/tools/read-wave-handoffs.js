@@ -3,7 +3,8 @@
 const { readWaveHandoffs } = require("../wave-handoff-store.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_wave_handoffs",
+  name: "bob_read_wave_handoffs",
+  aliases: ["bounty_read_wave_handoffs"],
   description:
     "Read validated structured wave handoff summaries from handoff-wN-aN.json files only. Markdown handoffs are ignored.",
   inputSchema: {

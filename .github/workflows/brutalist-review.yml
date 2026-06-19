@@ -1,0 +1,78 @@
+name: Brutalist Review
+
+# Claude + Codex review on trusted maintainer PRs, posted as inline comments.
+# CODEX_AUTH is the full ~/.codex/auth.json stored as a GitHub Actions secret.
+# Refresh it with `codex login` + `gh secret set CODEX_AUTH` if auth fails.
+# The image_generation tool is disabled (codex#21952 gpt-image-2 bug).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: brutalist-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  brutalist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["vmihalis","ejmockler"]'), github.event.pull_request.user.login)
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+      - name: Install CLI critics
+        working-directory: .github/brutalist-tools
+        env:
+          EXPECTED_TOOLS_LOCK_SHA256: 26185c16a5bc18ec25badf9c74da4b0d0be0fe0ba64d8e24502f73bcb5412ddf
+        run: |
+          actual="$(sha256sum package-lock.json | cut -d ' ' -f1)"
+          if [ "$actual" != "$EXPECTED_TOOLS_LOCK_SHA256" ]; then
+            echo "Unexpected brutalist tools lockfile hash: $actual" >&2
+            exit 1
+          fi
+          npm ci --ignore-scripts
+          node node_modules/@anthropic-ai/claude-code/install.cjs
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+          command -v brutalist-mcp claude codex
+          claude --version
+          codex --version
+          # codex: disable the broken built-in image_generation tool (gpt-image-2)
+          mkdir -p "$HOME/.codex"
+          printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
+      - name: Brutalist review
+        id: brutalist-review
+        # Advisory reviewer only; CI remains the hard merge gate.
+        continue-on-error: true
+        # Pinned to the immutable v1.14.7 commit SHA, not the mutable tag — this
+        # action receives credentials below, so it must not move.
+        uses: ejmockler/brutalist-mcp/packages/github-action@15cedc8159a54662fa741395746d4aa0e161a3b4 # v1.14.7
+        env:
+          BRUTALIST_TIMEOUT: "600000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
+        with:
+          github-token: ${{ github.token }}
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          codex-auth: ${{ secrets.CODEX_AUTH }}
+          minimum-severity: medium
+      - name: Report advisory reviewer failure
+        if: steps.brutalist-review.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          echo "::warning title=Brutalist Review::Advisory review failed; CI remains the hard merge gate."
+          body="$(printf 'Brutalist Review failed for %s.\n\nCI remains the hard merge gate.\n\nRun: %s/%s/actions/runs/%s' "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          gh pr comment "$PR_URL" --body "$body"

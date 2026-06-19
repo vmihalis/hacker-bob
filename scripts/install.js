@@ -12,6 +12,7 @@ const {
   getAdapter,
 } = require("../adapters/index.js");
 const { clearUpdateCache } = require("../mcp/lib/update-check.js");
+const { commandExists } = require("./lib/command-exists.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
@@ -21,16 +22,16 @@ const RESOURCE_SETS = Object.freeze([
     source: path.join(BOB_RESOURCE_DIR, "bypass-tables"),
     destination: path.join(BOB_RESOURCE_DIR, "bypass-tables"),
     predicate: (name) => name.endsWith(".txt"),
-    missingMessage: ".hacker-bob/bypass-tables/ is missing. HUNT phase requires these files.",
-    emptyMessage: ".hacker-bob/bypass-tables/ is empty. HUNT phase requires these files.",
+    missingMessage: ".hacker-bob/bypass-tables/ is missing. EVALUATE phase requires these files.",
+    emptyMessage: ".hacker-bob/bypass-tables/ is empty. EVALUATE phase requires these files.",
   },
   {
     name: "knowledge",
     source: path.join(BOB_RESOURCE_DIR, "knowledge"),
     destination: path.join(BOB_RESOURCE_DIR, "knowledge"),
     predicate: (name) => name.endsWith(".json"),
-    missingMessage: ".hacker-bob/knowledge/ is missing. HUNT phase requires these files.",
-    emptyMessage: ".hacker-bob/knowledge/ is empty. HUNT phase requires these files.",
+    missingMessage: ".hacker-bob/knowledge/ is missing. EVALUATE phase requires these files.",
+    emptyMessage: ".hacker-bob/knowledge/ is empty. EVALUATE phase requires these files.",
   },
 ]);
 
@@ -66,13 +67,23 @@ function detectInstalledAdapterIds(targetAbs) {
   if (
     fs.existsSync(path.join(targetAbs, ".claude", "bob", "VERSION")) ||
     fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob-update.md")) ||
-    fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob", "hunt.md")) ||
-    fs.existsSync(path.join(targetAbs, ".claude", "skills", "bob-hunt", "SKILL.md"))
+    fs.existsSync(path.join(targetAbs, ".claude", "commands", "bob", "evaluate.md")) ||
+    fs.existsSync(path.join(targetAbs, ".claude", "skills", "bob-evaluate-runner", "SKILL.md")) ||
+    // Legacy detection: prior installs created bob-evaluate (or bob-hunt) skill
+    // dirs before the rename to bob-evaluate-runner. Detect those so reinstall
+    // metadata still resolves to the Claude adapter.
+    fs.existsSync(path.join(targetAbs, ".claude", "skills", "bob-evaluate", "SKILL.md"))
   ) {
     ids.push("claude");
   }
   if (fs.existsSync(path.join(targetAbs, ".codex", "plugins", "hacker-bob"))) {
     ids.push("codex");
+  }
+  if (
+    fs.existsSync(path.join(targetAbs, ".kimi", "bob", "VERSION")) ||
+    fs.existsSync(path.join(targetAbs, ".kimi", "skills", "bob-evaluate", "SKILL.md"))
+  ) {
+    ids.push("kimi");
   }
   if (fs.existsSync(path.join(targetAbs, BOB_RESOURCE_DIR, "generic-mcp", "hacker-bob.md"))) {
     ids.push("generic-mcp");
@@ -273,14 +284,6 @@ function sourceCommitSha(sourceRoot) {
   return sha || null;
 }
 
-function commandExists(command) {
-  const result = spawnSync("sh", ["-c", `command -v ${command}`], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return result.status === 0;
-}
-
 function commandOrGoBinExists(command) {
   return commandExists(command) || fs.existsSync(path.join(os.homedir(), "go", "bin", command));
 }
@@ -363,12 +366,30 @@ function installProject(projectDir, options = {}) {
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
-  copyDirFiles(path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
-  const sourceToolsDir = path.join(sourceRoot, "mcp", "lib", "tools");
-  const targetToolsDir = path.join(mcpDir, "lib", "tools");
-  if (path.resolve(sourceToolsDir) !== path.resolve(targetToolsDir)) {
-    fs.rmSync(targetToolsDir, { recursive: true, force: true });
-    copyDirFiles(sourceToolsDir, targetToolsDir, (name) => name.endsWith(".js"));
+  // Recursively copy the whole mcp/lib tree so EVERY split-module subdir lands --
+  // tools/, waves/, body-resolvers/, belief/, and any future one. server.js requires
+  // these at module-load time, so a dropped subdir crashes startup with a "Cannot
+  // find module" error. Copying the tree (not an enumerated subdir list) makes that
+  // silent-drop class impossible. The managed subdirs are cleared first so a
+  // renamed/removed module does not linger across re-installs.
+  const sourceLibDir = path.join(sourceRoot, "mcp", "lib");
+  const targetLibDir = path.join(mcpDir, "lib");
+  if (path.resolve(sourceLibDir) !== path.resolve(targetLibDir)) {
+    for (const name of fs.readdirSync(sourceLibDir).sort()) {
+      const source = path.join(sourceLibDir, name);
+      if (name !== "node_modules" && fs.statSync(source).isDirectory()) {
+        fs.rmSync(path.join(targetLibDir, name), { recursive: true, force: true });
+      }
+    }
+    // Copy .js modules plus any .sh build assets a module reads at load time
+    // (e.g. repo-env.js resolves a native-fuzz build script under mcp/lib/fuzz/).
+    // Dropping a load-time .sh asset crashes mcp/server.js startup the same way a
+    // dropped subdir would, so the runtime-copy must carry both.
+    copyDirRecursive(
+      sourceLibDir,
+      targetLibDir,
+      (relative, name) => name.endsWith(".js") || name.endsWith(".sh"),
+    );
   }
   const copiedRuntimeDependencies = copyRuntimeNodeDependencies(sourceRoot, mcpDir);
 
@@ -443,7 +464,29 @@ function installProject(projectDir, options = {}) {
     // A stale update hint is cosmetic; never fail an otherwise valid install.
   }
 
-  fs.mkdirSync(path.join(os.homedir(), "bounty-agent-sessions"), { recursive: true });
+  fs.mkdirSync(path.join(os.homedir(), "hacker-bob-sessions"), { recursive: true });
+
+  // Y.10 (Y-D12 / D6 + D14) — provision the operator session-cap nonce at
+  // ~/.bob/session-cap (mode 0600) so bob_set_queue_policy({partial_surface_
+  // advance_acknowledgements: [...]}) acknowledgements have a real nonce to
+  // match against. The runtime gate (mcp/lib/lifecycle-gates.js) consults
+  // verifyAttestationToken; without an install-managed nonce the gate would
+  // fall back to non-empty-string validation and offer no operator-attest
+  // authority. Idempotent: existing nonces are preserved and the mode is
+  // re-enforced.
+  let sessionCap = null;
+  try {
+    const { ensureSessionCapNonce, sessionCapPath } = require(
+      path.join(targetAbs, "mcp", "lib", "session-cap.js"),
+    );
+    ensureSessionCapNonce();
+    sessionCap = sessionCapPath();
+  } catch {
+    // Best-effort: the runtime gate degrades gracefully when the nonce file
+    // is absent (cap_status: "uninitialized"); we never block install on
+    // session-cap provisioning errors.
+    sessionCap = null;
+  }
 
   return {
     adapters: adapterIds,
@@ -475,7 +518,7 @@ function printInstallSummary(summary) {
   if (summary.adapterResults.claude) {
     console.log(`  ${summary.agents} Claude agent definitions`);
     console.log("  Claude command shims (/bob-update, /bob-egress, /bob-export)");
-    console.log("  Claude bob-hunt + bob-status + bob-debug skills");
+    console.log("  Claude bob-evaluate-runner + bob-status + bob-debug + bob-diff-review skills");
     console.log(`  ${summary.rules} Claude rules`);
     console.log("  Claude session guard hooks, update/export helpers, and status line");
     console.log("  Claude .mcp.json and settings.json merged");
@@ -483,7 +526,7 @@ function printInstallSummary(summary) {
   }
   if (summary.adapterResults.codex) {
     console.log("  Codex plugin (.codex/plugins/hacker-bob) for MCP wiring");
-    console.log("  Codex skills ($bob-hunt, $bob-status, $bob-debug, $bob-update, $bob-export, $bob-egress) in ~/.codex/skills");
+    console.log("  Codex skills ($bob-evaluate, $bob-status, $bob-debug, $bob-update, $bob-export, $bob-egress) in ~/.codex/skills");
     console.log(`  Codex plugin command wrappers (${summary.codexCommands}) and .agents/plugins/marketplace.json`);
     if (summary.codexActivation && summary.codexActivation.ok) {
       console.log("  Codex plugin cache/config activated for MCP discovery");
@@ -497,11 +540,11 @@ function printInstallSummary(summary) {
     console.log(`  Generic MCP prompt docs (${summary.genericPromptDocs}) and .mcp.json merged`);
   }
   console.log(`  ${summary.bypassTables} neutral bypass tables`);
-  console.log(`  ${summary.knowledge} neutral hunter knowledge files`);
+  console.log(`  ${summary.knowledge} neutral evaluator knowledge files`);
   console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
-  console.log("  ~/bounty-agent-sessions/");
+  console.log("  ~/hacker-bob-sessions/  (legacy ~/bounty-agent-sessions/ remains readable until v2.1.0)");
   console.log("");
   console.log("Dependency check:");
   console.log("");
@@ -523,13 +566,13 @@ function printInstallSummary(summary) {
     console.log("    Get a key at https://capsolver.com and export CAPSOLVER_API_KEY=...");
   }
   console.log("");
-  console.log("Optional recon tools (hunting works without these, recon steps are skipped):");
+  console.log("Optional surface-discovery tools (evaluating works without these, surface-discovery steps are skipped):");
   for (const tool of ["subfinder", "httpx", "nuclei", "amass", "assetfinder", "chaos", "dnsx", "tlsx", "katana", "subzy"]) {
     console.log(`  ${commandOrGoBinExists(tool) ? "OK" : "MISSING"}: ${tool}`);
   }
   console.log(`  ${jwtToolExists() ? "OK" : "MISSING"}: jwt_tool`);
   console.log("");
-  console.log("Install recon tools (optional):");
+  console.log("Install surface-discovery tools (optional):");
   console.log("  go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest");
   console.log("  go install github.com/projectdiscovery/httpx/cmd/httpx@latest");
   console.log("  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest");
@@ -543,9 +586,9 @@ function printInstallSummary(summary) {
   console.log("  git clone https://github.com/ticarpi/jwt_tool ~/jwt_tool && python3 -m pip install -r ~/jwt_tool/requirements.txt");
   console.log("");
   if (summary.adapters.length === 1 && summary.adapters[0] === "claude") {
-    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-hunt target.com`);
+    console.log(`Done. Restart Claude Code in ${summary.targetAbs}, then run: /bob-evaluate target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "codex") {
-    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $bob-hunt target.com`);
+    console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $bob-evaluate target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "generic-mcp") {
     console.log(`Done. Connect your MCP host to ${path.join(summary.targetAbs, "mcp", "server.js")} and read .hacker-bob/generic-mcp/hacker-bob.md.`);
   } else {

@@ -67,7 +67,7 @@ function App() {
     {
       icon: Workflow,
       title: 'Root orchestrator',
-      text: 'Owns phase gates from recon through report and decides when hunter waves merge back.',
+      text: 'Owns phase gates from surface-discovery through report and decides when evaluator waves merge back.',
     },
     {
       icon: Database,
@@ -81,7 +81,7 @@ function App() {
     },
     {
       icon: Network,
-      title: 'Parallel hunters',
+      title: 'Parallel evaluators',
       text: 'Specialized agents fan out by attack surface, then return structured findings instead of chat transcripts.',
     },
   ];
@@ -153,7 +153,7 @@ function App() {
               <h1>Hacker Bob</h1>
               <p className="hero__subtitle">Open-source bug bounty workflow framework for Claude Code.</p>
               <p className="hero__body">
-                Bob coordinates recon, auth capture, hunting, chaining, verification, grading, and report writing through
+                Bob coordinates surface-discovery, auth capture, evaluating, chaining, verification, grading, and report writing through
                 local agents and a project-local MCP server.
               </p>
               <div className="hero__actions">
@@ -169,7 +169,7 @@ function App() {
               <dl className="hero__metrics" aria-label="Hacker Bob highlights">
                 <div>
                   <dt>7</dt>
-                  <dd>hunt phases</dd>
+                  <dd>evaluate phases</dd>
                 </div>
                 <div>
                   <dt>MCP</dt>
@@ -188,7 +188,7 @@ function App() {
                 <span>authorized target</span>
               </div>
               <ol>
-                {['RECON', 'AUTH', 'HUNT', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'].map((stage, index) => (
+                {['SURFACE_DISCOVERY', 'AUTH', 'EVALUATE', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'].map((stage, index) => (
                   <li key={stage}>
                     <span className="terminal-index">{String(index + 1).padStart(2, '0')}</span>
                     <span>{stage}</span>
@@ -207,7 +207,7 @@ function App() {
               <h2>Install Bob into one Claude Code project.</h2>
               <p>
                 The canonical npm package is <a href={npmUrl} {...externalProps('Open hacker-bob on npm')}>hacker-bob</a>.
-                After install, restart Claude Code from that project and run <code>/bob-hunt target.com</code>.
+                After install, restart Claude Code from that project and run <code>/bob-evaluate target.com</code>.
               </p>
             </div>
             <div className="install-strip__command">
@@ -228,12 +228,12 @@ function App() {
               <h2>More than a prompt pack.</h2>
               <p>
                 Bob is a coordinated agent runtime: the root orchestrator drives the pipeline, MCP state keeps the run
-                durable, and hunter agents write artifacts the rest of the system can trust.
+                durable, and evaluator agents write artifacts the rest of the system can trust.
               </p>
             </div>
 
-            <div className="pipeline-rail" aria-label="Bob hunt pipeline">
-              {['RECON', 'AUTH', 'HUNT', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'].map((stage) => (
+            <div className="pipeline-rail" aria-label="Bob evaluate pipeline">
+              {['SURFACE_DISCOVERY', 'AUTH', 'EVALUATE', 'CHAIN', 'VERIFY', 'GRADE', 'REPORT'].map((stage) => (
                 <span key={stage}>{stage}</span>
               ))}
             </div>
@@ -327,7 +327,7 @@ function App() {
               <p className="section-kicker">Contribute</p>
               <h2>Make Bob sharper.</h2>
               <p>
-                File issues, read the docs, inspect the agent contracts, and help harden the hunting pipeline for the next
+                File issues, read the docs, inspect the agent contracts, and help harden the evaluating pipeline for the next
                 release.
               </p>
             </div>

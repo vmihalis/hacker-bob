@@ -31,16 +31,44 @@ const {
   buildSurfaceGraph,
 } = require("../mcp/lib/surface-graph-builder.js");
 const {
-  indexFinding,
-} = require("../mcp/lib/findings-index.js");
+  normalizeEvidencePacksDocument,
+} = require("../mcp/lib/evidence.js");
+const {
+  normalizeProofBundlesDocument,
+} = require("../mcp/lib/proof-bundle.js");
+const {
+  proofBundlePaths,
+  repoCommandRunsJsonlPath,
+  repoRunsDir,
+  statePath,
+} = require("../mcp/lib/paths.js");
+const {
+  appendJsonlLine,
+} = require("../mcp/lib/storage.js");
+const {
+  hashCanonicalJson,
+} = require("../mcp/lib/verification-contracts.js");
+const {
+  initSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  indexStaticResults,
+  readStaticAnalysisIndex,
+} = require("../mcp/lib/static-analysis-index.js");
+
+const FIXTURE_CHECKOUT_OBJECT = "1".repeat(40);
+const FIXTURE_STATIC_ANALYSIS_SARIF = fs.readFileSync(
+  path.join(__dirname, "fixtures", "sarif", "codeql-codeflows.sarif"),
+  "utf8",
+);
 
 function uniqueDomain(prefix = "bob-determinism-ci") {
   const suffix = crypto.randomBytes(4).toString("hex");
-  return `${prefix}-${suffix}.local`;
+  return `${prefix}-${suffix}.example.com`;
 }
 
 function domainDir(domain) {
-  return path.join(os.homedir(), "bounty-agent-sessions", domain);
+  return path.join(os.homedir(), "hacker-bob-sessions", domain);
 }
 
 function cleanupDomain(domain) {
@@ -63,6 +91,11 @@ function writeAttackSurface(domain, surfaces) {
     path.join(dir, "attack_surface.json"),
     JSON.stringify({ surfaces }, null, 2),
   );
+}
+
+function ensureSession(domain) {
+  if (fs.existsSync(statePath(domain))) return;
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
 }
 
 const FIXTURE_OPENAPI = JSON.stringify({
@@ -151,7 +184,131 @@ function fixtureFetchByProfile({ auth_profile, endpoint }) {
   };
 }
 
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function appendRepoRunFixture(domain, runId, stdout, {
+  checkout_ref: checkoutRef = null,
+  checkout_kind: checkoutKind = null,
+  checkout_object: checkoutObject = checkoutRef ? FIXTURE_CHECKOUT_OBJECT : null,
+  checkout_object_format: checkoutObjectFormat = checkoutObject ? "sha1" : null,
+} = {}) {
+  const replayCommandHash = sha256Hex(JSON.stringify(["sh", "-lc", "./repro.sh"]));
+  fs.mkdirSync(repoRunsDir(domain), { recursive: true });
+  fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stdout`), stdout);
+  fs.writeFileSync(path.join(repoRunsDir(domain), `${runId}.stderr`), "");
+  const row = {
+    version: 1,
+    target_domain: domain,
+    run_id: runId,
+    dry_run: false,
+    command_hash: replayCommandHash,
+    replay_command_hash: replayCommandHash,
+    argv_hash: sha256Hex(JSON.stringify(["run", "--network", "none"])),
+    network_mode: "none",
+    mount_mode: "read_only",
+    work_mount_mode: "read_write",
+    replay_context: { finding_id: "F-1" },
+    image_tag: "bob-oss-fixture:stable",
+    exit_code: 0,
+    timed_out: false,
+    stdout_hash: sha256Hex(stdout),
+    stderr_hash: sha256Hex(""),
+  };
+  if (checkoutRef) row.checkout_ref = checkoutRef;
+  if (checkoutKind) row.checkout_kind = checkoutKind;
+  if (checkoutObject) row.checkout_object = checkoutObject;
+  if (checkoutObjectFormat) row.checkout_object_format = checkoutObjectFormat;
+  if (checkoutKind === "self_patch") row.checkout_patch_hash = sha256Hex("fixture patch\n");
+  appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
+}
+
+function exerciseDifferentialEvidence(domain) {
+  appendRepoRunFixture(domain, "det-ci-vuln-run", "vuln fired\n");
+  appendRepoRunFixture(domain, "det-ci-control-run", "control quiet\n", {
+    checkout_ref: "HEAD",
+    checkout_kind: "self_patch",
+  });
+  const document = normalizeEvidencePacksDocument({
+    version: 1,
+    target_domain: domain,
+    packs: [{
+      finding_id: "F-1",
+      sample_type: "oss_dynamic_replay",
+      sample_count: 1,
+      aggregate_counts: { runs: 2 },
+      representative_samples: [{ run_id: "det-ci-vuln-run" }],
+      sensitive_clusters: [],
+      replay_summary: "Deterministic differential fixture replay.",
+      redaction_notes: null,
+      report_snippet: "The self patch quiets the fixture proof.",
+      differential: {
+        control_kind: "self_patch",
+        vuln_run_id: "det-ci-vuln-run",
+        control_run_id: "det-ci-control-run",
+        control_ref: "HEAD",
+        vuln_fired: true,
+        control_fired: false,
+        verdict: "patch_fixes",
+        control_summary: "Control run did not fire in the offline fixture.",
+      },
+    }],
+  }, {
+    expectedDomain: domain,
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  });
+  return {
+    differential_hash: hashCanonicalJson(document.packs[0].differential),
+  };
+}
+
+function exerciseProofBundle(domain) {
+  const document = normalizeProofBundlesDocument({
+    version: 1,
+    target_domain: domain,
+    packs: [{
+      finding_id: "F-1",
+      bundle_kind: "replay_script",
+      artifacts: [{
+        run_id: "det-ci-vuln-run",
+        replay_command: ["sh", "-lc", "./repro.sh"],
+        replay_summary: "Deterministic proof bundle fixture replay.",
+      }],
+    }],
+  }, {
+    expectedDomain: domain,
+    findingIdSet: new Set(["F-1"]),
+    finalReportableIdSet: new Set(["F-1"]),
+  });
+  const paths = proofBundlePaths(domain);
+  fs.writeFileSync(paths.json, `${JSON.stringify(document, null, 2)}\n`);
+  return {
+    bundle_hash: document.packs[0].bundle_hash,
+    document_hash: hashCanonicalJson(document),
+  };
+}
+
+function exerciseStaticAnalysisIndex(domain) {
+  ensureSession(domain);
+  const runId = "det-ci-static-analysis";
+  appendRepoRunFixture(domain, runId, FIXTURE_STATIC_ANALYSIS_SARIF);
+  const stdoutPath = path.join(repoRunsDir(domain), `${runId}.stdout`);
+  indexStaticResults(domain, {
+    run_id: runId,
+    stdout_path: stdoutPath,
+    tool: "codeql",
+  });
+  const rows = readStaticAnalysisIndex(domain);
+  assert.equal(rows.length, 1);
+  return {
+    finding_hash: rows[0].finding_hash,
+  };
+}
+
 async function exerciseDeterministicPipelines(domain) {
+  ensureSession(domain);
   ingestSchemaDoc({
     target_domain: domain,
     raw_doc: FIXTURE_OPENAPI,
@@ -174,21 +331,6 @@ async function exerciseDeterministicPipelines(domain) {
     run_id: "det-ci-auth-diff",
   });
 
-  for (let i = 0; i < 3; i++) {
-    indexFinding({
-      target_domain: domain,
-      finding: {
-        finding_id: `DET-CI-F-${i}`,
-        title: `determinism canary finding ${i}`,
-        description: "fixture finding for determinism ci",
-        severity: "high",
-        attack_class: "idor",
-        endpoint: `/fixture/${i}`,
-        tech_stack: ["express"],
-      },
-    });
-  }
-
   writeAttackSurface(domain, FIXTURE_ATTACK_SURFACE);
   buildSurfaceGraph({ target_domain: domain });
 
@@ -204,7 +346,10 @@ async function exerciseDeterministicPipelines(domain) {
     ],
   });
 
-  return { docDelta, authDiff };
+  const c10 = exerciseDifferentialEvidence(domain);
+  const proofBundle = exerciseProofBundle(domain);
+  const staticAnalysis = exerciseStaticAnalysisIndex(domain);
+  return { docDelta, authDiff, c10, proofBundle, staticAnalysis };
 }
 
 function readJsonl(filePath) {
@@ -231,11 +376,6 @@ function snapshotContentHashSets(domain) {
       readJsonl(path.join(dir, "surface-graph.jsonl"))
         .map((row) => row.edge_hash)
         .filter((hash) => typeof hash === "string"),
-    ),
-    "findings-index.jsonl": new Set(
-      readJsonl(path.join(dir, "findings-index.jsonl"))
-        .map((row) => row.finding_id)
-        .filter((id) => typeof id === "string"),
     ),
   };
 }
@@ -276,8 +416,16 @@ test("determinism CI: every v2-style content-addressed artifact reproduces byte-
     // bookkeeping).
     assert.notEqual(runA.docDelta.results_hash, runB.docDelta.results_hash, "doc-delta results_hash must include target_domain so cross-domain hashes diverge");
     assert.notEqual(runA.authDiff.results_hash, runB.authDiff.results_hash, "auth-differential results_hash must include target_domain so cross-domain hashes diverge");
+    assert.notEqual(runA.proofBundle.document_hash, runB.proofBundle.document_hash, "proof-bundles.json hash must include target_domain so cross-domain hashes diverge");
+    assert.equal(runA.c10.differential_hash, runB.c10.differential_hash, "C10 differential hash must be target-domain independent");
+    assert.equal(runA.proofBundle.bundle_hash, runB.proofBundle.bundle_hash, "C14 bundle_hash must be target-domain independent");
+    assert.equal(runA.staticAnalysis.finding_hash, runB.staticAnalysis.finding_hash, "I10 finding_hash must be target-domain independent");
     assert.ok(typeof runA.docDelta.results_hash === "string" && runA.docDelta.results_hash.length === 64);
     assert.ok(typeof runA.authDiff.results_hash === "string" && runA.authDiff.results_hash.length === 64);
+    assert.ok(typeof runA.c10.differential_hash === "string" && runA.c10.differential_hash.length === 64);
+    assert.ok(typeof runA.proofBundle.bundle_hash === "string" && runA.proofBundle.bundle_hash.length === 64);
+    assert.ok(typeof runA.proofBundle.document_hash === "string" && runA.proofBundle.document_hash.length === 64);
+    assert.ok(typeof runA.staticAnalysis.finding_hash === "string" && runA.staticAnalysis.finding_hash.length === 64);
     // The disk-resident copy must match the in-memory result we got back.
     assert.equal(readDocDeltaResults(domainA).results_hash, runA.docDelta.results_hash);
     assert.equal(readAuthDifferentialResults(domainA).results_hash, runA.authDiff.results_hash);
@@ -299,6 +447,10 @@ test("determinism CI: re-running the same pipeline against the same target produ
     }
     assert.equal(firstRun.docDelta.results_hash, secondRun.docDelta.results_hash, "doc-delta results_hash drifted on second pass against the same target");
     assert.equal(firstRun.authDiff.results_hash, secondRun.authDiff.results_hash, "auth-differential results_hash drifted on second pass against the same target");
+    assert.equal(firstRun.c10.differential_hash, secondRun.c10.differential_hash, "C10 differential hash drifted on second pass against the same target");
+    assert.equal(firstRun.proofBundle.bundle_hash, secondRun.proofBundle.bundle_hash, "C14 bundle_hash drifted on second pass against the same target");
+    assert.equal(firstRun.proofBundle.document_hash, secondRun.proofBundle.document_hash, "proof-bundles.json hash drifted on second pass against the same target");
+    assert.equal(firstRun.staticAnalysis.finding_hash, secondRun.staticAnalysis.finding_hash, "I10 finding_hash drifted on second pass against the same target");
   } finally {
     cleanupDomain(domain);
   }

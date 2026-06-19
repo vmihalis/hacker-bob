@@ -41,11 +41,11 @@ test("summarizeCapabilityMetrics returns zeroed buckets when no events", () => {
 
 test("call_count, success_count, success_rate, avg_latency aggregate per capability", () => {
   const events = [
-    event({ tool: "bounty_ingest_schema_doc", latency_ms: 100 }),
-    event({ tool: "bounty_run_doc_delta", latency_ms: 200 }),
-    event({ tool: "bounty_run_doc_delta", latency_ms: 300, status: "error", ok: false }),
-    event({ tool: "bounty_index_finding", latency_ms: 50 }),
-    event({ tool: "bounty_index_finding", latency_ms: 50 }),
+    event({ tool: "bob_ingest_schema_doc", latency_ms: 100 }),
+    event({ tool: "bob_run_doc_delta", latency_ms: 200 }),
+    event({ tool: "bob_run_doc_delta", latency_ms: 300, status: "error", ok: false }),
+    event({ tool: "bob_append_chain_node", latency_ms: 50 }),
+    event({ tool: "bob_append_chain_node", latency_ms: 50 }),
   ];
   const result = summarizeCapabilityMetrics(events);
   assert.equal(result.C2_doc_vs_behavior.call_count, 3);
@@ -54,17 +54,17 @@ test("call_count, success_count, success_rate, avg_latency aggregate per capabil
   assert.equal(result.C2_doc_vs_behavior.success_rate, 0.6667);
   assert.equal(result.C2_doc_vs_behavior.avg_latency_ms, 200);
 
-  assert.equal(result.I6_findings_index.call_count, 2);
-  assert.equal(result.I6_findings_index.success_count, 2);
-  assert.equal(result.I6_findings_index.success_rate, 1);
-  assert.equal(result.I6_findings_index.avg_latency_ms, 50);
+  assert.equal(result.I7_chain_state_tree.call_count, 2);
+  assert.equal(result.I7_chain_state_tree.success_count, 2);
+  assert.equal(result.I7_chain_state_tree.success_rate, 1);
+  assert.equal(result.I7_chain_state_tree.avg_latency_ms, 50);
 });
 
 test("blocked_count breaks out from error_count", () => {
   const events = [
-    event({ tool: "bounty_run_auth_differential", status: "blocked", ok: true }),
-    event({ tool: "bounty_run_auth_differential", status: "ok" }),
-    event({ tool: "bounty_run_auth_differential", status: "error" }),
+    event({ tool: "bob_run_auth_differential", status: "blocked", ok: true }),
+    event({ tool: "bob_run_auth_differential", status: "ok" }),
+    event({ tool: "bob_run_auth_differential", status: "error" }),
   ];
   const result = summarizeCapabilityMetrics(events);
   const c4 = result.C4_multi_account_differential;
@@ -76,9 +76,9 @@ test("blocked_count breaks out from error_count", () => {
 
 test("last_called_at picks the latest timestamp", () => {
   const events = [
-    event({ tool: "bounty_query_chain_tree", timestamp: "2026-05-09T00:00:00Z" }),
-    event({ tool: "bounty_query_chain_tree", timestamp: "2026-05-10T00:00:00Z" }),
-    event({ tool: "bounty_query_chain_tree", timestamp: "2026-05-08T00:00:00Z" }),
+    event({ tool: "bob_query_chain_tree", timestamp: "2026-05-09T00:00:00Z" }),
+    event({ tool: "bob_query_chain_tree", timestamp: "2026-05-10T00:00:00Z" }),
+    event({ tool: "bob_query_chain_tree", timestamp: "2026-05-08T00:00:00Z" }),
   ];
   const result = summarizeCapabilityMetrics(events);
   assert.equal(result.I7_chain_state_tree.last_called_at, "2026-05-10T00:00:00Z");
@@ -86,28 +86,28 @@ test("last_called_at picks the latest timestamp", () => {
 
 test("per-tool breakdown reflects per-tool counts and rates", () => {
   const events = [
-    event({ tool: "bounty_ingest_schema_doc" }),
-    event({ tool: "bounty_ingest_schema_doc" }),
-    event({ tool: "bounty_run_doc_delta", status: "error", ok: false }),
+    event({ tool: "bob_ingest_schema_doc" }),
+    event({ tool: "bob_ingest_schema_doc" }),
+    event({ tool: "bob_run_doc_delta", status: "error", ok: false }),
   ];
   const result = summarizeCapabilityMetrics(events);
   const perTool = result.C2_doc_vs_behavior.per_tool;
-  assert.equal(perTool.bounty_ingest_schema_doc.call_count, 2);
-  assert.equal(perTool.bounty_ingest_schema_doc.success_rate, 1);
-  assert.equal(perTool.bounty_run_doc_delta.call_count, 1);
-  assert.equal(perTool.bounty_run_doc_delta.error_count, 1);
-  assert.equal(perTool.bounty_run_doc_delta.success_rate, 0);
-  assert.equal(perTool.bounty_query_schema_contracts.call_count, 0);
+  assert.equal(perTool.bob_ingest_schema_doc.call_count, 2);
+  assert.equal(perTool.bob_ingest_schema_doc.success_rate, 1);
+  assert.equal(perTool.bob_run_doc_delta.call_count, 1);
+  assert.equal(perTool.bob_run_doc_delta.error_count, 1);
+  assert.equal(perTool.bob_run_doc_delta.success_rate, 0);
+  assert.equal(perTool.bob_query_schema_contracts.call_count, 0);
 });
 
 test("events for unrelated tools are ignored", () => {
   const events = [
-    event({ tool: "bounty_http_scan" }),
-    event({ tool: "bounty_record_finding" }),
-    event({ tool: "bounty_index_finding" }),
+    event({ tool: "bob_http_scan" }),
+    event({ tool: "bob_record_candidate_claim" }),
+    event({ tool: "bob_append_chain_node" }),
   ];
   const result = summarizeCapabilityMetrics(events);
-  assert.equal(result.I6_findings_index.call_count, 1);
+  assert.equal(result.I7_chain_state_tree.call_count, 1);
   assert.equal(result.C2_doc_vs_behavior.call_count, 0);
   assert.equal(result.C4_multi_account_differential.call_count, 0);
 });
@@ -118,12 +118,12 @@ test("malformed events are tolerated", () => {
     "not-an-event",
     {},
     { tool: 123 },
-    { tool: "bounty_index_finding" },
+    { tool: "bob_append_chain_node" },
   ]);
-  assert.equal(result.I6_findings_index.call_count, 1);
+  assert.equal(result.I7_chain_state_tree.call_count, 1);
 });
 
 test("non-array input returns zeroed buckets", () => {
   const result = summarizeCapabilityMetrics(null);
-  assert.equal(result.I6_findings_index.call_count, 0);
+  assert.equal(result.I7_chain_state_tree.call_count, 0);
 });

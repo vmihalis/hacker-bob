@@ -3,7 +3,8 @@
 const { listAuthProfiles } = require("../auth.js");
 
 module.exports = Object.freeze({
-  name: "bounty_list_auth_profiles",
+  name: "bob_list_auth_profiles",
+  aliases: ["bounty_list_auth_profiles"],
   description:
     "Return redacted auth profile status for a target. Shows profile names, header/cookie key names, credential presence, and expiry/staleness hints without token, cookie, localStorage, or password values.",
   inputSchema: {
@@ -18,7 +19,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: listAuthProfiles,
-  role_bundles: ["auth","hunter-web","verifier","orchestrator","chain","evidence"],
+  role_bundles: ["auth","evaluator-web","verifier","orchestrator","chain","evidence"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

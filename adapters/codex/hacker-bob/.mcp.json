@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "bountyagent": {
+    "hacker-bob": {
       "command": "node",
       "args": [
         "../../../mcp/server.js"
@@ -10,7 +10,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@brutalist/mcp@latest"
+        "@brutalist/mcp@1.14.7"
       ]
     }
   }

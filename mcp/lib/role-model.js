@@ -5,36 +5,36 @@ const {
   TOOL_MANIFEST,
   toolNamesForRoleBundle,
 } = require("./tool-registry.js");
-const { hunterRoleSpecs } = require("./capability-packs.js");
+const { evaluatorRoleSpecs } = require("./capability-packs.js");
 
 const ROLE_PROMPT_DIR = path.join("prompts", "roles");
 
 const READ_ONLY_STATUS_TOOLS = Object.freeze([
-  "bounty_read_pipeline_analytics",
-  "bounty_read_session_summary",
-  "bounty_read_state_summary",
-  "bounty_wave_status",
-  "bounty_read_wave_handoffs",
-  "bounty_read_findings",
-  "bounty_read_verification_context",
-  "bounty_read_verification_round",
-  "bounty_read_evidence_packs",
-  "bounty_read_grade_verdict",
+  "bob_read_pipeline_analytics",
+  "bob_read_session_summary",
+  "bob_read_state_summary",
+  "bob_wave_status",
+  "bob_read_wave_handoffs",
+  "bob_read_candidate_claims",
+  "bob_read_verification_context",
+  "bob_read_verification_round",
+  "bob_read_evidence_packs",
+  "bob_read_grade_verdict",
 ]);
 
 const READ_ONLY_DEBUG_TOOLS = Object.freeze([
-  "bounty_read_pipeline_analytics",
-  "bounty_read_tool_telemetry",
-  "bounty_read_session_summary",
-  "bounty_read_state_summary",
-  "bounty_wave_status",
-  "bounty_read_wave_handoffs",
-  "bounty_read_findings",
-  "bounty_read_verification_context",
-  "bounty_read_verification_round",
-  "bounty_diff_verification_attempts",
-  "bounty_read_evidence_packs",
-  "bounty_read_grade_verdict",
+  "bob_read_pipeline_analytics",
+  "bob_read_tool_telemetry",
+  "bob_read_session_summary",
+  "bob_read_state_summary",
+  "bob_wave_status",
+  "bob_read_wave_handoffs",
+  "bob_read_candidate_claims",
+  "bob_read_verification_context",
+  "bob_read_verification_round",
+  "bob_diff_verification_attempts",
+  "bob_read_evidence_packs",
+  "bob_read_grade_verdict",
 ]);
 
 const ROLE_DEFINITIONS = Object.freeze({
@@ -43,40 +43,62 @@ const ROLE_DEFINITIONS = Object.freeze({
     prompt_body: path.join(ROLE_PROMPT_DIR, "orchestrator.md"),
     mcp_role_bundles: Object.freeze(["orchestrator", "auth"]),
   }),
-  recon: Object.freeze({
-    id: "recon",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "recon.md"),
-    mcp_role_bundles: Object.freeze([]),
+  "surface-discovery": Object.freeze({
+    id: "surface-discovery",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "surface-discovery.md"),
+    mcp_role_bundles: Object.freeze(["surface-discovery"]),
+    mcp_tools: Object.freeze(["bob_read_session_nucleus"]),
   }),
-  "deep-recon": Object.freeze({
-    id: "deep-recon",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "deep-recon.md"),
-    mcp_role_bundles: Object.freeze([]),
+  "deep-surface-discovery": Object.freeze({
+    id: "deep-surface-discovery",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "deep-surface-discovery.md"),
+    mcp_role_bundles: Object.freeze(["deep-surface-discovery"]),
+    mcp_tools: Object.freeze(["bob_read_session_nucleus"]),
   }),
   "surface-router": Object.freeze({
     id: "surface-router",
     prompt_body: path.join(ROLE_PROMPT_DIR, "surface-router.md"),
     mcp_role_bundles: Object.freeze(["router"]),
   }),
-  hunter: Object.freeze({
-    id: "hunter",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "hunter.md"),
-    mcp_role_bundles: Object.freeze(["hunter-shared", "hunter-web"]),
+  evaluator: Object.freeze({
+    id: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
   }),
-  // Per-chain hunter role definitions are generated below from HUNTER_ROLES
-  // in capability-packs.js. The static `hunter` (web) role above stays
+  // Per-chain evaluator role definitions are generated below from EVALUATOR_ROLES
+  // in capability-packs.js. The static `evaluator` (web) role above stays
   // hand-coded because it is not chain-specific.
   ...Object.fromEntries(
-    hunterRoleSpecs().map((role) => [
+    evaluatorRoleSpecs().map((role) => [
       role.role_id,
       Object.freeze({
         id: role.role_id,
-        family: "hunter",
+        family: "evaluator",
         prompt_body: path.join(ROLE_PROMPT_DIR, role.prompt_body_filename),
         mcp_role_bundles: role.role_bundles,
       }),
     ]),
   ),
+  // Plane X Cycle X.10 — generic TaskGraph evaluator shell. UNION of the
+  // shared evaluator + web + every chain-specific evaluator bundle so a
+  // single agent shell can execute Transition and Hypothesis nodes that
+  // span arbitrary tool combinations not knowable at build time. Per X-P7
+  // this is an ergonomics trade (preventive→detective control swap):
+  // mechanical verifier (X.6) catches out-of-band tool invocations via
+  // the `tool_constraint_violation` failure_reason emitted from
+  // bob_finalize_node when agent_output.tool_invocations[] contains a
+  // tool outside the dispatched node's allowed_tools_for_node[] set.
+  "evaluator-spawn": Object.freeze({
+    id: "evaluator-spawn",
+    family: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-spawn.md"),
+    mcp_role_bundles: Object.freeze([
+      "evaluator-shared",
+      "evaluator-spawn",
+      "evaluator-web",
+      ...evaluatorRoleSpecs().flatMap((role) => role.role_bundles.filter((b) => b !== "evaluator-shared")),
+    ]),
+  }),
   chain: Object.freeze({
     id: "chain",
     prompt_body: path.join(ROLE_PROMPT_DIR, "chain.md"),
@@ -99,6 +121,7 @@ const ROLE_DEFINITIONS = Object.freeze({
     family: "verifier",
     prompt_body: path.join(ROLE_PROMPT_DIR, "final-verifier.md"),
     mcp_role_bundles: Object.freeze(["verifier"]),
+    mcp_tools: Object.freeze(["bob_write_proof_bundle"]),
   }),
   evidence: Object.freeze({
     id: "evidence",

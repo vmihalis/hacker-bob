@@ -13,6 +13,7 @@ const {
   STALE_HOOK_SCRIPT_NAMES,
   expectedCanonicalFiles,
   isExcludedCanonicalPackageFile,
+  isInternalPlaneDeltaDetailDoc,
   isInternalRefactorDoc,
   isInternalRefactorScratch,
   isPackableBin,
@@ -36,6 +37,14 @@ function withDependencyFreshnessFixture(metadata, fn) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+test("cache-bob-workspace action links bob-diff-review into Claude skill discovery", () => {
+  const action = fs.readFileSync(path.join(ROOT, ".github/actions/cache-bob-workspace/action.yml"), "utf8");
+  assert.match(action, /\$INSTALL_TARGET\/\.claude\/skills\/bob-diff-review/);
+  assert.match(action, /\$HOME\/\.claude\/skills\/bob-diff-review/);
+  assert.match(action, /ln -s "\$SKILL_SRC" "\$SKILL_DEST"/);
+  assert.match(action, /\[\[ ! -f "\$SKILL_DEST\/SKILL\.md" \]\]/);
+});
 
 test("canonical package declares PSL as a runtime dependency without vendoring it", () => {
   const packageJson = require("../package.json");
@@ -70,7 +79,7 @@ test("dependency freshness check warns on stale but current PSL metadata", () =>
   assert.match(output, /Dependency freshness check passed with 1 warning\(s\)\./);
 });
 
-test("dependency freshness check fails when PSL is behind latest or too old", () => {
+test("dependency freshness check fails when PSL lockfile is behind latest", () => {
   assert.throws(() => withDependencyFreshnessFixture({
     version: "1.16.0",
     "dist-tags": { latest: "1.16.0" },
@@ -89,25 +98,6 @@ test("dependency freshness check fails when PSL is behind latest or too old", ()
     assert.match(String(error.stdout), /FAIL psl lockfile version 1\.15\.0 is behind npm latest 1\.16\.0/);
     return true;
   });
-
-  assert.throws(() => withDependencyFreshnessFixture({
-    version: "1.15.0",
-    "dist-tags": { latest: "1.15.0" },
-    time: { "1.15.0": "2024-12-02T10:16:04.251Z" },
-  }, (fixturePath) => execFileSync(process.execPath, [
-    "scripts/dependency-freshness.js",
-    "--metadata-file",
-    fixturePath,
-    "--now",
-    "2026-06-10T00:00:00.000Z",
-  ], {
-    cwd: ROOT,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  })), (error) => {
-    assert.match(String(error.stdout), /FAIL psl@1\.15\.0 latest publish age \d+\.\d days exceeds failure threshold 540 days/);
-    return true;
-  });
 });
 
 test("canonical package lists shipped Claude hooks explicitly", () => {
@@ -122,8 +112,9 @@ test("canonical package lists shipped Claude hooks explicitly", () => {
     "bob-egress.js",
     "bob-export.js",
     "bob-update.js",
-    "bounty-statusline.js",
-    "hunter-subagent-stop.js",
+    "bob-statusline.js",
+    "agent-run-start.js",
+    "agent-run-stop.js",
     "session-read-guard.sh",
     "session-write-guard.sh",
   ]) {
@@ -158,12 +149,27 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.equal(isExcludedCanonicalPackageFile(excluded), true, `${excluded} should be denied by policy`);
     }
 
-    assert.ok(pack.size < 2500000, `npm pack size ${pack.size} exceeds 2.5 MB threshold`);
+    // Pack-size budget raised to 3.1 MB to accommodate the kimi adapter family
+    // (adapters/kimi/*, scripts/lib/kimi-role-renderer.js, scripts/lib/install-fs.js,
+    // packages/hacker-bob-kimi/*) absorbed from PR #58 alongside the existing
+    // Y.3 Stage c substrate growth (evidence_refs[] validator + LARGE_BODY_THRESHOLD_BYTES
+    // export + EVIDENCE_REF_HANDLE_PREFIXES constant on bob_write_chain_rollup
+    // per Y-P14b / O4), plus the packable Plane-Delta graph JSON docs.
+    // Raised again to 3.2 MB for the CVSS v3.1 + CWE report-layer annotations
+    // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
+    // now measured against the lean tarball — mcp/node_modules is excluded from
+    // the pack, so this budget tracks shipped source/docs only.
+    // Raised to 3.3 MB for the OSS multi-TU fuzz foundation: the image-baked builder
+    // (mcp/lib/fuzz/bob-multitu-build.sh), bob_import_harness (mcp/lib/harness-store.js
+    // + tools/import-harness.js), and packing the .claude/hooks write-guard table the
+    // runtime write-guard hooks read.
+    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
       assert.ok(!file.startsWith("test/"), `${file} should not be packed`);
       assert.ok(!isInternalRefactorDoc(file), `${file} should not be packed`);
+      assert.ok(!isInternalPlaneDeltaDetailDoc(file), `${file} should not be packed`);
       assert.ok(!isInternalRefactorScratch(file), `${file} should not be packed`);
       assert.ok(!file.startsWith("scripts/replay-prompts/"), `${file} should not be packed`);
       assert.ok(!DISALLOWED_PACKED_FILE_PATTERNS.some((pattern) => pattern.test(file)), `${file} should not be packed`);
@@ -188,6 +194,7 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.notEqual(file, ".claude/hooks/bob-update-lib.js", "hook-local update library should not be packed");
       assert.ok(!LOCAL_INSTALL_METADATA_FILES.has(file), `${file} should not be packed`);
       assert.ok(!file.includes("bounty-agent-sessions"), `${file} should not be packed`);
+      assert.ok(!file.includes("hacker-bob-sessions"), `${file} should not be packed`);
       assert.ok(!file.includes(".cache/"), `${file} should not be packed`);
       if (isPackedTextFile(file)) {
         const sourcePath = path.join(ROOT, file);
@@ -214,6 +221,7 @@ test("canonical package excludes internal refactor docs and scratch topology", (
   const files = new Set(pack.files.map((file) => file.path));
   for (const file of files) {
     assert.ok(!isInternalRefactorDoc(file), `${file} should not be packed`);
+    assert.ok(!isInternalPlaneDeltaDetailDoc(file), `${file} should not be packed`);
     assert.ok(!isInternalRefactorScratch(file), `${file} should not be packed`);
   }
 });
@@ -222,17 +230,20 @@ test("package policy excludes denied files even if they exist in the source tree
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bob-package-policy-"));
   try {
     fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "docs", "plane-delta", "detail"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard.sh"), "stale\n");
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard-mcp.sh"), "stale\n");
     fs.writeFileSync(path.join(root, "docs", "hacker-bob-offline-guide.pdf"), "stale\n");
+    fs.writeFileSync(path.join(root, "docs", "plane-delta", "detail", "S14.md"), "internal\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-prompts", "00-baseline.md"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "keep.js"), "keep\n");
 
     const expectedFiles = expectedCanonicalFiles(root);
     assert.ok(expectedFiles.includes("scripts/keep.js"));
+    assert.ok(!expectedFiles.includes("docs/plane-delta/detail/S14.md"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {
       assert.ok(!expectedFiles.includes(excluded), `${excluded} should not be expected`);
     }

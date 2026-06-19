@@ -360,9 +360,9 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
   // fork_block_used reports the block the runner ACTUALLY pinned. cw-multi-test
   // is in-memory simulation with no chain-time semantics; harnesses that opt
   // into mainnet-state replay via BOB_COSMWASM_FORK_URL pull state at the
-  // current head, not at the hunter's pinned height. We therefore leave
+  // current head, not at the evaluator's pinned height. We therefore leave
   // fork_block_used null whenever the runner did not pin (`forkBlock` from
-  // the hunter is preserved in the `fork_block` response field as the PoC
+  // the evaluator is preserved in the `fork_block` response field as the PoC
   // pin). Verifier prompts cascade to follow-up `block_used` from the read
   // tools when fork_block_used is null.
   const forkBlockUsed = null;

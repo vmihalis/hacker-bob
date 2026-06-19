@@ -12,6 +12,8 @@ const {
   readFileUtf8,
 } = require("./storage.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
+const { appendFrontierEvent } = require("./frontier-events.js");
+const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
@@ -166,7 +168,45 @@ async function runDocDelta({
     per_contract: perContract,
   };
   payload.results_hash = hashCanonicalJson({ summary: { ...summary, started_at: null, finished_at: null }, per_contract: perContract });
+  // LEGACY: removed in Plane D — doc-delta-results.json remains during the
+  // dual-write window so capability-eval and report-writer keep working;
+  // frontier-events.jsonl carries the authoritative observation signal.
   persistResults(domain, payload);
+
+  // Dual-write per Pact P2: each doc-delta contract probe is an observation
+  // that compares a documented contract to live behavior. Emit one
+  // observation.recorded per contract so the frontier projection can fold
+  // them onto whichever surface the contract maps to downstream.
+  for (const entry of perContract) {
+    try {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "observation.recorded",
+        payload: {
+          observation_kind: "doc_delta",
+          endpoint: entry.endpoint,
+          method: entry.method,
+          contract_hash: entry.contract_hash,
+          divergence_count: entry.divergences.length,
+          divergence_types: Array.from(new Set(entry.divergences.map((d) => d.type))).sort(),
+          divergence_severities: Array.from(new Set(entry.divergences.map((d) => d.severity_class))).sort(),
+          fetch_error: entry.fetch_error || null,
+          run_id: summary.run_id,
+          results_hash: payload.results_hash,
+        },
+        source: {
+          artifact: "doc-delta-results.json",
+          tool: "bob_run_doc_delta",
+          ref: entry.contract_hash,
+        },
+      });
+    } catch {
+      // Frontier ledger is dual-write best-effort during the deprecation window.
+    }
+  }
+  try {
+    scheduleMaterialization(domain);
+  } catch {}
   return payload;
 }
 

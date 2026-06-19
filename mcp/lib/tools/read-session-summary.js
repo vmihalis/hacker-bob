@@ -3,7 +3,8 @@
 const { readSessionSummary } = require("../session-summary.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_session_summary",
+  name: "bob_read_session_summary",
+  aliases: ["bounty_read_session_summary"],
   description:
     "Read a compact derived session summary for handoff and report presentation. Returns phase, auth status, wave/finding counts, final reportable/evidence/grade/report status, blockers, and next action without raw PoCs, request bodies, tokens, or report text.",
   inputSchema: {

@@ -28,7 +28,7 @@ const RAW_EXCERPT_BYTES = 8 * 1024;
 // (could compile to attacker-controlled wasm artifacts), --offline (could
 // hide network operations), --release (changes test semantics in subtle ways),
 // --workspace (would expand the test set to every workspace member,
-// compounding build.rs blast radius beyond the hunter's named harness).
+// compounding build.rs blast radius beyond the evaluator's named harness).
 const SUBSTRATE_EXTRA_ARG_ALLOWLIST = new Set([
   "--features",       // followed by feature names (we accept the whole token)
   "--all-features",
@@ -386,7 +386,7 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
   // against. cargo test for ink! has no native fork-pinning — the harness
   // can opt into chain-state replay via BOB_SUBSTRATE_FORK_URL but that's
   // harness-driven, not runner-driven. We therefore leave fork_block_used
-  // null whenever the runner did not pin (the hunter's `forkBlock` argument
+  // null whenever the runner did not pin (the evaluator's `forkBlock` argument
   // is the PoC pin and is preserved in the `fork_block` response field).
   // Verifier prompts cascade to follow-up `block_used` from the read tools
   // when fork_block_used is null.

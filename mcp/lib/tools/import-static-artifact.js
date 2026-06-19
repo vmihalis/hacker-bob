@@ -3,7 +3,8 @@
 const { importStaticArtifact } = require("../static-artifacts.js");
 
 module.exports = Object.freeze({
-  name: "bounty_import_static_artifact",
+  name: "bob_import_static_artifact",
+  aliases: ["bounty_import_static_artifact"],
   description:
     "Import a token contract source artifact into session-owned static-imports for later safe static scanning. Accepts content only; filesystem path imports are rejected. Stored content is redacted and capped.",
   inputSchema: {
@@ -33,7 +34,7 @@ module.exports = Object.freeze({
       },
       "surface_id": {
         "type": "string",
-        "description": "Optional attack_surface.json surface ID to scope hunter brief hints."
+        "description": "Optional attack_surface.json surface ID to scope evaluator brief hints."
       }
     },
     "required": [
@@ -43,7 +44,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: importStaticArtifact,
-  role_bundles: ["hunter-web"],
+  role_bundles: ["evaluator-web"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

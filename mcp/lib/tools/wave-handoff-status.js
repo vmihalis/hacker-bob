@@ -3,7 +3,8 @@
 const { waveHandoffStatus } = require("../wave-handoff-store.js");
 
 module.exports = Object.freeze({
-  name: "bounty_wave_handoff_status",
+  name: "bob_wave_handoff_status",
+  aliases: ["bounty_wave_handoff_status"],
   description:
     "Read-only readiness check for one wave. Compares expected assignments to present handoff JSON files without validating payload contents.",
   inputSchema: {

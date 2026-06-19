@@ -29,169 +29,234 @@ const AUTHORITY_CLASSES = Object.freeze([
 ]);
 
 const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
-  bounty_anchor_run: "smart_contract_contextual",
-  bounty_append_chain_node: "initialized_session_mutation",
-  bounty_apply_wave_merge: "initialized_session_mutation",
-  bounty_aptos_fetch_module: "smart_contract_contextual",
-  bounty_aptos_fetch_resource: "smart_contract_contextual",
-  bounty_aptos_run: "smart_contract_contextual",
-  bounty_auth_store: "initialized_session_mutation",
-  bounty_auto_signup: "scoped_http_network",
-  bounty_build_surface_graph: "initialized_session_mutation",
-  bounty_build_symbol_surface_index: "initialized_session_mutation",
-  bounty_build_verification_adjudication: "initialized_session_mutation",
-  bounty_chain_ancestry: "initialized_session_read",
-  bounty_chain_frontier: "initialized_session_read",
-  bounty_clear_operator_note: "initialized_session_mutation",
-  bounty_clear_terminal_block: "initialized_session_mutation",
-  bounty_cosmwasm_fetch_contract: "smart_contract_contextual",
-  bounty_cosmwasm_run: "smart_contract_contextual",
-  bounty_cosmwasm_smart_query: "smart_contract_contextual",
-  bounty_diff_verification_attempts: "initialized_session_read",
-  bounty_evaluate_capabilities: "global_read",
-  bounty_evm_call: "global_preapproval",
-  bounty_evm_fetch_source: "smart_contract_contextual",
-  bounty_evm_role_table: "global_preapproval",
-  bounty_evm_storage_read: "global_preapproval",
-  bounty_extract_routes: "initialized_session_read",
-  bounty_finalize_hunter_run: "initialized_session_mutation",
-  bounty_foundry_run: "smart_contract_contextual",
-  bounty_get_context_budget: "mode_dependent_session",
-  bounty_halmos_run: "smart_contract_contextual",
-  bounty_http_scan: "scoped_http_network",
-  bounty_import_http_traffic: "scoped_http_network",
-  bounty_import_static_artifact: "initialized_session_mutation",
-  bounty_index_finding: "initialized_session_mutation",
-  bounty_ingest_audit_report: "initialized_session_mutation",
-  bounty_ingest_schema_doc: "initialized_session_mutation",
-  bounty_init_session: "bootstrap_session",
-  bounty_list_auth_profiles: "initialized_session_read",
-  bounty_list_findings: "initialized_session_read",
-  bounty_log_coverage: "initialized_session_mutation",
-  bounty_log_dead_ends: "initialized_session_mutation",
-  bounty_log_technique_attempt: "initialized_session_mutation",
-  bounty_merge_wave_handoffs: "initialized_session_read",
-  bounty_promote_surface_leads: "initialized_session_mutation",
-  bounty_public_intel: "scoped_http_network",
-  bounty_query_audit_reports: "initialized_session_read",
-  bounty_query_chain_tree: "initialized_session_read",
-  bounty_query_findings_index: "mode_dependent_session",
-  bounty_query_schema_contracts: "initialized_session_read",
-  bounty_query_surface_graph: "initialized_session_read",
-  bounty_read_auth_differential_results: "initialized_session_read",
-  bounty_read_capability_metrics: "mode_dependent_session",
-  bounty_read_capability_playbook: "global_read",
-  bounty_read_chain_attempts: "initialized_session_read",
-  bounty_read_doc_delta_results: "initialized_session_read",
-  bounty_read_evidence_packs: "initialized_session_read",
-  bounty_read_findings: "initialized_session_read",
-  bounty_read_grade_verdict: "initialized_session_read",
-  bounty_read_http_audit: "initialized_session_read",
-  bounty_read_hunter_brief: "initialized_session_read",
-  bounty_read_invariant_runs: "initialized_session_read",
-  bounty_read_pipeline_analytics: "mode_dependent_session",
-  bounty_read_session_state: "initialized_session_read",
-  bounty_read_session_summary: "initialized_session_read",
-  bounty_read_state_summary: "initialized_session_read",
-  bounty_read_surface_leads: "initialized_session_read",
-  bounty_read_surface_routes: "initialized_session_read",
-  bounty_read_technique_pack: "mode_dependent_session",
-  bounty_read_tool_telemetry: "mode_dependent_session",
-  bounty_read_verification_context: "initialized_session_read",
-  bounty_read_verification_round: "initialized_session_read",
-  bounty_read_wave_handoffs: "initialized_session_read",
-  bounty_record_finding: "initialized_session_mutation",
-  bounty_record_surface_leads: "initialized_session_mutation",
+  bob_anchor_run: "smart_contract_contextual",
+  bob_append_chain_node: "initialized_session_mutation",
+  bob_apply_wave_merge: "initialized_session_mutation",
+  bob_aptos_fetch_module: "smart_contract_contextual",
+  bob_aptos_fetch_resource: "smart_contract_contextual",
+  bob_aptos_run: "smart_contract_contextual",
+  bob_attach_contract: "initialized_session_mutation",
+  bob_auth_store: "initialized_session_mutation",
+  bob_auto_signup: "scoped_http_network",
+  bob_browser_click: "initialized_session_mutation",
+  bob_browser_console_messages: "initialized_session_mutation",
+  bob_browser_evaluate: "initialized_session_mutation",
+  bob_browser_fill_form: "initialized_session_mutation",
+  bob_browser_flush_recorded_requests: "initialized_session_mutation",
+  bob_browser_navigate: "initialized_session_mutation",
+  bob_browser_network_requests: "initialized_session_mutation",
+  bob_browser_press_key: "initialized_session_mutation",
+  bob_browser_session_close: "initialized_session_mutation",
+  bob_browser_session_start: "initialized_session_mutation",
+  bob_browser_session_start_recording: "initialized_session_mutation",
+  bob_browser_snapshot: "initialized_session_mutation",
+  bob_browser_take_screenshot: "initialized_session_mutation",
+  bob_browser_type: "initialized_session_mutation",
+  bob_browser_wait_for: "initialized_session_mutation",
+  bob_build_surface_graph: "initialized_session_mutation",
+  bob_build_symbol_surface_index: "initialized_session_mutation",
+  bob_build_verification_adjudication: "initialized_session_mutation",
+  bob_chain_ancestry: "initialized_session_read",
+  bob_chain_frontier: "initialized_session_read",
+  bob_clear_operator_note: "initialized_session_mutation",
+  bob_clear_terminal_block: "initialized_session_mutation",
+  bob_cosmwasm_fetch_contract: "smart_contract_contextual",
+  bob_cosmwasm_run: "smart_contract_contextual",
+  bob_cosmwasm_smart_query: "smart_contract_contextual",
+  bob_diff_verification_attempts: "initialized_session_read",
+  bob_evaluate_capabilities: "global_read",
+  bob_evm_call: "global_preapproval",
+  bob_evm_fetch_source: "smart_contract_contextual",
+  bob_evm_role_table: "global_preapproval",
+  bob_evm_storage_read: "global_preapproval",
+  bob_extract_routes: "initialized_session_read",
+  bob_finalize_agent_run: "initialized_session_mutation",
+  bob_foundry_run: "smart_contract_contextual",
+  bob_get_context_budget: "mode_dependent_session",
+  bob_halmos_run: "smart_contract_contextual",
+  bob_http_scan: "scoped_http_network",
+  bob_import_harness: "initialized_session_mutation",
+  bob_import_http_traffic: "scoped_http_network",
+  bob_import_seed_corpus: "initialized_session_mutation",
+  bob_import_static_artifact: "initialized_session_mutation",
+  bob_ingest_audit_report: "initialized_session_mutation",
+  bob_ingest_schema_doc: "initialized_session_mutation",
+  bob_init_session: "bootstrap_session",
+  bob_init_repo_session: "bootstrap_session",
+  bob_list_auth_profiles: "initialized_session_read",
+  bob_list_candidate_claims: "initialized_session_read",
+  bob_log_capability_friction: "initialized_session_mutation",
+  bob_log_coverage: "initialized_session_mutation",
+  bob_log_dead_ends: "initialized_session_mutation",
+  bob_log_protocol_drift: "initialized_session_mutation",
+  bob_log_technique_attempt: "initialized_session_mutation",
+  // Plane Y Cycle Y.2 — Y-D13 runtime drift telemetry entry. Mirrors the
+  // session-authority registration; Y.3 added the server-internal
+  // caller bundle for _write-base.js auto-emit.
+  bob_emit_runtime_drift: "initialized_session_mutation",
+  // Belief plane (CB-*) + composition experiment/verifier — orchestrator-only,
+  // session-scoped: reads classify as initialized_session_read, writers as
+  // initialized_session_mutation, the network-capable live verifier as
+  // scoped_http_network (mirrors bob_run_auth_differential).
+  bob_elicit_belief: "initialized_session_mutation",
+  bob_plan_belief_experiment: "initialized_session_mutation",
+  bob_query_belief_signals: "initialized_session_read",
+  bob_query_belief_window: "initialized_session_read",
+  bob_query_intervention_calculus: "initialized_session_read",
+  bob_read_belief_model_info: "initialized_session_read",
+  bob_read_belief_signals: "initialized_session_read",
+  bob_run_belief_residual: "initialized_session_mutation",
+  bob_run_belief_sampler: "initialized_session_mutation",
+  bob_train_belief_model: "initialized_session_mutation",
+  bob_read_composition_telemetry: "initialized_session_read",
+  bob_run_path_composition_experiment: "initialized_session_mutation",
+  bob_verify_composition_path: "scoped_http_network",
+  bob_merge_wave_handoffs: "initialized_session_read",
+  bob_promote_surface_leads: "initialized_session_mutation",
+  // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
+  // Orchestrator-only at the role-bundle layer; threads friction_history
+  // into the proposal's suggested_contract BEFORE bob_attach_contract.
+  bob_propose_friction_promotion: "initialized_session_mutation",
+  // Plane Y Cycle Y.7 — adversarial transcript scan (Y-D6 + Y-P9). Pure
+  // read; returns synthesized friction + drift records without appending.
+  bob_scan_transcript_for_friction: "initialized_session_read",
+  bob_propose_hypothesis: "initialized_session_mutation",
+  bob_propose_transition: "initialized_session_mutation",
+  bob_public_intel: "scoped_http_network",
+  bob_query_audit_reports: "initialized_session_read",
+  bob_query_chain_tree: "initialized_session_read",
+  bob_query_schema_contracts: "initialized_session_read",
+  bob_query_surface_graph: "initialized_session_read",
+  bob_read_auth_differential_results: "initialized_session_read",
+  bob_read_capability_metrics: "mode_dependent_session",
+  bob_read_capability_playbook: "global_read",
+  bob_read_chain_attempts: "initialized_session_read",
+  bob_read_doc_delta_results: "initialized_session_read",
+  bob_read_evidence_packs: "initialized_session_read",
+  bob_read_candidate_claims: "initialized_session_read",
+  bob_read_grade_verdict: "initialized_session_read",
+  bob_read_http_audit: "initialized_session_read",
+  bob_read_assignment_brief: "initialized_session_read",
+  bob_read_invariant_runs: "initialized_session_read",
+  bob_read_pipeline_analytics: "mode_dependent_session",
+  bob_advance_session: "initialized_session_mutation",
+  bob_append_frontier_event: "initialized_session_mutation",
+  bob_finalize_report: "initialized_session_mutation",
+  // Plane Y Cycle Y.3 — Y-D15b / Y-P13 MCP-rendered audit-graded artifacts.
+  bob_compose_report: "initialized_session_mutation",
+  bob_amend_report: "initialized_session_mutation",
+  bob_write_chain_rollup: "initialized_session_mutation",
+  bob_set_friction_scanners: "initialized_session_mutation",
+  bob_materialize_frontier: "initialized_session_mutation",
+  bob_materialize_task_graph: "initialized_session_mutation",
+  bob_read_queue_policy: "initialized_session_read",
+  bob_read_task_graph: "initialized_session_read",
+  bob_read_session_nucleus: "initialized_session_read",
+  bob_schedule_tasks: "initialized_session_mutation",
+  // Plane X Cycle X.9: bob_schedule_graph_nodes wraps the graph-walking
+  // scheduler + bob_prepare_node dispatch. Same authority class as
+  // bob_schedule_tasks (both append to scheduler-decisions.jsonl and
+  // mutate session state via downstream tools).
+  bob_schedule_graph_nodes: "initialized_session_mutation",
+  bob_set_pack_telemetry_config: "initialized_session_mutation",
+  bob_set_queue_policy: "initialized_session_mutation",
+  bob_read_session_state: "initialized_session_read",
+  bob_read_session_summary: "initialized_session_read",
+  bob_read_state_summary: "initialized_session_read",
+  bob_read_static_analysis_index: "initialized_session_read",
+  bob_read_surface_leads: "initialized_session_read",
+  bob_read_surface_routes: "initialized_session_read",
+  bob_read_technique_pack: "mode_dependent_session",
+  bob_read_tool_telemetry: "mode_dependent_session",
+  bob_read_verification_context: "initialized_session_read",
+  bob_read_verification_round: "initialized_session_read",
+  bob_read_wave_handoffs: "initialized_session_read",
+  bob_record_candidate_claim: "initialized_session_mutation",
+  bob_record_surface_leads: "initialized_session_mutation",
+  bob_prepare_node: "initialized_session_mutation",
+  bob_finalize_node: "initialized_session_mutation",
+  bob_repo_check: "initialized_session_mutation",
+  bob_repo_docker_run: "initialized_session_mutation",
+  bob_verify_repro_reproduction: "initialized_session_mutation",
+  bob_verify_oracle_differential: "initialized_session_mutation",
+  bob_repo_inventory: "initialized_session_mutation",
+  bob_repo_prepare_env: "initialized_session_mutation",
+  // Plane X Cycle X.7: bob_resolve_body is read-only — bodies are
+  // pull-only via the X-D12 resolver registry. Mapped to
+  // initialized_session_read because the tool reads session-bound
+  // artifacts and never mutates session state.
+  bob_resolve_body: "initialized_session_read",
   bounty_report_written: "initialized_session_mutation",
-  bounty_route_surfaces: "initialized_session_mutation",
-  bounty_run_auth_differential: "scoped_http_network",
-  bounty_run_doc_delta: "scoped_http_network",
-  bounty_run_invariant_for_finding: "smart_contract_contextual",
-  bounty_select_technique_packs: "initialized_session_read",
-  bounty_set_operator_note: "initialized_session_mutation",
-  bounty_signup_detect: "scoped_http_network",
-  bounty_start_next_wave: "initialized_session_mutation",
-  bounty_start_wave: "initialized_session_mutation",
-  bounty_static_scan: "initialized_session_mutation",
-  bounty_substrate_fetch_runtime: "smart_contract_contextual",
-  bounty_substrate_fetch_storage: "smart_contract_contextual",
-  bounty_substrate_run: "smart_contract_contextual",
-  bounty_suggest_invariants: "global_read",
-  bounty_sui_fetch_object: "smart_contract_contextual",
-  bounty_sui_fetch_package: "smart_contract_contextual",
-  bounty_sui_run: "smart_contract_contextual",
-  bounty_summarize_diff_impact: "initialized_session_read",
-  bounty_svm_fetch_account: "smart_contract_contextual",
-  bounty_svm_fetch_program: "smart_contract_contextual",
-  bounty_temp_email: "global_preapproval",
-  bounty_transition_phase: "initialized_session_mutation",
-  bounty_wave_handoff_status: "initialized_session_read",
-  bounty_wave_status: "initialized_session_read",
-  bounty_write_chain_attempt: "initialized_session_mutation",
-  bounty_write_evidence_packs: "initialized_session_mutation",
-  bounty_write_grade_verdict: "initialized_session_mutation",
-  bounty_write_handoff: "initialized_session_mutation",
-  bounty_write_verification_round: "initialized_session_mutation",
-  bounty_write_wave_handoff: "initialized_session_mutation",
+  bob_route_surfaces: "initialized_session_mutation",
+  bob_run_auth_differential: "scoped_http_network",
+  bob_run_doc_delta: "scoped_http_network",
+  bob_run_invariant_for_finding: "smart_contract_contextual",
+  bob_select_technique_packs: "initialized_session_read",
+  bob_set_operator_note: "initialized_session_mutation",
+  bob_signup_detect: "scoped_http_network",
+  bob_start_next_wave: "initialized_session_mutation",
+  bob_start_wave: "initialized_session_mutation",
+  bob_static_scan: "initialized_session_mutation",
+  bob_ingest_sarif: "initialized_session_mutation",
+  bob_substrate_fetch_runtime: "smart_contract_contextual",
+  bob_substrate_fetch_storage: "smart_contract_contextual",
+  bob_substrate_run: "smart_contract_contextual",
+  bob_suggest_invariants: "global_read",
+  bob_sui_fetch_object: "smart_contract_contextual",
+  bob_sui_fetch_package: "smart_contract_contextual",
+  bob_sui_run: "smart_contract_contextual",
+  bob_summarize_diff_impact: "initialized_session_mutation",
+  bob_svm_fetch_account: "smart_contract_contextual",
+  bob_svm_fetch_program: "smart_contract_contextual",
+  bob_temp_email: "global_preapproval",
+  bob_wave_handoff_status: "initialized_session_read",
+  bob_wave_status: "initialized_session_read",
+  bob_write_chain_attempt: "initialized_session_mutation",
+  bob_write_evidence_packs: "initialized_session_mutation",
+  bob_write_grade_verdict: "initialized_session_mutation",
+  bob_write_handoff: "initialized_session_mutation",
+  bob_write_proof_bundle: "initialized_session_mutation",
+  bob_write_verification_round: "initialized_session_mutation",
+  bob_write_wave_handoff: "initialized_session_mutation",
 });
 
 const ABSENT_TARGET_CATEGORY_BY_TOOL = Object.freeze({
-  bounty_evaluate_capabilities: "registry_capability_introspection",
-  bounty_read_capability_playbook: "registry_capability_introspection",
-  bounty_suggest_invariants: "local_static_inspection_no_session_write",
-  bounty_temp_email: "explicit_no_session_global_network_side_effect",
-  bounty_evm_call: "explicit_no_session_global_network_read_n2_006_evm",
-  bounty_evm_storage_read: "explicit_no_session_global_network_read_n2_006_evm",
-  bounty_evm_role_table: "explicit_no_session_global_network_read_n2_006_evm",
+  bob_evaluate_capabilities: "registry_capability_introspection",
+  bob_read_capability_playbook: "registry_capability_introspection",
+  bob_suggest_invariants: "local_static_inspection_no_session_write",
+  bob_temp_email: "explicit_no_session_global_network_side_effect",
+  bob_evm_call: "explicit_no_session_global_network_read_n2_006_evm",
+  bob_evm_storage_read: "explicit_no_session_global_network_read_n2_006_evm",
+  bob_evm_role_table: "explicit_no_session_global_network_read_n2_006_evm",
 });
 
 const CHAIN_TRANSPORT_OWNER_BY_TOOL = Object.freeze({
-  bounty_evm_call: "N2-006 EVM no-target RPC transport",
-  bounty_evm_storage_read: "N2-006 EVM no-target RPC transport",
-  bounty_evm_role_table: "N2-006 EVM no-target RPC transport",
-  bounty_evm_fetch_source: "N2-006 EVM contextual transport",
-  bounty_foundry_run: "N2-006 EVM subprocess/RPC transport",
-  bounty_halmos_run: "N2-006 EVM symbolic-runner transport",
-  bounty_svm_fetch_account: "N2-006 SVM contextual transport",
-  bounty_svm_fetch_program: "N2-006 SVM contextual transport",
-  bounty_anchor_run: "N2-006 SVM subprocess/RPC transport",
-  bounty_aptos_fetch_resource: "N2-006 Aptos contextual transport",
-  bounty_aptos_fetch_module: "N2-006 Aptos contextual transport",
-  bounty_aptos_run: "N2-006 Aptos subprocess/RPC transport",
-  bounty_sui_fetch_object: "N2-006 Sui contextual transport",
-  bounty_sui_fetch_package: "N2-006 Sui contextual transport",
-  bounty_sui_run: "N2-006 Sui subprocess/RPC transport",
-  bounty_substrate_run: "N2-006 Substrate subprocess/RPC transport",
-  bounty_substrate_fetch_storage: "N2-006 Substrate contextual transport",
-  bounty_substrate_fetch_runtime: "N2-006 Substrate contextual transport",
-  bounty_cosmwasm_run: "N2-006 CosmWasm subprocess/RPC transport",
-  bounty_cosmwasm_fetch_contract: "N2-006 CosmWasm contextual transport",
-  bounty_cosmwasm_smart_query: "N2-006 CosmWasm contextual transport",
-  bounty_run_invariant_for_finding: "N2-006/N2-007 invariant runner transport and write path",
+  bob_evm_call: "N2-006 EVM no-target RPC transport",
+  bob_evm_storage_read: "N2-006 EVM no-target RPC transport",
+  bob_evm_role_table: "N2-006 EVM no-target RPC transport",
+  bob_evm_fetch_source: "N2-006 EVM contextual transport",
+  bob_foundry_run: "N2-006 EVM subprocess/RPC transport",
+  bob_halmos_run: "N2-006 EVM symbolic-runner transport",
+  bob_svm_fetch_account: "N2-006 SVM contextual transport",
+  bob_svm_fetch_program: "N2-006 SVM contextual transport",
+  bob_anchor_run: "N2-006 SVM subprocess/RPC transport",
+  bob_aptos_fetch_resource: "N2-006 Aptos contextual transport",
+  bob_aptos_fetch_module: "N2-006 Aptos contextual transport",
+  bob_aptos_run: "N2-006 Aptos subprocess/RPC transport",
+  bob_sui_fetch_object: "N2-006 Sui contextual transport",
+  bob_sui_fetch_package: "N2-006 Sui contextual transport",
+  bob_sui_run: "N2-006 Sui subprocess/RPC transport",
+  bob_substrate_run: "N2-006 Substrate subprocess/RPC transport",
+  bob_substrate_fetch_storage: "N2-006 Substrate contextual transport",
+  bob_substrate_fetch_runtime: "N2-006 Substrate contextual transport",
+  bob_cosmwasm_run: "N2-006 CosmWasm subprocess/RPC transport",
+  bob_cosmwasm_fetch_contract: "N2-006 CosmWasm contextual transport",
+  bob_cosmwasm_smart_query: "N2-006 CosmWasm contextual transport",
+  bob_run_invariant_for_finding: "N2-006/N2-007 invariant runner transport and write path",
 });
 
 const MODE_RULES = Object.freeze({
-  bounty_query_findings_index: Object.freeze([
-    Object.freeze({
-      selector: "scope omitted or scope=target",
-      authority_class: "initialized_session_read",
-      target_domain: "required",
-      target_url_policy: "validate_session_target_url",
-      enforcement: "Require initialized session and target match before querying the target findings index.",
-      test_implication: "Direct tests for target mode require initialized session, missing target rejection, and target mismatch rejection.",
-    }),
-    Object.freeze({
-      selector: "scope=cross_target",
-      authority_class: "cross_session_read",
-      target_domain: "ignored",
-      target_url_policy: "index_only_no_target_url_export",
-      absent_target_category: "bounded_cross_session_enumeration",
-      bounds: "Scans at most 200 recent session indexes; top_k is capped at 50; returns domain_scan_limit/domains_truncated.",
-      enforcement: "Allow bounded recent cross-target findings-index enumeration without session mutation.",
-      test_implication: "Aggregate tests assert bounded enumeration and no state.target_url export.",
-    }),
-  ]),
-  bounty_get_context_budget: Object.freeze([
+  bob_get_context_budget: Object.freeze([
     Object.freeze({
       selector: "surface_id omitted",
       authority_class: "global_read",
@@ -210,7 +275,7 @@ const MODE_RULES = Object.freeze({
       test_implication: "Direct tests assert surface_id requires target_domain and initialized session.",
     }),
   ]),
-  bounty_read_technique_pack: Object.freeze([
+  bob_read_technique_pack: Object.freeze([
     Object.freeze({
       selector: "mode omitted or mode=summary",
       authority_class: "global_read",
@@ -229,7 +294,7 @@ const MODE_RULES = Object.freeze({
       test_implication: "Direct tests assert full mode requires target_domain/wave/agent/surface_id, initialized session, and artifact write bounds.",
     }),
   ]),
-  bounty_read_tool_telemetry: Object.freeze([
+  bob_read_tool_telemetry: Object.freeze([
     Object.freeze({
       selector: "target_domain present",
       authority_class: "initialized_session_read",
@@ -249,7 +314,7 @@ const MODE_RULES = Object.freeze({
       test_implication: "Aggregate tests assert bounded/sanitized cross-session telemetry.",
     }),
   ]),
-  bounty_read_pipeline_analytics: Object.freeze([
+  bob_read_pipeline_analytics: Object.freeze([
     Object.freeze({
       selector: "target_domain present",
       authority_class: "initialized_session_read",
@@ -269,7 +334,7 @@ const MODE_RULES = Object.freeze({
       test_implication: "Aggregate tests assert bounded lookback and target_url validation before export.",
     }),
   ]),
-  bounty_read_capability_metrics: Object.freeze([
+  bob_read_capability_metrics: Object.freeze([
     Object.freeze({
       selector: "target_domain present",
       authority_class: "initialized_session_read",
@@ -301,7 +366,7 @@ const LEGACY_DEFAULT_ALLOWLIST = Object.freeze({
     "deep_mode",
     "explored",
     "hold_count",
-    "hunt_wave",
+    "evaluation_wave",
     "lead_surface_ids",
     "operator_note",
     "pending_wave",
@@ -428,7 +493,11 @@ function classifyTool(tool) {
 }
 
 function validateExplicitAuthorityMap(registryTools) {
-  const registeredNames = new Set(registryTools.map((tool) => tool.name));
+  // Cycle P.1 aliases inherit authority from their primary, so they don't need
+  // their own entry in EXPLICIT_AUTHORITY_CLASS_BY_TOOL. The runtime resolves
+  // through the alias_of indirection.
+  const primaryTools = registryTools.filter((tool) => !tool.alias_of);
+  const registeredNames = new Set(primaryTools.map((tool) => tool.name));
   const mappedNames = new Set(Object.keys(EXPLICIT_AUTHORITY_CLASS_BY_TOOL));
   const missing = [...registeredNames].filter((name) => !mappedNames.has(name)).sort();
   const extra = [...mappedNames].filter((name) => !registeredNames.has(name)).sort();
@@ -479,7 +548,15 @@ function validateExplicitAuthorityMap(registryTools) {
   }
 
   for (const tool of registryTools) {
+    if (tool.alias_of) continue;
     if (hasTargetDomain(tool) && !requiresTargetDomain(tool) && !Object.prototype.hasOwnProperty.call(MODE_RULES, tool.name)) {
+      // bootstrap_session tools create the authority record and may accept an
+      // optional target_domain (e.g. bob_init_repo_session derives the slug
+      // from repo_path unless the operator pins it via --target-id). Mode
+      // rules don't apply because there is no session to bind against yet.
+      if (EXPLICIT_AUTHORITY_CLASS_BY_TOOL[tool.name] === "bootstrap_session") {
+        continue;
+      }
       throw new Error(`optional target_domain tool lacks mode rules: ${tool.name}`);
     }
   }
@@ -630,7 +707,7 @@ function modeSummary(toolName) {
 function buildRows() {
   validateExplicitAuthorityMap(TOOL_REGISTRY);
   const files = toolFileMap();
-  return TOOL_REGISTRY.map((tool) => {
+  return TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => {
     const authorityClass = classifyTool(tool);
     if (!AUTHORITY_CLASSES.includes(authorityClass)) {
       throw new Error(`unknown authority class for ${tool.name}: ${authorityClass}`);

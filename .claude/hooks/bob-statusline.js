@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+// Hacker Bob status line — model, context bar, active evaluate status
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const update = require(path.join(__dirname, '..', '..', 'mcp', 'lib', 'update-check.js'));
+
+let input = '';
+const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  clearTimeout(stdinTimeout);
+  try {
+    const data = JSON.parse(input);
+    const model = data.model?.display_name || 'Claude';
+    const dir = path.basename(data.workspace?.current_dir || process.cwd());
+    const remaining = data.context_window?.remaining_percentage;
+
+    // Context bar
+    const AUTO_COMPACT_BUFFER_PCT = 16.5;
+    let ctx = '';
+    if (remaining != null) {
+      const usableRemaining = Math.max(0, ((remaining - AUTO_COMPACT_BUFFER_PCT) / (100 - AUTO_COMPACT_BUFFER_PCT)) * 100);
+      const used = Math.max(0, Math.min(100, Math.round(100 - usableRemaining)));
+      const filled = Math.floor(used / 10);
+      const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+      if (used < 50) ctx = ` \x1b[32m${bar} ${used}%\x1b[0m`;
+      else if (used < 65) ctx = ` \x1b[33m${bar} ${used}%\x1b[0m`;
+      else if (used < 80) ctx = ` \x1b[38;5;208m${bar} ${used}%\x1b[0m`;
+      else ctx = ` \x1b[5;31m${bar} ${used}%\x1b[0m`;
+    }
+
+    // Bounty session status
+    // Cycle P.2: prefer the canonical `hacker-bob-sessions` root; fall back to
+    // the legacy `bounty-agent-sessions` root for sessions created before the
+    // migration so the statusline still surfaces in-progress runs.
+    let bounty = '';
+    const canonicalSessDir = path.join(os.homedir(), 'hacker-bob-sessions');
+    const legacySessDir = path.join(os.homedir(), 'bounty-agent-sessions');
+    const sessDir = fs.existsSync(canonicalSessDir) ? canonicalSessDir : legacySessDir;
+    try {
+      const dirs = fs.readdirSync(sessDir)
+        .map(d => {
+          const f = path.join(sessDir, d, 'state.json');
+          try { return { dir: d, mtime: fs.statSync(f).mtimeMs, state: JSON.parse(fs.readFileSync(f, 'utf8')) }; }
+          catch { return null; }
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtime - a.mtime);
+
+      if (dirs.length > 0) {
+        const s = dirs[0].state;
+        const phase = s.phase || '?';
+        const wave = s.evaluation_wave || 0;
+        const findings = s.total_findings || 0;
+        const target = s.target || dirs[0].dir;
+
+        const waveStr = phase === 'EVALUATE' ? ` W${wave}` : '';
+        const findingsStr = findings > 0 ? ` \x1b[32m${findings}f\x1b[0m` : '';
+        bounty = ` │ \x1b[1m${phase}${waveStr}\x1b[0m${findingsStr} │ ${target}`;
+      }
+    } catch {}
+
+    // Rate limit warning
+    let rate = '';
+    const fiveHr = data.rate_limits?.five_hour?.used_percentage;
+    const sevenDay = data.rate_limits?.seven_day?.used_percentage;
+    const worst = Math.max(fiveHr || 0, sevenDay || 0);
+    if (worst >= 80) rate = ` \x1b[5;31m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
+    else if (worst >= 60) rate = ` \x1b[33m⚠ Rate ${Math.round(worst)}%\x1b[0m`;
+
+    let updateHint = '';
+    try {
+      const projectDir = process.env.BOB_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || data.workspace?.current_dir || process.cwd();
+      const cache = update.readUpdateCache(projectDir);
+      if (cache && cache.update_available && !cache.error && cache.latest_version) {
+        const installedVersion = update.readInstalledVersion(projectDir) || cache.installed_version;
+        const updateIsNewer = !installedVersion || update.compareSemver(cache.latest_version, installedVersion) > 0;
+        if (updateIsNewer) {
+          updateHint = ` │ \x1b[33mUpdate Bob to ${cache.latest_version}: /bob-update\x1b[0m`;
+        }
+      }
+    } catch {}
+
+    process.stdout.write(`\x1b[2m${model}\x1b[0m │ \x1b[2m${dir}\x1b[0m${bounty}${ctx}${rate}${updateHint}`);
+  } catch {}
+});

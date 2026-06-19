@@ -10,7 +10,7 @@ This package is intentionally tiny: it ships a single `hacker-bob-cc` CLI shim t
 npx -y hacker-bob-cc install /path/to/your/project
 ```
 
-The wrapper installs the full Hacker Bob framework into the target project under `.claude/`, `.hacker-bob/`, and the project's `.mcp.json`. After installing, restart Claude Code in that project and run `/bob-hunt <target>`. Claude Code also exposes `/bob-status`, `/bob-debug`, `/bob-update`, `/bob-export`, and `/bob-egress`.
+The wrapper installs the full Hacker Bob framework into the target project under `.claude/`, `.hacker-bob/`, and the project's `.mcp.json`. After installing, restart Claude Code in that project and run `/bob-evaluate <target>`. Claude Code also exposes `/bob-status`, `/bob-debug`, `/bob-update`, `/bob-export`, and `/bob-egress`.
 
 ## Other commands
 

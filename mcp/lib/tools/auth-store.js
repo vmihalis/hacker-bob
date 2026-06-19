@@ -3,7 +3,8 @@
 const { authStore } = require("../auth.js");
 
 module.exports = Object.freeze({
-  name: "bounty_auth_store",
+  name: "bob_auth_store",
+  aliases: ["bounty_auth_store"],
   description:
     "Store an authentication profile by profile_name. Names such as attacker, victim, admin, and tenant_b are caller-defined auth profiles.",
   inputSchema: {

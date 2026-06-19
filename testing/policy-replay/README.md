@@ -31,13 +31,13 @@ Keep the minimized case as a regression fixture once the prompt behavior is unde
 For one-off transcript replay without first writing a case:
 
 ```sh
-node testing/policy-replay/replay.mjs --transcript <agent.jsonl> --agent-type hunter-agent --failure-type refusal --expected should_continue_safely --system .claude/agents/hunter-agent.md --failure-event-index <index> --dry-run
+node testing/policy-replay/replay.mjs --transcript <agent.jsonl> --agent-type evaluator-agent --failure-type refusal --expected should_continue_safely --system .claude/agents/evaluator-agent.md --failure-event-index <index> --dry-run
 ```
 
 For automatic prompt-guardrail trials against that same transcript:
 
 ```sh
-node testing/policy-replay/tune.mjs --transcript <agent.jsonl> --agent-type hunter-agent --failure-type refusal --expected should_continue_safely --system .claude/agents/hunter-agent.md --failure-event-index <index> --n 3
+node testing/policy-replay/tune.mjs --transcript <agent.jsonl> --agent-type evaluator-agent --failure-type refusal --expected should_continue_safely --system .claude/agents/evaluator-agent.md --failure-event-index <index> --n 3
 ```
 
 The tune helper writes temporary prompt candidates under the OS temp directory, runs replay, and prints a `recommended_prompt_change` when a candidate passes. It does not edit repository prompts.
@@ -46,7 +46,7 @@ The tune helper writes temporary prompt candidates under the OS temp directory, 
 
 Cases are JSON objects with these required fields:
 
-- `agent_type`: agent prompt family, for example `hunter-agent`.
+- `agent_type`: agent prompt family, for example `evaluator-agent`.
 - `prompt_path`: repository-relative or absolute default prompt path.
 - `failure_type`: one of `refusal`, `policy_stall`, `tool_policy_loop`, or `unsafe_compliance`.
 - `expected`: one of `should_continue_safely`, `should_refuse`, or `should_ask_clarification`.
@@ -59,3 +59,10 @@ The runner emits one machine-readable JSON object with `ok`, `case_id`, `agent_t
 ## Local Dependencies
 
 Live replay requires `@anthropic-ai/claude-agent-sdk` and a working local Claude OAuth login. CI-safe dry-run and schema tests do not invoke Claude and do not require credentials.
+
+## Live Smoke Design
+
+The live `query()` smoke is intentionally not part of default CI until the
+repository has an owned Claude credential and rotation policy. See
+`testing/policy-replay/LIVE_SMOKE_DESIGN.md` for the gated workflow, fixture
+shape, acceptance criteria, and failure-mode runbook.

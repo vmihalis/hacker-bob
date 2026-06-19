@@ -1,11 +1,17 @@
 #!/bin/bash
 # Session write guard hook — PreToolUse on Bash and Write
-# Blocks direct writes to MCP-owned files in ~/bounty-agent-sessions/
+# Blocks direct writes to MCP-owned files in ~/hacker-bob-sessions/
+# (also enforced against the legacy ~/bounty-agent-sessions/ root)
 # Forces agents to use MCP tools for structured output
 # Exit 0 = allow, Exit 2 = block
 
 INPUT=$(cat)
 export WRITE_GUARD_INPUT="$INPUT"
+# CR-2: classification tables are rendered from mcp/lib/paths.js
+# WRITE_GUARD_TABLES — never hand-edit. Regenerate with
+# `node scripts/generate-write-guard-tables.js`. The manifest travels beside
+# this hook (installed via the Claude adapter HOOK_DATA_FILES).
+export WRITE_GUARD_TABLES_FILE="$(dirname "$0")/write-guard-tables.json"
 
 python3 - <<'PY'
 import json
@@ -16,65 +22,50 @@ import shlex
 import sys
 
 
-SESSIONS_ROOT = pathlib.Path.home() / "bounty-agent-sessions"
+# Cycle P.2: guard both canonical and legacy session roots so MCP-owned
+# files stay protected across the v2.0/v2.1 coexistence window.
+SESSIONS_ROOTS = (
+    pathlib.Path.home() / "hacker-bob-sessions",
+    pathlib.Path.home() / "bounty-agent-sessions",
+)
+SESSIONS_ROOT = SESSIONS_ROOTS[0]
 
-# Files that MUST be written through MCP tools only
-MCP_OWNED_EXACT = {
-    "state.json",
-    "coverage.jsonl",
-    "technique-attempts.jsonl",
-    "technique-pack-reads.jsonl",
-    "chain-attempts.jsonl",
-    "findings.jsonl",
-    "findings.md",
-    "brutalist.json",
-    "brutalist.md",
-    "balanced.json",
-    "balanced.md",
-    "verified-final.json",
-    "verified-final.md",
-    "evidence-packs.json",
-    "evidence-packs.md",
-    "grade.json",
-    "grade.md",
-    "SESSION_HANDOFF.md",
-    "auth.json",
-    "http-audit.jsonl",
-    "traffic.jsonl",
-    "public-intel.json",
-    "surface-routes.json",
-    "static-artifacts.jsonl",
-    "static-scan-results.jsonl",
-    "pipeline-events.jsonl",
-    ".handoff-signing-key.json",
-}
+# CR-2: load the classification tables rendered from mcp/lib/paths.js
+# WRITE_GUARD_TABLES. The manifest is the single source of truth; closure
+# covers the AUDIT-GRADED subset (re-exported by reference from
+# AUDIT_GRADED_PATHS) plus the hand-maintained plain-MCP-owned/agent-writable
+# lists. The full MCP-owned basename inventory cross-check is a separate
+# follow-up.
+_tables_path = os.environ.get("WRITE_GUARD_TABLES_FILE", "")
+try:
+    with open(_tables_path, "r", encoding="utf-8") as _fh:
+        _T = json.load(_fh)
+except Exception as exc:  # fail closed
+    # A missing/corrupt manifest must FAIL CLOSED, not silently allow. Block
+    # every session write rather than lose enforcement.
+    print(
+        "BLOCKED: write-guard tables missing/unreadable "
+        f"({_tables_path}: {exc}). Run "
+        "`node scripts/generate-write-guard-tables.js`.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
-MCP_OWNED_DIRS = {
-    "static-imports",
-}
-
+# BLOCK set = audit-graded ∪ mcp-owned (both are write-via-MCP-only).
+MCP_OWNED_EXACT = set(_T["audit_graded_basenames"]) | set(_T["mcp_owned_basenames"])
+MCP_OWNED_DIRS = set(_T["mcp_owned_dirs"])
 MCP_OWNED_PATTERNS = [
-    re.compile(r"^handoff-w\d+-a\d+\.(json|md)$"),
-    re.compile(r"^wave-\d+-assignments\.json$"),
-    re.compile(r"^live-dead-ends-w\d+-a\d+\.jsonl$"),
+    re.compile(p) for p in (
+        _T["audit_graded_filename_patterns"] + _T["mcp_owned_filename_patterns"]
+    )
 ]
+# Audit-graded directory prefixes (verification-attempts/, wave-handoffs/, …):
+# anything under them — matched SESSION-RELATIVE, per isAuditGradedPath — is
+# blocked regardless of basename.
+MCP_OWNED_DIR_PREFIXES = list(_T["audit_graded_relative_dirs"])
 
-# Files that agents are allowed to write directly. JSON entries here are
-# compact recon/report artifacts; bulky raw captures remain blocked by name on
-# the read side and should not be written as ad hoc session files.
-AGENT_ALLOWED_EXACT = {
-    "chains.md",
-    "report.md",
-    "attack_surface.json",
-    "deep-summary.json",
-    "recon-summary.json",
-    "scope-warnings.log",
-    "deny-list.txt",
-}
-
-AGENT_ALLOWED_PATTERNS = [
-    re.compile(r"^.*\.txt$"),
-]
+AGENT_ALLOWED_EXACT = set(_T["agent_writable_basenames"])
+AGENT_ALLOWED_PATTERNS = [re.compile(p) for p in _T["agent_writable_filename_patterns"]]
 
 
 def is_mcp_owned(filename):
@@ -105,24 +96,37 @@ def resolve_path(raw_path):
     return pathlib.Path(path_text)
 
 
-def is_in_session_dir(resolved):
-    try:
-        resolved.resolve(strict=False).relative_to(SESSIONS_ROOT.resolve(strict=False))
-        return True
-    except (ValueError, OSError):
-        return False
+def session_relative(resolved):
+    """Return the session-RELATIVE PurePath if `resolved` is under a session
+    root, else None. Parity with isAuditGradedPath's path.relative() basis."""
+    for root in SESSIONS_ROOTS:
+        try:
+            rel = resolved.resolve(strict=False).relative_to(root.resolve(strict=False))
+            return rel
+        except (ValueError, OSError):
+            continue
+    return None
 
 
 def check_file(raw_path):
     """Returns filename to block, or None to allow."""
     resolved = resolve_path(raw_path)
-
-    if not is_in_session_dir(resolved):
+    rel = session_relative(resolved)
+    if rel is None:
         return None
 
     filename = resolved.name
 
     if any(part in MCP_OWNED_DIRS for part in resolved.parts):
+        return filename
+
+    # Relative-path-prefix match (parity with isAuditGradedPath). `rel` is
+    # relative to the session ROOT (e.g. <domain>/<run>/verification-attempts/x).
+    # The session root contains <domain>/<run> segments before the registry-named
+    # dir, so component membership on the session-relative parts is the faithful
+    # translation: it blocks …/verification-attempts/x and …/wave-handoffs/y
+    # while excluding out-of-session paths that merely share the home prefix.
+    if any(part in MCP_OWNED_DIR_PREFIXES for part in rel.parts):
         return filename
 
     if is_agent_allowed(filename):
@@ -188,7 +192,10 @@ def check_mutating_path_commands(command):
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
-        return
+        block(
+            "BLOCKED: Command cannot be safely parsed. "
+            "Refusing to allow potentially unsafe shell operation."
+        )
 
     mutators = {"rm", "unlink", "mv", "cp", "chmod", "chown"}
     for index, token in enumerate(tokens):
@@ -204,7 +211,7 @@ def check_mutating_path_commands(command):
             if blocked:
                 block(
                     f"BLOCKED: Bash {command_name} on '{blocked}' in session directory. "
-                    f"Use the appropriate bountyagent MCP tool instead."
+                    f"Use the appropriate hacker-bob MCP tool instead."
                 )
 
 
@@ -224,7 +231,7 @@ if "file_path" in tool_input:
     if blocked:
         block(
             f"BLOCKED: Direct write to '{blocked}' in session directory. "
-            f"Use the appropriate bountyagent MCP tool instead."
+            f"Use the appropriate hacker-bob MCP tool instead."
         )
     raise SystemExit(0)
 
@@ -249,7 +256,7 @@ if has_redirects:
         if blocked:
             block(
                 f"BLOCKED: Bash redirect to '{blocked}' in session directory. "
-                f"Use the appropriate bountyagent MCP tool instead."
+                f"Use the appropriate hacker-bob MCP tool instead."
             )
 
 # Extract and check inline script file writes (open(), Path().write_text(), etc.)
@@ -259,7 +266,7 @@ if has_open_call:
         if blocked:
             block(
                 f"BLOCKED: Inline script writes to '{blocked}' in session directory. "
-                f"Use the appropriate bountyagent MCP tool instead."
+                f"Use the appropriate hacker-bob MCP tool instead."
             )
 
 raise SystemExit(0)

@@ -49,7 +49,7 @@ async function rpcRequestOnce(url, method, params, { timeoutMs = DEFAULT_TIMEOUT
 }
 
 // Solana RPC has a stronger rate-limit reputation than EVM public RPCs. The
-// caller-supplied endpoints + per-cluster ladder lets verifiers/hunters fail
+// caller-supplied endpoints + per-cluster ladder lets verifiers/evaluators fail
 // over without re-spawning the MCP server.
 async function rpcRequest({
   cluster,

@@ -21,7 +21,7 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 const RAW_EXCERPT_BYTES = 8 * 1024;
 
 // Allowlisted aptos move test flags. We forbid any flag value that selects
-// a network or a wallet path (a hunter-supplied --profile could escape
+// a network or a wallet path (a evaluator-supplied --profile could escape
 // $HOME containment via path traversal in Aptos profile config).
 const APTOS_EXTRA_ARG_ALLOWLIST = new Set([
   "--skip-fetch-latest-git-deps",

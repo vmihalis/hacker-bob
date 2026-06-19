@@ -1,0 +1,21 @@
+# .actrc — act local GitHub Actions runner configuration
+#
+# See: https://github.com/nektos/act
+# Applied automatically when running `act` from this repository root.
+#
+# Use the ubuntu-latest image that mirrors the GitHub Actions hosted runner.
+# The medium image (catthehacker/ubuntu:act-latest) is a good balance between
+# image size and tool availability. Override with --platform if needed.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Do not pull the container image automatically; test-local.sh controls refreshes.
+--pull=false
+
+# Reuse containers between runs to speed up repeated testing.
+--reuse
+
+# NOTE: --secret-file is NOT set here.
+# scripts/test-local.sh adds --secret-file ${REPO_ROOT}/.secrets explicitly
+# so the path resolves correctly regardless of the working directory.
+# Running `act` directly (not via test-local.sh) requires --secret-file .secrets
+# or creating the .secrets file and passing it on the command line.

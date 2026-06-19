@@ -12,4 +12,4 @@ Run from the project root. The command has no v1 flags:
 node -e "const exporter=require('./mcp/lib/bob-export.js'); const result=exporter.exportBobReleaseBundle({ projectDir: process.cwd() }); process.stdout.write(exporter.renderExportResult(result));"
 ```
 
-Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not hunt, resume sessions, or interact with targets.
+Report the helper output exactly. This workflow exports telemetry and session summaries for improving Hacker Bob; it does not evaluate, resume sessions, or interact with targets.

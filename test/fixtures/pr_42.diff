@@ -1,0 +1,80 @@
+diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts
+new file mode 100644
+index 0000000..aabbcc1
+--- /dev/null
++++ b/src/auth/oauth.ts
+@@ -0,0 +1,35 @@
++import crypto from 'node:crypto';
++
++/**
++ * Generate a PKCE code verifier (RFC 7636).
++ * Returns a base64url-encoded random 32-byte string.
++ */
++export function generateCodeVerifier(): string {
++  return crypto.randomBytes(32).toString('base64url');
++}
++
++/**
++ * Derive PKCE code challenge from verifier using S256 method.
++ */
++export function generateCodeChallenge(verifier: string): string {
++  const hash = crypto.createHash('sha256').update(verifier).digest();
++  return Buffer.from(hash).toString('base64url');
++}
++
++/**
++ * Exchange authorization code for tokens.
++ * NOTE: client_secret is passed in request body — consider using
++ * Authorization header (Basic auth) instead to reduce exposure.
++ */
++export async function exchangeCodeForTokens(
++  code: string,
++  codeVerifier: string,
++  clientId: string,
++  clientSecret: string,
++  redirectUri: string,
++  tokenEndpoint: string,
++): Promise<{ access_token: string; refresh_token?: string }> {
++  const body = new URLSearchParams({
++    grant_type: 'authorization_code',
++    code,
++    code_verifier: codeVerifier,
++    client_id: clientId,
++    client_secret: clientSecret,
++    redirect_uri: redirectUri,
++  });
++
+diff --git a/src/auth/session.ts b/src/auth/session.ts
+index 1111111..2222222 100644
+--- a/src/auth/session.ts
++++ b/src/auth/session.ts
+@@ -1,8 +1,12 @@
+ import type { User } from '../types';
+
+-export function createSession(user: User): string {
+-  return Buffer.from(JSON.stringify(user)).toString('base64');
++import { randomUUID } from 'node:crypto';
++
++// Session store — in-memory; replace with Redis for production
++const sessions = new Map<string, User>();
++
++export function createSession(user: User): string {
++  const sessionId = randomUUID();
++  sessions.set(sessionId, user);
++  return sessionId;
+ }
+
+diff --git a/src/config.ts b/src/config.ts
+index 3333333..4444444 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -5,7 +5,8 @@ export const config = {
+   db: {
+     url: process.env.DATABASE_URL ?? 'postgresql://localhost:5432/app',
+   },
+-  secret: process.env.SESSION_SECRET ?? 'dev-secret-change-in-production',
++  sessionSecret: process.env.SESSION_SECRET,
++  jwtSecret: process.env.JWT_SECRET,
+   oauth: {
+     clientId: process.env.OAUTH_CLIENT_ID ?? '',
+     clientSecret: process.env.OAUTH_CLIENT_SECRET ?? '',

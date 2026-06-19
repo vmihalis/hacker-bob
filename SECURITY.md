@@ -32,7 +32,7 @@ In scope:
 - Path traversal, arbitrary file write, or unsafe session storage behavior.
 - SSRF, unsafe redirect handling, or unintended local/internal network access
   caused by Hacker Bob itself.
-- Dependency vulnerabilities that create exploitable risk for users of this
+- Dependency vulnerabilities that create demonstrable risk for users of this
   project.
 
 Out of scope:

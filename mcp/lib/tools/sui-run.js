@@ -17,8 +17,9 @@ async function handler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_sui_run",
-  description: "Run sui move test on a local Sui Move package, optionally pinned to a Sui network for harnesses that opt into checkpoint-clone fixtures via BOB_SUI_FORK_URL. Forks use direct public HTTPS JSON-RPC endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet RPC has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream Sui CLI socket. On RPC failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the hunter can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from the Move unit test output ([ PASS ]/[ FAIL ]/[ TIMEOUT ]). Requires `sui` CLI in PATH on the user's machine; if absent, returns reason: sui_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
+  name: "bob_sui_run",
+  aliases: ["bounty_sui_run"],
+  description: "Run sui move test on a local Sui Move package, optionally pinned to a Sui network for harnesses that opt into checkpoint-clone fixtures via BOB_SUI_FORK_URL. Forks use direct public HTTPS JSON-RPC endpoints from explicit fork_urls, env overrides, or the supplied network ladder; DNS-private/private endpoints and egress_profile proxy routing are unsupported by default, and localnet RPC has no default endpoint. Endpoint filtering is preflight-only handoff; Bob does not DNS-pin the downstream Sui CLI socket. On RPC failure the result reports reason: rpc_unreachable or a no_fork_endpoints* reason plus redacted fork_attempts[]/rpc_policy_rejections[] so the evaluator can record blocked_harness_runs[] and set surface_status: partial. Returns structured per-test pass/fail parsed from the Move unit test output ([ PASS ]/[ FAIL ]/[ TIMEOUT ]). Requires `sui` CLI in PATH on the user's machine; if absent, returns reason: sui_not_in_path. Subprocess hard-killed at timeout (default 90s, max 600s).",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -27,7 +28,7 @@ module.exports = Object.freeze({
       "match_test": { "type": "string", "minLength": 1, "maxLength": 200 },
       "network": { "type": "string", "enum": ["mainnet", "testnet", "devnet", "localnet"] },
       "fork_checkpoint": { "type": "integer", "minimum": 0 },
-      "fork_block": { "type": "integer", "minimum": 0, "description": "Alias for fork_checkpoint — accepted for symmetry with bounty_foundry_run / bounty_anchor_run." },
+      "fork_block": { "type": "integer", "minimum": 0, "description": "Alias for fork_checkpoint — accepted for symmetry with bob_foundry_run / bob_anchor_run." },
       "fork_urls": { "type": "array", "items": { "type": "string", "format": "uri" }, "maxItems": 8 },
       "extra_args": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 12 },
       "timeout_ms": { "type": "integer", "minimum": 5000, "maximum": 600000 },
@@ -36,7 +37,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "harness_path", "match_test"]
   },
   handler,
-  role_bundles: ["hunter-move", "verifier", "evidence"],
+  role_bundles: ["evaluator-move", "verifier", "evidence"],
   mutating: false,
   global_preapproval: false,
   network_access: true,

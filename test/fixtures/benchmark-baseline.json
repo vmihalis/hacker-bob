@@ -1,0 +1,8 @@
+{
+  "npm_test_wall_time_seconds": 81.47,
+  "captured_at_commit": "e03fbdabf9de1109c6f2e12fb165c7a323fc7e34",
+  "captured_at_iso": "2026-06-02T04:48:51Z",
+  "platform": "Darwin arm64",
+  "budget_formula": "MAX(npm_test_wall_time_seconds + 25%, 100)",
+  "note": "Y.0 hotfix 3 seed (Y-D18 / Y-D20 extended per rev 4.1 defect 9). Y.13 step 0 re-measures on terminal-smoke branch and asserts MAX(seeded + 25%, 100s)."
+}

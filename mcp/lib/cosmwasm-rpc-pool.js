@@ -101,7 +101,7 @@ function summarizeCosmwasmPoolForBrief(network) {
   }
   const trimmed = endpoints.slice(0, 6).map(redactRpcEndpoint);
   const note = endpoints.length === 0
-    ? `No default REST ladder for network ${normalizedNetwork}. Hunters must pass 'endpoints' explicitly to bounty_cosmwasm_* tools and 'fork_urls' to bounty_cosmwasm_run. Operators can set ${envKeyForNetwork(normalizedNetwork)}=url1,url2 in the MCP server env (before launch) for a default.`
+    ? `No default REST ladder for network ${normalizedNetwork}. Evaluators must pass 'endpoints' explicitly to bob_cosmwasm_* tools and 'fork_urls' to bob_cosmwasm_run. Operators can set ${envKeyForNetwork(normalizedNetwork)}=url1,url2 in the MCP server env (before launch) for a default.`
     : null;
   return {
     chain_family: "cosmwasm",

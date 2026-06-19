@@ -79,6 +79,20 @@ function validateArrayConstraints(value, schema, pathParts) {
   }
 }
 
+function autoTruncatedValue(value, schema) {
+  if (
+    typeof value === "string" &&
+    schema &&
+    schema["x-autoTruncate"] === true &&
+    Number.isInteger(schema.maxLength) &&
+    schema.maxLength >= 0 &&
+    value.length > schema.maxLength
+  ) {
+    return value.slice(0, schema.maxLength);
+  }
+  return value;
+}
+
 function validateOneOf(value, schema, pathParts) {
   if (!Array.isArray(schema.oneOf)) {
     return;
@@ -121,7 +135,12 @@ function validateObject(value, schema, pathParts) {
 
   for (const [key, childValue] of Object.entries(value)) {
     if (hasOwn(properties, key)) {
-      validateAgainstSchema(childValue, properties[key], [...pathParts, key]);
+      const childSchema = properties[key];
+      const nextChildValue = autoTruncatedValue(childValue, childSchema);
+      if (nextChildValue !== childValue) {
+        value[key] = nextChildValue;
+      }
+      validateAgainstSchema(value[key], childSchema, [...pathParts, key]);
       continue;
     }
 
@@ -161,7 +180,7 @@ function validateAgainstSchema(value, schema, pathParts = []) {
   }
 
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (types.includes("object") || (!schema.type && (schema.properties || schema.additionalProperties))) {
+  if (types.includes("object") || (!schema.type && (schema.properties || schema.additionalProperties || schema.required))) {
     if (typeof value === "object" && !Array.isArray(value)) {
       validateObject(value, schema, pathParts);
     }
@@ -169,7 +188,12 @@ function validateAgainstSchema(value, schema, pathParts = []) {
 
   if ((types.includes("array") || (!schema.type && schema.items)) && Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
-      validateAgainstSchema(value[index], schema.items || {}, [...pathParts, index]);
+      const itemSchema = schema.items || {};
+      const nextItemValue = autoTruncatedValue(value[index], itemSchema);
+      if (nextItemValue !== value[index]) {
+        value[index] = nextItemValue;
+      }
+      validateAgainstSchema(value[index], itemSchema, [...pathParts, index]);
     }
   }
 }

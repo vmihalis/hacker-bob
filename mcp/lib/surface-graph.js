@@ -23,6 +23,11 @@ const NODE_TYPES = Object.freeze([
   "secret_marker",
   "auth_scheme",
   "static_artifact",
+  "principal",
+  "credential",
+  "policy_gate",
+  "effect",
+  "intervention",
 ]);
 
 const EDGE_TYPES = Object.freeze([
@@ -33,6 +38,13 @@ const EDGE_TYPES = Object.freeze([
   "documents",
   "claims_auth",
   "leaks",
+  "uses_credential",
+  "requires",
+  "tests_gate",
+  "produces_effect",
+  "permits_effect",
+  "blocks_effect",
+  "observes_effect",
 ]);
 
 const DEFAULT_QUERY_LIMIT = 200;
@@ -214,6 +226,35 @@ function neighbors({ target_domain, node_type, node_id, direction, limit }) {
   return result;
 }
 
+const MECHANISM_NODE_TYPES = Object.freeze([
+  "principal",
+  "credential",
+  "policy_gate",
+  "effect",
+  "intervention",
+]);
+
+function queryMechanismView({ target_domain, principal_id, effect_id, limit }) {
+  const cap = Number.isInteger(limit) && limit > 0
+    ? Math.min(limit, MAX_QUERY_LIMIT)
+    : DEFAULT_QUERY_LIMIT;
+  const edges = queryEdges({ target_domain, limit: MAX_QUERY_LIMIT }).edges
+    .filter((edge) => MECHANISM_NODE_TYPES.includes(edge.source.type)
+      || MECHANISM_NODE_TYPES.includes(edge.target.type));
+  const filtered = edges.filter((edge) => {
+    if (principal_id && edge.source.id !== principal_id && edge.target.id !== principal_id) return false;
+    if (effect_id && edge.source.id !== effect_id && edge.target.id !== effect_id) return false;
+    return true;
+  });
+  return {
+    edges: filtered.slice(0, cap),
+    total_matched: filtered.length,
+    total_mechanism_edges: edges.length,
+    total_in_graph: queryEdges({ target_domain, limit: 1 }).total_in_graph,
+    node_types: MECHANISM_NODE_TYPES,
+  };
+}
+
 const SURFACE_SLICE_DEFAULT_LIMIT = 5;
 const SURFACE_SLICE_MAX_LIMIT = 25;
 
@@ -303,6 +344,7 @@ function summarizeSurfaceGraphForSurface(domain, surfaceObj, options) {
 module.exports = {
   appendEdges,
   queryEdges,
+  queryMechanismView,
   neighbors,
   normalizeEdge,
   summarizeSurfaceGraphForSurface,

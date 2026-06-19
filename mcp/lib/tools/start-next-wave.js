@@ -3,9 +3,10 @@
 const { startNextWave } = require("../waves.js");
 
 module.exports = Object.freeze({
-  name: "bounty_start_next_wave",
+  name: "bob_start_next_wave",
+  aliases: ["bounty_start_next_wave"],
   description:
-    "Plan and start the next standard HUNT/EXPLORE wave using MCP-owned wave policy and deep lead promotion.",
+    "Plan and start the next standard EVALUATE/EXPLORE wave using MCP-owned wave policy and deep lead promotion.",
   inputSchema: {
     type: "object",
     properties: {
@@ -28,6 +29,9 @@ module.exports = Object.freeze({
     "wave-N-assignments.json",
     "state.json",
     "surface-leads.json",
-    "attack_surface.json",
+    "frontier-events.jsonl",
+    "surface-index.json",
+    "task-queue.json",
+    "task-graph.json",
   ],
 });

@@ -18,6 +18,9 @@ const {
 const {
   normalizeSessionStateDocument,
 } = require("./session-state-contracts.js");
+const {
+  enforcementLiveness,
+} = require("./enforcement-attest.js");
 
 const AUTHORITY_VERSION = 1;
 const AUTHORITY_MODE_ENV = "BOB_SESSION_AUTHORITY_MODE";
@@ -37,110 +40,187 @@ const AUTHORITY_CLASSES = Object.freeze([
 ]);
 
 const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
-  bounty_anchor_run: "smart_contract_contextual",
-  bounty_append_chain_node: "initialized_session_mutation",
-  bounty_apply_wave_merge: "initialized_session_mutation",
-  bounty_aptos_fetch_module: "smart_contract_contextual",
-  bounty_aptos_fetch_resource: "smart_contract_contextual",
-  bounty_aptos_run: "smart_contract_contextual",
-  bounty_auth_store: "initialized_session_mutation",
-  bounty_auto_signup: "scoped_http_network",
-  bounty_build_surface_graph: "initialized_session_mutation",
-  bounty_build_symbol_surface_index: "initialized_session_mutation",
-  bounty_build_verification_adjudication: "initialized_session_mutation",
-  bounty_chain_ancestry: "initialized_session_read",
-  bounty_chain_frontier: "initialized_session_read",
-  bounty_clear_operator_note: "initialized_session_mutation",
-  bounty_clear_terminal_block: "initialized_session_mutation",
-  bounty_cosmwasm_fetch_contract: "smart_contract_contextual",
-  bounty_cosmwasm_run: "smart_contract_contextual",
-  bounty_cosmwasm_smart_query: "smart_contract_contextual",
-  bounty_diff_verification_attempts: "initialized_session_read",
-  bounty_evaluate_capabilities: "global_read",
-  bounty_evm_call: "global_preapproval",
-  bounty_evm_fetch_source: "smart_contract_contextual",
-  bounty_evm_role_table: "global_preapproval",
-  bounty_evm_storage_read: "global_preapproval",
-  bounty_extract_routes: "initialized_session_read",
-  bounty_finalize_hunter_run: "initialized_session_mutation",
-  bounty_foundry_run: "smart_contract_contextual",
-  bounty_get_context_budget: "mode_dependent_session",
-  bounty_halmos_run: "smart_contract_contextual",
-  bounty_http_scan: "scoped_http_network",
-  bounty_import_http_traffic: "scoped_http_network",
-  bounty_import_static_artifact: "initialized_session_mutation",
-  bounty_index_finding: "initialized_session_mutation",
-  bounty_ingest_audit_report: "initialized_session_mutation",
-  bounty_ingest_schema_doc: "initialized_session_mutation",
-  bounty_init_session: "bootstrap_session",
-  bounty_list_auth_profiles: "initialized_session_read",
-  bounty_list_findings: "initialized_session_read",
-  bounty_log_coverage: "initialized_session_mutation",
-  bounty_log_dead_ends: "initialized_session_mutation",
-  bounty_log_technique_attempt: "initialized_session_mutation",
-  bounty_merge_wave_handoffs: "initialized_session_read",
-  bounty_promote_surface_leads: "initialized_session_mutation",
-  bounty_public_intel: "scoped_http_network",
-  bounty_query_audit_reports: "initialized_session_read",
-  bounty_query_chain_tree: "initialized_session_read",
-  bounty_query_findings_index: "mode_dependent_session",
-  bounty_query_schema_contracts: "initialized_session_read",
-  bounty_query_surface_graph: "initialized_session_read",
-  bounty_read_auth_differential_results: "initialized_session_read",
-  bounty_read_capability_metrics: "mode_dependent_session",
-  bounty_read_capability_playbook: "global_read",
-  bounty_read_chain_attempts: "initialized_session_read",
-  bounty_read_doc_delta_results: "initialized_session_read",
-  bounty_read_evidence_packs: "initialized_session_read",
-  bounty_read_findings: "initialized_session_read",
-  bounty_read_grade_verdict: "initialized_session_read",
-  bounty_read_http_audit: "initialized_session_read",
-  bounty_read_hunter_brief: "initialized_session_read",
-  bounty_read_invariant_runs: "initialized_session_read",
-  bounty_read_pipeline_analytics: "mode_dependent_session",
-  bounty_read_session_state: "initialized_session_read",
-  bounty_read_session_summary: "initialized_session_read",
-  bounty_read_state_summary: "initialized_session_read",
-  bounty_read_surface_leads: "initialized_session_read",
-  bounty_read_surface_routes: "initialized_session_read",
-  bounty_read_technique_pack: "mode_dependent_session",
-  bounty_read_tool_telemetry: "mode_dependent_session",
-  bounty_read_verification_context: "initialized_session_read",
-  bounty_read_verification_round: "initialized_session_read",
-  bounty_read_wave_handoffs: "initialized_session_read",
-  bounty_record_finding: "initialized_session_mutation",
-  bounty_record_surface_leads: "initialized_session_mutation",
+  bob_anchor_run: "smart_contract_contextual",
+  bob_append_chain_node: "initialized_session_mutation",
+  bob_apply_wave_merge: "initialized_session_mutation",
+  bob_aptos_fetch_module: "smart_contract_contextual",
+  bob_aptos_fetch_resource: "smart_contract_contextual",
+  bob_aptos_run: "smart_contract_contextual",
+  bob_attach_contract: "initialized_session_mutation",
+  bob_auth_store: "initialized_session_mutation",
+  bob_auto_signup: "scoped_http_network",
+  bob_browser_click: "initialized_session_mutation",
+  bob_browser_console_messages: "initialized_session_mutation",
+  bob_browser_evaluate: "initialized_session_mutation",
+  bob_browser_fill_form: "initialized_session_mutation",
+  bob_browser_flush_recorded_requests: "initialized_session_mutation",
+  bob_browser_navigate: "initialized_session_mutation",
+  bob_browser_network_requests: "initialized_session_mutation",
+  bob_browser_press_key: "initialized_session_mutation",
+  bob_browser_session_close: "initialized_session_mutation",
+  bob_browser_session_start: "initialized_session_mutation",
+  bob_browser_session_start_recording: "initialized_session_mutation",
+  bob_browser_snapshot: "initialized_session_mutation",
+  bob_browser_take_screenshot: "initialized_session_mutation",
+  bob_browser_type: "initialized_session_mutation",
+  bob_browser_wait_for: "initialized_session_mutation",
+  bob_build_surface_graph: "initialized_session_mutation",
+  bob_build_symbol_surface_index: "initialized_session_mutation",
+  bob_build_verification_adjudication: "initialized_session_mutation",
+  bob_chain_ancestry: "initialized_session_read",
+  bob_chain_frontier: "initialized_session_read",
+  bob_clear_operator_note: "initialized_session_mutation",
+  bob_clear_terminal_block: "initialized_session_mutation",
+  bob_cosmwasm_fetch_contract: "smart_contract_contextual",
+  bob_cosmwasm_run: "smart_contract_contextual",
+  bob_cosmwasm_smart_query: "smart_contract_contextual",
+  bob_diff_verification_attempts: "initialized_session_read",
+  bob_evaluate_capabilities: "global_read",
+  bob_evm_call: "global_preapproval",
+  bob_evm_fetch_source: "smart_contract_contextual",
+  bob_evm_role_table: "global_preapproval",
+  bob_evm_storage_read: "global_preapproval",
+  bob_extract_routes: "initialized_session_read",
+  bob_finalize_agent_run: "initialized_session_mutation",
+  bob_foundry_run: "smart_contract_contextual",
+  bob_get_context_budget: "mode_dependent_session",
+  bob_halmos_run: "smart_contract_contextual",
+  bob_http_scan: "scoped_http_network",
+  bob_import_harness: "initialized_session_mutation",
+  bob_import_http_traffic: "scoped_http_network",
+  bob_import_seed_corpus: "initialized_session_mutation",
+  bob_import_static_artifact: "initialized_session_mutation",
+  bob_ingest_audit_report: "initialized_session_mutation",
+  bob_ingest_schema_doc: "initialized_session_mutation",
+  bob_init_session: "bootstrap_session",
+  bob_init_repo_session: "bootstrap_session",
+  bob_list_auth_profiles: "initialized_session_read",
+  bob_list_candidate_claims: "initialized_session_read",
+  bob_log_capability_friction: "initialized_session_mutation",
+  bob_log_coverage: "initialized_session_mutation",
+  bob_log_dead_ends: "initialized_session_mutation",
+  bob_log_protocol_drift: "initialized_session_mutation",
+  bob_log_technique_attempt: "initialized_session_mutation",
+  // Plane Y Cycle Y.2 — Y-D13 runtime drift telemetry entry. Orchestrator-
+  // only at the role-bundle layer; Y.3 added a server-internal caller
+  // bundle for _write-base.js auto-emit on INVALID_ARGUMENTS retry success.
+  bob_emit_runtime_drift: "initialized_session_mutation",
+  // Belief plane (CB-*) + composition experiment/verifier — orchestrator-only,
+  // session-scoped: reads classify as initialized_session_read, writers as
+  // initialized_session_mutation, the network-capable live verifier as
+  // scoped_http_network (mirrors bob_run_auth_differential).
+  bob_elicit_belief: "initialized_session_mutation",
+  bob_plan_belief_experiment: "initialized_session_mutation",
+  bob_query_belief_signals: "initialized_session_read",
+  bob_query_belief_window: "initialized_session_read",
+  bob_query_intervention_calculus: "initialized_session_read",
+  bob_read_belief_model_info: "initialized_session_read",
+  bob_read_belief_signals: "initialized_session_read",
+  bob_run_belief_residual: "initialized_session_mutation",
+  bob_run_belief_sampler: "initialized_session_mutation",
+  bob_train_belief_model: "initialized_session_mutation",
+  bob_read_composition_telemetry: "initialized_session_read",
+  bob_run_path_composition_experiment: "initialized_session_mutation",
+  bob_verify_composition_path: "scoped_http_network",
+  bob_merge_wave_handoffs: "initialized_session_read",
+  bob_promote_surface_leads: "initialized_session_mutation",
+  bob_propose_friction_promotion: "initialized_session_mutation",
+  // Plane Y Cycle Y.7 — adversarial transcript scan (Y-D6 + Y-P9). Pure
+  // read; returns synthesized friction + drift records without appending.
+  bob_scan_transcript_for_friction: "initialized_session_read",
+  bob_propose_hypothesis: "initialized_session_mutation",
+  bob_propose_transition: "initialized_session_mutation",
+  bob_public_intel: "scoped_http_network",
+  bob_query_audit_reports: "initialized_session_read",
+  bob_query_chain_tree: "initialized_session_read",
+  bob_query_schema_contracts: "initialized_session_read",
+  bob_query_surface_graph: "initialized_session_read",
+  bob_read_auth_differential_results: "initialized_session_read",
+  bob_read_capability_metrics: "mode_dependent_session",
+  bob_read_capability_playbook: "global_read",
+  bob_read_chain_attempts: "initialized_session_read",
+  bob_read_doc_delta_results: "initialized_session_read",
+  bob_read_evidence_packs: "initialized_session_read",
+  bob_read_candidate_claims: "initialized_session_read",
+  bob_read_grade_verdict: "initialized_session_read",
+  bob_read_http_audit: "initialized_session_read",
+  bob_read_assignment_brief: "initialized_session_read",
+  bob_read_invariant_runs: "initialized_session_read",
+  bob_read_pipeline_analytics: "mode_dependent_session",
+  bob_advance_session: "initialized_session_mutation",
+  bob_append_frontier_event: "initialized_session_mutation",
+  bob_finalize_report: "initialized_session_mutation",
+  // Plane Y Cycle Y.3 — Y-D15b / Y-P13 MCP-rendered audit-graded artifacts.
+  bob_compose_report: "initialized_session_mutation",
+  bob_amend_report: "initialized_session_mutation",
+  bob_write_chain_rollup: "initialized_session_mutation",
+  bob_set_friction_scanners: "initialized_session_mutation",
+  bob_materialize_frontier: "initialized_session_mutation",
+  bob_materialize_task_graph: "initialized_session_mutation",
+  bob_read_task_graph: "initialized_session_read",
+  bob_read_queue_policy: "initialized_session_read",
+  bob_read_session_nucleus: "initialized_session_read",
+  bob_schedule_tasks: "initialized_session_mutation",
+  // Plane X Cycle X.9: bob_schedule_graph_nodes wraps the graph-walking
+  // scheduler + bob_prepare_node dispatch. Same authority class as the
+  // wave-scheduler's bob_schedule_tasks.
+  bob_schedule_graph_nodes: "initialized_session_mutation",
+  bob_set_pack_telemetry_config: "initialized_session_mutation",
+  bob_set_queue_policy: "initialized_session_mutation",
+  bob_read_session_state: "initialized_session_read",
+  bob_read_session_summary: "initialized_session_read",
+  bob_read_state_summary: "initialized_session_read",
+  bob_read_static_analysis_index: "initialized_session_read",
+  bob_read_surface_leads: "initialized_session_read",
+  bob_read_surface_routes: "initialized_session_read",
+  bob_read_technique_pack: "mode_dependent_session",
+  bob_read_tool_telemetry: "mode_dependent_session",
+  bob_read_verification_context: "initialized_session_read",
+  bob_read_verification_round: "initialized_session_read",
+  bob_read_wave_handoffs: "initialized_session_read",
+  bob_record_candidate_claim: "initialized_session_mutation",
+  bob_record_surface_leads: "initialized_session_mutation",
+  bob_prepare_node: "initialized_session_mutation",
+  bob_finalize_node: "initialized_session_mutation",
+  bob_repo_check: "initialized_session_mutation",
+  bob_repo_docker_run: "initialized_session_mutation",
+  bob_verify_repro_reproduction: "initialized_session_mutation",
+  bob_verify_oracle_differential: "initialized_session_mutation",
+  bob_repo_inventory: "initialized_session_mutation",
+  bob_repo_prepare_env: "initialized_session_mutation",
+  bob_resolve_body: "initialized_session_read",
   bounty_report_written: "initialized_session_mutation",
-  bounty_route_surfaces: "initialized_session_mutation",
-  bounty_run_auth_differential: "scoped_http_network",
-  bounty_run_doc_delta: "scoped_http_network",
-  bounty_run_invariant_for_finding: "smart_contract_contextual",
-  bounty_select_technique_packs: "initialized_session_read",
-  bounty_set_operator_note: "initialized_session_mutation",
-  bounty_signup_detect: "scoped_http_network",
-  bounty_start_next_wave: "initialized_session_mutation",
-  bounty_start_wave: "initialized_session_mutation",
-  bounty_static_scan: "initialized_session_mutation",
-  bounty_substrate_fetch_runtime: "smart_contract_contextual",
-  bounty_substrate_fetch_storage: "smart_contract_contextual",
-  bounty_substrate_run: "smart_contract_contextual",
-  bounty_suggest_invariants: "global_read",
-  bounty_sui_fetch_object: "smart_contract_contextual",
-  bounty_sui_fetch_package: "smart_contract_contextual",
-  bounty_sui_run: "smart_contract_contextual",
-  bounty_summarize_diff_impact: "initialized_session_read",
-  bounty_svm_fetch_account: "smart_contract_contextual",
-  bounty_svm_fetch_program: "smart_contract_contextual",
-  bounty_temp_email: "global_preapproval",
-  bounty_transition_phase: "initialized_session_mutation",
-  bounty_wave_handoff_status: "initialized_session_read",
-  bounty_wave_status: "initialized_session_read",
-  bounty_write_chain_attempt: "initialized_session_mutation",
-  bounty_write_evidence_packs: "initialized_session_mutation",
-  bounty_write_grade_verdict: "initialized_session_mutation",
-  bounty_write_handoff: "initialized_session_mutation",
-  bounty_write_verification_round: "initialized_session_mutation",
-  bounty_write_wave_handoff: "initialized_session_mutation",
+  bob_route_surfaces: "initialized_session_mutation",
+  bob_run_auth_differential: "scoped_http_network",
+  bob_run_doc_delta: "scoped_http_network",
+  bob_run_invariant_for_finding: "smart_contract_contextual",
+  bob_select_technique_packs: "initialized_session_read",
+  bob_set_operator_note: "initialized_session_mutation",
+  bob_signup_detect: "scoped_http_network",
+  bob_start_next_wave: "initialized_session_mutation",
+  bob_start_wave: "initialized_session_mutation",
+  bob_static_scan: "initialized_session_mutation",
+  bob_ingest_sarif: "initialized_session_mutation",
+  bob_substrate_fetch_runtime: "smart_contract_contextual",
+  bob_substrate_fetch_storage: "smart_contract_contextual",
+  bob_substrate_run: "smart_contract_contextual",
+  bob_suggest_invariants: "global_read",
+  bob_sui_fetch_object: "smart_contract_contextual",
+  bob_sui_fetch_package: "smart_contract_contextual",
+  bob_sui_run: "smart_contract_contextual",
+  bob_summarize_diff_impact: "initialized_session_mutation",
+  bob_svm_fetch_account: "smart_contract_contextual",
+  bob_svm_fetch_program: "smart_contract_contextual",
+  bob_temp_email: "global_preapproval",
+  bob_wave_handoff_status: "initialized_session_read",
+  bob_wave_status: "initialized_session_read",
+  bob_write_chain_attempt: "initialized_session_mutation",
+  bob_write_evidence_packs: "initialized_session_mutation",
+  bob_write_grade_verdict: "initialized_session_mutation",
+  bob_write_handoff: "initialized_session_mutation",
+  bob_write_proof_bundle: "initialized_session_mutation",
+  bob_write_verification_round: "initialized_session_mutation",
+  bob_write_wave_handoff: "initialized_session_mutation",
 });
 
 const LEGACY_DEFAULTABLE_FIELDS = Object.freeze([
@@ -148,16 +228,13 @@ const LEGACY_DEFAULTABLE_FIELDS = Object.freeze([
   "blocked_prereq_history",
   "dead_ends",
   "deep_mode",
-  "explored",
   "hold_count",
-  "hunt_wave",
-  "lead_surface_ids",
+  "evaluation_wave",
   "operator_note",
   "pending_wave",
   "prereq_registry_snapshots",
   "scope_exclusions",
   "terminal_block_clear_history",
-  "terminally_blocked",
   "total_findings",
   "waf_blocked_endpoints",
 ]);
@@ -186,7 +263,17 @@ const SHADOW_MISSING_SESSION_CLASSES = new Set([
   "cross_session_read",
 ]);
 
-let shadowWarningEmitted = false;
+// Cycle O.1: REPO_TARGET_DOMAIN_PATTERN identifies the synthetic
+// `repo-<safeName>-<sha8>` slug minted by initRepoSession. This is the
+// hook the bootstrap rule uses to skip DNS validation (assertHttpScopeDomain
+// rejects non-public-suffix domains) and accept target_repo in place of
+// target_url. The pattern is intentionally narrow: `repo-` prefix, any
+// safe-domain content, terminating in an 8-hex realpath digest.
+const REPO_TARGET_DOMAIN_PATTERN = /^repo-[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8}$/;
+
+function isRepoTargetDomain(value) {
+  return typeof value === "string" && REPO_TARGET_DOMAIN_PATTERN.test(value);
+}
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -206,31 +293,47 @@ function safeArgumentTargetDomain(args) {
 }
 
 function authorityMode(env = process.env) {
-  return env[AUTHORITY_MODE_ENV] === "shadow" ? "shadow" : "enforce";
+  // Honor shadow ONLY when the operator has acked the degraded posture.
+  // An un-acked shadow request reports "enforce" so the kernel fails LOUD
+  // (real missing-session block) instead of silently downgrading.
+  return enforcementLiveness(env).shadow_active ? "shadow" : "enforce";
 }
 
 function classForTool(toolName) {
-  return EXPLICIT_AUTHORITY_CLASS_BY_TOOL[toolName] || null;
+  if (Object.prototype.hasOwnProperty.call(EXPLICIT_AUTHORITY_CLASS_BY_TOOL, toolName)) {
+    return EXPLICIT_AUTHORITY_CLASS_BY_TOOL[toolName];
+  }
+  // Cycle P.1: deprecation aliases inherit their primary's authority class.
+  // The class map is keyed on the canonical bob_* name only; bounty_* aliases
+  // resolve through the registry's primaryToolName indirection so we don't
+  // double-list every entry.
+  try {
+    // Lazy-require to avoid a load-order cycle (tool-registry imports
+    // capability-packs, which on some test paths transitively loads this
+    // module before the registry has finished initializing).
+    const registry = require("./tool-registry.js");
+    if (!registry || typeof registry.primaryToolName !== "function") {
+      // Registry module is mid-construction and has not yet attached the
+      // primaryToolName export. Throw so the surrounding catch falls through
+      // to the null return; dispatch will surface a STATE_CONFLICT instead
+      // of crashing with an opaque TypeError.
+      throw new Error(
+        "tool-registry.primaryToolName unavailable during load-order cycle",
+      );
+    }
+    const primary = registry.primaryToolName(toolName);
+    if (primary && primary !== toolName) {
+      return EXPLICIT_AUTHORITY_CLASS_BY_TOOL[primary] || null;
+    }
+  } catch {
+    // If the registry is mid-construction, fall through and report missing
+    // class; the dispatch path will surface the resulting STATE_CONFLICT.
+  }
+  return null;
 }
 
 function modeRule(toolName, args = {}) {
-  if (toolName === "bounty_query_findings_index") {
-    if (args.scope === "cross_target") {
-      return {
-        authority_class: "cross_session_read",
-        target_domain: "ignored",
-        target_url_policy: "index_only_no_target_url_export",
-        authority_source: "cross_session",
-      };
-    }
-    return {
-      authority_class: "initialized_session_read",
-      target_domain: "required",
-      target_url_policy: "validate_session_target_url",
-      authority_source: "session_state",
-    };
-  }
-  if (toolName === "bounty_get_context_budget") {
+  if (toolName === "bob_get_context_budget") {
     if (args.surface_id != null) {
       return {
         authority_class: "initialized_session_read",
@@ -246,7 +349,7 @@ function modeRule(toolName, args = {}) {
       authority_source: "optional_absent",
     };
   }
-  if (toolName === "bounty_read_technique_pack") {
+  if (toolName === "bob_read_technique_pack") {
     if (args.mode === "full") {
       return {
         authority_class: "initialized_session_mutation",
@@ -262,7 +365,7 @@ function modeRule(toolName, args = {}) {
       authority_source: "optional_absent",
     };
   }
-  if (toolName === "bounty_read_tool_telemetry") {
+  if (toolName === "bob_read_tool_telemetry") {
     if (targetDomainPresent(args)) {
       return {
         authority_class: "initialized_session_read",
@@ -278,7 +381,7 @@ function modeRule(toolName, args = {}) {
       authority_source: "cross_session",
     };
   }
-  if (toolName === "bounty_read_pipeline_analytics") {
+  if (toolName === "bob_read_pipeline_analytics") {
     if (targetDomainPresent(args)) {
       return {
         authority_class: "initialized_session_read",
@@ -294,7 +397,7 @@ function modeRule(toolName, args = {}) {
       authority_source: "cross_session",
     };
   }
-  if (toolName === "bounty_read_capability_metrics") {
+  if (toolName === "bob_read_capability_metrics") {
     if (targetDomainPresent(args)) {
       return {
         authority_class: "initialized_session_read",
@@ -319,7 +422,16 @@ function baseRuleForTool(tool, args) {
     return null;
   }
   if (defaultClass === "mode_dependent_session") {
-    return modeRule(tool.name, args);
+    // Resolve aliases to their primary so mode rules keyed on canonical names
+    // still apply when a deprecated bounty_* name is invoked.
+    let resolvedName = tool.name;
+    try {
+      const { primaryToolName } = require("./tool-registry.js");
+      resolvedName = primaryToolName(tool.name) || tool.name;
+    } catch {
+      // Fall back to alias name if registry not yet initialized.
+    }
+    return modeRule(resolvedName, args);
   }
   if (defaultClass === "bootstrap_session") {
     return {
@@ -373,6 +485,7 @@ function makeDecision({
   authority_session_present: sessionPresent = null,
   authority_match: match = null,
   authority_shadowed: shadowed = false,
+  operator_ack: operatorAck = null,
 } = {}) {
   return {
     authority_version: AUTHORITY_VERSION,
@@ -387,6 +500,7 @@ function makeDecision({
     authority_session_present: sessionPresent,
     authority_match: match,
     authority_shadowed: shadowed === true,
+    operator_ack: operatorAck === true ? true : (operatorAck === false ? false : null),
   };
 }
 
@@ -455,14 +569,14 @@ function shadowDecision(error, tool, rule) {
   if (!canShadowMissingSession(tool, rule)) {
     return null;
   }
-  if (!shadowWarningEmitted) {
-    shadowWarningEmitted = true;
-    process.stderr.write("WARNING: BOB_SESSION_AUTHORITY_MODE=shadow is allowing a missing-session read-only authority block.\n");
-  }
   return {
     ...error.authority,
     authority_result: "shadow_blocked",
     authority_shadowed: true,
+    // The ack is now a recorded fact on the audit-graded decision, not a
+    // discardable stderr line. canShadowMissingSession only returns true when
+    // authorityMode()==="shadow", which implies operator_ack.
+    operator_ack: true,
   };
 }
 
@@ -478,6 +592,15 @@ function normalizeArgumentTarget(rule, args) {
       sessionPresent: null,
       match: false,
     });
+  }
+  // Cycle O.1: repo-shaped target_domain (repo-<name>-<sha8>) bypasses
+  // assertHttpScopeDomain (which rejects non-public-suffix hosts). The
+  // pattern guard prevents a maliciously-crafted target_domain from
+  // smuggling repo treatment for a domain that is actually a URL.
+  if (REPO_TARGET_DOMAIN_PATTERN.test(args.target_domain.trim())) {
+    const trimmed = args.target_domain.trim();
+    args.target_domain = trimmed;
+    return trimmed;
   }
   try {
     const normalized = assertHttpScopeDomain(args.target_domain);
@@ -515,7 +638,7 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
     throw blockedDecision(rule, args, {
       errorCode: "no_session",
       envelopeCode: ERROR_CODES.STATE_CONFLICT,
-      message: `Session authority is missing for ${authorityTargetDomain}; call bounty_init_session first`,
+      message: `Session authority is missing for ${authorityTargetDomain}; call bob_init_session first`,
       authorityTargetDomain,
       sessionPresent: false,
       match: false,
@@ -558,53 +681,93 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
     });
   }
 
-  let rawTarget;
-  try {
-    rawTarget = assertHttpScopeDomain(raw.target);
-  } catch {
-    throw blockedDecision(rule, args, {
-      errorCode: "malformed_state",
-      envelopeCode: ERROR_CODES.STATE_CONFLICT,
-      message: `Session authority target is malformed for ${authorityTargetDomain}`,
-      authorityTargetDomain,
-      sessionPresent: true,
-      match: false,
-    });
-  }
+  // Cycle O.1: repo sessions use the synthetic repo-<name>-<sha8> slug.
+  // assertHttpScopeDomain rejects non-public-suffix hosts, so for repo
+  // sessions we validate target identity directly: raw.target must match
+  // the authority domain and be a well-formed repo slug. target_url is
+  // null for repo sessions; we replace the URL drift check with a
+  // target_repo presence check.
+  const isRepoAuthority = isRepoTargetDomain(authorityTargetDomain);
+  if (isRepoAuthority) {
+    if (raw.target !== authorityTargetDomain || !isRepoTargetDomain(raw.target)) {
+      throw blockedDecision(rule, args, {
+        errorCode: "raw_target_drift",
+        envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+        message: `Session authority target drift for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
+    if (!hasOwn(raw, "target_repo") || raw.target_repo == null || typeof raw.target_repo !== "object") {
+      throw blockedDecision(rule, args, {
+        errorCode: "legacy_security_field_missing",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: "session authority field is missing: target_repo",
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: true,
+      });
+    }
+    if (!hasOwn(raw, "repo_hash") || typeof raw.repo_hash !== "string" || !/^[0-9a-f]{8,64}$/i.test(raw.repo_hash)) {
+      throw blockedDecision(rule, args, {
+        errorCode: "legacy_security_field_missing",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: "session authority field is missing: repo_hash",
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: true,
+      });
+    }
+  } else {
+    let rawTarget;
+    try {
+      rawTarget = assertHttpScopeDomain(raw.target);
+    } catch {
+      throw blockedDecision(rule, args, {
+        errorCode: "malformed_state",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: `Session authority target is malformed for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
 
-  if (rawTarget !== authorityTargetDomain) {
-    throw blockedDecision(rule, args, {
-      errorCode: "raw_target_drift",
-      envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
-      message: `Session authority target drift for ${authorityTargetDomain}`,
-      authorityTargetDomain,
-      sessionPresent: true,
-      match: false,
-    });
-  }
+    if (rawTarget !== authorityTargetDomain) {
+      throw blockedDecision(rule, args, {
+        errorCode: "raw_target_drift",
+        envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+        message: `Session authority target drift for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
 
-  if (!hasOwn(raw, "target_url") || typeof raw.target_url !== "string" || !raw.target_url.trim()) {
-    throw blockedDecision(rule, args, {
-      errorCode: "legacy_security_field_missing",
-      envelopeCode: ERROR_CODES.STATE_CONFLICT,
-      message: "session authority field is missing: target_url",
-      authorityTargetDomain,
-      sessionPresent: true,
-      match: true,
-    });
-  }
+    if (!hasOwn(raw, "target_url") || typeof raw.target_url !== "string" || !raw.target_url.trim()) {
+      throw blockedDecision(rule, args, {
+        errorCode: "legacy_security_field_missing",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: "session authority field is missing: target_url",
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: true,
+      });
+    }
 
-  try {
-    validateHttpScanScope(raw.target_url, authorityTargetDomain);
-  } catch {
-    throw blockedDecision(rule, args, {
-      errorCode: "target_url_drift",
-      envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
-      message: `Session authority target_url drift for ${authorityTargetDomain}`,
-      authorityTargetDomain,
-      sessionPresent: true,
-      match: true,
-    });
+    try {
+      validateHttpScanScope(raw.target_url, authorityTargetDomain);
+    } catch {
+      throw blockedDecision(rule, args, {
+        errorCode: "target_url_drift",
+        envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+        message: `Session authority target_url drift for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: true,
+      });
+    }
   }
 
   assertLegacyFailClosedFields(raw, rule, args, authorityTargetDomain);
@@ -625,9 +788,80 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
   return raw;
 }
 
+function normalizeRepoBootstrapTarget(rule, args) {
+  if (!targetDomainPresent(args)) {
+    throw blockedDecision(rule, args, {
+      errorCode: "normalization_failed",
+      envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+      message: "target_domain is required for session authority",
+      sessionPresent: null,
+      match: false,
+    });
+  }
+  if (!isRepoTargetDomain(args.target_domain)) {
+    throw blockedDecision(rule, args, {
+      errorCode: "normalization_failed",
+      envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+      message: `target_domain must match repo session pattern repo-<name>-<sha8>; got ${args.target_domain}`,
+      sessionPresent: false,
+      match: false,
+    });
+  }
+  return args.target_domain;
+}
+
 function authorizeBootstrap(rule, args) {
+  // Cycle O.1: bootstrap accepts either target_url (web sessions) or
+  // repo_path / target_repo (OSS sessions). Exactly one must be present.
+  // The repo path skips DNS validation because the target_domain is a
+  // synthetic repo slug (validated by REPO_TARGET_DOMAIN_PATTERN).
+  const hasRepoPath = args && typeof args.repo_path === "string" && args.repo_path.trim().length > 0;
+  const hasRepo = (args && args.target_repo != null) || hasRepoPath;
+  const hasUrl = args && typeof args.target_url === "string" && args.target_url.trim().length > 0;
+  if (hasRepo && hasUrl) {
+    throw blockedDecision(rule, args, {
+      errorCode: "normalization_failed",
+      envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+      message: "bootstrap accepts exactly one of target_url or target_repo, not both",
+      sessionPresent: false,
+      match: false,
+    });
+  }
+  if (hasRepo) {
+    // bob_init_repo_session lets the caller omit target_domain — the slug
+    // is derived from the absolute repo path so reopening the same
+    // checkout from any working directory routes to the same session.
+    if (!targetDomainPresent(args) && hasRepoPath) {
+      try {
+        const { deriveRepoTargetDomain } = require("./repo-target.js");
+        const {
+          assertRepoRootPath,
+        } = require("./governance-contracts.js");
+        const canonicalRoot = assertRepoRootPath(args.repo_path, "repo_path");
+        args.target_domain = deriveRepoTargetDomain(canonicalRoot);
+      } catch (error) {
+        const code = error && error.code === "repo_path_not_found" ? "repo_path_not_found"
+          : error && error.code === "repo_path_not_directory" ? "repo_path_not_directory"
+          : "normalization_failed";
+        throw blockedDecision(rule, args, {
+          errorCode: code,
+          envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+          message: error.message || String(error),
+          sessionPresent: false,
+          match: false,
+        });
+      }
+    }
+    const authorityTargetDomain = normalizeRepoBootstrapTarget(rule, args);
+    return allowedDecision(rule, args, {
+      authorityTargetDomain,
+      source: "bootstrap",
+      sessionPresent: false,
+      match: true,
+    });
+  }
   const authorityTargetDomain = normalizeArgumentTarget(rule, args);
-  if (typeof args.target_url !== "string" || !args.target_url.trim()) {
+  if (!hasUrl) {
     throw blockedDecision(rule, args, {
       errorCode: "normalization_failed",
       envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
@@ -789,9 +1023,11 @@ module.exports = {
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
   LEGACY_DEFAULTABLE_FIELDS,
   LEGACY_FAIL_CLOSED_FIELDS,
+  REPO_TARGET_DOMAIN_PATTERN,
   authorizeToolCall,
   baseRuleForTool,
   classForTool,
+  isRepoTargetDomain,
   normalizeAuthorityTelemetry,
   scopedUrlDriftError,
   validateSessionAuthorityState,

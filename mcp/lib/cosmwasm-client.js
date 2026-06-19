@@ -192,7 +192,7 @@ async function getLatestBlock({ network, endpoints }) {
 async function getNodeInfo({ network, endpoints }) {
   // node_info returns the chain's network id (e.g., "osmosis-1", "neutron-1").
   // Verifier prompts compare this against the claimed chain_id to catch a
-  // hunter mis-routing an address from one chain to another.
+  // evaluator mis-routing an address from one chain to another.
   return restGet({
     network,
     path: "cosmos/base/tendermint/v1beta1/node_info",

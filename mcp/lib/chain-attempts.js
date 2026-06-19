@@ -9,8 +9,8 @@ const {
   readAttackSurfaceStrict,
 } = require("./attack-surface.js");
 const {
-  readFindingsFromJsonl,
-} = require("./finding-store.js");
+  readCandidateClaims,
+} = require("./claims.js");
 const {
   chainAttemptsJsonlPath,
 } = require("./paths.js");
@@ -100,6 +100,19 @@ function normalizeSurfaceIds(value, surfaceIdSet) {
     }
   }
   return normalized;
+}
+
+function readCandidateClaimFindingIdSet(domain) {
+  const ids = new Set();
+  for (const claim of readCandidateClaims(domain)) {
+    if (!claim || !Array.isArray(claim.evidence_refs)) continue;
+    for (const ref of claim.evidence_refs) {
+      if (ref && typeof ref === "object" && ref.kind === "finding" && typeof ref.finding_id === "string") {
+        ids.add(ref.finding_id);
+      }
+    }
+  }
+  return ids;
 }
 
 function buildSurfaceIdSet(domain, requestedSurfaceIds) {
@@ -228,8 +241,7 @@ function writeChainAttempt(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
     const existingAttempts = readChainAttemptsFromJsonl(domain);
-    const findings = readFindingsFromJsonl(domain);
-    const findingIdSet = new Set(findings.map((finding) => finding.id));
+    const findingIdSet = readCandidateClaimFindingIdSet(domain);
     const surfaceIdSet = buildSurfaceIdSet(domain, args.surface_ids);
     const attempt = normalizeChainAttemptRecord({
       version: CHAIN_ATTEMPT_VERSION,

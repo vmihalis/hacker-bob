@@ -3,7 +3,8 @@
 const { querySchemaContracts } = require("../schema-contracts-store.js");
 
 module.exports = Object.freeze({
-  name: "bounty_query_schema_contracts",
+  name: "bob_query_schema_contracts",
+  aliases: ["bounty_query_schema_contracts"],
   capability_id: "C2_doc_vs_behavior",
   description:
     "Query the schema-contract corpus for a target. Filters by endpoint substring and HTTP method. Use to discover documented contracts before differential testing or to enumerate the documented attack surface.",

@@ -24,7 +24,7 @@ function transcript() {
       timestamp: "2026-04-01T00:00:00.000Z",
       message: {
         role: "user",
-        content: [{ type: "text", text: "Authorized hunter brief request." }],
+        content: [{ type: "text", text: "Authorized evaluator brief request." }],
       },
     },
     {
@@ -37,7 +37,7 @@ function transcript() {
           {
             type: "tool_use",
             id: "toolu_test",
-            name: "bounty_read_hunter_brief",
+            name: "bob_read_assignment_brief",
             input: { target_domain: "redacted.example" },
           },
         ],
@@ -78,8 +78,8 @@ function transcript() {
 function validCase(overrides = {}) {
   return {
     id: "unit-refusal",
-    agent_type: "hunter-agent",
-    prompt_path: ".claude/agents/hunter-agent.md",
+    agent_type: "evaluator-agent",
+    prompt_path: ".claude/agents/evaluator-agent.md",
     failure_type: "refusal",
     expected: "should_continue_safely",
     transcript: transcript(),
@@ -169,7 +169,7 @@ test("policy replay dry-run reports prompt path, case metadata, and next message
     assert.equal(parsed.ok, true);
     assert.equal(parsed.dry_run, true);
     assert.equal(parsed.case_id, "unit-refusal");
-    assert.equal(parsed.agent_type, "hunter-agent");
+    assert.equal(parsed.agent_type, "evaluator-agent");
     assert.equal(parsed.expected, "should_continue_safely");
     assert.equal(parsed.replay.prompt_path, promptPath);
     assert.equal(parsed.replay.system_chars, "Test prompt\n".length);
@@ -198,7 +198,7 @@ test("policy replay dry-run can use an exact transcript without writing a case",
         "--transcript",
         transcriptPath,
         "--agent-type",
-        "hunter-agent",
+        "evaluator-agent",
         "--failure-type",
         "refusal",
         "--expected",
@@ -279,7 +279,7 @@ test("policy tune command dry-runs baseline and prompt guardrail candidates", ()
     assert.equal(parsed.ok, true);
     assert.equal(parsed.dry_run, true);
     assert.equal(parsed.case_id, "unit-refusal");
-    assert.equal(parsed.agent_type, "hunter-agent");
+    assert.equal(parsed.agent_type, "evaluator-agent");
     assert.equal(parsed.expected, "should_continue_safely");
     assert.ok(parsed.results.length >= 2);
     assert.equal(parsed.results[0].name, "baseline");

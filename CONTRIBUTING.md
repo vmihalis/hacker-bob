@@ -56,7 +56,7 @@ generator and commit the resulting changes:
 
 ```bash
 node scripts/generate-agent-tools.js
-node scripts/generate-bountyagent-skill.js
+node scripts/generate-hacker-bob-skill.js
 node scripts/generate-claude-roles.js
 node scripts/generate-codex-skills.js
 ```

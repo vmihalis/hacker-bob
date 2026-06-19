@@ -2,16 +2,20 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
+// Shared, allowlist-guarded PATH probe — the single sink for `command -v`.
+// Aliased to defaultCommandExists to preserve the detectAdapterId override hook.
+const { commandExists: defaultCommandExists } = require("../scripts/lib/command-exists.js");
 
 const claude = require("./claude/index.js");
 const codex = require("./codex/index.js");
 const genericMcp = require("./generic-mcp/index.js");
+const kimi = require("./kimi/index.js");
 
 const ADAPTERS = Object.freeze({
   [claude.id]: claude,
   [codex.id]: codex,
   [genericMcp.id]: genericMcp,
+  [kimi.id]: kimi,
 });
 const DEFAULT_ADAPTER_ID = "claude";
 const ALL_ADAPTER_IDS = Object.freeze(Object.keys(ADAPTERS));
@@ -45,14 +49,6 @@ function adapterIdsForSelection(selection, options = {}) {
     ids.push(id);
   }
   return ids;
-}
-
-function defaultCommandExists(command) {
-  const result = spawnSync("sh", ["-c", `command -v ${command}`], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return result.status === 0;
 }
 
 function safeIsDir(fsModule, candidate) {
@@ -90,6 +86,9 @@ function detectAdapterId(projectDir, options = {}) {
   if (env.CODEX_HOME) {
     return { id: "codex", reason: "env_CODEX_HOME", layer: "env" };
   }
+  if (env.KIMI_PROJECT_DIR) {
+    return { id: "kimi", reason: "env_KIMI_PROJECT_DIR", layer: "env" };
+  }
 
   // Layer 2: project artifacts — the user is inside a project that already
   // has host-specific tooling configured.
@@ -103,6 +102,9 @@ function detectAdapterId(projectDir, options = {}) {
     if (safeIsDir(fsModule, path.join(projectDir, ".agents", "plugins"))) {
       return { id: "codex", reason: "project_agents_plugins", layer: "project" };
     }
+    if (safeIsDir(fsModule, path.join(projectDir, ".kimi"))) {
+      return { id: "kimi", reason: "project_dot_kimi", layer: "project" };
+    }
     if (safeIsFile(fsModule, path.join(projectDir, ".mcp.json"))) {
       return { id: "generic-mcp", reason: "project_mcp_json", layer: "project" };
     }
@@ -112,11 +114,15 @@ function detectAdapterId(projectDir, options = {}) {
   // Both available means we cannot disambiguate; fall through to default.
   const claudeOnPath = commandExists("claude");
   const codexOnPath = commandExists("codex");
-  if (claudeOnPath && !codexOnPath) {
+  const kimiOnPath = commandExists("kimi");
+  if (claudeOnPath && !codexOnPath && !kimiOnPath) {
     return { id: "claude", reason: "cli_on_path_claude", layer: "cli" };
   }
-  if (codexOnPath && !claudeOnPath) {
+  if (codexOnPath && !claudeOnPath && !kimiOnPath) {
     return { id: "codex", reason: "cli_on_path_codex", layer: "cli" };
+  }
+  if (kimiOnPath && !claudeOnPath && !codexOnPath) {
+    return { id: "kimi", reason: "cli_on_path_kimi", layer: "cli" };
   }
 
   // Layer 4: hard-coded fallback.

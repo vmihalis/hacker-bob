@@ -1,11 +1,14 @@
 "use strict";
 
 const { writeChainAttempt } = require("../chain-attempts.js");
+const { wrapWriteTool } = require("./_write-base.js");
 
-module.exports = Object.freeze({
-  name: "bounty_write_chain_attempt",
+module.exports = wrapWriteTool({
+  name: "bob_write_chain_attempt",
+  writes_audit_graded: true,
+  aliases: ["bounty_write_chain_attempt"],
   description:
-    "Append one structured CHAIN-phase exploit-chain attempt to MCP-owned chain-attempts.jsonl.",
+    "Append one structured CHAIN-phase impact proof-chain attempt to MCP-owned chain-attempts.jsonl.",
   inputSchema: {
     type: "object",
     properties: {

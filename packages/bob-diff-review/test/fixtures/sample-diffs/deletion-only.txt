@@ -1,0 +1,10 @@
+diff --git a/src/utils.js b/src/utils.js
+index aaa1111..bbb2222 100644
+--- a/src/utils.js
++++ b/src/utils.js
+@@ -1,5 +1,3 @@
+ function foo() {
+-  const x = badValue();
+-  return x;
++  return 0;
+ }

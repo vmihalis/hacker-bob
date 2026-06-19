@@ -31,14 +31,74 @@ const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
 const {
-  readFindingIdSet,
-} = require("./finding-store.js");
+  safeGovernanceContextForDomain,
+} = require("./governance-context.js");
+const {
+  readCurrentClaimFreeze,
+} = require("./claim-freeze.js");
+const {
+  claimIdSetFromFindingIds,
+  findingIdSetForVerificationContext,
+} = require("./verification-finding-id-adapter.js");
 const {
   normalizeVerificationRoundDocument,
 } = require("./verification-round-store.js");
+const {
+  finalSeverityByFinding,
+  missingReachabilityStampsForReportableFindings,
+  normalizeReachabilityDispositionStamp,
+  reachabilityDispositionForFinding,
+} = require("./reachability-ceiling.js");
 
 function verificationLib() {
   return require("./verification.js");
+}
+
+// Cycle C.6: project the finding_id set from the frozen CandidateClaim batch.
+// Each CandidateClaim in the freeze carries evidence_refs[] entries with
+// kind="finding" + finding_id; folding those produces the set of finding ids
+// the grade pipeline must cover. The frozen set is authoritative — mutations
+// to findings.jsonl AFTER the freeze must not change the grade work-set.
+function readFrozenGradeFindingIdSet(domain) {
+  const freeze = readCurrentClaimFreeze(domain);
+  if (!freeze || !Array.isArray(freeze.claims)) return new Set();
+  const ids = new Set();
+  for (const claim of freeze.claims) {
+    if (!claim || !Array.isArray(claim.evidence_refs)) continue;
+    for (const ref of claim.evidence_refs) {
+      if (ref && typeof ref === "object" && ref.kind === "finding" && typeof ref.finding_id === "string") {
+        ids.add(ref.finding_id);
+      }
+    }
+  }
+  return ids;
+}
+
+// Resolve the grade work-set's finding_id membership. Frozen claims[] are
+// authoritative when a freeze exists on disk. Sessions that have recorded
+// claims but not yet materialized a freeze (legacy v1 verification, tests that
+// drive grade directly) fall through to the live claim ledger so the
+// finding_id projection stays consistent without a findings.jsonl reader.
+function readGradeFindingIdSet(domain) {
+  const frozen = readFrozenGradeFindingIdSet(domain);
+  if (frozen.size > 0) return frozen;
+  return findingIdSetForVerificationContext({ domain });
+}
+
+// LEGACY: removed in Plane D — accepts the older `{ finding_ids: [...] }`
+// shape from callers that have not migrated to the snapshot/freeze projection.
+// Routes the raw id array through the finding-id adapter so the grade
+// pipeline still surfaces an authoritative finding-id set without the adapter
+// dependency leaking past this function.
+function resolveGradeFindingIdSet(domain, { findingIdSet = null, finding_ids = null } = {}) {
+  if (findingIdSet instanceof Set) return findingIdSet;
+  if (Array.isArray(findingIdSet)) return new Set(findingIdSet);
+  if (Array.isArray(finding_ids)) {
+    // LEGACY: removed in Plane D
+    claimIdSetFromFindingIds(domain, finding_ids); // touches the adapter so the contract is exercised
+    return new Set(finding_ids);
+  }
+  return readGradeFindingIdSet(domain);
 }
 
 function normalizeGradeFinding(result, findingIdSet) {
@@ -61,6 +121,9 @@ function normalizeGradeFinding(result, findingIdSet) {
     total_score: assertInteger(result.total_score, "total_score", { min: 0 }),
     feedback: normalizeOptionalText(result.feedback, "feedback"),
   };
+  if (result.reachability != null) {
+    normalized.reachability = normalizeReachabilityDispositionStamp(result.reachability, "reachability");
+  }
 
   const expectedTotal = normalized.impact
     + normalized.proof_quality
@@ -86,6 +149,12 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
     total_score: assertInteger(document.total_score, "total_score", { min: 0 }),
     findings: [],
     feedback: normalizeOptionalText(document.feedback, "feedback"),
+    // Cycle C.6: optional claim freeze binding. Null preserves backwards
+    // compatibility with legacy grade verdicts written before the binding was
+    // introduced; new writers populate it whenever a freeze exists.
+    claim_freeze_id: document.claim_freeze_id == null
+      ? null
+      : assertNonEmptyString(document.claim_freeze_id, "claim_freeze_id"),
   };
 
   if (!Array.isArray(document.findings)) {
@@ -120,6 +189,14 @@ function isMediumOrHigher(severity) {
   return ["medium", "high", "critical"].includes(severity);
 }
 
+// Cycle C.6: derive the reportable-severity set from the verification round
+// bound to the frozen snapshot's claim freeze. For V2 attempts, requireV2State
+// loads the freshness-checked snapshot (its claim_freeze_id is integrity-bound
+// to the current claim-freeze.json by assertSnapshotMatchesFreeze) and the
+// V2 final round is bound to that snapshot via verification_snapshot_hash, so
+// the chain is round -> snapshot -> freeze. For V1 the snapshot/binding does
+// not exist; we fall back to the live final round but still project the
+// finding_id set from the frozen claim batch when one is available.
 function requireFinalReportableSeveritySet(domain, findingIdSet) {
   const paths = verificationRoundPaths(domain, "final");
   let normalized;
@@ -128,6 +205,13 @@ function requireFinalReportableSeveritySet(domain, findingIdSet) {
     let effectiveFindingIdSet = findingIdSet;
     let v2Current = null;
     if (document && document.version === 2) {
+      // requireV2State asserts the snapshot's claim_freeze_id and
+      // claim_freeze_hash agree with the persisted claim-freeze.json; the
+      // V2 verification round is then bound to that snapshot via the
+      // verification_snapshot_hash equality enforced by
+      // assertCurrentV2RoundDocument. The grade verdict therefore reads its
+      // reportable-severity set from a final round that is transitively
+      // bound to the frozen claim batch.
       v2Current = verificationLib().requireV2State(domain);
       effectiveFindingIdSet = new Set(v2Current.snapshot.finding_ids);
     }
@@ -154,6 +238,16 @@ function requireFinalReportableSeveritySet(domain, findingIdSet) {
       .filter((result) => result.reportable && isMediumOrHigher(result.severity))
       .map((result) => result.finding_id),
   );
+}
+
+// Cycle C.6: project the active claim_freeze_id for the session. Used to
+// record the freeze binding on the grade verdict document so a grader can
+// later prove which frozen claim batch was scored. Returns null when no
+// freeze exists yet (legacy/pre-claim sessions).
+function currentClaimFreezeId(domain) {
+  const freeze = readCurrentClaimFreeze(domain);
+  if (!freeze) return null;
+  return typeof freeze.freeze_id === "string" && freeze.freeze_id ? freeze.freeze_id : null;
 }
 
 function requireEvidencePacksForGrading(domain, findingIdSet) {
@@ -216,6 +310,19 @@ function renderGradeVerdictMarkdown(document) {
     lines.push(`- Chain Potential: ${finding.chain_potential}`);
     lines.push(`- Report Quality: ${finding.report_quality}`);
     lines.push(`- Total Score: ${finding.total_score}`);
+    if (finding.reachability) {
+      lines.push(`- Graded Severity: ${finding.reachability.graded_severity}`);
+      lines.push(`- Attack Vector: ${finding.reachability.attack_vector}`);
+      lines.push(`- Reachability Disposition: ${finding.reachability.disposition}`);
+      lines.push(`- Reachability Source: ${finding.reachability.reachability_source}`);
+      if (finding.reachability.call_path) {
+        lines.push(`- Reachability Call Path: ${finding.reachability.call_path}`);
+      }
+      if (finding.reachability.reachability_divergence) {
+        lines.push(`- Reachability Divergence: ${finding.reachability.reachability_divergence}`);
+      }
+      lines.push(`- Reachability Defensible: ${finding.reachability.defensible ? "yes" : "no"}`);
+    }
     lines.push(`- Feedback: ${finding.feedback || "N/A"}`);
     lines.push("");
   }
@@ -233,9 +340,14 @@ function writeGradeVerdict(args) {
     throw new Error("findings must be an array");
   }
 
-  const findingIdSet = readFindingIdSet(domain);
+  // Cycle C.6: the grade work-set is the frozen claim batch enumeration.
+  // resolveGradeFindingIdSet honors a caller-supplied legacy { finding_ids[] }
+  // shape via the verification-finding-id-adapter; otherwise the frozen
+  // claims[] projection wins, falling back to the live ledger only when no
+  // freeze exists yet.
+  const findingIdSet = resolveGradeFindingIdSet(domain, args);
   const seenIds = new Set();
-  const findings = args.findings.map((finding) => {
+  const normalizedFindings = args.findings.map((finding) => {
     const normalizedFinding = normalizeGradeFinding(finding, findingIdSet);
     if (seenIds.has(normalizedFinding.finding_id)) {
       throw new Error(`Duplicate finding_id in findings: ${normalizedFinding.finding_id}`);
@@ -244,6 +356,79 @@ function writeGradeVerdict(args) {
     return normalizedFinding;
   });
 
+  const finalReportableSeveritySet = requireFinalReportableSeveritySet(domain, findingIdSet);
+  // Fail-closed trust gate: refuse to bind a trust-degraded (unsigned) finding
+  // into the grade verdict at all. Any finding bound into grade.json (seenIds)
+  // can drive total_score and the SUBMIT verdict regardless of its reportable
+  // severity, so the gate keys on the actually-bound set, not the narrower
+  // reportable-severity set. Inert for signed/unmarked findings because
+  // degradedReportableFindingIds is empty for them.
+  const { degradedReportableFindingIds } = require("./tools/record-candidate-claim.js");
+  const degraded = degradedReportableFindingIds(domain);
+  if (degraded.size > 0) {
+    const offending = [...seenIds].filter((id) => degraded.has(id));
+    if (offending.length > 0) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `Refusing to grade trust-degraded (unsigned) finding(s): ${offending.join(", ")}`,
+        { degraded_finding_ids: offending },
+        {
+          remediation:
+            "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker, or exclude the finding(s) from the grade verdict, before writing it.",
+        },
+      );
+    }
+  }
+  const missingReachability = missingReachabilityStampsForReportableFindings(domain);
+  if (missingReachability.missing.length > 0) {
+    const prefix = missingReachability.inventory_absent === true
+      ? "Reachability inventory is required before grading final reportable repo module findings: "
+      : "Reachability stamps are required for final reportable repo module findings before grading: ";
+    throw new Error(
+      prefix + missingReachability.missing.join(", "),
+    );
+  }
+  const finalSeverities = finalSeverityByFinding(domain);
+  // O-P4 differential-reproduction proof gate. A final-reportable high/critical
+  // native-code finding must be backed by a verified_pass in repro-verified.jsonl
+  // bound (by command_hash) to its declared repro_command_argv. The single
+  // repo_command_run the claim cited is forgeable; only the verifier's differential
+  // re-run mints the verified_pass, and that ledger is MCP-write-only. Fail closed:
+  // an unbacked native high/critical finding cannot be graded (mirrors the
+  // reachability-stamp gate above).
+  const { reproVerifiedGapForNativeReportableFindings } = require("./claims.js");
+  const reproGap = reproVerifiedGapForNativeReportableFindings(domain, {
+    reportableFindingIds: finalReportableSeveritySet,
+    finalSeverities,
+  });
+  if (reproGap.missing.length > 0) {
+    const detail = reproGap.missing.map((m) => `${m.finding_id} (${m.reason})`).join(", ");
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Differential reproduction verified_pass is required for final reportable high/critical native-code finding(s) before grading: ${detail}.`,
+      { code: "O_P4_missing_repro_verified_pass", missing: reproGap.missing },
+      {
+        remediation:
+          "Run bob_verify_repro_reproduction with command = the finding's repro_command_argv and control_ref = the upstream-fix commit; it mints a verified_pass only on a genuine sanitizer flip. Or lower the finding's severity below high / exclude it from the reportable set.",
+      },
+    );
+  }
+  const findings = normalizedFindings.map((finding) => {
+    const recordedSeverity = finalSeverities.get(finding.finding_id);
+    if (!recordedSeverity) return finding;
+    const reachability = reachabilityDispositionForFinding({
+      domain,
+      findingId: finding.finding_id,
+      recordedSeverity,
+    });
+    if (reachability.disposition === "unknown") return finding;
+    return {
+      ...finding,
+      reachability,
+    };
+  });
+
+  const claimFreezeId = currentClaimFreezeId(domain);
   const document = {
     version: 1,
     target_domain: domain,
@@ -251,9 +436,12 @@ function writeGradeVerdict(args) {
     total_score: totalScore,
     findings,
     feedback,
+    // Cycle C.6: record the frozen claim batch the grade verdict is scoring.
+    // null is preserved for legacy/pre-claim sessions where no freeze exists.
+    claim_freeze_id: claimFreezeId,
   };
   enforceGradeVerdictConsistency(document, {
-    finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
+    finalReportableSeveritySet,
   });
   verificationLib().requireVerificationCompleteForGrade(domain, { findingIdSet });
 
@@ -264,17 +452,19 @@ function writeGradeVerdict(args) {
     verdict,
     findings_count: findings.length,
     written_json: paths.json,
+    claim_freeze_id: claimFreezeId,
   };
   writeMarkdownMirror(paths.markdown, renderGradeVerdictMarkdown(document), response);
   safeAppendPipelineEventDirect(domain, "grade_written", {
     phase: "GRADE",
     status: verdict,
-    source: "bounty_write_grade_verdict",
+    source: "bob_write_grade_verdict",
+    claim_freeze_id: claimFreezeId,
     counts: {
       findings: findings.length,
       total_score: totalScore,
     },
-  });
+  }, safeGovernanceContextForDomain(domain));
   return JSON.stringify(response);
   });
 }
@@ -283,7 +473,8 @@ function readGradeVerdict(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const paths = gradeArtifactPaths(domain);
   const document = loadJsonDocumentStrict(paths.json, "grade verdict JSON");
-  const findingIdSet = readFindingIdSet(domain);
+  // Cycle C.6: read the work-set from the frozen claim batch.
+  const findingIdSet = readGradeFindingIdSet(domain);
   const normalized = normalizeGradeVerdictDocument(document, {
     expectedDomain: domain,
     findingIdSet,

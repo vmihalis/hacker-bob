@@ -22,9 +22,10 @@ function readSurfaceRoutes(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_read_surface_routes",
+  name: "bob_read_surface_routes",
+  aliases: ["bounty_read_surface_routes"],
   description:
-    "Read the MCP-owned surface-routes.json: per-surface capability_pack, hunter_agent, brief_profile, confidence, and reasons. Use to dispatch verifier/chain/evidence/reporter prompts on assignment.capability_pack without re-deriving from surface_type or chain_family.",
+    "Read the MCP-owned surface-routes.json: per-surface capability_pack, evaluator_agent, brief_profile, confidence, and reasons. Use to dispatch verifier/chain/evidence/reporter prompts on assignment.capability_pack without re-deriving from surface_type or chain_family.",
   inputSchema: {
     type: "object",
     properties: {
@@ -34,7 +35,7 @@ module.exports = Object.freeze({
   },
   handler: readSurfaceRoutes,
   // Surface-router-agent (role bundle "router") writes routes via
-  // bounty_route_surfaces and exits — it does not need to re-read its own
+  // bob_route_surfaces and exits — it does not need to re-read its own
   // writes. Downstream consumers (orchestrator + verifier/chain/evidence/
   // reporter) read via this tool.
   role_bundles: ["orchestrator", "verifier", "chain", "evidence", "reporter"],

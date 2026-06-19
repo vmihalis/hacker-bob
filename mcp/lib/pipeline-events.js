@@ -29,11 +29,13 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "session_started",
   "egress_identity_bound",
   "phase_transitioned",
+  "lifecycle_advanced",
   "wave_started",
-  "hunter_stopped",
+  "evaluator_stopped",
   "wave_merge_pending",
   "wave_merged",
   "coverage_logged",
+  "evaluator_run_avoided",
   "technique_attempt_logged",
   "finding_recorded",
   "verification_snapshot_created",
@@ -43,6 +45,7 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "verification_archive_pruned",
   "verification_written",
   "evidence_written",
+  "proof_bundle_written",
   "grade_written",
   "surface_terminally_blocked",
   "terminal_block_cleared",
@@ -111,6 +114,36 @@ function normalizePositiveInteger(value, defaultValue, maxValue) {
   return Math.max(1, Math.min(maxValue, Math.trunc(value)));
 }
 
+// Governance triple required on every pipeline event append. The hash fields
+// are sha256 hex (64 chars); the lifecycle_state is the canonical enum from
+// governance-contracts. The triple is set by buildGovernanceContext /
+// buildGovernanceContextFromNucleus in governance-context.js; pipeline-events
+// does not derive it on the hot path.
+const GOVERNANCE_CONTEXT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const GOVERNANCE_CONTEXT_REQUIRED_KEYS = Object.freeze([
+  "nucleus_hash",
+  "lifecycle_state",
+  "egress_identity_hash",
+]);
+
+function assertGovernanceContext(governanceContext) {
+  if (governanceContext == null || typeof governanceContext !== "object" || Array.isArray(governanceContext)) {
+    throw new Error("governance_context is required on appendPipelineEvent");
+  }
+  for (const key of GOVERNANCE_CONTEXT_REQUIRED_KEYS) {
+    const value = governanceContext[key];
+    if (value == null || typeof value !== "string" || value.length === 0) {
+      throw new Error(`governance_context.${key} is required on appendPipelineEvent`);
+    }
+  }
+  if (!GOVERNANCE_CONTEXT_HASH_PATTERN.test(governanceContext.nucleus_hash)) {
+    throw new Error("governance_context.nucleus_hash must be a 64-char sha256 hex");
+  }
+  if (!GOVERNANCE_CONTEXT_HASH_PATTERN.test(governanceContext.egress_identity_hash)) {
+    throw new Error("governance_context.egress_identity_hash must be a 64-char sha256 hex");
+  }
+}
+
 function normalizePipelineEvent(targetDomain, type, fields = {}) {
   const domain = assertNonEmptyString(targetDomain || fields.target_domain, "target_domain");
   const eventType = capString(type || fields.type, 80);
@@ -126,12 +159,15 @@ function normalizePipelineEvent(targetDomain, type, fields = {}) {
     type: eventType,
   };
 
-  const phase = capString(fields.phase, 40);
-  const fromPhase = capString(fields.from_phase, 40);
-  const toPhase = capString(fields.to_phase, 40);
-  if (phase) event.phase = phase;
-  if (fromPhase) event.from_phase = fromPhase;
-  if (toPhase) event.to_phase = toPhase;
+  // Lifecycle vocabulary is the sole accepted form. The legacy phase fields
+  // (phase / from_phase / to_phase) were removed in D.3 once the lifecycle
+  // authority on session-nucleus.json became canonical.
+  const lifecycleState = capString(fields.lifecycle_state, 40);
+  const fromState = capString(fields.from_state, 40);
+  const toState = capString(fields.to_state, 40);
+  if (lifecycleState) event.lifecycle_state = lifecycleState;
+  if (fromState) event.from_state = fromState;
+  if (toState) event.to_state = toState;
 
   const waveNumber = normalizeWaveNumber(fields.wave_number == null ? fields.wave : fields.wave_number);
   if (waveNumber != null) event.wave_number = waveNumber;
@@ -233,13 +269,22 @@ function readSessionEgressFields(targetDomain) {
   }
 }
 
-function appendPipelineEventDirect(targetDomain, type, fields = {}, { env = process.env } = {}) {
+function appendPipelineEventDirect(targetDomain, type, fields = {}, governanceContext, { env = process.env } = {}) {
+  assertGovernanceContext(governanceContext);
   if (!pipelineAnalyticsEnabled(env)) return null;
   const domain = assertNonEmptyString(targetDomain || fields.target_domain, "target_domain");
   const event = normalizePipelineEvent(domain, type, {
     ...readSessionEgressFields(domain),
     ...fields,
+    lifecycle_state: fields.lifecycle_state || governanceContext.lifecycle_state,
   });
+  // The governance triple is stamped on every event so consumers can join
+  // pipeline events to nucleus mutations without re-reading state.json.
+  event.nucleus_hash = governanceContext.nucleus_hash;
+  if (governanceContext.lifecycle_state && !event.lifecycle_state) {
+    event.lifecycle_state = governanceContext.lifecycle_state;
+  }
+  event.egress_identity_hash = governanceContext.egress_identity_hash;
   withSessionLock(event.target_domain, () => {
     appendJsonlLine(pipelineEventsJsonlPath(event.target_domain), event, {
       maxRecords: PIPELINE_EVENTS_MAX_RECORDS,
@@ -248,32 +293,33 @@ function appendPipelineEventDirect(targetDomain, type, fields = {}, { env = proc
   return event;
 }
 
-function safeAppendPipelineEventDirect(targetDomain, type, fields = {}, options = {}) {
+function safeAppendPipelineEventDirect(targetDomain, type, fields = {}, governanceContext, options = {}) {
   try {
-    return appendPipelineEventDirect(targetDomain, type, fields, options);
+    return appendPipelineEventDirect(targetDomain, type, fields, governanceContext, options);
   } catch {
     return null;
   }
 }
 
-function safeAppendPipelineEventWithSessionLock(targetDomain, type, fields = {}, options = {}) {
+function safeAppendPipelineEventWithSessionLock(targetDomain, type, fields = {}, governanceContext, options = {}) {
   if (!pipelineAnalyticsEnabled(options.env || process.env)) return null;
   try {
-    return withSessionLock(targetDomain, () => appendPipelineEventDirect(targetDomain, type, fields, options));
+    assertGovernanceContext(governanceContext);
+    return withSessionLock(targetDomain, () => appendPipelineEventDirect(targetDomain, type, fields, governanceContext, options));
   } catch {
     return null;
   }
 }
 
-function safeRecordHunterStoppedPipelineEvent(input, options = {}) {
+function safeRecordEvaluatorStoppedPipelineEvent(input, governanceContext, options = {}) {
   if (!input || !input.target_domain) return null;
-  return safeAppendPipelineEventWithSessionLock(input.target_domain, "hunter_stopped", {
+  return safeAppendPipelineEventWithSessionLock(input.target_domain, "evaluator_stopped", {
     wave: input.wave,
     agent: input.agent,
     surface_id: input.surface_id,
     status: input.status,
     block_code: input.block_code == null ? input.blockCode : input.block_code,
-    source: input.source || input.telemetry_source || "hunter-subagent-stop",
+    source: input.source || input.telemetry_source || "agent-run-stop",
     now: input.now,
     counts: {
       coverage: input.coverage && Number.isFinite(input.coverage.total) ? input.coverage.total : 0,
@@ -281,7 +327,7 @@ function safeRecordHunterStoppedPipelineEvent(input, options = {}) {
       handoff_present: input.handoff && input.handoff.present === true ? 1 : 0,
       handoff_valid: input.handoff && input.handoff.valid === true ? 1 : 0,
     },
-  }, options);
+  }, governanceContext, options);
 }
 
 function normalizePipelineEventForRead(record, expectedDomain) {
@@ -304,8 +350,9 @@ function normalizePipelineEventForRead(record, expectedDomain) {
     verification_snapshot_hash: 128,
     adjudication_plan_hash: 128,
     final_verification_hash: 128,
+    nucleus_hash: 128,
   };
-  for (const field of ["phase", "from_phase", "to_phase", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by", "checkpoint_mode", "block_internal_hosts_source", "egress_profile", "egress_region", "egress_profile_identity_hash"]) {
+  for (const field of ["lifecycle_state", "from_state", "to_state", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by", "checkpoint_mode", "block_internal_hosts_source", "egress_profile", "egress_region", "egress_profile_identity_hash", "nucleus_hash"]) {
     const safe = capString(record[field], fieldCaps[field] || 120);
     if (safe) event[field] = safe;
   }
@@ -333,7 +380,9 @@ module.exports = {
   PIPELINE_EVENT_VERSION,
   PIPELINE_EVENTS_MAX_RECORDS,
   appendPipelineEventDirect,
+  assertGovernanceContext,
   capString,
+  GOVERNANCE_CONTEXT_REQUIRED_KEYS,
   isPlainObject,
   normalizeIsoTimestamp,
   normalizePipelineEvent,
@@ -342,6 +391,6 @@ module.exports = {
   pipelineAnalyticsEnabled,
   safeAppendPipelineEventDirect,
   safeAppendPipelineEventWithSessionLock,
-  safeRecordHunterStoppedPipelineEvent,
+  safeRecordEvaluatorStoppedPipelineEvent,
   timestampMs,
 };

@@ -10,10 +10,17 @@ const crypto = require("node:crypto");
 const {
   buildSurfaceGraph,
   edgesFromAttackSurface,
+  edgesFromAuthDifferentialResults,
+  edgesFromChainTree,
+  edgesFromEvmRoleTableResult,
   edgesFromSchemaCorpus,
 } = require("../mcp/lib/surface-graph-builder.js");
 const { queryEdges } = require("../mcp/lib/surface-graph.js");
 const { ingestSchemaDoc } = require("../mcp/lib/schema-contracts-store.js");
+const {
+  authDifferentialResultsPath,
+  chainTreeJsonlPath,
+} = require("../mcp/lib/paths.js");
 
 function uniqueDomain(prefix = "bob-graph-builder-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -21,7 +28,7 @@ function uniqueDomain(prefix = "bob-graph-builder-test") {
 }
 
 function domainDir(domain) {
-  return path.join(os.homedir(), "bounty-agent-sessions", domain);
+  return path.join(os.homedir(), "hacker-bob-sessions", domain);
 }
 
 function cleanupDomain(domain) {
@@ -116,9 +123,132 @@ test("edgesFromSchemaCorpus emits openapi_spec-documents-endpoint and endpoint-c
       && e.edge_type === "claims_auth");
     assert.ok(authEdge);
     assert.equal(authEdge.target.id, "bearerAuth");
+    const gateEdge = edges.find((e) =>
+      e.source.type === "endpoint"
+      && e.target.type === "policy_gate"
+      && e.edge_type === "claims_auth");
+    assert.ok(gateEdge);
+    const requiresEdge = edges.find((e) =>
+      e.source.type === "policy_gate"
+      && e.target.type === "credential"
+      && e.edge_type === "requires");
+    assert.ok(requiresEdge);
+    assert.equal(requiresEdge.target.id, "credential:bearerAuth");
   } finally {
     cleanupDomain(domain);
   }
+});
+
+function writeAuthDifferential(domain, perEndpoint) {
+  fs.mkdirSync(domainDir(domain), { recursive: true });
+  fs.writeFileSync(
+    authDifferentialResultsPath(domain),
+    JSON.stringify({ schema_version: 1, per_endpoint: perEndpoint }, null, 2),
+  );
+}
+
+test("edgesFromAuthDifferentialResults projects principal/credential/intervention/effect and IDOR-like gate path", () => {
+  const domain = uniqueDomain();
+  try {
+    writeAuthDifferential(domain, [{
+      endpoint: "/objects/123",
+      method: "GET",
+      signatures_by_profile: {
+        unauthenticated: { response_class: "ok", sent_with_auth: false },
+        victim: { response_class: "forbidden", sent_with_auth: true },
+      },
+      divergences: [{
+        type: "unauth_succeeds_where_auth_blocked",
+        severity_class: "security",
+      }],
+    }]);
+    const edges = edgesFromAuthDifferentialResults(domain);
+    assert.ok(edges.some((e) =>
+      e.source.id === "principal:unauthenticated"
+      && e.target.id === "policy_gate:auth-diff:/objects/123"
+      && e.edge_type === "tests_gate"));
+    assert.ok(edges.some((e) =>
+      e.source.id === "policy_gate:auth-diff:/objects/123"
+      && e.target.id === "effect:/objects/123:unauth_succeeds_where_auth_blocked"
+      && e.edge_type === "permits_effect"));
+    assert.ok(edges.some((e) =>
+      e.source.type === "credential"
+      && e.target.type === "intervention"
+      && e.edge_type === "tests_gate"));
+    assert.ok(edges.some((e) =>
+      e.source.type === "intervention"
+      && e.target.type === "effect"
+      && e.edge_type === "produces_effect"));
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("edgesFromAuthDifferentialResults does not create a policy-gate effect for public matching responses", () => {
+  const domain = uniqueDomain();
+  try {
+    writeAuthDifferential(domain, [{
+      endpoint: "/public",
+      method: "GET",
+      signatures_by_profile: {
+        unauthenticated: { response_class: "ok", sent_with_auth: false },
+        victim: { response_class: "ok", sent_with_auth: true },
+      },
+      divergences: [],
+    }]);
+    const edges = edgesFromAuthDifferentialResults(domain);
+    assert.equal(edges.some((e) => e.target.id === "effect:/public:unauth_succeeds_where_auth_blocked"), false);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("edgesFromChainTree projects chain outcomes as intervention observed effects", () => {
+  const domain = uniqueDomain();
+  try {
+    fs.mkdirSync(domainDir(domain), { recursive: true });
+    fs.writeFileSync(
+      chainTreeJsonlPath(domain),
+      `${JSON.stringify({
+        node_hash: "n1",
+        action: { kind: "selector_swap", target: "/objects/123" },
+        verdict: "success",
+      })}\n`,
+    );
+    const edges = edgesFromChainTree(domain);
+    assert.deepEqual(edges[0].source, { type: "intervention", id: "intervention:chain:n1" });
+    assert.deepEqual(edges[0].target, { type: "effect", id: "effect:chain:success" });
+    assert.equal(edges[0].edge_type, "observes_effect");
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("edgesFromEvmRoleTableResult projects role matrix rows into principal credentials and policy gates", () => {
+  const edges = edgesFromEvmRoleTableResult({
+    contract: "0x00000000000000000000000000000000000000AA",
+    access_control: [{
+      role_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      accounts: [
+        { account: "0x00000000000000000000000000000000000000BB", has_role: true },
+        { account: "0x00000000000000000000000000000000000000CC", has_role: false },
+      ],
+    }],
+    wards: [
+      { account: "0x00000000000000000000000000000000000000DD", ward: true },
+    ],
+  });
+  assert.ok(edges.some((e) =>
+    e.source.id === "policy_gate:evm:0x00000000000000000000000000000000000000aa:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    && e.target.id === "credential:evm-role:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    && e.edge_type === "requires"));
+  assert.ok(edges.some((e) =>
+    e.source.id === "principal:evm:0x00000000000000000000000000000000000000bb"
+    && e.edge_type === "uses_credential"));
+  assert.equal(edges.some((e) => e.source.id === "principal:evm:0x00000000000000000000000000000000000000cc"), false);
+  assert.ok(edges.some((e) =>
+    e.source.id === "principal:evm:0x00000000000000000000000000000000000000dd"
+    && e.target.id === "credential:evm-ward:0x00000000000000000000000000000000000000aa"));
 });
 
 test("buildSurfaceGraph reads attack_surface.json and the schema corpus and persists merged edges", () => {
@@ -143,7 +273,7 @@ test("buildSurfaceGraph reads attack_surface.json and the schema corpus and pers
     const result = buildSurfaceGraph({ target_domain: domain });
     assert.ok(result.new_count > 0);
     assert.ok(result.total_in_graph > 0);
-    assert.equal(result.sources_used.length, 2);
+    assert.equal(result.sources_used.length, 5);
     assert.equal(result.sources_used.find((s) => s.source === "attack_surface").edge_count > 0, true);
     assert.equal(result.sources_used.find((s) => s.source === "schema_corpus").edge_count > 0, true);
 
@@ -167,6 +297,31 @@ test("buildSurfaceGraph honors the sources filter", () => {
     });
     assert.equal(result.sources_used.length, 1);
     assert.equal(result.sources_used[0].source, "attack_surface");
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("buildSurfaceGraph persists mechanism projection edges into the single surface graph store", () => {
+  const domain = uniqueDomain();
+  try {
+    writeAuthDifferential(domain, [{
+      endpoint: "/objects/123",
+      method: "GET",
+      signatures_by_profile: {
+        unauthenticated: { response_class: "ok", sent_with_auth: false },
+        victim: { response_class: "forbidden", sent_with_auth: true },
+      },
+      divergences: [{ type: "unauth_succeeds_where_auth_blocked", severity_class: "security" }],
+    }]);
+    buildSurfaceGraph({ target_domain: domain, sources: ["auth_differential"] });
+    const result = queryEdges({
+      target_domain: domain,
+      source_type: "principal",
+      source_id: "principal:unauthenticated",
+      target_type: "policy_gate",
+    });
+    assert.equal(result.total_matched, 1);
   } finally {
     cleanupDomain(domain);
   }

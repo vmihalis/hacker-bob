@@ -8,7 +8,8 @@ function readCapabilityMetricsHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_read_capability_metrics",
+  name: "bob_read_capability_metrics",
+  aliases: ["bounty_read_capability_metrics"],
   description:
     "Aggregate tool telemetry by capability (C2 doc-vs-behavior, C4 multi-account, I6 findings index, I1 surface graph, I7 chain state tree, X2 verification attempt diff). Returns per-capability call counts, success rate, average latency, last-called timestamp, plus per-tool breakdown. Pass target_domain to scope to one session; omit for cross-target.",
   inputSchema: {

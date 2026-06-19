@@ -6,7 +6,8 @@ const {
 } = require("../constants.js");
 
 module.exports = Object.freeze({
-  name: "bounty_log_technique_attempt",
+  name: "bob_log_technique_attempt",
+  aliases: ["bounty_log_technique_attempt"],
   description:
     "Append one validated technique-pack selection, attempt, skip, or outcome record to MCP-owned technique-attempts.jsonl.",
   inputSchema: {
@@ -19,12 +20,12 @@ module.exports = Object.freeze({
       pack_id: { type: "string" },
       status: { type: "string", enum: TECHNIQUE_ATTEMPT_STATUS_VALUES },
       outcome: { type: "string" },
-      evidence: { type: "string" },
+      evidence: { type: "string", minLength: 1 },
     },
     required: ["target_domain", "surface_id", "pack_id", "status", "evidence"],
   },
   handler: logTechniqueAttempt,
-  role_bundles: ["hunter-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

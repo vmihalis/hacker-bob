@@ -20,6 +20,13 @@ const WRAPPER_PACKAGE_SPECS = Object.freeze([
     adapter: "codex",
     label: "Codex wrapper",
   }),
+  Object.freeze({
+    name: "hacker-bob-kimi",
+    relativeRoot: path.join("packages", "hacker-bob-kimi"),
+    bin: "bin/hacker-bob-kimi.js",
+    adapter: "kimi",
+    label: "Kimi CLI wrapper",
+  }),
 ]);
 
 const LOCAL_INSTALL_METADATA_FILES = new Set([
@@ -28,6 +35,8 @@ const LOCAL_INSTALL_METADATA_FILES = new Set([
   ".claude/bob/VERSION",
   ".claude/bob/install.json",
   ".claude/bob/egress-profiles.json",
+  ".kimi/bob/VERSION",
+  ".kimi/bob/install.json",
   // Operator-local Claude Code session overrides; excluded from package.json's
   // files glob (only settings.json ships) so npm pack never includes it. The
   // expectedCanonicalFiles walker should not require it either.
@@ -38,7 +47,7 @@ const LOCAL_INSTALL_METADATA_FILES = new Set([
 ]);
 
 const REQUIRED_SUPPORT_SURFACES = Object.freeze([
-  ".hacker-bob/knowledge/hunter-techniques.json",
+  ".hacker-bob/knowledge/evaluator-techniques.json",
   ".hacker-bob/bypass-tables/graphql.txt",
   ".hacker-bob/bypass-tables/oauth-oidc.txt",
   "bin/hacker-bob.js",
@@ -53,7 +62,7 @@ const REQUIRED_SUPPORT_SURFACES = Object.freeze([
   "testing/policy-replay/replay.mjs",
   "testing/policy-replay/tune.mjs",
   "testing/policy-replay/bench.mjs",
-  "testing/policy-replay/cases/sample-hunter-refusal.json",
+  "testing/policy-replay/cases/sample-evaluator-refusal.json",
   "testing/policy-replay/prompts/00-baseline.md",
   "testing/policy-replay/prompts/01-scope-anchor.md",
 ]);
@@ -107,6 +116,10 @@ function wrapperPackages(root = DEFAULT_ROOT) {
 
 function isInternalRefactorDoc(file) {
   return /^docs\/refactor-[^/]+\.md$/.test(file);
+}
+
+function isInternalPlaneDeltaDetailDoc(file) {
+  return /^docs\/plane-delta\/detail\/[^/]+\.md$/.test(file);
 }
 
 function isInternalRefactorScratch(file) {
@@ -168,8 +181,8 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
     ...sourceTreeFiles(root, ".claude").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
     ...sourceTreeFiles(root, "adapters"),
     ...sourceTreeFiles(root, "bin").filter(isPackableBin),
-    ...sourceTreeFiles(root, "docs").filter((file) => !isInternalRefactorDoc(file)),
-    ...sourceTreeFiles(root, "mcp"),
+    ...sourceTreeFiles(root, "docs").filter((file) => !isInternalRefactorDoc(file) && !isInternalPlaneDeltaDetailDoc(file)),
+    ...sourceTreeFiles(root, "mcp").filter((file) => !file.startsWith("mcp/node_modules/")),
     ...sourceTreeFiles(root, "prompts"),
     ...sourceTreeFiles(root, "scripts").filter(isPackableScript),
     ...sourceTreeFiles(root, "testing/policy-replay"),
@@ -188,6 +201,7 @@ module.exports = {
   expectedCanonicalFiles,
   isInternalRefactorScratch,
   isInternalRefactorDoc,
+  isInternalPlaneDeltaDetailDoc,
   isExcludedCanonicalPackageFile,
   isPackableBin,
   isPackableBobResource,

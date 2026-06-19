@@ -14,6 +14,8 @@ const {
   readFileUtf8,
 } = require("./storage.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
+const { appendFrontierEvent } = require("./frontier-events.js");
+const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 
 const DEFAULT_ENDPOINT_LIMIT = 200;
 
@@ -207,7 +209,46 @@ async function runAuthDifferential({
     summary: { ...summary, started_at: null, finished_at: null },
     per_endpoint: perEndpoint,
   });
+  // LEGACY: removed in Plane D — auth-differential-results.json remains during
+  // the dual-write window so capability-eval and report-writer keep working;
+  // frontier-events.jsonl carries the authoritative observation signal.
   persistResults(domain, payload);
+
+  // Dual-write per Pact P2: each auth-differential run produces a per-endpoint
+  // observation about how a surface responds across auth profiles. Emit one
+  // observation.recorded event per tested endpoint so the frontier projection
+  // can fold them by surface; the runner does not know the surface mapping for
+  // endpoints, so observations are surfaced by url-derived surface_ref via
+  // payload — downstream readers can join on the same key.
+  for (const entry of perEndpoint) {
+    try {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "observation.recorded",
+        payload: {
+          observation_kind: "auth_redirect",
+          endpoint: entry.endpoint,
+          method: entry.method,
+          profiles: profileList,
+          divergence_count: entry.divergences.length,
+          divergence_types: Array.from(new Set(entry.divergences.map((d) => d.type))).sort(),
+          divergence_severities: Array.from(new Set(entry.divergences.map((d) => d.severity_class))).sort(),
+          run_id: summary.run_id,
+          results_hash: payload.results_hash,
+        },
+        source: {
+          artifact: "auth-differential-results.json",
+          tool: "bob_run_auth_differential",
+          ref: payload.results_hash,
+        },
+      });
+    } catch {
+      // Frontier ledger is dual-write best-effort during the deprecation window.
+    }
+  }
+  try {
+    scheduleMaterialization(domain);
+  } catch {}
   return payload;
 }
 

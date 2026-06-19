@@ -33,11 +33,14 @@ const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
 const {
+  safeGovernanceContextForDomain,
+} = require("./governance-context.js");
+const {
   finalVerificationHash,
 } = require("./verification-contracts.js");
 const {
-  readFindingIdSet,
-} = require("./finding-store.js");
+  findingIdSetForVerificationContext,
+} = require("./verification-finding-id-adapter.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -65,7 +68,13 @@ function normalizeStringEnumArray(value, fieldName, allowedValues, { required = 
 }
 
 const VERIFICATION_ARTIFACT_HASH_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
-const VERIFICATION_ARTIFACT_HASH_VALUE_RE = /^[a-f0-9]{64}$/;
+// Y.0 hotfix 2 (O3): field evidence showed verification rounds that recorded
+// artifact hashes from third-party tooling (HTTP digest headers, vendor
+// scanner outputs) where md5 — not sha256 — was the only hash the upstream
+// emitted. The validator previously rejected those rounds; the regex now
+// accepts both md5 (32 lowercase hex) and sha256 (64 lowercase hex). The
+// 64-hex sha256 path is the back-compat default; md5 is the additive widening.
+const VERIFICATION_ARTIFACT_HASH_VALUE_RE = /^(?:[a-f0-9]{32}|[a-f0-9]{64})$/;
 const VERIFICATION_ARTIFACT_HASH_MAX_ENTRIES = 20;
 const VERIFICATION_ARTIFACT_HASH_SECRET_KEY_RE = /(?:authorization|cookie|token|secret|password|passwd|api[_-]?key|credential|session)/i;
 
@@ -89,7 +98,7 @@ function normalizeArtifactHashes(value, fieldName = "artifact_hashes") {
     }
     const normalizedHash = assertNonEmptyString(hash, `${fieldName}.${safeKey}`);
     if (!VERIFICATION_ARTIFACT_HASH_VALUE_RE.test(normalizedHash)) {
-      throw new Error(`${fieldName}.${safeKey} must be a lower-case SHA-256 hex hash`);
+      throw new Error(`${fieldName}.${safeKey} must be a lower-case md5 (32 hex) or sha256 (64 hex) hash`);
     }
     normalized[safeKey] = normalizedHash;
   }
@@ -283,7 +292,7 @@ function writeVerificationRound(args) {
 
   const findingIdSet = schemaVersion === 2
     ? new Set(v2Snapshot.finding_ids)
-    : readFindingIdSet(domain);
+    : findingIdSetForVerificationContext({ domain });
   const seenIds = new Set();
   let results = args.results.map((result) => {
     const normalizedResult = normalizeVerificationResult(result, findingIdSet, { schemaVersion });
@@ -317,7 +326,12 @@ function writeVerificationRound(args) {
     verificationLib().assertExactFindingCoverage(results, v2Snapshot.finding_ids, round);
     results = sortVerificationResultsByFindingIds(results, v2Snapshot.finding_ids);
     if (round === "final") {
-      const adjudicationPlanHash = assertNonEmptyString(args.adjudication_plan_hash, "adjudication_plan_hash");
+      let adjudicationPlanHash;
+      try {
+        adjudicationPlanHash = assertNonEmptyString(args.adjudication_plan_hash, "adjudication_plan_hash");
+      } catch (error) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
+      }
       v2Adjudication = verificationLib().requireCurrentAdjudication(domain, {
         adjudicationPlanHash,
         state: v2State,
@@ -367,7 +381,7 @@ function writeVerificationRound(args) {
   safeAppendPipelineEventDirect(domain, "verification_written", {
     phase: "VERIFY",
     status: round,
-    source: "bounty_write_verification_round",
+    source: "bob_write_verification_round",
     verification_attempt_id: schemaVersion === 2 ? v2State.verification_attempt_id : undefined,
     verification_snapshot_hash: schemaVersion === 2 ? v2State.verification_snapshot_hash : undefined,
     adjudication_plan_hash: schemaVersion === 2 && round === "final" ? document.adjudication_plan_hash : undefined,
@@ -377,7 +391,7 @@ function writeVerificationRound(args) {
       reportable: results.filter((result) => result.reportable).length,
       confirmed: results.filter((result) => result.disposition === "confirmed").length,
     },
-  });
+  }, safeGovernanceContextForDomain(domain));
   if (schemaVersion === 2) verificationLib().refreshVerificationManifest(domain, { throw_on_error: true });
   return JSON.stringify(response);
   });
@@ -389,7 +403,7 @@ function readVerificationRound(args) {
   const document = loadJsonDocumentStrict(paths.json, `${paths.round} verification round JSON`);
   const findingIdSet = document && document.version === 2
     ? null
-    : readFindingIdSet(domain);
+    : findingIdSetForVerificationContext({ domain });
   const normalized = normalizeVerificationRoundDocument(document, {
     expectedDomain: domain,
     expectedRound: paths.round,

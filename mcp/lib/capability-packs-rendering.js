@@ -11,7 +11,7 @@ const writeWaveHandoffTool = require("./tools/write-wave-handoff.js");
 // pack to capability-packs.js updates every adapter at next regeneration.
 // Keep the rendering renderer-agnostic — the same string is dropped into
 // brutalist/balanced/final/evidence prompts on Claude and into the Codex
-// `bob-hunt` skill's worker contracts.
+// `bob-evaluate` skill's worker contracts.
 function renderCapabilityPackVerifierTable() {
   const rows = [];
   const failReasonNotes = [];
@@ -56,7 +56,7 @@ function substituteCapabilityPackVerifierTable(document) {
 }
 
 // ----------------------------------------------------------------------
-// Hunter pack catalogue rendering
+// Evaluator pack catalogue rendering
 // ----------------------------------------------------------------------
 //
 // The orchestrator skill embeds one canonical smart-contract spawn template
@@ -66,16 +66,16 @@ function substituteCapabilityPackVerifierTable(document) {
 // as a one-line catalogue entry per pack. Adding a 7th chain pack adds one
 // catalogue line at next regeneration; no extra spawn template body or
 // renderer edit is needed. Web pack is excluded — its prompt fields differ
-// structurally and stay on the legacy SPAWN_HUNTER_AGENT body.
+// structurally and stay on the legacy SPAWN_EVALUATOR_AGENT body.
 //
 // Catalogue lookup contract: the orchestrator receives `assignment.capability_pack`
 // from wave-start result.data.assignments[]. Catalogue lines are keyed by
 // `capability_pack` (not chain_family) because that is the field every
 // downstream consumer — verifier, evidence, reporter — uses for dispatch.
-// Brief-profile dispatch: the orchestrator picks between the generic web
-// SPAWN_HUNTER_AGENT body (when `assignment.brief_profile === "web"`) and
-// the SC canonical template below (otherwise). Never use both for one
-// assignment.
+// Brief-profile dispatch: the orchestrator picks between the generic evaluator
+// SPAWN_EVALUATOR_AGENT body (when `assignment.brief_profile` is "web" or
+// "oss") and the SC canonical template below (otherwise). Never use both for
+// one assignment.
 
 function assertSpawnField(pack, fieldName) {
   const value = pack && pack.spawn ? pack.spawn[fieldName] : undefined;
@@ -85,7 +85,7 @@ function assertSpawnField(pack, fieldName) {
   return value;
 }
 
-const HUNTER_PACK_CATALOGUE_PLACEHOLDER = "{{HUNTER_PACK_CATALOGUE}}";
+const EVALUATOR_PACK_CATALOGUE_PLACEHOLDER = "{{EVALUATOR_PACK_CATALOGUE}}";
 
 // JSON-schema enum for blocked_harness_runs[].kind, surfaced here so the
 // catalogue can validate that every pack's blocked_harness_kind_options is
@@ -103,6 +103,10 @@ const BLOCKED_HARNESS_RUN_KINDS = Object.freeze([
   "symbolic_solver",
   "mock_dependency",
   "external_api",
+  "docker_unavailable",
+  "sanitizer_unavailable",
+  "static_analyzer_unavailable",
+  "cve_feed_stale",
   "other",
 ]);
 
@@ -139,16 +143,16 @@ function eachSmartContractPackValidated() {
     assertSpawnField(pack, "chain_id_description");
     assertSpawnField(pack, "workflow_summary");
     assertSpawnField(pack, "cli_dependency");
-    assertSpawnField(pack, "hunter_name_prefix");
+    assertSpawnField(pack, "evaluator_name_prefix");
     assertBlockedHarnessKindOptions(pack);
   }
   return packs;
 }
 
-function renderHunterPackCataloguePreamble() {
+function renderEvaluatorPackCataloguePreamble() {
   return [
     "Smart-contract spawn dispatch:",
-    "- If `assignment.brief_profile === \"web\"` -> use the generic hunter spawn template above; do not use the SC template below.",
+    "- If `assignment.brief_profile === \"web\"` or `assignment.brief_profile === \"oss\"` -> use the generic evaluator spawn template above; do not use the SC template below.",
     "- Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.",
     "",
     "Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.",
@@ -161,31 +165,31 @@ function renderClaudeSmartContractCanonicalSpawn() {
   // CLI, and blocked_harness kind into this template before spawning.
   return [
     "```",
-    "Agent(subagent_type: \"[assignment.hunter_agent]\", name: \"[assignment.hunter_agent]-w[wave]-a[agent]\", run_in_background: true, prompt: \"",
+    "Agent(subagent_type: \"[assignment.evaluator_agent]\", name: \"[assignment.evaluator_agent]-w[wave]-a[agent]\", run_in_background: true, prompt: \"",
     "Domain: [domain]",
     "Wave: w[wave]",
     "Agent: a[agent]",
     "Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]",
-    "Capability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Hunter agent: [assignment.hunter_agent]. Context budget: [assignment.context_budget].",
-    "First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data, including run_context.context_budget.",
+    "Capability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Evaluator agent: [assignment.evaluator_agent]. Context budget: [assignment.context_budget].",
+    "First action: call bob_read_assignment_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data, including run_context.context_budget.",
     "Confirm surface_type is smart_contract AND surface.chain_family matches the catalogue line's chain_family for [assignment.capability_pack]; surface.chain_id matches the catalogue line's chain_id description.",
     "Use bob_spec_status for trust_assumptions, invariants, known_issues, and severity_system metadata. Use rpc_pool.endpoints for non-MCP reads.",
     "Workflow: <copy verbatim from the catalogue line for [assignment.capability_pack]>.",
     "If <copy CLI dependency from the catalogue line> is not in PATH or all fork_attempts fail, set surface_status: partial and record blocked_harness_runs[] with kind: <copy from the catalogue line>.",
     "Checkpoint mode: [normal|paranoid|yolo].",
-    "Final: call bounty_write_wave_handoff exactly once with target_domain, wave, agent, surface_id, surface_status, handoff_token, summary, content, optional bypass_attempts, blocked_harness_runs, chain_notes, dead_ends, lead_surface_ids. Then call bounty_finalize_hunter_run. If finalization fails, fix the handoff and retry. After finalization succeeds, emit `BOB_HUNTER_DONE {\"target_domain\":\"[domain]\",\"wave\":\"w[wave]\",\"agent\":\"a[agent]\",\"surface_id\":\"[surface_id]\"}` for Claude compatibility.",
+    "Final: call bob_write_wave_handoff exactly once with target_domain, wave, agent, surface_id, surface_status, handoff_token, summary, content, optional bypass_attempts, blocked_harness_runs, chain_notes, dead_ends, lead_surface_ids. Then call bob_finalize_agent_run. If finalization fails, fix the handoff and retry. After finalization succeeds, emit `BOB_AGENT_RUN_DONE {\"target_domain\":\"[domain]\",\"wave\":\"w[wave]\",\"agent\":\"a[agent]\",\"surface_id\":\"[surface_id]\"}` for Claude compatibility.",
     "\")",
     "```",
   ].join("\n");
 }
 
-function renderClaudeHunterPackCatalogue() {
+function renderClaudeEvaluatorPackCatalogue() {
   const packs = eachSmartContractPackValidated();
   const lines = packs.map((pack) =>
-    `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> hunter_agent \`${pack.hunter_agent}\`. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`,
+    `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> evaluator_agent \`${pack.evaluator_agent}\`. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`,
   );
   return [
-    renderHunterPackCataloguePreamble(),
+    renderEvaluatorPackCataloguePreamble(),
     renderClaudeSmartContractCanonicalSpawn(),
     "",
     "Pack catalogue (lookup by `assignment.capability_pack`):",
@@ -193,16 +197,16 @@ function renderClaudeHunterPackCatalogue() {
   ].join("\n");
 }
 
-function renderCodexHunterPackCatalogue(codexWorkerLabelFor) {
+function renderCodexEvaluatorPackCatalogue(codexWorkerLabelFor) {
   const packs = eachSmartContractPackValidated();
   const lines = packs.map((pack) => {
     const label = codexWorkerLabelFor(pack);
     return `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> ${label}. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`;
   });
   return [
-    renderHunterPackCataloguePreamble(),
+    renderEvaluatorPackCataloguePreamble(),
     "```text",
-    "For each smart-contract assignment, use Codex spawn_agent with `agent_type: \"worker\"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary, CLI dependency, and blocked_harness_runs[] kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.hunter_agent] from Codex Worker Role Contracts.",
+    "For each smart-contract assignment, use Codex spawn_agent with `agent_type: \"worker\"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Evaluator agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bob_read_assignment_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary, CLI dependency, and blocked_harness_runs[] kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.evaluator_agent] from Codex Worker Role Contracts.",
     "```",
     "",
     "Pack catalogue (lookup by `assignment.capability_pack`):",
@@ -210,21 +214,21 @@ function renderCodexHunterPackCatalogue(codexWorkerLabelFor) {
   ].join("\n");
 }
 
-function substituteClaudeHunterPackCatalogue(document) {
-  if (!document.includes(HUNTER_PACK_CATALOGUE_PLACEHOLDER)) return document;
-  return document.split(HUNTER_PACK_CATALOGUE_PLACEHOLDER).join(renderClaudeHunterPackCatalogue());
+function substituteClaudeEvaluatorPackCatalogue(document) {
+  if (!document.includes(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER)) return document;
+  return document.split(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER).join(renderClaudeEvaluatorPackCatalogue());
 }
 
-function substituteCodexHunterPackCatalogue(document, codexWorkerLabelFor) {
-  if (!document.includes(HUNTER_PACK_CATALOGUE_PLACEHOLDER)) return document;
-  return document.split(HUNTER_PACK_CATALOGUE_PLACEHOLDER).join(renderCodexHunterPackCatalogue(codexWorkerLabelFor));
+function substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelFor) {
+  if (!document.includes(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER)) return document;
+  return document.split(EVALUATOR_PACK_CATALOGUE_PLACEHOLDER).join(renderCodexEvaluatorPackCatalogue(codexWorkerLabelFor));
 }
 
 // ----------------------------------------------------------------------
-// bounty_write_wave_handoff field-limit rendering
+// bob_write_wave_handoff field-limit rendering
 // ----------------------------------------------------------------------
 //
-// Hunter prompts learn handoff field limits before submission, not from
+// Evaluator prompts learn handoff field limits before submission, not from
 // rejection messages mid-flight. Limits are read from the live schema in
 // `mcp/lib/tools/write-wave-handoff.js` so a future schema bump propagates
 // to every consumer prompt at next regeneration without hand-edits.
@@ -246,7 +250,7 @@ function renderHandoffFieldLimits() {
   const blockedPrereqProps = props.blocked_prereqs.items.properties;
   const bypassAttemptProps = props.bypass_attempts.items.properties;
   const lines = [
-    "Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values are rejected):",
+    "Handoff field limits (enforced by `bob_write_wave_handoff`; oversize values are rejected):",
     `- \`summary\`: ${describeStringLimits(props.summary)}`,
     `- \`chain_notes[]\`: each entry ${describeStringLimits(props.chain_notes.items)} (max ${props.chain_notes.maxItems} entries)`,
     `- \`blocked_harness_runs[].harness\`: ${describeStringLimits(blockedHarnessProps.harness)}`,
@@ -273,13 +277,13 @@ module.exports = {
   BLOCKED_PREREQ_KINDS,
   CAPABILITY_PACK_VERIFIER_TABLE_PLACEHOLDER,
   HANDOFF_FIELD_LIMITS_PLACEHOLDER,
-  HUNTER_PACK_CATALOGUE_PLACEHOLDER,
+  EVALUATOR_PACK_CATALOGUE_PLACEHOLDER,
   renderCapabilityPackVerifierTable,
-  renderClaudeHunterPackCatalogue,
-  renderCodexHunterPackCatalogue,
+  renderClaudeEvaluatorPackCatalogue,
+  renderCodexEvaluatorPackCatalogue,
   renderHandoffFieldLimits,
   substituteCapabilityPackVerifierTable,
-  substituteClaudeHunterPackCatalogue,
-  substituteCodexHunterPackCatalogue,
+  substituteClaudeEvaluatorPackCatalogue,
+  substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
 };

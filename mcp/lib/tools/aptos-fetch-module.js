@@ -46,8 +46,9 @@ async function handler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_aptos_fetch_module",
-  description: "Read-only Aptos REST GET /accounts/{address}/module/{module_name} through the DNS-pinned direct public HTTPS REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Returns the module's ABI (functions, structs, friends) and bytecode length plus the ledger_version the read was anchored at. Used by Aptos hunters to enumerate exposed entry functions, capability types, and friend relationships before constructing exploit hypotheses.",
+  name: "bob_aptos_fetch_module",
+  aliases: ["bounty_aptos_fetch_module"],
+  description: "Read-only Aptos REST GET /accounts/{address}/module/{module_name} through the DNS-pinned direct public HTTPS REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Returns the module's ABI (functions, structs, friends) and bytecode length plus the ledger_version the read was anchored at. Used by Aptos evaluators to enumerate exposed entry functions, capability types, and friend relationships before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -61,7 +62,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "network", "address", "module_name"]
   },
   handler,
-  role_bundles: ["hunter-move", "verifier", "evidence"],
+  role_bundles: ["evaluator-move", "verifier", "evidence"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

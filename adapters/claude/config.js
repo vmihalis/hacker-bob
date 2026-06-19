@@ -9,7 +9,7 @@ const {
   mcpToolNamesForRole,
 } = require("../../mcp/lib/role-model.js");
 const {
-  hunterAgentNamesForCapabilityPacks,
+  evaluatorAgentNamesForCapabilityPacks,
 } = require("../../mcp/lib/capability-packs.js");
 
 const BASE_PERMISSIONS = Object.freeze([
@@ -32,11 +32,16 @@ const BASE_PERMISSIONS = Object.freeze([
 const PROJECT_DIR_EXPR = "${CLAUDE_PROJECT_DIR:-$PWD}";
 
 function mcpPermissionForTool(toolName) {
-  return `mcp__bountyagent__${toolName}`;
+  return `mcp__hacker-bob__${toolName}`;
 }
 
 function permissionsForAllTools() {
-  return TOOLS.map((tool) => mcpPermissionForTool(tool.name));
+  // Aliases (Cycle P.1) are not surfaced as permissions; the primary bob_*
+  // entry covers both names because the registry routes aliases to the same
+  // handler.
+  return TOOLS
+    .filter((tool) => !TOOL_MANIFEST[tool.name].alias_of)
+    .map((tool) => mcpPermissionForTool(tool.name));
 }
 
 function permissionsForRoleBundle(roleBundle) {
@@ -64,9 +69,16 @@ function isOrchestratorOnlyMutator(toolName) {
 }
 
 function defaultGlobalMcpPermissions() {
+  // Aliases (Cycle P.1 deprecation entries) inherit global_preapproval from
+  // their primary but must not be re-emitted as a separate permission line.
+  // Generated settings carry the canonical bob_* entry; calls through a
+  // bounty_* alias still resolve through the registry alias mapping.
   return TOOLS
     .map((tool) => tool.name)
-    .filter((toolName) => TOOL_MANIFEST[toolName].global_preapproval === true)
+    .filter((toolName) => {
+      const meta = TOOL_MANIFEST[toolName];
+      return meta.global_preapproval === true && !meta.alias_of;
+    })
     .map(mcpPermissionForTool);
 }
 
@@ -111,14 +123,33 @@ function defaultPreToolUseHooks() {
 }
 
 function defaultSubagentStopHooks() {
-  return hunterAgentNamesForCapabilityPacks().map((hunterAgent) => (
+  return evaluatorAgentNamesForCapabilityPacks().map((evaluatorAgent) => (
     {
-      matcher: hunterAgent,
+      matcher: evaluatorAgent,
       hooks: [
         {
           type: "command",
-          command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/hunter-subagent-stop.js"`,
+          command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/agent-run-stop.js"`,
           timeout: 10,
+        },
+      ],
+    }
+  ));
+}
+
+function defaultSubagentStartHooks() {
+  // Cycle S.5: mark the AgentRun ledger row `running` when the evaluator
+  // subagent starts. Best-effort and never blocks the agent's start; the
+  // file-presence fallback (Pact P2) covers misses during the deprecation
+  // window.
+  return evaluatorAgentNamesForCapabilityPacks().map((evaluatorAgent) => (
+    {
+      matcher: evaluatorAgent,
+      hooks: [
+        {
+          type: "command",
+          command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/agent-run-start.js"`,
+          timeout: 5,
         },
       ],
     }
@@ -140,7 +171,7 @@ function defaultSessionStartHooks() {
   ];
 }
 
-function bountyagentSkillAllowedTools() {
+function hackerBobSkillAllowedTools() {
   return uniqueStrings([
     "Task",
     "Read",
@@ -159,22 +190,24 @@ function defaultClaudeSettings() {
     hooks: {
       PreToolUse: defaultPreToolUseHooks(),
       SessionStart: defaultSessionStartHooks(),
+      SubagentStart: defaultSubagentStartHooks(),
       SubagentStop: defaultSubagentStopHooks(),
     },
     statusLine: {
       type: "command",
-      command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/bounty-statusline.js"`,
+      command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/bob-statusline.js"`,
     },
   };
 }
 
 module.exports = {
   BASE_PERMISSIONS,
-  bountyagentSkillAllowedTools,
+  hackerBobSkillAllowedTools,
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,
   defaultPreToolUseHooks,
   defaultSessionStartHooks,
+  defaultSubagentStartHooks,
   defaultSubagentStopHooks,
   isOrchestratorOnlyMutator,
   mcpPermissionForTool,

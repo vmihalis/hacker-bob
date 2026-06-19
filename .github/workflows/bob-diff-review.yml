@@ -1,0 +1,160 @@
+###############################################################################
+# Bob Diff Review — caller workflow
+#
+# This is the caller workflow that invokes the composite bob-diff-review action.
+# It is the correct place to declare the `permissions:` block for checks:write
+# because composite actions cannot declare permissions themselves (the key is
+# only valid at the workflow job level in GitHub Actions).
+#
+# Required org-level configuration:
+#   ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth token for the headless Claude runner
+#                           (RECOMMENDED; generate with `claude setup-token`).
+#   ANTHROPIC_API_KEY  — Anthropic API key (pay-per-use fallback) for the runner.
+#                        At least one of ANTHROPIC_OAUTH_TOKEN / ANTHROPIC_API_KEY
+#                        is required; OAuth wins when both are set.
+#   BOB_INSTALL_TOKEN  — GitHub App token or PAT (read:packages + contents:read)
+#                        used to pull @bobnetsec/* packages from GitHub Packages.
+#   BOB_VERSION        — Bob release tag used for the shared workspace cache.
+###############################################################################
+
+name: Bob Diff Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Restrict to branches targeting main so feature-branch-to-feature-branch
+    # PRs do not consume Anthropic API quota.
+    branches:
+      - main
+
+# ---------------------------------------------------------------------------
+# Job-level permissions
+# ---------------------------------------------------------------------------
+# IMPORTANT: composite actions cannot declare a `permissions:` block.
+# The checks:write permission must be granted here, at the job level.
+# Without checks:write the "Bob Diff Review" Check Run creation will be
+# silently skipped and an error logged to the runner console.
+#
+# pull-requests:write is required to post inline review comments.
+# contents:read is required to fetch the PR diff.
+# checks:write is required to create and update the Check Run status badge.
+# ---------------------------------------------------------------------------
+
+jobs:
+  bob-diff-review:
+    name: Bob Diff Review
+    runs-on: ubuntu-latest
+
+    # Restrict to internal contributors only — forked PRs do not receive org
+    # secrets, so the action would fail silently.  The repository_owner check
+    # ensures forks from external contributors are skipped.
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write          # Required: allows creating the "Bob Diff Review" Check Run
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history for the diff to be accurate.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check Bob Diff Review credentials
+        id: bob-secrets
+        shell: bash
+        env:
+          ANTHROPIC_OAUTH_TOKEN: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BOB_INSTALL_TOKEN: ${{ secrets.BOB_INSTALL_TOKEN }}
+          BOB_VERSION: ${{ vars.BOB_VERSION }}
+        run: |
+          missing=()
+          if [[ -z "$ANTHROPIC_OAUTH_TOKEN" && -z "$ANTHROPIC_API_KEY" ]]; then
+            missing+=("ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY")
+          fi
+          if [[ -z "$BOB_INSTALL_TOKEN" ]]; then
+            missing+=("BOB_INSTALL_TOKEN")
+          fi
+          if [[ -z "$BOB_VERSION" ]]; then
+            missing+=("BOB_VERSION")
+          fi
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            printf -v missing_csv '%s, ' "${missing[@]}"
+            missing_csv="${missing_csv%, }"
+            echo "::notice::Skipping Bob Diff Review because required configuration is missing: ${missing_csv}."
+          fi
+
+      - name: Checkout trusted Bob action source
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.base_ref }}
+          path: .bob-workflows-source
+          token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          persist-credentials: false
+
+      - name: Detect trusted Bob action source
+        if: steps.bob-secrets.outputs.has_credentials == 'true'
+        id: bob-source
+        shell: bash
+        run: |
+          if [[ -f ".bob-workflows-source/.github/actions/cache-bob-workspace/action.yml" && \
+                -f ".bob-workflows-source/.github/actions/cache-bob-session/action.yml" && \
+                -f ".bob-workflows-source/packages/bob-diff-review/action.yml" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Bob Diff Review because the protected base ref does not contain the Bob action source yet."
+          fi
+
+      - name: Restore Bob workspace cache (C1)
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
+        id: cache-bob-workspace
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-workspace
+        with:
+          bob_version: ${{ vars.BOB_VERSION }}
+          bob_install_token: ${{ secrets.BOB_INSTALL_TOKEN }}
+
+      - name: Restore Bob session cache (C2)
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
+        id: cache-bob-session
+        uses: ./.bob-workflows-source/.github/actions/cache-bob-session
+        with:
+          repository_id: ${{ github.repository_id }}
+          sha: ${{ github.event.pull_request.head.sha }}
+          base_ref: ${{ github.base_ref }}
+
+      - name: Run Bob Diff Review
+        if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-source.outputs.available == 'true'
+        id: bob-diff-review
+        uses: ./.bob-workflows-source/packages/bob-diff-review
+        env:
+          SKIP_SURFACE_BUILD: ${{ steps.cache-bob-session.outputs.cache-hit-symbol-index }}
+        with:
+          anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          bob-install-token: ${{ secrets.BOB_INSTALL_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          min-severity-for-failure: high
+
+      # Optional: surface the review outputs for downstream steps or notifications.
+      - name: Log review outputs
+        if: always()
+        shell: bash
+        env:
+          FINDINGS_COUNT: ${{ steps.bob-diff-review.outputs.findings_count }}
+          CRITICAL_COUNT: ${{ steps.bob-diff-review.outputs.critical_count }}
+          REVIEW_URL: ${{ steps.bob-diff-review.outputs.review_url }}
+        run: |
+          echo "findings_count=${FINDINGS_COUNT}"
+          echo "critical_count=${CRITICAL_COUNT}"
+          echo "review_url=${REVIEW_URL}"

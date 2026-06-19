@@ -77,7 +77,7 @@ function summarizeAptosPoolForBrief(network) {
   }
   const trimmed = endpoints.slice(0, 6).map(redactRpcEndpoint);
   const note = endpoints.length === 0
-    ? `No default RPC ladder for network ${normalizedNetwork}. Hunters must pass 'endpoints' explicitly to bounty_aptos_* tools and 'fork_urls' to bounty_aptos_run. Operators can set ${envKeyForNetwork(normalizedNetwork)}=url1,url2 in the MCP server env (before launch) for a default.`
+    ? `No default RPC ladder for network ${normalizedNetwork}. Evaluators must pass 'endpoints' explicitly to bob_aptos_* tools and 'fork_urls' to bob_aptos_run. Operators can set ${envKeyForNetwork(normalizedNetwork)}=url1,url2 in the MCP server env (before launch) for a default.`
     : null;
   return {
     chain_family: "aptos",

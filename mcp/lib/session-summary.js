@@ -2,9 +2,6 @@
 
 const fs = require("fs");
 const {
-  PHASE_VALUES,
-} = require("./constants.js");
-const {
   assertNonEmptyString,
 } = require("./validation.js");
 const {
@@ -16,10 +13,27 @@ const {
 const {
   readSessionArtifactSummary,
 } = require("./pipeline-analytics.js");
+const {
+  readSessionNucleus,
+} = require("./governance-store.js");
+const {
+  deriveLegacyPhaseFromLifecycleState,
+  deriveLifecycleStateFromLegacyPhase,
+} = require("./session-state-contracts.js");
+const {
+  LIFECYCLE_STATE_VALUES,
+} = require("./governance-contracts.js");
 
+// LIFECYCLE_STATE_VALUES is ordered SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE ->
+// VERIFY -> GRADE -> REPORT, which is the canonical "progress" ordering.
+// phaseAtLeast still accepts legacy phase strings so existing readers do not
+// need a rewrite during the deprecation window; both inputs are projected to
+// their lifecycle state before comparison.
 function phaseAtLeast(phase, requiredPhase) {
-  const current = PHASE_VALUES.indexOf(phase);
-  const required = PHASE_VALUES.indexOf(requiredPhase);
+  const currentState = deriveLifecycleStateFromLegacyPhase(phase) || phase;
+  const requiredState = deriveLifecycleStateFromLegacyPhase(requiredPhase) || requiredPhase;
+  const current = LIFECYCLE_STATE_VALUES.indexOf(currentState);
+  const required = LIFECYCLE_STATE_VALUES.indexOf(requiredState);
   return current >= 0 && required >= 0 && current >= required;
 }
 
@@ -73,21 +87,35 @@ function deriveBlockers(state, artifacts) {
 
 function nextAction(state, artifacts, blockers) {
   if (state.pending_wave != null) {
-    return `Resume and reconcile pending wave ${state.pending_wave} with bounty_apply_wave_merge.`;
+    return `Resume and settle pending wave ${state.pending_wave} with bob_apply_wave_merge.`;
   }
   if (blockers.includes("report_missing")) {
-    return "Run the report writer, then call bounty_read_session_summary again.";
+    return "Run the report writer, then call bob_read_session_summary again.";
   }
   if (artifacts.grade.verdict === "HOLD") {
-    return "Return to HUNT with grader feedback, then re-run CHAIN through REPORT.";
+    return "Return to OPEN_FRONTIER with grader feedback, then re-run CLAIM_FREEZE through REPORT.";
   }
-  if (state.phase === "RECON") return "Run recon, write attack_surface.json, then transition to AUTH.";
-  if (state.phase === "AUTH") return "Complete auth or use --no-auth, then transition to HUNT.";
-  if (state.phase === "HUNT" || state.phase === "EXPLORE") return "Start or resume the next hunter wave.";
-  if (state.phase === "CHAIN") return "Run chain-builder and write terminal chain attempts.";
-  if (state.phase === "VERIFY") return "Run verification rounds and evidence collection for final reportables.";
-  if (state.phase === "GRADE") return "Run grader and read back the grade verdict.";
-  if (state.phase === "REPORT") {
+  // Lifecycle-state-driven narration. The state field is the canonical
+  // projection of nucleus.lifecycle_state into state.json; older sessions
+  // without the field fall through the chain via the legacy phase mapping
+  // emitted by session-state-contracts.
+  const lifecycleState = state.lifecycle_state;
+  if (lifecycleState === "SETUP") {
+    return "Complete SETUP (seed discovery, auth capture as needed), then bob_advance_session to OPEN_FRONTIER.";
+  }
+  if (lifecycleState === "OPEN_FRONTIER") {
+    return "Schedule or resume the next evaluator wave; freeze a claim batch with bob_advance_session to CLAIM_FREEZE.";
+  }
+  if (lifecycleState === "CLAIM_FREEZE") {
+    return "Inspect the frozen claim batch, then bob_advance_session to VERIFY (or back to OPEN_FRONTIER).";
+  }
+  if (lifecycleState === "VERIFY") {
+    return "Run verification rounds and evidence collection for final reportables.";
+  }
+  if (lifecycleState === "GRADE") {
+    return "Run grader and read back the grade verdict.";
+  }
+  if (lifecycleState === "REPORT") {
     return artifacts.report.present
       ? "Present the compact summary and report path to the operator."
       : "Run report-writer and write report.md.";
@@ -108,45 +136,57 @@ const BLOCKED_PREREQ_KIND_ACTIONABILITY = Object.freeze({
 });
 
 function summarizeBlockedPrereqs(state) {
+  // Folding "kind + identifier_hint" groups across blocked surfaces uses
+  // state.blocked_prereq_history (the durable per-wave audit trail) as the
+  // grouping source after D.3 removed state.terminally_blocked. The
+  // frontier projection identifies the currently-blocked surface set;
+  // groups are restricted to entries for those surfaces.
   const groups = new Map();
-  const terminallyBlocked = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  // Iterate in blocked_at_wave ASC order so the LATEST blocker
-  // overrides the example_reason field — operators care about the
-  // freshest signal, not the oldest sample.
-  const sortedEntries = [...terminallyBlocked].sort((a, b) =>
-    (a.blocked_at_wave || 0) - (b.blocked_at_wave || 0),
-  );
-  for (const entry of sortedEntries) {
-    if (!entry || !Array.isArray(entry.blockers)) continue;
-    for (const blocker of entry.blockers) {
-      const hint = blocker.identifier_hint || null;
-      const key = `${blocker.kind}\t${hint || ""}`;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          kind: blocker.kind,
-          identifier_hint: hint,
-          surface_count: 0,
-          surface_ids: [],
-          latest_reason: null,
-          latest_blocked_at_wave: 0,
-        });
-      }
-      const group = groups.get(key);
-      group.surface_count += 1;
-      if (!group.surface_ids.includes(entry.surface_id)) {
-        group.surface_ids.push(entry.surface_id);
-      }
-      // Latest wave wins (entries are sorted ASC, so later iterations overwrite).
-      if (blocker.reason) {
-        group.latest_reason = blocker.reason;
-      }
-      if ((entry.blocked_at_wave || 0) > group.latest_blocked_at_wave) {
-        group.latest_blocked_at_wave = entry.blocked_at_wave || 0;
-      }
+  let blockedSurfaceIds = [];
+  if (state && typeof state.target === "string" && state.target) {
+    try {
+      const { currentBlockers } = require("./frontier-projections.js");
+      blockedSurfaceIds = currentBlockers(state.target).map((entry) => entry.surface_id);
+    } catch {
+      blockedSurfaceIds = [];
     }
   }
+  const blockedSet = new Set(blockedSurfaceIds);
+  const history = Array.isArray(state.blocked_prereq_history) ? state.blocked_prereq_history : [];
+  const surfaceWaveLookup = new Map();
+  // Sort history by (surface, wave ASC) so the latest reason for a (kind,
+  // identifier_hint) tuple wins.
+  const sortedHistory = [...history].sort((a, b) => (a.wave || 0) - (b.wave || 0));
+  for (const entry of sortedHistory) {
+    if (!entry || typeof entry.surface_id !== "string" || !blockedSet.has(entry.surface_id)) continue;
+    const hint = entry.identifier_hint || null;
+    const key = `${entry.kind}\t${hint || ""}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        kind: entry.kind,
+        identifier_hint: hint,
+        surface_count: 0,
+        surface_ids: [],
+        latest_reason: null,
+        latest_blocked_at_wave: 0,
+      });
+    }
+    const group = groups.get(key);
+    if (!group.surface_ids.includes(entry.surface_id)) {
+      group.surface_ids.push(entry.surface_id);
+      group.surface_count += 1;
+    }
+    if (entry.reason) {
+      group.latest_reason = entry.reason;
+    }
+    const wave = Number.isInteger(entry.wave) ? entry.wave : 0;
+    if (wave > group.latest_blocked_at_wave) {
+      group.latest_blocked_at_wave = wave;
+    }
+    surfaceWaveLookup.set(entry.surface_id, Math.max(surfaceWaveLookup.get(entry.surface_id) || 0, wave));
+  }
   return {
-    total_blocked_surfaces: terminallyBlocked.length,
+    total_blocked_surfaces: blockedSurfaceIds.length,
     by_kind: Array.from(groups.values()).sort((a, b) => {
       const aRank = BLOCKED_PREREQ_KIND_ACTIONABILITY[a.kind] ?? 99;
       const bRank = BLOCKED_PREREQ_KIND_ACTIONABILITY[b.kind] ?? 99;
@@ -162,12 +202,32 @@ function readSessionSummary(args) {
   const artifacts = readSessionArtifactSummary(domain);
   const blockers = deriveBlockers(state, artifacts);
   const reportPath = reportMarkdownPath(domain);
+  let nucleusHash = null;
+  let lifecycleState = null;
+  try {
+    const nucleus = readSessionNucleus(domain);
+    nucleusHash = nucleus && typeof nucleus.nucleus_hash === "string" ? nucleus.nucleus_hash : null;
+    lifecycleState = nucleus && typeof nucleus.lifecycle_state === "string" ? nucleus.lifecycle_state : null;
+  } catch (_error) {
+    nucleusHash = null;
+    lifecycleState = null;
+  }
+
+  // Step 4: state.json is a pure projection of nucleus.lifecycle_state. Derive
+  // the legacy `phase` from the nucleus (the single source of truth) so a
+  // partially-written state.json can never make this summary disagree with the
+  // lifecycle authority. Fall back to state.phase only when the nucleus carries
+  // no lifecycle_state (legacy disk that predates the nucleus).
+  const derivedPhase = deriveLegacyPhaseFromLifecycleState(lifecycleState);
+  const phase = derivedPhase || state.phase;
 
   return JSON.stringify({
     version: 1,
     summary: {
       target: domain,
-      phase: state.phase,
+      phase,
+      nucleus_hash: nucleusHash,
+      lifecycle_state: lifecycleState,
       auth_status: state.auth_status,
       checkpoint_mode: state.checkpoint_mode,
       block_internal_hosts: state.block_internal_hosts,
@@ -178,7 +238,7 @@ function readSessionSummary(args) {
       egress_profile_identity_hash: state.egress_profile_identity_hash,
       egress_profile_identity_version: state.egress_profile_identity_version,
       operator_note: state.operator_note,
-      waves_run: state.hunt_wave,
+      waves_run: state.evaluation_wave,
       pending_wave: state.pending_wave,
       finding_total: artifacts.findings.total,
       final_reportable_count: artifacts.verification.final_reportable_count,

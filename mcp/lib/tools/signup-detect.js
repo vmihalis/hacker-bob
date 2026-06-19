@@ -3,7 +3,8 @@
 const { signupDetect } = require("../signup.js");
 
 module.exports = Object.freeze({
-  name: "bounty_signup_detect",
+  name: "bob_signup_detect",
+  aliases: ["bounty_signup_detect"],
   description:
     "Probe a target for registration/signup endpoints and analyze form requirements. Returns detected endpoints, form fields, CAPTCHA presence, and signup feasibility.",
   inputSchema: {

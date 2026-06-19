@@ -3,7 +3,8 @@
 const { readVerificationContext } = require("../verification.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_verification_context",
+  name: "bob_read_verification_context",
+  aliases: ["bounty_read_verification_context"],
   description:
     "Read schema-aware verification attempt context, round/adjudication/evidence freshness, replay policy, and next action.",
   inputSchema: {

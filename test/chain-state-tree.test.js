@@ -22,7 +22,7 @@ function uniqueDomain(prefix = "bob-chain-tree-test") {
 }
 
 function cleanupDomain(domain) {
-  const dir = path.join(os.homedir(), "bounty-agent-sessions", domain);
+  const dir = path.join(os.homedir(), "hacker-bob-sessions", domain);
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -233,7 +233,7 @@ test("on-disk chain-tree.jsonl is sorted by node_hash for replay determinism", (
     appendChainNode({ target_domain: domain, action: { kind: "z_first" }, observed: { status: 200 } });
     appendChainNode({ target_domain: domain, action: { kind: "a_second" }, observed: { status: 200 } });
     appendChainNode({ target_domain: domain, action: { kind: "m_third" }, observed: { status: 200 } });
-    const filePath = path.join(os.homedir(), "bounty-agent-sessions", domain, "chain-tree.jsonl");
+    const filePath = path.join(os.homedir(), "hacker-bob-sessions", domain, "chain-tree.jsonl");
     const content = fs.readFileSync(filePath, "utf8");
     const records = content.split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l));
     for (let i = 1; i < records.length; i++) {

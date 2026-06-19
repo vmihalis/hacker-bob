@@ -50,7 +50,7 @@ function defaultLogLifecycleResolution(resolution, command) {
   const noun = resolution.ids.length > 1 ? "adapters" : "adapter";
   process.stderr.write(
     `hacker-bob ${command}: auto-selected ${noun} ${resolution.ids.join(", ")} (reason: ${resolution.reason})\n` +
-    `  Override with --adapter <claude|codex|generic-mcp|all>\n`,
+    `  Override with --adapter <claude|codex|generic-mcp|kimi|all>\n`,
   );
 }
 
@@ -253,7 +253,7 @@ function resourceCheckId(resourceSet) {
 }
 
 function resourceLabel(resourceSet) {
-  return path.basename(resourceSet.destination) === "knowledge" ? "hunter knowledge" : "bypass tables";
+  return path.basename(resourceSet.destination) === "knowledge" ? "evaluator knowledge" : "bypass tables";
 }
 
 function addRuntimeResourceChecks(checks, targetAbs) {
@@ -383,14 +383,14 @@ function doctorProject(projectDir, options = {}) {
     if (commandOrGoBinAvailable(tool)) {
       addCheck(checks, "ok", `optional_tool_${tool}`, `${tool} is available`);
     } else {
-      addCheck(checks, "warn", `optional_tool_${tool}`, `${tool} is missing; related recon steps will be skipped`);
+      addCheck(checks, "warn", `optional_tool_${tool}`, `${tool} is missing; related surface-discovery steps will be skipped`);
     }
   }
 
   if (httpxAvailable()) {
     addCheck(checks, "ok", "optional_tool_httpx", "httpx is available");
   } else {
-    addCheck(checks, "warn", "optional_tool_httpx", "httpx is missing; related recon steps will be skipped");
+    addCheck(checks, "warn", "optional_tool_httpx", "httpx is missing; related surface-discovery steps will be skipped");
   }
 
   if (jwtToolAvailable()) {
@@ -567,6 +567,7 @@ function pruneManagedDirs(targetAbs, result, { adapterIds, removeShared }) {
       path.join(BOB_RESOURCE_DIR, "knowledge"),
       BOB_RESOURCE_DIR,
       path.join("mcp", "lib", "tools"),
+      path.join("mcp", "lib", "body-resolvers"),
       path.join("mcp", "lib"),
       "mcp",
     );

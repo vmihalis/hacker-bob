@@ -3,7 +3,6 @@
 const {
   AUTH_STATUS_VALUES,
   CHECKPOINT_MODE_VALUES,
-  PHASE_VALUES,
   SESSION_PUBLIC_STATE_FIELDS,
 } = require("./constants.js");
 const {
@@ -17,6 +16,73 @@ const {
 const {
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
+
+// Local copy of the lifecycle enum. The canonical source is
+// governance-contracts.js, but that module depends on
+// blockInternalHostsPolicyFields exported below, so requiring it here would
+// create a top-level import cycle. Tests assert these two arrays stay in
+// sync (see test/session-state-store.test.js).
+const SESSION_STATE_LIFECYCLE_VALUES = Object.freeze([
+  "SETUP",
+  "OPEN_FRONTIER",
+  "CLAIM_FREEZE",
+  "VERIFY",
+  "GRADE",
+  "REPORT",
+]);
+
+// Cycle D.1 retired the legacy eight-phase FSM in favor of the six-state
+// lifecycle authority on session-nucleus.json. state.lifecycle_state is the
+// new canonical projection of nucleus.lifecycle_state into the session-state
+// document. state.phase persists as a derived back-compat read for callers
+// that still consume the legacy field; Cycle D.3 deletes the projection.
+//
+// Reverse-mapping rationale: lifecycle states are coarser than phases, so
+// each lifecycle state has one canonical pre-image (the legacy phase
+// readers will see when no explicit phase is on disk):
+//
+//   SETUP         -> SURFACE_DISCOVERY (init-session bootstrap window)
+//   OPEN_FRONTIER -> EVALUATE          (the modal frontier phase under v1.x)
+//   CLAIM_FREEZE  -> CHAIN             (chain assembly was the pre-verify hold)
+//   VERIFY        -> VERIFY            (identity)
+//   GRADE         -> GRADE             (identity)
+//   REPORT        -> REPORT            (identity)
+const LIFECYCLE_STATE_TO_LEGACY_PHASE = Object.freeze({
+  SETUP: "SURFACE_DISCOVERY",
+  OPEN_FRONTIER: "EVALUATE",
+  CLAIM_FREEZE: "CHAIN",
+  VERIFY: "VERIFY",
+  GRADE: "GRADE",
+  REPORT: "REPORT",
+});
+
+// Legacy phases that pre-date the lifecycle vocabulary still appear on disk
+// in sessions created before D.1. The forward map normalizes them so the
+// state-store can synthesize the lifecycle_state field on read.
+const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
+  SURFACE_DISCOVERY: "SETUP",
+  AUTH: "OPEN_FRONTIER",
+  EVALUATE: "OPEN_FRONTIER",
+  CHAIN: "OPEN_FRONTIER",
+  EXPLORE: "OPEN_FRONTIER",
+  VERIFY: "VERIFY",
+  GRADE: "GRADE",
+  REPORT: "REPORT",
+  // RECON/HUNT are accepted as aliases of SURFACE_DISCOVERY/EVALUATE on the
+  // read backfill path, resolving to the same lifecycle states so a session
+  // persisted under those phase names stays readable rather than failing closed
+  // on the legacy-phase fallback.
+  RECON: "SETUP",
+  HUNT: "OPEN_FRONTIER",
+});
+
+function deriveLegacyPhaseFromLifecycleState(lifecycleState) {
+  return LIFECYCLE_STATE_TO_LEGACY_PHASE[lifecycleState] || null;
+}
+
+function deriveLifecycleStateFromLegacyPhase(legacyPhase) {
+  return LEGACY_PHASE_TO_LIFECYCLE_STATE[legacyPhase] || null;
+}
 
 const OPERATOR_NOTE_MAX_CHARS = 1000;
 const BLOCK_INTERNAL_HOSTS_SOURCE_VALUES = Object.freeze([
@@ -43,6 +109,42 @@ function normalizeOperatorNote(value, fieldName = "operator_note") {
 
 function assertOperatorNote(value, fieldName = "operator_note") {
   return validateOperatorNoteText(assertNonEmptyString(value, fieldName), fieldName);
+}
+
+// Cycle O.1: SHAPE-only validator for the persisted target_repo object.
+// The strict version (with realpath + isDirectory checks) lives in
+// governance-contracts.assertRepoRootPath / normalizeTargetRepo and is
+// the bootstrap path; this version is reused by readers (state.json
+// reload, nucleus rehydration) where the disk path may have moved
+// since session init. session-state-contracts intentionally avoids fs
+// and governance-contracts imports to keep its require-graph cycle-free
+// (see test "session-state contract and store keep forbidden import
+// boundaries").
+function normalizeTargetRepoShape(value, fieldName = "target_repo") {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  const rootPath = assertNonEmptyString(value.root_path, `${fieldName}.root_path`);
+  validateNoSensitiveMaterial(rootPath, `${fieldName}.root_path`, { maxTextChars: 4096 });
+  const result = { root_path: rootPath };
+  if (value.source_url != null) {
+    const sourceUrl = assertNonEmptyString(value.source_url, `${fieldName}.source_url`);
+    validateNoSensitiveMaterial(sourceUrl, `${fieldName}.source_url`, { maxTextChars: 2048 });
+    result.source_url = sourceUrl;
+  }
+  if (value.branch != null) {
+    const branch = assertNonEmptyString(value.branch, `${fieldName}.branch`);
+    validateNoSensitiveMaterial(branch, `${fieldName}.branch`, { maxTextChars: 256 });
+    result.branch = branch;
+  }
+  if (value.commit != null) {
+    const commit = assertNonEmptyString(value.commit, `${fieldName}.commit`);
+    if (!/^[0-9a-f]{7,64}$/i.test(commit)) {
+      throw new Error(`${fieldName}.commit must be a 7-64 character hex commit id`);
+    }
+    result.commit = commit.toLowerCase();
+  }
+  return result;
 }
 
 function normalizeEgressIdentitySource(value, fieldName = "egress_profile_identity_source") {
@@ -250,64 +352,20 @@ function blockInternalHostsPolicyFields(policy) {
   };
 }
 
-// state.terminally_blocked carries one entry per terminally-blocked surface,
-// each with the blocker tuples (kind + identifier_hint + reason) that drove
-// promotion. Kind validation here is intentionally soft — the tuple was
-// already through normalizeBlockedPrereqs at handoff write time and through
-// the merge promotion logic before landing in state. State validation only
-// guards structural invariants so analytics / report writers can trust the
-// shape without re-walking handoff JSONs.
-function normalizeTerminallyBlocked(value, fieldName = "terminally_blocked") {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error(`${fieldName} must be an array`);
-  }
-  const seenSurfaceIds = new Set();
-  return value.map((entry, index) => {
-    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`${fieldName}[${index}] must be an object`);
-    }
-    const surfaceId = assertNonEmptyString(entry.surface_id, `${fieldName}[${index}].surface_id`);
-    if (seenSurfaceIds.has(surfaceId)) {
-      throw new Error(`${fieldName} contains duplicate surface_id ${surfaceId}; one closure entry per surface`);
-    }
-    seenSurfaceIds.add(surfaceId);
-    const blockedAtWave = assertInteger(entry.blocked_at_wave, `${fieldName}[${index}].blocked_at_wave`, { min: 1 });
-    if (!Array.isArray(entry.blockers) || entry.blockers.length === 0) {
-      throw new Error(`${fieldName}[${index}].blockers must be a non-empty array`);
-    }
-    const blockers = entry.blockers.map((blocker, blockerIndex) => {
-      if (blocker == null || typeof blocker !== "object" || Array.isArray(blocker)) {
-        throw new Error(`${fieldName}[${index}].blockers[${blockerIndex}] must be an object`);
-      }
-      const result = {
-        kind: assertNonEmptyString(blocker.kind, `${fieldName}[${index}].blockers[${blockerIndex}].kind`),
-      };
-      if (blocker.identifier_hint != null) {
-        result.identifier_hint = assertNonEmptyString(
-          blocker.identifier_hint,
-          `${fieldName}[${index}].blockers[${blockerIndex}].identifier_hint`,
-        );
-      }
-      if (blocker.reason != null) {
-        result.reason = assertNonEmptyString(
-          blocker.reason,
-          `${fieldName}[${index}].blockers[${blockerIndex}].reason`,
-        );
-      }
-      return result;
-    });
-    return {
-      surface_id: surfaceId,
-      blocked_at_wave: blockedAtWave,
-      blockers,
-    };
-  });
-}
-
+// Cycle D.3 deleted state.terminally_blocked from the session-state
+// document. The blocker projection now derives from frontier-events.jsonl
+// via frontier-projections.currentBlockers. terminallyBlockedSurfaceIds
+// remains a public export because the wave planner consumes the projection
+// directly; callers route the projection through this helper for symmetry
+// with the legacy shape (a list of surface_ids).
 function terminallyBlockedSurfaceIds(state) {
-  const list = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  return list.map((entry) => entry.surface_id);
+  if (!state || typeof state.target !== "string" || !state.target) return [];
+  try {
+    const { currentBlockers } = require("./frontier-projections.js");
+    return currentBlockers(state.target).map((entry) => entry.surface_id);
+  } catch {
+    return [];
+  }
 }
 
 function buildInitialSessionState(domain, targetUrl, {
@@ -317,6 +375,8 @@ function buildInitialSessionState(domain, targetUrl, {
   blockInternalHosts = null,
   allowInternalHosts = null,
   blockInternalHostsPolicy = null,
+  targetRepo = null,
+  repoHash = null,
 } = {}) {
   const egressFields = egressProfileStateFields(egressProfile);
   const internalHostPolicy = blockInternalHostsPolicy
@@ -327,23 +387,27 @@ function buildInitialSessionState(domain, targetUrl, {
       allowInternalHosts,
       legacyDefault: false,
     });
+  // Cycle O.1: repo sessions write target_repo + repo_hash; URL sessions
+  // leave them null. The mutually-exclusive contract is enforced by the
+  // governance scope policy and normalizeSessionStateDocument; this helper
+  // is just the document constructor.
   return {
     target: domain,
     target_url: targetUrl,
+    target_repo: targetRepo,
+    repo_hash: repoHash,
     deep_mode: deepMode,
     ...internalHostPolicy,
-    phase: "RECON",
-    hunt_wave: 0,
+    lifecycle_state: "SETUP",
+    phase: deriveLegacyPhaseFromLifecycleState("SETUP"),
+    evaluation_wave: 0,
     pending_wave: null,
     total_findings: 0,
-    explored: [],
-    terminally_blocked: [],
     prereq_registry_snapshots: [],
     blocked_prereq_history: [],
     terminal_block_clear_history: [],
     dead_ends: [],
     waf_blocked_endpoints: [],
-    lead_surface_ids: [],
     scope_exclusions: [],
     hold_count: 0,
     auth_status: "pending",
@@ -356,12 +420,11 @@ function buildInitialSessionState(domain, targetUrl, {
     verification_attempt_id: null,
     verification_snapshot_hash: null,
     verification_entered_at: null,
-    // New v1.3.5 sessions opt into mandatory handoff provenance. When true,
-    // validateHandoffProvenance refuses legacy_unverified handoffs, closing
-    // the assignment-file-downgrade attack documented in R1-HIGH-#1. Pre-v1.3.5
-    // sessions whose state.json lacks this field default to false (legacy
-    // compat) per the normalizer. Full removal of the legacy path is scheduled
-    // for v1.3.6 with deliberate test-fixture migration.
+    // The v1.3.5 handoff_provenance_required flag is retained on disk for
+    // round-trip stability and operator visibility, but the runtime no longer
+    // branches on it: v1.3.6 removed the legacy_unverified handoff path so
+    // signed handoffs are unconditionally required. New sessions still
+    // serialize the field as true; legacy sessions roundtrip as-is.
     handoff_provenance_required: true,
   };
 }
@@ -372,8 +435,8 @@ function buildInitialSessionState(domain, targetUrl, {
 // since the surface got stuck — not just whether ANY profile was added.
 // Counts collapsed unrelated additions into "growth" and gave irrelevant
 // blockers permanent amnesty. Snapshot captured at wave start (before
-// hunters dispatch), not merge time, so the comparison reflects "what
-// the hunter could have used".
+// evaluators dispatch), not merge time, so the comparison reflects "what
+// the evaluator could have used".
 function normalizePrereqRegistrySnapshots(value, fieldName = "prereq_registry_snapshots") {
   if (value == null) return [];
   if (!Array.isArray(value)) {
@@ -477,13 +540,40 @@ function normalizeBlockedPrereqHistory(value, fieldName = "blocked_prereq_histor
 }
 
 function publicSessionState(state) {
+  // Cycle O.1: target_repo and repo_hash are only meaningful for repo
+  // sessions; for URL sessions they are null. Omit them from the public
+  // projection so the historical URL-session shape stays byte-stable for
+  // downstream consumers that deep-equal it. composeSessionStateDocument
+  // still merges the raw document, so repo sessions write target_repo
+  // through buildInitialSessionState -> writeSessionStateDocument.
   return SESSION_PUBLIC_STATE_FIELDS.reduce((result, field) => {
-    result[field] = state[field];
+    const value = state[field];
+    if ((field === "target_repo" || field === "repo_hash") && value == null) {
+      return result;
+    }
+    result[field] = value;
     return result;
   }, {});
 }
 
 function compactSessionState(state) {
+  // explored_count, terminally_blocked_count, and lead_surface_ids derive
+  // from the frontier-events.jsonl projection (Cycle F.3 / D.3). Loaded
+  // lazily to avoid a cycle with frontier-projections at module-import time.
+  let exploredCount = 0;
+  let terminallyBlockedCount = 0;
+  let leadSurfaceIds = [];
+  if (state.target) {
+    try {
+      const projections = require("./frontier-projections.js");
+      exploredCount = projections.currentClosures(state.target).length;
+      terminallyBlockedCount = projections.currentBlockers(state.target).length;
+      leadSurfaceIds = projections.currentLeadSurfaceIds(state.target);
+    } catch {
+      // Projection unavailable (fresh session, malformed events); fall back
+      // to zero/empty rather than failing the compact serialization.
+    }
+  }
   return {
     target: state.target,
     deep_mode: state.deep_mode === true,
@@ -491,14 +581,15 @@ function compactSessionState(state) {
     block_internal_hosts: state.block_internal_hosts === true,
     block_internal_hosts_source: state.block_internal_hosts_source,
     phase: state.phase,
-    hunt_wave: state.hunt_wave,
+    lifecycle_state: state.lifecycle_state,
+    evaluation_wave: state.evaluation_wave,
     pending_wave: state.pending_wave,
     total_findings: state.total_findings,
-    explored_count: (state.explored || []).length,
-    terminally_blocked_count: (state.terminally_blocked || []).length,
+    explored_count: exploredCount,
+    terminally_blocked_count: terminallyBlockedCount,
     dead_ends_count: (state.dead_ends || []).length,
     waf_blocked_count: (state.waf_blocked_endpoints || []).length,
-    lead_surface_ids: state.lead_surface_ids || [],
+    lead_surface_ids: leadSurfaceIds,
     hold_count: state.hold_count,
     auth_status: state.auth_status,
     egress_profile: state.egress_profile,
@@ -528,31 +619,92 @@ function normalizeSessionStateDocument(document, requestedDomain) {
     assertNonEmptyString(document.target, "target");
   }
 
+  // Cycle D.1 dual-write window: a session may carry lifecycle_state, the
+  // legacy phase, or both on disk. The canonical authority is the lifecycle
+  // state; the legacy phase is a derived back-compat read for callers that
+  // have not yet migrated. Accept either, then synthesize whichever side is
+  // missing so consumers always see both fields.
+  let resolvedLifecycleState = null;
+  if (document.lifecycle_state != null) {
+    resolvedLifecycleState = assertEnumValue(
+      document.lifecycle_state,
+      SESSION_STATE_LIFECYCLE_VALUES,
+      "lifecycle_state",
+    );
+  } else if (typeof document.phase === "string") {
+    resolvedLifecycleState = deriveLifecycleStateFromLegacyPhase(document.phase);
+    if (!resolvedLifecycleState) {
+      throw new Error(`phase must be one of ${Object.keys(LEGACY_PHASE_TO_LIFECYCLE_STATE).join(", ")} (legacy fallback); got ${JSON.stringify(document.phase)}`);
+    }
+  } else {
+    throw new Error("lifecycle_state (or legacy phase) is required");
+  }
+  const resolvedLegacyPhase = typeof document.phase === "string"
+    ? document.phase
+    : deriveLegacyPhaseFromLifecycleState(resolvedLifecycleState);
+
+  // Cycle O.1: repo sessions persist target_repo instead of target_url.
+  // Validate exactly one shape is present. URL sessions retain the
+  // original strict shape (target_url required, target_repo absent).
+  // Repo sessions require target_repo + repo_hash and forbid target_url.
+  // We intentionally validate target_repo SHAPE only here — realpath /
+  // directory checks happen at session bootstrap (initRepoSession) and
+  // would force this module to depend on fs / governance-contracts,
+  // breaking the no-cycle, no-fs contract documented for session-state-
+  // contracts.
+  const hasUrlField = document.target_url != null;
+  const hasRepoField = document.target_repo != null;
+  if (!hasUrlField && !hasRepoField) {
+    throw new Error("session state requires exactly one of target_url or target_repo");
+  }
+  if (hasUrlField && hasRepoField) {
+    throw new Error("session state must carry exactly one of target_url or target_repo, not both");
+  }
+  let normalizedTargetUrl = null;
+  let normalizedTargetRepo = null;
+  let normalizedRepoHash = null;
+  if (hasUrlField) {
+    normalizedTargetUrl = assertNonEmptyString(document.target_url, "target_url");
+  } else {
+    normalizedTargetRepo = normalizeTargetRepoShape(document.target_repo);
+    if (typeof document.repo_hash !== "string" || !/^[0-9a-f]{8,64}$/i.test(document.repo_hash)) {
+      throw new Error("repo_hash is required (8-64 hex characters) for repo sessions");
+    }
+    normalizedRepoHash = document.repo_hash.toLowerCase();
+  }
+
   const normalized = {
     target: requestedDomain,
-    target_url: assertNonEmptyString(document.target_url, "target_url"),
+    target_url: normalizedTargetUrl,
+    target_repo: normalizedTargetRepo,
+    repo_hash: normalizedRepoHash,
     deep_mode: document.deep_mode == null
       ? false
       : assertBoolean(document.deep_mode, "deep_mode"),
     ...normalizeBlockInternalHostsStateFields(document),
-    phase: assertEnumValue(document.phase, PHASE_VALUES, "phase"),
-    hunt_wave: document.hunt_wave == null
+    lifecycle_state: resolvedLifecycleState,
+    phase: resolvedLegacyPhase,
+    evaluation_wave: document.evaluation_wave == null
       ? 0
-      : assertInteger(document.hunt_wave, "hunt_wave", { min: 0 }),
+      : assertInteger(document.evaluation_wave, "evaluation_wave", { min: 0 }),
     pending_wave: document.pending_wave == null
       ? null
       : assertInteger(document.pending_wave, "pending_wave", { min: 1 }),
     total_findings: document.total_findings == null
       ? 0
       : assertInteger(document.total_findings, "total_findings", { min: 0 }),
-    explored: normalizeStringArray(document.explored, "explored"),
-    terminally_blocked: normalizeTerminallyBlocked(document.terminally_blocked, "terminally_blocked"),
+    // Cycle D.3 deleted state.explored / state.terminally_blocked /
+    // state.lead_surface_ids from the contract. Legacy sessions on disk may
+    // still carry these arrays; readers silently drop them and let the
+    // frontier-events.jsonl projection (frontier-projections) be the sole
+    // surface-state source. The fields are intentionally absent from the
+    // normalized result so consumers cannot accidentally route through
+    // stale state.json arrays.
     prereq_registry_snapshots: normalizePrereqRegistrySnapshots(document.prereq_registry_snapshots, "prereq_registry_snapshots"),
     blocked_prereq_history: normalizeBlockedPrereqHistory(document.blocked_prereq_history, "blocked_prereq_history"),
     terminal_block_clear_history: normalizeTerminalBlockClearHistory(document.terminal_block_clear_history, "terminal_block_clear_history"),
     dead_ends: normalizeStringArray(document.dead_ends, "dead_ends"),
     waf_blocked_endpoints: normalizeStringArray(document.waf_blocked_endpoints, "waf_blocked_endpoints"),
-    lead_surface_ids: normalizeStringArray(document.lead_surface_ids, "lead_surface_ids"),
     scope_exclusions: normalizeStringArray(document.scope_exclusions, "scope_exclusions"),
     hold_count: document.hold_count == null
       ? 0
@@ -605,17 +757,10 @@ function normalizeSessionStateDocument(document, requestedDomain) {
       : assertBoolean(document.handoff_provenance_required, "handoff_provenance_required"),
   };
 
-  // Disjointness invariant: a surface is either explored (hunter declared
-  // complete) OR terminally_blocked (system promoted on stuck loop with no
-  // registry delta). Both at once would let consumers double-count or pick
-  // the wrong closure reason. Fail loud rather than silently dedupe.
-  const exploredSet = new Set(normalized.explored);
-  const collisions = normalized.terminally_blocked
-    .map((entry) => entry.surface_id)
-    .filter((id) => exploredSet.has(id));
-  if (collisions.length > 0) {
-    throw new Error(`state.explored and state.terminally_blocked must be disjoint; overlapping surface_id(s): ${collisions.join(", ")}`);
-  }
+  // Cycle D.3 removed state.explored and state.terminally_blocked from the
+  // contract; the disjointness invariant was lifted because the frontier
+  // ledger projection (foldLatestBySurface across closure / blocker events)
+  // is self-disjoint by construction — the latest surface-state event wins.
 
   return normalized;
 }
@@ -634,8 +779,12 @@ module.exports = {
   compactSessionState,
   composeSessionStateDocument,
   deriveBlockInternalHostsPolicy,
+  deriveLegacyPhaseFromLifecycleState,
+  deriveLifecycleStateFromLegacyPhase,
   egressProfileStateFields,
+  LIFECYCLE_STATE_TO_LEGACY_PHASE,
   normalizeSessionStateDocument,
+  normalizeTargetRepoShape,
   publicSessionState,
   terminallyBlockedSurfaceIds,
 };

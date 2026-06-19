@@ -10,6 +10,9 @@ const {
   sessionsRoot,
 } = require("./paths.js");
 const {
+  parseFindingId,
+} = require("./validation.js");
+const {
   suggestInvariantsForFinding,
 } = require("./invariant-template-corpus.js");
 const {
@@ -27,6 +30,13 @@ const READ_CHUNK_BYTES = 64 * 1024;
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeRequiredFindingId(finding) {
+  if (!finding || finding.finding_id == null) {
+    throw new Error("finding.finding_id must be the Bob F-N id for the final finding");
+  }
+  return parseFindingId(finding.finding_id, "finding.finding_id");
 }
 
 function resolveInvariantRunsFilePath(filePath, { createDir = false } = {}) {
@@ -562,6 +572,36 @@ function classifyFoundryOutcome(rawResult) {
   return "unknown";
 }
 
+function invariantFoundryResultHash(foundryResult) {
+  return hashCanonicalJson(foundryResult == null ? null : foundryResult);
+}
+
+function computeInvariantRunHash({
+  finding_id,
+  finding_hash,
+  template_id,
+  slot_values,
+  contract_name,
+  function_name,
+  execution_context_hash,
+  outcome,
+  foundry_result,
+  dry_run,
+}) {
+  return hashCanonicalJson({
+    finding_id: parseFindingId(finding_id, "finding_id"),
+    finding_hash: finding_hash || null,
+    template_id,
+    slot_values: slot_values || null,
+    contract_name,
+    function_name,
+    execution_context_hash,
+    outcome: outcome || null,
+    foundry_result_hash: invariantFoundryResultHash(foundry_result),
+    dry_run: dry_run === true,
+  });
+}
+
 async function runInvariantForFinding({
   target_domain,
   finding,
@@ -589,6 +629,7 @@ async function runInvariantForFinding({
   if (typeof foundry_run !== "function" && dry_run !== true) {
     throw new Error("foundry_run must be a function (or pass dry_run: true)");
   }
+  const findingId = normalizeRequiredFindingId(finding);
   const suggestion = suggestInvariantsForFinding(finding, { slot_values });
   if (suggestion.suggestions.length === 0) {
     return {
@@ -653,28 +694,36 @@ async function runInvariantForFinding({
       }
     }
     outcome = classifyFoundryOutcome(foundryRawResult);
-    runHash = hashCanonicalJson({
+    runHash = computeInvariantRunHash({
+      finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
       slot_values: slot_values || null,
       contract_name,
       function_name,
       execution_context_hash: executionContextHash,
+      outcome,
+      foundry_result: foundryRawResult,
+      dry_run: false,
     });
   } else {
-    runHash = hashCanonicalJson({
+    runHash = computeInvariantRunHash({
+      finding_id: findingId,
       finding_hash: finding.finding_hash,
       template_id: chosen.template_id,
       slot_values: slot_values || null,
       contract_name,
       function_name,
       execution_context_hash: executionContextHash,
+      outcome,
+      foundry_result: null,
       dry_run: true,
     });
   }
   const record = {
     run_hash: runHash,
     target_domain: domain,
+    finding_id: findingId,
     finding_hash: finding.finding_hash || null,
     finding_title: finding.title || null,
     vulnerability_class: suggestion.vulnerability_class,
@@ -692,6 +741,7 @@ async function runInvariantForFinding({
     match_test: match_test || null,
     test_path: writtenPath,
     outcome,
+    foundry_result_hash: invariantFoundryResultHash(foundryRawResult),
     foundry_result: foundryRawResult,
     dry_run: dry_run === true,
     run_id: typeof run_id === "string" && run_id.length > 0 ? run_id : null,
@@ -716,6 +766,7 @@ async function runInvariantForFinding({
     function_name,
     test_path: writtenPath,
     outcome,
+    finding_id: findingId,
     unfilled_slots: chosen.unfilled_slots,
     run_hash: runHash,
     execution_context_hash: executionContextHash,
@@ -747,11 +798,24 @@ function readInvariantRuns({ target_domain, outcome_filter, template_id_filter, 
   };
 }
 
+function readInvariantRunCorpus({ target_domain }) {
+  const domain = assertSafeDomain(target_domain);
+  const filePath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(domain), { createDir: false });
+  const records = readJsonlRuns(filePath);
+  return {
+    runs: records.filter((run) => isPlainObject(run)),
+    total_in_corpus: records.length,
+  };
+}
+
 module.exports = {
   runInvariantForFinding,
   readInvariantRuns,
+  readInvariantRunCorpus,
   buildTestSource,
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
 };

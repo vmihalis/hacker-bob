@@ -3,7 +3,8 @@
 const { autoSignup } = require("../signup.js");
 
 module.exports = Object.freeze({
-  name: "bounty_auto_signup",
+  name: "bob_auto_signup",
+  aliases: ["bounty_auto_signup"],
   description:
     "Automated browser-based account registration using Patchright (stealth Playwright fork) with CAPTCHA solving. Fills signup forms with human-like interaction, solves reCAPTCHA/hCaptcha/Turnstile via CapSolver, and returns extracted auth tokens. Requires patchright to be installed (optional dep). Set CAPSOLVER_API_KEY env var for CAPTCHA solving.",
   inputSchema: {

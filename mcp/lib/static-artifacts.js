@@ -41,11 +41,17 @@ const {
   RISK_WEIGHTS,
   SOLANA_PATTERNS,
 } = require("./token-scan-patterns.js");
+const {
+  appendFrontierEvent,
+} = require("./frontier-events.js");
+const {
+  scheduleMaterialization,
+} = require("./frontier-materialize-debounce.js");
 
 function rejectPathImport(args) {
   for (const key of ["path", "file_path", "filename", "contract_path", "source_path"]) {
     if (Object.prototype.hasOwnProperty.call(args, key)) {
-      throw new Error("Path imports are not supported. Pass artifact content to bounty_import_static_artifact.");
+      throw new Error("Path imports are not supported. Pass artifact content to bob_import_static_artifact.");
     }
   }
 }
@@ -232,7 +238,36 @@ function importStaticArtifact(args) {
       redactions: redacted.redactions,
       artifact_path: artifactPath,
     });
+    // LEGACY: removed in Plane D — static-artifacts.jsonl remains during the
+    // dual-write window so static-scan and bob-export readers keep working;
+    // frontier-events.jsonl carries the authoritative surface signal afterward.
     appendJsonlLine(staticArtifactsJsonlPath(domain), record, { maxRecords: STATIC_ARTIFACT_LOG_MAX_RECORDS });
+
+    // Dual-write per Pact P2: importing a static artifact contributes a surface
+    // signal (the artifact often describes a new contract, schema, or upload
+    // payload). Emit an observation.recorded event so the frontier projection
+    // can fold it without re-reading the legacy manifest.
+    try {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "observation.recorded",
+        surface_id: surfaceId || undefined,
+        payload: {
+          observation_kind: "static_artifact_imported",
+          artifact_id: artifactId,
+          artifact_type: artifactType,
+          label,
+          source_name: sourceName,
+          content_sha256: record.content_sha256,
+          stored_chars: record.stored_chars,
+          redactions: record.redactions,
+        },
+        source: { artifact: "static-artifacts.jsonl", tool: "bob_import_static_artifact" },
+      });
+      scheduleMaterialization(domain);
+    } catch {
+      // Frontier ledger is dual-write best-effort during the deprecation window.
+    }
 
     return JSON.stringify({
       version: 1,
@@ -536,9 +571,11 @@ module.exports = {
   normalizeStaticArtifactRecord,
   normalizeStaticScanResultRecord,
   readStaticArtifactRecordsFromJsonl,
+  readJsonlRecords,
   readStaticScanResultsFromJsonl,
   redactStaticArtifactContent,
   scanTokenContractContent,
+  shortSha256,
   staticScan,
   summarizeStaticScanHints,
 };

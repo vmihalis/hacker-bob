@@ -12,6 +12,8 @@ const {
   withSessionLock,
   writeFileAtomic,
 } = require("./storage.js");
+const { appendFrontierEvent } = require("./frontier-events.js");
+const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 
 function ensureSessionDir(domain) {
   const dir = sessionDir(domain);
@@ -98,7 +100,46 @@ function ingestSchemaDoc({ target_domain, raw_doc, source_uri }) {
       byHash.set(contract.contract_hash, record);
     }
     const records = Array.from(byHash.values());
+    // LEGACY: removed in Plane D — schema-contracts.jsonl remains during the
+    // dual-write window so doc-delta and query-schema-contracts keep working;
+    // frontier-events.jsonl carries the authoritative observation signal.
     writeJsonlContracts(filePath, records);
+    // Dual-write per Pact P2: each ingested schema contract is a static schema
+    // observation. Emit one observation.recorded per contract so the frontier
+    // projection sees the schema_field surface signal alongside the legacy
+    // contract corpus.
+    for (const contract of parsed.contracts) {
+      try {
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "observation.recorded",
+          payload: {
+            observation_kind: "schema_field",
+            endpoint: typeof contract.endpoint === "string" ? contract.endpoint : null,
+            method: typeof contract.method === "string" ? contract.method : null,
+            contract_hash: typeof contract.contract_hash === "string" ? contract.contract_hash : null,
+            schema_format: parsed.schema_format,
+            source_doc_hash: parsed.source_doc_hash,
+            source_uri: sourceUri,
+            claimed_auth_schemes: contract.claimed_auth && Array.isArray(contract.claimed_auth.schemes)
+              ? contract.claimed_auth.schemes
+              : [],
+            param_count: Array.isArray(contract.claimed_params) ? contract.claimed_params.length : 0,
+            documented_status_codes: Object.keys(contract.claimed_response_shape || {}).sort(),
+          },
+          source: {
+            artifact: "schema-contracts.jsonl",
+            tool: "bob_ingest_schema_doc",
+            ref: typeof contract.contract_hash === "string" ? contract.contract_hash : null,
+          },
+        });
+      } catch {
+        // Frontier ledger is dual-write best-effort during the deprecation window.
+      }
+    }
+    try {
+      scheduleMaterialization(domain);
+    } catch {}
     return {
       schema_format: parsed.schema_format,
       contract_count: parsed.contracts.length,

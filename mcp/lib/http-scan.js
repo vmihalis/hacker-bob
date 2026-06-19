@@ -7,7 +7,11 @@ const {
   parseAgentId,
   parseWaveId,
 } = require("./validation.js");
-const { appendHttpAuditRecord } = require("./http-records.js");
+const {
+  appendHttpAuditRecord,
+  recordJwtObservations,
+  recordSchemaObservations,
+} = require("./http-records.js");
 const {
   createProxyAgent,
 } = require("./egress-profiles.js");
@@ -69,7 +73,7 @@ function scopeBlockedEgressContext(targetDomain, requestedEgressProfile, fallbac
   if (!sessionStateExistsForEgressContext(targetDomain)) return fallback;
   try {
     return resolveAndAssertSessionEgressIdentity(targetDomain, requestedEgressProfile, {
-      source: "bounty_http_scan_scope_blocked",
+      source: "bob_http_scan_scope_blocked",
     }).identity;
   } catch (error) {
     if (isMissingSessionStateError(error)) return fallback;
@@ -158,7 +162,7 @@ async function httpScan(args) {
 
   try {
     const { profile, identity } = resolveAndAssertSessionEgressIdentity(targetDomain, requestedEgressProfile, {
-      source: "bounty_http_scan",
+      source: "bob_http_scan",
     });
     egressContext = identity;
     assertBlockInternalHostsCompatibleWithEgress(internalHostPolicy, profile);
@@ -204,7 +208,7 @@ async function httpScan(args) {
         ...scopeAuditFields(initialScopeDecision),
       });
       return JSON.stringify({
-        error: `auth_profile "${authProfile}" requested but not found — request was NOT sent. Store auth first via bounty_auth_store.`,
+        error: `auth_profile "${authProfile}" requested but not found — request was NOT sent. Store auth first via bob_auth_store.`,
         ...egressContext,
       });
     }
@@ -254,6 +258,7 @@ async function httpScan(args) {
 
     const responseMode = args.response_mode || "full";
     const bodyLimit = args.body_limit || 2000;
+    const auditTs = new Date().toISOString();
     audit({
       status,
       error: null,
@@ -261,6 +266,40 @@ async function httpScan(args) {
       final_url: redactUrlSensitiveValues(finalUrl),
       ...scopeAuditFields(initialScopeDecision),
     });
+    // Plane T Cycle T.5 — JWT-as-observation-kind. Scan response headers + body
+    // for JWT-shaped tokens; emit one observation.recorded per distinct token
+    // for the parent surface. Dedup by (surface_id, token_fingerprint).
+    // The full token never enters the event payload — only a sha256 fingerprint,
+    // a truncated snippet, and a sanitized projection of standard claims.
+    if (args.surface_id) {
+      try {
+        recordJwtObservations({
+          target_domain: targetDomain,
+          surface_id: args.surface_id,
+          response_headers: respHeaders,
+          response_body: analysisBody,
+          source_ref: `${auditTs} ${method} ${auditUrl}`,
+        });
+      } catch {
+        // Best-effort, mirrors the importHttpTraffic dual-write pattern.
+      }
+      // Plane T Cycle T.6 — GraphQL / OpenAPI schema observation. Inspect the
+      // JSON body for an introspection result OR an OpenAPI / Swagger spec;
+      // emit one observation.recorded per distinct schema per surface, keyed
+      // by sha256(canonical_json(schema)). The full schema document never
+      // enters the event payload — only the fingerprint + summary fields.
+      try {
+        recordSchemaObservations({
+          target_domain: targetDomain,
+          surface_id: args.surface_id,
+          request_url: finalUrl || url,
+          response_body: analysisBody,
+          source_ref: `${auditTs} ${method} ${auditUrl}`,
+        });
+      } catch {
+        // Best-effort, mirrors the JWT path.
+      }
+    }
 
     if (responseMode === "status_only") {
       return JSON.stringify({

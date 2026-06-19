@@ -23,7 +23,7 @@ function uniqueDomain(prefix = "bob-doc-delta-test") {
 }
 
 function domainDir(domain) {
-  return path.join(os.homedir(), "bounty-agent-sessions", domain);
+  return path.join(os.homedir(), "hacker-bob-sessions", domain);
 }
 
 function cleanupDomain(domain) {

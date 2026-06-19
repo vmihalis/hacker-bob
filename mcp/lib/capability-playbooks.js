@@ -48,7 +48,7 @@ function renderCapabilityPlaybookAppendix({ root = DEFAULT_ROOT } = {}) {
   const sections = [
     "",
     "## Optional: Differential Workflows",
-    "Orchestrator-driven differentials run outside the wave/hunter loop and feed `severity_class: \"security\"` rows into `bounty_record_finding`.",
+    "Orchestrator-driven differentials run outside the wave/evaluator loop and feed `severity_class: \"security\"` rows into `bob_record_candidate_claim`.",
   ];
   for (const { capability_id, playbook } of playbooks) {
     sections.push("", `### ${capability_id}`, playbook.trimEnd());

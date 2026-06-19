@@ -1,0 +1,13 @@
+{
+  "name": "hacker-bob-brutalist-tools",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.162",
+    "@brutalist/mcp": "1.14.7",
+    "@openai/codex": "0.136.0"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  }
+}

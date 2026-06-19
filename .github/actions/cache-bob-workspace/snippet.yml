@@ -1,0 +1,75 @@
+# Bob workspace cache — standalone workflow step snippet
+#
+# Drop these three steps into any workflow that needs Bob pre-installed.
+# Set vars.BOB_VERSION at the org level so all repos share one cached
+# workspace entry per Bob version.
+#
+# REQUIREMENTS
+#   - runs-on: ubuntu-latest  (~/bob-workspace path is runner-OS-pinned)
+#   - vars.BOB_VERSION set at org or repo level (e.g. "v1.2.3")
+#   - hacker-bob repo must be accessible (public or token provided)
+#
+# HOW IT WORKS
+#   Step 1 tries to restore ~/bob-workspace from the Actions cache.
+#   Step 2 checks out hacker-bob at BOB_VERSION only on cache miss.
+#   Step 3 runs install.sh only on cache miss; skipped on cache hit.
+
+steps:
+  # -- Step 0: Validate BOB_VERSION is set -------------------------------
+  - name: Validate BOB_VERSION is set
+    shell: bash
+    run: |
+      if [[ -z "${{ vars.BOB_VERSION }}" ]]; then
+        echo "::error::vars.BOB_VERSION is empty or unset. Set it at the org or repo level."
+        exit 1
+      fi
+
+  # ── Step 1: Restore Bob workspace cache ──────────────────────────────
+  - name: Restore Bob workspace cache
+    id: cache-bob
+    uses: actions/cache@v4
+    with:
+      # Absolute path — independent of GITHUB_WORKSPACE
+      path: ~/bob-workspace
+      # Bust automatically on version bump or OS change
+      key: ${{ runner.os }}-bob-workspace-${{ vars.BOB_VERSION }}-runtime-v2
+      # No restore-keys: a partial cache is worse than a fresh install
+
+  # ── Step 2: Check out hacker-bob source (cache miss only) ────────────
+  - name: Check out hacker-bob source
+    if: steps.cache-bob.outputs.cache-hit != 'true'
+    uses: actions/checkout@v4
+    with:
+      repository: vmihalis/hacker-bob
+      ref: ${{ vars.BOB_VERSION }}
+      path: .bob-workspace-source/hacker-bob-src
+      # Uncomment for private repo access:
+      # token: ${{ secrets.BOB_GITHUB_TOKEN }}
+
+  # ── Step 3: Install Bob into ~/bob-workspace (cache miss only) ────────
+  - name: Install Bob into ~/bob-workspace
+    if: steps.cache-bob.outputs.cache-hit != 'true'
+    run: |
+      set -euo pipefail
+      SRC="$GITHUB_WORKSPACE/.bob-workspace-source/hacker-bob-src"
+      mkdir -p "$HOME/bob-workspace"
+      (cd "$SRC" && npm ci)
+      bash "$SRC/install.sh" "$HOME/bob-workspace"
+      npm install --prefix "$HOME/bob-workspace/claude" @anthropic-ai/claude-code@2.1.162
+      node "$HOME/bob-workspace/claude/node_modules/@anthropic-ai/claude-code/install.cjs"
+      mkdir -p "$HOME/bob-workspace/bin"
+      ln -sf "$HOME/bob-workspace/claude/node_modules/.bin/claude" "$HOME/bob-workspace/bin/claude"
+      # Verify the cache boundary — node_modules must live inside the target
+      if [[ ! -d "$HOME/bob-workspace/node_modules" ]]; then
+        echo "::error::install.sh did not create ~/bob-workspace/node_modules"
+        exit 1
+      fi
+    shell: bash
+
+  - name: Export Bob runtime paths
+    run: |
+      set -euo pipefail
+      echo "$HOME/bob-workspace/bin" >> "$GITHUB_PATH"
+      echo "$HOME/bob-workspace/node_modules/.bin" >> "$GITHUB_PATH"
+      echo "BOB_MCP_SERVER_PATH=$HOME/bob-workspace/mcp/server.js" >> "$GITHUB_ENV"
+    shell: bash

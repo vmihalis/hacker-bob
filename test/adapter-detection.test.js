@@ -38,6 +38,16 @@ test("detection layer 1: $CODEX_HOME resolves to codex", () => {
   assert.equal(result.reason, "env_CODEX_HOME");
 });
 
+test("detection layer 1: $KIMI_PROJECT_DIR resolves to kimi", () => {
+  const result = detectAdapterId(null, {
+    env: { KIMI_PROJECT_DIR: "/somewhere" },
+    commandExists: never,
+  });
+  assert.equal(result.id, "kimi");
+  assert.equal(result.layer, "env");
+  assert.equal(result.reason, "env_KIMI_PROJECT_DIR");
+});
+
 test("detection layer 1: $CLAUDE_PROJECT_DIR wins over project artifacts and CLI", () => {
   const workspace = makeWorkspace();
   try {
@@ -53,6 +63,21 @@ test("detection layer 1: $CLAUDE_PROJECT_DIR wins over project artifacts and CLI
   }
 });
 
+test("detection layer 1: $KIMI_PROJECT_DIR wins over project artifacts and CLI", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+    const result = detectAdapterId(workspace, {
+      env: { KIMI_PROJECT_DIR: "/somewhere" },
+      commandExists: only("claude"),
+    });
+    assert.equal(result.id, "kimi");
+    assert.equal(result.layer, "env");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("detection layer 2: .claude/ project artifact resolves to claude", () => {
   const workspace = makeWorkspace();
   try {
@@ -61,6 +86,19 @@ test("detection layer 2: .claude/ project artifact resolves to claude", () => {
     assert.equal(result.id, "claude");
     assert.equal(result.layer, "project");
     assert.equal(result.reason, "project_dot_claude");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detection layer 2: .kimi/ project artifact resolves to kimi", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.mkdirSync(path.join(workspace, ".kimi"), { recursive: true });
+    const result = detectAdapterId(workspace, { env: {}, commandExists: never });
+    assert.equal(result.id, "kimi");
+    assert.equal(result.layer, "project");
+    assert.equal(result.reason, "project_dot_kimi");
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
@@ -105,6 +143,18 @@ test("detection layer 2: bare .mcp.json resolves to generic-mcp", () => {
   }
 });
 
+test("detection layer 2: .kimi/ wins over .mcp.json (kimi is the host, mcp is just wiring)", () => {
+  const workspace = makeWorkspace();
+  try {
+    fs.mkdirSync(path.join(workspace, ".kimi"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ".mcp.json"), "{}", "utf8");
+    const result = detectAdapterId(workspace, { env: {}, commandExists: never });
+    assert.equal(result.id, "kimi");
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("detection layer 2: .claude/ wins over .mcp.json (claude is the host, mcp is just wiring)", () => {
   const workspace = makeWorkspace();
   try {
@@ -135,6 +185,16 @@ test("detection layer 3: codex on PATH alone resolves to codex", () => {
   assert.equal(result.id, "codex");
   assert.equal(result.layer, "cli");
   assert.equal(result.reason, "cli_on_path_codex");
+});
+
+test("detection layer 3: kimi on PATH alone resolves to kimi", () => {
+  const result = detectAdapterId(null, {
+    env: {},
+    commandExists: only("kimi"),
+  });
+  assert.equal(result.id, "kimi");
+  assert.equal(result.layer, "cli");
+  assert.equal(result.reason, "cli_on_path_kimi");
 });
 
 test("detection layer 3: both CLIs on PATH falls through to fallback", () => {

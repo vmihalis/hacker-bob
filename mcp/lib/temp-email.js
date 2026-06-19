@@ -19,7 +19,7 @@ function generatePassword(len = 16) {
 
 function generateUsername(len = 10) {
   const chars = "abcdefghijkmnpqrstuvwxyz23456789";
-  let name = "hunt_";
+  let name = "eval_";
   for (let i = 0; i < len; i++) name += chars[Math.floor(Math.random() * chars.length)];
   return name;
 }

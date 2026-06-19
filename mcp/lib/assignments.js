@@ -10,6 +10,12 @@ const {
   parseAgentId,
 } = require("./validation.js");
 const {
+  normalizeTaskLens,
+} = require("./task-lenses.js");
+const {
+  normalizeTaskBudget,
+} = require("./tasks.js");
+const {
   readJsonFile,
 } = require("./storage.js");
 const {
@@ -19,6 +25,16 @@ const {
 const {
   normalizeAssignmentRouteMetadata,
 } = require("./capability-packs.js");
+
+const DEFAULT_ASSIGNMENT_TASK_LENS = "surface_scout";
+const DEFAULT_ASSIGNMENT_BUDGET = Object.freeze({
+  max_steps: 6,
+  max_context_tokens: 24000,
+});
+
+function normalizeAssignmentBudget(value) {
+  return normalizeTaskBudget(value) || { ...DEFAULT_ASSIGNMENT_BUDGET };
+}
 
 function loadWaveAssignments(domain, waveNumber) {
   const dir = sessionDir(domain);
@@ -48,6 +64,8 @@ function loadWaveAssignments(domain, waveNumber) {
     }
     const agent = parseAgentId(assignment.agent);
     const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+    const taskLens = normalizeTaskLens(assignment.task_lens || assignment.lens || DEFAULT_ASSIGNMENT_TASK_LENS, "task_lens");
+    const budget = normalizeAssignmentBudget(assignment.budget);
     const handoffTokenSha256 = typeof assignment.handoff_token_sha256 === "string" && assignment.handoff_token_sha256.trim()
       ? assignment.handoff_token_sha256.trim()
       : null;
@@ -62,7 +80,7 @@ function loadWaveAssignments(domain, waveNumber) {
     if (assignmentByAgent.has(agent)) {
       throw new Error(`Duplicate assignment for ${agent} in ${assignmentsPath}`);
     }
-    const normalizedAssignment = { agent, surface_id: surfaceId, ...routeMetadata };
+    const normalizedAssignment = { agent, surface_id: surfaceId, task_lens: taskLens, budget, ...routeMetadata };
     if (handoffTokenSha256) normalizedAssignment.handoff_token_sha256 = handoffTokenSha256;
     if (handoffTokenRequired) normalizedAssignment.handoff_token_required = true;
     if (surfaceType) normalizedAssignment.surface_type = surfaceType;
@@ -70,7 +88,23 @@ function loadWaveAssignments(domain, waveNumber) {
     assignmentByAgent.set(agent, normalizedAssignment);
   }
 
-  return { dir, wave: `w${waveNumber}`, assignmentsPath, assignments, assignmentByAgent };
+  const schedulerDecisionId = typeof assignmentsDoc.scheduler_decision_id === "string"
+    && assignmentsDoc.scheduler_decision_id.trim()
+    ? assignmentsDoc.scheduler_decision_id.trim()
+    : null;
+  const assignmentBatchId = typeof assignmentsDoc.assignment_batch_id === "string"
+    && assignmentsDoc.assignment_batch_id.trim()
+    ? assignmentsDoc.assignment_batch_id.trim()
+    : null;
+  return {
+    dir,
+    wave: `w${waveNumber}`,
+    assignmentsPath,
+    assignments,
+    assignmentByAgent,
+    scheduler_decision_id: schedulerDecisionId,
+    assignment_batch_id: assignmentBatchId,
+  };
 }
 
 function normalizeWaveAssignmentsInput(assignments) {
@@ -89,6 +123,8 @@ function normalizeWaveAssignmentsInput(assignments) {
 
     const agent = parseAgentId(assignment.agent);
     const surfaceId = assertNonEmptyString(assignment.surface_id, "surface_id");
+    const taskLens = normalizeTaskLens(assignment.task_lens || assignment.lens || DEFAULT_ASSIGNMENT_TASK_LENS, "task_lens");
+    const budget = normalizeAssignmentBudget(assignment.budget);
 
     if (seenAgents.has(agent)) {
       throw new Error(`Duplicate assignment for ${agent}`);
@@ -99,7 +135,7 @@ function normalizeWaveAssignmentsInput(assignments) {
 
     seenAgents.add(agent);
     seenSurfaceIds.add(surfaceId);
-    normalizedAssignments.push({ agent, surface_id: surfaceId });
+    normalizedAssignments.push({ agent, surface_id: surfaceId, task_lens: taskLens, budget });
   }
 
   return normalizedAssignments;
@@ -119,7 +155,10 @@ function validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId) {
 }
 
 module.exports = {
+  DEFAULT_ASSIGNMENT_BUDGET,
+  DEFAULT_ASSIGNMENT_TASK_LENS,
   loadWaveAssignments,
+  normalizeAssignmentBudget,
   normalizeWaveAssignmentsInput,
   validateAssignedWaveAgentSurface,
 };

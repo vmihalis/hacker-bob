@@ -1,18 +1,18 @@
 # Smart Contract Surface Spec
 
 This document defines `bob-spec.yaml`, the normalized program spec Bob uses to
-hunt smart-contract bounties. It maps each major bounty platform's rules into a
-single shape so the anti-stop rule, hunter brief, verifier, and report-writer
+evaluate smart-contract bounties. It maps each major bounty platform's rules into a
+single shape so the anti-stop rule, evaluator brief, verifier, and report-writer
 can reason about findings the same way regardless of platform.
 
 The spec is read at session init and consumed by:
-- Recon SC ingestion (writes `bob-spec.yaml` from a platform page + extends).
-- Hunter brief (`mcp/lib/hunter-brief.js`) — surfaces trust assumptions and
-  bypass conditions so hunters know which "admin-only" claims are still
+- Surface-discovery SC ingestion (writes `bob-spec.yaml` from a platform page + extends).
+- Evaluator brief (`mcp/lib/assignment-brief.js`) — surfaces trust assumptions and
+  bypass conditions so evaluators know which "admin-only" claims are still
   reportable.
-- Anti-stop rule (`prompts/roles/hunter-evm.md` etc., `.claude/rules/hunting.md`)
+- Anti-stop rule (`prompts/roles/evaluator-evm.md` etc., `.claude/rules/evaluating.md`)
   — references `program.severity_system.admin_rule.exceptions` to decide
-  whether a role-gated finding still needs an exploit hypothesis.
+  whether a role-gated finding still needs an impact hypothesis.
 - Verifier and report-writer — uses `severity_system.tiers` and platform-shaped
   payout/severity mapping.
 
@@ -68,7 +68,7 @@ assets:
     audit_links: [ "https://github.com/.../audit.pdf" ]
 ```
 
-`role_in_protocol` is a free taxonomy used for ranking; recon should populate
+`role_in_protocol` is a free taxonomy used for ranking; surface-discovery should populate
 it from program text and audit context. `contract_type` is structural.
 
 Multi-chain protocols list one entry per (chain, address). Cross-chain
@@ -111,13 +111,13 @@ trust_assumptions:
         - chain_id_confusion
 ```
 
-`bypass_conditions` is the heart of the anti-stop rule. When a hunter wants to
+`bypass_conditions` is the heart of the anti-stop rule. When a evaluator wants to
 declare a surface complete because "function is admin-only", the rule requires
 them to enumerate at least one bypass condition from this list and either
 attempt a PoC or set `surface_status: partial` with a documented missing
 harness.
 
-The condition vocabulary is open; recon and hunters can extend it. A short
+The condition vocabulary is open; surface-discovery and evaluators can extend it. A short
 list of commonly applicable conditions for EVM surfaces:
 
 - `admin_eoa_compromise` — single private key holds the role
@@ -146,8 +146,8 @@ known_issues:
     affects: [ "0x..." ]                  # optional asset filter
 ```
 
-Known issues are program-declared exclusions. Hunters MUST NOT submit findings
-that match these. Recon ingests them verbatim from the program page.
+Known issues are program-declared exclusions. Evaluators MUST NOT submit findings
+that match these. Surface-discovery ingests them verbatim from the program page.
 
 ## `out_of_scope_classes`
 
@@ -164,7 +164,7 @@ out_of_scope_classes:
   - chainlink_staleness_only      # Sherlock-specific
 ```
 
-The platform-default exclusion list. Hunters shortcut findings that match
+The platform-default exclusion list. Evaluators shortcut findings that match
 these without recording them.
 
 ## `invariants`
@@ -179,8 +179,8 @@ invariants:
     poc_hint: "donate raw token, observe totalAssets() drop"
 ```
 
-Invariants are hunter prompts as data. The hunter brief surfaces them and the
-hunter is expected to write at least one Foundry test that asserts each
+Invariants are evaluator prompts as data. The evaluator brief surfaces them and the
+evaluator is expected to write at least one Foundry test that asserts each
 invariant before declaring a surface complete.
 
 ## `audit_index`
@@ -223,32 +223,32 @@ previously-fixed issue.
 ### Admin rule encoding (drives anti-stop)
 
 Each platform's admin rule maps to an `exceptions` list. The anti-stop rule
-reads this list and asks the hunter to attempt at least one applicable
+reads this list and asks the evaluator to attempt at least one applicable
 exception before allowing `surface_status: complete`.
 
 **Immunefi v2.3** — admin-required attacks are out of scope unless the
-exploit also requires "additional modifications". The hunter must articulate
+impact proof also requires "additional modifications". The evaluator must articulate
 what the additional modification is (e.g. signature forgery, governance bypass,
 upgrade-path takeover) before declaring the surface complete.
 
 **Sherlock** — admins are trusted unless: (a) the program README explicitly
 states a restriction the bug bypasses, (b) the admin causes harm unknowingly,
-or (c) the role is accessible without permission. Hunter must check program
+or (c) the role is accessible without permission. Evaluator must check program
 text for stated restrictions and enumerate unknowing-harm scenarios.
 
 **Code4rena** — privilege escalation is valid up to Medium. Reckless admin
-mistakes are QA-only. Hunter focuses on escalation paths to a privileged role
+mistakes are QA-only. Evaluator focuses on escalation paths to a privileged role
 rather than admin-acts-badly scenarios.
 
 **Cantina** — admin-gated bugs are at most Low, **unless the protocol was
 designed to be resilient against such actions**. This is the most permissive:
-the hunter must read program docs/architecture for resilience claims and treat
+the evaluator must read program docs/architecture for resilience claims and treat
 any breach of those claims as in-scope.
 
 ## Bob extensions (what the platforms don't capture)
 
 These fields exist in `bob-spec.yaml` but are not provided by any platform's
-spec format. Recon and hunters fill them.
+spec format. Surface-discovery and evaluators fill them.
 
 - `trust_assumptions.trusted_roles[].bypass_conditions` — platforms list
   trusted roles, never the bypass model.
@@ -261,7 +261,7 @@ spec format. Recon and hunters fill them.
 
 ## Ingestion contract
 
-Recon SC writes `bob-spec.yaml` in three passes:
+Surface-discovery SC writes `bob-spec.yaml` in three passes:
 
 1. **Platform scrape** — pull `program.platform`, `source_url`,
    `severity_system.id`, `assets[]`, `known_issues[]`, `audit_links` from the
@@ -274,11 +274,11 @@ Recon SC writes `bob-spec.yaml` in three passes:
    populate `invariants`, `audit_index`, and `trust_assumptions[*].bypass_conditions`.
 
 Pass 1 is mechanical. Pass 2 needs the EVM read tools from Phase 1
-(`bounty_evm_fetch_source`, `bounty_evm_role_table`, `bounty_evm_dependency_graph`).
-Pass 3 needs `bounty_audit_fetch` and `bounty_invariant_extract` (Phase 1).
+(`bob_evm_fetch_source`, `bob_evm_role_table`, `bob_evm_dependency_graph`).
+Pass 3 needs `bob_audit_fetch` and `bob_invariant_extract` (Phase 1).
 
-For Phase 0, recon writes a partial `bob-spec.yaml` (Pass 1 only). Passes 2-3
-fill in dynamically as hunters request context, or as a recon Pass 2/3 expansion
+For Phase 0, surface-discovery writes a partial `bob-spec.yaml` (Pass 1 only). Passes 2-3
+fill in dynamically as evaluators request context, or as a surface-discovery Pass 2/3 expansion
 when Phase 1 tools land.
 
 ## Severity tier mapping
@@ -301,50 +301,51 @@ side-by-side.
 
 ## Pipeline integration: phase gates, chain attempts, evidence packs, egress
 
-Beyond `bob-spec.yaml` and the per-family hunter / verifier / chain / reporter
+Beyond `bob-spec.yaml` and the per-family evaluator / verifier / chain / reporter
 prompts, SC findings flow through four shared mechanisms introduced in main:
 
-### 1. Phase gates (`mcp/lib/phase-gates.js`)
+### 1. Lifecycle gates (`mcp/lib/lifecycle-gates.js`)
 
-The orchestrator's `bounty_transition_phase` enforces gates between phases.
-Three of the four matter for SC findings:
+The orchestrator's `bob_advance_session(to_state)` enforces gates between
+lifecycle states. The transitions that matter for SC claims:
 
-- **HUNT → CHAIN.** Blocks if `pending_wave` is set or any HIGH/CRITICAL
-  surface is unexplored. SC surfaces with `surface_status: partial` and at
-  least one `bypass_attempts[]` entry are marked explored by `apply-wave-merge`,
-  satisfying the gate. Operators with persistently blocked harness runs may
-  pass `override_reason`, but the standard path is to fix the toolchain and
-  re-run.
-- **CHAIN → VERIFY.** Blocks if findings exist (or handoff `chain_notes`
-  exist) and zero terminal `bounty_write_chain_attempt` records have been
-  written. The chain-builder MUST record at least one terminal outcome
-  (`confirmed`, `denied`, `blocked`, or `not_applicable`) per pivot — see
-  `prompts/roles/chain.md` for the SC pivot conventions.
-- **VERIFY → GRADE.** Blocks if any final-reportable finding (medium severity
+- **OPEN_FRONTIER → CLAIM_FREEZE.** Blocks if `pending_wave` is set or any
+  HIGH/CRITICAL surface is unexplored. SC surfaces with `surface_status:
+  partial` and at least one `bypass_attempts[]` entry are marked explored by
+  `apply-wave-merge`, satisfying the gate. Operators with persistently blocked
+  harness runs may set an operator override, but the standard path is to fix
+  the toolchain and re-run. Chain attempts (one terminal
+  `bob_write_chain_attempt` record per pivot — `confirmed`, `denied`,
+  `blocked`, or `not_applicable`) are validated as part of the freeze
+  prerequisites; see `prompts/roles/chain.md` for the SC pivot conventions.
+- **CLAIM_FREEZE → VERIFY.** Requires a `ClaimFreeze` artifact with at least
+  one `CandidateClaim` in scope. VerificationResult records are written
+  against the frozen payload, not the live claim ledger.
+- **VERIFY → GRADE.** Blocks if any final-reportable claim (medium severity
   or higher) lacks a valid evidence pack. The evidence-agent owns this; SC
-  findings produce evidence packs via the family runners (see below).
+  claims produce evidence packs via the family runners (see below).
 
 ### 2. Chain attempts × SC pivots
 
 The chain-builder (`prompts/roles/chain.md`) writes one terminal chain attempt
-per tested pivot via `bounty_write_chain_attempt`. For SC pivots specifically,
+per tested pivot via `bob_write_chain_attempt`. For SC pivots specifically,
 the `proof_reference` field cites the verifier's `match_test` (per
-`sc_evidence.match_test`) or a family fetch read (e.g., `bounty_evm_role_table`
-showing the granted role, `bounty_sui_fetch_object` showing the transferred
+`sc_evidence.match_test`) or a family fetch read (e.g., `bob_evm_role_table`
+showing the granted role, `bob_sui_fetch_object` showing the transferred
 owner) — never a free-text claim.
 
 Cross-family chains (e.g., `subdomain_takeover -> frontend_wallet_drain`)
 record one chain attempt per pivot edge. The web-side proof anchors on a
-`bounty_http_scan` request ID from `bounty_read_http_audit`; the SC-side
+`bob_http_scan` request ID from `bob_read_http_audit`; the SC-side
 proof anchors on `sc_evidence`.
 
 ### 3. Evidence packs × SC findings
 
 The evidence-agent (`prompts/roles/evidence.md` source, `.claude/agents/
 evidence-agent.md` artifact) runs after final verification when reportables
-exist. It dispatches by `finding.surface_type`:
+exist. It dispatches by `claim.surface_type`:
 
-- **`web` (or null legacy):** replays via `bounty_http_scan` with
+- **`web` (or null legacy):** replays via `bob_http_scan` with
   `egress_profile`, samples request/response shape (≤10 representative
   samples), redacts secrets/PII.
 - **`smart_contract`:** re-runs the family runner against a FRESH chain
@@ -353,12 +354,12 @@ exist. It dispatches by `finding.surface_type`:
 
 | chain_family | runner | sample_type | trust-map reads |
 |---|---|---|---|
-| evm | bounty_foundry_run | evm_foundry_run | bounty_evm_role_table / bounty_evm_storage_read / bounty_evm_call |
-| svm | bounty_anchor_run | svm_anchor_run | bounty_svm_fetch_program / bounty_svm_fetch_account |
-| aptos | bounty_aptos_run | aptos_move_test | bounty_aptos_fetch_resource / bounty_aptos_fetch_module |
-| sui | bounty_sui_run | sui_move_test | bounty_sui_fetch_object / bounty_sui_fetch_package |
-| substrate | bounty_substrate_run | substrate_ink_test | bounty_substrate_fetch_storage / bounty_substrate_fetch_runtime |
-| cosmwasm | bounty_cosmwasm_run | cosmwasm_cw_multi_test | bounty_cosmwasm_fetch_contract / bounty_cosmwasm_smart_query |
+| evm | bob_foundry_run | evm_foundry_run | bob_evm_role_table / bob_evm_storage_read / bob_evm_call |
+| svm | bob_anchor_run | svm_anchor_run | bob_svm_fetch_program / bob_svm_fetch_account |
+| aptos | bob_aptos_run | aptos_move_test | bob_aptos_fetch_resource / bob_aptos_fetch_module |
+| sui | bob_sui_run | sui_move_test | bob_sui_fetch_object / bob_sui_fetch_package |
+| substrate | bob_substrate_run | substrate_ink_test | bob_substrate_fetch_storage / bob_substrate_fetch_runtime |
+| cosmwasm | bob_cosmwasm_run | cosmwasm_cw_multi_test | bob_cosmwasm_fetch_contract / bob_cosmwasm_smart_query |
 
 `representative_samples[]` for SC findings carry `runner`, `harness_path`,
 `match_test`, `fork_block_used`, `test_stdout_excerpt` (≤1000 chars, the
@@ -374,7 +375,7 @@ checks pack EXISTENCE, not pack quality. The verifier owns reportability.
 
 ### 4. Direct SC egress policy
 
-`bounty_http_scan` honors the operator's `egress_profile` for HTTP traffic
+`bob_http_scan` honors the operator's `egress_profile` for HTTP traffic
 to the target. SC RPC clients and fork runners use a separate direct-only
 policy because chain RPC/REST endpoints are operator-curated infrastructure,
 not first-party target web traffic.
@@ -412,5 +413,5 @@ Per-family matrix:
 
 When SC findings have an off-chain web side (e.g., a leaked API key that
 controls oracle pricing on-chain), the off-chain HTTP step still flows
-through `bounty_http_scan` and honors the egress profile. The SC-side
+through `bob_http_scan` and honors the egress profile. The SC-side
 RPC/REST reads stay under the direct HTTPS policy above.

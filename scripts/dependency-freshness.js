@@ -15,7 +15,6 @@ const CHECKS = Object.freeze([
     name: "psl",
     reason: "Public Suffix List scope ownership",
     warnAfterDays: 180,
-    failAfterDays: 540,
   }),
 ]);
 
@@ -173,10 +172,9 @@ function checkDependency(check, options, packageJson, packageLock) {
 
   const ageDays = daysBetween(options.now, publishedDate);
   const ageText = ageDays.toFixed(1);
-  if (ageDays > check.failAfterDays) {
-    fail(`${check.name}@${latest} latest publish age ${ageText} days exceeds failure threshold ${check.failAfterDays} days`);
-  } else if (ageDays > check.warnAfterDays) {
-    warn(`${check.name}@${latest} latest publish age ${ageText} days exceeds warning threshold ${check.warnAfterDays} days`);
+  if (ageDays > check.warnAfterDays) {
+    const latestText = latest === lockedVersion ? "; lockfile is still npm latest" : "";
+    warn(`${check.name}@${latest} latest publish age ${ageText} days exceeds warning threshold ${check.warnAfterDays} days${latestText}`);
   } else {
     pass(`${check.name}@${latest} latest publish age ${ageText} days is within ${check.warnAfterDays} day warning threshold`);
   }

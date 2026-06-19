@@ -49,8 +49,9 @@ async function handler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_cosmwasm_fetch_contract",
-  description: "Read-only GET /cosmwasm/wasm/v1/contract/{address} through the DNS-pinned direct public HTTPS CosmWasm REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet REST has no default endpoint and endpoint_used is redacted. Returns the contract's code_id, creator, admin, and label, plus the head block height for the verified-at reference line. Hunters use this to identify the admin (migration-key holder) and code_id (WASM blob hash); verifiers use admin + code_id to confirm the contract hasn't been migrated since the hunter recorded the bug. A 404 from this endpoint is the chain_id/chain_family disambiguation gate — if the bech32 address doesn't resolve on the claimed network, the verifier denies the finding.",
+  name: "bob_cosmwasm_fetch_contract",
+  aliases: ["bounty_cosmwasm_fetch_contract"],
+  description: "Read-only GET /cosmwasm/wasm/v1/contract/{address} through the DNS-pinned direct public HTTPS CosmWasm REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet REST has no default endpoint and endpoint_used is redacted. Returns the contract's code_id, creator, admin, and label, plus the head block height for the verified-at reference line. Evaluators use this to identify the admin (migration-key holder) and code_id (WASM blob hash); verifiers use admin + code_id to confirm the contract hasn't been migrated since the evaluator recorded the bug. A 404 from this endpoint is the chain_id/chain_family disambiguation gate — if the bech32 address doesn't resolve on the claimed network, the verifier denies the finding.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -62,7 +63,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "network", "address"]
   },
   handler,
-  role_bundles: ["hunter-cosmwasm", "verifier", "evidence"],
+  role_bundles: ["evaluator-cosmwasm", "verifier", "evidence"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

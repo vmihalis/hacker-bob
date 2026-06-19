@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.3
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.4.0
         with:
           node-version: 20
           cache: npm
@@ -68,6 +68,18 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           if npm view "hacker-bob-codex@$VERSION" version >/dev/null 2>&1; then
             echo "hacker-bob-codex@$VERSION is already published; skipping."
+          else
+            npm publish --provenance --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish Kimi wrapper package
+        working-directory: packages/hacker-bob-kimi
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "hacker-bob-kimi@$VERSION" version >/dev/null 2>&1; then
+            echo "hacker-bob-kimi@$VERSION is already published; skipping."
           else
             npm publish --provenance --access public
           fi

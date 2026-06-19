@@ -18,8 +18,8 @@ const {
   parseWaveId,
 } = require("./validation.js");
 const {
-  readAttackSurfaceStrict,
-} = require("./attack-surface.js");
+  currentSurfaces,
+} = require("./frontier-projections.js");
 const {
   validateAssignedWaveAgentSurface,
 } = require("./assignments.js");
@@ -45,6 +45,9 @@ const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
 const {
+  safeGovernanceContextForDomain,
+} = require("./governance-context.js");
+const {
   resourceCandidatePaths,
 } = require("./runtime-resources.js");
 const {
@@ -52,11 +55,330 @@ const {
   ToolError,
 } = require("./envelope.js");
 
-const HUNTER_KNOWLEDGE_FILE = Object.freeze(["knowledge", "hunter-techniques.json"]);
-const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
-const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
-const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
+const EVALUATOR_KNOWLEDGE_FILE = Object.freeze(["knowledge", "evaluator-techniques.json"]);
+const EVALUATOR_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
+const EVALUATOR_KNOWLEDGE_MAX_ENTRIES = 4;
+const EVALUATOR_KNOWLEDGE_MAX_CHARS = 4500;
 const TECHNIQUE_PACK_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+
+// ── Plane O Cycle O.6 — OSS technique-pack content ──────────────────────────
+// Seven OSS technique packs with hunting vocabulary carried in `summary`
+// content (per Reviewer D's carry-back: heuristics live in pack content, not
+// role-prompt prose). Each pack declares `lens_affinity` so future brief
+// renderers can foreground packs for the matching OSS task lens.
+//
+// These packs do NOT flow through `getCapabilityPack(capability_pack)` — the
+// "oss" capability_pack is not registered yet (cycle O.9 wires the orchestrator
+// branch and any registry entries it needs). Instead they live as JS-defined
+// records exposed via the OSS_TECHNIQUE_PACKS export so the brief renderer
+// (under the `profile: "oss"` slice registry) and tests can read them
+// directly.
+//
+// Spec wording was deliberate: native-code pack carries the FULL MVP bug-class
+// vocabulary in its `summary` so tests can grep for "bounds checks" /
+// "double-free" / "use-after-free" against pack content without needing the
+// vocabulary to be hard-coded in evaluator-techniques.json.
+const OSS_TECHNIQUE_PACKS = Object.freeze([
+  Object.freeze({
+    id: "oss_dependency",
+    title: "OSS dependency triage",
+    lens_affinity: Object.freeze(["taint_trace"]),
+    summary: "Lockfile drift, vendored fork without security backports, manifest-declared vs resolved version, transitive dependency with known CVE reaching app code via call graph.",
+  }),
+  Object.freeze({
+    id: "oss_native_code",
+    title: "OSS native-code vulnerabilities",
+    lens_affinity: Object.freeze(["taint_trace", "fuzz_run"]),
+    summary: "bounds checks, integer truncation, signed/unsigned conversion, allocation-size math, NUL/path handling, state-machine confusion, lifetime/ownership mistakes, double-free/use-after-free, attacker-controlled network/file input reaching parser sites. For NFS/XDR/protocol projects: map data path from packet/file/API input to exact parser or state transition before recording; name file, function/symbol, controlling fields, impact if malformed.",
+  }),
+  Object.freeze({
+    id: "oss_api_schema",
+    title: "OSS API schema enforcement",
+    lens_affinity: Object.freeze(["code_surface_scout", "taint_trace"]),
+    summary: "OpenAPI/GraphQL schema in repo, server-side enforcement gaps vs declared schema, type-confusion via inheritance or polymorphism in handlers.",
+  }),
+  Object.freeze({
+    id: "oss_authz",
+    title: "OSS authorization gaps",
+    lens_affinity: Object.freeze(["taint_trace"]),
+    summary: "Decorator/middleware auth that's bypassable, role-check happens only in one of two callers, server-trusted client claims, IDOR in handlers.",
+  }),
+  Object.freeze({
+    id: "oss_ci_cd",
+    title: "OSS CI/CD pipeline review",
+    lens_affinity: Object.freeze(["code_surface_scout"]),
+    summary: "Workflow secrets via pull_request_target, malicious test runners on PR, GITHUB_TOKEN over-permissioning, third-party action without SHA pin.",
+  }),
+  Object.freeze({
+    id: "oss_secrets_config",
+    title: "OSS committed secrets and config misuse",
+    lens_affinity: Object.freeze(["code_surface_scout"]),
+    summary: "Committed credentials, weak crypto defaults, debug flags committed, .env in tree, history-purged secrets still recoverable.",
+  }),
+  Object.freeze({
+    id: "oss_docs_behavior",
+    title: "OSS docs-vs-behavior divergence",
+    lens_affinity: Object.freeze(["code_surface_scout"]),
+    summary: "Docs claim X but code does Y — rate-limit docs vs enforced limit, auth docs vs hard-coded admin email check.",
+  }),
+]);
+
+// ── Plane X Cycle X.5 — cross-stack identity-handoff technique pack ────────
+// Carries the hunting vocabulary that exercises the X.5 / X.11 cross-stack
+// thesis (the "Nike fix"): off-chain identity asserted by an auth artifact
+// (JWT / signed envelope) must propagate to on-chain identity in a way the
+// on-chain code can rely on without trust. Most cross-stack bugs live in the
+// silent assumption that "the wallet I see in tx is the same principal that
+// minted the JWT". `lens_affinity` covers the X.3 transition surface kinds
+// directly so the X.8 brief renderer can foreground this pack whenever the
+// dispatched node is a Transition (X.5 derivePackForNode UNION-includes it
+// for every Transition; the lens_affinity surfaces it for Surface and
+// Hypothesis briefs that touch identity_propagation / trust_handoff
+// adjacency too).
+//
+// Per X-P9 the `summary` is the brief-inlinable form; `full` keeps the
+// production-grade prompt the brief renderer pulls when the operator opts
+// into full-pack reads. Both stay short — under the 280-char invariant /
+// 512-char trust_assumption prose discipline applied across Plane X — so a
+// transition brief with this pack stays under the X-P9 brief budget by
+// construction.
+const WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK = Object.freeze({
+  id: "web3_identity_handoff",
+  title: "Cross-stack identity / trust handoff",
+  lens_affinity: Object.freeze([
+    "identity_propagation",
+    "value_movement",
+    "trust_handoff",
+    "state_dependency",
+    "oracle_dependency",
+    "message_passing",
+  ]),
+  summary:
+    "token-to-wallet correlation, off-chain auth assumption used as on-chain trust, signature recovery accepting forged eth_sign, meta-transaction replay, gas relayer permission escalation, message-bridge validator threshold under-set.",
+  full:
+    "Cross-stack identity / trust handoff hunting checklist:\n"
+    + "- token-to-wallet correlation: does the JWT.sub (or session principal) match the on-chain msg.sender / recovered signer? Mismatch = identity-propagation bug.\n"
+    + "- off-chain auth assumption used as on-chain trust: contract accepts an action because some off-chain service signed for it (oracle, relayer, custodian) — does the contract verify a signature bound to the OFF-CHAIN identity?\n"
+    + "- signature recovery accepting forged eth_sign: ecrecover over user-controlled prefix bytes; \\x19Ethereum Signed Message:\\n vs EIP-712 vs raw — wrong prefix → cross-domain replay.\n"
+    + "- meta-transaction replay: nonce per (signer, relayer) vs per signer; chainId binding; deadline; same signature replayable on fork chain.\n"
+    + "- gas relayer permission escalation: relayer wraps user-signed payload but adds its own privileged calldata after the boundary check.\n"
+    + "- message-bridge validator threshold under-set: validator set / DVN threshold defined off-chain or by a role that can be re-keyed without a freeze period.\n"
+    + "Witness this with relational_value_match: left = off-chain artifact (http_record, JWT.sub or signed envelope.signer), right = on-chain artifact (evm_call, recover_signer result or msg.sender). op: eq.",
+});
+
+// ── Plane X Cycle X.11 — per-transition-kind hunting vocabulary ────────────
+// The X-D3 closed enum of six transition_kind values each has its own
+// focused hunting vocabulary derived from WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK.
+// X.11 brief composition foregrounds the per-kind vocab when rendering a
+// Transition node brief so the agent doesn't have to mentally pattern-match
+// the combined summary against the specific transition_kind they were
+// dispatched against. Each entry stays under the 512-char prose discipline
+// (X-P9) so a Transition brief with all six hunting bullets would still fit
+// inside the X-P9 brief budget.
+const TRANSITION_KIND_HUNTING_VOCAB = Object.freeze({
+  identity_propagation:
+    "token-to-wallet correlation: does the JWT.sub (or session principal) match the on-chain msg.sender / recovered signer? Mismatch = identity-propagation bug. Off-chain identity asserted in an auth artifact (JWT, signed envelope) must bind to the on-chain identity the contract enforces — a privileged caller hand-off without binding is the canonical bug.",
+  value_movement:
+    "off-chain auth used as on-chain trust for money movement: a contract that accepts a transfer or mint because some off-chain service signed for it (custodian, relayer, oracle) — does the contract verify a signature bound to the OFF-CHAIN identity that authorized the off-chain leg? Cross-stack value movement bugs hide in the silent assumption that the off-chain auth principal equals the on-chain caller.",
+  trust_handoff:
+    "trust handoff between off-chain auth and on-chain authority: an off-chain role (admin / operator / oracle owner) maps to an on-chain role without a binding. Check whether the on-chain role can be re-keyed without notice, whether the off-chain role's signing key rotates separately from the on-chain assignment, and whether revoking off-chain access removes the on-chain authority.",
+  state_dependency:
+    "state read across the off-chain/on-chain boundary: contract reads a state derived off-chain (e.g., committed reward index from an indexer, off-chain order book digest) — does the contract enforce that the off-chain producer's signature is fresh, bound to the contract's expected sequence, and unforgeable? A stale or replayed off-chain state digest accepted on-chain is the canonical bug.",
+  oracle_dependency:
+    "oracle dependency from a privileged off-chain producer: contract trusts a price / event / signature from a named oracle — does the contract enforce the oracle's signature scheme, freshness, and the off-chain producer's identity binding (NOT just \"this address signed\")? Oracle-stale, oracle-replay, oracle-impersonation each map to a different witness predicate.",
+  message_passing:
+    "cross-chain / cross-stack message passing: a message routed through a bridge / DVN / relayer carries an off-chain-signed envelope that the destination contract accepts. Check whether the validator threshold is set on-chain (not by an off-chain role), whether the envelope's source-chain identity binds to the destination action, and whether replay across forks / chains is prevented (chainId + nonce + deadline).",
+});
+
+// ── Plane X Cycle X.11 — per-transition-kind worked Contract templates ─────
+// The X.11 brief composition surfaces a complete relational_value_match
+// predicate skeleton per transition_kind so the agent doesn't have to invent
+// the shape. Each template names a left artifact_ref + extract_path AND a
+// right artifact_ref + extract_path; the agent fills in the real refs from
+// their dispatched observations. Templates use placeholder ref ids
+// (e.g. `<auth_token_response>`, `<verify_signature>`) so the agent reads
+// them as "fill these in" not "use these literal ids".
+//
+// Per X-P9 each template stays under the X-D4 invariant cap (280 chars per
+// invariant statement) so a Transition brief carrying all six templates
+// remains under the brief budget.
+const TRANSITION_KIND_CONTRACT_TEMPLATES = Object.freeze({
+  identity_propagation: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause the on-chain msg.sender / recovered signer to differ from the off-chain principal that signed the auth artifact.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<auth_token_response>",
+          extract_path: "$.response.body.access_token.payload.sub",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<verify_signature>",
+          extract_path: "$.recovered_signer",
+        }),
+      }),
+    }),
+  }),
+  value_movement: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause an on-chain value-moving call to authorize a recipient that differs from the off-chain authorization's payee.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<authorize_transfer_response>",
+          extract_path: "$.response.body.authorized.payee",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<execute_transfer>",
+          extract_path: "$.calldata.recipient",
+        }),
+      }),
+    }),
+  }),
+  trust_handoff: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause the on-chain authority to act under a role whose off-chain holder no longer holds the corresponding off-chain credential.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<current_role_holder>",
+          extract_path: "$.response.body.role.holder_address",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<role_authority_check>",
+          extract_path: "$.recovered_signer",
+        }),
+      }),
+    }),
+  }),
+  state_dependency: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause the on-chain contract to accept an off-chain-produced state digest whose freshness, sequence, or signer binding is unverified.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<offchain_state_digest>",
+          extract_path: "$.response.body.commitment.digest",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<onchain_state_read>",
+          extract_path: "$.return_value.committed_digest",
+        }),
+      }),
+    }),
+  }),
+  oracle_dependency: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause the on-chain contract to accept an oracle value whose signer identity does not bind to the named oracle's off-chain identity.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<oracle_report_envelope>",
+          extract_path: "$.response.body.signer_address",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<oracle_verification>",
+          extract_path: "$.recovered_signer",
+        }),
+      }),
+    }),
+  }),
+  message_passing: Object.freeze({
+    invariant:
+      "An attacker MUST NOT cause a destination-chain action to be authorized by a source-chain envelope whose source-chain identity does not bind to the destination action.",
+    witness: Object.freeze({
+      kind: "relational_value_match",
+      predicate: Object.freeze({
+        left: Object.freeze({
+          artifact_ref: "http_record:<source_chain_envelope>",
+          extract_path: "$.response.body.source_chain.sender_address",
+        }),
+        op: "eq",
+        right: Object.freeze({
+          artifact_ref: "evm_call:<destination_chain_dispatch>",
+          extract_path: "$.calldata.authorized_sender",
+        }),
+      }),
+    }),
+  }),
+});
+
+// X.11 helper: surface the per-kind hunting vocab + Contract template for a
+// given transition_kind. Returns null for an unknown kind so callers can
+// gracefully fall back to the combined `web3_identity_handoff` summary.
+function transitionKindBriefContent(transitionKind) {
+  if (typeof transitionKind !== "string") return null;
+  const trimmed = transitionKind.trim();
+  if (!trimmed) return null;
+  const vocab = TRANSITION_KIND_HUNTING_VOCAB[trimmed];
+  const template = TRANSITION_KIND_CONTRACT_TEMPLATES[trimmed];
+  if (!vocab && !template) return null;
+  return Object.freeze({
+    transition_kind: trimmed,
+    hunting_vocab: vocab || null,
+    contract_template: template || null,
+  });
+}
+
+const TECHNIQUE_PACKS_BY_ID = Object.freeze({
+  ...Object.fromEntries(OSS_TECHNIQUE_PACKS.map((pack) => [pack.id, pack])),
+  [WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK.id]: WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK,
+});
+
+function getTechniquePackById(packId) {
+  if (typeof packId !== "string" || !packId.trim()) return null;
+  return TECHNIQUE_PACKS_BY_ID[packId.trim()] || null;
+}
+
+// Technique-pack id alias map. MVP wisdom about id-typo recovery: the MVP
+// branch shipped packs under longer descriptive ids (e.g.
+// `oss-native-code-c-parser-review`) and operators / docs reference them by
+// those legacy ids. The alias map resolves a legacy id to the canonical id.
+// Aliases also cover dash-vs-underscore variants and the human-friendly
+// hyphenated form some docs use.
+const OSS_TECHNIQUE_PACK_ID_ALIASES = Object.freeze({
+  "oss-native-code-c-parser-review": "oss_native_code",
+  "oss-native-code-protocol-memory": "oss_native_code",
+  "oss-native-code": "oss_native_code",
+  "oss-dependency": "oss_dependency",
+  "oss-api-schema": "oss_api_schema",
+  "oss-authz": "oss_authz",
+  "oss-ci-cd": "oss_ci_cd",
+  "oss-secrets-config": "oss_secrets_config",
+  "oss-docs-behavior": "oss_docs_behavior",
+});
+
+function resolveOssTechniquePackId(packId) {
+  if (typeof packId !== "string") return null;
+  const trimmed = packId.trim();
+  if (!trimmed) return null;
+  // Direct hit first (canonical id).
+  if (OSS_TECHNIQUE_PACKS.some((pack) => pack.id === trimmed)) {
+    return trimmed;
+  }
+  // Alias hit.
+  const aliased = OSS_TECHNIQUE_PACK_ID_ALIASES[trimmed];
+  if (aliased && OSS_TECHNIQUE_PACKS.some((pack) => pack.id === aliased)) {
+    return aliased;
+  }
+  return null;
+}
+
+function findOssTechniquePack(packId) {
+  const resolvedId = resolveOssTechniquePackId(packId);
+  if (resolvedId == null) return null;
+  return OSS_TECHNIQUE_PACKS.find((pack) => pack.id === resolvedId) || null;
+}
 const DEFAULT_SUMMARY_ESTIMATED_TOKENS = 500;
 const DEFAULT_FULL_ESTIMATED_TOKENS = 1500;
 const TECHNIQUE_SUMMARY_ITEMS_PER_KIND = 4;
@@ -67,7 +389,7 @@ const TECHNIQUE_SELECTION_MAX_CHARS = 6000;
 
 function registryWarning(source, { entryIndex = null, entryId = null, reason }) {
   const warning = {
-    source: source ? path.basename(source) : HUNTER_KNOWLEDGE_FILE[HUNTER_KNOWLEDGE_FILE.length - 1],
+    source: source ? path.basename(source) : EVALUATOR_KNOWLEDGE_FILE[EVALUATOR_KNOWLEDGE_FILE.length - 1],
     reason: String(reason || "invalid technique registry entry"),
   };
   if (entryIndex != null) warning.entry_index = entryIndex;
@@ -84,12 +406,12 @@ function readableEntryId(entry) {
   return null;
 }
 
-function hunterKnowledgeCandidatePaths() {
-  return resourceCandidatePaths(...HUNTER_KNOWLEDGE_FILE);
+function evaluatorKnowledgeCandidatePaths() {
+  return resourceCandidatePaths(...EVALUATOR_KNOWLEDGE_FILE);
 }
 
-function loadHunterKnowledge() {
-  for (const candidate of hunterKnowledgeCandidatePaths()) {
+function loadEvaluatorKnowledge() {
+  for (const candidate of evaluatorKnowledgeCandidatePaths()) {
     if (!candidate || !fs.existsSync(candidate)) continue;
     let parsed;
     try {
@@ -100,7 +422,7 @@ function loadHunterKnowledge() {
         version: 1,
         entries: [],
         warnings: [registryWarning(candidate, {
-          reason: `Malformed hunter-techniques.json: ${error.message || String(error)}`,
+          reason: `Malformed evaluator-techniques.json: ${error.message || String(error)}`,
         })],
       };
     }
@@ -111,7 +433,7 @@ function loadHunterKnowledge() {
         version,
         entries: [],
         warnings: [registryWarning(candidate, {
-          reason: "hunter-techniques.json must be an object with entries[]",
+          reason: "evaluator-techniques.json must be an object with entries[]",
         })],
       };
     }
@@ -283,23 +605,43 @@ function packEstimatedTokens(entry) {
   };
 }
 
+function normalizeLensAffinity(entry, packId) {
+  if (entry.lens_affinity == null) return null;
+  if (!Array.isArray(entry.lens_affinity)) {
+    throw new Error(`technique pack ${packId}: lens_affinity must be a string[] when set`);
+  }
+  const cleaned = entry.lens_affinity
+    .filter((item) => typeof item === "string" && item.trim())
+    .map((item) => item.trim());
+  if (cleaned.length !== entry.lens_affinity.length) {
+    throw new Error(`technique pack ${packId}: lens_affinity entries must be non-empty strings`);
+  }
+  return cleaned.length > 0 ? Object.freeze(cleaned) : null;
+}
+
 function normalizeRegistryEntry(entry, registryVersion) {
   if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("technique pack entry must be an object");
   }
   const id = normalizeTechniquePackId(entry.id || "knowledge-entry", "technique_pack.id");
-  const title = assertNonEmptyString(entry.title || entry.id || "Hunter guidance", "technique_pack.title");
+  const title = assertNonEmptyString(entry.title || entry.id || "Evaluator guidance", "technique_pack.title");
   const capabilityPacks = normalizeCapabilityPacks(entry);
   for (const capabilityPack of capabilityPacks) {
     if (!getCapabilityPack(capabilityPack)) {
       throw new Error(`Unknown capability_pack in technique pack ${id}: ${capabilityPack}`);
     }
   }
+  // Plane T cycle T.4 — optional `lens_affinity` field. When set, the brief
+  // renderer foregrounds the pack for matching task lenses (e.g.
+  // `browser_behavior_probe`) and demotes packs without affinity to "Other
+  // applicable techniques". When absent, the pack stays in the default flow.
+  const lensAffinity = normalizeLensAffinity(entry, id);
   return {
     id,
     version: Number.isInteger(entry.version) ? entry.version : registryVersion,
     title,
     capability_packs: capabilityPacks,
+    ...(lensAffinity ? { lens_affinity: lensAffinity } : {}),
     match: entry.match && typeof entry.match === "object" && !Array.isArray(entry.match) ? entry.match : {},
     techniques: stringArray(entry.techniques)
       .map((item) => item.trim())
@@ -311,6 +653,7 @@ function normalizeRegistryEntry(entry, registryVersion) {
     raw_entry: {
       id,
       title,
+      ...(lensAffinity ? { lens_affinity: lensAffinity } : {}),
       match: entry.match && typeof entry.match === "object" && !Array.isArray(entry.match) ? entry.match : {},
       techniques: stringArray(entry.techniques)
         .map((item) => item.trim())
@@ -323,7 +666,7 @@ function normalizeRegistryEntry(entry, registryVersion) {
 }
 
 function loadTechniqueRegistry() {
-  const knowledge = loadHunterKnowledge();
+  const knowledge = loadEvaluatorKnowledge();
   const warnings = Array.isArray(knowledge.warnings) ? knowledge.warnings.slice() : [];
   const packs = [];
   const seenIds = new Set();
@@ -373,6 +716,9 @@ function techniquePackSummary(pack, { matches = [], score = 0, attempt = null } 
     version: pack.version,
     title: pack.title,
     capability_packs: pack.capability_packs.slice(),
+    // Plane T cycle T.4 — expose `lens_affinity` so the brief renderer can
+    // foreground/demote summaries without re-reading the registry.
+    ...(Array.isArray(pack.lens_affinity) ? { lens_affinity: pack.lens_affinity.slice() } : {}),
     matched: matches.slice(0, 8),
     score,
     summary: {
@@ -433,11 +779,11 @@ function fitTechniquePackSummaries(summaries, maxChars = TECHNIQUE_SELECTION_MAX
 
 function selectTechniquePacksForSurface(surface, {
   capabilityPack = "web",
-  maxPacks = HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  maxPacks = EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
   includeAttempted = true,
   attempts = [],
 } = {}) {
-  const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || HUNTER_KNOWLEDGE_MAX_ENTRIES;
+  const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || EVALUATOR_KNOWLEDGE_MAX_ENTRIES;
   const registry = loadTechniqueRegistry();
   if (registry.packs.length === 0) {
     return {
@@ -464,7 +810,7 @@ function selectTechniquePacksForSurface(surface, {
 
   if (scoredPacks.length === 0) {
     const fallback = registry.packs.find(
-      (pack) => pack.id === HUNTER_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
+      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
     );
     if (fallback) {
       scoredPacks.push({ pack: fallback, score: 0, matches: ["fallback:generic-rest-api"] });
@@ -796,7 +1142,7 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     capability_pack: capabilityPack,
     capability_pack_version: route.capability_pack_version || pack.capability_pack_version,
     brief_profile: route.brief_profile || pack.brief_profile,
-    hunter_agent: route.hunter_agent || pack.hunter_agent,
+    evaluator_agent: route.evaluator_agent || pack.evaluator_agent,
     context_budget: normalizeContextBudget(route.context_budget, pack),
   };
 }
@@ -810,7 +1156,7 @@ function selectTechniquePacks(args) {
     throw new Error("include_attempted must be a boolean");
   }
 
-  const attackSurface = readAttackSurfaceStrict(domain);
+  const attackSurface = currentSurfaces(domain);
   const surface = attackSurface.document.surfaces.find((entry) => entry && entry.id === surfaceId);
   if (!surface) {
     throw new Error(`Unknown surface_id: ${surfaceId}`);
@@ -861,9 +1207,9 @@ function fitKnowledgeEntries(entries, maxChars) {
   return selected;
 }
 
-function resolveHunterKnowledge(surface, {
+function resolveEvaluatorKnowledge(surface, {
   capabilityPack = "web",
-  maxEntries = HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  maxEntries = EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
 } = {}) {
   const selectedResult = selectTechniquePacksForSurface(surface, {
     capabilityPack,
@@ -880,7 +1226,7 @@ function resolveHunterKnowledge(surface, {
       techniques: pack.summary.guidance.slice(0, 4),
       payload_hints: pack.summary.payload_hints.slice(0, 4),
     }));
-  const fittedEntries = fitKnowledgeEntries(slimEntries, HUNTER_KNOWLEDGE_MAX_CHARS);
+  const fittedEntries = fitKnowledgeEntries(slimEntries, EVALUATOR_KNOWLEDGE_MAX_CHARS);
   let techniques = [];
   let payloadHints = [];
   let charCount = 0;
@@ -899,7 +1245,7 @@ function resolveHunterKnowledge(surface, {
         hints: entry.payload_hints,
       }));
     charCount = JSON.stringify({ techniques, payload_hints: payloadHints }).length;
-    if (charCount <= HUNTER_KNOWLEDGE_MAX_CHARS) break;
+    if (charCount <= EVALUATOR_KNOWLEDGE_MAX_CHARS) break;
     fittedEntries.pop();
   }
   if (fittedEntries.length === 0) {
@@ -916,7 +1262,7 @@ function resolveHunterKnowledge(surface, {
       entries_returned: fittedEntries.length,
       capped: slimEntries.length > fittedEntries.length,
       char_count: charCount,
-      max_chars: HUNTER_KNOWLEDGE_MAX_CHARS,
+      max_chars: EVALUATOR_KNOWLEDGE_MAX_CHARS,
       registry_warnings: selectedResult.registry_warnings,
     },
   };
@@ -1032,7 +1378,7 @@ function logTechniqueAttempt(args) {
   const parsedAgent = agent ? parseAgentId(agent) : null;
 
   const packResult = readTechniquePack(packId, { mode: "summary" });
-  const attackSurface = readAttackSurfaceStrict(domain);
+  const attackSurface = currentSurfaces(domain);
   const surface = attackSurface.document.surfaces.find((entry) => entry && entry.id === surfaceId);
   if (!surface) {
     throw new Error(`Unknown surface_id: ${surfaceId}`);
@@ -1070,11 +1416,11 @@ function logTechniqueAttempt(args) {
       agent: parsedAgent,
       surface_id: surfaceId,
       status,
-      source: "bounty_log_technique_attempt",
+      source: "bob_log_technique_attempt",
       counts: {
         records: 1,
       },
-    });
+    }, safeGovernanceContextForDomain(domain));
     return JSON.stringify({
       appended: 1,
       log_path: logPath,
@@ -1085,16 +1431,16 @@ function logTechniqueAttempt(args) {
 }
 
 module.exports = {
-  HUNTER_KNOWLEDGE_FILE,
-  HUNTER_KNOWLEDGE_MAX_CHARS,
-  HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  EVALUATOR_KNOWLEDGE_FILE,
+  EVALUATOR_KNOWLEDGE_MAX_CHARS,
+  EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
   TECHNIQUE_FULL_ITEM_MAX_CHARS,
   TECHNIQUE_FULL_ITEMS_PER_KIND,
   TECHNIQUE_SELECTION_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
-  hunterKnowledgeCandidatePaths,
-  loadHunterKnowledge,
+  evaluatorKnowledgeCandidatePaths,
+  loadEvaluatorKnowledge,
   loadTechniqueRegistry,
   logTechniqueAttempt,
   normalizeTechniqueAttemptRecord,
@@ -1102,11 +1448,25 @@ module.exports = {
   readTechniquePack,
   readTechniquePackForTool,
   readTechniquePackReadRecordsFromJsonl,
-  resolveHunterKnowledge,
+  resolveEvaluatorKnowledge,
   scoreTechniqueEntry,
   selectTechniquePacks,
   selectTechniquePacksForSurface,
   assertTechniquePackMatchesCapability,
   summarizeTechniqueAttempt,
   techniquePackSummary,
+  // Cycle O.6 — OSS technique-pack content + id alias map.
+  OSS_TECHNIQUE_PACKS,
+  OSS_TECHNIQUE_PACK_ID_ALIASES,
+  findOssTechniquePack,
+  resolveOssTechniquePackId,
+  // Cycle X.5 — cross-stack identity-handoff technique pack + lookup helper.
+  WEB3_IDENTITY_HANDOFF_TECHNIQUE_PACK,
+  TECHNIQUE_PACKS_BY_ID,
+  getTechniquePackById,
+  // Cycle X.11 — per-transition-kind hunting vocab + worked Contract
+  // templates surfaced in the cross-stack Transition brief composition.
+  TRANSITION_KIND_HUNTING_VOCAB,
+  TRANSITION_KIND_CONTRACT_TEMPLATES,
+  transitionKindBriefContent,
 };

@@ -17,39 +17,6 @@ const KEEP = process.argv.includes("--keep");
 const EXCLUDED_RELEASE_CANDIDATE_PATHS = new Set([
   ...LOCAL_INSTALL_METADATA_FILES,
 ]);
-const ALLOWED_UNTRACKED_RELEASE_CANDIDATE_FILES = new Set([
-  "docs/PACKAGE_SURFACES.md",
-  "mcp/lib/finding-contracts.js",
-  "mcp/lib/finding-store.js",
-  "mcp/lib/grade-verdict-store.js",
-  "mcp/lib/handoff-signing-key.js",
-  "mcp/lib/pipeline-events.js",
-  "mcp/lib/pipeline-session-artifacts.js",
-  "mcp/lib/sc-egress-policy.js",
-  "mcp/lib/sc-http-client.js",
-  "mcp/lib/session-authority.js",
-  "mcp/lib/session-state-contracts.js",
-  "mcp/lib/session-state-store.js",
-  "mcp/lib/tool-policy.js",
-  "mcp/lib/verification-contracts.js",
-  "mcp/lib/verification-replay-safety.js",
-  "mcp/lib/verification-round-store.js",
-  "mcp/lib/verification-snapshot-contracts.js",
-  "mcp/lib/verification-status-contracts.js",
-  "mcp/lib/wave-handoff-contracts.js",
-  "mcp/lib/wave-handoff-store.js",
-  "scripts/authority-inventory.js",
-  "scripts/clean-release-audit.js",
-  "scripts/dependency-freshness.js",
-  "scripts/lib/package-policy.js",
-  "test/finding-contracts.test.js",
-  "test/pipeline-events.test.js",
-  "test/session-state-store.test.js",
-  "test/verification-contracts.test.js",
-  "test/wave-handoff-contracts.test.js",
-  "test/wave-handoff-store.test.js",
-]);
-
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd || ROOT,
@@ -89,24 +56,12 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function shouldIncludeUntracked(file) {
-  return ALLOWED_UNTRACKED_RELEASE_CANDIDATE_FILES.has(file);
-}
-
 function shouldExcludeUntracked(file) {
   if (!file || path.isAbsolute(file)) return true;
   if (EXCLUDED_RELEASE_CANDIDATE_PATHS.has(file)) return true;
   if (isInternalRefactorDoc(file)) return true;
   if (isInternalRefactorScratch(file)) return true;
   return false;
-}
-
-function chunked(values, size = 100) {
-  const chunks = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
-  }
-  return chunks;
 }
 
 function materializeReleaseCandidate({ workDir, indexFile }) {
@@ -120,17 +75,10 @@ function materializeReleaseCandidate({ workDir, indexFile }) {
   git(["add", "-u", "--", "."], { env });
 
   const untracked = splitNul(git(["ls-files", "--others", "--exclude-standard", "-z"], { env }).stdout);
-  const includedUntracked = untracked.filter(shouldIncludeUntracked).sort();
   const excludedUntracked = untracked.filter(shouldExcludeUntracked).sort();
-  const unclassifiedUntracked = untracked
-    .filter((file) => !shouldIncludeUntracked(file) && !shouldExcludeUntracked(file))
-    .sort();
-  if (unclassifiedUntracked.length > 0) {
-    throw new Error(`unclassified untracked files require an explicit release-candidate decision: ${unclassifiedUntracked.join(", ")}`);
-  }
-
-  for (const chunk of chunked(includedUntracked)) {
-    git(["add", "--", ...chunk], { env });
+  const blockingUntracked = untracked.filter((file) => !shouldExcludeUntracked(file)).sort();
+  if (blockingUntracked.length > 0) {
+    throw new Error(`untracked files block release: every net-new source must be committed or added to EXCLUDED_RELEASE_CANDIDATE_PATHS / refactor scratch policy before release: ${blockingUntracked.join(", ")}`);
   }
 
   const candidateTree = git(["write-tree"], { env }).stdout.trim();
@@ -144,9 +92,7 @@ function materializeReleaseCandidate({ workDir, indexFile }) {
     candidateTree,
     candidateManifestSha256: sha256(candidateIndexManifest),
     candidateDiffNameStatus,
-    includedUntracked,
     excludedUntracked,
-    unclassifiedUntracked,
   };
 }
 
@@ -228,9 +174,7 @@ function main() {
       candidate_archive_sha256: gitArchiveSha256(candidate.candidateTree),
       tracked_changes: candidate.trackedChanges,
       candidate_diff_name_status: candidate.candidateDiffNameStatus,
-      included_untracked: candidate.includedUntracked,
       excluded_untracked: candidate.excludedUntracked,
-      unclassified_untracked: candidate.unclassifiedUntracked,
       gates: {
         "npm run test:package": packageResult.status,
         "npm run release:check": releaseResult.status,

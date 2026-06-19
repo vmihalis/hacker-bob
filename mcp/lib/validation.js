@@ -5,6 +5,11 @@ const {
   FINDING_ID_RE,
   WAVE_ID_RE,
 } = require("./constants.js");
+const {
+  canonicalizeCwe,
+  assertValidCwe,
+  isKnownCwe,
+} = require("./cwe-catalog.js");
 
 function assertNonEmptyString(value, fieldName) {
   if (typeof value !== "string" || !value.trim()) {
@@ -131,6 +136,28 @@ function assertEnumValue(value, allowedValues, fieldName) {
   return value;
 }
 
+function assertCwe(value, fieldName = "cwe", { required = false, strictPresent = true } = {}) {
+  const empty = value == null || (typeof value === "string" && !value.trim());
+  if (empty) {
+    if (required) {
+      throw new Error(`${fieldName} is required and must be a catalog CWE id (e.g. "CWE-79"); see mcp/lib/cwe-catalog.js for the accepted set`);
+    }
+    return null;
+  }
+  if (!strictPresent) {
+    // Tolerant read-back: a present-but-unparseable or non-catalog CWE is
+    // degraded to null rather than throwing, so a legacy claim row whose
+    // embedded CWE predates the curated catalog (or used free text) still
+    // projects instead of being silently dropped by a caller's catch.
+    return isKnownCwe(value) ? canonicalizeCwe(value) : null;
+  }
+  const canonical = canonicalizeCwe(value);
+  if (canonical == null) {
+    throw new Error(`${fieldName} must be a CWE identifier like "CWE-79"; got ${JSON.stringify(value)}`);
+  }
+  return assertValidCwe(canonical);
+}
+
 function parseFindingId(value, fieldName = "finding_id") {
   const findingId = assertNonEmptyString(value, fieldName);
   if (!FINDING_ID_RE.test(findingId)) {
@@ -141,6 +168,7 @@ function parseFindingId(value, fieldName = "finding_id") {
 
 module.exports = {
   assertBoolean,
+  assertCwe,
   assertEnumValue,
   assertInteger,
   assertNonEmptyString,

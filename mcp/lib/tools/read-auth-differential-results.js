@@ -36,7 +36,8 @@ function readAuthDifferentialResultsHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_read_auth_differential_results",
+  name: "bob_read_auth_differential_results",
+  aliases: ["bounty_read_auth_differential_results"],
   capability_id: "C4_multi_account_differential",
   description:
     "Read the persisted auth-differential-results.json for a target. Pass summary_only: true to skip the per-endpoint array when only the divergence tally is needed.",

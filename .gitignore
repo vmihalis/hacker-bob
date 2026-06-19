@@ -1,6 +1,10 @@
 node_modules/
 testing/**/node_modules/
 site/dist/
+CODEX_VISUALIZATION/dist/
+CLAUDE_VISUALIZATION/dist/
+__pycache__/
+*.pyc
 .DS_Store
 *.log
 *.tsbuildinfo
@@ -9,9 +13,15 @@ site/dist/
 .mcp.json
 !adapters/codex/hacker-bob/.mcp.json
 .codex/
+.kimi/
 .agents/
 .hacker-bob/VERSION
 .hacker-bob/install.json
+.hacker-bob/verification-rounds/
 .claude/bob/VERSION
 .claude/bob/install.json
 .claude/bob/egress-profiles.json
+# act local testing — secrets and log files
+.secrets
+test/act-run.log
+test/act-mock-api.log

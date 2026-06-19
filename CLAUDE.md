@@ -1,13 +1,13 @@
 # Hacker Bob Repo Instructions
 
-This repository is the install source for the Hacker Bob `/bob-hunt` Claude Code framework.
+This repository is the install source for the Hacker Bob `/bob-evaluate` Claude Code framework.
 
 If a user asks you to install this framework into a project:
 
 1. Clone this repo locally.
 2. Run `./install.sh /absolute/path/to/target/project` from the cloned repo.
 3. The installer copies the skills, update command shim, agents, rules, hooks, knowledge, bypass tables, MCP runtime, and generated settings. It merges `.mcp.json` and `.claude/settings.json` instead of overwriting unrelated config.
-4. After install, run Claude Code from the target project and use `/bob-hunt <target>`.
+4. After install, run Claude Code from the target project and use `/bob-evaluate <target>` (slash command) or the `bob-evaluate` skill.
 
 Do not assume this cloned repo is the user's active workspace unless they explicitly want that.
 
@@ -22,7 +22,7 @@ local Claude Code workspace:
 3. It is intended for a dedicated local test workspace because it overwrites
    Bob-owned runtime files after backing up the target MCP/settings files.
 4. After `dev-sync.sh`, fully restart Claude Code in the test workspace, run
-   `/mcp`, and smoke test `bounty_http_scan` with
+   `/mcp`, and smoke test `bob_http_scan` with
    `target_domain: "example.com"` against `https://example.com`.
 
 Maintainer workflow:
@@ -32,17 +32,38 @@ Maintainer workflow:
   `npm run check:syntax`.
 - Generated prompt/config surfaces must stay current. Run
   `node scripts/generate-agent-tools.js` after role-bundle metadata changes and
-  `node scripts/generate-bountyagent-skill.js` after orchestrator/auth bundle
+  `node scripts/generate-hacker-bob-skill.js` after orchestrator/auth bundle
   changes.
 - `TOOLS`, MCP dispatch, role-bundle permissions, agent tool frontmatter, skill
   allowed-tools, Claude settings, and scope-hook registration must remain
   registry-driven.
-- Lifecycle hooks enforce contracts only. Hunter `SubagentStop` validates the
+- Correctness-vocabulary tags (S*, I*, C*, X.*, Y-P*, Y-D*, Y-R*) are
+  registry-driven via `mcp/lib/invariant-registry.js`. Every tag in the tree
+  must resolve to a REGISTRY entry (or the frozen, only-shrinking
+  `ALLOWLIST_UNDOCUMENTED` backlog), and every entry's `enforced_by`
+  file:symbol must exist. The collision-prone S/C/I families are matched only
+  in anchored comment form (`// I6`), so a tag's enforcing anchor MUST be a
+  comment. `npm run check:invariant-registry` (in `test:prompts`) is the
+  orphan-check. Adding a tag means adding its entry AND anchoring the tag at
+  the enforcing site.
+- Lifecycle hooks enforce contracts only. Evaluator `SubagentStop` validates the
   final marker and structured handoff but must not advance `pending_wave`,
-  `hunt_wave`, `explored`, findings summaries, or phase state.
+  `evaluation_wave`, `explored`, findings summaries, or phase state.
 - Markdown mirrors are human/debug artifacts. Chain evidence is MCP-owned in
   `chain-attempts.jsonl`; `report.md` remains the final human-facing
   agent-written report.
-- Hunter briefs must stay bounded: array counts are capped, scalar strings are
-  capped or omitted, and agents should use auth through `bounty_list_auth_profiles`
+- Audit-graded session paths are MCP-rendered (Y-P13). `mcp/lib/paths.js`
+  exports `AUDIT_GRADED_PATHS` (positive list — `report.md`, `chains.md`,
+  `evidence-packs.md`, `grade.md`, verification-round mirrors, wave-handoff
+  mirrors, claim-freeze snapshots, and the hash-bound JSONL ledgers) and the
+  `isAuditGradedPath(absolutePath, target_domain)` predicate. Agents never
+  call the Write tool on these paths; structured composition flows through
+  `bob_compose_report` (Y-D15b), `bob_write_chain_rollup` (Y-D15c),
+  `bob_amend_report` (Y-P13a operator-amendment path), `bob_write_evidence_packs`,
+  `bob_write_grade_verdict`, `bob_write_verification_round`, and
+  `bob_write_wave_handoff`. Scratch artifacts (`subdomains.txt`,
+  `attack_surface.json`, `family_seeds.txt`, `surface-discovery-tools.txt`)
+  are explicitly NOT in `AUDIT_GRADED_PATHS` and remain agent-writable.
+- Evaluator briefs must stay bounded: array counts are capped, scalar strings are
+  capped or omitted, and agents should use auth through `bob_list_auth_profiles`
   rather than reading secret files directly.

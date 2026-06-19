@@ -3,9 +3,10 @@
 const { waveStatus } = require("../waves.js");
 
 module.exports = Object.freeze({
-  name: "bounty_wave_status",
+  name: "bob_wave_status",
+  aliases: ["bounty_wave_status"],
   description:
-    "Read-only hunt status summary for wave decisions. Returns finding counts, coverage gate inputs, transition blockers, and per-finding metadata.",
+    "Read-only evaluate status summary for wave decisions. Returns finding counts, coverage gate inputs, transition blockers, and per-finding metadata.",
   inputSchema: {
     "type": "object",
     "properties": {

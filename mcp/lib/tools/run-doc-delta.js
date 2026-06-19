@@ -30,10 +30,11 @@ async function runDocDeltaToolHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_run_doc_delta",
+  name: "bob_run_doc_delta",
+  aliases: ["bounty_run_doc_delta"],
   capability_id: "C2_doc_vs_behavior",
   description:
-    "Run a doc-vs-behavior differential against the persisted schema-contract corpus. For each contract, issues a request via bounty_http_scan, classifies divergences, and writes doc-delta-results.json. Use after seeding the corpus with bounty_ingest_schema_doc.",
+    "Run a doc-vs-behavior differential against the persisted schema-contract corpus. For each contract, issues a request via bob_http_scan, classifies divergences, and writes doc-delta-results.json. Use after seeding the corpus with bob_ingest_schema_doc.",
   inputSchema: {
     type: "object",
     properties: {
@@ -66,12 +67,12 @@ module.exports = Object.freeze({
       },
       block_internal_hosts: {
         type: "boolean",
-        description: "Forwarded to bounty_http_scan. When omitted, the session's persisted effective policy is used by bounty_http_scan.",
+        description: "Forwarded to bob_http_scan. When omitted, the session's persisted effective policy is used by bob_http_scan.",
       },
       egress_profile: {
         type: "string",
         pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-        description: "Forwarded to bounty_http_scan when set.",
+        description: "Forwarded to bob_http_scan when set.",
       },
     },
     required: ["target_domain", "base_url"],

@@ -55,10 +55,11 @@ async function runAuthDifferentialToolHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_run_auth_differential",
+  name: "bob_run_auth_differential",
+  aliases: ["bounty_run_auth_differential"],
   capability_id: "C4_multi_account_differential",
   description:
-    "Run a multi-account differential across the supplied endpoints. For each endpoint, issues a request via bounty_http_scan once per auth_profile, classifies divergences (status, response class, body shape, body length, sensitive-field count, unauth-success-with-auth-blocked), and writes auth-differential-results.json. Provide profile_metadata to flag genuine auth bypass; otherwise the tool auto-derives sent_with_auth: false for profile names matching guest/anon/noauth/etc.",
+    "Run a multi-account differential across the supplied endpoints. For each endpoint, issues a request via bob_http_scan once per auth_profile, classifies divergences (status, response class, body shape, body length, sensitive-field count, unauth-success-with-auth-blocked), and writes auth-differential-results.json. Provide profile_metadata to flag genuine auth bypass; otherwise the tool auto-derives sent_with_auth: false for profile names matching guest/anon/noauth/etc.",
   inputSchema: {
     type: "object",
     properties: {
@@ -106,12 +107,12 @@ module.exports = Object.freeze({
       },
       block_internal_hosts: {
         type: "boolean",
-        description: "Forwarded to bounty_http_scan. When omitted, the session's persisted effective policy is used by bounty_http_scan.",
+        description: "Forwarded to bob_http_scan. When omitted, the session's persisted effective policy is used by bob_http_scan.",
       },
       egress_profile: {
         type: "string",
         pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-        description: "Forwarded to bounty_http_scan when set.",
+        description: "Forwarded to bob_http_scan when set.",
       },
     },
     required: ["target_domain", "base_url", "endpoints", "auth_profiles"],

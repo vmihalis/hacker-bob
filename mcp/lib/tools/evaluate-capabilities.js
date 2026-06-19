@@ -12,7 +12,8 @@ async function evaluateCapabilitiesHandler(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_evaluate_capabilities",
+  name: "bob_evaluate_capabilities",
+  aliases: ["bounty_evaluate_capabilities"],
   description:
     "Run the built-in capability evaluation harness. Each fixture exercises a specific capability against synthetic inputs and asserts the expected outcome (security-class divergence emitted, top-K finding ranked correctly, frontier branched, etc.). Call without args to run every fixture; pass `fixture: '<name>'` to run one. Use to catch capability regressions before parishioner review.",
   inputSchema: {

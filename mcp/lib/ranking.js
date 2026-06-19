@@ -1,11 +1,11 @@
 "use strict";
 
-const fs = require("fs");
 const {
   assertNonEmptyString,
 } = require("./validation.js");
 const {
   attackSurfacePath,
+  surfaceIndexPath,
 } = require("./paths.js");
 const {
   readTrafficRecordsFromJsonl,
@@ -15,8 +15,8 @@ const {
   summarizePublicIntelForSurface,
 } = require("./public-intel.js");
 const {
-  readAttackSurfaceStrict,
-} = require("./attack-surface.js");
+  currentSurfaces,
+} = require("./frontier-projections.js");
 
 function stringArray(value) {
   if (value == null) return [];
@@ -92,6 +92,9 @@ function scoreSurfaceRanking(surface, { trafficSummary = null, intelSummary = nu
   if (intelSummary && intelSummary.available && intelSummary.reports && intelSummary.reports.length > 0) {
     add(12, "disclosed_report_hints");
   }
+  if (intelSummary && intelSummary.available && Array.isArray(intelSummary.cve_matches) && intelSummary.cve_matches.length > 0) {
+    add(18, "matched_cve_hints");
+  }
 
   return {
     score,
@@ -101,11 +104,19 @@ function scoreSurfaceRanking(surface, { trafficSummary = null, intelSummary = nu
 }
 
 function rankAttackSurfaces(domain) {
-  const filePath = attackSurfacePath(domain);
-  if (!fs.existsSync(filePath)) return null;
-  const attackSurface = readAttackSurfaceStrict(domain);
+  // Ranking reads from currentSurfaces (Cycle F.5): surface-index.json is the
+  // authoritative source when present, with attack_surface.json reserved as
+  // the transitional fallback for legacy sessions only (D.3 removes the
+  // fallback). The returned `path` mirrors the underlying source so callers
+  // that previously relied on attackSurfacePath continue to receive a sensible
+  // file reference.
+  const projection = currentSurfaces(domain);
+  if (projection.source === "missing") return null;
+  const filePath = projection.source === "surface_index"
+    ? surfaceIndexPath(domain)
+    : attackSurfacePath(domain);
   const trafficRecords = readTrafficRecordsFromJsonl(domain);
-  const rankedSurfaces = attackSurface.document.surfaces.map((surface) => {
+  const rankedSurfaces = projection.surfaces.map((surface) => {
     const trafficSummary = summarizeTrafficRecords(trafficRecords, { surface, limit: 0 });
     const intelSummary = summarizePublicIntelForSurface(domain, surface, 3);
     const ranking = scoreSurfaceRanking(surface, { trafficSummary, intelSummary });

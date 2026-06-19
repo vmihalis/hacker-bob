@@ -300,7 +300,7 @@ function summarizeBobSpecForBrief(spec, surfaceId) {
       present: true,
       valid: false,
       reason: spec.reason,
-      message: "bob-spec.json failed validation; hunters should report the errors and proceed using runtime-derived heuristics for trust assumptions.",
+      message: "bob-spec.json failed validation; evaluators should report the errors and proceed using runtime-derived heuristics for trust assumptions.",
       errors: spec.errors.slice(0, 8),
       warnings: spec.warnings.slice(0, 8),
     };

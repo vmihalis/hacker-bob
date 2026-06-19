@@ -3,7 +3,8 @@
 const { mergeWaveHandoffs } = require("../wave-handoff-store.js");
 
 module.exports = Object.freeze({
-  name: "bounty_merge_wave_handoffs",
+  name: "bob_merge_wave_handoffs",
+  aliases: ["bounty_merge_wave_handoffs"],
   description:
     "Merge structured wave handoffs for one wave using the persisted assignment file.",
   inputSchema: {

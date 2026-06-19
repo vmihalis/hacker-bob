@@ -24,11 +24,21 @@ const LEAD_SCHEMA = {
     confidence: { type: "string", enum: ["high", "medium", "low"] },
     score: { type: "number", minimum: 0, maximum: 100 },
     promote: { type: "boolean" },
+    // Y.12 (rev 4.1 defect 1 — producer-side rationale enforcement). Each
+    // lead may carry a `rationale` (1..512 chars) explaining why it was
+    // ranked. When queue-policy.lead_rationale_required_when_below_threshold
+    // is TRUE, recordSurfaceLeadsInternal rejects with INVALID_ARGUMENTS
+    // any lead whose score is below queue-policy min_score (default 60)
+    // and whose rationale is missing/empty. Y-P8 preserved: orchestrator
+    // owns auto-promotion; this validator is structural complement to the
+    // Y.7 silent_lead_threshold_drop runtime tripwire.
+    rationale: { type: "string", minLength: 1, maxLength: 512 },
   },
 };
 
 module.exports = Object.freeze({
-  name: "bounty_record_surface_leads",
+  name: "bob_record_surface_leads",
+  aliases: ["bounty_record_surface_leads"],
   description:
     "Append compact discovered attack-surface leads to session-owned surface-leads.json for later promotion into wave-assignable surfaces.",
   inputSchema: {
@@ -49,7 +59,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "leads"],
   },
   handler: recordSurfaceLeads,
-  role_bundles: ["hunter-web", "orchestrator"],
+  role_bundles: ["evaluator-web", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

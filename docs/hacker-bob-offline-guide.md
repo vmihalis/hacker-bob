@@ -1,10 +1,12 @@
 ---
 title: "Hacker Bob Offline Code Walkthrough"
-subtitle: "How the project, agent pipeline, MCP memory, context management, and JSON state fit together"
+subtitle: "v1.3.5 snapshot — How the project, agent pipeline, MCP memory, context management, and JSON state fit together"
 author: "Generated for local code review"
 date: "2026-05-01"
 lang: en
 ---
+
+> **v1.3.5 snapshot.** This walkthrough was generated against the v1.x codebase prior to the v2.0.0 frontier-topology rewrite. It uses the legacy vocabulary throughout (`bountyagent` MCP server, `bounty_*` tool prefix, eight-phase FSM, `~/bounty-agent-sessions/` session root, `findings.jsonl` claim ledger). Treat every named tool, namespace, and session path here as a v1.x identifier. For target-state vocabulary see [CHANGELOG.md v2.0.0](../CHANGELOG.md), [docs/releases/v2.0.0.md](releases/v2.0.0.md), and the rewritten [docs/FIRST_RUN.md](FIRST_RUN.md) / [docs/SMART_CONTRACTS_SPEC.md](SMART_CONTRACTS_SPEC.md) / [docs/capability-hypergraph.md](capability-hypergraph.md).
 
 # How To Use This Guide
 
@@ -54,7 +56,7 @@ testing/        Policy replay harness for prompt/refusal diagnostics
 docs/           Human docs and release notes
 ```
 
-At runtime, a Bob hunt creates a local session directory:
+At runtime, a Bob evaluate creates a local session directory:
 
 ```text
 ~/bounty-agent-sessions/[target_domain]/
@@ -80,18 +82,18 @@ pipeline-events.jsonl
 http-audit.jsonl
 ```
 
-The slash command `/bob-hunt` is the orchestrator. It does not directly hunt.
+The slash command `/bob-evaluate` is the orchestrator. It does not directly evaluate.
 It coordinates the finite-state machine:
 
 ```text
-RECON -> AUTH -> HUNT -> CHAIN -> VERIFY -> GRADE -> REPORT
+SURFACE_DISCOVERY -> AUTH -> EVALUATE -> CHAIN -> VERIFY -> GRADE -> REPORT
 ```
 
 The heavy work is delegated to specialist agents:
 
 ```text
-recon-agent
-hunter-agent
+surface-discovery-agent
+evaluator-agent
 chain-builder
 brutalist-verifier
 balanced-verifier
@@ -126,14 +128,14 @@ The design is a response to four hard problems in agentic security work.
 
 A full bounty run can include:
 
-- recon output
+- surface-discovery output
 - live hosts
 - archived URLs
 - JavaScript endpoints
 - imported HTTP traffic
 - auth profiles
 - hundreds of HTTP scan records
-- hunter notes
+- evaluator notes
 - coverage records
 - findings
 - chain attempts
@@ -149,10 +151,10 @@ JSON and JSONL files, then giving each agent a small slice.
 The most important context-reduction tool is:
 
 ```text
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 ```
 
-That file builds a curated hunter brief from:
+That file builds a curated evaluator brief from:
 
 - assigned surface
 - coverage summary
@@ -164,14 +166,14 @@ That file builds a curated hunter brief from:
 - static scan hints
 - auth hint
 - bypass table
-- curated hunter techniques
+- curated evaluator techniques
 
-Hunters receive one assigned surface, not the entire session.
+Evaluators receive one assigned surface, not the entire session.
 
 ## Problem 2: Many Agents Need One Shared Memory
 
 The root orchestrator and subagents are separate Claude Code contexts. A
-background hunter might finish after the root chat has moved on or after context
+background evaluator might finish after the root chat has moved on or after context
 compaction. Shared state cannot live only in a message transcript.
 
 Bob therefore uses:
@@ -189,8 +191,8 @@ Without strict structure, an agent might say "I found something" in prose but
 forget to write the machine-readable artifact. Bob makes each phase write a
 specific artifact:
 
-- hunters write `handoff-wN-aN.json`
-- hunters record findings in `findings.jsonl`
+- evaluators write `handoff-wN-aN.json`
+- evaluators record findings in `findings.jsonl`
 - chain builder writes `chain-attempts.jsonl`
 - verifiers write `brutalist.json`, `balanced.json`, `verified-final.json`
 - evidence agent writes `evidence-packs.json`
@@ -210,7 +212,7 @@ guardrails in several layers:
 - redaction in `mcp/redaction.js`, `mcp/lib/http-records.js`, and evidence
   validation
 - write guard hook in `.claude/hooks/session-write-guard.sh`
-- hunter stop validation in `.claude/hooks/hunter-subagent-stop.js`
+- evaluator stop validation in `.claude/hooks/agent-run-stop.js`
 - phase gates in `mcp/lib/phase-gates.js`
 - egress profile handling in `mcp/lib/egress-profiles.js`
 
@@ -239,7 +241,7 @@ node scripts/generate-bountyagent-skill.js --check
 
 ## Installed Project
 
-An installed project is where a user actually runs Claude Code and `/bob-hunt`:
+An installed project is where a user actually runs Claude Code and `/bob-evaluate`:
 
 ```text
 /path/to/user/project
@@ -290,7 +292,7 @@ Bob has three main control surfaces.
 Files:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 .claude/skills/bob-status/SKILL.md
 .claude/skills/bob-debug/SKILL.md
 .claude/commands/bob-update.md
@@ -300,14 +302,14 @@ Files:
 Claude Code turns these into user-facing commands:
 
 ```text
-/bob-hunt
+/bob-evaluate
 /bob-status
 /bob-debug
 /bob-update
 /bob-egress
 ```
 
-The most important file is `bob-hunt/SKILL.md`. It is the orchestrator prompt.
+The most important file is `bob-evaluate/SKILL.md`. It is the orchestrator prompt.
 It defines:
 
 - accepted arguments
@@ -325,8 +327,8 @@ It defines:
 Files:
 
 ```text
-.claude/agents/recon-agent.md
-.claude/agents/hunter-agent.md
+.claude/agents/surface-discovery-agent.md
+.claude/agents/evaluator-agent.md
 .claude/agents/chain-builder.md
 .claude/agents/brutalist-verifier.md
 .claude/agents/balanced-verifier.md
@@ -344,7 +346,7 @@ Each agent has:
 - MCP server metadata when needed
 - a final-output contract
 
-Example: hunters do not get the `Write` tool. They can write durable hunt
+Example: evaluators do not get the `Write` tool. They can write durable evaluate
 artifacts only through MCP tools such as:
 
 ```text
@@ -378,21 +380,21 @@ envelopes.
 This is the simplified execution path when the user runs:
 
 ```text
-/bob-hunt example.com
+/bob-evaluate example.com
 ```
 
 ```text
 User
   |
   v
-/bob-hunt skill
+/bob-evaluate skill
   |
   v
 Root orchestrator prompt
   |
   +--> MCP: bounty_init_session
   |
-  +--> Task: recon-agent
+  +--> Task: surface-discovery-agent
   |       |
   |       +--> writes attack_surface.json
   |
@@ -400,23 +402,23 @@ Root orchestrator prompt
   |
   +--> AUTH tools: signup detect, temp email, auth store
   |
-  +--> MCP: bounty_transition_phase HUNT
+  +--> MCP: bounty_transition_phase EVALUATE
   |
   +--> MCP: bounty_start_wave
   |       |
   |       +--> writes wave-N-assignments.json
   |       +--> sets state.pending_wave = N
   |
-  +--> background hunter agents
+  +--> background evaluator agents
   |       |
-  |       +--> MCP: bounty_read_hunter_brief
+  |       +--> MCP: bounty_read_assignment_brief
   |       +--> MCP: bounty_http_scan
   |       +--> MCP: bounty_log_coverage
   |       +--> MCP: bounty_record_finding
   |       +--> MCP: bounty_write_wave_handoff
-  |       +--> final marker: BOB_HUNTER_DONE {...}
+  |       +--> final marker: BOB_AGENT_RUN_DONE {...}
   |
-  +--> hunter SubagentStop hook validates marker + handoff
+  +--> evaluator SubagentStop hook validates marker + handoff
   |
   +--> MCP: bounty_apply_wave_merge
   |       |
@@ -468,9 +470,9 @@ mcp/lib/phase-gates.js
 Valid phases:
 
 ```text
-RECON
+SURFACE_DISCOVERY
 AUTH
-HUNT
+EVALUATE
 CHAIN
 VERIFY
 GRADE
@@ -481,20 +483,20 @@ EXPLORE
 Allowed transitions:
 
 ```text
-RECON   -> AUTH
-AUTH    -> HUNT
-HUNT    -> CHAIN
+SURFACE_DISCOVERY   -> AUTH
+AUTH    -> EVALUATE
+EVALUATE    -> CHAIN
 CHAIN   -> VERIFY
 VERIFY  -> GRADE
 GRADE   -> REPORT
-GRADE   -> HUNT      # on HOLD
-REPORT  -> EXPLORE   # user asks for more hunting
+GRADE   -> EVALUATE      # on HOLD
+REPORT  -> EXPLORE   # user asks for more evaluating
 EXPLORE -> CHAIN
 ```
 
 Important transition gates:
 
-## HUNT -> CHAIN
+## EVALUATE -> CHAIN
 
 Blocked when:
 
@@ -508,7 +510,7 @@ Code:
 
 ```text
 mcp/lib/phase-gates.js
-computeHuntToChainGate()
+computeEvaluationToChainGate()
 ```
 
 ## CHAIN -> VERIFY
@@ -576,8 +578,8 @@ Example simplified `state.json`:
   "checkpoint_mode": "paranoid",
   "block_internal_hosts": true,
   "block_internal_hosts_source": "paranoid_default",
-  "phase": "HUNT",
-  "hunt_wave": 2,
+  "phase": "EVALUATE",
+  "evaluation_wave": 2,
   "pending_wave": null,
   "total_findings": 1,
   "explored": ["api-main", "auth-flow"],
@@ -596,12 +598,12 @@ Key fields:
 phase
   Current FSM phase.
 
-hunt_wave
+evaluation_wave
   Last merged wave number.
 
 pending_wave
-  Wave started but not reconciled yet. If this is not null, the correct path is
-  usually /bob-hunt resume <domain>.
+  Wave started but not settled yet. If this is not null, the correct path is
+  usually /bob-evaluate resume <domain>.
 
 explored
   Surface IDs completed by merged wave handoffs.
@@ -610,7 +612,7 @@ dead_ends
   Durable endpoint/host notes that should not be retried blindly.
 
 waf_blocked_endpoints
-  Endpoint classes where hunters hit hard blocking.
+  Endpoint classes where evaluators hit hard blocking.
 
 lead_surface_ids
   Existing attack surface IDs that later waves should prioritize.
@@ -619,7 +621,7 @@ total_findings
   Updated during wave merge from findings.jsonl summary.
 
 hold_count
-  Incremented when GRADE sends the workflow back to HUNT.
+  Incremented when GRADE sends the workflow back to EVALUATE.
 
 auth_status
   pending, authenticated, or unauthenticated.
@@ -720,15 +722,15 @@ the report writer.
 | Artifact | Format | Owner | Purpose |
 |---|---:|---|---|
 | `state.json` | JSON | MCP | FSM phase, waves, explored surfaces, auth status |
-| `attack_surface.json` | JSON | recon-agent | Recon output and hunter surface list |
+| `attack_surface.json` | JSON | surface-discovery-agent | Surface-discovery output and evaluator surface list |
 | `traffic.jsonl` | JSONL | MCP | Imported HAR/Burp-style traffic |
 | `http-audit.jsonl` | JSONL | MCP | Redacted record of Bob HTTP scan calls |
-| `wave-N-assignments.json` | JSON | MCP | Which hunter owns which surface |
+| `wave-N-assignments.json` | JSON | MCP | Which evaluator owns which surface |
 | `.handoff-signing-key.json` | JSON | MCP | Session-local private key for tokenized handoff signatures |
-| `handoff-wN-aN.json` | JSON | MCP | Authoritative hunter final handoff |
-| `handoff-wN-aN.md` | Markdown | MCP | Human mirror of hunter handoff |
+| `handoff-wN-aN.json` | JSON | MCP | Authoritative evaluator final handoff |
+| `handoff-wN-aN.md` | Markdown | MCP | Human mirror of evaluator handoff |
 | `coverage.jsonl` | JSONL | MCP | Endpoint/class/auth coverage records |
-| `findings.jsonl` | JSONL | MCP | Proven findings recorded by hunters |
+| `findings.jsonl` | JSONL | MCP | Proven findings recorded by evaluators |
 | `chain-attempts.jsonl` | JSONL | MCP | Tested chain hypotheses and outcomes |
 | `brutalist.json` | JSON | MCP | Verification round 1 |
 | `balanced.json` | JSON | MCP | Verification round 2 |
@@ -921,10 +923,10 @@ bounty_read_tool_telemetry
 bounty_read_pipeline_analytics
 ```
 
-## Hunter Tools
+## Evaluator Tools
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 bounty_http_scan
 bounty_read_http_audit
 bounty_import_static_artifact
@@ -1015,7 +1017,7 @@ This is the central design idea in the repo.
 
 ## Context Is Not Shared By Default
 
-The root orchestrator, hunters, verifiers, chain builder, grader, and reporter
+The root orchestrator, evaluators, verifiers, chain builder, grader, and reporter
 are separate agent runs. They do not automatically share all chat history.
 
 Bob treats the chat transcript as unreliable for durable coordination. The
@@ -1033,12 +1035,12 @@ bounty_read_pipeline_analytics
 
 These are compact. They avoid loading full arrays unless needed.
 
-## Hunters Get One Curated Brief
+## Evaluators Get One Curated Brief
 
-Hunter first action:
+Evaluator first action:
 
 ```text
-bounty_read_hunter_brief({
+bounty_read_assignment_brief({
   target_domain: "...",
   wave: "w1",
   agent: "a1"
@@ -1050,7 +1052,7 @@ The returned brief includes one assigned surface and bounded summaries.
 File:
 
 ```text
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 ```
 
 Key context controls in that file:
@@ -1065,9 +1067,9 @@ Key context controls in that file:
 - summarizes HTTP audit and circuit breaker state
 - adds public intel and static scan hints when available
 - gives auth guidance without exposing secrets
-- includes curated technique hints from `.claude/knowledge/hunter-techniques.json`
+- includes curated technique hints from `.claude/knowledge/evaluator-techniques.json`
 
-This is how Bob avoids pasting the whole session into every hunter.
+This is how Bob avoids pasting the whole session into every evaluator.
 
 ## Verification Reads Structured Artifacts
 
@@ -1094,7 +1096,7 @@ requirePriorVerificationRound()
 
 ## Evidence Is Separate From Findings
 
-Hunters record claims in `findings.jsonl`. Final verification decides which
+Evaluators record claims in `findings.jsonl`. Final verification decides which
 claims are reportable. The evidence agent then collects bounded, redacted
 samples in `evidence-packs.json`.
 
@@ -1115,7 +1117,7 @@ It reads artifacts and telemetry to answer:
 - what phase is this session in?
 - is a wave pending?
 - are handoffs missing?
-- did hunters get blocked?
+- did evaluators get blocked?
 - did tools fail often?
 - did final verification drop all findings?
 - are evidence packs missing?
@@ -1135,7 +1137,7 @@ Each agent is narrow on purpose.
 File:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 ```
 
 Responsibilities:
@@ -1152,15 +1154,15 @@ Not responsible for:
 
 - ad-hoc target testing
 - writing MCP-owned files directly
-- synthesizing hunter handoff JSON
+- synthesizing evaluator handoff JSON
 - repairing missing structured artifacts from Markdown
 
-## Recon Agent
+## Surface-discovery Agent
 
 File:
 
 ```text
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 ```
 
 It uses Bash only. It is intentionally MCP-free.
@@ -1183,12 +1185,12 @@ attack_surface.json
 
 This is one of the few agent-owned direct writes allowed in the session dir.
 
-## Hunter Agent
+## Evaluator Agent
 
 File:
 
 ```text
-.claude/agents/hunter-agent.md
+.claude/agents/evaluator-agent.md
 ```
 
 Responsibilities:
@@ -1316,7 +1318,7 @@ should include only verified, evidenced, graded findings.
 
 # Wave Lifecycle
 
-Waves are the core HUNT-phase coordination mechanism.
+Waves are the core EVALUATE-phase coordination mechanism.
 
 ## Start A Wave
 
@@ -1342,9 +1344,9 @@ startWave()
 
 Effects:
 
-- validates phase is `HUNT` or `EXPLORE`
+- validates phase is `EVALUATE` or `EXPLORE`
 - validates no `pending_wave`
-- validates wave number is `hunt_wave + 1`
+- validates wave number is `evaluation_wave + 1`
 - validates surface IDs exist in `attack_surface.json`
 - generates a secret handoff token for each assignment
 - writes `wave-N-assignments.json` with token hashes
@@ -1352,32 +1354,32 @@ Effects:
 - returns plain handoff tokens to the orchestrator
 - sets `state.pending_wave = N`
 
-The token is given only to the assigned hunter. The token prevents another
+The token is given only to the assigned evaluator. The token prevents another
 agent from writing through `bounty_write_wave_handoff` for a different
 assignment. After token validation, Bob signs the persisted JSON with the
 session-local `.handoff-signing-key.json` key so read and merge paths can reject
 later hand-edited JSON for tokenized assignments.
 
-## Spawn Background Hunters
+## Spawn Background Evaluators
 
-The orchestrator spawns one `hunter-agent` per assignment with:
+The orchestrator spawns one `evaluator-agent` per assignment with:
 
 ```text
 run_in_background: true
 ```
 
-Each hunter prompt includes:
+Each evaluator prompt includes:
 
 - domain
 - wave
 - agent ID
 - assigned handoff token
 - egress profile
-- first action: call `bounty_read_hunter_brief`
+- first action: call `bounty_read_assignment_brief`
 - final action: call `bounty_write_wave_handoff`
-- final marker: `BOB_HUNTER_DONE {...}`
+- final marker: `BOB_AGENT_RUN_DONE {...}`
 
-## Hunter Writes Handoff
+## Evaluator Writes Handoff
 
 Example simplified handoff:
 
@@ -1422,12 +1424,12 @@ writeWaveHandoff()
 File:
 
 ```text
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 ```
 
-When a hunter stops, the hook checks:
+When a evaluator stops, the hook checks:
 
-- did the final assistant message include `BOB_HUNTER_DONE`?
+- did the final assistant message include `BOB_AGENT_RUN_DONE`?
 - is the marker valid JSON?
 - does the marker include target, wave, agent, surface?
 - does a structured handoff JSON exist?
@@ -1441,7 +1443,7 @@ records telemetry.
 
 ## Merge A Wave
 
-After background hunters finish, the orchestrator calls:
+After background evaluators finish, the orchestrator calls:
 
 ```text
 bounty_apply_wave_merge({
@@ -1471,7 +1473,7 @@ Effects:
 - updates `waf_blocked_endpoints`
 - updates `lead_surface_ids`
 - clears `pending_wave`
-- sets `hunt_wave`
+- sets `evaluation_wave`
 - updates `total_findings`
 - appends a pipeline event
 
@@ -1489,7 +1491,7 @@ and does not mutate session state.
 
 # How Findings Flow Through The Pipeline
 
-## 1. Hunter Records A Finding
+## 1. Evaluator Records A Finding
 
 Tool:
 
@@ -1721,7 +1723,7 @@ unless the operator starts an explicitly authorized internal/lab program with
 Strict internal-host blocking is a direct-egress policy. Bob refuses
 effective `block_internal_hosts: true` with proxy-backed egress profiles because
 target DNS and routing may be resolved by the proxy outside Bob's process. The
-effective value is persisted in session state, hunter briefs, HTTP audit rows,
+effective value is persisted in session state, evaluator briefs, HTTP audit rows,
 pipeline events, and analytics.
 
 ## Auth Storage
@@ -1875,24 +1877,24 @@ The hook catches:
 - `Path(...).write_text(...)`
 - common inline script write patterns
 
-## Hunter Stop Hook
+## Evaluator Stop Hook
 
 File:
 
 ```text
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 ```
 
 Registered for:
 
 ```text
-SubagentStop: hunter-agent
+SubagentStop: evaluator-agent
 ```
 
-It blocks hunters from finishing unless their final marker and structured
+It blocks evaluators from finishing unless their final marker and structured
 handoff are valid.
 
-It also records metadata-only hunter run telemetry.
+It also records metadata-only evaluator run telemetry.
 
 ## No Shell Scope Guard
 
@@ -1907,7 +1909,7 @@ effective `block_internal_hosts: true` on direct egress. Browser-based auto-sign
 page HTTP requests through a target-host guard, blocks service workers, and
 blocks WebSockets when the host browser API supports it, but it refuses
 effective `block_internal_hosts: true` because Chromium resolves destinations outside
-Bob's safeFetch transport. Raw shell recon commands such as `curl`, `httpx`,
+Bob's safeFetch transport. Raw shell surface-discovery commands such as `curl`, `httpx`,
 `katana`, `nuclei`, and passive intel collection are bounded by generated
 prompts, host permissions, and operator authorization, not by Bob-enforced
 network containment.
@@ -1934,7 +1936,7 @@ Event types:
 session_started
 phase_transitioned
 wave_started
-hunter_stopped
+evaluator_stopped
 wave_merge_pending
 wave_merged
 coverage_logged
@@ -1952,7 +1954,7 @@ Example:
   "ts": "2026-05-01T00:00:00.000Z",
   "target_domain": "example.com",
   "type": "wave_merged",
-  "phase": "HUNT",
+  "phase": "EVALUATE",
   "wave_number": 1,
   "status": "merged",
   "source": "bounty_apply_wave_merge",
@@ -2028,7 +2030,7 @@ It can read one session or recent sessions and summarize:
 - bottlenecks
 - next actions
 - tool health
-- hunter health
+- evaluator health
 
 This is the core behind `/bob-status` and `/bob-debug`.
 
@@ -2095,7 +2097,7 @@ Questions to answer:
 Open:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 ```
 
 Do not skim too quickly. This file is the operational spec.
@@ -2106,9 +2108,9 @@ Mark these sections:
 - Hard Rules
 - FSM
 - Resume
-- RECON
+- SURFACE_DISCOVERY
 - AUTH
-- HUNT
+- EVALUATE
 - CHAIN
 - VERIFY
 - GRADE
@@ -2118,7 +2120,7 @@ Mark these sections:
 Questions to answer:
 
 - Why does the root orchestrator avoid target testing?
-- Why are hunter waves backgrounded?
+- Why are evaluator waves backgrounded?
 - Why is same-turn wave merge forbidden after spawn?
 - What artifacts are validated before moving phases?
 - What happens after `HOLD`?
@@ -2128,8 +2130,8 @@ Questions to answer:
 Open in this order:
 
 ```text
-.claude/agents/recon-agent.md
-.claude/agents/hunter-agent.md
+.claude/agents/surface-discovery-agent.md
+.claude/agents/evaluator-agent.md
 .claude/agents/chain-builder.md
 .claude/agents/brutalist-verifier.md
 .claude/agents/balanced-verifier.md
@@ -2200,14 +2202,14 @@ Questions to answer:
 - Which transitions have gates?
 - What happens when a lock is stale?
 
-## Step 7: Read Waves And Hunter Context
+## Step 7: Read Waves And Evaluator Context
 
 Open:
 
 ```text
 mcp/lib/assignments.js
 mcp/lib/waves.js
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 mcp/lib/coverage.js
 mcp/lib/ranking.js
 ```
@@ -2219,8 +2221,8 @@ bounty_start_wave
   -> write wave assignment with token hash
   -> return plain token to orchestrator
 
-hunter
-  -> bounty_read_hunter_brief
+evaluator
+  -> bounty_read_assignment_brief
   -> bounty_log_coverage
   -> bounty_write_wave_handoff
 
@@ -2235,7 +2237,7 @@ Questions to answer:
 - What makes a handoff valid?
 - How does a partial handoff get requeued?
 - How does coverage create requeue surface IDs?
-- How is hunter context capped?
+- How is evaluator context capped?
 
 ## Step 8: Read Findings, Chain, Verification, Evidence, Grade
 
@@ -2285,7 +2287,7 @@ Open:
 
 ```text
 .claude/hooks/session-write-guard.sh
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 test/test-write-guard.py
 test/prompt-contracts.test.js
 test/mcp-server.test.js
@@ -2385,7 +2387,7 @@ Goal: understand what Bob is from the user's point of view.
 Read:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 .claude/agents/*.md
 ```
 
@@ -2414,7 +2416,7 @@ Read:
 mcp/lib/session-state.js
 mcp/lib/phase-gates.js
 mcp/lib/waves.js
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 mcp/lib/coverage.js
 ```
 
@@ -2430,7 +2432,7 @@ mcp/lib/chain-attempts.js
 mcp/lib/evidence.js
 ```
 
-Goal: understand how a raw hunter claim becomes a trusted final report.
+Goal: understand how a raw evaluator claim becomes a trusted final report.
 
 ## 45 Minutes: Safety And Diagnostics
 
@@ -2466,7 +2468,7 @@ keep the moving parts in your head while reading the code.
 Use this as the reference story:
 
 ```text
-/bob-hunt https://example.test --normal --egress default
+/bob-evaluate https://example.test --normal --egress default
 ```
 
 The whole run is an artifact pipeline:
@@ -2474,10 +2476,10 @@ The whole run is an artifact pipeline:
 ```text
 skill prompt
   -> MCP session state
-  -> recon artifact
+  -> surface-discovery artifact
   -> auth artifact
   -> wave assignments
-  -> hunter briefs
+  -> evaluator briefs
   -> HTTP audit, coverage, findings, handoffs
   -> wave merge
   -> chain attempts
@@ -2492,10 +2494,10 @@ The session directory is the database, and MCP tools are the write API.
 
 ## Step 0: Claude Code Loads The Control Surface
 
-The operator types `/bob-hunt`. Claude Code loads:
+The operator types `/bob-evaluate`. Claude Code loads:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 ```
 
 That skill is the root orchestrator contract. It says:
@@ -2508,7 +2510,7 @@ That skill is the root orchestrator contract. It says:
 - what the root must never do itself
 
 Important detail: the root orchestrator has `Task`, `Read`, and selected MCP
-tools. It is intentionally not a hunter. It coordinates the state machine.
+tools. It is intentionally not a evaluator. It coordinates the state machine.
 
 ## Step 1: Session Initialization
 
@@ -2552,8 +2554,8 @@ Simplified state:
 {
   "target": "example.test",
   "target_url": "https://example.test",
-  "phase": "RECON",
-  "hunt_wave": 0,
+  "phase": "SURFACE_DISCOVERY",
+  "evaluation_wave": 0,
   "pending_wave": null,
   "total_findings": 0,
   "explored": [],
@@ -2577,28 +2579,28 @@ source = bounty_init_session
 The event log is not the state itself. It is the audit trail that explains how
 the state changed over time.
 
-## Step 2: Recon Agent Produces The Attack Surface
+## Step 2: Surface-discovery Agent Produces The Attack Surface
 
 The root spawns:
 
 ```text
-Agent(subagent_type: "recon-agent", name: "recon", prompt: "DOMAIN=example.test SESSION=...")
+Agent(subagent_type: "surface-discovery-agent", name: "surface-discovery", prompt: "DOMAIN=example.test SESSION=...")
 ```
 
 Agent contract:
 
 ```text
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 ```
 
-The recon agent is unusual because it uses Bash and writes one authoritative
+The surface-discovery agent is unusual because it uses Bash and writes one authoritative
 agent-owned artifact directly:
 
 ```text
 attack_surface.json
 ```
 
-It also creates recon scratch files such as:
+It also creates surface-discovery scratch files such as:
 
 ```text
 subdomains.txt
@@ -2613,7 +2615,7 @@ js_secrets.txt
 Those scratch files help build the final attack surface, but later orchestration
 mostly cares about `attack_surface.json`.
 
-After recon, the root reads `attack_surface.json`. If it is missing or empty,
+After surface-discovery, the root reads `attack_surface.json`. If it is missing or empty,
 the run stops. If it contains surfaces, the root transitions:
 
 ```text
@@ -2626,7 +2628,7 @@ bounty_transition_phase({
 State change:
 
 ```text
-RECON -> AUTH
+SURFACE_DISCOVERY -> AUTH
 ```
 
 ## Step 3: Auth Either Stores Profiles Or Marks The Run Unauthenticated
@@ -2665,7 +2667,7 @@ If the operator used `--no-auth`, the root does not try signup. It transitions:
 ```text
 bounty_transition_phase({
   target_domain: "example.test",
-  to_phase: "HUNT",
+  to_phase: "EVALUATE",
   auth_status: "unauthenticated"
 })
 ```
@@ -2676,7 +2678,7 @@ Otherwise successful auth transitions with:
 auth_status: "authenticated"
 ```
 
-## Step 4: The Root Starts A Hunt Wave
+## Step 4: The Root Starts A Evaluation Wave
 
 Before every wave, the root reads compact state and attack surface context:
 
@@ -2725,7 +2727,7 @@ Important `state.json` mutation:
 
 ```json
 {
-  "hunt_wave": 0,
+  "evaluation_wave": 0,
   "pending_wave": 1
 }
 ```
@@ -2748,7 +2750,7 @@ Important `wave-1-assignments.json` detail:
 
 The plaintext handoff token is returned only in the MCP response to
 `bounty_start_wave`. It is not written to disk. The root injects each token into
-only the matching hunter prompt.
+only the matching evaluator prompt.
 
 Why this matters:
 
@@ -2762,22 +2764,22 @@ local actor with direct read access to `.handoff-signing-key.json` can forge a
 signature; Bob's guarantee is that the key is not returned through MCP and raw
 tokens are not persisted in assignment or handoff JSON.
 
-## Step 5: Hunters Run In Parallel
+## Step 5: Evaluators Run In Parallel
 
-The root spawns one background `hunter-agent` per assignment:
+The root spawns one background `evaluator-agent` per assignment:
 
 ```text
-hunter-w1-a1 -> api-main
-hunter-w1-a2 -> auth-flow
-hunter-w1-a3 -> billing-api
+evaluator-w1-a1 -> api-main
+evaluator-w1-a2 -> auth-flow
+evaluator-w1-a3 -> billing-api
 ```
 
-The root must use background tasks for hunter waves. It must also respect the
+The root must use background tasks for evaluator waves. It must also respect the
 launch-turn barrier:
 
 ```text
 start wave
-spawn hunters
+spawn evaluators
 report assignments
 stop this turn
 ```
@@ -2785,12 +2787,12 @@ stop this turn
 It must not start and merge the same wave in one turn. This prevents the root
 from merging before background agents have had a fair chance to write handoffs.
 
-## Step 6: Each Hunter Loads One Curated Context Packet
+## Step 6: Each Evaluator Loads One Curated Context Packet
 
-The first action for a normal hunter is:
+The first action for a normal evaluator is:
 
 ```text
-bounty_read_hunter_brief({
+bounty_read_assignment_brief({
   target_domain: "example.test",
   wave: "w1",
   agent: "a2"
@@ -2800,11 +2802,11 @@ bounty_read_hunter_brief({
 Code path:
 
 ```text
-mcp/lib/tools/read-hunter-brief.js
-  -> mcp/lib/hunter-brief.js
+mcp/lib/tools/read-assignment-brief.js
+  -> mcp/lib/assignment-brief.js
 ```
 
-The brief contains only what that hunter needs:
+The brief contains only what that evaluator needs:
 
 - its assigned surface
 - valid surface IDs
@@ -2818,12 +2820,12 @@ The brief contains only what that hunter needs:
 - static scan hints
 - curated technique hints
 
-This is the practical core of context management. The hunter does not receive
+This is the practical core of context management. The evaluator does not receive
 the whole session. It receives one bounded packet.
 
-## Step 7: Hunter Activity Creates Structured Evidence Trails
+## Step 7: Evaluator Activity Creates Structured Evidence Trails
 
-During testing, the hunter uses MCP tools instead of writing files:
+During testing, the evaluator uses MCP tools instead of writing files:
 
 ```text
 bounty_http_scan          -> http-audit.jsonl
@@ -2832,7 +2834,7 @@ bounty_log_dead_ends     -> live-dead-ends-w1-a2.jsonl
 bounty_record_finding    -> findings.jsonl and findings.md
 ```
 
-If a hunter proves a finding, it records it immediately:
+If a evaluator proves a finding, it records it immediately:
 
 ```text
 bounty_record_finding({
@@ -2865,9 +2867,9 @@ pipeline-events.jsonl
 
 `findings.jsonl` is authoritative. `findings.md` is a human/debug mirror.
 
-## Step 8: Hunter Completion Uses Two Signals
+## Step 8: Evaluator Completion Uses Two Signals
 
-At the end of its assigned surface, each hunter must call:
+At the end of its assigned surface, each evaluator must call:
 
 ```text
 bounty_write_wave_handoff({
@@ -2894,13 +2896,13 @@ handoff-w1-a2.md
 Then the final assistant message must include:
 
 ```text
-BOB_HUNTER_DONE {"target_domain":"example.test","wave":"w1","agent":"a2","surface_id":"billing-api"}
+BOB_AGENT_RUN_DONE {"target_domain":"example.test","wave":"w1","agent":"a2","surface_id":"billing-api"}
 ```
 
 The hook checks the marker and the structured handoff:
 
 ```text
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 ```
 
 Why two signals exist:
@@ -2912,8 +2914,8 @@ Why two signals exist:
 
 ## Step 9: Resume Or Completion Merges The Wave
 
-When all hunters complete, or when the operator later runs resume, the root
-reconciles the pending wave:
+When all evaluators complete, or when the operator later runs resume, the root
+settles the pending wave:
 
 ```text
 bounty_read_state_summary({ target_domain: "example.test" })
@@ -2960,7 +2962,7 @@ state.dead_ends
 state.waf_blocked_endpoints
 state.lead_surface_ids
 state.pending_wave
-state.hunt_wave
+state.evaluation_wave
 state.total_findings
 ```
 
@@ -2968,7 +2970,7 @@ Typical mutation:
 
 ```json
 {
-  "hunt_wave": 1,
+  "evaluation_wave": 1,
   "pending_wave": null,
   "total_findings": 1,
   "explored": ["api-main", "auth-flow", "billing-api"]
@@ -3001,7 +3003,7 @@ That status includes:
 - circuit breaker summary
 - transition blockers
 
-The HUNT -> CHAIN gate is enforced in:
+The EVALUATE -> CHAIN gate is enforced in:
 
 ```text
 mcp/lib/phase-gates.js
@@ -3176,7 +3178,7 @@ SKIP:   score < 20 or no medium-or-higher final reportable
 On `HOLD`, the FSM can go:
 
 ```text
-GRADE -> HUNT
+GRADE -> EVALUATE
 ```
 
 `state.hold_count` increments so Bob does not loop forever without escalation.
@@ -3221,12 +3223,12 @@ trust the JSON and debug the report writer.
 When following this run in the code, read in this order:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 mcp/lib/session-state.js
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 mcp/lib/waves.js
-.claude/agents/hunter-agent.md
-mcp/lib/hunter-brief.js
+.claude/agents/evaluator-agent.md
+mcp/lib/assignment-brief.js
 mcp/lib/findings.js
 mcp/lib/phase-gates.js
 .claude/agents/chain-builder.md
@@ -3310,13 +3312,13 @@ finding records are still in `findings.jsonl`.
 Owner:
 
 ```text
-recon-agent
+surface-discovery-agent
 ```
 
 Written by:
 
 ```text
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 ```
 
 Read by:
@@ -3325,7 +3327,7 @@ Read by:
 root orchestrator
 bounty_start_wave
 bounty_wave_status
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 ranking and phase gate code
 ```
 
@@ -3334,8 +3336,8 @@ Use it to answer:
 - what surfaces exist?
 - what surface IDs can be assigned?
 - which surfaces are high or critical?
-- what evidence led recon to classify each surface?
-- what high-value flows and bug-class hints should hunters consider?
+- what evidence led surface-discovery to classify each surface?
+- what high-value flows and bug-class hints should evaluators consider?
 
 Trust level:
 
@@ -3348,12 +3350,12 @@ Important caution:
 Runtime ranking should not rewrite this file. Ranking is computed from current
 state, traffic, coverage, audit, public intel, and static hints.
 
-## Recon Scratch Files
+## Surface-discovery Scratch Files
 
 Examples:
 
 ```text
-recon-tools.txt
+surface-discovery-tools.txt
 subdomains.txt
 live_hosts.txt
 family_candidates.txt
@@ -3368,19 +3370,19 @@ js_secrets.txt
 Owner:
 
 ```text
-recon-agent
+surface-discovery-agent
 ```
 
 Use them to answer:
 
 - where did `attack_surface.json` come from?
-- did a recon tool fail or return nothing?
+- did a surface-discovery tool fail or return nothing?
 - did JavaScript extraction produce useful endpoint hints?
 
 Trust level:
 
 ```text
-supporting evidence for recon, not the main orchestration API
+supporting evidence for surface-discovery, not the main orchestration API
 ```
 
 ## `auth.json`
@@ -3440,7 +3442,7 @@ bounty_import_http_traffic
 Read by:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 bounty_wave_status
 bounty_read_pipeline_analytics
 ```
@@ -3448,7 +3450,7 @@ bounty_read_pipeline_analytics
 Use it to answer:
 
 - what real application routes were imported from Burp/HAR-style history?
-- what authenticated routes should hunters prioritize?
+- what authenticated routes should evaluators prioritize?
 - did imported traffic cover the assigned surface?
 
 Trust level:
@@ -3472,7 +3474,7 @@ bounty_http_scan
 Read by:
 
 ```text
-hunters
+evaluators
 chain builder
 verifiers
 evidence agent
@@ -3512,7 +3514,7 @@ bounty_start_wave
 Read by:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 bounty_write_wave_handoff
 bounty_wave_handoff_status
 bounty_apply_wave_merge
@@ -3557,7 +3559,7 @@ SubagentStop hook validation
 
 Use it to answer:
 
-- did the hunter finish?
+- did the evaluator finish?
 - was the surface complete or partial?
 - what should be requeued?
 - what dead ends and WAF blocks were discovered?
@@ -3572,16 +3574,15 @@ present for assigned agents.
 Trust level:
 
 ```text
-authoritative hunter completion record
+authoritative evaluator completion record
 ```
 
 Important caution:
 
-For tokenized assignments, `provenance: "verified"` is accepted only when the
-handoff carries `provenance_model: "session_file_hmac_v1"` and a valid HMAC
-signature over the JSON payload. Legacy assignments without token hashes remain
-explicitly `legacy_unverified`; unsigned verified claims are invalid for
-tokenized waves.
+`provenance: "verified"` is accepted only when the handoff carries
+`provenance_model: "session_file_hmac_v1"` and a valid HMAC signature over the
+JSON payload. Assignments without token hashes are rejected; unsigned verified
+claims are invalid for every wave handoff.
 
 Markdown handoffs are ignored for machine merge. A Markdown-only handoff is not
 a completed wave handoff.
@@ -3596,7 +3597,7 @@ bounty_write_wave_handoff
 
 Use it to answer:
 
-- what did the hunter say in human-friendly prose?
+- what did the evaluator say in human-friendly prose?
 
 Trust level:
 
@@ -3620,14 +3621,14 @@ Read by:
 
 ```text
 bounty_apply_wave_merge
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 analytics
 ```
 
 Use it to answer:
 
-- did a hunter log dead ends before reaching final handoff?
-- should later hunters avoid a path even if a handoff was partial?
+- did a evaluator log dead ends before reaching final handoff?
+- should later evaluators avoid a path even if a handoff was partial?
 
 Trust level:
 
@@ -3646,7 +3647,7 @@ bounty_log_coverage
 Read by:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 bounty_wave_status
 phase gates
 wave merge requeue logic
@@ -3692,15 +3693,15 @@ analytics
 
 Use it to answer:
 
-- what claims did hunters prove live?
+- what claims did evaluators prove live?
 - which wave, agent, and surface produced each claim?
 - what endpoint and auth profile were involved?
-- what evidence did the hunter provide before verification?
+- what evidence did the evaluator provide before verification?
 
 Trust level:
 
 ```text
-authoritative hunter finding ledger
+authoritative evaluator finding ledger
 ```
 
 Important caution:
@@ -4018,7 +4019,7 @@ bounty_static_scan
 Use them to answer:
 
 - what token-contract or static source was imported?
-- what bounded static scan hints should hunter briefs include?
+- what bounded static scan hints should evaluator briefs include?
 
 Trust level:
 
@@ -4028,7 +4029,7 @@ authoritative for imported static-analysis leads
 
 Important caution:
 
-Hunters must import pasted content through MCP. They must not scan arbitrary
+Evaluators must import pasted content through MCP. They must not scan arbitrary
 local paths.
 
 ## `public-intel.json`
@@ -4042,7 +4043,7 @@ bounty_public_intel
 Read by:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 ranking
 analytics
 ```
@@ -4070,7 +4071,7 @@ what it may write, and what it must not decide.
 File:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 ```
 
 Phase:
@@ -4096,8 +4097,8 @@ May write through MCP:
 
 May spawn:
 
-- recon agent
-- hunter agents
+- surface-discovery agent
+- evaluator agents
 - chain builder
 - verifiers
 - evidence agent
@@ -4106,38 +4107,38 @@ May spawn:
 
 Must not:
 
-- hunt directly
+- evaluate directly
 - send target HTTP requests except AUTH signup/login calls
 - synthesize handoff JSON
 - manually edit MCP-owned artifacts
-- merge a wave in the same turn it launched hunters
+- merge a wave in the same turn it launched evaluators
 
 Best file to read:
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 ```
 
 Failure signals:
 
 - invalid phase transition
-- pending wave not reconciled
+- pending wave not settled
 - phase gate blockers
 - missing attack surface
 - missing verification/evidence/grade artifacts
 
-## Recon Agent
+## Surface-discovery Agent
 
 File:
 
 ```text
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 ```
 
 Phase:
 
 ```text
-RECON
+SURFACE_DISCOVERY
 ```
 
 Primary context:
@@ -4149,7 +4150,7 @@ May write:
 
 ```text
 attack_surface.json
-recon scratch files
+surface-discovery scratch files
 ```
 
 Must not:
@@ -4161,35 +4162,35 @@ Must not:
 Best code/doc pair:
 
 ```text
-.claude/agents/recon-agent.md
+.claude/agents/surface-discovery-agent.md
 mcp/lib/attack-surface.js
 ```
 
 Failure signals:
 
-- missing tools in `recon-tools.txt`
+- missing tools in `surface-discovery-tools.txt`
 - empty `live_hosts.txt`
 - missing or malformed `attack_surface.json`
 - attack surface contains no surfaces
 
-## Hunter Agent
+## Evaluator Agent
 
 File:
 
 ```text
-.claude/agents/hunter-agent.md
+.claude/agents/evaluator-agent.md
 ```
 
 Phase:
 
 ```text
-HUNT or EXPLORE
+EVALUATE or EXPLORE
 ```
 
 Primary context:
 
 - spawn prompt with target, wave, agent, handoff token, egress profile
-- one `bounty_read_hunter_brief` result
+- one `bounty_read_assignment_brief` result
 
 May write through MCP:
 
@@ -4215,15 +4216,15 @@ Must not:
 Best code/doc pair:
 
 ```text
-.claude/agents/hunter-agent.md
-mcp/lib/hunter-brief.js
+.claude/agents/evaluator-agent.md
+mcp/lib/assignment-brief.js
 mcp/lib/waves.js
 mcp/lib/findings.js
 ```
 
 Failure signals:
 
-- no `BOB_HUNTER_DONE` marker
+- no `BOB_AGENT_RUN_DONE` marker
 - marker does not match handoff
 - handoff token invalid
 - handoff missing or malformed
@@ -4512,7 +4513,7 @@ report.md
 Must not:
 
 - report denied, blocked, inconclusive, or not-applicable chains as impact
-- use hunter severity if verification changed it
+- use evaluator severity if verification changed it
 - invent vulnerability sections in no-findings reports
 - include methodology filler
 
@@ -4529,7 +4530,7 @@ Failure signals:
 The FSM is simple on paper:
 
 ```text
-RECON -> AUTH -> HUNT -> CHAIN -> VERIFY -> GRADE -> REPORT
+SURFACE_DISCOVERY -> AUTH -> EVALUATE -> CHAIN -> VERIFY -> GRADE -> REPORT
                                                  |
                                                  v
                                    REPORT -> EXPLORE -> CHAIN
@@ -4568,15 +4569,15 @@ should use the blocker message to decide what to do next.
 ## Gate Table
 
 ```text
-RECON -> AUTH
-  Legal after recon if attack_surface.json exists and root decides recon found surfaces.
+SURFACE_DISCOVERY -> AUTH
+  Legal after surface-discovery if attack_surface.json exists and root decides surface-discovery found surfaces.
   The MCP transition itself does not create attack_surface.json.
 
-AUTH -> HUNT
+AUTH -> EVALUATE
   Requires auth_status.
   Allowed values: authenticated or unauthenticated.
 
-HUNT -> CHAIN
+EVALUATE -> CHAIN
   Requires no pending_wave.
   Requires readable attack_surface.json.
   Requires readable coverage.
@@ -4598,15 +4599,15 @@ VERIFY -> GRADE
 GRADE -> REPORT
   Reuses the evidence-pack validity gate.
 
-GRADE -> HUNT
+GRADE -> EVALUATE
   Allowed on HOLD.
   Increments hold_count.
 
 REPORT -> EXPLORE
-  Allowed only when the user asks to continue hunting after a report.
+  Allowed only when the user asks to continue evaluating after a report.
 
 EXPLORE -> CHAIN
-  Uses the same wave system as HUNT, then returns to CHAIN.
+  Uses the same wave system as EVALUATE, then returns to CHAIN.
 ```
 
 ## Phase Gate Debugging Question
@@ -4664,7 +4665,7 @@ mcp/lib/phase-gates.js
 Trace these functions:
 
 ```text
-computeHuntToChainGate
+computeEvaluationToChainGate
 computeChainToVerifyGate
 computeVerifyToGradeGate
 formatTransitionBlockers
@@ -4686,9 +4687,9 @@ F-1: IDOR in invoice export exposes victim invoice metadata
 
 ## Forward Trace
 
-### 1. Hunter Discovers The Issue
+### 1. Evaluator Discovers The Issue
 
-The hunter is assigned:
+The evaluator is assigned:
 
 ```text
 wave = w1
@@ -4699,7 +4700,7 @@ surface_id = billing-api
 It reads:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 ```
 
 It sees imported traffic for:
@@ -4730,9 +4731,9 @@ The request is audited in:
 http-audit.jsonl
 ```
 
-### 2. Hunter Logs Coverage
+### 2. Evaluator Logs Coverage
 
-The hunter records that this endpoint and bug class were tested:
+The evaluator records that this endpoint and bug class were tested:
 
 ```text
 bounty_log_coverage({
@@ -4759,7 +4760,7 @@ Artifact:
 coverage.jsonl
 ```
 
-### 3. Hunter Records The Finding
+### 3. Evaluator Records The Finding
 
 Tool:
 
@@ -4796,7 +4797,7 @@ MCP also updates the human mirror:
 findings.md
 ```
 
-### 4. Hunter Writes Handoff
+### 4. Evaluator Writes Handoff
 
 Tool:
 
@@ -4836,7 +4837,7 @@ Important fields:
 Then the final marker appears:
 
 ```text
-BOB_HUNTER_DONE {"target_domain":"example.test","wave":"w1","agent":"a2","surface_id":"billing-api"}
+BOB_AGENT_RUN_DONE {"target_domain":"example.test","wave":"w1","agent":"a2","surface_id":"billing-api"}
 ```
 
 The hook checks marker-to-handoff consistency.
@@ -4854,7 +4855,7 @@ State after merge:
 ```json
 {
   "pending_wave": null,
-  "hunt_wave": 1,
+  "evaluation_wave": 1,
   "total_findings": 1,
   "explored": ["billing-api"]
 }
@@ -5058,8 +5059,8 @@ Ask these questions:
 2. Does `verified-final.json` mark it `reportable: true`?
 3. Does `evidence-packs.json` include a pack for it?
 4. Does the evidence pack reference request audit entries?
-5. Does `findings.jsonl` show which hunter recorded it?
-6. Does the hunter handoff match the assigned surface?
+5. Does `findings.jsonl` show which evaluator recorded it?
+6. Does the evaluator handoff match the assigned surface?
 7. Does state show the wave was actually merged?
 
 That backward trace is the fastest way to find hallucinated report content.
@@ -5085,8 +5086,8 @@ bounty_read_pipeline_analytics
 
 Likely causes:
 
-- one background hunter has not finished
-- a hunter ended without the final marker
+- one background evaluator has not finished
+- a evaluator ended without the final marker
 - handoff JSON is missing
 - handoff JSON is malformed
 - marker and handoff disagree
@@ -5096,17 +5097,17 @@ Code to read:
 
 ```text
 mcp/lib/waves.js
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 ```
 
 What to do:
 
-- wait for hunters if they are still running
+- wait for evaluators if they are still running
 - resume the session after completion
 - use force-merge only when the missing/invalid handoff is understood and the
   reason is explicit
 
-## HUNT Will Not Transition To CHAIN
+## EVALUATE Will Not Transition To CHAIN
 
 Inspect:
 
@@ -5131,7 +5132,7 @@ Code to read:
 
 ```text
 mcp/lib/phase-gates.js
-computeHuntToChainGate
+computeEvaluationToChainGate
 ```
 
 What to do:
@@ -5224,7 +5225,7 @@ grade.json
 
 Likely causes:
 
-- report writer used stale hunter findings instead of final verification
+- report writer used stale evaluator findings instead of final verification
 - report writer included a denied or downgraded non-reportable finding
 - report writer included chain impact from a denied or blocked chain attempt
 
@@ -5239,13 +5240,13 @@ What to do:
 - regenerate the report writer output
 - instruct it to use only final reportable findings and evidence packs
 
-## A Hunter Keeps Repeating Work
+## A Evaluator Keeps Repeating Work
 
 Inspect:
 
 ```text
 coverage.jsonl
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 dead_ends in state.json
 waf_blocked_endpoints in state.json
 ```
@@ -5254,21 +5255,21 @@ Likely causes:
 
 - coverage was not logged before pivots
 - dead ends were not merged yet
-- hunter brief caps hid some older context
+- evaluator brief caps hid some older context
 - assigned surface is too broad
 
 Code to read:
 
 ```text
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 mcp/lib/coverage.js
 ```
 
 What to do:
 
-- make hunters log coverage after meaningful tests
-- split broad surfaces in recon if needed
-- tune hunter brief summaries if context caps are too aggressive
+- make evaluators log coverage after meaningful tests
+- split broad surfaces in surface-discovery if needed
+- tune evaluator brief summaries if context caps are too aggressive
 
 ## A Finding Is Missing From The Report
 
@@ -5286,7 +5287,7 @@ report.md
 
 Possible disappearance points:
 
-- hunter never recorded it
+- evaluator never recorded it
 - brutalist denied it
 - balanced failed to pass it through
 - final failed to pass it through
@@ -5333,7 +5334,7 @@ What to do:
 
 - use `bounty_list_auth_profiles` before replay
 - store a fresh profile with `bounty_auth_store`
-- make sure hunters/verifiers use `auth_profile: "attacker"` and `"victim"`
+- make sure evaluators/verifiers use `auth_profile: "attacker"` and `"victim"`
   where appropriate
 
 ## HTTP Requests Fail Repeatedly
@@ -5344,7 +5345,7 @@ Inspect:
 http-audit.jsonl
 bounty_wave_status
 bounty_read_pipeline_analytics
-circuit_breaker_summary in hunter brief
+circuit_breaker_summary in evaluator brief
 ```
 
 Likely causes:
@@ -5397,7 +5398,7 @@ Bob's architecture is mostly about preventing context collapse.
 The naive version of this project would paste everything into every agent:
 
 ```text
-all recon
+all surface-discovery
 all traffic
 all requests
 all findings
@@ -5431,12 +5432,12 @@ It does not need every request or every endpoint. It needs to know:
 
 This is why `readStateSummary()` exists next to full `readSessionState()`.
 
-## Pattern 2: One Assigned Brief For Each Hunter
+## Pattern 2: One Assigned Brief For Each Evaluator
 
-Each hunter reads:
+Each evaluator reads:
 
 ```text
-bounty_read_hunter_brief
+bounty_read_assignment_brief
 ```
 
 That brief is a lossy but purposeful packet. It should answer:
@@ -5449,8 +5450,8 @@ That brief is a lossy but purposeful packet. It should answer:
 - what request history is relevant?
 - what static or public hints matter?
 
-The hunter should not read the whole session directory. It should not decide
-its own surface. It should not consume all other hunters' context.
+The evaluator should not read the whole session directory. It should not decide
+its own surface. It should not consume all other evaluators' context.
 
 ## Pattern 3: Structured Artifacts For Later Agents
 
@@ -5519,7 +5520,7 @@ If these become prose-only, many-agent coordination breaks.
 If the root chat loses context, the recovery path is:
 
 ```text
-/bob-hunt resume example.test
+/bob-evaluate resume example.test
 ```
 
 The root does not need the old chat. It reads:
@@ -5551,7 +5552,7 @@ These are designed for a flight. Do the "Task" first, then check the answer.
 Task:
 
 ```bash
-sed -n '1,260p' .claude/skills/bob-hunt/SKILL.md
+sed -n '1,260p' .claude/skills/bob-evaluate/SKILL.md
 ```
 
 Questions:
@@ -5563,11 +5564,11 @@ Questions:
 
 Answer:
 
-The root orchestrator contract is the `bob-hunt` skill. It owns phase
+The root orchestrator contract is the `bob-evaluate` skill. It owns phase
 coordination, agent spawning, wave start/merge decisions, and resume behavior.
-It must not hunt directly, synthesize handoffs, or write MCP-owned artifacts.
+It must not evaluate directly, synthesize handoffs, or write MCP-owned artifacts.
 The launch-turn barrier forbids merging or checking handoff status in the same
-turn that spawned hunters.
+turn that spawned evaluators.
 
 ## Exercise 2: Find Who Writes `state.json`
 
@@ -5618,21 +5619,21 @@ This prevents unauthenticated handoff writes through the MCP tool and lets read
 and merge paths reject hand-edited tokenized handoff JSON unless the local
 session signing key is available.
 
-## Exercise 4: Find The Hunter's First Required Action
+## Exercise 4: Find The Evaluator's First Required Action
 
 Task:
 
 ```bash
-rg -n "first action|bounty_read_hunter_brief|Call `bounty_read_hunter_brief`" .claude/agents/hunter-agent.md .claude/skills/bob-hunt/SKILL.md
+rg -n "first action|bounty_read_assignment_brief|Call `bounty_read_assignment_brief`" .claude/agents/evaluator-agent.md .claude/skills/bob-evaluate/SKILL.md
 ```
 
 Answer:
 
-The hunter must call `bounty_read_hunter_brief` first in normal wave mode. The
+The evaluator must call `bounty_read_assignment_brief` first in normal wave mode. The
 orchestrator prompt injects wave, agent, target, token, and egress profile, but
 the brief is where the assigned context packet comes from.
 
-## Exercise 5: Find Where HUNT -> CHAIN Can Block
+## Exercise 5: Find Where EVALUATE -> CHAIN Can Block
 
 Task:
 
@@ -5642,7 +5643,7 @@ sed -n '1,180p' mcp/lib/phase-gates.js
 
 Answer:
 
-`computeHuntToChainGate()` blocks on:
+`computeEvaluationToChainGate()` blocks on:
 
 ```text
 pending_wave
@@ -5652,7 +5653,7 @@ unexplored_high_surfaces
 open_requeue_coverage
 ```
 
-This is why Bob cannot simply decide "enough hunting" based on chat vibes.
+This is why Bob cannot simply decide "enough evaluating" based on chat vibes.
 
 ## Exercise 6: Find The "Include Every Finding" Rule
 
@@ -5718,7 +5719,7 @@ Answer:
 
 The write guard blocks direct writes to MCP-owned artifacts such as state,
 findings, handoffs, evidence packs, traffic, audit, coverage, and pipeline
-events. It allows recon-owned `attack_surface.json`.
+events. It allows surface-discovery-owned `attack_surface.json`.
 
 ## Exercise 10: Trace One Tool End To End
 
@@ -5733,8 +5734,8 @@ mcp/lib/tools/write-wave-handoff.js
 mcp/lib/tool-registry.js
 mcp/lib/dispatch.js
 mcp/lib/waves.js
-.claude/agents/hunter-agent.md
-.claude/hooks/hunter-subagent-stop.js
+.claude/agents/evaluator-agent.md
+.claude/hooks/agent-run-stop.js
 test/mcp-server.test.js
 ```
 
@@ -5755,7 +5756,7 @@ Use this section when you know the question but not the file.
 ## Where Does A Run Start?
 
 ```text
-.claude/skills/bob-hunt/SKILL.md
+.claude/skills/bob-evaluate/SKILL.md
 mcp/lib/tools/init-session.js
 mcp/lib/session-state.js
 ```
@@ -5814,10 +5815,10 @@ mcp/lib/tools/apply-wave-merge.js
 mcp/lib/tools/write-wave-handoff.js
 ```
 
-## Where Are Hunter Briefs Built?
+## Where Are Evaluator Briefs Built?
 
 ```text
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 mcp/lib/ranking.js
 mcp/lib/http-records.js
 mcp/lib/coverage.js
@@ -5907,7 +5908,7 @@ mcp/lib/tool-telemetry.js
 
 ```text
 .claude/hooks/session-write-guard.sh
-.claude/hooks/hunter-subagent-stop.js
+.claude/hooks/agent-run-stop.js
 ```
 
 ## Where Are Prompt Contracts Tested?
@@ -5981,11 +5982,11 @@ Why:
 A static Markdown/HTML report could turn raw artifacts into a readable
 postmortem.
 
-Expose context budget metadata in hunter briefs.
+Expose context budget metadata in evaluator briefs.
 
 Why:
 
-When a brief is heavily compressed, the hunter and operator should know. Numeric
+When a brief is heavily compressed, the evaluator and operator should know. Numeric
 budget metadata would make missed context easier to diagnose.
 
 ## Larger Architecture Improvements
@@ -6102,9 +6103,9 @@ phase -> agent -> MCP tool -> artifact -> next phase gate
 Example output:
 
 ```text
-HUNT -> hunter-agent -> bounty_record_finding -> findings.jsonl
-HUNT -> hunter-agent -> bounty_write_wave_handoff -> handoff-wN-aN.json
-HUNT -> bounty_apply_wave_merge -> state.json
+EVALUATE -> evaluator-agent -> bounty_record_finding -> findings.jsonl
+EVALUATE -> evaluator-agent -> bounty_write_wave_handoff -> handoff-wN-aN.json
+EVALUATE -> bounty_apply_wave_merge -> state.json
 CHAIN -> chain-builder -> bounty_write_chain_attempt -> chain-attempts.jsonl
 VERIFY -> final-verifier -> bounty_write_verification_round -> verified-final.json
 VERIFY -> evidence-agent -> bounty_write_evidence_packs -> evidence-packs.json
@@ -6167,11 +6168,11 @@ Priority:
 
 Medium-high, especially for teaching and postmortems.
 
-## 4. Make Context Budgets Visible In Hunter Briefs
+## 4. Make Context Budgets Visible In Evaluator Briefs
 
 Suggestion:
 
-Expand `bounty_read_hunter_brief` output with a small `context_budget` object:
+Expand `bounty_read_assignment_brief` output with a small `context_budget` object:
 
 ```json
 {
@@ -6189,7 +6190,7 @@ Expand `bounty_read_hunter_brief` output with a small `context_budget` object:
 Why it makes sense:
 
 The repo already caps surface arrays and reports `surface_limits`. A broader
-budget summary would make it obvious when a hunter is receiving a heavily
+budget summary would make it obvious when a evaluator is receiving a heavily
 compressed view. That helps explain missed context and helps tune caps without
 guesswork.
 
@@ -6217,7 +6218,7 @@ Inputs:
 ```json
 {
   "target_domain": "example.com",
-  "from_phase": "HUNT",
+  "from_phase": "EVALUATE",
   "to_phase": "CHAIN"
 }
 ```
@@ -6449,8 +6450,8 @@ Suggestion:
 
 Add tests and fixtures for common bad behaviors:
 
-- hunter writes Markdown handoff only
-- hunter marker does not match structured handoff
+- evaluator writes Markdown handoff only
+- evaluator marker does not match structured handoff
 - balanced verifier drops a finding
 - evidence pack includes a token-like string
 - grade says `SUBMIT` with no medium-or-higher final reportable
@@ -6582,7 +6583,7 @@ docs/developer/context-management.md
 It should explain:
 
 - why the root orchestrator uses summaries
-- why hunters get one assigned brief
+- why evaluators get one assigned brief
 - why arrays are capped
 - why Markdown is not authoritative
 - how telemetry stays metadata-only
@@ -6616,10 +6617,10 @@ There are several, depending on what you mean:
 - CLI entry: `bin/hacker-bob.js`
 - installer: `scripts/install.js`
 - MCP server: `mcp/server.js`
-- `/bob-hunt` orchestration prompt: `.claude/skills/bob-hunt/SKILL.md`
+- `/bob-evaluate` orchestration prompt: `.claude/skills/bob-evaluate/SKILL.md`
 - MCP tool registry: `mcp/lib/tool-registry.js`
 
-For runtime behavior, start with `/bob-hunt` and `mcp/server.js`.
+For runtime behavior, start with `/bob-evaluate` and `mcp/server.js`.
 
 ## Why use MCP at all?
 
@@ -6650,7 +6651,7 @@ They are human/debug mirrors. For example, `findings.md` is easier to read than
 The user can run:
 
 ```text
-/bob-hunt resume <domain>
+/bob-evaluate resume <domain>
 ```
 
 The orchestrator reads MCP state and artifacts, sees the current phase and
@@ -6658,33 +6659,33 @@ pending wave, and continues from there.
 
 ## What is `pending_wave`?
 
-It means a wave was started but not merged. Hunters may still be running, or
+It means a wave was started but not merged. Evaluators may still be running, or
 some handoffs may be missing. Bob should not start another wave or move to
 CHAIN while `pending_wave` is set.
 
-## Why forbid same-turn merge after spawning hunters?
+## Why forbid same-turn merge after spawning evaluators?
 
-Hunters run in the background. The root turn that spawns them should not
+Evaluators run in the background. The root turn that spawns them should not
 immediately assume their handoffs exist. The launch-turn barrier prevents the
 orchestrator from racing ahead before background work finishes.
 
 ## What is a handoff token?
 
 When `bounty_start_wave` creates assignments, it generates a token for each
-assigned hunter. The token hash is stored in `wave-N-assignments.json`; the
+assigned evaluator. The token hash is stored in `wave-N-assignments.json`; the
 plain token is returned only to the orchestrator so it can put it in that
-hunter's prompt. `bounty_write_wave_handoff` verifies the token before accepting
+evaluator's prompt. `bounty_write_wave_handoff` verifies the token before accepting
 the handoff.
 
-## Why does the hunter also emit `BOB_HUNTER_DONE`?
+## Why does the evaluator also emit `BOB_AGENT_RUN_DONE`?
 
 The marker lets the SubagentStop hook confirm that the final message is a
-proper hunter completion. The hook then checks that the structured handoff
+proper evaluator completion. The hook then checks that the structured handoff
 exists and matches the marker. The marker alone is not enough.
 
 ## Who owns `attack_surface.json`?
 
-The recon agent writes it directly. This is one of the explicitly allowed
+The surface-discovery agent writes it directly. This is one of the explicitly allowed
 agent-owned session files. After that, MCP reads it and validates surface IDs.
 
 ## How does Bob avoid repeating work?
@@ -6694,14 +6695,14 @@ Several mechanisms:
 - `state.explored`
 - `coverage.jsonl`
 - dead-end and WAF-blocked endpoint lists
-- hunter brief coverage summaries
+- evaluator brief coverage summaries
 - wave merge requeue logic
 - finding dedupe keys
 - HTTP audit summaries and circuit breaker summaries
 
-## How does Bob decide which surfaces to hunt?
+## How does Bob decide which surfaces to evaluate?
 
-The recon agent gives each surface a priority. MCP ranking can compute runtime
+The surface-discovery agent gives each surface a priority. MCP ranking can compute runtime
 ranking from attack surface data, imported traffic, and public intel hints. The
 README says ranking is runtime prioritization, not a durable rewrite in normal
 status/brief reads.
@@ -6726,7 +6727,7 @@ The final round is the gate for evidence collection.
 
 Evidence collection can touch the target again. Bob should collect formal
 evidence only for findings that survived final verification, not for every weak
-hunter claim.
+evaluator claim.
 
 ## What makes evidence valid?
 
@@ -6800,7 +6801,7 @@ environment variable references.
 ## Why is there no shell scope guard?
 
 The current design puts enforceable target-host policy into MCP HTTP calls and
-does not claim Bob-enforced containment for raw Bash recon. The removed hook
+does not claim Bob-enforced containment for raw Bash surface-discovery. The removed hook
 files were permissive compatibility shims, so deleting them makes the installed
 surface match the enforcement model. This is tested behavior, not missing code.
 
@@ -6821,7 +6822,7 @@ policy replay harness.
 
 The `testing/policy-replay/` harness can replay minimized transcript cases
 against agent prompts to diagnose false refusals, policy stalls, or unsafe
-compliance risks. It is not part of normal hunting.
+compliance risks. It is not part of normal evaluating.
 
 ## How are generated prompt surfaces kept in sync?
 
@@ -6862,7 +6863,7 @@ A Claude Code subagent with a narrow prompt and tool list.
 
 ## Orchestrator
 
-The root `/bob-hunt` flow. It coordinates agents and state transitions.
+The root `/bob-evaluate` flow. It coordinates agents and state transitions.
 
 ## MCP
 
@@ -6877,12 +6878,12 @@ contract artifact.
 
 ## Wave
 
-A batch of hunter assignments. Each assignment maps one agent ID to one surface
+A batch of evaluator assignments. Each assignment maps one agent ID to one surface
 ID.
 
 ## Handoff
 
-A structured end-of-wave summary written by a hunter through MCP.
+A structured end-of-wave summary written by a evaluator through MCP.
 
 ## Coverage
 
@@ -6891,7 +6892,7 @@ tested, blocked, promising, needs auth, or should be requeued.
 
 ## Finding
 
-A proven vulnerability claim recorded by a hunter.
+A proven vulnerability claim recorded by a evaluator.
 
 ## Chain Attempt
 
@@ -6971,7 +6972,7 @@ mcp/lib/pipeline-analytics.js
 mcp/lib/tool-telemetry.js
 ```
 
-## HTTP, Auth, Recon Enrichment
+## HTTP, Auth, Surface-discovery Enrichment
 
 ```text
 mcp/lib/http-scan.js
@@ -6985,7 +6986,7 @@ mcp/lib/egress-profiles.js
 mcp/lib/public-intel.js
 mcp/lib/static-artifacts.js
 mcp/lib/ranking.js
-mcp/lib/hunter-brief.js
+mcp/lib/assignment-brief.js
 mcp/redaction.js
 ```
 
@@ -7023,11 +7024,11 @@ When reading this repo, do not start by trying to understand every helper
 function. Follow the data:
 
 ```text
-/bob-hunt
+/bob-evaluate
   -> state.json
   -> attack_surface.json
   -> wave assignments
-  -> hunter brief
+  -> evaluator brief
   -> coverage/findings/handoff
   -> wave merge
   -> chain attempts
@@ -7045,7 +7046,7 @@ tool registry
   -> session locks
   -> phase gates
   -> write guard
-  -> hunter stop hook
+  -> evaluator stop hook
   -> prompt contract tests
 ```
 

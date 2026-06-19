@@ -10,7 +10,8 @@ function readHttpAudit(args) {
 }
 
 module.exports = Object.freeze({
-  name: "bounty_read_http_audit",
+  name: "bob_read_http_audit",
+  aliases: ["bounty_read_http_audit"],
   description:
     "Read a capped HTTP request audit summary from session-owned http-audit.jsonl, optionally filtered to one attack surface.",
   inputSchema: {
@@ -23,7 +24,7 @@ module.exports = Object.freeze({
     required: ["target_domain"],
   },
   handler: readHttpAudit,
-  role_bundles: ["hunter-web", "verifier", "chain", "evidence"],
+  role_bundles: ["evaluator-web", "verifier", "chain", "evidence"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

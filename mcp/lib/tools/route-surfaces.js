@@ -3,7 +3,8 @@
 const { routeSurfaces } = require("../surface-router.js");
 
 module.exports = Object.freeze({
-  name: "bounty_route_surfaces",
+  name: "bob_route_surfaces",
+  aliases: ["bounty_route_surfaces"],
   description: "Classify attack_surface.json entries into MCP-owned capability packs and write surface-routes.json.",
   inputSchema: {
     type: "object",

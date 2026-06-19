@@ -1,7 +1,7 @@
 {
   "name": "hacker-bob",
-  "version": "1.3.5",
-  "description": "Codex MCP wiring for the Hacker Bob bug bounty hunting runtime.",
+  "version": "2.0.1",
+  "description": "Codex MCP wiring for the Hacker Bob bug bounty evaluating runtime.",
   "author": {
     "name": "Hacker Bob contributors",
     "email": "maintainers@example.invalid",
@@ -19,8 +19,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Hacker Bob",
-    "shortDescription": "Autonomous bug bounty hunting through a portable MCP runtime.",
-    "longDescription": "Run Hacker Bob hunts, status checks, debug reviews, and package updates from Codex while durable state remains in the shared MCP runtime.",
+    "shortDescription": "Autonomous bug bounty evaluating through a portable MCP runtime.",
+    "longDescription": "Run Hacker Bob evaluations, status checks, debug reviews, and package updates from Codex while durable state remains in the shared MCP runtime.",
     "developerName": "Hacker Bob contributors",
     "category": "Developer Tools",
     "capabilities": [
@@ -32,7 +32,7 @@
     "privacyPolicyURL": "https://github.com/vmihalis/hacker-bob/blob/main/SECURITY.md",
     "termsOfServiceURL": "https://github.com/vmihalis/hacker-bob/blob/main/DISCLAIMER.md",
     "defaultPrompt": [
-      "Start a Hacker Bob hunt for example.com",
+      "Start a Hacker Bob evaluate for example.com",
       "Show Hacker Bob status for the latest run",
       "Debug the latest Hacker Bob run"
     ],

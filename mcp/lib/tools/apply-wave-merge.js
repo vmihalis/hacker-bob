@@ -3,7 +3,8 @@
 const { applyWaveMerge } = require("../waves.js");
 
 module.exports = Object.freeze({
-  name: "bounty_apply_wave_merge",
+  name: "bob_apply_wave_merge",
+  aliases: ["bounty_apply_wave_merge"],
   description:
     "Apply one wave merge to session state from authoritative structured handoff JSON, including exclusions, leads, and findings summary.",
   inputSchema: {
@@ -20,7 +21,7 @@ module.exports = Object.freeze({
       },
       "force_merge_reason": {
         "type": "string",
-        "description": "Required when force_merge is true. Explain missing/invalid handoffs and why reconciliation is safe."
+        "description": "Required when force_merge is true. Explain missing/invalid handoffs and why settlement is safe."
       }
     },
     "required": [

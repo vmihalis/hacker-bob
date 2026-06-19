@@ -3,9 +3,10 @@
 const { clearTerminalBlock } = require("../session-state.js");
 
 module.exports = Object.freeze({
-  name: "bounty_clear_terminal_block",
+  name: "bob_clear_terminal_block",
+  aliases: ["bounty_clear_terminal_block"],
   description:
-    "Remove a surface from state.terminally_blocked and record the clear in state.terminal_block_clear_history. Operator-driven: call this only after the missing prerequisite material (auth profile, egress profile, funded wallet, etc.) has been registered. Rejects surfaces that were never terminally blocked, and rejects clearing while a wave is pending — the operator must merge the current wave first. The reason field (>=20 chars) is durable in state.json, not just the pipeline event. Blocked_prereq_history is retained for debugging; the loop detector uses the clear epoch to ignore pre-clear entries.",
+    "Clear a terminally-blocked surface from the frontier ledger and record the clear in state.terminal_block_clear_history. Operator-driven: call this only after the missing prerequisite material (auth profile, egress profile, funded wallet, etc.) has been registered. Rejects surfaces that are not currently terminally blocked (per frontier-projections.currentBlockers), and rejects clearing while a wave is pending — the operator must merge the current wave first. The reason field (>=20 chars) is durable in state.json, not just the pipeline event. blocked_prereq_history is retained for debugging; the loop detector uses the clear epoch to ignore pre-clear entries.",
   inputSchema: {
     "type": "object",
     "properties": {

@@ -10,12 +10,29 @@ const ERROR_CODES = Object.freeze({
   INTERNAL_ERROR: "INTERNAL_ERROR",
 });
 
+// Y.3 (Y-D12 / D15): ToolError optionally carries a structured `remediation`
+// string so STATE_CONFLICT (and any other) call sites can tell the caller
+// exactly which tool to invoke to clear the conflict. The field is reflected
+// uniformly through errorEnvelope(). Y.10 (Y-P12) lands the first concrete
+// backfill: the OPEN_FRONTIER -> CLAIM_FREEZE partial_surfaces_remaining
+// blocker propagates remediation through advanceSession() so MCP callers
+// see the structured "call bob_set_queue_policy({partial_surface_advance_
+// acknowledgements: [...]})" hint verbatim.
 class ToolError extends Error {
-  constructor(code, message, details = null) {
+  constructor(code, message, details = null, options = null) {
     super(message);
     this.name = "ToolError";
     this.code = code;
     this.details = details;
+    const remediation = options && typeof options === "object" && !Array.isArray(options)
+      ? options.remediation
+      : null;
+    if (remediation != null) {
+      if (typeof remediation !== "string") {
+        throw new TypeError("ToolError remediation must be a string when provided");
+      }
+      this.remediation = remediation;
+    }
   }
 }
 
@@ -31,13 +48,21 @@ function okEnvelope(toolName, data) {
   };
 }
 
-function errorEnvelope(toolName, code, message, details = undefined) {
+function errorEnvelope(toolName, code, message, details = undefined, options = undefined) {
   const error = {
     code,
     message: message || code,
   };
   if (details !== undefined) {
     error.details = details;
+  }
+  // Y.3 (Y-D12 / D15): propagate the optional structured remediation string
+  // through the response envelope so MCP callers can present it verbatim. The
+  // field is only emitted when the throwing site or caller explicitly attached
+  // one; legacy STATE_CONFLICT sites without remediation continue to render
+  // without the field.
+  if (options && typeof options === "object" && !Array.isArray(options) && typeof options.remediation === "string") {
+    error.remediation = options.remediation;
   }
   return {
     ok: false,

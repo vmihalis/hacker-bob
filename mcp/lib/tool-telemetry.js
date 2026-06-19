@@ -2,7 +2,6 @@
 
 const fs = require("fs");
 const crypto = require("crypto");
-const os = require("os");
 const path = require("path");
 const {
   bobVersion,
@@ -12,7 +11,10 @@ const {
   readFileUtf8,
 } = require("./storage.js");
 const {
+  TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
   statePath,
+  telemetryDir,
+  telemetryToolInvocationsJsonlPath,
 } = require("./paths.js");
 const {
   assertHttpScopeDomain,
@@ -22,19 +24,21 @@ const {
   normalizeAuthorityTelemetry,
   validateSessionAuthorityState,
 } = require("./session-authority.js");
+const {
+  migrateLegacyTelemetryAgentRunsFile,
+} = require("./telemetry-migration.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
-const AGENT_RUN_TELEMETRY_VERSION = 1;
-const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
+const TOOL_INVOCATION_TELEMETRY_VERSION = 1;
 const TOOL_EVENTS_FILE_NAME = "tool-events.jsonl";
-const AGENT_RUNS_FILE_NAME = "agent-runs.jsonl";
+const TOOL_INVOCATIONS_FILE_NAME = TELEMETRY_TOOL_INVOCATIONS_FILE_NAME;
 const ERROR_MESSAGE_MAX_CHARS = 200;
 const SAFE_LABEL_MAX_CHARS = 200;
 const SAFE_PATH_MAX_CHARS = 1000;
 const DEFAULT_RECENT_FAILURE_LIMIT = 10;
 const MAX_RECENT_FAILURE_LIMIT = 100;
 const TOOL_TELEMETRY_MAX_RECORDS = 5000;
-const AGENT_RUN_TELEMETRY_MAX_RECORDS = 5000;
+const TOOL_INVOCATION_TELEMETRY_MAX_RECORDS = 5000;
 const INVALID_FILTER_VALUE = Symbol("invalid-filter-value");
 
 const SENSITIVE_MESSAGE_RE = /\b(?:authorization|bearer|cookie|set-cookie|password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)\b/i;
@@ -72,24 +76,18 @@ function telemetryEnabled(env = process.env) {
   return env.BOUNTY_TELEMETRY !== "0";
 }
 
-function telemetryDir(env = process.env) {
-  const override = typeof env.BOUNTY_TELEMETRY_DIR === "string"
-    ? env.BOUNTY_TELEMETRY_DIR.trim()
-    : "";
-  return override ? path.resolve(override) : path.join(os.homedir(), TELEMETRY_DIR_NAME);
-}
-
 function toolTelemetryPath(env = process.env) {
   return path.join(telemetryDir(env), TOOL_EVENTS_FILE_NAME);
 }
 
-function agentRunTelemetryPath(env = process.env) {
-  return path.join(telemetryDir(env), AGENT_RUNS_FILE_NAME);
+function toolInvocationTelemetryPath(env = process.env) {
+  migrateLegacyTelemetryAgentRunsFile({ env });
+  return telemetryToolInvocationsJsonlPath(env);
 }
 
 function safeTelemetryPath(filePath) {
   const name = path.basename(String(filePath || ""));
-  if (name === TOOL_EVENTS_FILE_NAME || name === AGENT_RUNS_FILE_NAME) {
+  if (name === TOOL_EVENTS_FILE_NAME || name === TOOL_INVOCATIONS_FILE_NAME) {
     return `[telemetry-dir]/${name}`;
   }
   return "[telemetry-dir]";
@@ -159,7 +157,7 @@ function matchesFilterValue(eventValue, filterValue) {
   return !filterValue || eventValue === filterValue;
 }
 
-function agentRunSidecarPath(runId, env = process.env) {
+function toolInvocationSidecarPath(runId, env = process.env) {
   return path.join(telemetryDir(env), "runs", `${runId}.json`);
 }
 
@@ -320,7 +318,13 @@ function redactUrlsInText(text) {
 }
 
 function redactSessionPaths(text) {
-  return text.replace(/(?:~|\/[^\s"'<>)]*)\/bounty-agent-sessions\/[^\s"'<>)]*/g, "[session-path]");
+  // Cycle P.2: redact both the canonical `hacker-bob-sessions` root and the
+  // legacy `bounty-agent-sessions` root so telemetry never leaks home-prefixed
+  // session paths during the v2.0/v2.1 coexistence window.
+  return text.replace(
+    /(?:~|\/[^\s"'<>)]*)\/(?:hacker-bob-sessions|bounty-agent-sessions)\/[^\s"'<>)]*/g,
+    "[session-path]",
+  );
 }
 
 function redactSensitiveFragments(text) {
@@ -432,7 +436,7 @@ function safeRecordToolTelemetry(input, options = {}) {
   }
 }
 
-function normalizeAgentRunHandoff(handoff) {
+function normalizeToolInvocationHandoff(handoff) {
   const value = handoff && typeof handoff === "object" && !Array.isArray(handoff) ? handoff : {};
   const chainNotesCount = Number.isFinite(value.chain_notes_count)
     ? Math.max(0, Math.trunc(value.chain_notes_count))
@@ -448,7 +452,7 @@ function normalizeAgentRunHandoff(handoff) {
   };
 }
 
-function normalizeAgentRunCoverage(coverage) {
+function normalizeToolInvocationCoverage(coverage) {
   const value = coverage && typeof coverage === "object" && !Array.isArray(coverage) ? coverage : {};
   const byStatusInput = value.by_status && typeof value.by_status === "object" && !Array.isArray(value.by_status)
     ? value.by_status
@@ -475,14 +479,14 @@ function normalizeAgentRunCoverage(coverage) {
   };
 }
 
-function normalizeAgentRunFindings(findings) {
+function normalizeToolInvocationFindings(findings) {
   const value = findings && typeof findings === "object" && !Array.isArray(findings) ? findings : {};
   return {
     count: Number.isFinite(value.count) ? Math.max(0, Math.trunc(value.count)) : 0,
   };
 }
 
-function buildAgentRunTelemetryEvent({
+function buildToolInvocationTelemetryEvent({
   runType,
   run_type: runTypeSnake,
   status,
@@ -496,18 +500,18 @@ function buildAgentRunTelemetryEvent({
   handoff,
   coverage,
   findings,
-  telemetry_source: telemetrySource = "hunter-subagent-stop",
+  telemetry_source: telemetrySource = "agent-run-stop",
   bob_version: bobVersionInput = null,
   now = new Date(),
 }) {
-  const normalizedRunType = runType || runTypeSnake || "hunter";
+  const normalizedRunType = runType || runTypeSnake || "evaluator";
   const normalizedBlockCode = blockCode == null ? blockCodeSnake : blockCode;
   const event = {
-    version: AGENT_RUN_TELEMETRY_VERSION,
+    version: TOOL_INVOCATION_TELEMETRY_VERSION,
     bob_version: currentBobVersion(bobVersionInput),
     ts: now.toISOString(),
     run_id: null,
-    run_type: safeTelemetryLabel(normalizedRunType, 80) || "hunter",
+    run_type: safeTelemetryLabel(normalizedRunType, 80) || "evaluator",
     status: status === "allowed" ? "allowed" : "blocked",
     block_code: status === "allowed" ? null : safeTelemetryLabel(normalizedBlockCode, 120),
     target_domain: capDomain(targetDomain),
@@ -515,35 +519,35 @@ function buildAgentRunTelemetryEvent({
     agent: safeTelemetryLabel(agent, 40),
     surface_id: safeTelemetryLabel(surfaceId),
     transcript_path: capString(transcriptPath, SAFE_PATH_MAX_CHARS),
-    handoff: normalizeAgentRunHandoff(handoff),
-    coverage: normalizeAgentRunCoverage(coverage),
-    findings: normalizeAgentRunFindings(findings),
-    telemetry_source: safeTelemetryLabel(telemetrySource, 120) || "hunter-subagent-stop",
+    handoff: normalizeToolInvocationHandoff(handoff),
+    coverage: normalizeToolInvocationCoverage(coverage),
+    findings: normalizeToolInvocationFindings(findings),
+    telemetry_source: safeTelemetryLabel(telemetrySource, 120) || "agent-run-stop",
   };
   event.run_id = buildRunId(event);
   return event;
 }
 
-function appendAgentRunTelemetryEvent(event, { env = process.env } = {}) {
+function appendToolInvocationTelemetryEvent(event, { env = process.env } = {}) {
   if (!telemetryEnabled(env)) return false;
-  const filePath = agentRunTelemetryPath(env);
-  appendJsonlLine(filePath, event, { maxRecords: AGENT_RUN_TELEMETRY_MAX_RECORDS });
+  const filePath = toolInvocationTelemetryPath(env);
+  appendJsonlLine(filePath, event, { maxRecords: TOOL_INVOCATION_TELEMETRY_MAX_RECORDS });
 
-  const sidecarPath = agentRunSidecarPath(event.run_id, env);
+  const sidecarPath = toolInvocationSidecarPath(event.run_id, env);
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
   fs.writeFileSync(sidecarPath, `${JSON.stringify(event, null, 2)}\n`, "utf8");
   return true;
 }
 
-function recordAgentRunTelemetry(input, options = {}) {
-  const event = buildAgentRunTelemetryEvent(input);
-  appendAgentRunTelemetryEvent(event, options);
+function recordToolInvocationTelemetry(input, options = {}) {
+  const event = buildToolInvocationTelemetryEvent(input);
+  appendToolInvocationTelemetryEvent(event, options);
   return event;
 }
 
-function safeRecordAgentRunTelemetry(input, options = {}) {
+function safeRecordToolInvocationTelemetry(input, options = {}) {
   try {
-    return recordAgentRunTelemetry(input, options);
+    return recordToolInvocationTelemetry(input, options);
   } catch {
     return null;
   }
@@ -627,24 +631,24 @@ function eventMatchesFilters(event, filters) {
     matchesFilterValue(event.target_domain, filters.target_domain);
 }
 
-function isPlainAgentRunEvent(event) {
+function isPlainToolInvocationEvent(event) {
   return (
     event &&
     typeof event === "object" &&
     !Array.isArray(event) &&
-    event.version === AGENT_RUN_TELEMETRY_VERSION &&
+    event.version === TOOL_INVOCATION_TELEMETRY_VERSION &&
     typeof event.run_id === "string" &&
     typeof event.run_type === "string" &&
     (event.status === "allowed" || event.status === "blocked")
   );
 }
 
-function normalizeAgentRunEventForSummary(event) {
+function normalizeToolInvocationEventForSummary(event) {
   return {
     ts: safeTimestamp(event.ts),
     bob_version: safeVersionLabel(event.bob_version),
     run_id: safeTelemetryLabel(event.run_id, 80),
-    run_type: safeTelemetryLabel(event.run_type, 80) || "hunter",
+    run_type: safeTelemetryLabel(event.run_type, 80) || "evaluator",
     status: event.status === "allowed" ? "allowed" : "blocked",
     block_code: safeTelemetryLabel(event.block_code, 120),
     target_domain: capDomain(event.target_domain),
@@ -652,14 +656,14 @@ function normalizeAgentRunEventForSummary(event) {
     agent: safeTelemetryLabel(event.agent, 40),
     surface_id: safeTelemetryLabel(event.surface_id),
     transcript_path: safeTranscriptPath(event.transcript_path),
-    handoff: normalizeAgentRunHandoff(event.handoff),
-    coverage: normalizeAgentRunCoverage(event.coverage),
-    findings: normalizeAgentRunFindings(event.findings),
+    handoff: normalizeToolInvocationHandoff(event.handoff),
+    coverage: normalizeToolInvocationCoverage(event.coverage),
+    findings: normalizeToolInvocationFindings(event.findings),
     telemetry_source: safeTelemetryLabel(event.telemetry_source, 120),
   };
 }
 
-function agentRunMatchesFilters(event, filters) {
+function toolInvocationMatchesFilters(event, filters) {
   return matchesFilterValue(event.target_domain, filters.target_domain) &&
     matchesFilterValue(event.run_type, filters.agent_run_type) &&
     matchesFilterValue(event.wave, filters.wave) &&
@@ -707,7 +711,7 @@ function readToolTelemetryEvents({ target_domain: targetDomain, tool, env = proc
   return result;
 }
 
-function readAgentRunTelemetryEvents({
+function readToolInvocationTelemetryEvents({
   target_domain: targetDomain,
   agent_run_type: agentRunType,
   wave,
@@ -715,7 +719,7 @@ function readAgentRunTelemetryEvents({
   surface_id: surfaceId,
   env = process.env,
 } = {}) {
-  const filePath = agentRunTelemetryPath(env);
+  const filePath = toolInvocationTelemetryPath(env);
   const filters = {
     target_domain: safeTargetDomainFilter(targetDomain),
     agent_run_type: safeFilterLabel(agentRunType, 80),
@@ -734,7 +738,7 @@ function readAgentRunTelemetryEvents({
     return result;
   }
 
-  const lines = readFileUtf8(filePath, { label: AGENT_RUNS_FILE_NAME }).split(/\r?\n/);
+  const lines = readFileUtf8(filePath, { label: TOOL_INVOCATIONS_FILE_NAME }).split(/\r?\n/);
   for (const line of lines) {
     if (!line.trim()) continue;
     let parsed;
@@ -744,12 +748,12 @@ function readAgentRunTelemetryEvents({
       result.malformed_lines += 1;
       continue;
     }
-    if (!isPlainAgentRunEvent(parsed)) {
+    if (!isPlainToolInvocationEvent(parsed)) {
       result.malformed_lines += 1;
       continue;
     }
-    const normalized = normalizeAgentRunEventForSummary(parsed);
-    if (agentRunMatchesFilters(normalized, filters)) {
+    const normalized = normalizeToolInvocationEventForSummary(parsed);
+    if (toolInvocationMatchesFilters(normalized, filters)) {
       result.events.push(normalized);
     }
   }
@@ -871,7 +875,7 @@ function summarizeToolTelemetryEvents(events, { limit = DEFAULT_RECENT_FAILURE_L
   };
 }
 
-function slimAgentRunEvent(event) {
+function slimToolInvocationEvent(event) {
   return {
     ts: event.ts,
     bob_version: event.bob_version,
@@ -891,7 +895,7 @@ function slimAgentRunEvent(event) {
   };
 }
 
-function summarizeAgentRunTelemetryEvents(events, {
+function summarizeToolInvocationTelemetryEvents(events, {
   limit = DEFAULT_RECENT_FAILURE_LIMIT,
   readResult = null,
   filters = {},
@@ -912,11 +916,11 @@ function summarizeAgentRunTelemetryEvents(events, {
   }
 
   return {
-    version: AGENT_RUN_TELEMETRY_VERSION,
+    version: TOOL_INVOCATION_TELEMETRY_VERSION,
     bob_version: currentBobVersion(null, env),
     observed_bob_versions: observedBobVersions(events),
     enabled: readResult ? readResult.enabled : telemetryEnabled(),
-    telemetry_path: readResult ? readResult.telemetry_path : safeTelemetryPath(agentRunTelemetryPath()),
+    telemetry_path: readResult ? readResult.telemetry_path : safeTelemetryPath(toolInvocationTelemetryPath()),
     filters,
     total_runs: events.length,
     malformed_lines: readResult ? readResult.malformed_lines : 0,
@@ -925,12 +929,12 @@ function summarizeAgentRunTelemetryEvents(events, {
       by_status: byStatus,
       by_block_code: byBlockCode,
     },
-    latest_run: events.length ? slimAgentRunEvent(events[events.length - 1]) : null,
+    latest_run: events.length ? slimToolInvocationEvent(events[events.length - 1]) : null,
     recent_blocked_runs: events
       .filter((event) => event.status === "blocked")
       .slice(-recentBlockedLimit)
       .reverse()
-      .map(slimAgentRunEvent),
+      .map(slimToolInvocationEvent),
   };
 }
 
@@ -959,7 +963,7 @@ function readToolTelemetry(args = {}, { env = process.env } = {}) {
   };
 
   if (args.include_agent_runs === true) {
-    const agentRunFilters = {
+    const toolInvocationFilters = {
       target_domain: publicFilterValue(safeTargetDomainFilter(args.target_domain)),
       agent_run_type: publicFilterValue(safeFilterLabel(args.agent_run_type, 80)),
       wave: publicFilterValue(safeFilterLabel(args.wave, 40)),
@@ -967,7 +971,7 @@ function readToolTelemetry(args = {}, { env = process.env } = {}) {
       surface_id: publicFilterValue(safeFilterLabel(args.surface_id)),
       limit,
     };
-    const agentRunReadResult = readAgentRunTelemetryEvents({
+    const toolInvocationReadResult = readToolInvocationTelemetryEvents({
       target_domain: args.target_domain,
       agent_run_type: args.agent_run_type,
       wave: args.wave,
@@ -975,10 +979,10 @@ function readToolTelemetry(args = {}, { env = process.env } = {}) {
       surface_id: args.surface_id,
       env,
     });
-    response.agent_runs = summarizeAgentRunTelemetryEvents(agentRunReadResult.events, {
+    response.agent_runs = summarizeToolInvocationTelemetryEvents(toolInvocationReadResult.events, {
       limit,
-      readResult: agentRunReadResult,
-      filters: agentRunFilters,
+      readResult: toolInvocationReadResult,
+      filters: toolInvocationFilters,
       env,
     });
   }
@@ -996,28 +1000,28 @@ function observedBobVersions(events) {
 }
 
 module.exports = {
-  AGENT_RUNS_FILE_NAME,
-  AGENT_RUN_TELEMETRY_MAX_RECORDS,
-  AGENT_RUN_TELEMETRY_VERSION,
   TOOL_EVENTS_FILE_NAME,
+  TOOL_INVOCATIONS_FILE_NAME,
+  TOOL_INVOCATION_TELEMETRY_MAX_RECORDS,
+  TOOL_INVOCATION_TELEMETRY_VERSION,
   TOOL_TELEMETRY_MAX_RECORDS,
   TOOL_TELEMETRY_VERSION,
-  agentRunSidecarPath,
-  agentRunTelemetryPath,
-  appendAgentRunTelemetryEvent,
+  appendToolInvocationTelemetryEvent,
   appendToolTelemetryEvent,
-  buildAgentRunTelemetryEvent,
+  buildToolInvocationTelemetryEvent,
   buildToolTelemetryEvent,
-  recordAgentRunTelemetry,
-  readAgentRunTelemetryEvents,
+  readToolInvocationTelemetryEvents,
   readToolTelemetry,
   readToolTelemetryEvents,
-  safeRecordAgentRunTelemetry,
+  recordToolInvocationTelemetry,
   safeErrorMessage,
+  safeRecordToolInvocationTelemetry,
   safeRecordToolTelemetry,
-  summarizeAgentRunTelemetryEvents,
+  summarizeToolInvocationTelemetryEvents,
   summarizeToolTelemetryEvents,
   telemetryDir,
   telemetryEnabled,
+  toolInvocationSidecarPath,
+  toolInvocationTelemetryPath,
   toolTelemetryPath,
 };
