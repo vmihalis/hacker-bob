@@ -128,7 +128,7 @@ function defaultPreToolUseHooks() {
       hooks: [
         {
           type: "command",
-          command: `node "${PROJECT_DIR_EXPR}/.claude/hooks/bob-http-write-confirm.js"`,
+          command: `bash "${PROJECT_DIR_EXPR}/.claude/hooks/bob-http-write-confirm.sh"`,
           timeout: 5,
         },
       ],

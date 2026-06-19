@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Unit tests for the bob-http-write-confirm.js PreToolUse hook.
+"""Unit tests for the bob-http-write-confirm.sh PreToolUse hook.
 
-The hook is FLAG-CONTROLLED + INERT BY DEFAULT: it asks the operator to confirm only when
-BOB_HTTP_WRITE_CONFIRM is truthy AND a bob_http_scan call carries a target-mutating method
-(POST/PUT/PATCH/DELETE). Everything else passes through (exit 0, no stdout = abstain). Unlike
-the exit-2 session-write-guard, an "ask" is an exit-0 stdout decision, so each case asserts
-on both the exit code and whether stdout carries permissionDecision:"ask"."""
+The hook is FLAG-CONTROLLED + INERT BY DEFAULT: a pure-bash flag check exits immediately (allow) when
+BOB_HTTP_WRITE_CONFIRM is unset/falsy — no interpreter spawn — so the disabled case (the default) is
+free on every bob_http_scan. When enabled, it asks the operator to confirm a target-mutating
+bob_http_scan (POST/PUT/PATCH/DELETE) and FAILS CLOSED: any enabled call we cannot positively confirm
+to be a read (malformed/missing method) asks rather than silently allowing a possible write. Definitive
+reads (GET/HEAD/OPTIONS) and out-of-scope tools pass through. An "ask" is an exit-0 stdout decision, so
+each case asserts on both the exit code and whether stdout carries permissionDecision:"ask"."""
 import json
 import os
 import subprocess
 import sys
 
-HOOK = os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "bob-http-write-confirm.js")
+HOOK = os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "bob-http-write-confirm.sh")
 SCAN = "mcp__hacker-bob__bob_http_scan"
 
 
@@ -21,7 +23,7 @@ def scan(method, url="https://target.example/api/x"):
 
 # (description, flag_value_or_None, payload_or_raw_string, expect_ask)
 TESTS = [
-    # --- inert by default (flag unset) ---
+    # --- inert by default (flag unset/falsy): allow with no interpreter spawn ---
     ("flag unset + POST -> allow (gate inert by default)", None, scan("POST"), False),
     ("flag unset + DELETE -> allow (gate inert by default)", None, scan("DELETE"), False),
     ("flag explicitly off (\"0\") + POST -> allow", "0", scan("POST"), False),
@@ -33,7 +35,8 @@ TESTS = [
     ("flag on (\"true\") + PUT -> ask", "true", scan("PUT"), True),
     ("flag on (\"yes\") + PATCH -> ask", "yes", scan("PATCH"), True),
     ("flag on (\"on\") + DELETE -> ask", "on", scan("DELETE"), True),
-    ("flag on + lowercase \"post\" -> ask (case-insensitive)", "1", scan("post"), True),
+    ("flag on (\"ON\") uppercase + DELETE -> ask (case-insensitive flag)", "ON", scan("DELETE"), True),
+    ("flag on + lowercase \"post\" method -> ask (case-insensitive method)", "1", scan("post"), True),
 
     # --- enabled: read methods pass through ---
     ("flag on + GET -> allow", "1", scan("GET"), False),
@@ -46,11 +49,12 @@ TESTS = [
     ("flag on + bob_auto_signup -> allow (out of scope; has its own provenance guard)",
      "1", {"tool_name": "mcp__hacker-bob__bob_auto_signup", "tool_input": {}}, False),
 
-    # --- enabled: defensive edges ---
-    ("flag on + scan with missing method -> allow (no method = not a write)",
-     "1", {"tool_name": SCAN, "tool_input": {"url": "https://target.example/x"}}, False),
-    ("flag on + malformed JSON payload -> allow (abstain, don't block harness)", "1", "{not json", False),
-    ("flag on + empty payload -> allow", "1", "{}", False),
+    # --- enabled: FAIL CLOSED on anything we can't confirm is a read ---
+    ("flag on + scan with missing method -> ASK (fail closed; can't confirm a read)",
+     "1", {"tool_name": SCAN, "tool_input": {"url": "https://target.example/x"}}, True),
+    ("flag on + malformed JSON payload -> ASK (fail closed; might be a write)", "1", "{not json", True),
+    ("flag on + empty payload -> ASK (fail closed; no method to confirm a read)", "1", "{}", True),
+    ("flag on + unknown method -> ASK (fail closed)", "1", scan("FROBNICATE"), True),
 ]
 
 
@@ -64,7 +68,7 @@ def main():
             env["BOB_HTTP_WRITE_CONFIRM"] = flag
         raw = payload if isinstance(payload, str) else json.dumps(payload)
         result = subprocess.run(
-            ["node", HOOK], input=raw, capture_output=True, text=True, env=env,
+            ["bash", HOOK], input=raw, capture_output=True, text=True, env=env,
         )
         asked = '"permissionDecision":"ask"' in result.stdout.replace(" ", "")
         ok = result.returncode == 0 and asked == expect_ask

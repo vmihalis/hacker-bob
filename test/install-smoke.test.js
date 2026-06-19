@@ -415,11 +415,11 @@ test("installer merges existing MCP/settings config idempotently", () => {
       1,
     );
     // The write-confirm gate matcher ships in the canonical source settings and merges into an
-    // existing target exactly once (deduped), pointing at the bob-http-write-confirm.js hook.
+    // existing target exactly once (deduped), pointing at the bob-http-write-confirm.sh hook.
     const scanEntries = settings.hooks.PreToolUse.filter((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
     assert.equal(scanEntries.length, 1);
     assert.equal(
-      scanEntries[0].hooks.filter((hook) => /bob-http-write-confirm\.js/.test(hook.command)).length,
+      scanEntries[0].hooks.filter((hook) => /bob-http-write-confirm\.sh/.test(hook.command)).length,
       1,
     );
     const stopEntry = settings.hooks.SubagentStop.find((entry) => entry.matcher === "evaluator-agent");

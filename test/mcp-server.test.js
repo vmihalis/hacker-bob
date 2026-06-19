@@ -18688,7 +18688,7 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     for (const entry of mcpEntries) {
       assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
       assert.ok(
-        entry.hooks.every((hook) => /bob-http-write-confirm\.js/.test(hook.command)),
+        entry.hooks.every((hook) => /bob-http-write-confirm\.sh/.test(hook.command)),
         "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
       );
     }
@@ -18732,7 +18732,7 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   const mergedScan = merged.hooks.PreToolUse.find((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
   assert.ok(mergedScan, "the write-confirm gate matcher survives the merge via the canonical default");
   assert.ok(
-    mergedScan.hooks.every((hook) => /bob-http-write-confirm\.js/.test(hook.command)),
+    mergedScan.hooks.every((hook) => /bob-http-write-confirm\.sh/.test(hook.command)),
     "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
   );
 });

@@ -217,7 +217,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-http-write-confirm.js\"",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-http-write-confirm.sh\"",
             "timeout": 5
           }
         ]

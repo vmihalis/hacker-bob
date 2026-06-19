@@ -19,6 +19,7 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 const HOOK_FILES = Object.freeze([
   "session-read-guard.sh",
   "session-write-guard.sh",
+  "bob-http-write-confirm.sh",
   "bob-statusline.js",
   "agent-run-start.js",
   "agent-run-stop.js",
@@ -38,6 +39,7 @@ const STALE_HOOK_FILES = Object.freeze([
 const EXECUTABLE_HOOKS = Object.freeze([
   "session-read-guard.sh",
   "session-write-guard.sh",
+  "bob-http-write-confirm.sh",
   "agent-run-start.js",
   "agent-run-stop.js",
   "bob-egress.js",

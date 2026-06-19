@@ -1527,7 +1527,7 @@ test("settings hooks register only the write-confirm HITL gate on MCP tools (nev
   for (const entry of mcpEntries) {
     assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", `unexpected MCP-tool matcher ${entry.matcher} in settings`);
     assert.ok(
-      (entry.hooks || []).every((h) => h.command.includes("bob-http-write-confirm.js")),
+      (entry.hooks || []).every((h) => h.command.includes("bob-http-write-confirm.sh")),
       "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
     );
   }
