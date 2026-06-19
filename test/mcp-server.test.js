@@ -12011,7 +12011,7 @@ test("bob_read_findings, bob_list_findings, and bob_wave_status return empty-sta
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [],
     });
@@ -12089,7 +12089,7 @@ test("bob_list_findings and bob_wave_status keep their external shapes while rea
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [
         {

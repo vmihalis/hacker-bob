@@ -111,6 +111,13 @@ function routeSurfacesInternal(domain, { attackSurfaceInfo = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
   const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo });
   const filePath = surfaceRoutesPath(targetDomain);
+  // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
+  // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
+  // would otherwise be silently written and only blow up later on read (bricking unrelated
+  // artifacts). Fail fast here with the validator's actionable message instead of persisting a
+  // landmine. (Forward-discipline: a breaking route-field change must also bump SURFACE_ROUTE_VERSION
+  // above — the un-bumped rename is what let a stale file masquerade as field corruption.)
+  document.routes.forEach((route, index) => validateSurfaceRoute(route, index, filePath));
   writeFileAtomic(filePath, `${JSON.stringify(document, null, 2)}\n`);
 
   return {
@@ -141,16 +148,41 @@ function readSurfaceRoutesStrict(domain) {
   ) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (expected versioned routes document)`);
   }
+  // Per-route resilience: a single malformed/stale route — e.g. one written by a PRIOR framework
+  // version after a route-field rename (the hunter_agent -> evaluator_agent v2.1 drift) — must NOT
+  // abort the whole read and brick every consumer that funnels through this function (routing,
+  // context-budget, the offensive HTTP confirmers, and the downstream verifier/evidence/grader/
+  // reporter agents). Quarantine bad/duplicate routes into malformed_routes[] and emit a repair
+  // hint; surface-routes.json is fully regenerable via bob_route_surfaces. Genuinely unrecoverable
+  // top-level shape (unparseable JSON, version mismatch, routes-not-an-array) still fails hard above.
   const seenSurfaceIds = new Set();
-  const routes = parsed.routes.map((route, index) => {
-    const normalized = validateSurfaceRoute(route, index, filePath);
+  const routes = [];
+  const malformedRoutes = [];
+  parsed.routes.forEach((route, index) => {
+    let normalized;
+    try {
+      normalized = validateSurfaceRoute(route, index, filePath);
+    } catch (error) {
+      malformedRoutes.push({
+        index,
+        surface_id: (route && typeof route === "object" && route.surface_id) || null,
+        reason: error.message || String(error),
+      });
+      return;
+    }
     if (seenSurfaceIds.has(normalized.surface_id)) {
-      throw new Error(`Malformed surface routes JSON: ${filePath} (duplicate surface_id: ${normalized.surface_id})`);
+      malformedRoutes.push({ index, surface_id: normalized.surface_id, reason: `duplicate surface_id: ${normalized.surface_id}` });
+      return;
     }
     seenSurfaceIds.add(normalized.surface_id);
-    return normalized;
+    routes.push(normalized);
   });
-  return { path: filePath, document: { ...parsed, routes } };
+  const result = { path: filePath, document: { ...parsed, routes } };
+  if (malformedRoutes.length > 0) {
+    result.malformed_routes = malformedRoutes;
+    result.repair_hint = "re-run bob_route_surfaces to regenerate surface-routes.json from the current surface index";
+  }
+  return result;
 }
 
 function routeSurfaces(args) {

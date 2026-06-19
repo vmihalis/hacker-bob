@@ -60,6 +60,15 @@ function getContextBudget(args) {
         briefProfile = route.brief_profile;
         capabilityPackVersion = route.capability_pack_version;
         contextBudget = normalizeContextBudget(route.context_budget, pack);
+      } else if (Array.isArray(routesInfo.malformed_routes)) {
+        // readSurfaceRoutesStrict quarantines a malformed route (e.g. an unsupported context_budget
+        // field, or a stale cross-version schema) so read-all consumers do not brick. But a TARGETED
+        // budget lookup for that exact surface must SURFACE the problem — the agent cannot operate
+        // under an undefined budget — rather than silently fall back to the pack default.
+        const malformed = routesInfo.malformed_routes.find((entry) => entry.surface_id === surfaceId);
+        if (malformed) {
+          throw new Error(`surface_id ${surfaceId} has a malformed route: ${malformed.reason}`);
+        }
       }
     } catch (error) {
       if (!/Missing surface routes JSON:/.test(error.message || String(error))) {

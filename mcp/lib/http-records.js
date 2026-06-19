@@ -350,18 +350,83 @@ function normalizeHttpAuditSummaryLimit(value) {
   return Math.max(0, Math.min(HTTP_AUDIT_SUMMARY_MAX_ITEMS, Math.trunc(value)));
 }
 
-function isCircuitBreakerFailure(record) {
-  if (record.status === 403 || record.status === 429) return true;
+function recordHasAuthProfile(record) {
+  return typeof record.auth_profile === "string" && record.auth_profile.length > 0;
+}
+
+// GENUINE block signals — always count toward the breaker, NEVER reclassified:
+//   429 (rate-limit); timeouts / connection resets; AND a 403 returned DESPITE an attached auth
+//   profile (the server blocks even an authenticated session). These keep a real WAF/rate-limit
+//   trip a hard stop.
+function isHardBlockFailure(record) {
+  if (record.status === 429) return true;
+  if (record.status === 403 && recordHasAuthProfile(record)) return true;
   if (["request_error", "network_unreachable_target"].includes(record.scope_decision) && /timeout|abort|econnreset|connection reset/i.test(record.error || "")) return true;
   return false;
 }
 
+// A 403 sent WITHOUT any auth profile is a CANDIDATE auth-challenge — the expected response when an
+// authenticated endpoint is probed unauthenticated. It is reclassified as benign ONLY on positive,
+// temporally-ordered evidence (a later authenticated 2xx to the same host+path); with no such
+// success it STILL counts as a block, so a pure WAF wall stays tripped.
+function isUnauthenticatedForbidden(record) {
+  return record.status === 403 && !recordHasAuthProfile(record);
+}
+
+// Back-compat: any record that was a "failure" before is still a failure (hard block OR candidate
+// auth-challenge). The reclassification happens in buildCircuitBreakerSummary, not here.
+function isCircuitBreakerFailure(record) {
+  return isHardBlockFailure(record) || isUnauthenticatedForbidden(record);
+}
+
+function circuitBreakerRecordKey(record) {
+  const host = record.host || hostnameFromUrl(record.url) || "unknown";
+  let path = typeof record.path === "string" && record.path ? record.path : "";
+  if (!path) {
+    try { path = new URL(record.url).pathname; } catch { path = ""; }
+  }
+  return `${host} ${path}`;
+}
+
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {
-  const relevantRecords = (surface ? records.filter((record) => recordMatchesSurface(record, surface)) : records)
-    .filter(isCircuitBreakerFailure);
+  const relevant = surface ? records.filter((record) => recordMatchesSurface(record, surface)) : records;
+
+  // Index the LATEST authenticated 2xx success per host+path. An unauthenticated 403 is a benign
+  // auth-challenge (not a host block) once a later authenticated request to the SAME host+path
+  // actually succeeds. This is the ONLY path that reclassifies a 403 — a genuine WAF/rate-limit
+  // block produces no such authed success, so it stays counted (and tripped). No traffic is sent
+  // and no live block is bypassed; this only stops double-counting historical unauth challenges
+  // once the data itself shows the now-attached session passes.
+  const latestAuthedSuccessTs = new Map();
+  for (const record of relevant) {
+    if (recordHasAuthProfile(record) && Number.isInteger(record.status) && record.status >= 200 && record.status < 300) {
+      const key = circuitBreakerRecordKey(record);
+      const ts = Date.parse(record.ts);
+      if (!Number.isNaN(ts) && (!latestAuthedSuccessTs.has(key) || ts > latestAuthedSuccessTs.get(key))) {
+        latestAuthedSuccessTs.set(key, ts);
+      }
+    }
+  }
+
+  const failures = relevant.filter(isCircuitBreakerFailure);
   const byHost = new Map();
-  for (const record of relevantRecords) {
+  const authChallengeByHost = new Map();
+  for (const record of failures) {
     const host = record.host || hostnameFromUrl(record.url) || "unknown";
+
+    // Reclassify an unauthenticated 403 as an auth-challenge ONLY with positive, temporally-ordered
+    // evidence: a later authenticated 2xx on the same host+path. Hard blocks (429, timeouts, 403
+    // despite auth) are mutually exclusive with this and are never reclassified.
+    if (isUnauthenticatedForbidden(record)) {
+      const healedTs = latestAuthedSuccessTs.get(circuitBreakerRecordKey(record));
+      const recordTs = Date.parse(record.ts);
+      if (healedTs != null && !Number.isNaN(recordTs) && healedTs > recordTs) {
+        if (!authChallengeByHost.has(host)) authChallengeByHost.set(host, { host, auth_challenge_403: 0 });
+        authChallengeByHost.get(host).auth_challenge_403 += 1;
+        continue;
+      }
+    }
+
     if (!byHost.has(host)) {
       byHost.set(host, {
         host,
@@ -404,6 +469,10 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
   const belowThreshold = sortedItems.filter(
     (item) => item.failures > 0 && item.failures < threshold,
   );
+  // Auditable, separate channel: unauthenticated 403s that a later authed success healed. Surfaced
+  // (never hidden) but NOT counted toward the breaker.
+  const authChallengeHosts = Array.from(authChallengeByHost.values()).sort((a, b) => a.host.localeCompare(b.host));
+  const authChallengeCount = authChallengeHosts.reduce((sum, h) => sum + h.auth_challenge_403, 0);
 
   return {
     threshold,
@@ -411,8 +480,10 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
     tripped_count: tripped.length,
     below_threshold_hosts: belowThreshold,
     below_threshold_count: belowThreshold.length,
+    auth_challenge_hosts: authChallengeHosts,
+    auth_challenge_403_count: authChallengeCount,
     note: tripped.length
-      ? "Repeated 403/429/timeout results on these hosts. Prefer fewer replay variants, authenticated traffic-derived requests, or a different surface."
+      ? "Repeated genuine block signals (429/timeout, or 403 even with an auth profile) on these hosts. Prefer fewer replay variants or a different surface; do NOT bypass a live block. (Unauthenticated 403s already healed by a later authenticated success are excluded and reported under auth_challenge_hosts.)"
       : null,
   };
 }
@@ -1648,6 +1719,8 @@ module.exports = {
   headerNamesFromInput,
   importHttpTraffic,
   isCircuitBreakerFailure,
+  isHardBlockFailure,
+  isUnauthenticatedForbidden,
   isNetworkUnreachableRecord,
   normalizeHttpAuditRecord,
   normalizeImportedTrafficEntry,
