@@ -128,6 +128,20 @@ test("findRoutedSurface rejects a surface whose route was quarantined even if a 
   assert.throws(() => findRoutedSurface(domain, "surface:api"), /malformed route/);
 }));
 
+test("findRoutedSurface rejection cannot be evaded by a whitespace-padded quarantined surface_id (trimmed on store)", () => withTempHome(() => {
+  const domain = "router-wspad.example.test";
+  // A valid route for "surface:api" plus a stale duplicate whose surface_id kept whitespace padding.
+  // validateSurfaceRoute trims on the valid path, so the lookup id is "surface:api"; the quarantined
+  // entry must ALSO be trimmed or its `=== surfaceId` match fails and the corruption-rejection is evaded.
+  const padded = staleHunterRoute("surface:api");
+  padded.surface_id = "  surface:api  ";
+  writeRoutesFile(domain, [validWebRoute("surface:api"), padded]);
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.malformed_routes.length, 1);
+  assert.equal(read.malformed_routes[0].surface_id, "surface:api", "stored malformed surface_id is trimmed");
+  assert.throws(() => findRoutedSurface(domain, "surface:api"), /malformed route/, "padded quarantined dupe must not evade rejection");
+}));
+
 test("happy path: routeSurfacesInternal writes valid routes that read back cleanly (validate-on-write passes)", () => withTempHome(() => {
   const domain = "router-roundtrip.example.test";
   fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });

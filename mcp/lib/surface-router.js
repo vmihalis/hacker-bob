@@ -182,9 +182,14 @@ function readSurfaceRoutesStrict(domain) {
         || error instanceof SyntaxError || error instanceof EvalError || error instanceof URIError) {
         throw error;
       }
+      const rawSurfaceId = route && typeof route === "object" ? route.surface_id : null;
       malformedRoutes.push({
         index,
-        surface_id: (route && typeof route === "object" && route.surface_id) || null,
+        // Trim the stored surface_id: getContextBudget/findRoutedSurface reject a corrupt file by
+        // matching the malformed entry's surface_id against the (trimmed) request id, and
+        // validateSurfaceRoute trims on the valid path — so a quarantined entry that kept a
+        // whitespace-padded id (e.g. " surface:api ") would otherwise EVADE that rejection.
+        surface_id: (typeof rawSurfaceId === "string" ? rawSurfaceId.trim() : rawSurfaceId) || null,
         reason: sanitizeRouteReason(error.message || String(error), filePath),
       });
       return;
