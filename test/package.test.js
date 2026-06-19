@@ -115,6 +115,8 @@ test("canonical package lists shipped Claude hooks explicitly", () => {
     "bob-statusline.js",
     "agent-run-start.js",
     "agent-run-stop.js",
+    "bob-http-write-confirm.sh",
+    "bob-http-write-confirm-impl.py",
     "session-read-guard.sh",
     "session-write-guard.sh",
   ]) {
