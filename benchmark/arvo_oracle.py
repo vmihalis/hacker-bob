@@ -138,6 +138,28 @@ DOCKER_CAPS = [
 
 IMAGE_REPO = "n132/arvo"
 
+# Frozen Phase-0 manifest: pin images by content DIGEST, not floating tag
+# (BOB_OSS_BENCHMARK_PLAN.md §3.5). A registry retag/eviction would otherwise
+# silently swap the code under test out from under a recorded result.
+_MANIFEST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arvo_phase0_manifest.json")
+_PINNED_DIGESTS = None  # lazy { (arvo_id, variant): "sha256:..." }
+
+
+def _pinned_digests() -> dict:
+    global _PINNED_DIGESTS
+    if _PINNED_DIGESTS is None:
+        _PINNED_DIGESTS = {}
+        try:
+            with open(_MANIFEST_PATH) as f:
+                manifest = json.load(f)
+            for c in manifest.get("cases", []):
+                for variant, img in c.get("images", {}).items():
+                    if isinstance(img, dict) and img.get("digest"):
+                        _PINNED_DIGESTS[(str(c.get("arvo_id")), variant)] = img["digest"]
+        except (OSError, ValueError, KeyError):
+            _PINNED_DIGESTS = {}
+    return _PINNED_DIGESTS
+
 # How much of the captured output to surface in `raw_tail`.
 RAW_TAIL_LINES = 40
 
@@ -272,6 +294,24 @@ def _image_tag(case: str, variant: str) -> str:
     return f"{IMAGE_REPO}:{case}-{variant}"
 
 
+def _image_ref(case: str, variant: str) -> str:
+    """Digest-pinned image ref from the frozen manifest; floating tag (loudly warned) otherwise.
+
+    Pinning by @sha256 makes the code under test reproducible and tamper-evident.
+    A case absent from the manifest is a fabrication risk per the plan, so the
+    fallback is explicit and warned, never silent.
+    """
+    digest = _pinned_digests().get((str(case), variant))
+    if digest:
+        return f"{IMAGE_REPO}@{digest}"
+    sys.stderr.write(
+        f"[arvo_oracle] WARNING: {IMAGE_REPO}:{case}-{variant} is NOT in the frozen "
+        f"manifest ({os.path.basename(_MANIFEST_PATH)}); using the floating tag. The "
+        f"result is NOT reproducibly pinned (BOB_OSS_BENCHMARK_PLAN.md §3.5).\n"
+    )
+    return _image_tag(case, variant)
+
+
 def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", *args],
@@ -340,7 +380,7 @@ echo "arvo_oracle: target=$TARGET input=$ARVO_INPUT" 1>&2
 
 def run_case(case: str, variant: str, input_path: str | None, timeout: int) -> dict:
     """Run one ARVO image variant and return a structured verdict."""
-    image = _image_tag(case, variant)
+    image = _image_ref(case, variant)
     ensure_image(image, timeout)
 
     if input_path is None:

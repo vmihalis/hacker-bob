@@ -458,6 +458,27 @@ def _reconstruct_cost(transcript_path):
 
 
 # ---------------------------------------------------------------------------
+# claims.jsonl projection: bob's candidate findings live in claim.payload.finding.
+# ---------------------------------------------------------------------------
+def _findings_from_claims(claims):
+    """Project bob's claims.jsonl rows into the finding-shape map_session consumes.
+
+    Each claim's per-finding detail is the nested claim.payload.finding object, whose
+    fields (id, file_path, symbol, cwe, repro_command, description, validated,
+    severity, proof_of_concept, response_evidence) are exactly what the finding loop
+    reads. finding_id is payload.finding.id (mirrored in claim.evidence_refs[]).
+    """
+    out = []
+    for c in claims:
+        if not isinstance(c, dict):
+            continue
+        fnd = (c.get("payload") or {}).get("finding")
+        if isinstance(fnd, dict) and isinstance(fnd.get("id"), str) and fnd.get("id"):
+            out.append(fnd)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Core mapping.
 # ---------------------------------------------------------------------------
 def map_session(session_dir, *, case_id=None, config="native", trial_index=0,
@@ -472,7 +493,14 @@ def map_session(session_dir, *, case_id=None, config="native", trial_index=0,
     repo_env_path = os.path.join(session_dir, "repo-env.json")
     grade_path = os.path.join(session_dir, "grade.json")
 
+    # bob records candidate findings as claims.jsonl (CB-C2): the per-finding detail
+    # lives in claim.payload.finding (id, file_path, symbol, cwe, repro_command,
+    # description, validated, severity, ...) and links to verified-final.json by
+    # finding_id. findings.jsonl does NOT exist in bob — it is a legacy fallback only.
+    claims_path = os.path.join(session_dir, "claims.jsonl")
     findings = list(_read_jsonl(findings_path))
+    if not findings:
+        findings = _findings_from_claims(_read_jsonl(claims_path))
     runs = list(_read_jsonl(runs_path))
     events = list(_read_jsonl(events_path))
     verified = _read_json(verified_path)
@@ -693,6 +721,9 @@ def main(argv=None):
         "cost_usd": run_obj["cost"].get("usd"),
         "cost_reconciled": run_obj["cost"].get("reconciled"),
         "wall_clock_seconds": run_obj.get("wall_clock_seconds"),
+        # §5.4: build status is a first-class result, not a denominator filter.
+        # True/False from repo-env.json docker_build; None when status is unknown.
+        "build_failed": (run_obj.get("limits_hit") or {}).get("build_failed"),
     }
     sys.stdout.write(json.dumps(summary, indent=2 if args.pretty else None,
                                 separators=None if args.pretty else (",", ":")))

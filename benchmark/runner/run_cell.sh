@@ -25,7 +25,7 @@ MODEL="${MODEL:-}"                                  # e.g. opus ; empty = inheri
 BUILD_FLAGS="${BUILD_FLAGS:---build --allow-network}"
 CELL_TIMEOUT="${CELL_TIMEOUT:-7200}"                # per claude invocation, seconds
 MAX_RESUMES="${MAX_RESUMES:-3}"                     # nudges if -p stops before terminal
-USE_ORACLE="${USE_ORACLE:-0}"                       # 1 = independent ARVO re-exec (+5.78GB image/case)
+USE_ORACLE="${USE_ORACLE:-1}"                       # 1 = independent ARVO re-exec (REQUIRED for a defensible hit; +image/case). Set 0 only for cheap dry-runs.
 KEEP_REPO_RUNS="${KEEP_REPO_RUNS:-0}"               # 1 = keep big repo-runs/ fuzzers+corpora
 
 cell_id="${CASE_ID}-t$(printf '%02d' "$TRIAL")"
@@ -50,7 +50,9 @@ vuln_commit=$(printf '%s' "$row" | cut -f6)
 vul_repo_url=$(printf '%s' "$row" | cut -f7)
 
 # ---- provision the vulnerable target (per-case dir) ------------------------
-REPO="$REPOS_DIR/$CASE_ID"
+REPO="$REPOS_DIR/$CASE_ID-t$TRIAL"   # per-trial checkout: bob keys repo sessions by
+                                     # repo-path hash and resumes existing ones, so a
+                                     # unique path per trial guarantees N independent sessions.
 BOB_TARGET="$REPO"
 if [ -n "$vul_repo_url" ]; then
   # TARBALL MODE: CyberGym repo-vul.tar.gz = byte-identical paired target.
@@ -88,10 +90,21 @@ fi
 # ---- helpers ---------------------------------------------------------------
 complete() { local s="$1"; [ -n "$s" ] && [ -f "$s/grade.json" ] && [ -f "$s/report.md" ]; }
 resolve_sdir() {
-  local p="$OPENCLAW_HOME/bounty-agent-sessions/$target_id"
-  if [ -d "$p" ]; then echo "$p"; return; fi
-  find "$OPENCLAW_HOME/bounty-agent-sessions" -maxdepth 1 -mindepth 1 -type d \
-       -newermt "@$ts" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+  # Upstream migrated the session root from bounty-agent-sessions -> hacker-bob-sessions
+  # (paths.js P.2); check the canonical root first, then the legacy fallback, so the
+  # runner finds the session regardless of which root the installed bob writes.
+  local root p hit
+  local roots=("$OPENCLAW_HOME/hacker-bob-sessions" "$OPENCLAW_HOME/bounty-agent-sessions")
+  for root in "${roots[@]}"; do
+    p="$root/$target_id"
+    if [ -d "$p" ]; then echo "$p"; return; fi
+  done
+  for root in "${roots[@]}"; do
+    [ -d "$root" ] || continue
+    hit=$(find "$root" -maxdepth 1 -mindepth 1 -type d \
+          -newermt "@$ts" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    [ -n "$hit" ] && { echo "$hit"; return; }
+  done
 }
 run_claude() {  # $1 = slash command
   timeout "$CELL_TIMEOUT" bash -lc \
@@ -102,7 +115,7 @@ run_claude() {  # $1 = slash command
 # ---- launch ---------------------------------------------------------------
 ts=$(date +%s)
 echo "[cell $cell_id] launch  case=$CASE_ID project=$project trial=$TRIAL target_id=$target_id"
-run_claude "/bob-oss $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >"$logf" 2>&1
+run_claude "/bob-evaluate $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >"$logf" 2>&1
 rc=$?
 
 # ---- drive to terminal (resume if -p stopped at the launch barrier) -------
@@ -112,7 +125,7 @@ while ! complete "$SDIR" && [ "$resumes" -lt "$MAX_RESUMES" ]; do
   [ $(( $(date +%s) - ts )) -ge "$CELL_TIMEOUT" ] && { echo "[cell $cell_id] timeout"; break; }
   resumes=$((resumes+1))
   echo "[cell $cell_id] not terminal yet; resume #$resumes"
-  run_claude "/bob-oss resume $target_id" >>"$logf" 2>&1
+  run_claude "/bob-evaluate $BOB_TARGET --target-id $target_id $BUILD_FLAGS" >>"$logf" 2>&1
   SDIR=$(resolve_sdir)
 done
 SDIR=$(resolve_sdir)

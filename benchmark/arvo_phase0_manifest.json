@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "track": "arvo_rediscovery_phase0",
+  "note": "Frozen 3-case ARVO memory-safety spike. SECONDARY (rediscovery) track per BOB_OSS_BENCHMARK_PLAN.md \u00a73.2 \u2014 contamination-prone by construction (all 3 fixes predate the 2026-01 model cutoff). This is a gate-validation spike, NOT a capability headline; the primary track is prospective novel-yield (\u00a73.1).",
+  "frozen_at": "2026-06-15",
+  "registry": "docker.io/n132/arvo",
+  "arvo_meta": {
+    "repo": "n132/ARVO-Meta",
+    "commit_sha": "2a5a43fa47783e2cdc6dbded5b09161b18a58275",
+    "meta_url_template": "https://raw.githubusercontent.com/n132/ARVO-Meta/{commit}/archive_data/meta/{id}.json",
+    "note": "Only localId 25402 resolves at the ARVO-Meta meta path; 42493450 and 42495624 are OSS-Fuzz Monorail IDs absent from archive_data/meta/, so their ground truth is derived from the upstream fix commit via git."
+  },
+  "cases": [
+    {
+      "case_id": "arvo-25402-muparser",
+      "arvo_id": "25402",
+      "project": "muparser",
+      "upstream_repo": "beltoforion/muparser",
+      "language": "c++",
+      "sanitizer": "asan",
+      "fuzzer": "libfuzzer",
+      "fuzz_target": "set_eval_fuzzer",
+      "crash_type": "Heap-buffer-overflow READ 8",
+      "crash_type_source": "arvo_meta@2a5a43fa (confirmed)",
+      "vulnerable_commit": "9e28c713f1413eb3cbc2949043108a3bba47f9a1",
+      "fix_commit": "322716256d60e316c9a3b905a387be36d4e47368",
+      "fix_commit_date": "2020-09-16T22:21:02Z",
+      "fix_files": [
+        "include/muParserDef.h",
+        "samples/example1/example1.cpp",
+        "src/muParserBase.cpp",
+        "src/muParserTest.cpp",
+        "src/muParserTokenReader.cpp"
+      ],
+      "fix_files_source": "git diff-tree (GitHub API repos/beltoforion/muparser/commits/322716256d60)",
+      "arvo_meta_resolves": true,
+      "images": {
+        "vul": {
+          "ref": "n132/arvo:25402-vul",
+          "digest": "sha256:5f3321a8cf94d5b6e715d6b3900ad5de7243e46fd6e01131531f2711972b071a"
+        },
+        "fix": {
+          "ref": "n132/arvo:25402-fix",
+          "digest": "sha256:5c48e1babfc5cf94762806481256f7a2e312bf40352f5ac44d39f03d893e56e0"
+        }
+      }
+    },
+    {
+      "case_id": "arvo-42493450-c-blosc2",
+      "arvo_id": "42493450",
+      "project": "c-blosc2",
+      "upstream_repo": "Blosc/c-blosc2",
+      "language": "c",
+      "sanitizer": "asan",
+      "fuzzer": "libfuzzer",
+      "fuzz_target": "decompress_frame_fuzzer",
+      "crash_type": "Heap-use-after-free READ 4",
+      "crash_type_source": "scorer_prior (pending oracle confirmation; not in ARVO-Meta meta path)",
+      "vulnerable_commit": "969fb4cbb617801876fb5ddefc73778935ff1a56",
+      "fix_commit": "e411d87705c65db2aafb0e774092fe57647fb31c",
+      "fix_commit_date": "2021-02-19T09:09:20Z",
+      "fix_files": [
+        "blosc/frame.c"
+      ],
+      "fix_files_source": "git diff-tree (GitHub API repos/Blosc/c-blosc2/commits/e411d87705c6)",
+      "arvo_meta_resolves": false,
+      "images": {
+        "vul": {
+          "ref": "n132/arvo:42493450-vul",
+          "digest": "sha256:5237e5724b30ddcd1d0f9c354e34a2db602351fe0ee818832567447d7265ff74"
+        },
+        "fix": {
+          "ref": "n132/arvo:42493450-fix",
+          "digest": "sha256:e50475c7e65f7dd339e03097d9319d1f2870a5b9355eadefc9baf1ca9ea6c502"
+        }
+      }
+    },
+    {
+      "case_id": "arvo-42495624-wasm3",
+      "arvo_id": "42495624",
+      "project": "wasm3",
+      "upstream_repo": "wasm3/wasm3",
+      "language": "c",
+      "sanitizer": "asan",
+      "fuzzer": "libfuzzer",
+      "fuzz_target": "fuzzer",
+      "crash_type": "Global-buffer-overflow READ 8",
+      "crash_type_source": "scorer_prior (pending oracle confirmation; not in ARVO-Meta meta path)",
+      "vulnerable_commit": "cfbfbbff1531b4eaf7e557816ea4649e4e259cb1",
+      "fix_commit": "60fdd9ecd84b841351059dbfb962a32f616e376e",
+      "fix_commit_date": "2021-04-09T22:21:08Z",
+      "fix_files": [
+        "source/m3_compile.c",
+        "source/m3_compile.h"
+      ],
+      "fix_files_source": "git diff-tree (GitHub API repos/wasm3/wasm3/commits/60fdd9ecd84b)",
+      "arvo_meta_resolves": false,
+      "images": {
+        "vul": {
+          "ref": "n132/arvo:42495624-vul",
+          "digest": "sha256:be4213f9060f18082f16c84ddecb5d483abdd81ed8320999732f0a5b0a9570e8"
+        },
+        "fix": {
+          "ref": "n132/arvo:42495624-fix",
+          "digest": "sha256:3b3ff00971bb6f8b074aaf5749946b7105cb361edd0816e672b5ff2a14b99d74"
+        }
+      }
+    }
+  ],
+  "manifest_hash": "sha256:1ac38d51ab3faeef41a39c98d0c607622c3554df7e7523ca2d23ee3b759913c2"
+}
