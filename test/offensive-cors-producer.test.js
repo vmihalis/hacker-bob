@@ -335,6 +335,34 @@ test("a RELATIVE endpoint binds to the surface's declared host, NOT the session 
   assert.equal(rows[0].target, canonicalizeExploitTarget(`https://${surfaceHost}/api/data`));
 }));
 
+test("a protocol-relative '//host' endpoint is rejected (never resolves to a foreign host)", () => withTempHome(async () => {
+  const domain = "cors-protorel.example.test";
+  // The endpoint value is a network-path reference pointing at an IN-SCOPE subdomain. Without the
+  // // guard, new URL("//cdn.<domain>/x", apex) would resolve to https://cdn.<domain>/x and probe
+  // it — escaping the surface-host binding. The guard rejects it, so NO endpoint resolves.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: SURFACE_ID,
+      title: "Surface with a protocol-relative endpoint",
+      surface_type: "web",
+      hosts: [domain],
+      endpoints: [`//cdn.${domain}/x`],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+  ensureHandoffSigningKey(domain);
+
+  await assert.rejects(
+    () => corsConfirm(baseArgs(domain), { fetch_fn: reflectingFetch }),
+    /no in-scope recorded endpoint resolves/i,
+  );
+  assert.equal(readRows(domain).length, 0);
+}));
+
 // ───────────────────────── Fetch-Metadata defense (P2-a) ───────────────────
 
 test("a target that blocks cross-site Sec-Fetch-Site (Fetch Metadata) mints nothing", () => withTempHome(async () => {

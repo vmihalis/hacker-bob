@@ -328,11 +328,15 @@ function urlFromEndpoint(endpoint, origin, fieldName) {
   const raw = assertRequiredText(endpoint, fieldName);
   try {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return new URL(raw);
-    if (raw.startsWith("/")) return new URL(raw, origin);
+    // A path-absolute reference is a single "/" + path. A leading "//" is a network-path
+    // (protocol-relative) reference: new URL("//host/x", origin) resolves to a DIFFERENT host,
+    // escaping the surface-host binding and signing a row for the wrong asset. Mirror the
+    // normalizePathTemplate guard and reject it here (it falls through to the reject below).
+    if (raw.startsWith("/") && !raw.startsWith("//")) return new URL(raw, origin);
   } catch {
     rejectInvalidArguments(`${fieldName} could not be resolved as a URL`);
   }
-  rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path`);
+  rejectInvalidArguments(`${fieldName} must be an absolute http(s) URL or an absolute path (not a // network-path reference)`);
 }
 
 function resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName = "bob_http_confirm" }) {
