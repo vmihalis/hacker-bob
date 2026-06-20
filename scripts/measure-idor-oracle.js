@@ -612,6 +612,31 @@ const CORPUS = [
     // Readback omits the owning-scope key, so the same-tenant signal comes ONLY from the proof fold.
     provision: () => provisionFor({ readbackScope: null }),
   },
+  {
+    id: "C11", name: "CONTROL: NESTED-envelope same tenant (org_id under {data:{...}}) — Codex PR#136",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "O_B and O_A both carry org_id:7 ONE LEVEL under a {data:{...}} envelope (common in real REST APIs), not as a top-level key. Without nested scanning owningScopeValues saw nothing and the SAME-tenant pair soft-minted at LOW; scanning one envelope level surfaces the nested org_id so #14 hard-blocks. Locks the nested-scope fix.",
+    predicted: "identities_collided_same_tenant",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, { id: OBJ_B, data: { org_id: 7 }, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+        if (w.isA) return jsonResponse(200, { id: OBJ_B, data: { org_id: 7 }, viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, { id: OBJ_A, data: { org_id: 7 }, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: null }),
+  },
 ];
 
 const GATE_LABEL = {

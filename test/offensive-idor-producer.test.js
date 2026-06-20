@@ -945,6 +945,33 @@ test("AC-6 negative: P1/readback omit scope but the A→B PROOF body (P2/P2′) 
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: NESTED-envelope same tenant (org_id under {data:{...}}) → identities_collided_same_tenant (nested scope scan, Codex PR#136)", () => withTempHome(async () => {
+  // The resource sits one level under a {data:{...}} envelope (common in real REST APIs), so the
+  // owning-scope is NOT a top-level key. Before nested scanning, owningScopeValues saw nothing -> the
+  // same-tenant guard missed the collision and the SAME-tenant pair soft-minted at LOW. Scanning one
+  // level into the envelope surfaces the nested org_id so #14 hard-blocks. Canary stays at the
+  // top-level details.secret.token leaf (only the SCOPE is nested).
+  const domain = "idor-neg-nested-sametenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, data: { org_id: 7 }, viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, data: { org_id: 7 }, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+      }
+      return null;
+    },
+  });
+  // Readback omits scope, so the nested top-level proof bodies are the only same-tenant signal.
+  const provision = { ...soundProvision(), owner_readback_b: { id: OBJ_B, details: { secret: { token: CANARY_B } } } };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {

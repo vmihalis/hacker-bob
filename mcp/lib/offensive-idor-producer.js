@@ -338,6 +338,25 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
+// Common single-object envelope wrappers: many REST APIs nest the resource one level under one of
+// these keys (e.g. {data:{org_id:..}}, {result:{owner_scope:..}}, JSON:API {data:{attributes:{..}}}).
+// Owning-scope detection scans the TOP-LEVEL body AND one level into these wrappers so a nested
+// tenant/owner scope is not invisible — which, after #13/#14 were demoted to soft-gates, would let a
+// nested-envelope SAME-tenant body soft-mint at LOW (Codex PR#136). One level only — bounded — and the
+// direction is precision-safe: more scope detected = more same-tenant/shared/unusable HARD blocks,
+// never a new mint. The top-level root is ALWAYS scanned first, so flat bodies are unchanged.
+const SCOPE_ENVELOPE_KEYS = Object.freeze(["data", "result", "item", "record", "attributes", "payload", "resource"]);
+
+function scopeSearchRoots(parsedBody) {
+  if (parsedBody == null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) return [];
+  const roots = [parsedBody];
+  for (const key of SCOPE_ENVELOPE_KEYS) {
+    const nested = parsedBody[key];
+    if (nested != null && typeof nested === "object" && !Array.isArray(nested)) roots.push(nested);
+  }
+  return roots;
+}
+
 // Coerce an owning-scope field to its canonical string form: a non-empty trimmed string, OR a SAFE
 // integer stringified. Integer org_id/tenant_id values are common in real REST APIs; without this a
 // numeric tenant id is typeof "number", silently escapes the string-only scope reads, and a
@@ -358,10 +377,11 @@ function scopeValueString(value) {
 }
 
 function ownScopeOf(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return null;
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = scopeValueString(parsedBody[key]);
-    if (value != null) return value;
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) return value;
+    }
   }
   return null;
 }
@@ -377,10 +397,11 @@ function ownScopeIsPrivate(scope) {
 // first present owning-scope key is the discriminator; both identities must carry
 // one at the SAME key and they must differ.
 function tenantDiscriminator(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return null;
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = scopeValueString(parsedBody[key]);
-    if (value != null) return { key, value };
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) return { key, value };
+    }
   }
   return null;
 }
@@ -390,11 +411,12 @@ function tenantDiscriminator(parsedBody) {
 // B label it under different alias keys, or carry it under a SECONDARY key (e.g. A
 // owner_scope:"x" + tenant_id:"acme" vs B org_id:"acme"). Lowercased for a case-robust match.
 function owningScopeValues(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return [];
   const values = [];
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = scopeValueString(parsedBody[key]);
-    if (value != null) values.push(value.toLowerCase());
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) values.push(value.toLowerCase());
+    }
   }
   return values;
 }
@@ -417,10 +439,11 @@ function hasExplicitSharedScope(parsedBody) {
 // (Booleans/objects as a tenant id are nonsensical and cannot precision-collide, so they stay
 // scopeValueString→null/absent; only the realistic numeric-id precision risk hard-blocks here.)
 function hasUnusableOwningScope(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return false;
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "number" && !Number.isSafeInteger(value)) return true;
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = root[key];
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return true;
+    }
   }
   return false;
 }
