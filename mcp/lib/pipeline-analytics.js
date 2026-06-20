@@ -855,10 +855,6 @@ function analyzeSession(targetDomain, {
       total: artifacts.findings.total,
       by_severity: artifacts.findings.by_severity,
     },
-    // Exposed at EVERY lifecycle state (unlike the low_coverage health flag, which only
-    // emits at CLAIM_FREEZE+) so the orchestrator can check unexplored_high BEFORE it
-    // advances OPEN_FRONTIER -> CLAIM_FREEZE.
-    attack_surface_coverage: artifacts.attack_surface_coverage,
     chain_attempts_count: artifacts.chain_attempts.total,
     chain_attempts_by_outcome: artifacts.chain_attempts.by_outcome,
     technique_attempts: {
