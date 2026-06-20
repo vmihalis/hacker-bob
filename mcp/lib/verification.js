@@ -1371,6 +1371,8 @@ module.exports = {
   prepareVerificationEntry,
   readVerificationContext,
   requireCurrentAdjudication,
+  hasCurrentV2Files,
+  inferOrphanedAttemptId,
   requireCompleteV2VerificationChain,
   requireV2State,
   requireVerificationCompleteForGrade,

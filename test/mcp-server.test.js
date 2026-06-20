@@ -7393,7 +7393,7 @@ test("merge re-derives smart_contract surface_type even when stored handoff cach
   });
 });
 
-test("merge emits sc_complete_with_zero_evidence suspicion flag when all bypass_attempts are no_finding", () => {
+test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_attempts are substantive", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
@@ -7410,6 +7410,31 @@ test("merge emits sc_complete_with_zero_evidence suspicion flag when all bypass_
       bypass_attempts: [
         { condition: "admin_eoa_compromise", attempt_summary: "Forge test calls admin function from a non-admin EOA. Reverts as expected.", outcome: "no_finding" },
         { condition: "oracle_staleness", attempt_summary: "Forge test pushes time forward 30 minutes; price oracle returns stale read but the consumer rejects.", outcome: "no_finding" },
+      ],
+    });
+    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
+    assert.deepEqual(merged.suspicion_flags, []);
+  });
+});
+
+test("merge emits sc_complete_with_zero_evidence suspicion flag when bypass_attempts are low-effort attestations", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Audit confirms fixed.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        // Clears the schema floors (condition >= 4, attempt_summary >= 30) but
+        // cites no real condition and documents no exercised mechanism.
+        { condition: "gate", attempt_summary: "role-gated so we did not test it.", outcome: "no_finding" },
       ],
     });
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
@@ -7966,6 +7991,76 @@ test("bob_finalize_agent_run enforces web technique attempt requirement", async 
     const rows = readJsonl(toolInvocationTelemetryPath());
     assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked", "allowed"]);
     assert.deepEqual(rows.map((row) => row.block_code), ["missing_technique_attempt_log", "missing_technique_attempt_log", null]);
+  });
+});
+
+test("bob_finalize_agent_run accepts a completion-status technique attempt logged without wave/agent", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      content: "# a1",
+    });
+
+    // Evaluator logs a real completion-status attempt for the right surface but
+    // omits wave/agent (both are optional on bob_log_technique_attempt). The
+    // finalize matcher must accept it instead of raising a phantom
+    // missing_technique_attempt_log.
+    JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      evidence: "Attempted the generic REST API pack against surface-a; no exploitable behavior.",
+    }));
+
+    const allowed = await executeTool("bob_finalize_agent_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(allowed.ok, true);
+    assert.equal(allowed.data.status, "allowed");
+  });
+});
+
+test("bob_finalize_agent_run rejects a completion-status technique attempt whose wave mismatches the run", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    // Same surface assigned in both waves (e.g. requeued); only a w2 attempt exists.
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      content: "# a1",
+    });
+
+    // The only completion-status attempt on record is bound to a DIFFERENT wave.
+    seedTechniqueAttempt(domain, { wave: "w2", agent: "a1", surface_id: "surface-a" });
+
+    const blocked = await executeTool("bob_finalize_agent_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.error.code, "STATE_CONFLICT");
+    assert.equal(blocked.error.details.block_code, "missing_technique_attempt_log");
   });
 });
 
@@ -11022,6 +11117,42 @@ test("smart-contract HTTP client pins IPv6 answers", async () => {
   assert.equal(response.ok, true);
   assert.equal(response.text, "ok-v6");
   assert.equal(observedAddress, "2606:4700:4700::1111");
+});
+
+test("smart-contract HTTP client surfaces AggregateError inner connection codes", async () => {
+  const { requestPublicHttpsText } = require("../mcp/lib/sc-http-client.js");
+  const requestImpl = (requestOptions, _callback) => {
+    const req = new EventEmitter();
+    req.write = () => {};
+    req.setTimeout = () => req;
+    req.destroy = () => {};
+    req.end = () => {
+      process.nextTick(() => {
+        const aggregate = new AggregateError(
+          [
+            Object.assign(new Error("connect ECONNREFUSED 2606:4700:4700::1111:443"), { code: "ECONNREFUSED" }),
+            Object.assign(new Error("connect ETIMEDOUT 93.184.216.34:443"), { code: "ETIMEDOUT" }),
+          ],
+          "AggregateError",
+        );
+        req.emit("error", aggregate);
+      });
+    };
+    return req;
+  };
+
+  await assert.rejects(() => withMockSmartContractRpcLookup({
+    "rpc.example.test": [
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "93.184.216.34", family: 4 },
+    ],
+  }, () => requestPublicHttpsText("https://rpc.example.test/rpc", { requestImpl })), (error) => {
+    assert.match(error.message, /SC HTTP request failed for/);
+    assert.match(error.message, /ECONNREFUSED/);
+    assert.match(error.message, /ETIMEDOUT/);
+    assert.equal(error.cause instanceof AggregateError, true);
+    return true;
+  });
 });
 
 test("smart-contract HTTP client fails closed after its byte cap", async () => {

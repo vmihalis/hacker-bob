@@ -460,6 +460,77 @@ test("Test D: provenance-verified handoff is honored even after a `failed` row, 
   });
 });
 
+// Test D + recorded finding: the verified-handoff recovery path must validate a
+// FINDING-BEARING handoff against the run's actual recorded findings, not an
+// empty set. Before the fix, verifiedHandoffOnDiskForAssignment passed
+// findingsForRun:[] so a bypass_attempts entry citing a recorded finding_id
+// threw "does not match any recorded finding", the recovery returned false, and
+// the agent that found the bug was wrongly pushed into missing — the same
+// readiness deadlock, on the recovery path.
+test("Test D + finding: a finding-bearing handoff is honored on the recovery path", () => {
+  withTempHome(() => {
+    const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+    const domain = "agent-runs-failed-but-verified-finding.example.com";
+    const start = driveWaveStart(domain, ["surface-a"]);
+    const assignmentToken = start.assignments[0].handoff_token;
+
+    const recorded = JSON.parse(recordCandidateClaimTool.handler({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      title: "Reward accounting lets a donor skew the split",
+      severity: "high",
+      cwe: "CWE-682",
+      endpoint: "onchain://ethereum-mainnet/0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A",
+      description: "Donating to the distributor before distribution swings the pool share.",
+      proof_of_concept: "Mainnet-fork test donates aUSDC, then distributeRewards redirects emissions.",
+      response_evidence: "Fork run shows the USDC pool jump from ~1.2% to ~98.4% of the daily window.",
+      impact: "Permissionless redirection of ~2864 MOR/day from honest depositors.",
+      validated: true,
+      auth_profile: "attacker-1",
+      cvss_inputs: { attack_vector: "network", privileges_required: "none", confidentiality: "none", integrity: "high" },
+    }));
+    assert.match(recorded.finding_id, /^F-[1-9][0-9]*$/);
+
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      handoff_token: assignmentToken,
+      summary: "found a reward-split manipulation; recorded as a finding",
+      content: "# Handoff\n\nbody",
+      bypass_attempts: [{
+        condition: "permissionless reward-split manipulation via pre-distribution donation",
+        attempt_summary: "Mainnet-fork PoC donates aUSDC before distributeRewards and confirms the emission redirect.",
+        outcome: "finding_recorded",
+        finding_id: recorded.finding_id,
+      }],
+    }));
+
+    markAgentRunTerminal({
+      targetDomain: domain,
+      wave: "w1",
+      agent: "a1",
+      surfaceId: "surface-a",
+      status: "failed",
+      blockCode: "missing_handoff",
+      failureReason: "gate self-poisoned despite a valid finding-bearing handoff on disk",
+    });
+
+    const doc = buildWaveHandoffsDocument(domain, [1]);
+    assert.equal(doc.missing_handoffs.length, 0, "finding-bearing verified handoff must not be reported missing");
+    assert.ok(doc.handoffs.some((h) => h.agent === "a1" && h.surface_id === "surface-a"));
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.equal(readiness.is_complete, true);
+    assert.deepEqual(readiness.received_agents, ["a1"]);
+    assert.deepEqual(readiness.invalid_agents, []);
+  });
+});
+
 // Step 2b negative control: a `failed` row with NO handoff on disk (the agent
 // genuinely died) and a `failed` row with a FORGED handoff both stay gated
 // closed. The verified-handoff relaxation must never accept unsigned/forged

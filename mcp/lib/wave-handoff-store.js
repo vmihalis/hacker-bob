@@ -144,13 +144,21 @@ function verifiedHandoffOnDiskForAssignment(domain, artifacts, assignment, {
       throw signingKeyError;
     }
     const handoffJson = readJsonFile(filePath);
+    // Validate against the run's recorded findings (same set the merge uses), so
+    // a finding-bearing handoff recovered on the runaway-loop path is not falsely
+    // rejected by an empty finding set — the Y-D-style readiness deadlock again.
+    const findingsForRun = findingPayloadsFromClaims(domain).filter(
+      (finding) => finding.wave === artifacts.wave
+        && finding.agent === assignment.agent
+        && finding.surface_id === assignment.surface_id,
+    );
     validateWaveHandoffPayload(handoffJson, {
       targetDomain: domain,
       wave: artifacts.wave,
       agent: assignment.agent,
       surfaceId: assignment.surface_id,
       effectiveSurfaceType: assignment.surface_type || null,
-      findingsForRun: [],
+      findingsForRun,
     });
     validateHandoffProvenance(handoffJson, assignment, { signingKey });
     return true;
@@ -233,11 +241,22 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
   // readiness lies to the caller about wave health.
   let signingKey = null;
   let signingKeyError = null;
+  // Load the run's recorded findings so each handoff's bypass_attempts[].finding_id
+  // is validated against the SAME finding set the merge uses (mergeWaveHandoffsInternal).
+  // Without this, a handoff that legitimately cites a recorded finding is forced into
+  // invalid_agents while the real merge accepts it, deadlocking apply_wave_merge.
+  const findingsByRun = new Map();
   if (domain) {
     try {
       signingKey = readSigningKeyForArtifacts(domain, artifacts);
     } catch (error) {
       signingKeyError = error;
+    }
+    for (const finding of findingPayloadsFromClaims(domain)) {
+      if (finding.wave !== artifacts.wave) continue;
+      const runKey = `${finding.wave}\u0000${finding.agent}\u0000${finding.surface_id}`;
+      if (!findingsByRun.has(runKey)) findingsByRun.set(runKey, []);
+      findingsByRun.get(runKey).push(finding);
     }
   }
 
@@ -289,13 +308,14 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
       // validation runs inside mergeWaveHandoffsInternal. Catching both here
       // ensures the gate also reflects business-rule failures so merge can't
       // silently drop surfaces with invalid handoffs.
+      const runKey = `${artifacts.wave}\u0000${assignment.agent}\u0000${assignment.surface_id}`;
       const payload = validateWaveHandoffPayload(handoffJson, {
         targetDomain: domain,
         wave: artifacts.wave,
         agent: assignment.agent,
         surfaceId: assignment.surface_id,
         effectiveSurfaceType: assignment.surface_type || null,
-        findingsForRun: [],
+        findingsForRun: findingsByRun.get(runKey) || [],
       });
       void payload;
       validateHandoffProvenance(handoffJson, assignment, { signingKey });
@@ -316,6 +336,37 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
   };
 }
 
+// sc_complete_with_zero_evidence is a NON-BLOCKING human-review suspicion flag,
+// not a gate. The only structured substance signal on a bypass_attempt is the
+// outcome (partial_evidence/finding_recorded, handled by the early return in
+// bypassAttemptHasSubstance) plus finding_id; for a no_finding/blocked disproof
+// the sole field-local signal left is how much the agent actually wrote. These
+// length floors are 2x the schema storage floors (condition >= 4,
+// attempt_summary >= 30 in wave-handoff-contracts.js) — a deliberately coarse
+// heuristic. They suppress the flag for a disproof that both cites a condition
+// and describes the exercised mechanism, while still flagging a floor-hugging
+// one-line attestation. Length is gameable in both directions; this narrows the
+// false positives that fired on thoroughly-tested-clean surfaces, it does not
+// prove substance. A stronger semantic check (condition must appear in the
+// surface's trust_assumptions[*].bypass_conditions) is a follow-up.
+const SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS = 8;
+const SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS = 60;
+
+function bypassAttemptHasSubstance(attempt) {
+  // A recorded/partial finding is substance on its own.
+  if (attempt.outcome === "partial_evidence" || attempt.outcome === "finding_recorded") {
+    return true;
+  }
+  // A no_finding / blocked disproof counts only when it both cites a real
+  // bypass condition and documents the concrete mechanism it exercised.
+  const condition = typeof attempt.condition === "string" ? attempt.condition.trim() : "";
+  const summary = typeof attempt.attempt_summary === "string" ? attempt.attempt_summary.trim() : "";
+  return (
+    condition.length >= SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS
+    && summary.length >= SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS
+  );
+}
+
 function buildSuspicionFlags({ smartContractCompletedSurfaceIds, bypassAttemptsForCompletedSurfaces, recordedFindingsBySurface }) {
   const flags = [];
   for (const surfaceId of smartContractCompletedSurfaceIds) {
@@ -323,14 +374,11 @@ function buildSuspicionFlags({ smartContractCompletedSurfaceIds, bypassAttemptsF
     const attempts = bypassAttemptsForCompletedSurfaces.get(surfaceId) || [];
     if (findings.length > 0) continue;
     if (attempts.length === 0) continue;
-    const hasSubstantiveOutcome = attempts.some((attempt) => (
-      attempt.outcome === "partial_evidence" || attempt.outcome === "finding_recorded"
-    ));
-    if (hasSubstantiveOutcome) continue;
+    if (attempts.some(bypassAttemptHasSubstance)) continue;
     flags.push({
       flag: "sc_complete_with_zero_evidence",
       surface_id: surfaceId,
-      reason: "smart_contract surface marked complete with no recorded finding and no bypass_attempts entry produced partial_evidence or finding_recorded; review for low-effort attestation",
+      reason: "smart_contract surface marked complete with no recorded finding and no bypass_attempts entry shows substance (a cited bypass condition plus a concrete attempt_summary describing the exercised mechanism, or a partial_evidence/finding_recorded outcome); review for low-effort attestation",
     });
   }
   return flags;

@@ -13,11 +13,14 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  buildWaveReadiness,
   getLatestMergedWavePartialSurfaceIds,
+  loadWaveArtifacts,
   mergeWaveHandoffs,
   waveMergeSnapshotPath,
   waveHandoffsSnapshotDir,
 } = require("../mcp/lib/wave-handoff-store.js");
+const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
   sessionDir,
   waveAssignmentsPath,
@@ -201,4 +204,54 @@ test("getLatestMergedWavePartialSurfaceIds filters non-string entries", () => {
 test("getLatestMergedWavePartialSurfaceIds requires target_domain string", () => {
   assert.throws(() => getLatestMergedWavePartialSurfaceIds(""), /target_domain/);
   assert.throws(() => getLatestMergedWavePartialSurfaceIds(null), /target_domain/);
+});
+
+test("buildWaveReadiness accepts a handoff whose bypass_attempts cites a recorded finding_id", () => {
+  withTempHome(() => {
+    const domain = "readiness-finding-bypass.com";
+    writeAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-finder-1" },
+    ]);
+
+    // Record a real finding for (w1, a1, surface-finder-1) so it mints an F-N id.
+    const recorded = JSON.parse(recordCandidateClaimTool.handler({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-finder-1",
+      title: "IDOR exposes another tenant record",
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: "https://readiness-finding-bypass.com/api/records/7",
+      description: "Changing the record identifier returns another tenant payload.",
+      proof_of_concept: "GET /api/records/7 as the attacker tenant returns private fields.",
+      response_evidence: "Response leaked tenant identifier and email for record 7.",
+      impact: "Cross-tenant record disclosure.",
+      validated: true,
+      auth_profile: "attacker-1",
+      cvss_inputs: {
+        attack_vector: "network",
+        privileges_required: "low",
+        confidentiality: "high",
+      },
+    }));
+    assert.equal(recorded.recorded, true);
+    assert.match(recorded.finding_id, /^F-[1-9][0-9]*$/);
+
+    // The agent that found the bug references that finding_id in bypass_attempts.
+    writeHandoff(domain, "w1", "a1", "surface-finder-1", {
+      surface_status: "complete",
+      bypass_attempts: [{
+        condition: "object-level authorization on the record endpoint",
+        attempt_summary: "Iterated record ids across tenants and confirmed cross-tenant disclosure.",
+        outcome: "finding_recorded",
+        finding_id: recorded.finding_id,
+      }],
+    });
+
+    const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
+    assert.deepEqual(readiness.invalid_agents, [], "finding-citing handoff must not be marked invalid");
+    assert.deepEqual(readiness.received_agents, ["a1"]);
+    assert.equal(readiness.is_complete, true);
+  });
 });
