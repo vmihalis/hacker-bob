@@ -2092,7 +2092,7 @@ For each reportable finding:
 
 1. Look up the routed pack and its `evidence` block.
 2. For v2 replay calls only, pass `replay_context`: `{ purpose: "evidence_replay", verification_attempt_id: current_attempt_id, verification_snapshot_hash: snapshot_hash, round: "final", finding_id }`. Do not pass replay context for ordinary reads or unknown purposes.
-3. **Web (`runner: "bob_http_scan"`)**: replay through `bob_http_scan` with `target_domain` and the injected `egress_profile` and `block_internal_hosts`. Check the returned `egress_profile_identity_hash` when present; do not switch profiles to make evidence collection pass. If strict internal-host blocking conflicts with a proxy-backed egress profile, record the blocked prerequisite instead of retrying with weaker policy. Use the appropriate `auth_profile` when replaying authenticated proof. Keep request volume moderate and stop when you have representative proof, not exhaustive enumeration. `sample_type` is a short label like `"cross-account object access"`, `"open redirect → token theft"`, `"IDOR"`. Free-text but bounded (≤80 chars). `representative_samples[]` items contain: `request_ref` (HTTP audit ID), `endpoint`, `auth_profile`, `status`, `observed_fields`, `redacted_object_id`. No raw bodies, no auth headers, no cookies.
+3. **Web (`runner: "bob_http_scan"`)**: replay through `bob_http_scan` with `target_domain` and the injected `egress_profile` and `block_internal_hosts`. Check the returned `egress_profile_identity_hash` when present; do not switch profiles to make evidence collection pass. If strict internal-host blocking conflicts with a proxy-backed egress profile, record the blocked prerequisite instead of retrying with weaker policy. Use the appropriate `auth_profile` when replaying authenticated proof. Keep request volume moderate and stop when you have representative proof, not exhaustive enumeration. `sample_type` is a short label like `"cross-account object access"`, `"open redirect → token theft"`, `"IDOR"`. Free-text but bounded (≤80 chars). `representative_samples[]` items contain: `request_ref` (HTTP audit ID), `endpoint`, `auth_profile`, `status`, `observed_fields`, and `object_id` + `sample_record` (the real exposed values, in an authorized engagement, as proof-of-impact; redacted on a safe-harbor program that caps data access). No auth headers, no cookies, no tokens — secrets never go in the pack.
 4. **Smart-contract (`runner: "bob_<chain>_run"`)**: read `finding.sc_evidence` and call the pack's `runner` with `harness_path`, `match_test`, `chain_id` (or cluster/network), and `match_contract`. Pass every sc_evidence field EXCEPT the pack's fresh-state field (the verifier table column "fresh-state replay") so the replay runs on current state. SC replay endpoints are direct public HTTPS only; do not route them through `egress_profile` or replace rejected endpoints with private/localnet RPC. Runner endpoint filtering is preflight-only handoff; Bob does not DNS-pin downstream CLI sockets. Capture the test stdout excerpt as the proof; the verifier already confirmed the bug, so the evidence pack archives the canonical reproducer. Use the pack's `sample_type` verbatim on the evidence pack (`evm_foundry_run`, `svm_anchor_run`, `aptos_move_test`, `sui_move_test`, `substrate_ink_test`, `cosmwasm_cw_multi_test`).
 5. Build trust-map confirmation reads via the family fetch tools — these go into `representative_samples[]` alongside the test output:
    - EVM: `bob_evm_role_table` (granted-role snapshot), `bob_evm_storage_read` (slot snapshot at the affected storage location), `bob_evm_call` (current view-call result).
@@ -2108,9 +2108,10 @@ For each reportable finding:
 Common rules (HTTP + SC):
 - Store only bounded samples: at most 10 `representative_samples` per finding.
 - Use aggregates for scale: counts by role, data class, status code, affected object type, on-chain state slot.
-- Redact or omit secrets, auth headers, cookies, tokens, passwords, API keys, full PII values, raw large response bodies, and full SC contract bytecode dumps.
-- Prefer safe examples: status codes, content types, request refs, object type labels, redacted IDs, field names, short excerpts, count summaries, function signatures, role/owner addresses.
-- `sensitive_clusters` should name data classes or redacted clusters, not raw sensitive values.
+- Always redact or omit secrets, auth headers, cookies, tokens, passwords, API keys, and full SC contract bytecode dumps — these never belong in a report regardless of engagement.
+- Data-exposure proof-of-impact: in an authorized engagement (client / asset-owner, or `BOB_DATA_ACCESS_AUTHORIZED` set) include a SMALL real sample (≤10 records) with the real exposed field values — that is the proof the data owner is paying to see, and a masked count alone will not convey the risk. On a public safe-harbor program that caps data access, redact PII values + raw large bodies and pair the sample with the response schema + count. Never include the full corpus — a bounded sample, not a dump.
+- Capture: status codes, content types, request refs, object type labels, object IDs (real in an authorized engagement, redacted on safe-harbor), field names, the real exposed field values for a data-exposure finding (per the rule above), short excerpts, count summaries, function signatures, role/owner addresses.
+- `sensitive_clusters` names the data classes exposed (e.g. "billing profile", "national ID"); the real values themselves live in `representative_samples[]` per the proof-of-impact rule above.
 - `report_snippet` should be prose the report writer can reuse as proof/impact context.
 
 Example (HTTP finding):
@@ -2131,7 +2132,8 @@ bob_write_evidence_packs({
           auth_profile: "attacker",
           status: 200,
           observed_fields: ["account_id", "email", "invoice_total"],
-          redacted_object_id: "acct_...789"
+          object_id: "acct_84412789",
+          sample_record: { account_id: "84412789", email: "j.devries@example.com", invoice_total: "$4,210.00" }
         }
       ],
       sensitive_clusters: ["billing profile fields", "invoice metadata"],
