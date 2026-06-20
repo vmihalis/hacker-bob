@@ -156,9 +156,12 @@ function whoAndWhat(url, headers) {
   };
 }
 
-function provisionFor({ readbackScope = "tenant-B" } = {}) {
+function provisionFor({ readbackScope = "tenant-B", readbackExtra = null } = {}) {
   const readback = { id: OBJ_B, details: { secret: { token: CANARY_B } } };
   if (readbackScope) readback.owner_scope = readbackScope;
+  // Extra owning-scope aliases on the readback (e.g. a SECONDARY workspace_id:"public") so the
+  // multi-alias #13 guard can be exercised.
+  if (readbackExtra && typeof readbackExtra === "object") Object.assign(readback, readbackExtra);
   return {
     object_a: OBJ_A, object_b: OBJ_B, object_c: OBJ_C,
     canary_a: CANARY_A, canary_b: CANARY_B, canary_c: CANARY_C,
@@ -475,6 +478,57 @@ const CORPUS = [
       return challenge(404);
     },
     provision: () => provisionFor({ readbackScope: "public" }),
+  },
+  {
+    id: "C6", name: "CONTROL: owner readback hides a shared label in a SECONDARY alias — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "P1/P2 omit owning-scope keys and the readback's PRIMARY alias is private (owner_scope:\"tenant-B\"), but a SECONDARY alias is shared (workspace_id:\"public\"). #13 must scan EVERY alias, not just the first ownScopeOf match, and HARD-block. Locks the Codex P2 multi-alias-readback fix.",
+    predicted: "own_scope_explicitly_shared",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, resourceBody({ canary: CANARY_B, viewer: "viewer-B", objId: OBJ_B }));
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_B, viewer: "viewer-A", objId: OBJ_B }));
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "tenant-A", viewer: "viewer-A", objId: OBJ_A }));
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "tenant-B", readbackExtra: { workspace_id: "public" } }),
+  },
+  {
+    id: "C7", name: "CONTROL: the A->B proof read (P2/P2') itself says owner_scope \"public\" — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "The readback is private and P1 omits the scope key, but the successful A->B proof body whose canary signs the row itself carries owner_scope:\"public\". #13 must screen P2/P2' (not just P1 + readback) and HARD-block. Locks the Codex P2 proof-read-shared fix.",
+    predicted: "own_scope_explicitly_shared",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        // P0/P1 (B's own reads) omit the scope key; the A->B proof reads carry owner_scope "public".
+        if (w.isB) return jsonResponse(200, resourceBody({ canary: CANARY_B, viewer: "viewer-B", objId: OBJ_B }));
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "public", viewer: "viewer-A", objId: OBJ_B }));
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "tenant-A", viewer: "viewer-A", objId: OBJ_A }));
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "tenant-B" }),
   },
 ];
 

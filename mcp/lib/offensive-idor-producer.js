@@ -380,6 +380,14 @@ function owningScopeValues(parsedBody) {
   return values;
 }
 
+// True iff a body carries an EXPLICIT shared/default/public owning-scope label at ANY alias
+// (mint condition #13). Scans EVERY OWNING_SCOPE_KEYS alias, not just the first ownScopeOf match,
+// so a {owner_scope:"tenant-B", workspace_id:"public"} body cannot hide a shared label behind a
+// private primary alias. Positive evidence the object is shared → HARD refutation.
+function hasExplicitSharedScope(parsedBody) {
+  return owningScopeValues(parsedBody).some((value) => SHARED_SCOPE_VALUES.includes(value));
+}
+
 // AC-5 PII tripwire (mint condition #17). Scan a body for PII shapes; any shape
 // that is not an exact-allowlisted synthetic identifier aborts the sign. Wires
 // detectPiiShapes (previously unwired). Returns the offending shapes (empty = ok).
@@ -1039,27 +1047,27 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // record the weakness and continue to the mint. (C1/C2 controls trip DIFFERENT, upstream
   // gates — canary_leaked_unauthenticated / p5_authenticated_shared — which are NOT demoted.)
   const confidenceSignals = [];
-  // #13 CROSS-TENANT SCOPE PROOF — is ownScopeOf(P1) B's OWN private scope?
-  // An EXPLICIT shared/default/public scope value is positive evidence the object is SHARED
-  // (not B-private), so it stays a HARD refutation. Only a MISSING scope key is "unprovable"
-  // and demotes to a confidence signal (the read still mints, at a LOWER severity).
+  // #13 CROSS-TENANT SCOPE PROOF — is O_B's OWN scope private, or an EXPLICIT shared label?
+  // An EXPLICIT shared/default/public value at ANY owning-scope alias is positive evidence O_B is
+  // SHARED (not B-private) → HARD refutation. Scan it across EVERY body that should reflect O_B's
+  // scope, each at EVERY alias (hasExplicitSharedScope, not just the first ownScopeOf match):
+  //   - p1Parsed     — the live P1 cross-principal read;
+  //   - parsedReadback — B's OWN owner readback (already trusted for #20 canary discovery + #24
+  //     create-time PII screening, so its shared label is authoritative even when P1 omits it);
+  //   - p2Parsed/p2primeParsed — the successful A→B proof reads whose canary signs the row; the
+  //     signed proof body itself must not say "public"/"default"/"shared".
+  // Only a scope MISSING from the P1 body across ALL aliases is "unprovable" and demotes to a
+  // confidence signal (the read still mints, at a LOWER severity). Asymmetric by the
+  // absence-vs-positive rule: positive shared evidence on ANY of these bodies STRENGTHENS the
+  // block; a readback/proof body that merely carries a PRIVATE scope does NOT clear the P1-side
+  // soft-gate (the soft-gate reflects what the P1 proof body demonstrates to a reviewer).
+  for (const proofBody of [p1Parsed, parsedReadback, p2Parsed, p2primeParsed]) {
+    if (hasExplicitSharedScope(proofBody)) {
+      return fail("blocked_by_design", "own_scope_explicitly_shared");
+    }
+  }
   const p1Scope = ownScopeOf(p1Parsed);
   const ownScopePrivate = ownScopeIsPrivate(p1Scope);
-  if (p1Scope != null && !ownScopePrivate) {
-    return fail("blocked_by_design", "own_scope_explicitly_shared");
-  }
-  // The producer's OWN owner readback (B reading B's freshly-created object) is already trusted to
-  // discover the canary field (#20) and screen create-time foreign PII (#24), so an EXPLICIT shared
-  // scope label there is authoritative positive evidence O_B is SHARED → HARD refutation too, even
-  // when the live P1 read omits the key (which on its own would only soft-gate below). Asymmetric by
-  // the absence-vs-positive rule: positive shared evidence on the readback can only STRENGTHEN the
-  // block; a readback that merely carries a PRIVATE scope does NOT clear the P1-side soft-gate (the
-  // soft-gate reflects what the cross-principal proof body demonstrates to a reviewer, not the
-  // producer's internal create-time bookkeeping).
-  const readbackScope = ownScopeOf(parsedReadback);
-  if (readbackScope != null && !ownScopeIsPrivate(readbackScope)) {
-    return fail("blocked_by_design", "own_scope_explicitly_shared");
-  }
   if (p1Scope == null) {
     confidenceSignals.push({
       gate: "own_scope_missing",
@@ -1074,8 +1082,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // vs A `tenant_id:"acme"`, or a match under a SECONDARY key. That is positive evidence AGAINST
   // a cross-tenant break, so it stays a HARD refutation. A genuine same-tenant user-level BOLA
   // would need a different proof; minting it here would mislabel it as THIS producer's
-  // cross-TENANT IDOR.
-  const bScopeValues = owningScopeValues(p1Parsed);
+  // cross-TENANT IDOR. B's scope values fold in the OWNER READBACK too (same absence-vs-positive
+  // rule as #13): when the live P1 body omits owning-scope keys, the trusted readback's B-scope
+  // still hard-refutes a same-tenant collision with A. (It can only ADD a refutation; differing
+  // values do NOT clear the P1-side distinctness soft-gate below, which stays on the live bodies.)
+  const bScopeValues = [...new Set([
+    ...owningScopeValues(p1Parsed),
+    ...owningScopeValues(parsedReadback),
+  ])];
   const aScopeValues = owningScopeValues(p3Parsed);
   const tenantsProvablySame = aScopeValues.some((v) => bScopeValues.includes(v));
   if (tenantsProvablySame) {

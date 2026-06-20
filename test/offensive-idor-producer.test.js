@@ -776,6 +776,86 @@ test("AC-6 soft preserved: a PRIVATE-scope owner readback does NOT clear the P1 
   assert.equal(result.masked_oracle.relation.own_scope_private, false);
 }));
 
+test("AC-6 negative: owner readback hides a shared label in a SECONDARY alias (owner_scope private + workspace_id 'public') → blocks", () => withTempHome(async () => {
+  // #13 must scan EVERY owning-scope alias, not just the first ownScopeOf match. P1/P2 omit scope;
+  // the readback's primary alias is private (owner_scope:"tenant-B") but a secondary alias is
+  // shared (workspace_id:"public"). The shared label is positive evidence O_B is shared → block.
+  const domain = "idor-neg-readback-multialias.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB }) => {
+      if (wantsOB && (isA || isB)) {
+        const body = resourceBody({ canary: CANARY_B, scope: "tenant-B", viewer: isB ? "viewer-B" : "viewer-A" });
+        delete body.owner_scope;
+        return jsonResponse(200, body);
+      }
+      return null;
+    },
+  });
+  const provision = {
+    ...soundProvision(),
+    owner_readback_b: { id: OBJ_B, owner_scope: "tenant-B", workspace_id: "public", details: { secret: { token: CANARY_B } } },
+  };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "own_scope_explicitly_shared");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: the signed A→B proof read (P2/P2′) explicitly says owner_scope 'public' while P1 omits it → blocks", () => withTempHome(async () => {
+  // #13 must screen the SUCCESSFUL proof reads (P2/P2′), not just P1 + the readback. Here the
+  // readback is private and P1 omits the key, but the A→B proof body whose canary signs the row
+  // itself carries owner_scope:"public" — positive shared evidence inside the signed proof → block.
+  const domain = "idor-neg-proofread-shared.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB }) => {
+      if (wantsOB && isB) {
+        const body = resourceBody({ canary: CANARY_B, scope: "tenant-B", viewer: "viewer-B" });
+        delete body.owner_scope; // P0/P1 omit the scope key
+        return jsonResponse(200, body);
+      }
+      if (wantsOB && isA) {
+        return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "public", viewer: "viewer-A" }));
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "own_scope_explicitly_shared");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: owner readback B-scope collides with A's own scope (same tenant) even though P1 omits the key → blocks", () => withTempHome(async () => {
+  // #14 same-tenant guard must fold the owner readback's B-scope when P1 omits owning-scope keys.
+  // P1/P2 omit scope; the readback puts B in tenant "acme" and A's own object (P3) is also "acme",
+  // so A and B are provably the SAME tenant → hard block (not a soft mint).
+  const domain = "idor-neg-readback-sametenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        const body = resourceBody({ canary: CANARY_B, scope: "tenant-B", viewer: isB ? "viewer-B" : "viewer-A" });
+        delete body.owner_scope; // P1/P2 omit the owning-scope key
+        return jsonResponse(200, body);
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "acme", viewer: "viewer-A", objId: OBJ_A }));
+      }
+      return null;
+    },
+  });
+  const provision = {
+    ...soundProvision(),
+    owner_readback_b: { id: OBJ_B, owner_scope: "acme", details: { secret: { token: CANARY_B } } },
+  };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {
