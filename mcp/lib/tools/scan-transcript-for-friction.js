@@ -149,7 +149,13 @@ function handler(args) {
 module.exports = Object.freeze({
   name: "bob_scan_transcript_for_friction",
   description:
-    "Cycle Y.7 adversarial post-run scan (Y-D6 + Y-P9). Returns the synthesized "
+    "Cycle Y.7 adversarial post-run scan (Y-D6 + Y-P9). The transcript- and "
+    + "invocation-bearing path: pass transcript_text/tool_invocations for the "
+    + "regex, mcp_invocation_failure, evidence_size, and handoff_invocation_diff "
+    + "scanners the server CANNOT witness at merge time (no transcript / no "
+    + "invocation stream). bob_apply_wave_merge already mechanizes the promotion "
+    + "gate AND the one invocation-free scanner (handoff_ledger_diff) server-side "
+    + "(CR-3); this tool adds the remaining coverage. Returns the synthesized "
     + "capability_friction + protocol_drift records detected by the closed default "
     + "scanner registry (bash_curl, bash_wget, bash_raw_http, bash_cat_ledger, "
     + "mcp_invocation_failure_scanner, curl_on_target_domain, curl_on_osint_endpoint, "

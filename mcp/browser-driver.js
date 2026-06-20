@@ -48,8 +48,25 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const HARD_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_NAVIGATE_TIMEOUT_MS = 30_000;
 const DEFAULT_WAIT_FOR_TIMEOUT_MS = 15_000;
+const DEFAULT_EVALUATE_TIMEOUT_MS = 15_000;
+const DEFAULT_SCREENSHOT_TIMEOUT_MS = 30_000;
 const MAX_EVAL_RESULT_BYTES = 256 * 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
+// Ceiling on any agent-supplied per-operation timeout, mirroring
+// browser-tools-shared.js. A non-positive value can't disable the bound and a
+// pathological value can't pin the single-page session far past its useful life.
+const MAX_OPERATION_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Agent-supplied timeout_ms is the per-operation deadline. A non-finite or
+// non-positive value — notably 0, which Playwright treats as "no timeout" —
+// must never disable the bound, or an agent could request an unbounded driver
+// op that pins the single-page session until the reaper. Clamp to the
+// operation default below, and to MAX_OPERATION_TIMEOUT_MS above.
+function resolveOpTimeout(args, defaultMs) {
+  const requested = Number(args && args.timeout_ms);
+  if (!Number.isFinite(requested) || requested <= 0) return defaultMs;
+  return Math.min(requested, MAX_OPERATION_TIMEOUT_MS);
+}
 
 // Expression sandbox: agents must not turn the browser into a covert HTTP
 // transport. Network IO from the page context bypasses Bob's scope checks
@@ -440,7 +457,7 @@ class BrowserDriver {
       wrapped.code = "scope_blocked";
       throw wrapped;
     }
-    const timeout = Number.isFinite(args && args.timeout_ms) ? Number(args.timeout_ms) : DEFAULT_NAVIGATE_TIMEOUT_MS;
+    const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
     const response = await this.page.goto(url, { waitUntil: "domcontentloaded", timeout });
     await randomDelay(150, 400);
     return {
@@ -530,13 +547,43 @@ class BrowserDriver {
       err.code = "evaluate_sandbox_violation";
       throw err;
     }
+    // page.evaluate takes no Playwright timeout, so a runaway expression
+    // (`while(true){}`, `new Promise(()=>{})`) would pin the page until the IPC
+    // backstop fires ~90s later, leaving the single-page session dead. Race it
+    // against a wall-clock bound so the command returns a precise
+    // evaluate_timeout instead; async-hang sessions stay usable afterward.
+    const timeout = resolveOpTimeout(args, DEFAULT_EVALUATE_TIMEOUT_MS);
+    const evalPromise = this.page.evaluate(expression);
+    // If the bound wins the race the evaluate stays pending and may reject
+    // later when the page is torn down; swallow that so it is not an unhandled
+    // rejection.
+    evalPromise.catch(() => {});
+    let timer;
     let result;
     try {
       // page.evaluate accepts a function or string; the string form runs the
       // expression in the page world and returns the value.
-      result = await this.page.evaluate(expression);
+      result = await Promise.race([
+        evalPromise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const e = new Error(
+              `evaluate_timeout after ${timeout}ms — expression did not settle. If it blocks the renderer (e.g. an infinite loop) the page is wedged; close this session and start a new one.`,
+            );
+            e.code = "evaluate_timeout";
+            reject(e);
+          }, timeout);
+          if (timer && typeof timer.unref === "function") timer.unref();
+        }),
+      ]);
     } catch (err) {
+      // Preserve the evaluate_timeout code so the agent can tell a runaway /
+      // wedged expression apart from an ordinary evaluation error and recycle
+      // the session.
+      if (err && err.code === "evaluate_timeout") throw err;
       throw new Error(`evaluate_failed: ${err && err.message ? err.message : err}`);
+    } finally {
+      clearTimeout(timer);
     }
     return { result: safeJsonClone(result, MAX_EVAL_RESULT_BYTES) };
   }
@@ -566,7 +613,7 @@ class BrowserDriver {
     if (!predicate || typeof predicate.kind !== "string") {
       throw new Error("wait_for.predicate must be a structured object with a `kind`");
     }
-    const timeout = Number.isFinite(args && args.timeout_ms) ? Number(args.timeout_ms) : DEFAULT_WAIT_FOR_TIMEOUT_MS;
+    const timeout = resolveOpTimeout(args, DEFAULT_WAIT_FOR_TIMEOUT_MS);
     const startedAt = Date.now();
     try {
       switch (predicate.kind) {
@@ -628,7 +675,7 @@ class BrowserDriver {
     this.screenshotSeq += 1;
     const fileName = `${this.sessionId}-${String(this.screenshotSeq).padStart(4, "0")}.png`;
     const artifactPath = path.join(dir, fileName);
-    await this.page.screenshot({ path: artifactPath, fullPage });
+    await this.page.screenshot({ path: artifactPath, fullPage, timeout: DEFAULT_SCREENSHOT_TIMEOUT_MS });
     return { artifact_path: artifactPath };
   }
 
