@@ -535,6 +535,15 @@ function scoreTechniqueEntry(entry, surface) {
     "tech_stack",
     "surface_type",
   ]);
+  // match.endpoints patterns are matched (substring `includes`, see countMatches) against this MERGED
+  // text, which deliberately spans freeform fields (hosts, high_value_flows, evidence) on top of the
+  // structured endpoint lists. Because the patterns are slash-prefixed path fragments (e.g. "/_search",
+  // "/elasticsearch", "/solr"), a hit inside `evidence` means recon wrote a LITERAL discovered path —
+  // intended recall (a mentioned search backend is a real target), not prose noise. Consequence for
+  // high-stakes packs (e.g. over-permissive-search-list, which guides cross-tenant record sampling):
+  // evidence that names a search path is sufficient to SELECT the pack as a candidate, so selection must
+  // never be read as proof a search surface exists — the evaluator confirms a live search/list endpoint
+  // before sampling, and selection alone extracts nothing.
   const endpointText = surfaceFieldText(surface, [
     "endpoints",
     "discovered_endpoints",
