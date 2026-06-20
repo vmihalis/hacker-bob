@@ -15,18 +15,26 @@ const {
   WRITE_GUARD_TABLES,
   AUDIT_GRADED_PATHS,
 } = require("../mcp/lib/paths.js");
-const { render, MANIFEST_PATH } = require("../scripts/generate-write-guard-tables.js");
+const { render, MANIFEST_PATHS } = require("../scripts/generate-write-guard-tables.js");
 
-test("rendered manifest is checked in and byte-identical to paths.js projection", () => {
-  assert.ok(fs.existsSync(MANIFEST_PATH), "write-guard-tables.json must be committed");
-  const onDisk = fs.readFileSync(MANIFEST_PATH, "utf8");
-  assert.equal(onDisk, render(),
-    "write-guard-tables.json is stale; run node scripts/generate-write-guard-tables.js");
+test("EVERY rendered manifest is checked in and byte-identical to paths.js projection", () => {
+  // The generator writes one manifest per adapter (Claude + Kimi). Asserting all
+  // of MANIFEST_PATHS — not just the first — prevents split-brain enforcement
+  // where the Kimi mirror silently drifts from the Claude copy.
+  const expected = render();
+  for (const manifestPath of MANIFEST_PATHS) {
+    assert.ok(fs.existsSync(manifestPath), `${manifestPath} must be committed`);
+    assert.equal(fs.readFileSync(manifestPath, "utf8"), expected,
+      `${manifestPath} is stale; run node scripts/generate-write-guard-tables.js`);
+  }
 });
 
-test("manifest round-trips to the exact WRITE_GUARD_TABLES object", () => {
-  const parsed = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
-  assert.deepEqual(parsed, JSON.parse(JSON.stringify(WRITE_GUARD_TABLES)));
+test("EVERY manifest round-trips to the exact WRITE_GUARD_TABLES object", () => {
+  const expected = JSON.parse(JSON.stringify(WRITE_GUARD_TABLES));
+  for (const manifestPath of MANIFEST_PATHS) {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    assert.deepEqual(parsed, expected, `${manifestPath} must round-trip WRITE_GUARD_TABLES`);
+  }
 });
 
 test("CLASS: every audit-graded basename is a hook BLOCK, never agent-writable", () => {

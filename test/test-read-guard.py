@@ -6,6 +6,9 @@ import subprocess
 import sys
 
 HOOK = os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "session-read-guard.sh")
+KIMI_HOOK = os.path.join(os.path.dirname(__file__), "..", "adapters", "kimi", "hooks", "session-read-guard.sh")
+# The Claude and Kimi read guards must enforce IDENTICAL policy (no split-brain).
+HOOKS = [("claude", HOOK), ("kimi", KIMI_HOOK)]
 HOME = os.path.expanduser("~")
 SESSION = f"{HOME}/hacker-bob-sessions/example.com"
 
@@ -227,6 +230,16 @@ TESTS = [
      2,
      "bob_read_session_summary"),
 
+    # --- sensitive session state: OOB tokens + private-target/lab auth ---
+    ("Read oob-tokens.jsonl blocks",
+     {"tool_input": {"file_path": f"{SESSION}/oob-tokens.jsonl"}},
+     2,
+     "bob_read_session_summary"),
+    ("Read lab-authorization.json blocks",
+     {"tool_input": {"file_path": f"{SESSION}/lab-authorization.json"}},
+     2,
+     "bob_read_session_summary"),
+
     # --- shlex.split ValueError must block, not silently allow ---
     ("Bash with unterminated quote blocks (shlex ValueError)",
      {"tool_input": {"command": f"cat '{SESSION}/findings.jsonl"}},
@@ -239,27 +252,29 @@ def main():
     passed = 0
     failed = 0
 
-    for desc, payload, expected, expected_text in TESTS:
-        result = subprocess.run(
-            ["bash", HOOK],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-        )
-        ok = result.returncode == expected
-        if ok and expected_text:
-            ok = expected_text in result.stderr
-        status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
-        print(f"  {status}: {desc}")
-        if not ok:
-            print(f"         expected exit {expected}, got {result.returncode}")
-            if expected_text:
-                print(f"         expected stderr to include: {expected_text}")
-            if result.stderr.strip():
-                print(f"         stderr: {result.stderr.strip()}")
-            failed += 1
-        else:
-            passed += 1
+    for adapter, hook in HOOKS:
+        print(f"\n=== {adapter} read guard ===")
+        for desc, payload, expected, expected_text in TESTS:
+            result = subprocess.run(
+                ["bash", hook],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+            )
+            ok = result.returncode == expected
+            if ok and expected_text:
+                ok = expected_text in result.stderr
+            status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
+            print(f"  {status}: [{adapter}] {desc}")
+            if not ok:
+                print(f"         expected exit {expected}, got {result.returncode}")
+                if expected_text:
+                    print(f"         expected stderr to include: {expected_text}")
+                if result.stderr.strip():
+                    print(f"         stderr: {result.stderr.strip()}")
+                failed += 1
+            else:
+                passed += 1
 
     print(f"\n  {passed}/{passed + failed} passed")
     return 0 if failed == 0 else 1

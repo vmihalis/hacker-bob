@@ -40,32 +40,35 @@ _tables_path = os.environ.get("WRITE_GUARD_TABLES_FILE", "")
 try:
     with open(_tables_path, "r", encoding="utf-8") as _fh:
         _T = json.load(_fh)
+    # Key extraction is INSIDE the try so a structurally-wrong manifest (valid
+    # JSON but a missing/wrong-typed key) raises KeyError/TypeError here and
+    # fails CLOSED with the designed exit 2 — not an unhandled exit 1 that a
+    # future adapter could treat as a hook-framework error and fail OPEN.
+    # BLOCK set = audit-graded ∪ mcp-owned (both are write-via-MCP-only).
+    MCP_OWNED_EXACT = set(_T["audit_graded_basenames"]) | set(_T["mcp_owned_basenames"])
+    MCP_OWNED_DIRS = set(_T["mcp_owned_dirs"])
+    MCP_OWNED_PATTERNS = [
+        re.compile(p) for p in (
+            _T["audit_graded_filename_patterns"] + _T["mcp_owned_filename_patterns"]
+        )
+    ]
+    # Audit-graded directory prefixes (verification-attempts/, wave-handoffs/, …):
+    # anything under them — matched SESSION-RELATIVE, per isAuditGradedPath — is
+    # blocked regardless of basename.
+    MCP_OWNED_DIR_PREFIXES = list(_T["audit_graded_relative_dirs"])
+
+    AGENT_ALLOWED_EXACT = set(_T["agent_writable_basenames"])
+    AGENT_ALLOWED_PATTERNS = [re.compile(p) for p in _T["agent_writable_filename_patterns"]]
 except Exception as exc:  # fail closed
-    # A missing/corrupt manifest must FAIL CLOSED, not silently allow. Block
-    # every session write rather than lose enforcement.
+    # A missing/corrupt/incomplete manifest must FAIL CLOSED, not silently allow.
+    # Block every session write rather than lose enforcement.
     print(
-        "BLOCKED: write-guard tables missing/unreadable "
+        "BLOCKED: write-guard tables missing/unreadable/invalid "
         f"({_tables_path}: {exc}). Run "
         "`node scripts/generate-write-guard-tables.js`.",
         file=sys.stderr,
     )
     raise SystemExit(2)
-
-# BLOCK set = audit-graded ∪ mcp-owned (both are write-via-MCP-only).
-MCP_OWNED_EXACT = set(_T["audit_graded_basenames"]) | set(_T["mcp_owned_basenames"])
-MCP_OWNED_DIRS = set(_T["mcp_owned_dirs"])
-MCP_OWNED_PATTERNS = [
-    re.compile(p) for p in (
-        _T["audit_graded_filename_patterns"] + _T["mcp_owned_filename_patterns"]
-    )
-]
-# Audit-graded directory prefixes (verification-attempts/, wave-handoffs/, …):
-# anything under them — matched SESSION-RELATIVE, per isAuditGradedPath — is
-# blocked regardless of basename.
-MCP_OWNED_DIR_PREFIXES = list(_T["audit_graded_relative_dirs"])
-
-AGENT_ALLOWED_EXACT = set(_T["agent_writable_basenames"])
-AGENT_ALLOWED_PATTERNS = [re.compile(p) for p in _T["agent_writable_filename_patterns"]]
 
 
 def is_mcp_owned(filename):

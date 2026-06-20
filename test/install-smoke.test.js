@@ -772,6 +772,58 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
   }
 });
 
+test("kimi hook registration is shell-injection-safe and uninstall is install-scoped", () => {
+  // #2: the generated PreToolUse `command` is run as a shell command, so the
+  // hook path must be single-quoted (shell-inert) — $(), backticks, $VAR in the
+  // install path must NOT expand at hook runtime.
+  const malicious = "/tmp/proj-$(touch /tmp/PWNED)-`id`-$HOME";
+  const block = KIMI_ADAPTER.renderKimiHookBlock(malicious);
+  const writePath = path.join(malicious, ".kimi", "hooks", "session-write-guard.sh");
+  assert.ok(block.includes(`'${writePath}'`),
+    "hook path must be single-quoted in the command so the shell cannot expand it");
+  // shellSingleQuote escapes an embedded single quote as '\'' (close/escape/reopen).
+  assert.equal(KIMI_ADAPTER.shellSingleQuote("a'b"), "'a'\\''b'");
+
+  // #7a: kimiHookBlockMatchesTarget identifies the OWNING install only.
+  const blockA = KIMI_ADAPTER.renderKimiHookBlock("/tmp/projA");
+  assert.equal(KIMI_ADAPTER.kimiHookBlockMatchesTarget(blockA, "/tmp/projA"), true);
+  assert.equal(KIMI_ADAPTER.kimiHookBlockMatchesTarget(blockA, "/tmp/projB"), false);
+
+  const originalKimiShare = process.env.KIMI_SHARE_DIR;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-kimi-uninstall-"));
+  try {
+    // #7b: uninstalling project A must NOT remove a global Bob block owned by B.
+    const kimiDir = path.join(tempHome, ".kimi");
+    fs.mkdirSync(kimiDir, { recursive: true });
+    process.env.KIMI_SHARE_DIR = kimiDir;
+    const cfgPath = path.join(kimiDir, "config.toml");
+    fs.writeFileSync(cfgPath, `${KIMI_ADAPTER.renderKimiHookBlock("/tmp/projB")}\n`);
+
+    const rA = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: "/tmp/projA", dryRun: false });
+    assert.ok(fs.readFileSync(cfgPath, "utf8").includes("# >>> hacker-bob managed hooks"),
+      "B's global hook block must survive A's uninstall");
+    assert.ok(rA.skipped.some((s) => /different project/.test(s.reason || "")),
+      "uninstall must report skipping a block owned by a different project");
+
+    // #7c: a symlinked config must not be followed/rewritten on uninstall.
+    const realCfg = path.join(tempHome, "real-config.toml");
+    fs.writeFileSync(realCfg, `${KIMI_ADAPTER.renderKimiHookBlock("/tmp/projB")}\n`);
+    const symHome = path.join(tempHome, "symhome", ".kimi");
+    fs.mkdirSync(symHome, { recursive: true });
+    fs.symlinkSync(realCfg, path.join(symHome, "config.toml"));
+    process.env.KIMI_SHARE_DIR = symHome;
+    const rSym = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: "/tmp/projB", dryRun: false });
+    assert.ok(fs.readFileSync(realCfg, "utf8").includes("# >>> hacker-bob managed hooks"),
+      "symlinked config target must be left intact");
+    assert.ok(rSym.skipped.some((s) => /symlink/.test(s.reason || "")),
+      "uninstall must report refusing to rewrite a symlinked config");
+  } finally {
+    if (originalKimiShare === undefined) delete process.env.KIMI_SHARE_DIR;
+    else process.env.KIMI_SHARE_DIR = originalKimiShare;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("detectInstalledAdapterIds recognizes an installed kimi layout (claude/codex parity)", () => {
   // Locks the fix for reinstall/update/uninstall auto-detection: a project that
   // has a kimi install but no neutral install.json metadata must still resolve
