@@ -71,7 +71,7 @@ module.exports = Object.freeze({
       },
       "lab_authorization": {
         "type": "object",
-        "description": "OFF BY DEFAULT. Declares intent to scope this session to a private host (IPv4 loopback 127.0.0.0/8 or RFC1918: 10/8, 172.16/12, 192.168/16) that the OPERATOR owns and is authorized to test. This declaration ALONE does NOT grant the escape: the operator must ALSO set the BOB_LAB_TARGET_ACK environment variable on the MCP server (an operator-only control the agent cannot supply). Without both, the public-DNS gate rejects non-public targets. Cloud-metadata, link-local, IPv6, and .internal/.local hosts are never eligible. Recorded as an audit-graded artifact and implies allow_internal_hosts for this session; cannot be combined with block_internal_hosts.",
+        "description": "OFF BY DEFAULT. Declares intent to scope this session to a private host (IPv4 loopback 127.0.0.0/8 or RFC1918: 10/8, 172.16/12, 192.168/16) that the OPERATOR owns and is authorized to test. This declaration ALONE does NOT grant the escape: the operator must ALSO set, on the MCP server (operator-only controls the agent cannot supply), BOTH the BOB_LAB_TARGET_ACK environment variable (consent) AND BOB_LAB_TARGET to the exact host (e.g. 192.168.1.53; comma-separated for several). Without all of these, the public-DNS gate rejects non-public targets, and the grant is bound to the named host(s) only. Cloud-metadata, link-local, IPv6, and .internal/.local hosts are never eligible. Recorded as an audit-graded artifact and implies allow_internal_hosts for this session; cannot be combined with block_internal_hosts.",
         "properties": {
           "private_targets": {
             "type": "boolean",

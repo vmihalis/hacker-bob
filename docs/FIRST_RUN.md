@@ -117,17 +117,18 @@ Do not use a real company, public service, customer environment, or bug bounty t
 
 ### Private / lab targets (loopback & RFC1918)
 
-By default Bob's scope kernel rejects any non-public target — bare IPs, loopback, and RFC1918 hosts all fail with "not a public DNS domain", because a registrable public domain is the ownership signal Bob relies on. To scan a private lab host that **you own and are authorized to test**, the **operator** must enable the escape out-of-band; the agent cannot enable it for itself:
+By default Bob's scope kernel rejects any non-public target — bare IPs, loopback, and RFC1918 hosts all fail with "not a public DNS domain", because a registrable public domain is the ownership signal Bob relies on. To scan a private lab host that **you own and are authorized to test**, the **operator** must enable the escape out-of-band; the agent cannot enable it for itself (it controls tool arguments, but never the server's environment):
 
-1. Set the operator attestation in the MCP server's environment **before launch** (the agent cannot read or set the server's environment, so this is an operator-only control):
+1. Set **two** operator controls in the MCP server's environment, and keep them set for the whole session (they are re-checked at every scan, not only at init — if you relaunch the server without them, scans of the lab target start failing with "not a public DNS domain"):
 
    ```text
    export BOB_LAB_TARGET_ACK=i-own-and-am-authorized-to-test-these-private-targets
+   export BOB_LAB_TARGET=192.168.1.53        # the exact host(s) you authorize; comma-separated for several
    ```
 
-2. Declare intent at init by passing `lab_authorization: { "private_targets": true }` to `bob_init_session`.
+2. Declare intent at init by passing `lab_authorization: { "private_targets": true }` to `bob_init_session` with `target_domain` set to that host.
 
-Both are required. Without the env var, the declaration alone does nothing and the public-DNS gate still rejects the target. Only IPv4 loopback (`127.0.0.0/8`) and RFC1918 (`10/8`, `172.16/12`, `192.168/16`) are eligible; IPv6, link-local (`169.254/16`), cloud-metadata, and `.internal`/`.local` names are never eligible even with the attestation. The attestation is recorded as an audit-graded session artifact, pins scope to that one host, and requires the default (direct) egress profile.
+All three are required. Without the env vars the declaration alone does nothing, and the grant is **bound to the host(s) named in `BOB_LAB_TARGET`** — so an active session cannot be turned against a neighboring private host. Only IPv4 loopback (`127.0.0.0/8`) and RFC1918 (`10/8`, `172.16/12`, `192.168/16`) are eligible; IPv6, link-local (`169.254/16`), cloud-metadata, and `.internal`/`.local` names are never eligible even with the attestation. The attestation is recorded as an audit-graded session artifact, pins scope to that one host, and requires the default (direct) egress profile.
 
 ## Lifecycle States
 

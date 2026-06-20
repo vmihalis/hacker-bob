@@ -7,12 +7,14 @@
 // hosts all fail with "not a public DNS domain". That gate is the scope-ownership
 // control: a registrable public domain is provable program scope; a private IP
 // carries no ownership signal. This module is the ONLY sanctioned escape — an
-// operator who OWNS a private lab host sets BOB_LAB_TARGET_ACK in the server
-// environment AND declares private_targets intent at bob_init_session; that
-// attestation, recorded as an audit-graded (agent-unforgeable) session artifact,
-// lets the kernel scope a session to that one private host. The ack is an
-// operator env var, never a tool argument, so a model cannot self-authorize by
-// reading a published token from its own schema.
+// operator who OWNS a private lab host sets BOB_LAB_TARGET_ACK (consent) and
+// BOB_LAB_TARGET (the exact authorized host) in the server environment AND
+// declares private_targets intent at bob_init_session; that attestation,
+// recorded as an audit-graded (agent-unforgeable) session artifact, lets the
+// kernel scope a session to that one named private host. Both controls are
+// operator env vars, never tool arguments, so a model can neither self-authorize
+// by reading a published token from its own schema nor — while an ack is set for
+// one lab box — pivot the grant to a neighboring private host.
 //
 // Design mirrors enforcement-attest.js:
 //   * the ack is an operator ENV var (BOB_LAB_TARGET_ACK), out of the model's
@@ -42,14 +44,38 @@ const net = require("net");
 // CLOSED — not a secret, which is why it is fine for it to live in source.
 const LAB_TARGET_ACK_TOKEN = "i-own-and-am-authorized-to-test-these-private-targets";
 const LAB_TARGET_ACK_ENV = "BOB_LAB_TARGET_ACK";
+// The operator also names the EXACT host(s) they authorize, comma-separated, in
+// BOB_LAB_TARGET. This binds the grant to the intended host: while the ack is set
+// for one lab box, a prompt-injected orchestrator must not be able to scope a
+// session to a NEIGHBORING private host (e.g. sweep the operator's RFC1918 LAN).
+const LAB_TARGET_HOST_ENV = "BOB_LAB_TARGET";
 
 const LAB_AUTHORIZATION_BASENAME = "lab-authorization.json";
 
-// The operator-only gate: true iff the exact ack token is set in the server
-// environment. Read ONLY from process.env — never from a tool argument or the
-// published schema — so a prompt-injected evaluator cannot satisfy it.
+// The operator-only consent gate: true iff the exact ack token is set in the
+// server environment. Read ONLY from process.env — never from a tool argument or
+// the published schema — so a prompt-injected evaluator cannot satisfy it.
 function operatorLabAckPresent() {
   return process.env[LAB_TARGET_ACK_ENV] === LAB_TARGET_ACK_TOKEN;
+}
+
+// The operator-declared set of exact authorized lab hosts (from BOB_LAB_TARGET).
+// Bracketed IPv6-style wrappers are stripped for comparison parity.
+function operatorAuthorizedLabHosts() {
+  const raw = process.env[LAB_TARGET_HOST_ENV];
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((h) => h.trim().replace(/^\[|\]$/g, ""))
+    .filter(Boolean);
+}
+
+// The operator-only host-binding gate: true iff `host` is one of the exact hosts
+// the operator named in BOB_LAB_TARGET. Read ONLY from process.env, so the agent
+// (which controls target_domain) cannot widen the grant to another private host.
+function operatorAuthorizedLabHost(host) {
+  const address = String(host || "").replace(/^\[|\]$/g, "");
+  return operatorAuthorizedLabHosts().includes(address);
 }
 
 function ipv4Octets(address) {
@@ -110,10 +136,14 @@ function parseLabAuthorization(raw) {
   });
 }
 
-// A host is permitted iff it is lab-eligible AND a valid attestation is present.
+// A host is permitted iff it is lab-eligible AND a valid attestation is present
+// AND the operator named this exact host in BOB_LAB_TARGET. The host-binding
+// stops an active ack (set for one lab box) from being reused by a prompt-injected
+// agent to scope a session to a neighboring private host.
 function labTargetPermitted(host, { authorization } = {}) {
   if (!labTargetEligibleHost(host)) return false;
-  return parseLabAuthorization(authorization) != null;
+  if (parseLabAuthorization(authorization) == null) return false;
+  return operatorAuthorizedLabHost(host);
 }
 
 // Read the persisted, audit-graded attestation for a target's session. Returns
@@ -153,7 +183,9 @@ function recordLabAuthorization(targetDomain, authorization) {
 module.exports = {
   LAB_TARGET_ACK_TOKEN,
   LAB_TARGET_ACK_ENV,
+  LAB_TARGET_HOST_ENV,
   operatorLabAckPresent,
+  operatorAuthorizedLabHost,
   LAB_AUTHORIZATION_BASENAME,
   labTargetEligibleHost,
   parseLabAuthorization,

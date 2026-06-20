@@ -16,7 +16,9 @@ const path = require("path");
 const {
   LAB_TARGET_ACK_TOKEN,
   LAB_TARGET_ACK_ENV,
+  LAB_TARGET_HOST_ENV,
   operatorLabAckPresent,
+  operatorAuthorizedLabHost,
   labTargetEligibleHost,
   parseLabAuthorization,
   labTargetPermitted,
@@ -26,39 +28,48 @@ const { assertHttpScopeDomain, validateHttpScanScope } = require("../mcp/lib/sco
 const { isAuditGradedPath, labAuthorizationPath, sessionDir } = require("../mcp/lib/paths.js");
 
 // The model-suppliable INTENT — NO secret. Authorization comes from the operator
-// env ack, never from this object (the legacy `ack` field is ignored).
+// env vars, never from this object (the legacy `ack` field is ignored).
 const INTENT = Object.freeze({ private_targets: true });
+// Hosts the home-based success tests authorize (set in BOB_LAB_TARGET).
+const DEFAULT_HOSTS = "192.168.1.53,127.0.0.1,10.1.2.3,192.168.1.54";
 
+// Set/clear the operator env controls (consent ack + host binding) around fn.
+// ack:true sets BOB_LAB_TARGET_ACK to the token; hosts (string|null) sets/clears
+// BOB_LAB_TARGET. Both are restored afterward.
+function withLabEnv(fn, { ack = true, hosts = null } = {}) {
+  const prevAck = process.env[LAB_TARGET_ACK_ENV];
+  const prevHost = process.env[LAB_TARGET_HOST_ENV];
+  if (ack) process.env[LAB_TARGET_ACK_ENV] = LAB_TARGET_ACK_TOKEN;
+  else delete process.env[LAB_TARGET_ACK_ENV];
+  if (hosts) process.env[LAB_TARGET_HOST_ENV] = hosts;
+  else delete process.env[LAB_TARGET_HOST_ENV];
+  try {
+    return fn();
+  } finally {
+    if (prevAck === undefined) delete process.env[LAB_TARGET_ACK_ENV];
+    else process.env[LAB_TARGET_ACK_ENV] = prevAck;
+    if (prevHost === undefined) delete process.env[LAB_TARGET_HOST_ENV];
+    else process.env[LAB_TARGET_HOST_ENV] = prevHost;
+  }
+}
+
+// parseLabAuthorization is host-agnostic, so its tests only toggle the ack.
 function withLabAck(fn) {
-  const prev = process.env[LAB_TARGET_ACK_ENV];
-  process.env[LAB_TARGET_ACK_ENV] = LAB_TARGET_ACK_TOKEN;
-  try {
-    return fn();
-  } finally {
-    if (prev === undefined) delete process.env[LAB_TARGET_ACK_ENV];
-    else process.env[LAB_TARGET_ACK_ENV] = prev;
-  }
+  return withLabEnv(fn, { ack: true, hosts: null });
 }
-
 function withoutLabAck(fn) {
-  const prev = process.env[LAB_TARGET_ACK_ENV];
-  delete process.env[LAB_TARGET_ACK_ENV];
-  try {
-    return fn();
-  } finally {
-    if (prev !== undefined) process.env[LAB_TARGET_ACK_ENV] = prev;
-  }
+  return withLabEnv(fn, { ack: false, hosts: null });
 }
 
-// Lab-escape context: a temp HOME for the session root, and (by default) the
-// operator env ack set. Pass { ack: false } to exercise the no-operator path.
-function withTempHome(fn, { ack = true } = {}) {
+// Lab-escape context: a temp HOME for the session root, plus (by default) both
+// operator env controls set. Pass { ack: false } for the no-consent path or
+// { hosts: ... } to scope the host binding for that test.
+function withTempHome(fn, { ack = true, hosts = DEFAULT_HOSTS } = {}) {
   const previousHome = process.env.HOME;
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-lab-attest-"));
   process.env.HOME = tempHome;
-  const wrapper = ack ? withLabAck : withoutLabAck;
   try {
-    return wrapper(() => fn(tempHome));
+    return withLabEnv(() => fn(tempHome), { ack, hosts });
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
@@ -134,18 +145,20 @@ test("parseLabAuthorization checks the operator env BEFORE reading attacker inpu
   });
 });
 
-test("labTargetPermitted requires eligibility AND the operator env ack", () => {
-  withLabAck(() => {
+test("labTargetPermitted requires eligibility AND the operator ack AND the host binding", () => {
+  withLabEnv(() => {
     assert.equal(labTargetPermitted("192.168.1.53", { authorization: INTENT }), true);
     assert.equal(labTargetPermitted("192.168.1.53", {}), false);
     // Eligible host but ineligible scope: blocked even with the env + intent.
     assert.equal(labTargetPermitted("169.254.169.254", { authorization: INTENT }), false);
     assert.equal(labTargetPermitted("8.8.8.8", { authorization: INTENT }), false);
-  });
-  // Without the operator env, an eligible host + intent is still refused.
-  withoutLabAck(() => {
+    // Eligible + ack present, but NOT the operator-named host → refused.
+    assert.equal(labTargetPermitted("10.0.0.9", { authorization: INTENT }), false);
+  }, { ack: true, hosts: "192.168.1.53" });
+  // Without the operator ack, an eligible + named host + intent is still refused.
+  withLabEnv(() => {
     assert.equal(labTargetPermitted("192.168.1.53", { authorization: INTENT }), false);
-  });
+  }, { ack: false, hosts: "192.168.1.53" });
 });
 
 test("default public-DNS gate is UNCHANGED without an attestation", () => {
@@ -178,6 +191,27 @@ test("opts-supplied attestation permits only eligible hosts (init bootstrap path
       /not a public DNS domain/,
     );
   }, { ack: false });
+});
+
+test("operator ack is bound to the BOB_LAB_TARGET host, not a process-wide grant", () => {
+  // Operator authorizes ONLY 192.168.1.53. While that ack is set, a prompt-injected
+  // agent must NOT be able to pivot the grant to a neighboring eligible host.
+  withTempHome(() => {
+    assert.equal(assertHttpScopeDomain("192.168.1.53", { labAuthorization: INTENT }), "192.168.1.53");
+    assert.equal(operatorAuthorizedLabHost("192.168.1.53"), true);
+    for (const neighbor of ["10.0.0.9", "192.168.1.99", "127.0.0.1", "172.16.0.1"]) {
+      assert.equal(operatorAuthorizedLabHost(neighbor), false, `${neighbor} must not be authorized`);
+      assert.throws(
+        () => assertHttpScopeDomain(neighbor, { labAuthorization: INTENT }),
+        /not a public DNS domain/,
+        `${neighbor} pivot must be refused`,
+      );
+    }
+  }, { hosts: "192.168.1.53" });
+  // Consent ack set but BOB_LAB_TARGET unset → no host is authorized at all.
+  withTempHome(() => {
+    assert.throws(() => assertHttpScopeDomain("192.168.1.53", { labAuthorization: INTENT }), /not a public DNS domain/);
+  }, { hosts: null });
 });
 
 test("validateHttpScanScope pins scope to the exact attested host", () => {
