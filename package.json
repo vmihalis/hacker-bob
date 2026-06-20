@@ -36,6 +36,7 @@
     ".claude/hooks/bob-http-write-confirm-impl.py",
     ".claude/hooks/session-read-guard.sh",
     ".claude/hooks/session-write-guard.sh",
+    ".claude/hooks/write-guard-tables.json",
     ".claude/rules/**/*",
     ".claude/settings.json",
     ".claude/skills/**/*",
