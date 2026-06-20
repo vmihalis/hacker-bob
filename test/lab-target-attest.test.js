@@ -249,10 +249,15 @@ test("attestation persists to an audit-graded artifact and is read back without 
     const sidecar = path.join(home, "hacker-bob-sessions", "192.168.1.53", "lab-authorization.json");
     assert.equal(fs.existsSync(sidecar), true);
     assert.equal(labAuthorizationPath("192.168.1.53"), sidecar);
-    // The persisted artifact records the env attestation, NOT a token.
+    // The persisted artifact records the env attestation, NOT a token, and is
+    // self-describing for post-incident audit: it names the scoped host and the
+    // operator's authorized-host set at mint time.
     const persisted = JSON.parse(fs.readFileSync(sidecar, "utf8"));
     assert.equal(persisted.ack_source, "operator_env");
     assert.equal(persisted.ack, undefined);
+    assert.equal(persisted.target_host, "192.168.1.53");
+    assert.ok(Array.isArray(persisted.authorized_hosts) && persisted.authorized_hosts.includes("192.168.1.53"),
+      "audit record must capture the operator-authorized hosts");
 
     // The scope kernel reads the persisted attestation with NO opts (the scan path).
     assert.equal(assertHttpScopeDomain("192.168.1.53"), "192.168.1.53");

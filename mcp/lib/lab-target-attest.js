@@ -173,9 +173,18 @@ function recordLabAuthorization(targetDomain, authorization) {
   if (!normalized) return null;
   const { labAuthorizationPath } = require("./paths.js");
   const { writeFileAtomic } = require("./storage.js");
+  // Persist a self-describing audit record: the normalized attestation PLUS the
+  // exact host this session was scoped to and the operator's authorized-host set
+  // at mint time, so the artifact is forensically meaningful on its own. The
+  // live gate still reads the env (operatorAuthorizedLabHost), not this file.
+  const record = {
+    ...normalized,
+    target_host: targetDomain,
+    authorized_hosts: operatorAuthorizedLabHosts(),
+  };
   writeFileAtomic(
     labAuthorizationPath(targetDomain),
-    `${JSON.stringify(normalized, null, 2)}\n`,
+    `${JSON.stringify(record, null, 2)}\n`,
   );
   return normalized;
 }
