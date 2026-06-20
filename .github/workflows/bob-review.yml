@@ -112,7 +112,7 @@ jobs:
       # Fetch full history so the diff computation covers the entire branch.
       # -----------------------------------------------------------------------
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -139,7 +139,7 @@ jobs:
 
       - name: Checkout Bob workflows source with install token
         if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: bobnetsec/bob-workflows
           ref: ${{ inputs.bob-workflows-ref }}
@@ -149,7 +149,7 @@ jobs:
 
       - name: Checkout Bob workflows source with workflow token
         if: steps.bob-secrets.outputs.has_credentials == 'true' && steps.bob-secrets.outputs.has_install_token != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: bobnetsec/bob-workflows
           ref: ${{ inputs.bob-workflows-ref }}
