@@ -43,6 +43,11 @@ const {
 } = require("../mcp/lib/http-records.js");
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
+// Real record-mode capture needs a hostable headless driver session: a Chromium
+// binary present AND no BOB_SKIP_BROWSER_TESTS opt-out (set by CI that ships
+// Chrome but can't start a headless session).
+const BROWSER_LAUNCHABLE =
+  !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
 const PATCHRIGHT_SKIP_REASON =
   "patchright optional dependency not installed; install via `npm install` + `npx patchright install chromium` to enable this test";
 
@@ -312,7 +317,7 @@ test("importHttpTraffic source_meta nested objects/arrays are dropped (shape sta
 //      land in traffic.jsonl with source: "browser_capture" and
 //      source_meta.session_id === <this session>.
 
-test("smoke: record_mode captures http(s) requests, drops non-HTTP schemes, lands in traffic.jsonl", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async (t) => {
+test("smoke: record_mode captures http(s) requests, drops non-HTTP schemes, lands in traffic.jsonl", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async (t) => {
   await withTempHome(async (home) => {
     const domain = "example.com";
     seedSessionStateForDomain(home, domain);
@@ -392,7 +397,7 @@ test("smoke: record_mode captures http(s) requests, drops non-HTTP schemes, land
   });
 });
 
-test("smoke: session close drains residual record_mode buffer before exit", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("smoke: session close drains residual record_mode buffer before exit", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   await withTempHome(async (home) => {
     const domain = "example.com";
     seedSessionStateForDomain(home, domain);
@@ -437,7 +442,7 @@ test("smoke: session close drains residual record_mode buffer before exit", { sk
 // least one request, call browser_session_close WITHOUT calling flush first,
 // then confirm the entries landed in traffic.jsonl with source ===
 // "browser_capture" and source_meta.session_id set to the closed session.
-test("regression: browser_session_close persists drained captures via importHttpTraffic (no prior flush)", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async (t) => {
+test("regression: browser_session_close persists drained captures via importHttpTraffic (no prior flush)", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async (t) => {
   await withTempHome(async (home) => {
     const domain = "example.com";
     seedSessionStateForDomain(home, domain);
@@ -501,7 +506,7 @@ test("regression: browser_session_close persists drained captures via importHttp
 
 // T.7 fixup regression — idempotent close on an already-closed session must
 // not crash and must not double-write.
-test("regression: browser_session_close is idempotent and does not double-write", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("regression: browser_session_close is idempotent and does not double-write", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   await withTempHome(async (home) => {
     const domain = "example.com";
     seedSessionStateForDomain(home, domain);
@@ -553,7 +558,7 @@ test("regression: browser_session_close is idempotent and does not double-write"
   });
 });
 
-test("smoke: captured URL can be re-targeted via bob_http_scan (mutate-and-replay pivot)", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+test("smoke: captured URL can be re-targeted via bob_http_scan (mutate-and-replay pivot)", { skip: !BROWSER_LAUNCHABLE, todo: BROWSER_LAUNCHABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
   await withTempHome(async (home) => {
     const domain = "example.com";
     seedSessionStateForDomain(home, domain);

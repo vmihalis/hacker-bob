@@ -26,6 +26,15 @@ function sessionDir(domain) {
   return path.join(sessionsRoot(), safe);
 }
 
+// bob_init_session (lab-target-attest.recordLabAuthorization) when the operator
+// attests ownership of a loopback/RFC1918 target. Audit-graded (see
+// AUDIT_GRADED_BASENAMES) so an agent cannot forge it via the Write tool to
+// self-grant a private-target scan. The scope kernel reads it to permit the
+// otherwise-rejected private target_domain.
+function labAuthorizationPath(domain) {
+  return path.join(sessionDir(domain), "lab-authorization.json");
+}
+
 // Canonical session root. Cycle P.2 of the frontier-topology realization
 // hypergraph moves the session root from `~/bounty-agent-sessions` to
 // `~/hacker-bob-sessions`. Per Risk R6, the legacy root is *preserved*: it is
@@ -432,6 +441,10 @@ function repoDockerfilePath(domain) {
 //   * verification-input-snapshot   — frozen verifier input
 //   * Plus any future hash-bound artifact added to AUDIT_GRADED_PATHS.
 const AUDIT_GRADED_BASENAMES = Object.freeze([
+  // Operator-attested lab/private-target authorization. MCP-write-only (written
+  // only by bob_init_session) so a prompt-injected agent cannot forge it via the
+  // Write tool to self-grant a loopback/RFC1918 scan past the public-DNS gate.
+  "lab-authorization.json",
   "report.md",
   "chains.md",
   "evidence-packs.md",
@@ -584,6 +597,7 @@ module.exports = {
   repoRunsDir,
   repoWorkDir,
   scopeWarningsPath,
+  labAuthorizationPath,
   sessionDir,
   sessionEventsJsonlPath,
   sessionLockPath,
