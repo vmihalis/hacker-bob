@@ -511,6 +511,7 @@ function blocked(outcome, reason, extra = {}) {
     offensive_outcome: outcome,
     reason,
     row_written: false,
+    confidence_signals: [],
     ...extra,
   };
 }
@@ -1015,16 +1016,34 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (bodyLeaksCanary(P6, canary_a)) {
     return fail("blocked_by_design", "p6_canary_in_deny_body");
   }
-  // #13 CROSS-TENANT SCOPE PROOF — ownScopeOf(P1) is B's OWN private scope.
+  // #13/#14 are DEMOTED from hard refutations to non-blocking CONFIDENCE SIGNALS
+  // (measure-idor-oracle.js read-out: they killed real A-only IDORs, holding recall at
+  // 16.7%). The canary witness already proved A read B's specific private object (P2/P2′)
+  // while anon (P4/P4id) AND a third authenticated tenant C (P5) are denied — a categorical
+  // cross-principal break. #13/#14 only STRENGTHEN the labeling of that break as
+  // cross-TENANT; their absence weakens tenant attribution but does NOT refute the IDOR, so
+  // record the weakness and continue to the mint. (C1/C2 controls trip DIFFERENT, upstream
+  // gates — canary_leaked_unauthenticated / p5_authenticated_shared — which are NOT demoted.)
+  const confidenceSignals = [];
+  // #13 CROSS-TENANT SCOPE PROOF (signal) — is ownScopeOf(P1) B's OWN private scope?
   const p1Scope = ownScopeOf(p1Parsed);
-  if (!ownScopeIsPrivate(p1Scope)) {
-    return fail("blocked_by_design", "own_scope_not_private");
+  const ownScopePrivate = ownScopeIsPrivate(p1Scope);
+  if (!ownScopePrivate) {
+    confidenceSignals.push({
+      gate: "own_scope_not_private",
+      reason: "P1 echoed no private owning-scope key (or a shared scope); cross-tenant attribution is weaker than a scoped read.",
+    });
   }
-  // #14 TENANT DISCRIMINATOR — A and B both present at a fixed key AND differ.
+  // #14 TENANT DISCRIMINATOR (signal) — A and B present at a fixed key AND differ?
   const tenantB = tenantDiscriminator(p1Parsed);
   const tenantA = tenantDiscriminator(p3Parsed);
-  if (!tenantA || !tenantB || tenantA.key !== tenantB.key || tenantA.value === tenantB.value) {
-    return fail("blocked_by_design", "identities_collided_not_provable");
+  const tenantsProvablyDistinct = !!(tenantA && tenantB
+    && tenantA.key === tenantB.key && tenantA.value !== tenantB.value);
+  if (!tenantsProvablyDistinct) {
+    confidenceSignals.push({
+      gate: "identities_collided_not_provable",
+      reason: "A and B carry no distinguishable tenant discriminator at the same key; cross-tenant distinctness is not provable from the bodies.",
+    });
   }
   // #15 CACHE ORIGIN-PROOF — no DEFINITIVE shared-cache hazard signal on P2/P2′.
   if (responseIsSharedCacheable(P2) || responseIsSharedCacheable(P2prime)) {
@@ -1104,8 +1123,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     p6_partitioned: true,
     c_authenticated: true,
     o_c_access_controlled: true,
-    tenants_distinct: true,
-    own_scope_private: true,
+    tenants_distinct: tenantsProvablyDistinct,
+    own_scope_private: ownScopePrivate,
     no_cache_signal: true,
   };
   const diagnosticBundle = canonicalJson({
@@ -1117,7 +1136,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     relation: relationBooleans,
     field_path: fieldPath,
     canary_present: { p1: true, p2: true, p2prime: true },
-    tenant_key: tenantB.key,
+    tenant_key: tenantB ? tenantB.key : null,
+    confidence_signals: confidenceSignals,
   });
 
   const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
@@ -1148,11 +1168,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     stderr_hash: row.stderr_hash,
     exit_code: row.exit_code,
     demonstrated_severity: row.demonstrated_severity,
+    // Non-blocking provability signals (#13/#14): EMPTY on a fully-proven fire, populated
+    // when tenant attribution is weaker. Hash-bound via stderr_hash (diagnosticBundle) and
+    // surfaced here so the evaluator/grader can corroborate or discount the attribution.
+    confidence_signals: confidenceSignals,
     // The agent passes this surface_id to BOTH the producer and the record call
     // so the #111 strict-equality gate passes.
     masked_oracle: {
       relation: relationBooleans,
       canary_present: { p1: true, p2: true, p2prime: true },
+      confidence_signals: confidenceSignals,
       body_hash: row.stdout_hash,
     },
     ...identity,

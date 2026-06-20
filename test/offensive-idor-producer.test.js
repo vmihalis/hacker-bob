@@ -335,6 +335,7 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   assert.equal(result.demonstrated_severity, "medium");
   assert.equal(result.tool_id, "bob_http_idor_confirm");
   assert.equal(result.surface_id, SURFACE_ID);
+  assert.deepEqual(result.confidence_signals, [], "a fully-proven fire carries NO confidence signals");
   // exactly ONE row
   const rows = readOffensiveRunRecords(domain);
   assert.equal(rows.length, 1);
@@ -693,8 +694,13 @@ test("AC-6 negative: same tenant / absent discriminator → identities_collided_
     },
   });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "identities_collided_not_provable");
+  // #14 is DEMOTED to a non-blocking confidence signal: the canary-proven cross-tenant
+  // read still mints, recording that A and B could not be shown distinct at the same key.
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable"]);
+  assert.equal(result.masked_oracle.relation.tenants_distinct, false);
+  assert.equal(readOffensiveRunRecords(domain).length, 1);
 }));
 
 test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", () => withTempHome(async () => {
@@ -709,8 +715,13 @@ test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", 
     },
   });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "own_scope_not_private");
+  // #13 is DEMOTED to a non-blocking confidence signal: a non-private/shared own-scope no
+  // longer refutes the cross-tenant read; it is recorded as weaker attribution.
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["own_scope_not_private"]);
+  assert.equal(result.masked_oracle.relation.own_scope_private, false);
+  assert.equal(readOffensiveRunRecords(domain).length, 1);
 }));
 
 // ───────────────────────── round-2 review hardening ──────────────────────────
@@ -1494,10 +1505,10 @@ test("AC-5 safety: a control-object id (object_a) that is a percent-encoded cana
 }));
 
 test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) → own_scope_not_private", () => withTempHome(async () => {
-  // Before this fix account_id was an owning-scope key, so two records with different
-  // account_ids (even in the SAME tenant) falsely satisfied the cross-tenant
-  // discriminator. account_id is now ignored, so an O_B body carrying ONLY account_id
-  // exposes no private owner scope and the producer signs nothing.
+  // account_id is NOT an owning-scope/tenant key, so an O_B body carrying ONLY account_id
+  // exposes no private owner scope (#13) AND no tenant discriminator (#14). Post-demotion
+  // those two gates are non-blocking confidence signals, so the canary-proven cross-tenant
+  // read still mints — carrying BOTH signals (weak attribution) rather than refusing to sign.
   const domain = "idor-neg-accountid-not-tenant.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, {
@@ -1509,9 +1520,55 @@ test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) 
     },
   });
   const result = await run(domain, { fetch_fn });
-  assert.equal(result.confirmed, false);
-  assert.equal(result.reason, "own_scope_not_private");
-  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable", "own_scope_not_private"]);
+  assert.equal(result.masked_oracle.relation.own_scope_private, false);
+  assert.equal(result.masked_oracle.relation.tenants_distinct, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), true);
+}));
+
+test("soft-gated fire: confidence_signals are hash-bound into the durable stderr capture and survive re-projection", () => withTempHome(async () => {
+  // A canary-proven cross-tenant read where A and B cannot be shown distinct at the same
+  // tenant key (#14 trips as a signal). The fire still mints; the #14 signal must be
+  // hash-bound into the signed row's stderr capture so the freeze re-hash + grader see it.
+  const domain = "idor-soft-gated-roundtrip.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, wantsOA }) => {
+      // A's own object reports the SAME scope as B's → discriminator does not differ (#14).
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-B", details: { secret: { token: CANARY_A } }, server_ts: "x" });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable"]);
+  // the masked return echoes the same signals the diagnostic bundle captured
+  assert.deepEqual(result.masked_oracle.confidence_signals, result.confidence_signals);
+
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.equal(row.stderr_hash, result.stderr_hash);
+
+  // the signal text is physically in the frozen stderr capture, and that capture re-hashes
+  // to the signed row's stderr_hash → the confidence_signals are hash-bound, not free text.
+  const stderrFile = path.join(offensiveRunsDir(domain), `${row.run_id}.stderr`);
+  const stderrBytes = fs.readFileSync(stderrFile);
+  assert.match(stderrBytes.toString("utf8"), /identities_collided_not_provable/);
+  const recomputed = crypto.createHash("sha256").update(stderrBytes).digest("hex");
+  assert.equal(recomputed, row.stderr_hash, "stderr capture must re-hash to the signed stderr_hash");
+
+  // the stdout identity hash is stable across 3 re-projections (the freeze re-hash path).
+  for (let i = 0; i < 3; i += 1) {
+    const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
+    assert.equal(observed.stdout_hash, row.stdout_hash);
+  }
 }));
 
 // ───────────────────────── round-12 review hardening ──────────────────────────
