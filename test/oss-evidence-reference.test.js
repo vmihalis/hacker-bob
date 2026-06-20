@@ -185,7 +185,7 @@ test("EVIDENCE_REFERENCE_KIND_VALUES carries the two O.8 additions alongside the
   ]) {
     assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes(existing), `regression: ${existing} removed`);
   }
-  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 8);
+  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 9);
 });
 
 // ── 2. deterministic lookup keys ─────────────────────────────────────────────

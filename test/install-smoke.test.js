@@ -202,7 +202,16 @@ test("installer copies a require-able complete MCP runtime", () => {
         "const installedRequire = require('module').createRequire(process.argv[1]);",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 168) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 176) process.exit(2);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_confirm')) process.exit(42);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_cors_confirm')) process.exit(49);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_idor_confirm')) process.exit(43);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_xss_reflect')) process.exit(44);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_xss_confirm')) process.exit(45);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_oob_mint')) process.exit(46);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_oob_poll')) process.exit(47);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_nuclei_scan')) process.exit(48);",
+        "if (!server.TOOLS.some((tool) => tool.name === 'bob_import_harness')) process.exit(50);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_ingest_sarif')) process.exit(40);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_read_static_analysis_index')) process.exit(41);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_list_auth_profiles')) process.exit(3);",
@@ -417,9 +426,13 @@ test("installer merges existing MCP/settings config idempotently", () => {
       bashEntry.hooks.filter((hook) => /session-write-guard\.sh/.test(hook.command)).length,
       1,
     );
+    // The write-confirm gate matcher ships in the canonical source settings and merges into an
+    // existing target exactly once (deduped), pointing at the bob-http-write-confirm.sh hook.
+    const scanEntries = settings.hooks.PreToolUse.filter((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
+    assert.equal(scanEntries.length, 1);
     assert.equal(
-      settings.hooks.PreToolUse.filter((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan").length,
-      0,
+      scanEntries[0].hooks.filter((hook) => /bob-http-write-confirm\.sh/.test(hook.command)).length,
+      1,
     );
     const stopEntry = settings.hooks.SubagentStop.find((entry) => entry.matcher === "evaluator-agent");
     assert.ok(stopEntry);
@@ -756,6 +769,58 @@ test("kimi adapter installs skills, registers the hacker-bob MCP key, and doctor
     if (originalKimiShare === undefined) delete process.env.KIMI_SHARE_DIR;
     else process.env.KIMI_SHARE_DIR = originalKimiShare;
     fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("kimi hook registration is shell-injection-safe and uninstall is install-scoped", () => {
+  // #2: the generated PreToolUse `command` is run as a shell command, so the
+  // hook path must be single-quoted (shell-inert) — $(), backticks, $VAR in the
+  // install path must NOT expand at hook runtime.
+  const malicious = "/tmp/proj-$(touch /tmp/PWNED)-`id`-$HOME";
+  const block = KIMI_ADAPTER.renderKimiHookBlock(malicious);
+  const writePath = path.join(malicious, ".kimi", "hooks", "session-write-guard.sh");
+  assert.ok(block.includes(`'${writePath}'`),
+    "hook path must be single-quoted in the command so the shell cannot expand it");
+  // shellSingleQuote escapes an embedded single quote as '\'' (close/escape/reopen).
+  assert.equal(KIMI_ADAPTER.shellSingleQuote("a'b"), "'a'\\''b'");
+
+  // #7a: kimiHookBlockMatchesTarget identifies the OWNING install only.
+  const blockA = KIMI_ADAPTER.renderKimiHookBlock("/tmp/projA");
+  assert.equal(KIMI_ADAPTER.kimiHookBlockMatchesTarget(blockA, "/tmp/projA"), true);
+  assert.equal(KIMI_ADAPTER.kimiHookBlockMatchesTarget(blockA, "/tmp/projB"), false);
+
+  const originalKimiShare = process.env.KIMI_SHARE_DIR;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "bob-kimi-uninstall-"));
+  try {
+    // #7b: uninstalling project A must NOT remove a global Bob block owned by B.
+    const kimiDir = path.join(tempHome, ".kimi");
+    fs.mkdirSync(kimiDir, { recursive: true });
+    process.env.KIMI_SHARE_DIR = kimiDir;
+    const cfgPath = path.join(kimiDir, "config.toml");
+    fs.writeFileSync(cfgPath, `${KIMI_ADAPTER.renderKimiHookBlock("/tmp/projB")}\n`);
+
+    const rA = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: "/tmp/projA", dryRun: false });
+    assert.ok(fs.readFileSync(cfgPath, "utf8").includes("# >>> hacker-bob managed hooks"),
+      "B's global hook block must survive A's uninstall");
+    assert.ok(rA.skipped.some((s) => /different project/.test(s.reason || "")),
+      "uninstall must report skipping a block owned by a different project");
+
+    // #7c: a symlinked config must not be followed/rewritten on uninstall.
+    const realCfg = path.join(tempHome, "real-config.toml");
+    fs.writeFileSync(realCfg, `${KIMI_ADAPTER.renderKimiHookBlock("/tmp/projB")}\n`);
+    const symHome = path.join(tempHome, "symhome", ".kimi");
+    fs.mkdirSync(symHome, { recursive: true });
+    fs.symlinkSync(realCfg, path.join(symHome, "config.toml"));
+    process.env.KIMI_SHARE_DIR = symHome;
+    const rSym = KIMI_ADAPTER.uninstall({ sourceRoot: ROOT, targetAbs: "/tmp/projB", dryRun: false });
+    assert.ok(fs.readFileSync(realCfg, "utf8").includes("# >>> hacker-bob managed hooks"),
+      "symlinked config target must be left intact");
+    assert.ok(rSym.skipped.some((s) => /symlink/.test(s.reason || "")),
+      "uninstall must report refusing to rewrite a symlinked config");
+  } finally {
+    if (originalKimiShare === undefined) delete process.env.KIMI_SHARE_DIR;
+    else process.env.KIMI_SHARE_DIR = originalKimiShare;
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
 });

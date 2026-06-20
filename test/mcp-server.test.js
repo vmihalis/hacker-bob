@@ -85,6 +85,9 @@ const {
   normalizeAutoSignupResult,
 } = require("../mcp/lib/signup.js");
 const {
+  tempEmailCreate,
+} = require("../mcp/lib/temp-email.js");
+const {
   toolInvocationSidecarPath,
   toolInvocationTelemetryPath,
   appendToolInvocationTelemetryEvent,
@@ -401,6 +404,14 @@ const {
 
 const EXPECTED_TOOL_NAMES = [
   "bob_http_scan",
+  "bob_http_confirm",
+  "bob_http_cors_confirm",
+  "bob_http_idor_confirm",
+  "bob_http_xss_reflect",
+  "bob_http_xss_confirm",
+  "bob_oob_mint",
+  "bob_oob_poll",
+  "bob_nuclei_scan",
   "bob_read_http_audit",
   "bob_start_next_wave",
   "bob_start_wave",
@@ -636,6 +647,30 @@ function withEnv(overrides, fn) {
   } catch (error) {
     cleanup();
     throw error;
+  }
+}
+
+async function provisionSignupTempEmail() {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      if (url.includes("mail.tm/domains")) {
+        return { ok: true, json: async () => ({ "hydra:member": [{ domain: "test.tm" }] }) };
+      }
+      if (url.includes("mail.tm/accounts")) {
+        return { ok: true, status: 201, json: async () => ({ id: "abc" }) };
+      }
+      if (url.includes("mail.tm/token")) {
+        return { ok: true, json: async () => ({ token: "jwt123" }) };
+      }
+      return { ok: false, status: 500, text: async () => "" };
+    };
+
+    const created = JSON.parse(await tempEmailCreate("mail.tm"));
+    assert.equal(created.success, true);
+    return created.email_address;
+  } finally {
+    global.fetch = originalFetch;
   }
 }
 
@@ -2059,6 +2094,10 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(byName.get("bob_http_scan").inputSchema.properties.url.type, "string");
   assert.equal(byName.get("bob_http_scan").inputSchema.properties.egress_profile.type, "string");
   assert.deepEqual(byName.get("bob_http_scan").inputSchema.required, ["method", "url", "target_domain"]);
+  assert.equal(byName.get("bob_http_confirm").inputSchema.properties.surface_id.type, "string");
+  assert.equal(Object.hasOwn(byName.get("bob_http_confirm").inputSchema.properties, "finding_id"), false);
+  assert.equal(Object.hasOwn(byName.get("bob_http_confirm").inputSchema.properties, "severity"), false);
+  assert.deepEqual(byName.get("bob_http_confirm").inputSchema.required, ["target_domain", "surface_id", "oracle_kind", "path_template"]);
   assert.equal(TOOL_MANIFEST.bob_read_http_audit.mutating, false);
   assert.equal(byName.get("bob_write_chain_attempt").inputSchema.properties.outcome.enum.includes("inconclusive"), true);
   assert.deepEqual(TOOL_MANIFEST.bob_write_chain_attempt.role_bundles, ["chain"]);
@@ -2101,6 +2140,11 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_http_scan.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bob_http_scan.scope_required, true);
   assert.deepEqual(TOOL_MANIFEST.bob_http_scan.scope_url_fields, []);
+  assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.role_bundles, ["verifier", "evaluator-web", "evidence"]);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.mutating, true);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.network_access, true);
+  assert.equal(TOOL_MANIFEST.bob_http_confirm.scope_required, true);
+  assert.deepEqual(TOOL_MANIFEST.bob_http_confirm.session_artifacts_written, ["http-audit.jsonl"]);
   assert.deepEqual(TOOL_MANIFEST.bob_run_doc_delta.scope_url_fields, ["base_url"]);
   assert.deepEqual(TOOL_MANIFEST.bob_run_auth_differential.scope_url_fields, ["base_url"]);
   assert.deepEqual(TOOL_MANIFEST.bob_signup_detect.scope_url_fields, ["target_url"]);
@@ -7541,7 +7585,9 @@ test("tokenized wave handoffs require the correct token and report verified prov
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
-      handoff_token: "wrong-token-value",
+      // Well-formed length (32 chars, matching generateHandoffToken's base64url(24)) but the WRONG
+      // value, so it clears the schema minLength and exercises the sha256-mismatch path.
+      handoff_token: "x".repeat(32),
       summary: "Tested the assigned surface.",
       content: "# handoff",
     });
@@ -12023,7 +12069,7 @@ test("bob_read_findings, bob_list_findings, and bob_wave_status return empty-sta
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [],
     });
@@ -12101,7 +12147,7 @@ test("bob_list_findings and bob_wave_status keep their external shapes while rea
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [
         {
@@ -14955,6 +15001,7 @@ test("auto-signup result normalization fails ambiguous states and preserves diag
 test("bob_auto_signup returns ok true manual fallback when browser automation is unavailable", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const originalResolve = Module._resolveFilename;
     Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
       if (request === "patchright") {
@@ -14966,7 +15013,7 @@ test("bob_auto_signup returns ok true manual fallback when browser automation is
       const result = await executeTool("bob_auto_signup", {
         target_domain: "example.com",
         signup_url: "https://example.com/signup",
-        email: "a@example.test",
+        email,
         password: "Password123!",
       });
 
@@ -14985,12 +15032,13 @@ test("bob_auto_signup returns ok true manual fallback when browser automation is
 test("bob_auto_signup rejects raw proxy arguments and uses egress profiles only", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const rawProxySecret = ["browser", "proxy", "secret"].join("-");
     const rawProxy = ["http://user:", rawProxySecret, "@proxy.example:8080"].join("");
     const rejected = await executeTool("bob_auto_signup", {
       target_domain: "example.com",
       signup_url: "https://example.com/signup",
-      email: "a@example.test",
+      email,
       password: "Password123!",
       proxy: rawProxy,
     });
@@ -15026,7 +15074,7 @@ test("bob_auto_signup rejects raw proxy arguments and uses egress profiles only"
           const result = await executeTool("bob_auto_signup", {
             target_domain: "example.com",
             signup_url: "https://example.com/signup",
-            email: "a@example.test",
+            email,
             password: "Password123!",
             egress_profile: "browser-eu",
           });
@@ -15103,6 +15151,48 @@ test("bob_signup_detect uses egress profiles and rejects proxy-backed strict mod
   });
 });
 
+test("bob_auto_signup rejects a non-temp-provisioned email before any browser or network work", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain);
+    // Intentionally do NOT provision a temp mailbox: a synthetic literal is not
+    // bound to the in-process bob_temp_email store and must fail the gate.
+    const email = "synthetic@example.com";
+
+    const originalResolve = Module._resolveFilename;
+    let patchrightResolveCalls = 0;
+    Module._resolveFilename = function patchedResolve(request, parent, isMain, options) {
+      if (request === "patchright") {
+        patchrightResolveCalls += 1;
+        throw new Error("Patchright resolution must not run when the signup email fails the temp-binding gate");
+      }
+      return originalResolve.call(this, request, parent, isMain, options);
+    };
+
+    try {
+      await withMockSafeFetch({}, async (requestedUrls) => {
+        const result = await executeTool("bob_auto_signup", {
+          target_domain: domain,
+          signup_url: "https://signup.example.com/register",
+          email,
+          password: "Password123!",
+        });
+
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, "INVALID_ARGUMENTS");
+        assert.equal(result.error.details.code, "auto_signup_email_not_temp_provisioned");
+        // The gate fires before egress resolution, URL safety, browser resolve, and authStore:
+        assert.equal(patchrightResolveCalls, 0);
+        assert.deepEqual(requestedUrls, []);
+        // The supplied email must never be echoed back anywhere in the envelope.
+        assert.equal(JSON.stringify(result).includes(email), false);
+      }, { dnsRecords: { "signup.example.com": [{ address: "10.0.0.5", family: 4 }] } });
+    } finally {
+      Module._resolveFilename = originalResolve;
+    }
+  });
+});
+
 test("bob_auto_signup blocks internal and off-target signup URLs before browser launch", async () => {
   await withTempHome(async () => {
     const domain = "example.com";
@@ -15139,6 +15229,7 @@ test("bob_auto_signup refuses strict internal-host mode before browser availabil
   await withTempHome(async () => {
     const domain = "example.com";
     seedSessionState(domain);
+    const email = await provisionSignupTempEmail();
 
     const originalResolve = Module._resolveFilename;
     let patchrightResolveCalls = 0;
@@ -15155,7 +15246,7 @@ test("bob_auto_signup refuses strict internal-host mode before browser availabil
         const result = await executeTool("bob_auto_signup", {
           target_domain: domain,
           signup_url: "https://signup.example.com/register",
-          email: "a@example.test",
+          email,
           password: "Password123!",
           block_internal_hosts: true,
         });
@@ -15184,6 +15275,7 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
       checkpoint_mode: "paranoid",
     });
     assert.equal(init.ok, true);
+    const email = await provisionSignupTempEmail();
 
     const originalResolve = Module._resolveFilename;
     let patchrightResolveCalls = 0;
@@ -15200,7 +15292,7 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
         const result = await executeTool("bob_auto_signup", {
           target_domain: domain,
           signup_url: `https://signup.${domain}/register`,
-          email: "a@example.test",
+          email,
           password: "Password123!",
         });
 
@@ -15222,10 +15314,11 @@ test("bob_auto_signup uses persisted paranoid policy for manual fallback before 
 test("bob_auto_signup treats non-policy egress profile failures as manual fallback", async () => {
   await withTempHome(async () => {
     seedSessionState("example.com");
+    const email = await provisionSignupTempEmail();
     const result = await executeTool("bob_auto_signup", {
       target_domain: "example.com",
       signup_url: "https://signup.example.com/register",
-      email: "a@example.test",
+      email,
       password: "Password123!",
       egress_profile: "missing-profile",
     });
@@ -17836,6 +17929,276 @@ test("bob_read_assignment_brief falls back to generic guidance for unknown tech"
   });
 });
 
+test("bob_read_assignment_brief surfaces over-permissive-search-list for an Elasticsearch search surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-es-search",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Elasticsearch"],
+      endpoints: ["/_search", "/api/search"],
+      interesting_params: ["search", "facet"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-es-search" }]);
+
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search surface (search endpoint + people-search hint; filter/facet params are non-scoring)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-people-search",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/people/search"],
+      interesting_params: ["filter", "facet"],
+      evidence: ["people search index over an employee directory"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-people-search" }]);
+
+    // Recall is driven by a real search signal: the /people/search endpoint (contains /search, +5) plus
+    // the "people search" hint in evidence (+4) = score 9. The filter/facet params do NOT contribute to
+    // scoring (match.params is []); they only mirror a realistic faceted-search surface, not a bare
+    // directory route. (A surface with ONLY a filter param scores 0 here and defers to generic-rest-api,
+    // which keeps the entry from over-broadening onto unrelated lists.)
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a GraphQL query surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql-only",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL", "Apollo"],
+      endpoints: ["/graphql"],
+      interesting_params: ["query", "variables", "operationName"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql-only" }]);
+
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("every technique entry's summary items fit the 240-char cap (registry-wide: no silent truncation of guidance)", () => {
+  // capTechniqueString (technique-packs.js) silently truncates summary items past the cap, which can
+  // drop a safety/grading guardrail. Rather than rely on a per-entry guard, assert the invariant across
+  // the WHOLE registry so a future high-risk entry can't regress unnoticed. Track the production
+  // constants (imported above), not local literals, so this stays correct if the cap changes.
+  const knowledge = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
+    "utf8",
+  ));
+  for (const entry of knowledge.entries) {
+    for (const kind of ["techniques", "payload_hints"]) {
+      const summaryItems = Array.isArray(entry[kind]) ? entry[kind].slice(0, TECHNIQUE_SUMMARY_ITEMS_PER_KIND) : [];
+      for (const item of summaryItems) {
+        assert.ok(item.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+          `${entry.id} ${kind} summary item exceeds cap (${item.length}): ${item.slice(0, 60)}`);
+      }
+    }
+  }
+  // over-permissive-search-list specifically: the grading thesis ("NOT auto-LOW") and the
+  // no-bulk-extraction guardrail must ride the first surfaced item so they survive summary truncation.
+  const ops = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
+  assert.ok(ops, "over-permissive-search-list entry must exist");
+  assert.match(ops.techniques[0], /NOT auto-LOW/);
+  assert.match(ops.techniques[0], /never the full corpus/i);
+  // The first surfaced item must be default-safe: mask unless the engagement authorizes real values.
+  assert.match(ops.techniques[0], /mask the sample by default/i);
+  assert.match(ops.techniques[0], /authorized engagement/i);
+});
+
+test("over-permissive-search-list proof guidance caps extraction at a small sample and gates unmasked data on authorization", () => {
+  const knowledge = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
+    "utf8",
+  ));
+  const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
+  assert.ok(entry, "over-permissive-search-list entry must exist");
+  const blob = [...entry.techniques, ...entry.payload_hints].join("   ");
+  // Proof-of-impact is a SMALL sample (5-10 records), never the full corpus: the line between an
+  // authorized demonstration and mass exfiltration. The guardrail must be explicit in the guidance.
+  assert.match(blob, /5[–-]10 (record|sample)/i);
+  assert.match(blob, /never the full corpus|not the whole set/i);
+  // Unmasked real records are gated on an authorized engagement; on a public safe-harbor program the
+  // sample is masked and paired with schema + count.
+  assert.match(blob, /authorized engagement/i);
+  assert.match(blob, /safe.harbor/i);
+  assert.match(blob, /mask the sample/i);
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a bare people directory with no search/filter signal", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-bare-directory",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/people"],
+      interesting_params: ["name"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-bare-directory" }]);
+
+    // A benign member directory (no search tech, no filter/search param) must not receive
+    // predicate-annihilation / header-routing guidance just for exposing a /people route.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for an OAuth authorize surface using the scope param", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-oauth",
+      hosts: [`https://${domain}`],
+      tech_stack: ["OAuth"],
+      endpoints: ["/oauth/authorize"],
+      interesting_params: ["scope", "redirect_uri", "client_id"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-oauth" }]);
+
+    // "scope" is the canonical OAuth/OIDC param; it must not pull search-filter-bypass guidance onto
+    // an auth flow, so it is not a match param for this technique.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a lone search param with no search signal", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-orders-search",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/orders"],
+      interesting_params: ["search"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-orders-search" }]);
+
+    // A lone search/list param must not by itself pull (now real-data-pulling) mass-extraction guidance
+    // and suppress the generic fallback; a real search SIGNAL (tech / a /search-family endpoint / hint)
+    // is required. The entry carries no match params.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a research endpoint (no substring match on 'search')", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/api/data"],
+      interesting_params: ["q"],
+      evidence: ["research endpoint serving academic papers"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research" }]);
+
+    // The hints must not substring-match "research" (contains "search"); "research endpoint" is not a
+    // search surface and must fall back to generic guidance.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a 'Research API' tech surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research-api",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Research API"],
+      endpoints: ["/api/papers"],
+      interesting_params: ["q"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research-api" }]);
+
+    // tech match is substring-based; "search api" was a substring of "Research API" and must not pull
+    // mass-extraction guidance onto a research/data API with no real search signal.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief selects over-permissive-search-list as a candidate for /api/research/search (real /search segment scores 5; ties with the /api generic packs, does not dominate)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research-search-endpoint",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/api/research/search"],
+      interesting_params: ["q"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research-search-endpoint" }]);
+
+    // Boundary pinned (the brutalist's "score exactly 5 and receive guidance" case). A real /search-family
+    // PATH SEGMENT is sufficient signal on its own: "/search" substring-matches the trailing /search of
+    // /api/research/search -> endpoint weight 5 -> the pack is a SELECTED CANDIDATE the evaluator can pull.
+    // But it does NOT dominate: on an /api/ path it ties at 5 with generic-rest-api (/api) and nextjs
+    // (/api/), so it ranks as a peer candidate (alphabetical tiebreak puts it 3rd, out of the top-2 inline
+    // `techniques` slot) rather than crowding out the generic REST guidance -- a precision safeguard, not a
+    // false positive. Contrast the "Research API" tech and bare /research surfaces above, which have NO
+    // /search segment, score 0, and are not selected at all. Assert on technique_packs.selected (the real
+    // candidate set, cap 5), NOT the legacy top-2 `techniques` field.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const ops = brief.technique_packs.selected.find((entry) => entry.id === "over-permissive-search-list");
+    assert.ok(ops, "a real /search path segment must select over-permissive-search-list as a candidate");
+    assert.equal(ops.score, 5);
+    assert.ok(ops.matched.includes("endpoint:/search"), "must match via the /search endpoint pattern");
+  });
+});
+
+test("bob_read_assignment_brief selects over-permissive-search-list when evidence names a literal /_search path (recall by design; matcher spans freeform evidence)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-evidence-search-path",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/metrics"],
+      evidence: ["internal telemetry proxied through /_search for log search"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-evidence-search-path" }]);
+
+    // Documented behavior, pinned (the round-15 brutalist HIGH boundary): endpoint patterns are matched
+    // against the MERGED endpointText (technique-packs.js scoreTechniqueEntry), which spans `evidence`, so
+    // a LITERAL "/_search" path written into recon evidence scores 5 and selects the pack even though the
+    // structured endpoints list is just /metrics. This is INTENTIONAL recall, not a false positive: the
+    // patterns are slash-prefixed path fragments, so an evidence match means recon actually found a search
+    // path (an exposed /_search/ES backend IS an over-permissive-search target worth probing). The risk is
+    // self-limiting -- selection is candidate guidance, and the evaluator can only sample records from a
+    // real search/list endpoint, which /metrics is not. Pinned so the merged-input matching can't regress
+    // silently. (Contrast: evidence containing only the WORD "research" -- no "/search" path -- does not
+    // match, because the pattern requires the leading slash.)
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const ops = brief.technique_packs.selected.find((entry) => entry.id === "over-permissive-search-list");
+    assert.ok(ops, "a literal /_search path in evidence must select over-permissive-search-list (recall)");
+    assert.ok(ops.matched.includes("endpoint:/_search"), "must match via the /_search endpoint pattern against evidence text");
+  });
+});
+
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -18788,6 +19151,12 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
 
+  // Anchored exact-command match (^...$): a bare substring check would pass on a chained command like
+  // `bash ".../bob-http-write-confirm.sh" && evil`, weakening this security contract. The only allowed
+  // MCP-tool hook command is exactly a bash invocation of the write-confirm gate, nothing appended.
+  const isWriteConfirmOnlyCommand = (command) =>
+    /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+
   for (const settings of [generated, installed]) {
     const hooksText = JSON.stringify(settings.hooks.PreToolUse || []);
     assert.doesNotMatch(hooksText, /scope-guard/);
@@ -18795,11 +19164,19 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    assert.equal(
-      settings.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-      false,
-      "MCP tool hooks should not imply an external scope guard",
-    );
+    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
+    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
+    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
+    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
+    // scope/enforcement guard on an MCP tool remains forbidden.
+    const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    for (const entry of mcpEntries) {
+      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
+      assert.ok(
+        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
+      );
+    }
   }
 
   for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
@@ -18834,10 +19211,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.match(mergedHooksText, /session-write-guard\.sh/);
   assert.match(mergedHooksText, /session-read-guard\.sh/);
   assert.match(mergedHooksText, /echo existing/);
-  assert.equal(
-    merged.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-    false,
-    "stale MCP scope hook matchers should be removed when their only hook is stale",
+  // The stale scope-guard-mcp.sh hook is stripped (assert above). The bob_http_scan matcher survives
+  // the merge ONLY because `generated` (defaultClaudeSettings) contributes the non-stale write-confirm
+  // HITL hook — so the surviving MCP hook is exactly that gate, never the stripped scope guard.
+  const mergedScan = merged.hooks.PreToolUse.find((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
+  assert.ok(mergedScan, "the write-confirm gate matcher survives the merge via the canonical default");
+  assert.ok(
+    mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+    "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
   );
 });
 

@@ -391,6 +391,17 @@ function installProject(projectDir, options = {}) {
       (relative, name) => name.endsWith(".js") || name.endsWith(".sh"),
     );
   }
+  // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
+  // The recursive mcp/lib copy above is .js/.sh-only, so copy this .json explicitly. Absent until the image is pinned.
+  const offensiveImageLock = path.join(sourceRoot, "mcp", "lib", "offensive-image.json");
+  const targetImageLock = path.join(mcpDir, "lib", "offensive-image.json");
+  if (fs.existsSync(offensiveImageLock)) {
+    copyFile(offensiveImageLock, targetImageLock);
+  } else {
+    // Unpinned source: remove any stale target lockfile so the runtime fails closed instead of
+    // resolving a previously-installed (now removed) digest.
+    fs.rmSync(targetImageLock, { force: true });
+  }
   const copiedRuntimeDependencies = copyRuntimeNodeDependencies(sourceRoot, mcpDir);
 
   // Policy-replay diagnostic harness. Adapter-agnostic tooling under

@@ -50,10 +50,25 @@ const TRANSITION_GATES = Object.freeze({
   "VERIFY->GRADE": gateVerifyToGrade,
   "GRADE->REPORT": gateGradeToReport,
   "OPEN_FRONTIER->CLAIM_FREEZE": gateOpenFrontierToClaimFreeze,
+  "CLAIM_FREEZE->VERIFY": gateClaimFreezeToVerify,
 });
 
 function compactError(error) {
   return error && error.message ? error.message : String(error);
+}
+
+// Mirrors session-state.js isSensitiveMaterialError (the two messages
+// validateNoSensitiveMaterial raises). Replicated locally to avoid a require
+// cycle (session-state.js requires this module). readCandidateClaims re-runs the
+// sensitive-material validator over every persisted claim; when one carries
+// legitimately secret-shaped evidence without a persisted bypass, the read throws.
+// That is the VERIFY snapshot bootstrap's concern (it raises the specific
+// claim_evidence_secret_blocked block and honors operator_force) — the
+// CLAIM_FREEZE->VERIFY gate must DEFER it, not preempt it with its own blocker.
+function isSensitiveMaterialReadError(error) {
+  const message = error && typeof error.message === "string" ? error.message : "";
+  return /appears to contain secrets, auth headers, cookies, or tokens/.test(message)
+    || /is too large; do not persist raw large response bodies/.test(message);
 }
 
 function gateVerifyToGrade(context) {
@@ -136,6 +151,96 @@ function gateGradeToReport(context) {
       message: `GRADE -> REPORT blocked: ${message}`,
       error: message,
     });
+  }
+  return blockers;
+}
+
+function gateClaimFreezeToVerify(context) {
+  const blockers = [];
+
+  // (1) Read the CANDIDATE claims — the authoritative set at THIS transition. The claim-freeze.json
+  // SNAPSHOT does not exist yet here: bob_advance_session evaluates this gate (session-state.js:502)
+  // BEFORE the durable write, and the freeze snapshot is built lazily by the VERIFY bootstrap
+  // (prepareVerificationEntry -> buildClaimFreeze, session-state.js:590) only AFTER this gate passes.
+  // Reading readCurrentClaimFreeze here would therefore see null and no-op (the gate would never
+  // fire in production). readCandidateClaims (claims.jsonl) is exactly the set buildClaimFreeze will
+  // snapshot verbatim, and it exists now — recorded during the hunt before CLAIM_FREEZE. It also
+  // re-normalizes each record and fail-closes on a malformed line (readJsonlStrict), so a tampered
+  // claims.jsonl surfaces as a read error -> blocker below.
+  let claims;
+  try {
+    claims = require("./claims.js").readCandidateClaims(context.target_domain);
+  } catch (error) {
+    // A persisted claim's secret-shaped evidence trips the sensitive-material re-scan inside
+    // readCandidateClaims. That is the VERIFY snapshot bootstrap's job (it raises the specific
+    // claim_evidence_secret_blocked block and honors operator_force); this gate defers rather than
+    // preempting it with a generic blocker.
+    if (isSensitiveMaterialReadError(error)) return blockers;
+    blockers.push({
+      code: "candidate_claims_unreadable",
+      blocked_by: "candidate_claims_unreadable",
+      message: `CLAIM_FREEZE -> VERIFY blocked: could not read the candidate claims: ${compactError(error)}`,
+      error: compactError(error),
+      remediation:
+        "repair claims.jsonl (it failed the strict read) before advancing to VERIFY",
+    });
+    return blockers;
+  }
+  if (!Array.isArray(claims) || claims.length === 0) return blockers;
+
+  // (2) NO-BRICK EARLY EXIT. Select every claim that the exploit-proof contract has anything to say
+  // about: it either asserts exploited_safely OR carries an exploit_run evidence_ref. A normal
+  // session has zero such claims and returns [] here WITHOUT reading the offensive ledger or the
+  // signing key, so a session with NO signing key on disk is never bricked. FAIL-CLOSED
+  // (CodeRabbit/Codex): both tamper shapes are caught — (a) an exploited_safely claim lacking an
+  // exploit_run ref, and (b) a claim still carrying an exploit_run ref after its outcome was
+  // changed/removed (the VERIFY severity-rise guard consumes exploit_run refs regardless of
+  // outcome) — because both flow into assertExploitedClaimHasProof below, which throws
+  // (exploit_proof_missing_exploit_run_evidence / exploit_run_ref_without_exploited_outcome) BEFORE
+  // any ledger/key read. No-brick is unaffected: a normal claim matches neither arm of the filter.
+  const claimsRequiringProof = claims.filter((claim) => (
+    claim
+    && typeof claim === "object"
+    && (
+      (claim.exploit_outcome && claim.exploit_outcome.outcome === "exploited_safely")
+      || (Array.isArray(claim.evidence_refs)
+        && claim.evidence_refs.some((ref) => ref && ref.kind === "exploit_run"))
+    )
+  ));
+  if (claimsRequiringProof.length === 0) return blockers;
+
+  // (3) Re-confirm each proof-bearing claim still has a fresh, matching, signed offensive row
+  // backing every cited exploit_run ref. Reuse the record-time contract verbatim. The assert reads
+  // the offensive ledger and reads the signing key ONLY when runRows.length > 0, so the
+  // conditional-key-read no-brick rule holds via reuse. Pass the FULL candidate-claim set as
+  // existingClaims (Codex) so the assert's run_id-single-use check catches a tampered claims.jsonl
+  // that duplicates one signed exploit_run across multiple findings; the assert self-skips the same
+  // claim_id, so a legitimately unique frozen set never false-blocks (record-time single-use
+  // already guarantees uniqueness on the normal path).
+  const { assertExploitedClaimHasProof } = require("./claims.js");
+  for (const claim of claimsRequiringProof) {
+    try {
+      assertExploitedClaimHasProof(claim, { existingClaims: claims });
+    } catch (error) {
+      // Gate RETURNS blockers; the assert THROWS. Convert any throw into a structured blocker.
+      const underlying = (error && error.details && typeof error.details.code === "string")
+        ? error.details.code
+        : null;
+      blockers.push({
+        code: "exploited_claim_proof_unbacked_at_freeze",
+        blocked_by: "exploited_claim_proof_unbacked_at_freeze",
+        claim_id: typeof claim.claim_id === "string" ? claim.claim_id : null,
+        underlying_code: underlying,
+        message:
+          `CLAIM_FREEZE -> VERIFY blocked: claim`
+          + ` ${typeof claim.claim_id === "string" ? claim.claim_id : "(unknown)"}`
+          + ` cites exploit-proof that no longer holds: ${compactError(error)}`,
+        error: compactError(error),
+        remediation:
+          "re-run the offensive confirmer/producer for this finding so a fresh MAC-signed"
+          + " offensive-runs.jsonl row backs every cited exploit_run ref, then re-record/re-freeze before VERIFY",
+      });
+    }
   }
   return blockers;
 }

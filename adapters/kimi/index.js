@@ -73,9 +73,22 @@ function tomlString(value) {
   return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }
 
+// POSIX single-quote escaping for a shell word. Kimi's hook `command` is run as
+// a shell command (docs: it is the shell command to execute), so a bare
+// double-quoted path lets $(...), backticks, and $VAR in the install path expand
+// at hook runtime — installing Bob into a project whose path contains shell
+// metacharacters would then persist arbitrary command execution. Single-quoting
+// the path makes it an inert literal; an embedded single quote becomes '\''.
+function shellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function renderKimiHookBlock(targetAbs) {
-  const writeCmd = `bash ${tomlString(path.join(targetAbs, ".kimi", "hooks", "session-write-guard.sh"))}`;
-  const readCmd = `bash ${tomlString(path.join(targetAbs, ".kimi", "hooks", "session-read-guard.sh"))}`;
+  // shellSingleQuote the path (shell safety), then tomlString the whole command
+  // (TOML string correctness). The two layers compose: TOML decodes to
+  // `bash '<path>'`, and the shell then treats <path> as a literal.
+  const writeCmd = `bash ${shellSingleQuote(path.join(targetAbs, ".kimi", "hooks", "session-write-guard.sh"))}`;
+  const readCmd = `bash ${shellSingleQuote(path.join(targetAbs, ".kimi", "hooks", "session-read-guard.sh"))}`;
   return [
     KIMI_HOOK_BLOCK_BEGIN,
     "[[hooks]]",
@@ -123,6 +136,22 @@ function removeKimiHookBlock(text) {
 
 function hasKimiHookBlock(text) {
   return typeof text === "string" && text.includes(KIMI_HOOK_BLOCK_BEGIN);
+}
+
+// True only when the sentinel block references THIS project's guard paths. The
+// global ~/.kimi/config.toml holds a single Bob block; when Bob is installed
+// into project A then B, the block points at B. Uninstalling A must not remove
+// B's block (that would silently disable B's guards). Match the write-guard
+// path inside the block, not anywhere in the file.
+function kimiHookBlockMatchesTarget(text, targetAbs) {
+  const normalized = (text || "").replace(/\r\n/g, "\n");
+  const begin = normalized.indexOf(KIMI_HOOK_BLOCK_BEGIN);
+  if (begin === -1) return false;
+  const endMarker = normalized.indexOf(KIMI_HOOK_BLOCK_END, begin);
+  const end = endMarker === -1 ? normalized.length : endMarker + KIMI_HOOK_BLOCK_END.length;
+  const block = normalized.slice(begin, end);
+  const writePath = path.join(targetAbs, ".kimi", "hooks", "session-write-guard.sh");
+  return block.includes(writePath);
 }
 
 function isPlainObject(value) {
@@ -578,6 +607,19 @@ function removeKimiHookRegistration(targetAbs, result) {
   const home = kimiHome();
   const configPath = kimiConfigPath(home);
   if (!fileExists(configPath)) return;
+  // Refuse to follow a symlinked config: rewriting it would clobber the link
+  // target (e.g. a dotfile-managed Kimi config) outside Bob-owned files. Install
+  // already rejects symlinked configs via createSafeInstallFs; mirror that here.
+  let lst;
+  try {
+    lst = fs.lstatSync(configPath);
+  } catch {
+    return;
+  }
+  if (lst.isSymbolicLink()) {
+    result.skipped.push({ type: "config", path: configPath, reason: "refusing to rewrite a symlinked Kimi config" });
+    return;
+  }
   let original;
   try {
     original = fs.readFileSync(configPath, "utf8");
@@ -586,6 +628,13 @@ function removeKimiHookRegistration(targetAbs, result) {
     return;
   }
   if (!hasKimiHookBlock(original)) return; // not Bob-managed / already gone
+  // Only remove the block when it belongs to THIS install. A block pointing at a
+  // different project means another Bob install owns the shared global config;
+  // removing it would disable that install's guards.
+  if (!kimiHookBlockMatchesTarget(original, targetAbs)) {
+    result.skipped.push({ type: "config", path: configPath, reason: "Kimi hook block belongs to a different project install" });
+    return;
+  }
   const next = removeKimiHookBlock(original);
   if (next === original) return;
   const removeFile = next.trim() === "";
@@ -629,6 +678,8 @@ module.exports = {
   upsertKimiHookBlock,
   removeKimiHookBlock,
   renderKimiHookBlock,
+  shellSingleQuote,
+  kimiHookBlockMatchesTarget,
   HOOK_FILES,
   HOOK_DATA_FILES,
   EXECUTABLE_HOOKS,

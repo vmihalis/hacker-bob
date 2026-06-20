@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__hacker-bob__bob_http_scan",
+      "mcp__hacker-bob__bob_http_confirm",
       "mcp__hacker-bob__bob_read_http_audit",
       "mcp__hacker-bob__bob_read_surface_routes",
       "mcp__hacker-bob__bob_import_static_artifact",
@@ -74,6 +75,13 @@
       "Read",
       "Glob",
       "Grep",
+      "mcp__hacker-bob__bob_http_cors_confirm",
+      "mcp__hacker-bob__bob_http_idor_confirm",
+      "mcp__hacker-bob__bob_http_xss_reflect",
+      "mcp__hacker-bob__bob_http_xss_confirm",
+      "mcp__hacker-bob__bob_oob_mint",
+      "mcp__hacker-bob__bob_oob_poll",
+      "mcp__hacker-bob__bob_nuclei_scan",
       "mcp__hacker-bob__bob_start_next_wave",
       "mcp__hacker-bob__bob_start_wave",
       "mcp__hacker-bob__bob_route_surfaces",
@@ -217,6 +225,16 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__hacker-bob__bob_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-http-write-confirm.sh\"",
             "timeout": 5
           }
         ]

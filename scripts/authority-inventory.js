@@ -74,7 +74,12 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_foundry_run: "smart_contract_contextual",
   bob_get_context_budget: "mode_dependent_session",
   bob_halmos_run: "smart_contract_contextual",
+  bob_http_confirm: "scoped_http_network",
+  bob_http_cors_confirm: "scoped_http_network",
+  bob_http_idor_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
+  bob_http_xss_confirm: "scoped_http_network",
+  bob_http_xss_reflect: "scoped_http_network",
   bob_import_harness: "initialized_session_mutation",
   bob_import_http_traffic: "scoped_http_network",
   bob_import_seed_corpus: "initialized_session_mutation",
@@ -112,6 +117,11 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_run_path_composition_experiment: "initialized_session_mutation",
   bob_verify_composition_path: "scoped_http_network",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR7 nuclei detection scan (mirror of session-authority.js).
+  bob_nuclei_scan: "scoped_http_network",
+  // PR6 OOB collector (mirror of session-authority.js).
+  bob_oob_mint: "scoped_http_network",
+  bob_oob_poll: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   // Plane Y Cycle Y.6 — friction-to-Hypothesis promotion (Y-P6 + Y-P11).
   // Orchestrator-only at the role-bundle layer; threads friction_history

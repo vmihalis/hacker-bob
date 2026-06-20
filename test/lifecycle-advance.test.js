@@ -8,8 +8,12 @@ const path = require("path");
 
 const {
   advanceSession,
+  deriveAdvanceAuthContext,
   initSession,
 } = require("../mcp/lib/session-state.js");
+const {
+  authStore,
+} = require("../mcp/lib/auth.js");
 const {
   readSessionNucleus,
 } = require("../mcp/lib/governance-store.js");
@@ -225,6 +229,10 @@ function seedUndrainedPartialSurface(domain, surfaceId) {
     wave_number: 1,
     partial_surface_ids: [surfaceId],
   }));
+}
+
+function authContextReplacedEvents(domain) {
+  return readSessionEvents(domain).filter((event) => event.kind === "governance.auth_context.replaced");
 }
 
 const TOPOLOGY_ONLY_FORCEABLE_GATES = Object.freeze(new Map([
@@ -745,4 +753,257 @@ test("OPEN_FRONTIER -> CLAIM_FREEZE is unblocked with no chain work and no parti
 
     assert.deepEqual(evaluation.blockers, []);
   });
+});
+
+test("auth_status derives to 'authenticated' on advance when a usable profile is stored (Option C)", () => {
+  withTempHome(() => {
+    const domain = "auth-derive.example.test";
+    bootstrapDomain(domain);
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    // state.json mirrors the nucleus auth_status (the two lifecycle stores stay in lockstep).
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
+  });
+});
+
+test("auth_status carries forward (stays pending) on advance when no profile is stored", () => {
+  withTempHome(() => {
+    const domain = "auth-none.example.test";
+    bootstrapDomain(domain);
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("advanceSession honors an explicit auth_status arg over profile presence", () => {
+  withTempHome(() => {
+    const domain = "auth-explicit.example.test";
+    bootstrapDomain(domain);
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    // explicit "unauthenticated" wins even though a usable profile is stored
+    advanceSession({
+      target_domain: domain,
+      to_state: "OPEN_FRONTIER",
+      auth_status: "unauthenticated",
+      override: "operator_force",
+      override_reason: "auth-status precedence test",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+  });
+});
+
+test("auth_status stays 'pending' when the stored profile carries no credential material", () => {
+  withTempHome(() => {
+    const domain = "auth-empty-profile.example.test";
+    bootstrapDomain(domain);
+    // bob_auth_store with only a profile_name — no headers/cookies/storage = an empty profile
+    // with no actual auth material, so it must NOT count as authenticated.
+    authStore({ target_domain: domain, profile_name: "attacker" });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("auth_status stays 'pending' when the stored profile carries ONLY a non-credential header (positive-inclusion)", () => {
+  withTempHome(() => {
+    const domain = "auth-noncred-header.example.test";
+    bootstrapDomain(domain);
+    // A profile with a header that is NOT a session credential (X-Debug) must not promote the
+    // session — hasUsableAuthProfile is a positive allowlist (Authorization/Cookie), not "any key
+    // that isn't known metadata", so an unrecognized header cannot silently auth the session.
+    authStore({ target_domain: domain, profile_name: "attacker", headers: { "X-Debug": "true" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("auth_status: a prior explicit 'unauthenticated' is carried forward across a later advance even when a profile exists", () => {
+  withTempHome(() => {
+    const domain = "auth-noauth-sticky.example.test";
+    bootstrapDomain(domain);
+    // A usable profile is captured, but the operator ran --no-auth (explicit unauthenticated).
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "unauthenticated" });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+    // A LATER advance that omits auth_status must NOT silently flip it back to "authenticated"
+    // just because a profile is on disk — the operator-asserted negative is sticky.
+    advanceSession({
+      target_domain: domain,
+      to_state: "CLAIM_FREEZE",
+      override: "operator_force",
+      override_reason: "auth-status carry-forward test bypasses the freeze content gate",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "unauthenticated");
+  });
+});
+
+test("auth_status: an explicit 'authenticated' with NO stored profile and NO operator_force is NOT honored (no forged provenance)", () => {
+  withTempHome(() => {
+    const domain = "auth-forge-guard.example.test";
+    bootstrapDomain(domain);
+    // No profile is stored. A plain caller asserting "authenticated" must not be able to forge
+    // credential provenance — the unbacked positive claim is ignored and derivation keeps it pending.
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "authenticated" });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("auth_status: an explicit 'authenticated' under operator_force IS honored (operator authority)", () => {
+  withTempHome(() => {
+    const domain = "auth-force-authed.example.test";
+    bootstrapDomain(domain);
+    // operator_force is the deliberate operator-authority path — an explicit "authenticated" is
+    // honored even with no profile (the operator vouches for the credential context).
+    advanceSession({
+      target_domain: domain,
+      to_state: "OPEN_FRONTIER",
+      auth_status: "authenticated",
+      override: "operator_force",
+      override_reason: "operator vouches for an out-of-band authenticated context",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+  });
+});
+
+test("auth_status: a blank auth_status arg is treated as omitted and does NOT split-brain the nucleus vs state.json", () => {
+  withTempHome(() => {
+    const domain = "auth-blank-arg.example.test";
+    bootstrapDomain(domain);
+    // The canonical schema rejects a blank enum value, but a direct in-process caller could pass
+    // one. It must be treated as OMITTED (derive), and — the headline of the round — the nucleus
+    // and its state.json mirror must AGREE on the normalized value, not split-brain ("pending" vs "").
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "" });
+    const nucleusStatus = readSessionNucleus(domain).auth_context.auth_status;
+    const stateStatus = JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status;
+    assert.equal(nucleusStatus, "pending");
+    assert.equal(stateStatus, "pending");
+    assert.equal(nucleusStatus, stateStatus);
+  });
+});
+
+test("deriveAdvanceAuthContext precedence table: operator authority > sticky --no-auth > forge-guarded explicit > derive", () => {
+  const D = (prior, explicit, hasProfile, op) =>
+    deriveAdvanceAuthContext({ auth_status: prior }, explicit, hasProfile, op).auth_status;
+  // (1) operator_force is authority — an explicit value (incl. unbacked "authenticated") is honored.
+  assert.equal(D("unauthenticated", "authenticated", false, true), "authenticated");
+  assert.equal(D("authenticated", "unauthenticated", true, true), "unauthenticated");
+  // (2) sticky --no-auth: a prior "unauthenticated" survives an omitted auth_status AND an
+  //     UNPRIVILEGED explicit "authenticated" — even with a usable profile present. THE HEADLINE FIX.
+  assert.equal(D("unauthenticated", null, true, false), "unauthenticated");
+  assert.equal(D("unauthenticated", "authenticated", true, false), "unauthenticated");
+  // (3) unprivileged explicit: negative/neutral always honored; positive only when backed by a profile.
+  assert.equal(D("pending", "unauthenticated", false, false), "unauthenticated");
+  assert.equal(D("pending", "authenticated", false, false), "pending");   // forge guard: unbacked → ignored
+  assert.equal(D("pending", "authenticated", true, false), "authenticated"); // backed → honored
+  // (3) no-regress: an explicit "pending" (the "unknown" state) must NOT downgrade an established
+  //     milestone — even without operator_force and with no profile, an authenticated session stays
+  //     authenticated (falls through to carry-forward). The forge guard blocks the reverse; this
+  //     blocks the regress-to-unknown direction Codex+Claude flagged.
+  assert.equal(D("authenticated", "pending", false, false), "authenticated"); // explicit "pending" cannot regress
+  assert.equal(D("authenticated", "pending", true, false), "authenticated");  // (profile would derive authed anyway)
+  assert.equal(D("pending", "pending", false, false), "pending");             // pending->pending is a no-op, allowed
+  // (4)/(5) no explicit: derive from profile presence, else carry forward.
+  assert.equal(D("pending", null, true, false), "authenticated");
+  assert.equal(D("pending", null, false, false), "pending");
+  assert.equal(D("authenticated", null, false, false), "authenticated");   // never auto-downgrade
+});
+
+test("deriveAdvanceAuthContext self-guards an invalid explicit value (exported fn, no call-boundary)", () => {
+  // The function is exported and callable in-process WITHOUT advanceSession's boundary validation.
+  // A non-blank value outside AUTH_STATUS_VALUES must throw a clear INVALID_ARGUMENTS here, not
+  // propagate silently into a deep normalizeAuthContext throw at nucleus-build time.
+  assert.throws(
+    () => deriveAdvanceAuthContext({ auth_status: "pending" }, "bogus", false, false),
+    (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be one of/.test(err.message),
+  );
+  // A NON-STRING (non-null) value is rejected outright (fail-closed, matching advanceSession's
+  // boundary) rather than silently treated as omitted.
+  assert.throws(
+    () => deriveAdvanceAuthContext({ auth_status: "pending" }, 42, false, false),
+    (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be a string/.test(err.message),
+  );
+  // A blank/whitespace explicit value is still allowed (treated as omitted → derive); so is null/omitted.
+  assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, "   ", true, false).auth_status, "authenticated");
+  assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, null, true, false).auth_status, "authenticated");
+});
+
+test("advanceSession emits a governance.auth_context.replaced audit event ONLY when auth_status changes", () => {
+  withTempHome(() => {
+    const domain = "auth-audit-event.example.test";
+    bootstrapDomain(domain);
+    // A usable profile is stored, so the first advance moves auth_status pending -> authenticated.
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    const afterChange = authContextReplacedEvents(domain);
+    assert.equal(afterChange.length, 1, "one auth_context.replaced event on the pending->authenticated change");
+    assert.equal(afterChange[0].payload.from_auth_status, "pending");
+    assert.equal(afterChange[0].payload.to_auth_status, "authenticated");
+    assert.equal(afterChange[0].payload.had_usable_profile, true);
+    assert.equal(afterChange[0].payload.explicit_auth_status_supplied, false);
+    // ATOMIC PROVENANCE: the canonical lifecycle.advanced event ALSO carries the transition, so the
+    // auth move is reconstructable from that single durable append even if the best-effort companion
+    // above ever fails to write.
+    const advanced = lifecycleAdvancedEvents(domain);
+    const changedAdvance = advanced.find((e) => e.payload.auth_status_changed === true);
+    assert.ok(changedAdvance, "the advance that changed auth_status carries it on the canonical event");
+    assert.equal(changedAdvance.payload.from_auth_status, "pending");
+    assert.equal(changedAdvance.payload.to_auth_status, "authenticated");
+    // A LATER advance that does not change auth_status (still authenticated) emits NO new event.
+    advanceSession({
+      target_domain: domain,
+      to_state: "CLAIM_FREEZE",
+      override: "operator_force",
+      override_reason: "auth-audit no-change test bypasses the freeze content gate",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    assert.equal(
+      authContextReplacedEvents(domain).length, 1,
+      "no second event when auth_status is unchanged (change-only audit)",
+    );
+  });
+});
+
+test("advanceSession rejects an invalid (non-blank) auth_status at the call boundary", () => {
+  withTempHome(() => {
+    const domain = "auth-invalid-arg.example.test";
+    bootstrapDomain(domain);
+    assert.throws(
+      () => advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "bogus" }),
+      (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be one of/.test(err.message),
+    );
+    // The rejected call must not have advanced the nucleus.
+    assert.equal(readSessionNucleus(domain).lifecycle_state, "SETUP");
+  });
+});
+
+test("advanceSession trims a padded auth_status (honored, not thrown deep, and the stores agree)", () => {
+  withTempHome(() => {
+    const domain = "auth-padded.example.test";
+    bootstrapDomain(domain);
+    // A padded "  authenticated  " passes the trim-based call-boundary check; it must also be
+    // TRIMMED before derivation so it is honored as "authenticated" (with a backing profile) rather
+    // than passed raw and throwing on the padded enum value deep in normalizeAuthContext.
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "  authenticated  " });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
+  });
+});
+
+test("legacy bounty_transition_phase adapter DROPS auth_status (no authority conflation via override_reason)", () => {
+  const tool = require("../mcp/lib/tools/advance-session.js");
+  const adapter = tool.aliases[0].arg_adapter;
+  // override_reason -> operator_force is lifecycle-bypass authority; it must NOT also carry an
+  // auth_status assertion through to bob_advance_session (where operator_force is auth authority).
+  const out = adapter({
+    target_domain: "x.test",
+    to_phase: "VERIFY",
+    override_reason: "bypass the gate",
+    auth_status: "authenticated",
+  });
+  assert.equal(out.override, "operator_force");
+  assert.equal(Object.prototype.hasOwnProperty.call(out, "auth_status"), false);
 });

@@ -203,9 +203,21 @@ async function tempEmail(args) {
   return JSON.stringify({ error: `Unknown operation: ${op}` });
 }
 
+// Exact, case-sensitive match against the raw provider address the store keys on
+// (set above with no lowercasing). Callers must pass the address returned by
+// bob_temp_email verbatim; lowercasing or padding it would false-reject the
+// mailbox. The match is exact (no trim/normalize here) — tool input reaching the
+// signup gate is already trimmed upstream by assertNonEmptyString. This store is
+// process-global, not per-session.
+function tempMailboxIsKnown(address) {
+  if (typeof address !== "string" || !address) return false;
+  return tempMailboxes.has(address);
+}
+
 module.exports = {
   tempEmail,
   tempEmailCreate,
   tempEmailExtract,
+  tempMailboxIsKnown,
   tempEmailPoll,
 };

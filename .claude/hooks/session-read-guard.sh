@@ -62,6 +62,11 @@ BLOCKED_EXACT = {
     "report.md",
     "chains.md",
     ".handoff-signing-key.json",
+    # Sensitive session state: out-of-band interaction binding tokens and
+    # private-target/lab authorization carry secret-shaped material; force agents
+    # through MCP readers rather than the raw Read tool.
+    "oob-tokens.jsonl",
+    "lab-authorization.json",
     # Plane O O.7: OSS-target artifacts. Raw stdout/stderr from sandboxed
     # docker runs and inventory/env documents may carry secret-shaped tokens
     # from build output. Force agents through MCP readers.
@@ -70,6 +75,11 @@ BLOCKED_EXACT = {
     "repo-env.json",
     "Dockerfile.bob",
     "repo-inventory.json",
+    # PR #108 review (Codex P1): the offensive proof ledger carries run ids,
+    # target URLs, safe-oracle canaries, and capture hashes. Read-guard it like
+    # its write-guarded sibling repo-command-runs.jsonl so agents cannot bypass
+    # the MCP readers to harvest target/canary material directly.
+    "offensive-runs.jsonl",
 }
 
 ALLOWED_EXACT = {
@@ -85,6 +95,7 @@ BLOCKED_DIRS = {
     # in-container scratch space (`repo-work/`), and S14 materialized
     # control checkouts (`repo-checkouts/`) must stay opaque to agents.
     "repo-runs",
+    "offensive-runs",
     "repo-work",
     "repo-checkouts",
 }
@@ -151,11 +162,28 @@ def session_root_for(resolved):
     return None
 
 
-def check_file(raw_path, *, block_session_dirs=False):
-    resolved = resolve_path(raw_path)
+def extract_cd_targets(command):
+    """Directories the command cd's/pushd's into. PR #108 review (Codex P1): the
+    read guard must resolve relative reads against the shell's cwd, not the hook
+    process cwd, or `cd <session_dir> && cat offensive-runs.jsonl` reads the
+    ledger (and every other blocked file) directly. Mirrors the
+    session-write-guard fix; honors the `--` option terminator and cd flags."""
+    bases = []
+    for match in re.finditer(r"\b(?:cd|pushd)\s+(?:-[A-Za-z]+\s+|--\s+)*([\"']?)([^\"'\s;|&]+)\1", command):
+        raw = match.group(2)
+        if raw.startswith("-") or raw in {"-", "~-", "&&", "||"}:
+            continue
+        bases.append(resolve_path(raw))
+    return bases
+
+
+def _evaluate_resolved(resolved, block_session_dirs):
+    """Returns (in_session, blocked_name). in_session=False means the path is
+    outside every session root; blocked_name is a filename to block or None to
+    allow when in_session."""
     root = session_root_for(resolved)
     if root is None:
-        return None
+        return (False, None)
 
     try:
         session_relative_parts = resolved.resolve(strict=False).relative_to(
@@ -165,20 +193,33 @@ def check_file(raw_path, *, block_session_dirs=False):
         session_relative_parts = ()
 
     if block_session_dirs and len(session_relative_parts) <= 1:
-        return resolved.name or "session directory"
+        return (True, resolved.name or "session directory")
 
     filename = resolved.name
     if filename in ALLOWED_EXACT:
-        return None
+        return (True, None)
     if any(part in BLOCKED_DIRS for part in resolved.parts):
-        return filename
+        return (True, filename)
     if filename in BLOCKED_EXACT:
-        return filename
+        return (True, filename)
     if any(pattern.match(filename) for pattern in BLOCKED_PATTERNS):
-        return filename
+        return (True, filename)
     session_relative = str(resolved)
     if RISKY_PATH_RE.search(session_relative):
-        return filename
+        return (True, filename)
+    return (True, None)
+
+
+def check_file(raw_path, *, block_session_dirs=False, base_dirs=None):
+    resolved = resolve_path(raw_path)
+    candidates = [resolved]
+    if not resolved.is_absolute() and base_dirs:
+        for base in base_dirs:
+            candidates.append(base / resolved)
+    for candidate in candidates:
+        in_session, blocked_name = _evaluate_resolved(candidate, block_session_dirs)
+        if in_session:
+            return blocked_name
     return None
 
 
@@ -228,6 +269,7 @@ def check_bash_command(command):
             file=sys.stderr,
         )
         raise SystemExit(2)
+    base_dirs = extract_cd_targets(command)
     for index, token in enumerate(tokens):
         command_name = pathlib.PurePosixPath(token).name
         if command_name not in READ_COMMANDS:
@@ -237,7 +279,11 @@ def check_bash_command(command):
             if candidate in {"|", ";", "&&", "||"}:
                 break
             for path_candidate in candidate_paths(candidate):
-                blocked = check_file(path_candidate, block_session_dirs=block_session_dirs)
+                blocked = check_file(
+                    path_candidate,
+                    block_session_dirs=block_session_dirs,
+                    base_dirs=base_dirs,
+                )
                 if blocked:
                     block(blocked)
 
