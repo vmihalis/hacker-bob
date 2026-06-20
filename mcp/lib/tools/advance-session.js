@@ -107,7 +107,8 @@ module.exports = Object.freeze({
           "Optional governance auth-context update applied during this advance. When " +
           "omitted, auth_status is derived: 'authenticated' if a usable auth profile is " +
           "stored, else the prior value carries forward. An explicit value wins (e.g. " +
-          "--no-auth advances with 'unauthenticated').",
+          "--no-auth advances with 'unauthenticated'). Any CHANGE to auth_status is recorded " +
+          "in session-events.jsonl as a governance.auth_context.replaced event.",
       },
       override: {
         type: "string",

@@ -171,6 +171,10 @@ function lifecycleOverrideEvents(domain) {
   return readSessionEvents(domain).filter((event) => event.kind === "governance.lifecycle.override");
 }
 
+function authContextReplacedEvents(domain) {
+  return readSessionEvents(domain).filter((event) => event.kind === "governance.auth_context.replaced");
+}
+
 const TOPOLOGY_ONLY_FORCEABLE_GATES = Object.freeze(new Map([
   ["VERIFY->GRADE", { blocked_by: "verification_stale", code: "verification_chain_incomplete" }],
   ["GRADE->REPORT", { blocked_by: "evidence_incomplete", code: "evidence_packs_invalid" }],
@@ -758,10 +762,57 @@ test("deriveAdvanceAuthContext precedence table: operator authority > sticky --n
   assert.equal(D("pending", "unauthenticated", false, false), "unauthenticated");
   assert.equal(D("pending", "authenticated", false, false), "pending");   // forge guard: unbacked → ignored
   assert.equal(D("pending", "authenticated", true, false), "authenticated"); // backed → honored
+  // (3) no-regress: an explicit "pending" (the "unknown" state) must NOT downgrade an established
+  //     milestone — even without operator_force and with no profile, an authenticated session stays
+  //     authenticated (falls through to carry-forward). The forge guard blocks the reverse; this
+  //     blocks the regress-to-unknown direction Codex+Claude flagged.
+  assert.equal(D("authenticated", "pending", false, false), "authenticated"); // explicit "pending" cannot regress
+  assert.equal(D("authenticated", "pending", true, false), "authenticated");  // (profile would derive authed anyway)
+  assert.equal(D("pending", "pending", false, false), "pending");             // pending->pending is a no-op, allowed
   // (4)/(5) no explicit: derive from profile presence, else carry forward.
   assert.equal(D("pending", null, true, false), "authenticated");
   assert.equal(D("pending", null, false, false), "pending");
   assert.equal(D("authenticated", null, false, false), "authenticated");   // never auto-downgrade
+});
+
+test("deriveAdvanceAuthContext self-guards an invalid explicit value (exported fn, no call-boundary)", () => {
+  // The function is exported and callable in-process WITHOUT advanceSession's boundary validation.
+  // A non-blank value outside AUTH_STATUS_VALUES must throw a clear INVALID_ARGUMENTS here, not
+  // propagate silently into a deep normalizeAuthContext throw at nucleus-build time.
+  assert.throws(
+    () => deriveAdvanceAuthContext({ auth_status: "pending" }, "bogus", false, false),
+    (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be one of/.test(err.message),
+  );
+  // A blank/whitespace explicit value is still allowed (treated as omitted → derive).
+  assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, "   ", true, false).auth_status, "authenticated");
+});
+
+test("advanceSession emits a governance.auth_context.replaced audit event ONLY when auth_status changes", () => {
+  withTempHome(() => {
+    const domain = "auth-audit-event.example.test";
+    bootstrapDomain(domain);
+    // A usable profile is stored, so the first advance moves auth_status pending -> authenticated.
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    const afterChange = authContextReplacedEvents(domain);
+    assert.equal(afterChange.length, 1, "one auth_context.replaced event on the pending->authenticated change");
+    assert.equal(afterChange[0].payload.from_auth_status, "pending");
+    assert.equal(afterChange[0].payload.to_auth_status, "authenticated");
+    assert.equal(afterChange[0].payload.had_usable_profile, true);
+    assert.equal(afterChange[0].payload.explicit_auth_status_supplied, false);
+    // A LATER advance that does not change auth_status (still authenticated) emits NO new event.
+    advanceSession({
+      target_domain: domain,
+      to_state: "CLAIM_FREEZE",
+      override: "operator_force",
+      override_reason: "auth-audit no-change test bypasses the freeze content gate",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    assert.equal(
+      authContextReplacedEvents(domain).length, 1,
+      "no second event when auth_status is unchanged (change-only audit)",
+    );
+  });
 });
 
 test("advanceSession rejects an invalid (non-blank) auth_status at the call boundary", () => {
