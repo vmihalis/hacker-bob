@@ -41,7 +41,7 @@ module.exports = wrapWriteTool({
       },
       "handoff_token": {
         "type": "string",
-        "minLength": 16
+        "minLength": 32
       },
       "summary": {
         "type": "string",
