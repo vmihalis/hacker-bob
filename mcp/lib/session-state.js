@@ -673,6 +673,9 @@ function advanceSession(args) {
         ...state,
         ...(verificationEntry ? verificationEntry.state_fields : {}),
         lifecycle_state: toState,
+        // Mirror the derived auth_status into state.json so it never disagrees with the
+        // nucleus auth_context (the two lifecycle stores must stay in lockstep).
+        auth_status: nextAuthContext.auth_status,
         ...(derivedLegacyPhase ? { phase: derivedLegacyPhase } : {}),
       };
 

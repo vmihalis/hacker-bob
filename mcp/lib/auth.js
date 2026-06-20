@@ -388,7 +388,14 @@ function hasUsableAuthProfile(domain) {
     try { doc = readAuthJson(resolveAuthJsonPath(candidateDomain)); } catch { doc = null; }
     const migrated = migrateAuthJson(doc);
     for (const profile of Object.values(migrated.profiles || {})) {
-      if (profile && typeof profile === "object") return true;
+      // "Usable" requires at least one ACTUAL credential — an outbound header (Authorization,
+      // Cookie, X-*) — not merely a non-null object. A profile that is empty or carries only
+      // Bob-LOCAL metadata (e.g. bob_auth_store called with just a profile_name, no
+      // headers/cookies/storage) is NOT authenticated material.
+      if (profile && typeof profile === "object"
+        && Object.keys(profile).some((key) => !PROFILE_METADATA_KEYS.has(key))) {
+        return true;
+      }
     }
   }
   return false;

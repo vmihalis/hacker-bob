@@ -4,6 +4,9 @@ const { advanceSession } = require("../session-state.js");
 const {
   LIFECYCLE_STATE_VALUES,
 } = require("../governance-contracts.js");
+const {
+  AUTH_STATUS_VALUES,
+} = require("../constants.js");
 
 // Maps each legacy phase string to the lifecycle state it collapsed into.
 // The old eight-phase FSM modeled per-claim frontier work as four sequential
@@ -25,9 +28,8 @@ const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
 // Arg adapter for the `bounty_transition_phase` alias. Translates the legacy
 // `to_phase` enum to the canonical `to_state` enum and treats a populated
 // `override_reason` as an `operator_force` override (the legacy tool used
-// `override_reason` as both the opt-out flag and the audit string). The
-// `auth_status` argument is dropped: auth context is governance-plane scope
-// in the new topology and moves through bob_init_session / governance events.
+// `override_reason` as both the opt-out flag and the audit string). `auth_status`
+// is forwarded to bob_advance_session as the optional governance auth-context update.
 function adaptLegacyTransitionPhaseArgs(args) {
   const safe = (args && typeof args === "object" && !Array.isArray(args)) ? args : {};
   const result = {};
@@ -47,6 +49,9 @@ function adaptLegacyTransitionPhaseArgs(args) {
     result.override = "operator_force";
     result.override_reason = safe.override_reason;
   }
+  if (typeof safe.auth_status === "string") {
+    result.auth_status = safe.auth_status;
+  }
   return result;
 }
 
@@ -62,7 +67,7 @@ const LEGACY_TRANSITION_PHASE_INPUT_SCHEMA = Object.freeze({
       type: "string",
       enum: ["authenticated", "unauthenticated"],
       description:
-        "Ignored by the bob_advance_session redirect; auth context is governance scope.",
+        "Forwarded to bob_advance_session as the optional governance auth-context update.",
     },
     override_reason: {
       type: "string",
@@ -89,6 +94,15 @@ module.exports = Object.freeze({
       to_state: {
         type: "string",
         enum: [...LIFECYCLE_STATE_VALUES],
+      },
+      auth_status: {
+        type: "string",
+        enum: [...AUTH_STATUS_VALUES],
+        description:
+          "Optional governance auth-context update applied during this advance. When " +
+          "omitted, auth_status is derived: 'authenticated' if a usable auth profile is " +
+          "stored, else the prior value carries forward. An explicit value wins (e.g. " +
+          "--no-auth advances with 'unauthenticated').",
       },
       override: {
         type: "string",
@@ -127,7 +141,7 @@ module.exports = Object.freeze({
       "Deprecated alias for bob_advance_session. Accepts the legacy to_phase " +
       "enum {SURFACE_DISCOVERY, AUTH, EVALUATE, CHAIN, VERIFY, GRADE, REPORT, " +
       "EXPLORE}, maps each value to its lifecycle state, and forwards to " +
-      "bob_advance_session. The auth_status argument is ignored; override_reason " +
+      "bob_advance_session. The auth_status argument is forwarded; override_reason " +
       "implies operator_force. Removed in v2.1.0; prefer bob_advance_session " +
       "with the six-state lifecycle enum directly.",
     inputSchema: LEGACY_TRANSITION_PHASE_INPUT_SCHEMA,

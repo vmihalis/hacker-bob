@@ -622,6 +622,8 @@ test("auth_status derives to 'authenticated' on advance when a usable profile is
     authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
     advanceTopology(domain, "OPEN_FRONTIER");
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    // state.json mirrors the nucleus auth_status (the two lifecycle stores stay in lockstep).
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
   });
 });
 
@@ -648,5 +650,17 @@ test("advanceSession honors an explicit auth_status arg over profile presence", 
       override_reason: "auth-status precedence test",
     });
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+  });
+});
+
+test("auth_status stays 'pending' when the stored profile carries no credential material", () => {
+  withTempHome(() => {
+    const domain = "auth-empty-profile.example.test";
+    bootstrapDomain(domain);
+    // bob_auth_store with only a profile_name — no headers/cookies/storage = an empty profile
+    // with no actual auth material, so it must NOT count as authenticated.
+    authStore({ target_domain: domain, profile_name: "attacker" });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
   });
 });
