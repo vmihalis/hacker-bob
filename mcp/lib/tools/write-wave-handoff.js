@@ -197,7 +197,8 @@ module.exports = wrapWriteTool({
       "surface_id",
       "surface_status",
       "summary",
-      "content"
+      "content",
+      "handoff_token"
     ]
   },
   handler: writeWaveHandoff,
