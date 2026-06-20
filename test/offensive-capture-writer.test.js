@@ -143,3 +143,17 @@ test("buildAndSignOffensiveRow: demonstratedSeverityOverride can only LOWER the 
     assert.equal(none.demonstrated_severity, "medium", "no override keeps the registry ceiling");
   });
 });
+
+test("SEVERITY_VALUES is DESCENDING (most-severe first) — the invariant the can-only-lower clamp depends on", () => {
+  // offensive-capture-writer's `SEVERITY_VALUES[Math.max(overrideIdx, registryIdx)]` can only LOWER
+  // severity BECAUSE SEVERITY_VALUES is ordered most-severe (index 0) to least-severe (a higher index
+  // = less severe, so Math.max picks the less-severe value). If anyone reorders it or inserts a tier,
+  // the clamp would silently invert and an override could RAISE the signed ceiling. Lock the ordering
+  // so a regression fails loudly HERE, not by mis-signing a row in production.
+  const { SEVERITY_VALUES } = require("../mcp/lib/constants.js");
+  assert.deepEqual(
+    SEVERITY_VALUES,
+    ["critical", "high", "medium", "low", "info"],
+    "SEVERITY_VALUES must stay descending; the offensive severity clamp's can-only-lower property depends on it",
+  );
+});

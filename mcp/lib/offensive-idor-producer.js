@@ -1153,9 +1153,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (tenantsProvablySame) {
     return fail("blocked_by_design", "identities_collided_same_tenant");
   }
-  // PROVABLY DISTINCT: both present at the SAME key with DIFFERENT values.
+  // PROVABLY DISTINCT: both present at the SAME key with DIFFERENT values. Compared
+  // case-INSENSITIVELY to stay consistent with the same-tenant HARD block above (owningScopeValues
+  // lowercases): a case-only difference ("Acme" vs "acme") must NOT read as "provably distinct" here
+  // while the same-tenant guard already treats it as one tenant — that asymmetry would otherwise be a
+  // false-negative dead-zone. Case-insensitive is the SAFE direction (prefer same-tenant → no mint).
   const tenantsProvablyDistinct = !!(tenantA && tenantB
-    && tenantA.key === tenantB.key && tenantA.value !== tenantB.value);
+    && tenantA.key === tenantB.key && tenantA.value.toLowerCase() !== tenantB.value.toLowerCase());
   // The remainder — a missing discriminator on either side, or different alias keys carrying
   // different values — is UNPROVABLE (not disproven): demote to a confidence signal.
   if (!tenantsProvablyDistinct) {
