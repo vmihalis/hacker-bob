@@ -298,7 +298,7 @@ Execution contract:
 
 1. Binary check
 ```bash
-mkdir -p "[SESSION]" && { for t in subfinder nuclei curl python3; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; command -v httpx >/dev/null && echo "OK:httpx" || { [ -x ~/go/bin/httpx ] && echo "OK:httpx" || echo "MISSING:httpx"; }; command -v katana >/dev/null && echo "OK:katana" || { [ -x ~/go/bin/katana ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
+mkdir -p "[SESSION]" && { for t in subfinder nuclei curl python3; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; { H=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&[ "$(head -c2 "$c" 2>/dev/null)" != '#!' ]&&{ H="$c"; break; }; done; [ -n "$H" ] && echo "OK:httpx" || echo "MISSING:httpx"; }; { K=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&[ "$(head -c2 "$c" 2>/dev/null)" != '#!' ]&&{ K="$c"; break; }; done; [ -n "$K" ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
 ```
 2. Subdomain aggregation
 ```bash
@@ -309,9 +309,15 @@ tmp="$(mktemp "${TMPDIR:-/tmp}/bob-surface-discovery-subdomains.XXXXXX")" && sor
 ```
 3. Live hosts
 ```bash
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober), skipping a same-named #!-script shadow
+# on PATH (e.g. the python "httpx" HTTP client) that masks ~/go/bin/httpx and silently empties recon.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { HTTPX="$c"; break; }; done
 : > "[SESSION]/live_hosts.txt"
 if [ -n "$HTTPX" ]; then timeout 75 "$HTTPX" -l "[SESSION]/subdomains.txt" -silent -follow-redirects -tech-detect -title -status-code -content-length -o "[SESSION]/live_hosts.txt" 2>/dev/null || true; fi
+# Make a STARVED recon visible instead of silently masking it with the apex fallback below: if real
+# subdomains were enumerated but httpx probed 0 live hosts (or httpx was unresolved), record a DEGRADED
+# marker so the orchestrator/operator knows breadth collapsed (usually a missing/shadowed PD httpx).
+if [ ! -s "[SESSION]/live_hosts.txt" ] && [ -s "[SESSION]/subdomains.txt" ]; then nsub="$(wc -l < "[SESSION]/subdomains.txt" | tr -d ' ')"; if [ -n "$HTTPX" ]; then hx="httpx_ran_0_live"; else hx="httpx_unresolved"; fi; echo "DEGRADED:live_hosts_empty:${nsub}_subdomains:${hx}" >> "[SESSION]/surface-discovery-tools.txt"; fi
 if [ ! -s "[SESSION]/live_hosts.txt" ]; then printf "https://%s\nhttps://www.%s\n" "[DOMAIN]" "[DOMAIN]" > "[SESSION]/live_hosts.txt"; fi
 ```
 4. First-party family discovery
@@ -341,7 +347,9 @@ for host, count in counts.most_common():
 picked = sorted(set(picked[:5]))
 (session / "family_candidates.txt").write_text("\n".join(picked) + ("\n" if picked else ""))
 PY
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober), skipping a same-named #!-script shadow
+# on PATH (e.g. the python "httpx" HTTP client) that masks ~/go/bin/httpx and silently empties recon.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { HTTPX="$c"; break; }; done
 if [ -s "[SESSION]/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 "$HTTPX" -l "[SESSION]/family_candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "[SESSION]/family_live.txt" 2>/dev/null || true; else : > "[SESSION]/family_live.txt"; fi
 ```
 5. URL discovery with CDX/Wayback and Katana
@@ -351,7 +359,7 @@ if [ -s "[SESSION]/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 
 while read -r root; do timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; done < "[SESSION]/cdx_roots.txt"
 { printf "https://%s\nhttps://www.%s\n" "[DOMAIN]" "[DOMAIN]"; awk '{print $1}' "[SESSION]/live_hosts.txt" 2>/dev/null; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null; } | sort -u | head -n 20 > "[SESSION]/crawl_roots.txt"
 : > "[SESSION]/katana_urls.txt"
-KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
+KATANA=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { KATANA="$c"; break; }; done
 if [ -n "$KATANA" ] && [ -s "[SESSION]/crawl_roots.txt" ]; then timeout 90 "$KATANA" -list "[SESSION]/crawl_roots.txt" -silent -d 2 -jc -fs rdn -rl 20 -timeout 8 -o "[SESSION]/katana_urls.txt" 2>/dev/null || true; fi
 cat "[SESSION]/katana_urls.txt" >> "[SESSION]/all_urls.txt" 2>/dev/null || true
 sort -u -o "[SESSION]/all_urls.txt" "[SESSION]/all_urls.txt"
@@ -455,7 +463,7 @@ Execution contract:
 
 1. Binary check and workspace setup
 ```bash
-mkdir -p "[SESSION]" && { for t in subfinder amass assetfinder chaos curl python3 nuclei dig; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; for t in dnsx tlsx subzy; do command -v "$t" >/dev/null && echo "OK:$t" || { [ -x "$HOME/go/bin/$t" ] && echo "OK:$t" || echo "MISSING:$t"; }; done; command -v httpx >/dev/null && echo "OK:httpx" || { [ -x ~/go/bin/httpx ] && echo "OK:httpx" || echo "MISSING:httpx"; }; command -v katana >/dev/null && echo "OK:katana" || { [ -x ~/go/bin/katana ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
+mkdir -p "[SESSION]" && { for t in subfinder amass assetfinder chaos curl python3 nuclei dig; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; for t in dnsx tlsx subzy; do tb=""; for c in "$HOME/go/bin/$t" "$(command -v "$t" 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&[ "$(head -c2 "$c" 2>/dev/null)" != '#!' ]&&{ tb="$c"; break; }; done; [ -n "$tb" ] && echo "OK:$t" || echo "MISSING:$t"; done; { H=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&[ "$(head -c2 "$c" 2>/dev/null)" != '#!' ]&&{ H="$c"; break; }; done; [ -n "$H" ] && echo "OK:httpx" || echo "MISSING:httpx"; }; { K=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&[ "$(head -c2 "$c" 2>/dev/null)" != '#!' ]&&{ K="$c"; break; }; done; [ -n "$K" ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
 ```
 2. Passive subdomain and CT aggregation
 ```bash
@@ -496,10 +504,12 @@ trap 'rm -rf "$scratch"' EXIT
 httpx_json="$scratch/httpx.jsonl"
 dnsx_json="$scratch/dnsx.jsonl"
 tlsx_json="$scratch/tlsx.jsonl"
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
-DNSX="$(command -v dnsx 2>/dev/null || true)"; [ -z "$DNSX" ] && [ -x ~/go/bin/dnsx ] && DNSX="$HOME/go/bin/dnsx"
-TLSX="$(command -v tlsx 2>/dev/null || true)"; [ -z "$TLSX" ] && [ -x ~/go/bin/tlsx ] && TLSX="$HOME/go/bin/tlsx"
-SUBZY="$(command -v subzy 2>/dev/null || true)"; [ -z "$SUBZY" ] && [ -x ~/go/bin/subzy ] && SUBZY="$HOME/go/bin/subzy"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober), skipping a same-named #!-script shadow
+# on PATH (e.g. the python "httpx" HTTP client) that masks ~/go/bin/httpx and silently empties recon.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { HTTPX="$c"; break; }; done
+DNSX=""; for c in "$HOME/go/bin/dnsx" "$(command -v dnsx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { DNSX="$c"; break; }; done
+TLSX=""; for c in "$HOME/go/bin/tlsx" "$(command -v tlsx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { TLSX="$c"; break; }; done
+SUBZY=""; for c in "$HOME/go/bin/subzy" "$(command -v subzy 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { SUBZY="$c"; break; }; done
 : > "$httpx_json"; : > "$dnsx_json"; : > "$tlsx_json"; : > "$SESSION/live_hosts.txt"; : > "$SESSION/cname_records.txt"; : > "$SESSION/dns_records.txt"; : > "$SESSION/tlsx_sans.txt"; : > "$SESSION/takeover_probe_hosts.txt"; : > "$SESSION/subzy_takeovers.txt"
 if [ -n "$HTTPX" ]; then timeout 180 "$HTTPX" -l "$SESSION/subdomains.txt" -silent -follow-redirects -tech-detect -title -status-code -content-length -json -o "$httpx_json" 2>/dev/null || true; fi
 python3 - "$SESSION" "$httpx_json" <<'PY'
@@ -520,6 +530,10 @@ for line in httpx_path.read_text(errors="ignore").splitlines():
     rows.append(f"{url} [{status}] [{tech}] {title}".strip())
 (session / "live_hosts.txt").write_text("\n".join(rows) + ("\n" if rows else ""))
 PY
+# Surface a STARVED recon instead of silently masking it with the apex fallback below: real subdomains
+# enumerated but 0 live hosts probed (or httpx unresolved) is recorded as a DEGRADED marker so the
+# orchestrator/operator sees breadth collapsed (usually a missing/shadowed ProjectDiscovery httpx).
+if [ ! -s "$SESSION/live_hosts.txt" ] && [ -s "$SESSION/subdomains.txt" ]; then nsub="$(wc -l < "$SESSION/subdomains.txt" | tr -d ' ')"; if [ -n "$HTTPX" ]; then hx="httpx_ran_0_live"; else hx="httpx_unresolved"; fi; echo "DEGRADED:live_hosts_empty:${nsub}_subdomains:${hx}" >> "$SESSION/surface-discovery-tools.txt"; fi
 if [ ! -s "$SESSION/live_hosts.txt" ]; then printf "https://%s\nhttps://www.%s\n" "$DOMAIN" "$DOMAIN" > "$SESSION/live_hosts.txt"; fi
 if command -v dig >/dev/null; then awk '{print $1}' "$SESSION/subdomains.txt" | head -n 500 | while read -r h; do timeout 4 dig +short CNAME "$h" 2>/dev/null | sed "s#^#$h #" >> "$SESSION/cname_records.txt" || true; timeout 4 dig +short A "$h" 2>/dev/null | sed "s#^#$h A #" >> "$SESSION/dns_records.txt" || true; done; fi
 if [ -n "$DNSX" ]; then timeout 120 "$DNSX" -l "$SESSION/subdomains.txt" -silent -a -aaaa -cname -resp -json -o "$dnsx_json" 2>/dev/null || true; fi
@@ -618,7 +632,9 @@ brand_candidates = sorted(set(brand_siblings[:5]))
 (session / "sibling-domain-candidates.txt").write_text("\n".join(sibling_candidates) + ("\n" if sibling_candidates else ""))
 (session / "brand-sibling-probe-candidates.txt").write_text("\n".join(brand_candidates) + ("\n" if brand_candidates else ""))
 PY
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober), skipping a same-named #!-script shadow
+# on PATH (e.g. the python "httpx" HTTP client) that masks ~/go/bin/httpx and silently empties recon.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { HTTPX="$c"; break; }; done
 if [ -s "$SESSION/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 90 "$HTTPX" -l "$SESSION/family_candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "$SESSION/family_live.txt" 2>/dev/null || true; else : > "$SESSION/family_live.txt"; fi
 : > "$SESSION/brand_sibling_live.txt"
 if [ -s "$SESSION/brand-sibling-probe-candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 "$HTTPX" -l "$SESSION/brand-sibling-probe-candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "$SESSION/brand_sibling_live.txt" 2>/dev/null || true; fi
@@ -631,7 +647,7 @@ DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
 { awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 80 > "$SESSION/crawl_roots.txt"
 : > "$SESSION/katana_urls.txt"
-KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
+KATANA=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && [ "$(head -c2 "$c" 2>/dev/null)" != '#!' ] && { KATANA="$c"; break; }; done
 if [ -n "$KATANA" ] && [ -s "$SESSION/crawl_roots.txt" ]; then timeout 180 "$KATANA" -list "$SESSION/crawl_roots.txt" -silent -d 2 -jc -kf robotstxt,sitemapxml -fs rdn -rl 20 -timeout 8 -o "$SESSION/katana_urls.txt" 2>/dev/null || true; fi
 cat "$SESSION/katana_urls.txt" >> "$SESSION/all_urls.txt" 2>/dev/null || true
 sort -u -o "$SESSION/all_urls.txt" "$SESSION/all_urls.txt"
