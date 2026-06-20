@@ -11,6 +11,9 @@ const {
   initSession,
 } = require("../mcp/lib/session-state.js");
 const {
+  authStore,
+} = require("../mcp/lib/auth.js");
+const {
   readSessionNucleus,
 } = require("../mcp/lib/governance-store.js");
 const {
@@ -608,5 +611,42 @@ test("bob_advance_session honors D3 bidirectional edges (CLAIM_FREEZE <-> OPEN_F
       ["REPORT", "OPEN_FRONTIER"],
     ]);
     assert.ok(fs.existsSync(sessionEventsJsonlPath(domain)));
+  });
+});
+
+test("auth_status derives to 'authenticated' on advance when a usable profile is stored (Option C)", () => {
+  withTempHome(() => {
+    const domain = "auth-derive.example.test";
+    bootstrapDomain(domain);
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+  });
+});
+
+test("auth_status carries forward (stays pending) on advance when no profile is stored", () => {
+  withTempHome(() => {
+    const domain = "auth-none.example.test";
+    bootstrapDomain(domain);
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("advanceSession honors an explicit auth_status arg over profile presence", () => {
+  withTempHome(() => {
+    const domain = "auth-explicit.example.test";
+    bootstrapDomain(domain);
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    // explicit "unauthenticated" wins even though a usable profile is stored
+    advanceSession({
+      target_domain: domain,
+      to_state: "OPEN_FRONTIER",
+      auth_status: "unauthenticated",
+      override: "operator_force",
+      override_reason: "auth-status precedence test",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
   });
 });

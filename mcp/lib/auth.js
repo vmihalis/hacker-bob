@@ -378,11 +378,28 @@ function listAuthProfiles(args) {
   });
 }
 
+// True iff auth.json carries at least one stored profile (any name) for the session domain
+// or a candidate auth domain. Lets advanceSession derive auth_status from the PRESENCE of
+// usable credentials without coupling the session lifecycle to a specific profile name.
+function hasUsableAuthProfile(domain) {
+  assertSafeDomain(domain);
+  for (const candidateDomain of candidateAuthDomains(domain, `https://${domain}/`)) {
+    let doc = null;
+    try { doc = readAuthJson(resolveAuthJsonPath(candidateDomain)); } catch { doc = null; }
+    const migrated = migrateAuthJson(doc);
+    for (const profile of Object.values(migrated.profiles || {})) {
+      if (profile && typeof profile === "object") return true;
+    }
+  }
+  return false;
+}
+
 module.exports = {
   applyAuthProfileHeaders,
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
+  hasUsableAuthProfile,
   listAuthProfiles,
   migrateAuthJson,
   PROFILE_METADATA_KEYS,

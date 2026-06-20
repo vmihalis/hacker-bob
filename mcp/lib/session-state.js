@@ -26,6 +26,9 @@ const {
   resolveEgressProfile,
 } = require("./egress-profiles.js");
 const {
+  hasUsableAuthProfile,
+} = require("./auth.js");
+const {
   buildSessionNucleus,
   LIFECYCLE_STATE_VALUES,
   normalizeLifecycleState,
@@ -471,6 +474,27 @@ function isSensitiveMaterialError(error) {
     || /is too large; do not persist raw large response bodies/.test(message);
 }
 
+// Option C (auth_status): derive auth_status on every lifecycle advance so it reflects
+// reality instead of staying "pending" forever (the field has no other setter). Precedence:
+//  (1) an explicit caller-supplied auth_status wins — honors `--no-auth` advancing with
+//      "unauthenticated" and any explicit operator value;
+//  (2) otherwise, if a usable auth profile is stored, the session is "authenticated";
+//  (3) otherwise carry the prior status forward — only the explicit path (1) ever sets
+//      "unauthenticated"; we never silently auto-downgrade.
+// buildSessionNucleus -> normalizeAuthContext validates the resulting enum.
+function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile) {
+  const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
+  let nextStatus;
+  if (explicitAuthStatus != null) {
+    nextStatus = explicitAuthStatus;
+  } else if (hasProfile) {
+    nextStatus = "authenticated";
+  } else {
+    nextStatus = prior.auth_status || "pending";
+  }
+  return { ...prior, auth_status: nextStatus };
+}
+
 function advanceSession(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   let toState;
@@ -546,12 +570,17 @@ function advanceSession(args) {
       });
     }
 
+    const nextAuthContext = deriveAdvanceAuthContext(
+      priorNucleus.auth_context,
+      args.auth_status,
+      hasUsableAuthProfile(domain),
+    );
     const nextNucleus = buildSessionNucleus({
       target_domain: priorNucleus.target_domain,
       target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
       scope_policy: priorNucleus.scope_policy,
       egress_identity: priorNucleus.egress_identity,
-      auth_context: priorNucleus.auth_context,
+      auth_context: nextAuthContext,
       operator_constraint: priorNucleus.operator_constraint,
       lifecycle_state: toState,
     });
