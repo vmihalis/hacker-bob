@@ -30,11 +30,11 @@
       "match": {
         "tech": ["elasticsearch", "opensearch", "solr", "algolia", "search api", "full-text search"],
         "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
-        "params": ["search"],
-        "hints": ["search endpoint", "search index", "people search", "over-permissive search"]
+        "params": [],
+        "hints": ["people search", "over-permissive search", "full-text search"]
       },
       "techniques": [
-        "NOT auto-LOW: prove impact by pulling a SMALL sample (5–10 records) of the exposed cross-scope data, then grade by what leaked (data class + volume). Sample only — never page the full corpus (that is exfiltration, not proof).",
+        "NOT auto-LOW: prove impact by sampling the exposed cross-scope data (5–10 records max, never the full corpus), then grade by what leaked. Mask the sample by default; show real values only in an authorized engagement.",
         "Predicate annihilation: set the search/filter value to an always-true predicate (`*`, `*:*`, empty, `true`, `1 eq 1`, `id>0`) to drop implicit scope. A jump from the scoped count to the global corpus proves the bypass; then pull the sample.",
         "Scope-param drop: remove or null the tenant/org/scope filter the UI sends (org_id, account, team) and resend. If the count now spans other tenants the scope was client-enforced — an access-control break worth a 5–10 record sample.",
         "Tenant/index header routing: vary tenant/index headers or path segments (X-Tenant-Id, X-Org-Id, Index:, X-Search-Index, people-search) to reach another tenant's index, then sample 5–10 records from it as proof."

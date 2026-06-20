@@ -17861,7 +17861,10 @@ test("every technique entry's summary items fit the 240-char cap (registry-wide:
   const ops = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
   assert.ok(ops, "over-permissive-search-list entry must exist");
   assert.match(ops.techniques[0], /NOT auto-LOW/);
-  assert.match(ops.techniques[0], /never page the full corpus/i);
+  assert.match(ops.techniques[0], /never the full corpus/i);
+  // The first surfaced item must be default-safe: mask unless the engagement authorizes real values.
+  assert.match(ops.techniques[0], /mask the sample by default/i);
+  assert.match(ops.techniques[0], /authorized engagement/i);
 });
 
 test("over-permissive-search-list proof guidance caps extraction at a small sample and gates unmasked data on authorization", () => {
@@ -17918,6 +17921,48 @@ test("bob_read_assignment_brief does NOT surface over-permissive-search-list for
 
     // "scope" is the canonical OAuth/OIDC param; it must not pull search-filter-bypass guidance onto
     // an auth flow, so it is not a match param for this technique.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a lone search param with no search signal", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-orders-search",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/orders"],
+      interesting_params: ["search"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-orders-search" }]);
+
+    // A lone search/list param must not by itself pull (now real-data-pulling) mass-extraction guidance
+    // and suppress the generic fallback; a real search SIGNAL (tech / a /search-family endpoint / hint)
+    // is required. The entry carries no match params.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a research endpoint (no substring match on 'search')", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/api/data"],
+      interesting_params: ["q"],
+      evidence: ["research endpoint serving academic papers"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research" }]);
+
+    // The hints must not substring-match "research" (contains "search"); "research endpoint" is not a
+    // search surface and must fall back to generic guidance.
     const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
     assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
   });
