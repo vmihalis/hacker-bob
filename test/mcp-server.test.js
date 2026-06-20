@@ -17838,28 +17838,30 @@ test("bob_read_assignment_brief does NOT surface over-permissive-search-list for
   });
 });
 
-test("over-permissive-search-list guidance fits the 240-char summary cap with the grading thesis front-loaded", () => {
-  // Track the production cap (imported above) rather than a local literal, so this guard stays correct
-  // if the cap changes: keep every technique/payload_hint within it so summary-mode briefs never
-  // truncate the safety or grading guidance.
+test("every technique entry's summary items fit the 240-char cap (registry-wide: no silent truncation of guidance)", () => {
+  // capTechniqueString (technique-packs.js) silently truncates summary items past the cap, which can
+  // drop a safety/grading guardrail. Rather than rely on a per-entry guard, assert the invariant across
+  // the WHOLE registry so a future high-risk entry can't regress unnoticed. Track the production
+  // constants (imported above), not local literals, so this stays correct if the cap changes.
   const knowledge = JSON.parse(fs.readFileSync(
     path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
     "utf8",
   ));
-  const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
-  assert.ok(entry, "over-permissive-search-list entry must exist");
-  for (const technique of entry.techniques) {
-    assert.ok(technique.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
-      `technique exceeds summary cap (${technique.length}): ${technique.slice(0, 60)}`);
+  for (const entry of knowledge.entries) {
+    for (const kind of ["techniques", "payload_hints"]) {
+      const summaryItems = Array.isArray(entry[kind]) ? entry[kind].slice(0, TECHNIQUE_SUMMARY_ITEMS_PER_KIND) : [];
+      for (const item of summaryItems) {
+        assert.ok(item.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+          `${entry.id} ${kind} summary item exceeds cap (${item.length}): ${item.slice(0, 60)}`);
+      }
+    }
   }
-  for (const hint of entry.payload_hints) {
-    assert.ok(hint.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
-      `payload_hint exceeds summary cap (${hint.length}): ${hint.slice(0, 60)}`);
-  }
-  // The grading thesis ("NOT auto-LOW") and the no-bulk-extraction guardrail must ride the first
-  // surfaced item so they survive summary truncation even on the demoted/other-applicable path.
-  assert.match(entry.techniques[0], /NOT auto-LOW/);
-  assert.match(entry.techniques[0], /never page the full corpus/i);
+  // over-permissive-search-list specifically: the grading thesis ("NOT auto-LOW") and the
+  // no-bulk-extraction guardrail must ride the first surfaced item so they survive summary truncation.
+  const ops = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
+  assert.ok(ops, "over-permissive-search-list entry must exist");
+  assert.match(ops.techniques[0], /NOT auto-LOW/);
+  assert.match(ops.techniques[0], /never page the full corpus/i);
 });
 
 test("over-permissive-search-list proof guidance caps extraction at a small sample and gates unmasked data on authorization", () => {
@@ -17876,7 +17878,7 @@ test("over-permissive-search-list proof guidance caps extraction at a small samp
   assert.match(blob, /never page the full corpus|not the whole set/i);
   // Unmasked real records are gated on an authorized engagement; on a public safe-harbor program the
   // sample is masked and paired with schema + count.
-  assert.match(blob, /authorized engagement|BOB_DATA_ACCESS_AUTHORIZED/i);
+  assert.match(blob, /authorized engagement/i);
   assert.match(blob, /safe.harbor/i);
   assert.match(blob, /mask the sample/i);
 });

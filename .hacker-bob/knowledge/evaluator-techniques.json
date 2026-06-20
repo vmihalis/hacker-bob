@@ -30,7 +30,7 @@
       "match": {
         "tech": ["elasticsearch", "opensearch", "solr", "algolia", "search api", "full-text search"],
         "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
-        "params": ["search", "facet", "filter"],
+        "params": ["search"],
         "hints": ["search endpoint", "search index", "people search", "over-permissive search"]
       },
       "techniques": [
@@ -40,7 +40,7 @@
         "Tenant/index header routing: vary tenant/index headers or path segments (X-Tenant-Id, X-Org-Id, Index:, X-Search-Index, people-search) to reach another tenant's index, then sample 5–10 records from it as proof."
       ],
       "payload_hints": [
-        "Proof = a 5–10 record sample of the leaked data, never the full corpus. Authorized engagement (client/asset-owner, or BOB_DATA_ACCESS_AUTHORIZED set) → real records; public safe-harbor cap → mask the sample + add response schema + count.",
+        "Proof = a 5–10 record sample of the leaked data, never the full corpus. Authorized engagement (client/asset-owner, or a program whose policy permits retrieval) → real records; default/safe-harbor → mask the sample + schema + count.",
         "Predicate annihilation: ?q=* / ?q=true / ?$filter=1 eq 1 / ?search=*:* / ?where=1=1 ; NoSQL ?filter[$ne]= / ?q[$gt]= / ?where[$exists]=true. Read the count, then pull 5–10 sample records (not the whole set).",
         "Scope-param drop/swap: remove &tenant_id= / &org_id= / &scope=, or set scope=all / tenant_id=<other-tenant>; compare counts, then sample 5–10 records as proof.",
         "Index/tenant header routing (GET): Index: people-search | X-Search-Index: internal | X-Tenant-Id: <other> | X-Org-Id: <other> — confirm by count, then sample 5–10."
