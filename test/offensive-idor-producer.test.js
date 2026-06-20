@@ -723,6 +723,59 @@ test("AC-6 negative: P1 own-scope is an EXPLICIT shared scope (\"default\") → 
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: owner readback marks O_B with an explicit shared scope while P1 omits it → own_scope_explicitly_shared (blocks)", () => withTempHome(async () => {
+  // The live P1/P2 cross-principal reads OMIT every owning-scope key (which on its own would only
+  // SOFT-gate to own_scope_missing). But the producer's OWN owner readback — already trusted to
+  // discover the canary field (#20) and screen create-time PII (#24) — marks O_B "public". That
+  // authoritative shared label is positive evidence O_B is shared, so it HARD-blocks even though P1
+  // dropped the key; a soft-gated LOW mint here would mislabel a shared object as a cross-tenant read.
+  const domain = "idor-neg-readback-shared.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB }) => {
+      if (wantsOB && (isA || isB)) {
+        const body = resourceBody({ canary: CANARY_B, scope: "tenant-B", viewer: isB ? "viewer-B" : "viewer-A" });
+        delete body.owner_scope; // P1/P2 echo NO owning-scope key
+        return jsonResponse(200, body);
+      }
+      return null;
+    },
+  });
+  const provision = {
+    ...soundProvision(),
+    owner_readback_b: { id: OBJ_B, owner_scope: "public", details: { secret: { token: CANARY_B } } },
+  };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "own_scope_explicitly_shared");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 soft preserved: a PRIVATE-scope owner readback does NOT clear the P1 own_scope_missing soft-gate", () => withTempHome(async () => {
+  // Asymmetric rule: the readback can only STRENGTHEN a block (explicit-shared), never clear the
+  // P1-side soft-gate. P1 omits the owning-scope key (account_id only) while the readback carries a
+  // PRIVATE scope ("tenant-B"). The cross-principal proof body still does not demonstrate B-private
+  // ownership to a reviewer, so own_scope_missing must still fire and the fire mints at LOW.
+  const domain = "idor-soft-readback-private.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, account_id: "acct-b-1", viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      return null;
+    },
+  });
+  // soundProvision()'s readback carries owner_scope:"tenant-B" (private) — must NOT upgrade the fire.
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.ok(result.confidence_signals.some((s) => s.gate === "own_scope_missing"));
+  assert.equal(result.demonstrated_severity, "low");
+  assert.equal(result.masked_oracle.relation.own_scope_private, false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {

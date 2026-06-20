@@ -1048,6 +1048,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (p1Scope != null && !ownScopePrivate) {
     return fail("blocked_by_design", "own_scope_explicitly_shared");
   }
+  // The producer's OWN owner readback (B reading B's freshly-created object) is already trusted to
+  // discover the canary field (#20) and screen create-time foreign PII (#24), so an EXPLICIT shared
+  // scope label there is authoritative positive evidence O_B is SHARED → HARD refutation too, even
+  // when the live P1 read omits the key (which on its own would only soft-gate below). Asymmetric by
+  // the absence-vs-positive rule: positive shared evidence on the readback can only STRENGTHEN the
+  // block; a readback that merely carries a PRIVATE scope does NOT clear the P1-side soft-gate (the
+  // soft-gate reflects what the cross-principal proof body demonstrates to a reviewer, not the
+  // producer's internal create-time bookkeeping).
+  const readbackScope = ownScopeOf(parsedReadback);
+  if (readbackScope != null && !ownScopeIsPrivate(readbackScope)) {
+    return fail("blocked_by_design", "own_scope_explicitly_shared");
+  }
   if (p1Scope == null) {
     confidenceSignals.push({
       gate: "own_scope_missing",

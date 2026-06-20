@@ -450,6 +450,32 @@ const CORPUS = [
     },
     provision: () => provisionFor({ readbackScope: "public" }),
   },
+  {
+    id: "C5", name: "CONTROL: owner readback marks O_B shared while P1 omits scope — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "A reads O_B's canary and anon + 3rd-tenant C are denied, and the LIVE P1/P2 bodies echo NO owning-scope key (which on its own would only soft-gate to own_scope_missing). BUT the producer's trusted owner readback marks O_B owner_scope \"public\" — authoritative positive evidence the object is SHARED. #13 must HARD-block on the readback, not soft-mint LOW. Locks the Codex P2 readback-shared fix.",
+    predicted: "own_scope_explicitly_shared",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        // P1/P2 omit owner_scope (resourceBody adds it only when `scope` is truthy).
+        if (w.isB) return jsonResponse(200, resourceBody({ canary: CANARY_B, viewer: "viewer-B", objId: OBJ_B }));
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_B, viewer: "viewer-A", objId: OBJ_B }));
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "tenant-A", viewer: "viewer-A", objId: OBJ_A }));
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "public" }),
+  },
 ];
 
 const GATE_LABEL = {
