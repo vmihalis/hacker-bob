@@ -17878,7 +17878,7 @@ test("over-permissive-search-list proof guidance caps extraction at a small samp
   // Proof-of-impact is a SMALL sample (5-10 records), never the full corpus: the line between an
   // authorized demonstration and mass exfiltration. The guardrail must be explicit in the guidance.
   assert.match(blob, /5[–-]10 (record|sample)/i);
-  assert.match(blob, /never page the full corpus|not the whole set/i);
+  assert.match(blob, /never the full corpus|not the whole set/i);
   // Unmasked real records are gated on an authorized engagement; on a public safe-harbor program the
   // sample is masked and paired with schema + count.
   assert.match(blob, /authorized engagement/i);
