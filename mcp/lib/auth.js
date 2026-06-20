@@ -409,7 +409,7 @@ function hasUsableAuthProfile(domain) {
       // and auth tasks still run, rather than over-claiming credential provenance).
       if (profile && typeof profile === "object"
         && Object.entries(profile).some(([key, value]) =>
-          CREDENTIAL_HEADER_NAMES.has(String(key).toLowerCase())
+          CREDENTIAL_HEADER_NAMES.has(key.toLowerCase())
           && typeof value === "string" && value.trim() !== "")) {
         return true;
       }

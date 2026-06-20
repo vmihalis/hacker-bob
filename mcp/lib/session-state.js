@@ -485,24 +485,33 @@ function isSensitiveMaterialError(error) {
 // hasUsableAuthProfile directly rather than trust this field.
 //
 // Precedence:
-//  (1) An explicit caller-supplied auth_status wins — EXCEPT an UNBACKED positive claim:
-//      "authenticated" is honored only when a usable profile is actually present OR the caller
-//      carries operator_force authority. This stops any bob_advance_session caller (including a
-//      prompt-injected evaluator) from forging credential provenance with nothing in the auth
-//      store. Negative/neutral assertions ("unauthenticated" via `--no-auth`, "pending") need no
-//      evidence and are always honored.
+//  (1) An explicit, NON-BLANK caller-supplied auth_status wins — EXCEPT an UNBACKED positive
+//      claim: "authenticated" is honored only when a usable profile is actually present OR the
+//      caller carries operator_force authority. So an UNPRIVILEGED caller (one WITHOUT
+//      operator_force) — e.g. a prompt-injected evaluator — cannot forge credential provenance
+//      with nothing in the auth store; operator_force stays the deliberate operator escape hatch
+//      (an operator vouching for an out-of-band context CAN assert "authenticated"). Negative/
+//      neutral assertions ("unauthenticated" via `--no-auth`, "pending") need no evidence and are
+//      always honored. A blank/whitespace value is treated as OMITTED — otherwise it would
+//      normalize to "pending" in the nucleus while the raw "" leaked to the state.json mirror.
 //  (2) A prior EXPLICIT "unauthenticated" is carried forward (NOT auto-upgraded) when the caller
 //      omits auth_status, even if a profile now exists — a `--no-auth`/resumed run stays
 //      unauthenticated until the operator explicitly changes it.
 //  (3) Otherwise, a usable stored profile means "authenticated".
 //  (4) Otherwise carry the prior status forward (default "pending"); never silently auto-downgrade.
-// buildSessionNucleus -> normalizeAuthContext validates the resulting enum.
+// buildSessionNucleus -> normalizeAuthContext validates the resulting enum; the caller mirrors the
+// NORMALIZED nucleus value into state.json so the two stores can never disagree.
 function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile, operatorForced = false) {
   const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
+  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted so it cannot win
+  // branch (1) and then split-brain (nucleus "pending" vs state.json "").
+  const explicit = (typeof explicitAuthStatus === "string" && explicitAuthStatus.trim() !== "")
+    ? explicitAuthStatus
+    : null;
   let nextStatus;
-  if (explicitAuthStatus != null
-    && (explicitAuthStatus !== "authenticated" || hasProfile || operatorForced === true)) {
-    nextStatus = explicitAuthStatus;                       // (1) honored explicit value
+  if (explicit != null
+    && (explicit !== "authenticated" || hasProfile || operatorForced === true)) {
+    nextStatus = explicit;                                 // (1) honored explicit value
   } else if (prior.auth_status === "unauthenticated") {
     nextStatus = "unauthenticated";                        // (2) sticky operator-asserted negative
   } else if (hasProfile) {
@@ -692,9 +701,11 @@ function advanceSession(args) {
         ...state,
         ...(verificationEntry ? verificationEntry.state_fields : {}),
         lifecycle_state: toState,
-        // Mirror the derived auth_status into state.json so it never disagrees with the
-        // nucleus auth_context (the two lifecycle stores must stay in lockstep).
-        auth_status: nextAuthContext.auth_status,
+        // Mirror the NORMALIZED nucleus auth_status into state.json so the two lifecycle stores
+        // can never disagree — buildSessionNucleus -> normalizeAuthContext is the single source of
+        // truth for the value (e.g. it coerces a blank/legacy value to "pending"); mirroring the
+        // pre-normalization derive output here would split-brain on any value the nucleus rewrites.
+        auth_status: nextNucleus.auth_context.auth_status,
         ...(derivedLegacyPhase ? { phase: derivedLegacyPhase } : {}),
       };
 

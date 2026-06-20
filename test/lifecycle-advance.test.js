@@ -726,3 +726,19 @@ test("auth_status: an explicit 'authenticated' under operator_force IS honored (
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
   });
 });
+
+test("auth_status: a blank auth_status arg is treated as omitted and does NOT split-brain the nucleus vs state.json", () => {
+  withTempHome(() => {
+    const domain = "auth-blank-arg.example.test";
+    bootstrapDomain(domain);
+    // The canonical schema rejects a blank enum value, but a direct in-process caller could pass
+    // one. It must be treated as OMITTED (derive), and — the headline of the round — the nucleus
+    // and its state.json mirror must AGREE on the normalized value, not split-brain ("pending" vs "").
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "" });
+    const nucleusStatus = readSessionNucleus(domain).auth_context.auth_status;
+    const stateStatus = JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status;
+    assert.equal(nucleusStatus, "pending");
+    assert.equal(stateStatus, "pending");
+    assert.equal(nucleusStatus, stateStatus);
+  });
+});
