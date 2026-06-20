@@ -637,6 +637,31 @@ const CORPUS = [
     },
     provision: () => provisionFor({ readbackScope: null }),
   },
+  {
+    id: "C12", name: "CONTROL: JSON:API same tenant (org_id under {data:{attributes:{...}}}) — Codex PR#136",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "JSON:API nests the resource TWO levels under {data:{attributes:{...}}}, so org_id:7 is neither top-level nor one level down. The one-level scan missed it and the SAME-tenant pair could soft-mint LOW; the bounded two-level envelope scan reaches data.attributes so #14 hard-blocks. Locks the JSON:API depth fix.",
+    predicted: "identities_collided_same_tenant",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, { data: { type: "account", id: OBJ_B, attributes: { org_id: 7 } }, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+        if (w.isA) return jsonResponse(200, { data: { type: "account", id: OBJ_B, attributes: { org_id: 7 } }, viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, { data: { type: "account", id: OBJ_A, attributes: { org_id: 7 } }, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: null }),
+  },
 ];
 
 const GATE_LABEL = {

@@ -338,21 +338,31 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
-// Common single-object envelope wrappers: many REST APIs nest the resource one level under one of
-// these keys (e.g. {data:{org_id:..}}, {result:{owner_scope:..}}, JSON:API {data:{attributes:{..}}}).
-// Owning-scope detection scans the TOP-LEVEL body AND one level into these wrappers so a nested
-// tenant/owner scope is not invisible — which, after #13/#14 were demoted to soft-gates, would let a
-// nested-envelope SAME-tenant body soft-mint at LOW (Codex PR#136). One level only — bounded — and the
-// direction is precision-safe: more scope detected = more same-tenant/shared/unusable HARD blocks,
-// never a new mint. The top-level root is ALWAYS scanned first, so flat bodies are unchanged.
+// Common single-object envelope wrappers: many REST APIs nest the resource under one of these keys
+// (e.g. {data:{org_id:..}}, {result:{owner_scope:..}}), and JSON:API nests it TWO levels under
+// {data:{attributes:{..}}}. Owning-scope detection scans the TOP-LEVEL body, ONE level into these
+// wrappers, AND a SECOND level via the same wrappers (so JSON:API data.attributes is reached) — so a
+// nested tenant/owner scope is not invisible, which after #13/#14 were demoted to soft-gates would let
+// a nested-envelope SAME-tenant body soft-mint at LOW (Codex PR#136). Bounded to two levels, descending
+// ONLY through these well-known keys; the direction is precision-safe (more scope detected = more
+// same-tenant/shared/unusable HARD blocks, never a new mint). Top-level root is scanned first, so flat
+// bodies are unchanged.
 const SCOPE_ENVELOPE_KEYS = Object.freeze(["data", "result", "item", "record", "attributes", "payload", "resource"]);
 
 function scopeSearchRoots(parsedBody) {
   if (parsedBody == null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) return [];
   const roots = [parsedBody];
-  for (const key of SCOPE_ENVELOPE_KEYS) {
-    const nested = parsedBody[key];
-    if (nested != null && typeof nested === "object" && !Array.isArray(nested)) roots.push(nested);
+  const addEnvelopeChildren = (obj) => {
+    for (const key of SCOPE_ENVELOPE_KEYS) {
+      const nested = obj[key];
+      if (nested != null && typeof nested === "object" && !Array.isArray(nested) && !roots.includes(nested)) {
+        roots.push(nested);
+      }
+    }
+  };
+  addEnvelopeChildren(parsedBody);            // level 1: {data:{...}}, {result:{...}}, ...
+  for (const root of roots.slice(1)) {        // level 2: JSON:API {data:{attributes:{...}}}
+    addEnvelopeChildren(root);
   }
   return roots;
 }

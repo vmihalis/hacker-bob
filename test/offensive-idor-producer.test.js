@@ -972,6 +972,30 @@ test("AC-6 negative: NESTED-envelope same tenant (org_id under {data:{...}}) →
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: JSON:API same tenant (org_id under {data:{attributes:{...}}}) → identities_collided_same_tenant (two-level scope scan, Codex PR#136)", () => withTempHome(async () => {
+  // JSON:API nests the resource TWO levels under {data:{attributes:{...}}}, so the owning-scope is not
+  // at the top level NOR one level down. The one-level scan missed it and the SAME-tenant pair could
+  // soft-mint at LOW; the bounded two-level envelope scan reaches data.attributes so #14 hard-blocks.
+  const domain = "idor-neg-jsonapi-sametenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { data: { type: "account", id: OBJ_B, attributes: { org_id: 7 } }, viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { data: { type: "account", id: OBJ_A, attributes: { org_id: 7 } }, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+      }
+      return null;
+    },
+  });
+  const provision = { ...soundProvision(), owner_readback_b: { id: OBJ_B, details: { secret: { token: CANARY_B } } } };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {
