@@ -29,14 +29,14 @@
       "title": "Over-permissive search/list endpoints: filter-bypass mass extraction",
       "match": {
         "tech": ["elasticsearch", "opensearch", "solr", "algolia", "search api", "full-text search"],
-        "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr", "/people", "/members", "/directory"],
-        "params": ["search", "facet", "filter", "where", "scope"],
+        "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
+        "params": ["search", "facet", "filter"],
         "hints": ["search endpoint", "search index", "people search", "over-permissive search"]
       },
       "techniques": [
-        "NOT auto-LOW: grade by the proven cross-scope count (access-control break; severity follows data class + volume). Confirm with a COUNT-ONLY masked total or ONE redacted sample; NEVER page raw rows, real PII, cookies, or auth headers.",
+        "NOT auto-LOW: grade by the proven cross-scope count (access-control break; severity follows data class + volume). Confirm by COUNT/metadata totals ONLY — never page or sample real rows, PII, cookies, or auth headers.",
         "Predicate annihilation: set the search/filter value to an always-true predicate (`*`, `*:*`, empty, `true`, `1 eq 1`, `id>0`) to drop implicit scope. Read the COUNT-ONLY total; a jump to the global corpus is over-broad — don't page rows.",
-        "Scope-param drop: remove or null the tenant/org/scope filter the UI sends (org_id, account, team) and resend. If the COUNT-ONLY total now spans other tenants the scope was client-enforced — an access-control break. Redacted evidence only.",
+        "Scope-param drop: remove or null the tenant/org/scope filter the UI sends (org_id, account, team) and resend. If the COUNT-ONLY total now spans other tenants the scope was client-enforced — an access-control break. Compare COUNTS only.",
         "Tenant/index header routing: vary tenant/index headers or path segments (X-Tenant-Id, X-Org-Id, Index:, X-Search-Index, people-search) to reach another tenant's index. Confirm by COUNT-ONLY masked totals; never extract rows."
       ],
       "payload_hints": [

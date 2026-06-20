@@ -17797,19 +17797,24 @@ test("bob_read_assignment_brief surfaces over-permissive-search-list for an Elas
   });
 });
 
-test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search list surface (route + filter param, no search tech)", () => {
+test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search surface (search endpoint + people-search hint + filter)", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
     seedAttackSurfaces(domain, [{
-      id: "surface-people",
+      id: "surface-people-search",
       hosts: [`https://${domain}`],
       tech_stack: ["Custom"],
-      endpoints: ["/people"],
-      interesting_params: ["filter"],
+      endpoints: ["/people/search"],
+      interesting_params: ["filter", "facet"],
+      evidence: ["people search index over an employee directory"],
     }]);
-    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-people" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-people-search" }]);
 
+    // Recall is driven by a real search signal (a /search endpoint + a "people search" hint), with the
+    // filter/facet params boosting rank -- this is the over-permissive people-search list, not a bare
+    // directory route. (A lone filter param defers to generic-rest-api, which keeps the entry from
+    // over-broadening onto unrelated lists.)
     const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
     assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
   });
@@ -17854,7 +17859,67 @@ test("over-permissive-search-list guidance fits the 240-char summary cap with th
   // The grading thesis ("NOT auto-LOW") and the PII guard must ride the first surfaced item so they
   // survive summary truncation even on the demoted/other-applicable path.
   assert.match(entry.techniques[0], /NOT auto-LOW/);
-  assert.match(entry.techniques[0], /NEVER page raw rows, real PII/);
+  assert.match(entry.techniques[0], /never page or sample real rows/i);
+});
+
+test("over-permissive-search-list confirmation guidance is internally consistent: count/metadata-only, never sample a real row", () => {
+  const knowledge = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
+    "utf8",
+  ));
+  const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
+  assert.ok(entry, "over-permissive-search-list entry must exist");
+  // No technique may license retrieving/sampling a real row -- it would pull cross-tenant PII on a
+  // /people-style list and contradict the payload-hint rule "do NOT page rows (even limit=1 returns
+  // one real row)". Confirmation must stay count/metadata-only.
+  const allTechniques = entry.techniques.join("   ");
+  // Affirmative row-capture licenses only (negated guards like "never page or sample real rows" are fine).
+  assert.doesNotMatch(allTechniques, /redacted sample|redacted evidence|ONE sample|sample a (real )?row/i);
+  assert.match(entry.techniques[0], /COUNT\/metadata totals ONLY/i);
+  assert.ok(
+    entry.payload_hints.some((hint) => /do NOT page rows|never (fetch|page) rows/i.test(hint)),
+    "a payload hint must explicitly forbid paging rows",
+  );
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a bare people directory with no search/filter signal", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-bare-directory",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/people"],
+      interesting_params: ["name"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-bare-directory" }]);
+
+    // A benign member directory (no search tech, no filter/search param) must not receive
+    // predicate-annihilation / header-routing guidance just for exposing a /people route.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for an OAuth authorize surface using the scope param", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-oauth",
+      hosts: [`https://${domain}`],
+      tech_stack: ["OAuth"],
+      endpoints: ["/oauth/authorize"],
+      interesting_params: ["scope", "redirect_uri", "client_id"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-oauth" }]);
+
+    // "scope" is the canonical OAuth/OIDC param; it must not pull search-filter-bypass guidance onto
+    // an auth flow, so it is not a match param for this technique.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
 });
 
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
