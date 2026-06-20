@@ -278,8 +278,12 @@ const CORPUS = [
     klass: "true-idor", fidelity: "documented", known_true: true, in_scope: false,
     pathTemplate: "/my-account?id={id}",
     endpointPath: "/my-account",
-    note: "Classic IDOR but keyed by a QUERY param, not a path segment. v1 path_template requires {id} as the final PATH segment → structurally out of scope.",
-    predicted: "THROW:path_template",
+    note: "Classic IDOR but keyed by a QUERY param, not a path segment. v1 path_template rejects a query string outright (the {id} can only be the final PATH segment) → structurally out of scope.",
+    predicted: "THROW:INVALID_ARGUMENTS",
+    // Pin the SPECIFIC gate this fixture covers (the query-string rejection), not just the shared
+    // INVALID_ARGUMENTS code — so a future refactor that throws a DIFFERENT INVALID_ARGUMENTS first
+    // (traversal, surface-not-found) fails the gate instead of silently passing (Codex/Claude P3).
+    predicted_error_includes: "must not include a query string",
     fetchFn: (domain) => async () => challenge(404),
     provision: () => provisionFor(),
   },
@@ -555,6 +559,59 @@ const CORPUS = [
     },
     provision: () => provisionFor({ readbackScope: "tenant-B" }),
   },
+  {
+    id: "C9", name: "CONTROL: A and B share an UNSAFE-magnitude numeric org_id (>2^53) — Codex PR#136 P1",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "O_B and O_A both report org_id 9007199254740993 (2^53+1) — a 64-bit tenant id JSON.parse already rounded, so scopeValueString drops it to null. If that read as 'scope absent' the SAME-tenant pair would soft-mint a LOW cross-tenant row. A present-but-unsafe discriminator can't prove DISTINCT tenants → must HARD-block own_scope_unusable_numeric. Locks the precision-collision fix.",
+    predicted: "own_scope_unusable_numeric",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      const UNSAFE = 9007199254740993; // 2^53 + 1
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, { id: OBJ_B, org_id: UNSAFE, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+        if (w.isA) return jsonResponse(200, { id: OBJ_B, org_id: UNSAFE, viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, { id: OBJ_A, org_id: UNSAFE, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "tenant-B" }),
+  },
+  {
+    id: "C10", name: "CONTROL: P1/readback omit scope but the A->B proof body reveals O_B in A's tenant — Codex PR#136 P1",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "P1 (B's self-read) and the owner readback omit the owning-scope key, but the signed A->B proof bodies (P2/P2') carry org_id 'acme' == A's P3 scope — positive evidence O_B sits in A's tenant. The same-tenant guard must fold P2/P2' (not just P1 + readback) and HARD-block. Locks the proof-read same-tenant fold.",
+    predicted: "identities_collided_same_tenant",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        // P0/P1 (B's own reads) omit the scope key; the A->B proof reads carry org_id "acme" (A's tenant).
+        if (w.isB) return jsonResponse(200, { id: OBJ_B, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+        if (w.isA) return jsonResponse(200, { id: OBJ_B, org_id: "acme", viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, { id: OBJ_A, org_id: "acme", viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    // Readback omits the owning-scope key, so the same-tenant signal comes ONLY from the proof fold.
+    provision: () => provisionFor({ readbackScope: null }),
+  },
 ];
 
 const GATE_LABEL = {
@@ -563,6 +620,7 @@ const GATE_LABEL = {
   body_not_parseable: "#2 P1/P2 body is not JSON (text/CSV/PDF export)",
   own_scope_missing: "#13 P1 echoes NO owning-scope key (unprovable -> soft LOW signal)",
   own_scope_explicitly_shared: "#13 P1 echoes an EXPLICIT shared/default/public scope (object is shared -> blocks)",
+  own_scope_unusable_numeric: "#13/#14 a PRESENT owning-scope value is an unsafe-magnitude number (precision-lost -> blocks)",
   identities_collided_not_provable: "#14 A and B not distinguishable at the same tenant key (unprovable)",
   identities_collided_same_tenant: "#14 A and B PROVABLY the same tenant (positive evidence against cross-tenant)",
   object_not_access_controlled: "#10 anon read of O_B is not 401/403",
@@ -590,7 +648,12 @@ async function runFixture(fx) {
 
 function matches(predicted, actual) {
   if (predicted === "FIRE") return actual === "FIRE";
-  if (predicted.startsWith("THROW:")) return actual.startsWith("THROW:");
+  // EXACT error-code match for THROW (not a prefix): a prefix `startsWith("THROW:")` would let a
+  // fixture pass on ANY thrown error — so if the guard it was written for regresses and some later
+  // unrelated error (a different INVALID_ARGUMENTS, a STATE_CONFLICT) is thrown first, CI would
+  // still report a match and silently stop checking the invariant the fixture names (Codex/Claude
+  // PR#136). The throw REASON is additionally pinned per-fixture via predicted_error_includes below.
+  if (predicted.startsWith("THROW:")) return actual === predicted;
   return actual === predicted;
 }
 
@@ -668,6 +731,18 @@ function matches(predicted, actual) {
   if (signalFixtures.length === 0) console.log("  (no fixtures declare expected_signals)");
 
   console.log("");
+  console.log("  ── THROW-REASON CHECK (a THROW fixture fires the gate it NAMES, not any error) ──");
+  const throwReasonFixtures = results.filter(({ fx }) => typeof fx.predicted_error_includes === "string");
+  const throwReasonMismatches = [];
+  for (const { fx, r } of throwReasonFixtures) {
+    const ok = typeof r.outcome === "string" && r.outcome.startsWith("THROW:")
+      && typeof r.detail === "string" && r.detail.includes(fx.predicted_error_includes);
+    if (!ok) throwReasonMismatches.push(fx.id);
+    console.log(`  ${W(fx.id, 4)} want~="${fx.predicted_error_includes}" got="${(r.detail || "").slice(0, 52)}" ${ok ? "✓" : "✗ MISMATCH"}`);
+  }
+  if (throwReasonFixtures.length === 0) console.log("  (no fixtures pin a throw reason)");
+
+  console.log("");
   console.log("  ── READ-OUT ────────────────────────────────────────────────────────────────");
   console.log("  • The oracle is SOUND on this corpus (0 false mints) and now fires on an A-only");
   console.log("    cross-tenant read even when the bodies don't echo a private owning-scope key or a");
@@ -690,11 +765,12 @@ function matches(predicted, actual) {
   // checking the guard it was written for (Codex PR#136 P3). predMismatches is the superset.
   const predMismatches = results.filter(({ fx, r }) => !matches(fx.predicted, r.outcome));
   const hardFail = controlFires.length > 0 || signalMismatches.length > 0
-    || expectedFiresMissed.length > 0 || predMismatches.length > 0;
-  console.log(`  ── REGRESSION GATE: ${hardFail ? "❌ FAIL" : "✅ PASS"} — 0 control mints, 0 signal mismatches, every fixture matched its predicted outcome ──`);
+    || expectedFiresMissed.length > 0 || predMismatches.length > 0 || throwReasonMismatches.length > 0;
+  console.log(`  ── REGRESSION GATE: ${hardFail ? "❌ FAIL" : "✅ PASS"} — 0 control mints, 0 signal mismatches, every fixture matched its predicted outcome + throw reason ──`);
   if (controlFires.length) console.log(`     control false-mint(s): ${controlFires.map(({ fx }) => fx.id).join(", ")}`);
   if (signalMismatches.length) console.log(`     signal mismatch(es): ${signalMismatches.join(", ")}`);
   if (predMismatches.length) console.log(`     predicted != actual: ${predMismatches.map(({ fx, r }) => `${fx.id}(want ${fx.predicted}, got ${r.outcome})`).join(", ")}`);
+  if (throwReasonMismatches.length) console.log(`     throw-reason mismatch(es): ${throwReasonMismatches.join(", ")}`);
   if (hardFail) process.exitCode = 1;
   console.log("");
 })().catch((e) => { console.error(e); process.exit(1); });

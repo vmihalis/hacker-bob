@@ -407,6 +407,24 @@ function hasExplicitSharedScope(parsedBody) {
   return owningScopeValues(parsedBody).some((value) => SHARED_SCOPE_VALUES.includes(value));
 }
 
+// True iff a body carries an owning-scope key whose value is PRESENT but UNUSABLE for tenant
+// comparison — specifically a NUMBER that is not a safe integer (a 64-bit id above 2^53 already
+// lost precision in JSON.parse, or a float). scopeValueString() drops these to null, which the
+// same-tenant guard would otherwise read as "scope ABSENT" and could then soft-mint two SAME-tenant
+// objects (both org_id:9007199254740993) as cross-tenant. A present-but-unsafe discriminator means
+// we cannot prove the two identities are in DIFFERENT tenants, so it is positive evidence AGAINST a
+// provable cross-tenant break → HARD refutation (fail closed), NOT a soft "missing scope" signal.
+// (Booleans/objects as a tenant id are nonsensical and cannot precision-collide, so they stay
+// scopeValueString→null/absent; only the realistic numeric-id precision risk hard-blocks here.)
+function hasUnusableOwningScope(parsedBody) {
+  if (parsedBody == null || typeof parsedBody !== "object") return false;
+  for (const key of OWNING_SCOPE_KEYS) {
+    const value = parsedBody[key];
+    if (typeof value === "number" && !Number.isSafeInteger(value)) return true;
+  }
+  return false;
+}
+
 // AC-5 PII tripwire (mint condition #17). Scan a body for PII shapes; any shape
 // that is not an exact-allowlisted synthetic identifier aborts the sign. Wires
 // detectPiiShapes (previously unwired). Returns the offending shapes (empty = ok).
@@ -1087,6 +1105,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       return fail("blocked_by_design", "own_scope_explicitly_shared");
     }
   }
+  // A PRESENT-but-unusable owning-scope value (an unsafe-magnitude / float number that
+  // scopeValueString drops to null) would make the same-tenant guard below read the scope as
+  // ABSENT and could soft-mint two SAME-tenant objects (both carrying the same unsafe numeric
+  // org_id) as cross-tenant. We cannot prove the identities are in DIFFERENT tenants when a
+  // discriminator is present but unsafe to compare, so fail closed across EVERY body that feeds
+  // the tenant guard — the B side (p1/readback/p2/p2′) AND the A side (p3). (Codex PR#136 P1.)
+  for (const proofBody of [p1Parsed, parsedReadback, p2Parsed, p2primeParsed, p3Parsed]) {
+    if (hasUnusableOwningScope(proofBody)) {
+      return fail("blocked_by_design", "own_scope_unusable_numeric");
+    }
+  }
   const p1Scope = ownScopeOf(p1Parsed);
   const ownScopePrivate = ownScopeIsPrivate(p1Scope);
   if (p1Scope == null) {
@@ -1107,9 +1136,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // rule as #13): when the live P1 body omits owning-scope keys, the trusted readback's B-scope
   // still hard-refutes a same-tenant collision with A. (It can only ADD a refutation; differing
   // values do NOT clear the P1-side distinctness soft-gate below, which stays on the live bodies.)
+  // B's scope values ALSO fold in the signed A→B proof bodies (p2/p2′): those are the reads whose
+  // canary signs the row and are already trusted for the explicit-shared hard block above, so if
+  // the proof body itself reveals O_B sits in A's tenant (same owning-scope value as A), that is
+  // positive same-tenant evidence and must hard-refute too — even when P1/readback omit the key
+  // (Codex PR#136 P1). Folding proof bodies can only ADD a refutation: a real cross-tenant proof
+  // body carries B's tenant value (≠ A), so it never creates a false same-tenant collision.
   const bScopeValues = [...new Set([
     ...owningScopeValues(p1Parsed),
     ...owningScopeValues(parsedReadback),
+    ...owningScopeValues(p2Parsed),
+    ...owningScopeValues(p2primeParsed),
   ])];
   const aScopeValues = owningScopeValues(p3Parsed);
   const tenantsProvablySame = aScopeValues.some((v) => bScopeValues.includes(v));
@@ -1257,13 +1294,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // Non-blocking provability signals (#13/#14): EMPTY on a fully-proven fire, populated
     // when tenant attribution is weaker. Hash-bound via stderr_hash (diagnosticBundle) and
     // surfaced here so the evaluator/grader can corroborate or discount the attribution.
-    confidence_signals: confidenceSignals,
+    // Each consumer-facing slot gets an INDEPENDENT array (.slice()) so a caller mutating one
+    // return field can never silently mutate the other (top-level vs masked_oracle).
+    confidence_signals: confidenceSignals.slice(),
     // The agent passes this surface_id to BOTH the producer and the record call
     // so the #111 strict-equality gate passes.
     masked_oracle: {
       relation: relationBooleans,
       canary_present: { p1: true, p2: true, p2prime: true },
-      confidence_signals: confidenceSignals,
+      confidence_signals: confidenceSignals.slice(),
       body_hash: row.stdout_hash,
     },
     ...identity,

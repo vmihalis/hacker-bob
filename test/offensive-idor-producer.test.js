@@ -887,6 +887,64 @@ test("AC-6 negative: A and B share an INTEGER org_id (numeric tenant) → identi
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: A and B share an UNSAFE-magnitude numeric org_id (>2^53) → own_scope_unusable_numeric (no precision false-mint)", () => withTempHome(async () => {
+  // A 64-bit tenant id above 2^53 already lost precision in JSON.parse, so scopeValueString drops it
+  // to null. Were that read as "scope absent", two SAME-tenant objects (both org_id 9007199254740993)
+  // would soft-mint a LOW cross-tenant row. A present-but-unsafe discriminator cannot prove DISTINCT
+  // tenants → hard block instead of downgrading to "missing" (Codex PR#136 P1).
+  const domain = "idor-neg-unsafe-numeric.example.test";
+  setupSession(domain);
+  const UNSAFE = 9007199254740993; // 2^53 + 1 — JSON.parse already rounded this to ...992
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, org_id: UNSAFE, viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, org_id: UNSAFE, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "own_scope_unusable_numeric");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-6 negative: P1/readback omit scope but the A→B PROOF body (P2/P2′) reveals O_B in A's tenant → identities_collided_same_tenant (proof-read fold, Codex PR#136 P1)", () => withTempHome(async () => {
+  // P1 (B's self-read) and the owner readback omit the owning-scope key, so the OLD same-tenant guard
+  // (P1 + readback only) saw no collision and would soft-mint. But the signed A→B proof bodies (P2/P2′)
+  // themselves carry org_id "acme" == A's P3 scope — positive evidence O_B sits in A's tenant. Folding
+  // the proof bodies into the same-tenant guard hard-refutes it (they are already trusted for the
+  // explicit-shared hard block, so they must also feed the positive same-tenant refutation).
+  const domain = "idor-neg-proofread-sametenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && isB) {
+        // P1/P0a/P0b — B's self-read OMITS the owning-scope key (byte-stable across B's reads).
+        return jsonResponse(200, { id: OBJ_B, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOB && isA) {
+        // P2/P2′ — the A→B proof read REVEALS O_B sits in A's tenant ("acme").
+        return jsonResponse(200, { id: OBJ_B, org_id: "acme", viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        // P3 — A's own object is in tenant "acme".
+        return jsonResponse(200, { id: OBJ_A, org_id: "acme", viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+      }
+      return null;
+    },
+  });
+  // Readback also omits the owning-scope key, so the same-tenant signal comes ONLY from the proof fold.
+  const provision = { ...soundProvision(), owner_readback_b: { id: OBJ_B, details: { secret: { token: CANARY_B } } } };
+  const result = await run(domain, { fetch_fn, provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {

@@ -221,6 +221,17 @@ function buildAndSignOffensiveRow(domain, {
       `unknown offensive tool_id (absent from the demonstrated-severity registry): ${toolId}`,
     );
   }
+  // The registry value MUST be a known severity on EVERY path — not only when an override is
+  // supplied. A registry typo (a non-empty string absent from SEVERITY_VALUES) would otherwise pass
+  // straight through to the signed row's demonstrated_severity on the NO-override path, unvalidated.
+  // A typo is a programming error, so fail closed rather than sign an out-of-enum severity.
+  const registryIdx = SEVERITY_VALUES.indexOf(registrySeverity);
+  if (registryIdx < 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `registry demonstrated-severity for ${toolId} is not a known severity value: ${registrySeverity}`,
+    );
+  }
   // An optional per-row override may ONLY LOWER the registry ceiling — e.g. a soft-gated
   // IDOR fire whose cross-tenant attribution was unproven, which must be claim-VISIBLE as a
   // lower severity because the confidence signal itself is not carried into the claim/grade
@@ -233,16 +244,6 @@ function buildAndSignOffensiveRow(domain, {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
         `demonstratedSeverityOverride must be a known severity value: ${demonstratedSeverityOverride}`,
-      );
-    }
-    // The registry value MUST also be a known severity — otherwise its index is -1 and Math.max
-    // would silently elect the override regardless of direction (defeating the only-LOWER clamp).
-    // A registry typo is a programming error, so fail closed rather than mis-clamp a signed row.
-    const registryIdx = SEVERITY_VALUES.indexOf(registrySeverity);
-    if (registryIdx < 0) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `registry demonstrated-severity for ${toolId} is not a known severity value: ${registrySeverity}`,
       );
     }
     demonstratedSeverity = SEVERITY_VALUES[Math.max(overrideIdx, registryIdx)];
