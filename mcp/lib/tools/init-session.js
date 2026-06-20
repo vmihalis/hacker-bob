@@ -71,18 +71,14 @@ module.exports = Object.freeze({
       },
       "lab_authorization": {
         "type": "object",
-        "description": "OFF BY DEFAULT. Operator attestation that target_domain is a private host you OWN and are AUTHORIZED to test (IPv4 loopback 127.0.0.0/8 or RFC1918: 10/8, 172.16/12, 192.168/16). Required to scope a session to a private IP literal; without it the public-DNS gate rejects non-public targets. Cloud-metadata, link-local, IPv6, and .internal/.local hosts are never eligible. Recorded as an audit-graded artifact and implies allow_internal_hosts for this session; cannot be combined with block_internal_hosts.",
+        "description": "OFF BY DEFAULT. Declares intent to scope this session to a private host (IPv4 loopback 127.0.0.0/8 or RFC1918: 10/8, 172.16/12, 192.168/16) that the OPERATOR owns and is authorized to test. This declaration ALONE does NOT grant the escape: the operator must ALSO set the BOB_LAB_TARGET_ACK environment variable on the MCP server (an operator-only control the agent cannot supply). Without both, the public-DNS gate rejects non-public targets. Cloud-metadata, link-local, IPv6, and .internal/.local hosts are never eligible. Recorded as an audit-graded artifact and implies allow_internal_hosts for this session; cannot be combined with block_internal_hosts.",
         "properties": {
           "private_targets": {
             "type": "boolean",
-            "description": "Must be true to attest a private target."
-          },
-          "ack": {
-            "type": "string",
-            "description": "Exact attestation token (verbatim): i-own-and-am-authorized-to-test-these-private-targets"
+            "description": "Must be true to declare a private-target session. Authorization is granted out-of-band by the operator via the BOB_LAB_TARGET_ACK server environment variable, not by any value in this call."
           }
         },
-        "required": ["private_targets", "ack"],
+        "required": ["private_targets"],
         "additionalProperties": false
       }
     },
