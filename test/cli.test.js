@@ -769,6 +769,7 @@ test("CLI doctor --json returns stable machine-readable checks", () => {
       "claude_egress_profiles_example",
       "claude_egress_profiles_config",
       "claude_mcp_dependency_proxy_agent",
+      "claude_mcp_dependency_patchright",
       "claude_policy_replay_harness",
       "mcp_server_loadable",
       "resource_knowledge",
