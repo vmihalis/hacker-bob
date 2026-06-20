@@ -17779,6 +17779,84 @@ test("bob_read_assignment_brief falls back to generic guidance for unknown tech"
   });
 });
 
+test("bob_read_assignment_brief surfaces over-permissive-search-list for an Elasticsearch search surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-es-search",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Elasticsearch"],
+      endpoints: ["/_search", "/api/search"],
+      interesting_params: ["search", "facet"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-es-search" }]);
+
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search list surface (route + filter param, no search tech)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-people",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/people"],
+      interesting_params: ["filter"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-people" }]);
+
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a GraphQL query surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql-only",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL", "Apollo"],
+      endpoints: ["/graphql"],
+      interesting_params: ["query", "variables", "operationName"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql-only" }]);
+
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
+test("over-permissive-search-list guidance fits the 240-char summary cap with the grading thesis front-loaded", () => {
+  // technique-packs.js caps each summary item at TECHNIQUE_SUMMARY_ITEM_MAX_CHARS = 240; keep every
+  // technique/payload_hint within it so summary-mode briefs never truncate the safety or grading guidance.
+  const SUMMARY_ITEM_MAX_CHARS = 240;
+  const knowledge = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
+    "utf8",
+  ));
+  const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
+  assert.ok(entry, "over-permissive-search-list entry must exist");
+  for (const technique of entry.techniques) {
+    assert.ok(technique.length <= SUMMARY_ITEM_MAX_CHARS,
+      `technique exceeds summary cap (${technique.length}): ${technique.slice(0, 60)}`);
+  }
+  for (const hint of entry.payload_hints) {
+    assert.ok(hint.length <= SUMMARY_ITEM_MAX_CHARS,
+      `payload_hint exceeds summary cap (${hint.length}): ${hint.slice(0, 60)}`);
+  }
+  // The grading thesis ("NOT auto-LOW") and the PII guard must ride the first surfaced item so they
+  // survive summary truncation even on the demoted/other-applicable path.
+  assert.match(entry.techniques[0], /NOT auto-LOW/);
+  assert.match(entry.techniques[0], /NEVER page raw rows, real PII/);
+});
+
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
   withTempHome(() => {
     const domain = "example.com";
