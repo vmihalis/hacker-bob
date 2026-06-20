@@ -52,6 +52,17 @@ function getContextBudget(args) {
 
     try {
       const routesInfo = readSurfaceRoutesStrict(targetDomain);
+      // readSurfaceRoutesStrict quarantines a malformed route (e.g. an unsupported context_budget
+      // field, or a stale cross-version schema) so read-all consumers do not brick. But a TARGETED
+      // budget lookup must SURFACE a quarantined target — checked FIRST, so it fires even when a
+      // duplicate VALID route for the same surface also exists (the file is still corrupt and the
+      // agent cannot trust a silently-chosen budget/pack), not just when no route was found.
+      if (Array.isArray(routesInfo.malformed_routes)) {
+        const malformed = routesInfo.malformed_routes.find((entry) => entry.surface_id === surfaceId);
+        if (malformed) {
+          throw new Error(`surface_id ${surfaceId} has a malformed route: ${malformed.reason}`);
+        }
+      }
       const route = routesInfo.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
       if (route) {
         if (route.capability_pack !== capabilityPack) {

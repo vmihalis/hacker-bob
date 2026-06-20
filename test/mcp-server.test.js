@@ -7531,7 +7531,9 @@ test("tokenized wave handoffs require the correct token and report verified prov
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
-      handoff_token: "wrong-token-value",
+      // Well-formed length (32 chars, matching generateHandoffToken's base64url(24)) but the WRONG
+      // value, so it clears the schema minLength and exercises the sha256-mismatch path.
+      handoff_token: "x".repeat(32),
       summary: "Tested the assigned surface.",
       content: "# handoff",
     });
@@ -12011,7 +12013,7 @@ test("bob_read_findings, bob_list_findings, and bob_wave_status return empty-sta
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [],
     });
@@ -12089,7 +12091,7 @@ test("bob_list_findings and bob_wave_status keep their external shapes while rea
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, auth_challenge_hosts: [], auth_challenge_403_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [
         {
@@ -18729,6 +18731,12 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
 
+  // Anchored exact-command match (^...$): a bare substring check would pass on a chained command like
+  // `bash ".../bob-http-write-confirm.sh" && evil`, weakening this security contract. The only allowed
+  // MCP-tool hook command is exactly a bash invocation of the write-confirm gate, nothing appended.
+  const isWriteConfirmOnlyCommand = (command) =>
+    /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+
   for (const settings of [generated, installed]) {
     const hooksText = JSON.stringify(settings.hooks.PreToolUse || []);
     assert.doesNotMatch(hooksText, /scope-guard/);
@@ -18736,11 +18744,19 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    assert.equal(
-      settings.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-      false,
-      "MCP tool hooks should not imply an external scope guard",
-    );
+    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
+    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
+    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
+    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
+    // scope/enforcement guard on an MCP tool remains forbidden.
+    const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    for (const entry of mcpEntries) {
+      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
+      assert.ok(
+        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
+      );
+    }
   }
 
   for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
@@ -18775,10 +18791,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.match(mergedHooksText, /session-write-guard\.sh/);
   assert.match(mergedHooksText, /session-read-guard\.sh/);
   assert.match(mergedHooksText, /echo existing/);
-  assert.equal(
-    merged.hooks.PreToolUse.some((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || "")),
-    false,
-    "stale MCP scope hook matchers should be removed when their only hook is stale",
+  // The stale scope-guard-mcp.sh hook is stripped (assert above). The bob_http_scan matcher survives
+  // the merge ONLY because `generated` (defaultClaudeSettings) contributes the non-stale write-confirm
+  // HITL hook — so the surviving MCP hook is exactly that gate, never the stripped scope guard.
+  const mergedScan = merged.hooks.PreToolUse.find((entry) => entry.matcher === "mcp__hacker-bob__bob_http_scan");
+  assert.ok(mergedScan, "the write-confirm gate matcher survives the merge via the canonical default");
+  assert.ok(
+    mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+    "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
   );
 });
 

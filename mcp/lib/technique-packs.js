@@ -1123,6 +1123,24 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     try {
       const routesInfo = readSurfaceRoutesStrict(domain);
       route = routesInfo.document.routes.find((entry) => entry.surface_id === surface.id) || null;
+      // readSurfaceRoutesStrict is now tolerant: a stale/duplicate route for this surface is QUARANTINED
+      // (kept out of document.routes) rather than throwing. Surface a diagnostic whenever THIS surface
+      // is quarantined — REGARDLESS of whether a valid route was also retained. The check is NOT gated on
+      // `!route`: a valid-first + malformed-duplicate file is corrupt (getContextBudget/findRoutedSurface
+      // reject it unconditionally), so staying silent here just because the valid first occurrence was
+      // found would recreate split authority over one artifact. Unlike those hard gates, technique
+      // selection must NOT brick on a stale route — pack re-derivation (or the retained valid route) is a
+      // safe result — so it degrades gracefully with a diagnostic; the authoritative rejection is downstream.
+      if (Array.isArray(routesInfo.malformed_routes)) {
+        const quarantined = routesInfo.malformed_routes.find((m) => m && m.surface_id === surface.id);
+        if (quarantined) {
+          const action = route ? "using the valid route but the file is corrupt" : "re-deriving its capability pack";
+          process.stderr.write(
+            `WARNING: surface_id ${surface.id} has a quarantined route (${quarantined.reason}); `
+            + `bob_select_technique_packs is ${action} — re-run bob_route_surfaces to regenerate.\n`,
+          );
+        }
+      }
     } catch {}
   }
   if (!route) {

@@ -247,6 +247,17 @@ function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
 
 function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
+  // Check quarantined routes for THIS surface FIRST — BEFORE accepting a route — so a corrupt file
+  // (even one with a valid-first occurrence AND a malformed duplicate for the same surface_id) is
+  // rejected here exactly as getContextBudget rejects it. Otherwise live offensive probes would
+  // trust a file the budget system considers corrupt (split routing authority over one artifact).
+  // The reader quarantines instead of bricking; a targeted probe surfaces the repairable reason.
+  if (Array.isArray(routed.malformed_routes)) {
+    const malformed = routed.malformed_routes.find((entry) => entry.surface_id === surfaceId);
+    if (malformed) {
+      rejectInvalidArguments(`surface_id ${surfaceId} has a malformed route (re-run bob_route_surfaces): ${malformed.reason}`);
+    }
+  }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
     rejectInvalidArguments(`unknown or unrouted surface_id ${surfaceId}`);

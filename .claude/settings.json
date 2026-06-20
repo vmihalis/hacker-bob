@@ -211,6 +211,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__hacker-bob__bob_http_scan",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-http-write-confirm.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [

@@ -350,12 +350,11 @@ test("resolveBaselineFromSurface resolves a query-free baseline that matches the
 test("auditConfirmRequest writes a breaker-visible record under any toolId and never throws", () => withTempHome(() => {
   const domain = "common-audit.example.test";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  // The point of the parameterized toolId is per-tool attribution; note that
-  // normalizeHttpAuditRecord does NOT persist a `tool` field, so a future producer
-  // passing a different toolId (or omitting it) yields a BYTE-IDENTICAL persisted
-  // record — circuit-breaker / request-budget visibility comes from the record's
-  // existence + surface_id/status/url, never from `tool`. The toolId's only
-  // observable effect is the stderr diagnostic on an audit-write failure.
+  // normalizeHttpAuditRecord PERSISTS `tool` (the toolId) so the circuit breaker can tell a
+  // faithful-auth bob_http_scan record (no `tool`) from an offensive-confirmer probe (which audits
+  // WITHOUT an auth_profile) — the auth-aware heal-gate only reclassifies the former. Breaker /
+  // request-budget VISIBILITY still comes from the record's existence + surface_id/status/url, not
+  // from `tool`; a missing toolId cannot make a probe invisible.
   auditConfirmRequest({
     domain,
     surfaceId: "surface:accounts",
@@ -373,8 +372,9 @@ test("auditConfirmRequest writes a breaker-visible record under any toolId and n
   // a successful probe records scope_decision "allowed" (a null would make
   // normalizeHttpAuditRecord throw and silently drop the breaker-visibility record)
   assert.equal(records[0].scope_decision, "allowed");
-  // `tool` is normalized out — a missing toolId cannot make a probe invisible
-  assert.equal(Object.prototype.hasOwnProperty.call(records[0], "tool"), false);
+  // `tool` is now persisted (the toolId) — it gates the breaker's faithful-auth heal logic; it
+  // never affects breaker-visibility (record existence + surface_id/status/url do that).
+  assert.equal(records[0].tool, "bob_http_idor_confirm");
   // defensive audit contract: never throws even with no domain / no toolId
   assert.doesNotThrow(() => auditConfirmRequest({ domain: null }));
 }));
