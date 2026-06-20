@@ -8,6 +8,7 @@ const path = require("path");
 
 const {
   advanceSession,
+  deriveAdvanceAuthContext,
   initSession,
 } = require("../mcp/lib/session-state.js");
 const {
@@ -741,4 +742,24 @@ test("auth_status: a blank auth_status arg is treated as omitted and does NOT sp
     assert.equal(stateStatus, "pending");
     assert.equal(nucleusStatus, stateStatus);
   });
+});
+
+test("deriveAdvanceAuthContext precedence table: operator authority > sticky --no-auth > forge-guarded explicit > derive", () => {
+  const D = (prior, explicit, hasProfile, op) =>
+    deriveAdvanceAuthContext({ auth_status: prior }, explicit, hasProfile, op).auth_status;
+  // (1) operator_force is authority — an explicit value (incl. unbacked "authenticated") is honored.
+  assert.equal(D("unauthenticated", "authenticated", false, true), "authenticated");
+  assert.equal(D("authenticated", "unauthenticated", true, true), "unauthenticated");
+  // (2) sticky --no-auth: a prior "unauthenticated" survives an omitted auth_status AND an
+  //     UNPRIVILEGED explicit "authenticated" — even with a usable profile present. THE HEADLINE FIX.
+  assert.equal(D("unauthenticated", null, true, false), "unauthenticated");
+  assert.equal(D("unauthenticated", "authenticated", true, false), "unauthenticated");
+  // (3) unprivileged explicit: negative/neutral always honored; positive only when backed by a profile.
+  assert.equal(D("pending", "unauthenticated", false, false), "unauthenticated");
+  assert.equal(D("pending", "authenticated", false, false), "pending");   // forge guard: unbacked → ignored
+  assert.equal(D("pending", "authenticated", true, false), "authenticated"); // backed → honored
+  // (4)/(5) no explicit: derive from profile presence, else carry forward.
+  assert.equal(D("pending", null, true, false), "authenticated");
+  assert.equal(D("pending", null, false, false), "pending");
+  assert.equal(D("authenticated", null, false, false), "authenticated");   // never auto-downgrade
 });

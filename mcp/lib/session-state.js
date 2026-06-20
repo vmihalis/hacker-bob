@@ -484,40 +484,43 @@ function isSensitiveMaterialError(error) {
 // consumer needing a live "are credentials present right now" answer must call
 // hasUsableAuthProfile directly rather than trust this field.
 //
-// Precedence:
-//  (1) An explicit, NON-BLANK caller-supplied auth_status wins — EXCEPT an UNBACKED positive
-//      claim: "authenticated" is honored only when a usable profile is actually present OR the
-//      caller carries operator_force authority. So an UNPRIVILEGED caller (one WITHOUT
-//      operator_force) — e.g. a prompt-injected evaluator — cannot forge credential provenance
-//      with nothing in the auth store; operator_force stays the deliberate operator escape hatch
-//      (an operator vouching for an out-of-band context CAN assert "authenticated"). Negative/
-//      neutral assertions ("unauthenticated" via `--no-auth`, "pending") need no evidence and are
-//      always honored. A blank/whitespace value is treated as OMITTED — otherwise it would
-//      normalize to "pending" in the nucleus while the raw "" leaked to the state.json mirror.
-//  (2) A prior EXPLICIT "unauthenticated" is carried forward (NOT auto-upgraded) when the caller
-//      omits auth_status, even if a profile now exists — a `--no-auth`/resumed run stays
-//      unauthenticated until the operator explicitly changes it.
-//  (3) Otherwise, a usable stored profile means "authenticated".
-//  (4) Otherwise carry the prior status forward (default "pending"); never silently auto-downgrade.
+// Precedence (in order):
+//  (1) operator_force is operator AUTHORITY: an explicit, non-blank value carried with
+//      operator_force is always honored — including lifting a prior "unauthenticated" or asserting
+//      "authenticated" with no profile (an operator vouching for an out-of-band context).
+//  (2) A prior "unauthenticated" is STICKY: once a run is `--no-auth`, only operator authority (1)
+//      can lift it. It survives BOTH an omitted auth_status AND an UNPRIVILEGED explicit
+//      "authenticated" (even with a profile in the store — e.g. a victim credential captured for
+//      IDOR testing must not silently re-authenticate a `--no-auth` session). This is broader than
+//      "carried forward on omission": an unprivileged backed claim cannot reverse the operator's
+//      intent.
+//  (3) An UNPRIVILEGED explicit value (no operator_force, prior not sticky-unauthenticated):
+//      negative/neutral assertions ("unauthenticated", "pending") need no evidence and are honored;
+//      a positive "authenticated" is honored ONLY when a usable profile is actually present (the
+//      forge guard — a prompt-injected evaluator cannot fabricate credential provenance). A blank/
+//      whitespace value is treated as OMITTED (else it would normalize to "pending" in the nucleus
+//      while the raw "" leaked to the state.json mirror).
+//  (4) No explicit value: a usable stored profile means "authenticated".
+//  (5) Otherwise carry the prior status forward (default "pending"); never silently auto-downgrade.
 // buildSessionNucleus -> normalizeAuthContext validates the resulting enum; the caller mirrors the
 // NORMALIZED nucleus value into state.json so the two stores can never disagree.
 function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile, operatorForced = false) {
   const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
-  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted so it cannot win
-  // branch (1) and then split-brain (nucleus "pending" vs state.json "").
+  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted.
   const explicit = (typeof explicitAuthStatus === "string" && explicitAuthStatus.trim() !== "")
     ? explicitAuthStatus
     : null;
   let nextStatus;
-  if (explicit != null
-    && (explicit !== "authenticated" || hasProfile || operatorForced === true)) {
-    nextStatus = explicit;                                 // (1) honored explicit value
+  if (explicit != null && operatorForced === true) {
+    nextStatus = explicit;                                 // (1) operator authority
   } else if (prior.auth_status === "unauthenticated") {
-    nextStatus = "unauthenticated";                        // (2) sticky operator-asserted negative
+    nextStatus = "unauthenticated";                        // (2) sticky --no-auth (only (1) lifts it)
+  } else if (explicit != null && (explicit !== "authenticated" || hasProfile)) {
+    nextStatus = explicit;                                 // (3) unprivileged explicit (forge-guarded)
   } else if (hasProfile) {
-    nextStatus = "authenticated";                          // (3) usable stored credentials
+    nextStatus = "authenticated";                          // (4) usable stored credentials
   } else {
-    nextStatus = prior.auth_status || "pending";           // (4) carry forward / default
+    nextStatus = prior.auth_status || "pending";           // (5) carry forward / default
   }
   return { ...prior, auth_status: nextStatus };
 }
@@ -991,6 +994,7 @@ module.exports = {
   assertBlockInternalHostsCompatibleWithEgress,
   clearOperatorNote,
   clearTerminalBlock,
+  deriveAdvanceAuthContext,
   initSession,
   reportWritten,
   resolveAndAssertSessionEgressIdentity,
