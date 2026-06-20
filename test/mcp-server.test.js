@@ -17968,6 +17968,26 @@ test("bob_read_assignment_brief does NOT surface over-permissive-search-list for
   });
 });
 
+test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a 'Research API' tech surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research-api",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Research API"],
+      endpoints: ["/api/papers"],
+      interesting_params: ["q"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research-api" }]);
+
+    // tech match is substring-based; "search api" was a substring of "Research API" and must not pull
+    // mass-extraction guidance onto a research/data API with no real search signal.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.ok(!brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
+  });
+});
+
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
   withTempHome(() => {
     const domain = "example.com";

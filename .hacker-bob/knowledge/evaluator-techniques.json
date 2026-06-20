@@ -28,7 +28,7 @@
       "id": "over-permissive-search-list",
       "title": "Over-permissive search/list endpoints: filter-bypass mass extraction",
       "match": {
-        "tech": ["elasticsearch", "opensearch", "solr", "algolia", "search api", "full-text search"],
+        "tech": ["elasticsearch", "opensearch", "solr", "algolia", "full-text search"],
         "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
         "params": [],
         "hints": ["people search", "over-permissive search", "full-text search"]
