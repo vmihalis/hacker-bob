@@ -173,6 +173,13 @@ function emitPromotedSurfaceObserved(domain, lead, surfaceId) {
       surface_id: surfaceId,
       payload: {
         surface_type: lead.surface_type || "unknown",
+        // Smart-contract sub-shape. chain_family is required downstream for
+        // capability routing; the materializer carries chain_family/chain_id/
+        // contract_address as surface scalars (chain_id stringified to fit the
+        // text-scalar carrier and to be uniform with the name-based families).
+        chain_family: lead.chain_family || undefined,
+        chain_id: lead.chain_id == null ? undefined : String(lead.chain_id),
+        contract_address: lead.contract_address || undefined,
         title: lead.title,
         hosts: lead.hosts,
         endpoints: lead.endpoints,
@@ -185,9 +192,13 @@ function emitPromotedSurfaceObserved(domain, lead, surfaceId) {
       source: { artifact: "surface-leads.json", tool: "bob_promote_surface_leads" },
     });
     scheduleMaterialization(domain);
-  } catch {
-    // Frontier ledger append is best-effort here; materialization runs on
-    // the next producer event.
+  } catch (err) {
+    // A ToolError here is a contract violation (e.g. the Y-D21 smart_contract
+    // chain_family invariant): promoting a malformed surface is a producer
+    // defect that must surface to the caller, not be silently dropped. Genuine
+    // append/IO failures remain best-effort — the next producer event
+    // re-materializes.
+    if (err instanceof ToolError) throw err;
   }
 }
 

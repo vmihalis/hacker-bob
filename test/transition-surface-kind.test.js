@@ -313,7 +313,7 @@ test("materializer leaves surfaces[] intact when transitions[] grows", () => {
   withTempHome(() => {
     const domain = "x3-coexist.example.com";
     seedSurface(domain, "surface:auth", { surface_type: "web" });
-    seedSurface(domain, "surface:vault", { surface_type: "smart_contract" });
+    seedSurface(domain, "surface:vault", { surface_type: "smart_contract", chain_family: "evm" });
     appendTransitionProposal({
       target_domain: domain,
       from_surface: "surface:auth",

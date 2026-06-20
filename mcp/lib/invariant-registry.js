@@ -92,6 +92,25 @@ const REGISTRY = Object.freeze({
       Object.freeze({ file: "mcp/lib/repo-env.js", symbol: "S14" }), // tag anchor (repo-env.js comment)
     ]),
   }),
+
+  // ── Frontier producer-boundary integrity (Y-D21) ────────────────────────
+  // The append funnel is the cheapest fail-closed boundary every surface.observed
+  // emitter flows through. Enforcing the smart_contract => chain_family pairing
+  // here turns a far-downstream, provenance-free capability-routing throw into a
+  // located append-time rejection that can never poison the surface set.
+  "Y-D21": Object.freeze({
+    kind: "invariant",
+    class: "frontier_integrity",
+    title:
+      "Producer-boundary surface integrity: a surface.observed event whose "
+      + "surface_type is smart_contract MUST carry a known chain_family (one of "
+      + "CHAIN_FAMILY_VALUES), enforced fail-closed at append time so a dropped "
+      + "field cannot poison surface-index.json or detonate as a provenance-free "
+      + "routing INTERNAL_ERROR.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/frontier-events.js", symbol: "assertSmartContractChainFamily" }),
+    ]),
+  }),
 });
 
 // Backlog: tags that EXIST in the tree but do not yet have a written registry
