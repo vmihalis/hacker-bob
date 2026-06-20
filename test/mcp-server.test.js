@@ -17989,6 +17989,36 @@ test("bob_read_assignment_brief does NOT surface over-permissive-search-list for
   });
 });
 
+test("bob_read_assignment_brief selects over-permissive-search-list as a candidate for /api/research/search (real /search segment scores 5; ties with the /api generic packs, does not dominate)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-research-search-endpoint",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/api/research/search"],
+      interesting_params: ["q"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-research-search-endpoint" }]);
+
+    // Boundary pinned (the brutalist's "score exactly 5 and receive guidance" case). A real /search-family
+    // PATH SEGMENT is sufficient signal on its own: "/search" substring-matches the trailing /search of
+    // /api/research/search -> endpoint weight 5 -> the pack is a SELECTED CANDIDATE the evaluator can pull.
+    // But it does NOT dominate: on an /api/ path it ties at 5 with generic-rest-api (/api) and nextjs
+    // (/api/), so it ranks as a peer candidate (alphabetical tiebreak puts it 3rd, out of the top-2 inline
+    // `techniques` slot) rather than crowding out the generic REST guidance -- a precision safeguard, not a
+    // false positive. Contrast the "Research API" tech and bare /research surfaces above, which have NO
+    // /search segment, score 0, and are not selected at all. Assert on technique_packs.selected (the real
+    // candidate set, cap 5), NOT the legacy top-2 `techniques` field.
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const ops = brief.technique_packs.selected.find((entry) => entry.id === "over-permissive-search-list");
+    assert.ok(ops, "a real /search path segment must select over-permissive-search-list as a candidate");
+    assert.equal(ops.score, 5);
+    assert.ok(ops.matched.includes("endpoint:/search"), "must match via the /search endpoint pattern");
+  });
+});
+
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
   withTempHome(() => {
     const domain = "example.com";
