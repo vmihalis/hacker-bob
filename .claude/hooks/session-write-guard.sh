@@ -137,13 +137,27 @@ def check_file(raw_path, base_dirs=None):
     escape the session-dir check.
     """
     resolved = resolve_path(raw_path)
-    rel = session_relative(resolved)
-    if rel is None:
-        return None
+    candidates = [resolved]
+    if not resolved.is_absolute() and base_dirs:
+        for base in base_dirs:
+            candidates.append(base / resolved)
+
+    for candidate in candidates:
+        rel = session_relative(candidate)
+        if rel is None:
+            continue
 
         filename = candidate.name
 
         if any(part in MCP_OWNED_DIRS for part in candidate.parts):
+            return filename
+
+        # Relative-path-prefix match (parity with isAuditGradedPath). `rel` is
+        # relative to the session ROOT (e.g. <domain>/<run>/verification-attempts/x).
+        # Component membership on the session-relative parts blocks
+        # …/verification-attempts/x and …/wave-handoffs/y while excluding
+        # out-of-session paths that merely share the home prefix.
+        if any(part in MCP_OWNED_DIR_PREFIXES for part in rel.parts):
             return filename
 
         if is_agent_allowed(filename):
@@ -155,23 +169,7 @@ def check_file(raw_path, base_dirs=None):
         # Block by default for unrecognized files in session dir
         return filename
 
-    # Relative-path-prefix match (parity with isAuditGradedPath). `rel` is
-    # relative to the session ROOT (e.g. <domain>/<run>/verification-attempts/x).
-    # The session root contains <domain>/<run> segments before the registry-named
-    # dir, so component membership on the session-relative parts is the faithful
-    # translation: it blocks …/verification-attempts/x and …/wave-handoffs/y
-    # while excluding out-of-session paths that merely share the home prefix.
-    if any(part in MCP_OWNED_DIR_PREFIXES for part in rel.parts):
-        return filename
-
-    if is_agent_allowed(filename):
-        return None
-
-    if is_mcp_owned(filename):
-        return filename
-
-    # Block by default for unrecognized files in session dir
-    return filename
+    return None
 
 
 def block(message):
