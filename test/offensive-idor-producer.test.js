@@ -703,7 +703,7 @@ test("AC-6 negative: PROVABLY same tenant (A and B both report owner_scope tenan
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
-test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", () => withTempHome(async () => {
+test("AC-6 negative: P1 own-scope is an EXPLICIT shared scope (\"default\") → own_scope_explicitly_shared (blocks)", () => withTempHome(async () => {
   const domain = "idor-neg-shared-scope.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, {
@@ -715,13 +715,12 @@ test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", 
     },
   });
   const result = await run(domain, { fetch_fn });
-  // #13 is DEMOTED to a non-blocking confidence signal: a non-private/shared own-scope no
-  // longer refutes the cross-tenant read; it is recorded as weaker attribution.
-  assert.equal(result.confirmed, true, JSON.stringify(result));
-  assert.equal(result.row_written, true);
-  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["own_scope_not_private"]);
-  assert.equal(result.masked_oracle.relation.own_scope_private, false);
-  assert.equal(readOffensiveRunRecords(domain).length, 1);
+  // An EXPLICIT shared scope ("default") is positive evidence the object is shared, NOT
+  // B-private — it stays a HARD refutation (only a MISSING scope key soft-gates).
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "own_scope_explicitly_shared");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 // ───────────────────────── round-2 review hardening ──────────────────────────
@@ -1504,11 +1503,11 @@ test("AC-5 safety: a control-object id (object_a) that is a percent-encoded cana
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
-test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) → own_scope_not_private", () => withTempHome(async () => {
+test("AC-6 soft: account_id is NOT an owning-scope/tenant key → own_scope_missing + identities_collided_not_provable, mints at LOW", () => withTempHome(async () => {
   // account_id is NOT an owning-scope/tenant key, so an O_B body carrying ONLY account_id
-  // exposes no private owner scope (#13) AND no tenant discriminator (#14). Post-demotion
-  // those two gates are non-blocking confidence signals, so the canary-proven cross-tenant
-  // read still mints — carrying BOTH signals (weak attribution) rather than refusing to sign.
+  // exposes no private owner scope (#13 MISSING) AND no tenant discriminator (#14). Both are
+  // ABSENCE-of-evidence, so they demote to confidence signals and the canary-proven read
+  // still mints — but at LOW severity (the unproven attribution is claim-visible), not medium.
   const domain = "idor-neg-accountid-not-tenant.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, {
@@ -1522,9 +1521,11 @@ test("AC-6 negative: account_id is NOT a tenant/owner scope (it is a record id) 
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, true, JSON.stringify(result));
   assert.equal(result.row_written, true);
-  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable", "own_scope_not_private"]);
+  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable", "own_scope_missing"]);
+  assert.equal(result.demonstrated_severity, "low");
   assert.equal(result.masked_oracle.relation.own_scope_private, false);
   assert.equal(result.masked_oracle.relation.tenants_distinct, false);
+  assert.equal(readOffensiveRunRecords(domain)[0].demonstrated_severity, "low");
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), true);
 }));
 
@@ -1547,6 +1548,7 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, true, JSON.stringify(result));
   assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "low", "a soft-gated fire is stamped LOW, not medium");
   assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable"]);
   // the masked return echoes the same signals the diagnostic bundle captured
   assert.deepEqual(result.masked_oracle.confidence_signals, result.confidence_signals);
@@ -1554,6 +1556,7 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
   const rows = readOffensiveRunRecords(domain);
   assert.equal(rows.length, 1);
   const row = rows[0];
+  assert.equal(row.demonstrated_severity, "low", "the signed row carries the LOW soft-gate severity");
   assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
   assert.equal(row.stderr_hash, result.stderr_hash);
 
@@ -1570,6 +1573,31 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
     const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
     assert.equal(observed.stdout_hash, row.stdout_hash);
   }
+}));
+
+test("AC-6 negative: same tenant under DIFFERENT alias keys (org_id vs tenant_id, both \"acme\") → identities_collided_same_tenant (blocks)", () => withTempHome(async () => {
+  // Codex PR#136: B's object carries org_id and A's own object carries tenant_id, but BOTH
+  // resolve to the same tenant value "acme". Same value across aliases is positive evidence of
+  // one tenant — it must HARD-block, not soft-gate (which would mislabel a same-tenant BOLA as
+  // this producer's cross-tenant IDOR).
+  const domain = "idor-neg-cross-alias-same-tenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, org_id: "acme", viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, tenant_id: "acme", details: { secret: { token: CANARY_A } }, server_ts: "x" });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 // ───────────────────────── round-12 review hardening ──────────────────────────

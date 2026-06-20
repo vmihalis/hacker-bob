@@ -1025,35 +1025,42 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // record the weakness and continue to the mint. (C1/C2 controls trip DIFFERENT, upstream
   // gates — canary_leaked_unauthenticated / p5_authenticated_shared — which are NOT demoted.)
   const confidenceSignals = [];
-  // #13 CROSS-TENANT SCOPE PROOF (signal) — is ownScopeOf(P1) B's OWN private scope?
+  // #13 CROSS-TENANT SCOPE PROOF — is ownScopeOf(P1) B's OWN private scope?
+  // An EXPLICIT shared/default/public scope value is positive evidence the object is SHARED
+  // (not B-private), so it stays a HARD refutation. Only a MISSING scope key is "unprovable"
+  // and demotes to a confidence signal (the read still mints, at a LOWER severity).
   const p1Scope = ownScopeOf(p1Parsed);
   const ownScopePrivate = ownScopeIsPrivate(p1Scope);
-  if (!ownScopePrivate) {
+  if (p1Scope != null && !ownScopePrivate) {
+    return fail("blocked_by_design", "own_scope_explicitly_shared");
+  }
+  if (p1Scope == null) {
     confidenceSignals.push({
-      gate: "own_scope_not_private",
-      reason: "P1 echoed no private owning-scope key (or a shared scope); cross-tenant attribution is weaker than a scoped read.",
+      gate: "own_scope_missing",
+      reason: "P1 echoed NO owning-scope key, so B-private ownership cannot be shown from the body; cross-tenant attribution is unproven.",
     });
   }
   // #14 TENANT DISCRIMINATOR — A and B present at a fixed key AND differ?
   const tenantB = tenantDiscriminator(p1Parsed);
   const tenantA = tenantDiscriminator(p3Parsed);
-  const tenantsProvablyDistinct = !!(tenantA && tenantB
-    && tenantA.key === tenantB.key && tenantA.value !== tenantB.value);
-  // PROVABLY SAME tenant (both present at the same key with the SAME value) is positive
-  // evidence AGAINST a cross-tenant break — it stays a HARD refutation, NOT the "unprovable"
-  // case the demotion targets. A genuine same-tenant user-level BOLA would need a different
-  // proof; minting it here would mislabel it as THIS producer's cross-TENANT IDOR.
-  const tenantsProvablySame = !!(tenantA && tenantB
-    && tenantA.key === tenantB.key && tenantA.value === tenantB.value);
+  // PROVABLY SAME tenant: both identities carry a discriminator with the SAME VALUE —
+  // INCLUDING across different alias keys (B `org_id:"acme"` vs A `tenant_id:"acme"`). That is
+  // positive evidence AGAINST a cross-tenant break, so it stays a HARD refutation. A genuine
+  // same-tenant user-level BOLA would need a different proof; minting it here would mislabel
+  // it as THIS producer's cross-TENANT IDOR.
+  const tenantsProvablySame = !!(tenantA && tenantB && tenantA.value === tenantB.value);
   if (tenantsProvablySame) {
     return fail("blocked_by_design", "identities_collided_same_tenant");
   }
-  // The remaining "not provably distinct" cases — a missing tenant key on either side, or
-  // discriminators at different keys — are UNPROVABLE (not disproven): demote to a signal.
+  // PROVABLY DISTINCT: both present at the SAME key with DIFFERENT values.
+  const tenantsProvablyDistinct = !!(tenantA && tenantB
+    && tenantA.key === tenantB.key && tenantA.value !== tenantB.value);
+  // The remainder — a missing discriminator on either side, or different alias keys carrying
+  // different values — is UNPROVABLE (not disproven): demote to a confidence signal.
   if (!tenantsProvablyDistinct) {
     confidenceSignals.push({
       gate: "identities_collided_not_provable",
-      reason: "A and B carry no distinguishable tenant discriminator at the same key (missing or mismatched key); cross-tenant distinctness is not provable from the bodies.",
+      reason: "A and B carry no comparable tenant discriminator (missing on one side, or different alias keys with different values); cross-tenant distinctness is not provable from the bodies.",
     });
   }
   // #15 CACHE ORIGIN-PROOF — no DEFINITIVE shared-cache hazard signal on P2/P2′.
@@ -1159,6 +1166,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     stdoutContent: p2BodyForCapture,
     stderrContent: diagnosticBundle,
     relationBooleans,
+    // A soft-gated fire (any confidence signal) caps the signed row at LOW: the unproven
+    // cross-tenant attribution must be claim-visible, and severity is the only field the
+    // claim/grade path carries. A fully-proven fire keeps the registry MEDIUM ceiling.
+    demonstratedSeverityOverride: confidenceSignals.length > 0 ? "low" : undefined,
   }));
 
   // Masked three-hash return (sensitive_output:true) — NEVER raw response bytes.

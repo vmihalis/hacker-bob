@@ -13,6 +13,9 @@ const {
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("./claims.js");
 const {
+  SEVERITY_VALUES,
+} = require("./constants.js");
+const {
   signOffensiveRunRow,
 } = require("./offensive-row-mac.js");
 const {
@@ -194,6 +197,7 @@ function buildAndSignOffensiveRow(domain, {
   stdoutContent,
   stderrContent,
   relationBooleans = {},
+  demonstratedSeverityOverride,
 }) {
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a
   // generic caller must not be able to smuggle a traversal segment into the
@@ -210,12 +214,28 @@ function buildAndSignOffensiveRow(domain, {
   // the caller — a producer cannot drift its signed severity by convention, and an
   // unregistered tool_id cannot mint a row at all (fail-closed; stronger than the
   // record gate's ?? "info" cap, which still applies downstream).
-  const demonstratedSeverity = OFFENSIVE_TOOL_DEMONSTRATED_CEILING[toolId];
-  if (typeof demonstratedSeverity !== "string" || !demonstratedSeverity) {
+  const registrySeverity = OFFENSIVE_TOOL_DEMONSTRATED_CEILING[toolId];
+  if (typeof registrySeverity !== "string" || !registrySeverity) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `unknown offensive tool_id (absent from the demonstrated-severity registry): ${toolId}`,
     );
+  }
+  // An optional per-row override may ONLY LOWER the registry ceiling — e.g. a soft-gated
+  // IDOR fire whose cross-tenant attribution was unproven, which must be claim-VISIBLE as a
+  // lower severity because the confidence signal itself is not carried into the claim/grade
+  // schema. It can never RAISE severity: SEVERITY_VALUES is DESCENDING, so the less-severe
+  // value is the higher index and Math.max selects it; an unknown override fails closed.
+  let demonstratedSeverity = registrySeverity;
+  if (demonstratedSeverityOverride != null) {
+    const overrideIdx = SEVERITY_VALUES.indexOf(demonstratedSeverityOverride);
+    if (overrideIdx < 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `demonstratedSeverityOverride must be a known severity value: ${demonstratedSeverityOverride}`,
+      );
+    }
+    demonstratedSeverity = SEVERITY_VALUES[Math.max(overrideIdx, SEVERITY_VALUES.indexOf(registrySeverity))];
   }
   // relationBooleans is spread into the row LAST (to document extra legs). It is
   // MAC-covered proof material, not a free-form bag, so it must neither override a

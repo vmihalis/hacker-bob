@@ -96,7 +96,7 @@ function setupSession(domain, { surfaceId, endpoint }) {
 // A JSON resource body with REAL per-viewer variance (so two reads by the SAME
 // viewer are byte-identical — P0 stable — while different viewers differ) and the
 // canary at a nested leaf details.secret.token. `scope` is OMITTED when falsy
-// (models an API that echoes no owning-scope key → #13 own_scope_not_private).
+// (models an API that echoes no owning-scope key → #13 own_scope_missing soft signal).
 function resourceBody({ canary, scope, viewer, objId, includeCanary = true }) {
   const seed = crypto.createHash("sha256").update(`${viewer}|${objId}`).digest("hex");
   const body = {
@@ -310,9 +310,9 @@ const CORPUS = [
     klass: "true-idor", fidelity: "synthetic", known_true: true, in_scope: true,
     pathTemplate: "/api/records/{id}",
     endpointPath: `/api/records/${OBJ_B}`,
-    note: "Identical A-only IDOR to T5 but the API echoes NO owning-scope key in the body — the only difference. Now FIRES carrying BOTH #13 (own_scope_not_private) and #14 (identities_collided) as non-blocking confidence signals.",
+    note: "Identical A-only IDOR to T5 but the API echoes NO owning-scope key in the body — the only difference. FIRES at LOW carrying BOTH #13 (own_scope_missing) and #14 (identities_collided) confidence signals.",
     predicted: "FIRE",
-    expected_signals: ["identities_collided_not_provable", "own_scope_not_private"],
+    expected_signals: ["identities_collided_not_provable", "own_scope_missing"],
     fetchFn: (domain) => async ({ url, headers }) => {
       const w = whoAndWhat(url, headers);
       if (w.anon) return challenge(403);
@@ -425,13 +425,39 @@ const CORPUS = [
     },
     provision: () => provisionFor({ readbackScope: "tenant-same" }),
   },
+  {
+    id: "C4", name: "CONTROL: EXPLICIT shared scope (owner_scope \"public\") — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/files/{id}",
+    endpointPath: `/api/files/${OBJ_B}`,
+    note: "A reads O_B's canary and anon + 3rd-tenant C are denied, BUT O_B explicitly marks owner_scope \"public\" — positive evidence the object is SHARED, not B-private. #13 must HARD-block (not soft-gate). Locks the Codex P2 explicit-shared fix.",
+    predicted: "own_scope_explicitly_shared",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "public", viewer: "viewer-B", objId: OBJ_B }));
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "public", viewer: "viewer-A", objId: OBJ_B }));
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "tenant-A", viewer: "viewer-A", objId: OBJ_A }));
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "public" }),
+  },
 ];
 
 const GATE_LABEL = {
   p5_authenticated_shared: "#11 authenticated-but-shared exclusion (a 3rd tenant C can also read O_B)",
   canary_leaked_unauthenticated: "#9 anon read of O_B leaks the canary (object is public)",
   body_not_parseable: "#2 P1/P2 body is not JSON (text/CSV/PDF export)",
-  own_scope_not_private: "#13 P1 echoes no private owning-scope key",
+  own_scope_missing: "#13 P1 echoes NO owning-scope key (unprovable -> soft LOW signal)",
+  own_scope_explicitly_shared: "#13 P1 echoes an EXPLICIT shared/default/public scope (object is shared -> blocks)",
   identities_collided_not_provable: "#14 A and B not distinguishable at the same tenant key (unprovable)",
   identities_collided_same_tenant: "#14 A and B PROVABLY the same tenant (positive evidence against cross-tenant)",
   object_not_access_controlled: "#10 anon read of O_B is not 401/403",
@@ -539,11 +565,14 @@ function matches(predicted, actual) {
   console.log("");
   console.log("  ── READ-OUT ────────────────────────────────────────────────────────────────");
   console.log("  • The oracle is SOUND on this corpus (0 false mints) and now fires on an A-only");
-  console.log("    cross-tenant read EVEN when the bodies don't echo a private owning-scope key or");
-  console.log("    a distinct tenant key — #13/#14 are DEMOTED to non-blocking confidence_signals.");
-  console.log("  • A soft-gated fire carries confidence_signals (hash-bound via stderr_hash) so the");
-  console.log("    3-round blind verification + grader corroborate or discount the tenant attribution;");
-  console.log("    the demonstrated_severity ceiling stays medium (Option A).");
+  console.log("    cross-tenant read even when the bodies don't echo a private owning-scope key or a");
+  console.log("    distinct tenant key. #13/#14 demote ONLY on ABSENCE of evidence (missing scope /");
+  console.log("    missing-or-mismatched tenant key); POSITIVE evidence against cross-tenant — an");
+  console.log("    explicit shared scope (C4) or the same tenant value even across aliases (C3) —");
+  console.log("    still HARD-blocks.");
+  console.log("  • A soft-gated fire is stamped LOW (fully-proven fires stay medium): the unproven");
+  console.log("    attribution is carried by SEVERITY, which the claim/grade path enforces. The");
+  console.log("    confidence_signals are additionally hash-bound via stderr_hash for the verifier.");
   console.log("  • The remaining in-scope misses are the SOUNDNESS FLOOR: p5_authenticated_shared +");
   console.log("    canary_leaked_unauthenticated (textbook BOLAs broken for everyone, declined as");
   console.log("    'shared/public') and body_not_parseable (non-JSON export bodies). NOT demoted.");
@@ -551,11 +580,16 @@ function matches(predicted, actual) {
   console.log("    C-can-also-read should CORROBORATE (C has the IDOR too) rather than refute (#11).");
   console.log("");
   const expectedFiresMissed = results.filter(({ fx, r }) => fx.predicted === "FIRE" && r.outcome !== "FIRE");
-  const hardFail = controlFires.length > 0 || signalMismatches.length > 0 || expectedFiresMissed.length > 0;
-  console.log(`  ── REGRESSION GATE: ${hardFail ? "❌ FAIL" : "✅ PASS"} — 0 control mints, 0 signal mismatches, every FIRE-predicted fixture fired ──`);
+  // ANY fixture whose ACTUAL outcome != PREDICTED must fail the gate — e.g. a security
+  // control that declines for the WRONG gate would otherwise let the harness silently stop
+  // checking the guard it was written for (Codex PR#136 P3). predMismatches is the superset.
+  const predMismatches = results.filter(({ fx, r }) => !matches(fx.predicted, r.outcome));
+  const hardFail = controlFires.length > 0 || signalMismatches.length > 0
+    || expectedFiresMissed.length > 0 || predMismatches.length > 0;
+  console.log(`  ── REGRESSION GATE: ${hardFail ? "❌ FAIL" : "✅ PASS"} — 0 control mints, 0 signal mismatches, every fixture matched its predicted outcome ──`);
   if (controlFires.length) console.log(`     control false-mint(s): ${controlFires.map(({ fx }) => fx.id).join(", ")}`);
   if (signalMismatches.length) console.log(`     signal mismatch(es): ${signalMismatches.join(", ")}`);
-  if (expectedFiresMissed.length) console.log(`     FIRE-predicted but declined: ${expectedFiresMissed.map(({ fx }) => fx.id).join(", ")}`);
+  if (predMismatches.length) console.log(`     predicted != actual: ${predMismatches.map(({ fx, r }) => `${fx.id}(want ${fx.predicted}, got ${r.outcome})`).join(", ")}`);
   if (hardFail) process.exitCode = 1;
   console.log("");
 })().catch((e) => { console.error(e); process.exit(1); });
