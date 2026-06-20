@@ -17856,30 +17856,29 @@ test("over-permissive-search-list guidance fits the 240-char summary cap with th
     assert.ok(hint.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
       `payload_hint exceeds summary cap (${hint.length}): ${hint.slice(0, 60)}`);
   }
-  // The grading thesis ("NOT auto-LOW") and the PII guard must ride the first surfaced item so they
-  // survive summary truncation even on the demoted/other-applicable path.
+  // The grading thesis ("NOT auto-LOW") and the no-bulk-extraction guardrail must ride the first
+  // surfaced item so they survive summary truncation even on the demoted/other-applicable path.
   assert.match(entry.techniques[0], /NOT auto-LOW/);
-  assert.match(entry.techniques[0], /never page or sample real rows/i);
+  assert.match(entry.techniques[0], /never page the full corpus/i);
 });
 
-test("over-permissive-search-list confirmation guidance is internally consistent: count/metadata-only, never sample a real row", () => {
+test("over-permissive-search-list proof guidance caps extraction at a small sample and gates unmasked data on authorization", () => {
   const knowledge = JSON.parse(fs.readFileSync(
     path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
     "utf8",
   ));
   const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
   assert.ok(entry, "over-permissive-search-list entry must exist");
-  // No technique may license retrieving/sampling a real row -- it would pull cross-tenant PII on a
-  // /people-style list and contradict the payload-hint rule "do NOT page rows (even limit=1 returns
-  // one real row)". Confirmation must stay count/metadata-only.
-  const allTechniques = entry.techniques.join("   ");
-  // Affirmative row-capture licenses only (negated guards like "never page or sample real rows" are fine).
-  assert.doesNotMatch(allTechniques, /redacted sample|redacted evidence|ONE sample|sample a (real )?row/i);
-  assert.match(entry.techniques[0], /COUNT\/metadata totals ONLY/i);
-  assert.ok(
-    entry.payload_hints.some((hint) => /do NOT page rows|never (fetch|page) rows/i.test(hint)),
-    "a payload hint must explicitly forbid paging rows",
-  );
+  const blob = [...entry.techniques, ...entry.payload_hints].join("   ");
+  // Proof-of-impact is a SMALL sample (5-10 records), never the full corpus: the line between an
+  // authorized demonstration and mass exfiltration. The guardrail must be explicit in the guidance.
+  assert.match(blob, /5[–-]10 (record|sample)/i);
+  assert.match(blob, /never page the full corpus|not the whole set/i);
+  // Unmasked real records are gated on an authorized engagement; on a public safe-harbor program the
+  // sample is masked and paired with schema + count.
+  assert.match(blob, /authorized engagement|BOB_DATA_ACCESS_AUTHORIZED/i);
+  assert.match(blob, /safe.harbor/i);
+  assert.match(blob, /mask the sample/i);
 });
 
 test("bob_read_assignment_brief does NOT surface over-permissive-search-list for a bare people directory with no search/filter signal", () => {
