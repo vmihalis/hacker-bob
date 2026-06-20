@@ -6,6 +6,9 @@ const {
   assertNonEmptyString,
 } = require("./validation.js");
 const {
+  AUTH_STATUS_VALUES,
+} = require("./constants.js");
+const {
   sessionDir,
   sessionNucleusPath,
   statePath,
@@ -25,6 +28,9 @@ const {
 const {
   resolveEgressProfile,
 } = require("./egress-profiles.js");
+const {
+  hasUsableAuthProfile,
+} = require("./auth.js");
 const {
   buildSessionNucleus,
   LIFECYCLE_STATE_VALUES,
@@ -508,6 +514,99 @@ function isSensitiveMaterialError(error) {
     || /is too large; do not persist raw large response bodies/.test(message);
 }
 
+// Option C (auth_status): derive auth_status on every lifecycle advance so it reflects
+// reality instead of staying "pending" forever (the field has no other setter).
+//
+// SEMANTICS — auth_status is a session-lifetime MILESTONE (the highest/operator-asserted auth
+// state reached), NOT a real-time per-request credential probe: it is recomputed only at advance
+// time from profile PRESENCE, and once "authenticated"/"unauthenticated" it is sticky absent an
+// explicit caller change. Credential deletion BETWEEN advances is therefore not auto-detected; a
+// consumer needing a live "are credentials present right now" answer must call
+// hasUsableAuthProfile directly rather than trust this field.
+//
+// Precedence (in order):
+//  (1) operator_force is operator AUTHORITY: an explicit, non-blank value carried with
+//      operator_force is always honored — including lifting a prior "unauthenticated" or asserting
+//      "authenticated" with no profile (an operator vouching for an out-of-band context).
+//      DELIBERATE DUAL-USE (Claude PR#138 review): operator_force is THE operator-authority signal,
+//      so it intentionally grants BOTH lifecycle-gate-bypass AND auth-context-assertion authority
+//      under one flag. This is defensible for an advisory milestone that grants no capability and
+//      whose every operator_force advance already carries an audited override_reason; a separate
+//      auth-authority flag would add API surface for no security gain. An UNPRIVILEGED caller (no
+//      operator_force) still cannot assert "authenticated" without a backing profile — see (3).
+//  (2) A prior "unauthenticated" is STICKY: once a run is `--no-auth`, only operator authority (1)
+//      can lift it. It survives BOTH an omitted auth_status AND an UNPRIVILEGED explicit
+//      "authenticated" (even with a profile in the store — e.g. a victim credential captured for
+//      IDOR testing must not silently re-authenticate a `--no-auth` session). This is broader than
+//      "carried forward on omission": an unprivileged backed claim cannot reverse the operator's
+//      intent.
+//  (3) An UNPRIVILEGED explicit value (no operator_force, prior not sticky-unauthenticated):
+//      a negative "unauthenticated" assertion needs no evidence and is honored; a neutral "pending"
+//      is honored ONLY when it does not REGRESS an established milestone — an explicit "pending"
+//      (the "unknown/initial" state) can never silently downgrade a prior "authenticated" back to
+//      "unknown" (it falls through to (4)/(5), which preserve the milestone); a positive
+//      "authenticated" is honored ONLY when a usable profile is actually present. This forge guard
+//      blocks a BARE unprivileged assertion of "authenticated" with no backing — but it does NOT
+//      make the milestone unforgeable: an evaluator able to call the pre-approved bob_auth_store can
+//      stash a credential-shaped header and reach (4)'s profile-backed "authenticated". That is
+//      acceptable because auth_status grants no capability (a forged/bogus token 401s on use — see
+//      SEMANTICS) and because every auth_status CHANGE emits a governance.auth_context.replaced
+//      audit event (in advanceSession), so a fabricated milestone is always reconstructable. A
+//      blank/whitespace value is treated as OMITTED (else it would normalize to "pending" in the
+//      nucleus while the raw "" leaked to the state.json mirror).
+//  (4) No explicit value: a usable stored profile means "authenticated".
+//  (5) Otherwise carry the prior status forward (default "pending"); never silently auto-downgrade.
+// buildSessionNucleus -> normalizeAuthContext validates the resulting enum; the caller mirrors the
+// NORMALIZED nucleus value into state.json so the two stores can never disagree.
+function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile, operatorForced = false) {
+  const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
+  // SELF-GUARD: this function is exported (module.exports) and callable in-process WITHOUT
+  // advanceSession's call-boundary validation, so it validates its own input — fail-closed and
+  // consistent with that boundary. A non-string (non-null) value is rejected outright (else it would
+  // be silently treated as omitted); a blank/whitespace string is allowed (treated as omitted below);
+  // only a non-blank string outside AUTH_STATUS_VALUES throws — rather than any of these propagating
+  // into a deep normalizeAuthContext throw at nucleus-build time.
+  if (explicitAuthStatus != null && typeof explicitAuthStatus !== "string") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `auth_status must be a string; got ${typeof explicitAuthStatus}`,
+    );
+  }
+  if (typeof explicitAuthStatus === "string") {
+    const trimmedExplicit = explicitAuthStatus.trim();
+    if (trimmedExplicit !== "" && !AUTH_STATUS_VALUES.includes(trimmedExplicit)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `auth_status must be one of ${AUTH_STATUS_VALUES.join(", ")}; got ${JSON.stringify(explicitAuthStatus)}`,
+      );
+    }
+  }
+  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted. A non-blank value
+  // is TRIMMED so a padded " authenticated " is honored as "authenticated" (and reaches the
+  // nucleus's normalizeAuthContext enum check trimmed) instead of being passed through raw, which
+  // would pass the trim-based call-boundary check yet throw deep on the padded enum value.
+  const explicit = (typeof explicitAuthStatus === "string" && explicitAuthStatus.trim() !== "")
+    ? explicitAuthStatus.trim()
+    : null;
+  let nextStatus;
+  if (explicit != null && operatorForced === true) {
+    nextStatus = explicit;                                 // (1) operator authority
+  } else if (prior.auth_status === "unauthenticated") {
+    nextStatus = "unauthenticated";                        // (2) sticky --no-auth (only (1) lifts it)
+  } else if (
+    explicit != null
+    && (explicit !== "authenticated" || hasProfile)        // forge guard: a positive needs a profile
+    && !(explicit === "pending" && prior.auth_status && prior.auth_status !== "pending")  // no regress to "unknown"
+  ) {
+    nextStatus = explicit;                                 // (3) unprivileged explicit (forge- + downgrade-guarded)
+  } else if (hasProfile) {
+    nextStatus = "authenticated";                          // (4) usable stored credentials
+  } else {
+    nextStatus = prior.auth_status || "pending";           // (5) carry forward / default
+  }
+  return { ...prior, auth_status: nextStatus };
+}
+
 function advanceSession(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   let toState;
@@ -526,6 +625,24 @@ function advanceSession(args) {
   const overrideReason = args.override_reason == null
     ? null
     : assertNonEmptyString(args.override_reason, "override_reason");
+  // Validate auth_status at the call boundary (not deep in buildSessionNucleus -> normalizeAuthContext)
+  // so a direct in-process caller gets a clear error. A blank/whitespace value is allowed here and
+  // treated as OMITTED downstream by deriveAdvanceAuthContext; only a non-blank invalid value throws.
+  if (args.auth_status != null) {
+    if (typeof args.auth_status !== "string") {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `auth_status must be a string; got ${typeof args.auth_status}`,
+      );
+    }
+    const trimmedAuth = args.auth_status.trim();
+    if (trimmedAuth !== "" && !AUTH_STATUS_VALUES.includes(trimmedAuth)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `auth_status must be one of ${AUTH_STATUS_VALUES.join(", ")}; got ${JSON.stringify(args.auth_status)}`,
+      );
+    }
+  }
 
   return withSessionLock(domain, () => {
     const priorNucleus = readSessionNucleus(domain);
@@ -567,6 +684,18 @@ function advanceSession(args) {
       );
     }
 
+    // Derive the next auth context FIRST — deriveAdvanceAuthContext performs the only fallible work
+    // left (the hasUsableAuthProfile auth.json read). Computing it before the override audit append
+    // upholds "all fallible work BEFORE durable writes": a throw here can never orphan an
+    // already-recorded governance.lifecycle.override event with no corresponding state transition.
+    const hadUsableProfile = hasUsableAuthProfile(domain);
+    const nextAuthContext = deriveAdvanceAuthContext(
+      priorNucleus.auth_context,
+      args.auth_status,
+      hadUsableProfile,
+      override === "operator_force",
+    );
+
     if (override === "operator_force") {
       appendSessionEvent({
         target_domain: domain,
@@ -588,7 +717,7 @@ function advanceSession(args) {
       target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
       scope_policy: priorNucleus.scope_policy,
       egress_identity: priorNucleus.egress_identity,
-      auth_context: priorNucleus.auth_context,
+      auth_context: nextAuthContext,
       operator_constraint: priorNucleus.operator_constraint,
       lifecycle_state: toState,
     });
@@ -681,6 +810,11 @@ function advanceSession(args) {
         ...state,
         ...(verificationEntry ? verificationEntry.state_fields : {}),
         lifecycle_state: toState,
+        // Mirror the NORMALIZED nucleus auth_status into state.json so the two lifecycle stores
+        // can never disagree — buildSessionNucleus -> normalizeAuthContext is the single source of
+        // truth for the value (e.g. it coerces a blank/legacy value to "pending"); mirroring the
+        // pre-normalization derive output here would split-brain on any value the nucleus rewrites.
+        auth_status: nextNucleus.auth_context.auth_status,
         ...(derivedLegacyPhase ? { phase: derivedLegacyPhase } : {}),
       };
 
@@ -726,6 +860,18 @@ function advanceSession(args) {
       writeJsonDocument(nucleusPath, nextNucleus);
     }
 
+    // Compute the auth_status transition from the NORMALIZED nuclei (buildSessionNucleus already ran
+    // normalizeAuthContext) BEFORE the advance event, so the canonical lifecycle.advanced event can
+    // carry the transition ATOMICALLY with the lifecycle move (its single append is the durable
+    // record of this advance — the transition is always reconstructable from this event alone).
+    const priorAuthStatus = priorNucleus.auth_context && typeof priorNucleus.auth_context === "object"
+      ? priorNucleus.auth_context.auth_status
+      : undefined;
+    const nextAuthStatus = nextNucleus.auth_context && typeof nextNucleus.auth_context === "object"
+      ? nextNucleus.auth_context.auth_status
+      : undefined;
+    const authStatusChanged = nextAuthStatus !== priorAuthStatus;
+
     const advancedEvent = appendSessionEvent({
       target_domain: domain,
       kind: "governance.lifecycle.advanced",
@@ -735,8 +881,42 @@ function advanceSession(args) {
         to_state: toState,
         nucleus_hash: nextNucleus.nucleus_hash,
         prior_nucleus_hash: priorNucleus.nucleus_hash,
+        // Auth-status provenance rides on the CANONICAL advance event so it is captured atomically
+        // with the lifecycle move — the dedicated companion below is a best-effort index, not the
+        // source of truth. from/to are the NORMALIZED nucleus values (null when absent).
+        from_auth_status: priorAuthStatus == null ? null : priorAuthStatus,
+        to_auth_status: nextAuthStatus == null ? null : nextAuthStatus,
+        auth_status_changed: authStatusChanged,
       },
     });
+
+    // Emit a dedicated, INDEXABLE governance.auth_context.replaced event whenever auth_status changed,
+    // so the milestone's moves can be queried directly (operator authority vs profile-derived) without
+    // scanning every advance. BEST-EFFORT: the advance is already durably committed and its provenance
+    // is on the advanced event above, so a write failure HERE must not fail the tool and report an
+    // error for a state change that did happen (mirrors the observational pipeline-events mirror
+    // below). change-only keeps the log to real moves.
+    if (authStatusChanged) {
+      try {
+        appendSessionEvent({
+          target_domain: domain,
+          kind: "governance.auth_context.replaced",
+          nucleus_hash: nextNucleus.nucleus_hash,
+          payload: {
+            from_auth_status: priorAuthStatus == null ? null : priorAuthStatus,
+            to_auth_status: nextAuthStatus == null ? null : nextAuthStatus,
+            operator_forced: override === "operator_force",
+            had_usable_profile: hadUsableProfile,
+            explicit_auth_status_supplied:
+              typeof args.auth_status === "string" && args.auth_status.trim() !== "",
+          },
+        });
+      } catch (authEventError) {
+        // Observability companion only — the advance and its provenance (on the advanced event) are
+        // already durable, so a failure to append this index must not surface as a tool error.
+        void authEventError;
+      }
+    }
 
     // Mirror the advance into pipeline-events.jsonl for analytics consumers.
     // Lifecycle vocabulary is canonical; the legacy phase fields are no
@@ -966,6 +1146,7 @@ module.exports = {
   assertBlockInternalHostsCompatibleWithEgress,
   clearOperatorNote,
   clearTerminalBlock,
+  deriveAdvanceAuthContext,
   initSession,
   reportWritten,
   resolveAndAssertSessionEgressIdentity,

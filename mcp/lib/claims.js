@@ -874,6 +874,14 @@ function offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey) {
   if (!Number.isInteger(row.exit_code)) return false;
   if (OFFENSIVE_RUN_DISALLOWED_EXIT_CODES.includes(row.exit_code)) return false;
   if (Number.isInteger(ref.exit_code) && row.exit_code !== ref.exit_code) return false;
+  // CONFIDENCE-SIGNAL BOUNDARY (Codex/Claude PR#136, intentional Option-B1): this validator does
+  // NOT inspect the producer's confidence_signals[]. Those are ADVISORY forensics (e.g. a soft-gated
+  // IDOR fire with unproven cross-tenant attribution), hash-bound into the row via stderr_hash but
+  // NOT a schema-enforced claim gate. The consequence of weak attribution is carried instead by
+  // demonstrated_severity — a soft-gated producer LOWERS its signed severity ceiling (see
+  // offensive-capture-writer.js demonstratedSeverityOverride), and severity IS enforced downstream.
+  // So a soft-gated row backs a claim only at the reduced severity; a consumer wanting the signal
+  // text reads it from the row's stderr capture, it does not flow through this evidence gate.
   return true;
 }
 

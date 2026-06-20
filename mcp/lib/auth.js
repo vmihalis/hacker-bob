@@ -378,11 +378,61 @@ function listAuthProfiles(args) {
   });
 }
 
+// The outbound SESSION-CREDENTIAL header names (lowercased) that mark a profile as carrying
+// usable authentication material. buildHeaderProfile flattens a stored cookie jar into a
+// "Cookie" header and a stored JWT into "Authorization: Bearer …", so these two are the
+// canonical signal that a profile authenticates a request. This is a POSITIVE allowlist — the
+// inverse of PROFILE_METADATA_KEYS — so hasUsableAuthProfile never treats an unrecognized key
+// as a credential (see below).
+const CREDENTIAL_HEADER_NAMES = Object.freeze(new Set(["authorization", "cookie"]));
+
+// True iff auth.json carries at least one stored profile (any name) for the session domain
+// or a candidate auth domain whose body holds usable credential material. Lets advanceSession
+// derive auth_status from the PRESENCE of usable credentials without coupling the session
+// lifecycle to a specific profile name.
+//
+// NAME-AGNOSTIC BY DESIGN (Codex PR#138 review): a profile named `victim`, `admin`, or `idor_target`
+// — stored to replay captured credentials for access-control / IDOR testing — also satisfies this.
+// That is intentional: the operator plan advances auth_status when an attacker OR victim profile is
+// persisted, and `auth_status` is an advisory session MILESTONE meaning "this session holds at least
+// one usable credential profile (any principal)", NOT a claim that a specific principal authenticated.
+// It grants no capability (a stale/unintended credential 401s on use), so the name-agnostic read is
+// the SAFE simplification; coupling the milestone to caller-chosen profile names would be fragile
+// (names are free-form: attacker/victim/admin/tenant_b/...) for no security gain.
+function hasUsableAuthProfile(domain) {
+  assertSafeDomain(domain);
+  for (const candidateDomain of candidateAuthDomains(domain, `https://${domain}/`)) {
+    let doc = null;
+    try { doc = readAuthJson(resolveAuthJsonPath(candidateDomain)); } catch { doc = null; }
+    const migrated = migrateAuthJson(doc);
+    for (const profile of Object.values(migrated.profiles || {})) {
+      // POSITIVE-INCLUSION: a profile is "usable" only when it carries an outbound session
+      // credential (Authorization or Cookie) with a non-empty string value. An ALLOWLIST — not
+      // "any key not in PROFILE_METADATA_KEYS" — so a future profile field added for telemetry/
+      // annotation can never SILENTLY promote a session to "authenticated" (the exclusion-list
+      // form would, and the carry-forward rule never auto-downgrades, so one false upgrade would
+      // stick for the session lifetime). An empty or metadata-only profile (bob_auth_store called
+      // with just a profile_name) has no credential header → not authenticated. A profile whose
+      // ONLY credential is a bespoke header (e.g. X-Api-Key) also reads as not-yet-authenticated;
+      // that false-negative is the SAFE direction for a trust signal (the session stays "pending"
+      // and auth tasks still run, rather than over-claiming credential provenance).
+      if (profile && typeof profile === "object"
+        && Object.entries(profile).some(([key, value]) =>
+          CREDENTIAL_HEADER_NAMES.has(key.toLowerCase())
+          && typeof value === "string" && value.trim() !== "")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 module.exports = {
   applyAuthProfileHeaders,
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
+  hasUsableAuthProfile,
   listAuthProfiles,
   migrateAuthJson,
   PROFILE_METADATA_KEYS,

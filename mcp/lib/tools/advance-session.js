@@ -4,6 +4,9 @@ const { advanceSession } = require("../session-state.js");
 const {
   LIFECYCLE_STATE_VALUES,
 } = require("../governance-contracts.js");
+const {
+  AUTH_STATUS_VALUES,
+} = require("../constants.js");
 
 // Maps each legacy phase string to the lifecycle state it collapsed into.
 // The old eight-phase FSM modeled per-claim frontier work as four sequential
@@ -25,9 +28,13 @@ const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
 // Arg adapter for the `bounty_transition_phase` alias. Translates the legacy
 // `to_phase` enum to the canonical `to_state` enum and treats a populated
 // `override_reason` as an `operator_force` override (the legacy tool used
-// `override_reason` as both the opt-out flag and the audit string). The
-// `auth_status` argument is dropped: auth context is governance-plane scope
-// in the new topology and moves through bob_init_session / governance events.
+// `override_reason` as both the opt-out flag and the audit string). `auth_status`
+// is DROPPED here, NOT forwarded: this shim maps override_reason -> operator_force,
+// and operator_force is auth-context AUTHORITY in bob_advance_session, so forwarding
+// auth_status through it would let a caller manufacture operator-level auth provenance
+// ("authenticated") as a side-effect of a lifecycle-gate bypass — conflating two
+// separate privilege grants. Auth context moves only through the canonical
+// bob_advance_session tool / governance events.
 function adaptLegacyTransitionPhaseArgs(args) {
   const safe = (args && typeof args === "object" && !Array.isArray(args)) ? args : {};
   const result = {};
@@ -60,9 +67,12 @@ const LEGACY_TRANSITION_PHASE_INPUT_SCHEMA = Object.freeze({
     },
     auth_status: {
       type: "string",
-      enum: ["authenticated", "unauthenticated"],
+      enum: [...AUTH_STATUS_VALUES],
       description:
-        "Ignored by the bob_advance_session redirect; auth context is governance scope.",
+        "Ignored by the bob_advance_session redirect — accepted for backward-compat but NOT " +
+        "forwarded. Auth context moves only through the canonical bob_advance_session tool, never " +
+        "through this lifecycle-bypass shim (forwarding it would conflate operator_force lifecycle " +
+        "authority with auth-context authority).",
     },
     override_reason: {
       type: "string",
@@ -89,6 +99,16 @@ module.exports = Object.freeze({
       to_state: {
         type: "string",
         enum: [...LIFECYCLE_STATE_VALUES],
+      },
+      auth_status: {
+        type: "string",
+        enum: [...AUTH_STATUS_VALUES],
+        description:
+          "Optional governance auth-context update applied during this advance. When " +
+          "omitted, auth_status is derived: 'authenticated' if a usable auth profile is " +
+          "stored, else the prior value carries forward. An explicit value wins (e.g. " +
+          "--no-auth advances with 'unauthenticated'). Any CHANGE to auth_status is recorded " +
+          "in session-events.jsonl as a governance.auth_context.replaced event.",
       },
       override: {
         type: "string",

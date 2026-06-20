@@ -13,8 +13,27 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const writer = require("../mcp/lib/offensive-capture-writer.js");
+const { initSession } = require("../mcp/lib/session-state.js");
+const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { withSessionLock } = require("../mcp/lib/storage.js");
+
+function withTempHome(fn) {
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-capture-writer-"));
+  process.env.HOME = home;
+  try {
+    return fn(home);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
 
 function buildArgs(over = {}) {
   return {
@@ -94,4 +113,47 @@ test("buildAndSignOffensiveRow refuses a non-boolean relationBooleans value (MAC
       `must reject non-boolean relation value ${JSON.stringify(value)}`,
     );
   }
+});
+
+test("buildAndSignOffensiveRow rejects an unknown demonstratedSeverityOverride (fails closed, before any write)", () => {
+  for (const bad of ["", "sev", "MEDIUM", "lowish", 123, {}, true, ["low"]]) {
+    assert.throws(
+      () => writer.buildAndSignOffensiveRow("d.test", buildArgs({ demonstratedSeverityOverride: bad })),
+      /demonstratedSeverityOverride must be a known severity/,
+      `must reject demonstratedSeverityOverride ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test("buildAndSignOffensiveRow: demonstratedSeverityOverride can only LOWER the registry ceiling, never raise it", () => {
+  withTempHome(() => {
+    const domain = "clamp.example.test";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    ensureHandoffSigningKey(domain);
+    // bob_http_idor_confirm's registry ceiling is "medium". The clamp uses Math.max over the
+    // DESCENDING SEVERITY_VALUES, so the override can only move toward a higher index = lower severity.
+    const lowered = withSessionLock(domain, () =>
+      writer.buildAndSignOffensiveRow(domain, buildArgs({ demonstratedSeverityOverride: "low" })));
+    assert.equal(lowered.demonstrated_severity, "low", "override 'low' must lower medium -> low");
+    const raised = withSessionLock(domain, () =>
+      writer.buildAndSignOffensiveRow(domain, buildArgs({ demonstratedSeverityOverride: "critical" })));
+    assert.equal(raised.demonstrated_severity, "medium", "override 'critical' must NOT raise above the medium ceiling");
+    const none = withSessionLock(domain, () =>
+      writer.buildAndSignOffensiveRow(domain, buildArgs({})));
+    assert.equal(none.demonstrated_severity, "medium", "no override keeps the registry ceiling");
+  });
+});
+
+test("SEVERITY_VALUES is DESCENDING (most-severe first) — the invariant the can-only-lower clamp depends on", () => {
+  // offensive-capture-writer's `SEVERITY_VALUES[Math.max(overrideIdx, registryIdx)]` can only LOWER
+  // severity BECAUSE SEVERITY_VALUES is ordered most-severe (index 0) to least-severe (a higher index
+  // = less severe, so Math.max picks the less-severe value). If anyone reorders it or inserts a tier,
+  // the clamp would silently invert and an override could RAISE the signed ceiling. Lock the ordering
+  // so a regression fails loudly HERE, not by mis-signing a row in production.
+  const { SEVERITY_VALUES } = require("../mcp/lib/constants.js");
+  assert.deepEqual(
+    SEVERITY_VALUES,
+    ["critical", "high", "medium", "low", "info"],
+    "SEVERITY_VALUES must stay descending; the offensive severity clamp's can-only-lower property depends on it",
+  );
 });

@@ -338,11 +338,60 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
+// Common single-object envelope wrappers: many REST APIs nest the resource under one of these keys
+// (e.g. {data:{org_id:..}}, {result:{owner_scope:..}}), and JSON:API nests it TWO levels under
+// {data:{attributes:{..}}}. Owning-scope detection scans the TOP-LEVEL body, ONE level into these
+// wrappers, AND a SECOND level via the same wrappers (so JSON:API data.attributes is reached) — so a
+// nested tenant/owner scope is not invisible, which after #13/#14 were demoted to soft-gates would let
+// a nested-envelope SAME-tenant body soft-mint at LOW (Codex PR#136). Bounded to two levels, descending
+// ONLY through these well-known keys; the direction is precision-safe (more scope detected = more
+// same-tenant/shared/unusable HARD blocks, never a new mint). Top-level root is scanned first, so flat
+// bodies are unchanged.
+const SCOPE_ENVELOPE_KEYS = Object.freeze(["data", "result", "item", "record", "attributes", "payload", "resource"]);
+
+function scopeSearchRoots(parsedBody) {
+  if (parsedBody == null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) return [];
+  const roots = [parsedBody];
+  const addEnvelopeChildren = (obj) => {
+    for (const key of SCOPE_ENVELOPE_KEYS) {
+      const nested = obj[key];
+      if (nested != null && typeof nested === "object" && !Array.isArray(nested) && !roots.includes(nested)) {
+        roots.push(nested);
+      }
+    }
+  };
+  addEnvelopeChildren(parsedBody);            // level 1: {data:{...}}, {result:{...}}, ...
+  for (const root of roots.slice(1)) {        // level 2: JSON:API {data:{attributes:{...}}}
+    addEnvelopeChildren(root);
+  }
+  return roots;
+}
+
+// Coerce an owning-scope field to its canonical string form: a non-empty trimmed string, OR a SAFE
+// integer stringified. Integer org_id/tenant_id values are common in real REST APIs; without this a
+// numeric tenant id is typeof "number", silently escapes the string-only scope reads, and a
+// same-tenant BOLA (A and B both org_id:42) would be mislabeled a cross-tenant IDOR. Only
+// Number.isSafeInteger values are coerced: a 64-bit id above 2^53 already lost precision in
+// JSON.parse (9007199254740993 -> ...992), so its String() form is unreliable for tenant comparison
+// and could COLLIDE two distinct tenants — reject it (-> null = no usable scope value, the
+// conservative direction: the read soft-gates rather than risk a precision-wrong same-tenant
+// verdict). A float (42.5) is likewise not a tenant id. Anything else (null, boolean, object,
+// NaN/Infinity, unsafe-magnitude number) is also not a usable scope value.
+function scopeValueString(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  return null;
+}
+
 function ownScopeOf(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return null;
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) return value;
+    }
   }
   return null;
 }
@@ -358,12 +407,55 @@ function ownScopeIsPrivate(scope) {
 // first present owning-scope key is the discriminator; both identities must carry
 // one at the SAME key and they must differ.
 function tenantDiscriminator(parsedBody) {
-  if (parsedBody == null || typeof parsedBody !== "object") return null;
-  for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "string" && value.trim()) return { key, value: value.trim() };
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) return { key, value };
+    }
   }
   return null;
+}
+
+// All owning-scope VALUES present in a body across EVERY OWNING_SCOPE_KEYS alias (not just the
+// first-matched one). Lets the same-tenant guard detect a shared tenant value even when A and
+// B label it under different alias keys, or carry it under a SECONDARY key (e.g. A
+// owner_scope:"x" + tenant_id:"acme" vs B org_id:"acme"). Lowercased for a case-robust match.
+function owningScopeValues(parsedBody) {
+  const values = [];
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = scopeValueString(root[key]);
+      if (value != null) values.push(value.toLowerCase());
+    }
+  }
+  return values;
+}
+
+// True iff a body carries an EXPLICIT shared/default/public owning-scope label at ANY alias
+// (mint condition #13). Scans EVERY OWNING_SCOPE_KEYS alias, not just the first ownScopeOf match,
+// so a {owner_scope:"tenant-B", workspace_id:"public"} body cannot hide a shared label behind a
+// private primary alias. Positive evidence the object is shared → HARD refutation.
+function hasExplicitSharedScope(parsedBody) {
+  return owningScopeValues(parsedBody).some((value) => SHARED_SCOPE_VALUES.includes(value));
+}
+
+// True iff a body carries an owning-scope key whose value is PRESENT but UNUSABLE for tenant
+// comparison — specifically a NUMBER that is not a safe integer (a 64-bit id above 2^53 already
+// lost precision in JSON.parse, or a float). scopeValueString() drops these to null, which the
+// same-tenant guard would otherwise read as "scope ABSENT" and could then soft-mint two SAME-tenant
+// objects (both org_id:9007199254740993) as cross-tenant. A present-but-unsafe discriminator means
+// we cannot prove the two identities are in DIFFERENT tenants, so it is positive evidence AGAINST a
+// provable cross-tenant break → HARD refutation (fail closed), NOT a soft "missing scope" signal.
+// (Booleans/objects as a tenant id are nonsensical and cannot precision-collide, so they stay
+// scopeValueString→null/absent; only the realistic numeric-id precision risk hard-blocks here.)
+function hasUnusableOwningScope(parsedBody) {
+  for (const root of scopeSearchRoots(parsedBody)) {
+    for (const key of OWNING_SCOPE_KEYS) {
+      const value = root[key];
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return true;
+    }
+  }
+  return false;
 }
 
 // AC-5 PII tripwire (mint condition #17). Scan a body for PII shapes; any shape
@@ -512,6 +604,9 @@ function blocked(outcome, reason, extra = {}) {
     reason,
     row_written: false,
     ...extra,
+    // A blocked outcome NEVER carries confidence signals — kept authoritative (after ...extra) so a
+    // caller's extra cannot accidentally attach a soft-gate signal to a hard block.
+    confidence_signals: [],
   };
 }
 
@@ -1015,16 +1110,96 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (bodyLeaksCanary(P6, canary_a)) {
     return fail("blocked_by_design", "p6_canary_in_deny_body");
   }
-  // #13 CROSS-TENANT SCOPE PROOF — ownScopeOf(P1) is B's OWN private scope.
-  const p1Scope = ownScopeOf(p1Parsed);
-  if (!ownScopeIsPrivate(p1Scope)) {
-    return fail("blocked_by_design", "own_scope_not_private");
+  // #13/#14 are DEMOTED from hard refutations to non-blocking CONFIDENCE SIGNALS
+  // (measure-idor-oracle.js read-out: they killed real A-only IDORs, holding recall at
+  // 16.7%). The canary witness already proved A read B's specific private object (P2/P2′)
+  // while anon (P4/P4id) AND a third authenticated tenant C (P5) are denied — a categorical
+  // cross-principal break. #13/#14 only STRENGTHEN the labeling of that break as
+  // cross-TENANT; their absence weakens tenant attribution but does NOT refute the IDOR, so
+  // record the weakness and continue to the mint. (C1/C2 controls trip DIFFERENT, upstream
+  // gates — canary_leaked_unauthenticated / p5_authenticated_shared — which are NOT demoted.)
+  const confidenceSignals = [];
+  // #13 CROSS-TENANT SCOPE PROOF — is O_B's OWN scope private, or an EXPLICIT shared label?
+  // An EXPLICIT shared/default/public value at ANY owning-scope alias is positive evidence O_B is
+  // SHARED (not B-private) → HARD refutation. Scan it across EVERY body that should reflect O_B's
+  // scope, each at EVERY alias (hasExplicitSharedScope, not just the first ownScopeOf match):
+  //   - p1Parsed     — the live P1 cross-principal read;
+  //   - parsedReadback — B's OWN owner readback (already trusted for #20 canary discovery + #24
+  //     create-time PII screening, so its shared label is authoritative even when P1 omits it);
+  //   - p2Parsed/p2primeParsed — the successful A→B proof reads whose canary signs the row; the
+  //     signed proof body itself must not say "public"/"default"/"shared".
+  // Only a scope MISSING from the P1 body across ALL aliases is "unprovable" and demotes to a
+  // confidence signal (the read still mints, at a LOWER severity). Asymmetric by the
+  // absence-vs-positive rule: positive shared evidence on ANY of these bodies STRENGTHENS the
+  // block; a readback/proof body that merely carries a PRIVATE scope does NOT clear the P1-side
+  // soft-gate (the soft-gate reflects what the P1 proof body demonstrates to a reviewer).
+  for (const proofBody of [p1Parsed, parsedReadback, p2Parsed, p2primeParsed]) {
+    if (hasExplicitSharedScope(proofBody)) {
+      return fail("blocked_by_design", "own_scope_explicitly_shared");
+    }
   }
-  // #14 TENANT DISCRIMINATOR — A and B both present at a fixed key AND differ.
+  // A PRESENT-but-unusable owning-scope value (an unsafe-magnitude / float number that
+  // scopeValueString drops to null) would make the same-tenant guard below read the scope as
+  // ABSENT and could soft-mint two SAME-tenant objects (both carrying the same unsafe numeric
+  // org_id) as cross-tenant. We cannot prove the identities are in DIFFERENT tenants when a
+  // discriminator is present but unsafe to compare, so fail closed across EVERY body that feeds
+  // the tenant guard — the B side (p1/readback/p2/p2′) AND the A side (p3). (Codex PR#136 P1.)
+  for (const proofBody of [p1Parsed, parsedReadback, p2Parsed, p2primeParsed, p3Parsed]) {
+    if (hasUnusableOwningScope(proofBody)) {
+      return fail("blocked_by_design", "own_scope_unusable_numeric");
+    }
+  }
+  const p1Scope = ownScopeOf(p1Parsed);
+  const ownScopePrivate = ownScopeIsPrivate(p1Scope);
+  if (p1Scope == null) {
+    confidenceSignals.push({
+      gate: "own_scope_missing",
+      reason: "P1 echoed NO owning-scope key, so B-private ownership cannot be shown from the body; cross-tenant attribution is unproven.",
+    });
+  }
+  // #14 TENANT DISCRIMINATOR — A and B present at a fixed key AND differ?
   const tenantB = tenantDiscriminator(p1Parsed);
   const tenantA = tenantDiscriminator(p3Parsed);
-  if (!tenantA || !tenantB || tenantA.key !== tenantB.key || tenantA.value === tenantB.value) {
-    return fail("blocked_by_design", "identities_collided_not_provable");
+  // PROVABLY SAME tenant: A and B share ANY owning-scope VALUE, across EVERY alias key (not
+  // just the first-matched discriminator, and not just at the SAME key) — e.g. B `org_id:"acme"`
+  // vs A `tenant_id:"acme"`, or a match under a SECONDARY key. That is positive evidence AGAINST
+  // a cross-tenant break, so it stays a HARD refutation. A genuine same-tenant user-level BOLA
+  // would need a different proof; minting it here would mislabel it as THIS producer's
+  // cross-TENANT IDOR. B's scope values fold in the OWNER READBACK too (same absence-vs-positive
+  // rule as #13): when the live P1 body omits owning-scope keys, the trusted readback's B-scope
+  // still hard-refutes a same-tenant collision with A. (It can only ADD a refutation; differing
+  // values do NOT clear the P1-side distinctness soft-gate below, which stays on the live bodies.)
+  // B's scope values ALSO fold in the signed A→B proof bodies (p2/p2′): those are the reads whose
+  // canary signs the row and are already trusted for the explicit-shared hard block above, so if
+  // the proof body itself reveals O_B sits in A's tenant (same owning-scope value as A), that is
+  // positive same-tenant evidence and must hard-refute too — even when P1/readback omit the key
+  // (Codex PR#136 P1). Folding proof bodies can only ADD a refutation: a real cross-tenant proof
+  // body carries B's tenant value (≠ A), so it never creates a false same-tenant collision.
+  const bScopeValues = [...new Set([
+    ...owningScopeValues(p1Parsed),
+    ...owningScopeValues(parsedReadback),
+    ...owningScopeValues(p2Parsed),
+    ...owningScopeValues(p2primeParsed),
+  ])];
+  const aScopeValues = owningScopeValues(p3Parsed);
+  const tenantsProvablySame = aScopeValues.some((v) => bScopeValues.includes(v));
+  if (tenantsProvablySame) {
+    return fail("blocked_by_design", "identities_collided_same_tenant");
+  }
+  // PROVABLY DISTINCT: both present at the SAME key with DIFFERENT values. Compared
+  // case-INSENSITIVELY to stay consistent with the same-tenant HARD block above (owningScopeValues
+  // lowercases): a case-only difference ("Acme" vs "acme") must NOT read as "provably distinct" here
+  // while the same-tenant guard already treats it as one tenant — that asymmetry would otherwise be a
+  // false-negative dead-zone. Case-insensitive is the SAFE direction (prefer same-tenant → no mint).
+  const tenantsProvablyDistinct = !!(tenantA && tenantB
+    && tenantA.key === tenantB.key && tenantA.value.toLowerCase() !== tenantB.value.toLowerCase());
+  // The remainder — a missing discriminator on either side, or different alias keys carrying
+  // different values — is UNPROVABLE (not disproven): demote to a confidence signal.
+  if (!tenantsProvablyDistinct) {
+    confidenceSignals.push({
+      gate: "identities_collided_not_provable",
+      reason: "A and B carry no comparable tenant discriminator (missing on one side, or different alias keys with different values); cross-tenant distinctness is not provable from the bodies.",
+    });
   }
   // #15 CACHE ORIGIN-PROOF — no DEFINITIVE shared-cache hazard signal on P2/P2′.
   if (responseIsSharedCacheable(P2) || responseIsSharedCacheable(P2prime)) {
@@ -1104,8 +1279,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     p6_partitioned: true,
     c_authenticated: true,
     o_c_access_controlled: true,
-    tenants_distinct: true,
-    own_scope_private: true,
+    tenants_distinct: tenantsProvablyDistinct,
+    own_scope_private: ownScopePrivate,
     no_cache_signal: true,
   };
   const diagnosticBundle = canonicalJson({
@@ -1117,7 +1292,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     relation: relationBooleans,
     field_path: fieldPath,
     canary_present: { p1: true, p2: true, p2prime: true },
-    tenant_key: tenantB.key,
+    tenant_key: tenantB ? tenantB.key : null,
+    confidence_signals: confidenceSignals,
   });
 
   const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
@@ -1128,6 +1304,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     stdoutContent: p2BodyForCapture,
     stderrContent: diagnosticBundle,
     relationBooleans,
+    // A soft-gated fire (any confidence signal) caps the signed row at LOW: the unproven
+    // cross-tenant attribution must be claim-visible, and severity is the only field the
+    // claim/grade path carries. A fully-proven fire keeps the registry MEDIUM ceiling.
+    demonstratedSeverityOverride: confidenceSignals.length > 0 ? "low" : undefined,
   }));
 
   // Masked three-hash return (sensitive_output:true) — NEVER raw response bytes.
@@ -1148,11 +1328,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     stderr_hash: row.stderr_hash,
     exit_code: row.exit_code,
     demonstrated_severity: row.demonstrated_severity,
+    // Non-blocking provability signals (#13/#14): EMPTY on a fully-proven fire, populated
+    // when tenant attribution is weaker. Hash-bound via stderr_hash (diagnosticBundle) and
+    // surfaced here so the evaluator/grader can corroborate or discount the attribution.
+    // Each consumer-facing slot gets an INDEPENDENT array (.slice()) so a caller mutating one
+    // return field can never silently mutate the other (top-level vs masked_oracle).
+    confidence_signals: confidenceSignals.slice(),
     // The agent passes this surface_id to BOTH the producer and the record call
     // so the #111 strict-equality gate passes.
     masked_oracle: {
       relation: relationBooleans,
       canary_present: { p1: true, p2: true, p2prime: true },
+      confidence_signals: confidenceSignals.slice(),
       body_hash: row.stdout_hash,
     },
     ...identity,
