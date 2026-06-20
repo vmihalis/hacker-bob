@@ -681,12 +681,12 @@ test("AC-6 negative: P2′ canary drops on the fresh URL (eventual consistency) 
   assert.equal(result.reason, "canary_did_not_survive_fresh_url");
 }));
 
-test("AC-6 negative: same tenant / absent discriminator → identities_collided_not_provable", () => withTempHome(async () => {
+test("AC-6 negative: PROVABLY same tenant (A and B both report owner_scope tenant-B) → identities_collided_same_tenant (still blocks)", () => withTempHome(async () => {
   const domain = "idor-neg-same-tenant.example.test";
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, {
     handler: ({ isA, isB, wantsOB, wantsOA }) => {
-      // A's own object reports the SAME scope as B's → discriminator does not differ.
+      // A's own object reports the SAME scope value as B's → A and B are PROVABLY one tenant.
       if (wantsOA && isA) {
         return jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-B", details: { secret: { token: CANARY_A } }, server_ts: "x" });
       }
@@ -694,13 +694,13 @@ test("AC-6 negative: same tenant / absent discriminator → identities_collided_
     },
   });
   const result = await run(domain, { fetch_fn });
-  // #14 is DEMOTED to a non-blocking confidence signal: the canary-proven cross-tenant
-  // read still mints, recording that A and B could not be shown distinct at the same key.
-  assert.equal(result.confirmed, true, JSON.stringify(result));
-  assert.equal(result.row_written, true);
-  assert.deepEqual(result.confidence_signals.map((s) => s.gate).sort(), ["identities_collided_not_provable"]);
-  assert.equal(result.masked_oracle.relation.tenants_distinct, false);
-  assert.equal(readOffensiveRunRecords(domain).length, 1);
+  // PROVABLY same tenant is positive evidence AGAINST a cross-tenant break, so #14 stays a
+  // HARD refutation here (it is NOT the "unprovable" case the demotion targets) — nothing is
+  // signed. The T6/T7-style UNPROVABLE cases (missing/mismatched key) still mint with a signal.
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
 test("AC-6 negative: P1 own-scope is a SHARED scope → own_scope_not_private", () => withTempHome(async () => {
@@ -1536,9 +1536,10 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
   setupSession(domain);
   const fetch_fn = soundFetchFn(domain, {
     handler: ({ isA, wantsOA }) => {
-      // A's own object reports the SAME scope as B's → discriminator does not differ (#14).
+      // A's own object echoes NO tenant key, so A and B cannot be shown DISTINCT at the same
+      // key (#14 UNPROVABLE → a non-blocking signal; the canary-proven read still mints).
       if (wantsOA && isA) {
-        return jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-B", details: { secret: { token: CANARY_A } }, server_ts: "x" });
+        return jsonResponse(200, { id: OBJ_A, details: { secret: { token: CANARY_A } }, server_ts: "x" });
       }
       return null;
     },

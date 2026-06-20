@@ -400,6 +400,31 @@ const CORPUS = [
     },
     provision: () => provisionFor(),
   },
+  {
+    id: "C3", name: "CONTROL: PROVABLY same tenant (A and B share owner_scope) — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/items/{id}",
+    endpointPath: `/api/items/${OBJ_B}`,
+    note: "A reads O_B's canary and anon + 3rd-tenant C are denied, BUT O_B and O_A both report the SAME owner_scope value — A and B are PROVABLY one tenant. NOT a cross-tenant IDOR; #14 must HARD-block (not demote to a signal). Locks the Codex P2 fix.",
+    predicted: "identities_collided_same_tenant",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "tenant-same", viewer: "viewer-B", objId: OBJ_B }));
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_B, scope: "tenant-same", viewer: "viewer-A", objId: OBJ_B }));
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, resourceBody({ canary: CANARY_A, scope: "tenant-same", viewer: "viewer-A", objId: OBJ_A }));
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "tenant-same" }),
+  },
 ];
 
 const GATE_LABEL = {
@@ -407,7 +432,8 @@ const GATE_LABEL = {
   canary_leaked_unauthenticated: "#9 anon read of O_B leaks the canary (object is public)",
   body_not_parseable: "#2 P1/P2 body is not JSON (text/CSV/PDF export)",
   own_scope_not_private: "#13 P1 echoes no private owning-scope key",
-  identities_collided_not_provable: "#14 A and B not distinguishable at the same tenant key",
+  identities_collided_not_provable: "#14 A and B not distinguishable at the same tenant key (unprovable)",
+  identities_collided_same_tenant: "#14 A and B PROVABLY the same tenant (positive evidence against cross-tenant)",
   object_not_access_controlled: "#10 anon read of O_B is not 401/403",
   "p5_not_found_ambiguous": "#11 a 3rd tenant C gets 404 (existence-ambiguous)",
 };

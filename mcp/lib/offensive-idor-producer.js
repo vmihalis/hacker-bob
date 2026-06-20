@@ -1034,15 +1034,26 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       reason: "P1 echoed no private owning-scope key (or a shared scope); cross-tenant attribution is weaker than a scoped read.",
     });
   }
-  // #14 TENANT DISCRIMINATOR (signal) — A and B present at a fixed key AND differ?
+  // #14 TENANT DISCRIMINATOR — A and B present at a fixed key AND differ?
   const tenantB = tenantDiscriminator(p1Parsed);
   const tenantA = tenantDiscriminator(p3Parsed);
   const tenantsProvablyDistinct = !!(tenantA && tenantB
     && tenantA.key === tenantB.key && tenantA.value !== tenantB.value);
+  // PROVABLY SAME tenant (both present at the same key with the SAME value) is positive
+  // evidence AGAINST a cross-tenant break — it stays a HARD refutation, NOT the "unprovable"
+  // case the demotion targets. A genuine same-tenant user-level BOLA would need a different
+  // proof; minting it here would mislabel it as THIS producer's cross-TENANT IDOR.
+  const tenantsProvablySame = !!(tenantA && tenantB
+    && tenantA.key === tenantB.key && tenantA.value === tenantB.value);
+  if (tenantsProvablySame) {
+    return fail("blocked_by_design", "identities_collided_same_tenant");
+  }
+  // The remaining "not provably distinct" cases — a missing tenant key on either side, or
+  // discriminators at different keys — are UNPROVABLE (not disproven): demote to a signal.
   if (!tenantsProvablyDistinct) {
     confidenceSignals.push({
       gate: "identities_collided_not_provable",
-      reason: "A and B carry no distinguishable tenant discriminator at the same key; cross-tenant distinctness is not provable from the bodies.",
+      reason: "A and B carry no distinguishable tenant discriminator at the same key (missing or mismatched key); cross-tenant distinctness is not provable from the bodies.",
     });
   }
   // #15 CACHE ORIGIN-PROOF — no DEFINITIVE shared-cache hazard signal on P2/P2′.
