@@ -37,6 +37,15 @@ Maintainer workflow:
 - `TOOLS`, MCP dispatch, role-bundle permissions, agent tool frontmatter, skill
   allowed-tools, Claude settings, and scope-hook registration must remain
   registry-driven.
+- Correctness-vocabulary tags (S*, I*, C*, X.*, Y-P*, Y-D*, Y-R*) are
+  registry-driven via `mcp/lib/invariant-registry.js`. Every tag in the tree
+  must resolve to a REGISTRY entry (or the frozen, only-shrinking
+  `ALLOWLIST_UNDOCUMENTED` backlog), and every entry's `enforced_by`
+  file:symbol must exist. The collision-prone S/C/I families are matched only
+  in anchored comment form (`// I6`), so a tag's enforcing anchor MUST be a
+  comment. `npm run check:invariant-registry` (in `test:prompts`) is the
+  orphan-check. Adding a tag means adding its entry AND anchoring the tag at
+  the enforcing site.
 - Lifecycle hooks enforce contracts only. Evaluator `SubagentStop` validates the
   final marker and structured handoff but must not advance `pending_wave`,
   `evaluation_wave`, `explored`, findings summaries, or phase state.

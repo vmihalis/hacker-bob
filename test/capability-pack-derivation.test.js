@@ -46,7 +46,9 @@ const {
   normalizeContract,
 } = require("../mcp/lib/contracts.js");
 const {
+  VALID_ROLE_BUNDLES,
   toolNamesForRoleBundle,
+  roleBundleResolvesToTools,
 } = require("../mcp/lib/tool-registry.js");
 
 // ─── Fixtures ────────────────────────────────────────────────────────────
@@ -224,6 +226,81 @@ test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is keyed on every shipped capabi
       `EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK missing key for ${packId}`,
     );
   }
+});
+
+// Reusable closure helper (the pattern T3/T7 reuse against their own
+// source-of-truth lists + predicates): iterate values, apply a structural
+// predicate, report offenders via deepEqual([]).
+function assertBundleListClosed(bundles, label) {
+  const dead = bundles.filter((b) => !roleBundleResolvesToTools(b));
+  assert.deepEqual(dead, [], `${label}: dead role bundles: ${dead.join(", ")}`);
+}
+
+test("EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK is a faithful projection of CAPABILITY_PACKS[*].role_bundles", () => {
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  assert.deepEqual(
+    Object.keys(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK).sort(),
+    Object.keys(CAPABILITY_PACKS).sort(),
+    "derived map key set must equal CAPABILITY_PACKS key set",
+  );
+  for (const [packId, pack] of Object.entries(CAPABILITY_PACKS)) {
+    assert.deepEqual(
+      EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK[packId],
+      pack.role_bundles,
+      `derived bundles for ${packId} must equal CAPABILITY_PACKS.${packId}.role_bundles`,
+    );
+  }
+});
+
+// CR-1 closure: keys existing is not enough — every VALUE (each derived role
+// bundle) must be a declared VALID_ROLE_BUNDLES member AND resolve to a
+// non-empty tool set. This closes the dead-bundle class (e.g. the historical
+// `evaluator-oss`, a valid-looking name no tool declared, which silently
+// produced zero OSS tools per surface). Data-agnostic: it fails on any pack
+// that maps onto a non-member or empty-resolving bundle, not just the bundle
+// that happened to be wrong when it was written.
+test("every derived evaluator role bundle is a VALID_ROLE_BUNDLES member that resolves to >=1 tool", () => {
+  for (const [packId, bundles] of Object.entries(EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK)) {
+    assert.ok(
+      Array.isArray(bundles) && bundles.length > 0,
+      `pack ${packId} must derive at least one role bundle`,
+    );
+    for (const bundle of bundles) {
+      // The registry predicate must agree with the raw conjunction — guards
+      // against the helper silently weakening to always-true in a refactor.
+      assert.equal(
+        roleBundleResolvesToTools(bundle),
+        VALID_ROLE_BUNDLES.includes(bundle) && toolNamesForRoleBundle(bundle).length > 0,
+        `roleBundleResolvesToTools(${bundle}) disagrees with raw membership/tool-count`,
+      );
+    }
+    assertBundleListClosed(bundles, `pack ${packId}`);
+  }
+});
+
+test("every VALID_ROLE_BUNDLES entry itself resolves to >=1 tool (no orphan-declared bundles)", () => {
+  const orphans = VALID_ROLE_BUNDLES.filter((b) => toolNamesForRoleBundle(b).length === 0);
+  assert.deepEqual(orphans, [], `declared role bundles with no tools: ${orphans.join(", ")}`);
+});
+
+test("oss_native_code allowed tools include bob_static_scan + bob_import_static_artifact", () => {
+  const node = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}oss-native`,
+    kind: "surface",
+    surface_refs: ["surface:oss"],
+  };
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: { "surface:oss": { capability_pack: "oss_native_code" } },
+  };
+  const out = derivePackForNode(node, graphContext, [], null);
+  const tools = new Set(out.allowed_tools_for_node);
+  assert.ok(tools.has("bob_static_scan"), "oss_native_code must surface bob_static_scan");
+  assert.ok(
+    tools.has("bob_import_static_artifact"),
+    "oss_native_code must surface bob_import_static_artifact",
+  );
 });
 
 // ─── X-P4 lint guard ─────────────────────────────────────────────────────
