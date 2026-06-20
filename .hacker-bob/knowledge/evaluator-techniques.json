@@ -28,10 +28,10 @@
       "id": "over-permissive-search-list",
       "title": "Over-permissive search/list endpoints: filter-bypass mass extraction",
       "match": {
-        "tech": ["api", "rest", "graphql", "json", "elasticsearch", "opensearch", "solr", "algolia", "search"],
-        "endpoints": ["/search", "/api/search", "/query", "/find", "/lookup", "/people", "/directory", "/autocomplete", "/suggest", "/typeahead"],
-        "params": ["query", "search", "term", "keyword", "filter", "$filter", "where", "scope"],
-        "hints": ["search", "list", "directory", "people search", "over-permissive", "mass extraction", "enumeration", "filter", "predicate", "elasticsearch", "autocomplete"]
+        "tech": ["elasticsearch", "opensearch", "solr", "algolia", "search api", "full-text search"],
+        "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
+        "params": ["query", "search", "$filter", "facet"],
+        "hints": ["search endpoint", "search index", "people search", "over-permissive search", "mass extraction", "predicate annihilation", "elasticsearch", "autocomplete"]
       },
       "techniques": [
         "SYNTHETIC/own data only - never page through or exfiltrate real third-party records; confirm by COUNT. Try PREDICATE ANNIHILATION on a scoped search/list endpoint: an always-true predicate (`true`, `1 eq 1`, OData `$filter=1 eq 1`, Lucene `*:*`/`q=*`, NoSQL `filter[$ne]=`/`q[$gt]=`/`where[$exists]=true`) collapses the server-side scope filter. Prove it with a RECORD-COUNT differential (scoped N vs annihilated M, M >> N) - the count, not the rows.",
@@ -39,14 +39,13 @@
         "Read-only, count-only. Try HEADER-BASED ACCESS-CONTROL / INDEX ROUTING: swap headers that select the backend index/shard/principal - `Index:`/`X-Index`/`X-Search-Index` pointing at another index (people-search, admin, internal), `X-Tenant-Id`/`X-Org-Id`, or role/group headers - to reach a broader index or another tenant's data the UI never exposes.",
         "No row exfiltration needed. Use BOOLEAN/BLIND enumeration when the endpoint returns only a filtered COUNT or yes/no: vary the predicate (true vs false, `a*` vs `zz*`) and confirm the count tracks attacker input - that proves the filter is attacker-reachable.",
         "An over-permissive endpoint is NOT automatically LOW - try the predicate-annihilation, scope-drop and header-routing pivots BEFORE grading, then grade by the PROVEN cross-scope outcome. A masked record-count showing other tenants'/users' records under an annihilated filter is an access-control break whose severity follows the data class and volume.",
-        "SAFE confirmation only: report a MASKED record count (e.g. scoped=12 vs unscoped=9155), ONE synthetic/redacted sample row, and the exact request/response. NEVER dump real records or real PII to prove the point."
+        "SAFE confirmation only: report a MASKED record count (e.g. scoped=12 vs unscoped=9155), ONE synthetic/redacted sample row, and the REDACTED request + a REDACTED response excerpt (status + the count field only). NEVER paste raw response bodies, real rows, cookies, auth headers, or real PII into evidence."
       ],
       "payload_hints": [
-        "Predicate annihilation: ?q=*  ?q=true  ?filter=true  ?$filter=1 eq 1  ?$filter=true  ?where=1=1  ?search=*:*  ?q=1 OR 1=1",
-        "NoSQL operator injection: ?filter[$ne]=  ?q[$gt]=  ?where[$exists]=true  ?id[$ne]=null  (JSON body: {\"filter\":{\"$ne\":null}})",
-        "Scope-param drop/swap: remove &tenant_id= / &org_id= / &scope=, or set scope=* / scope=all / tenant_id=<other-synthetic-tenant>, then diff the result count",
-        "Index/principal header routing: Index: people-search  |  X-Search-Index: internal  |  X-Tenant-Id: <other>  |  X-Org-Id: <other>  |  X-Roles: admin",
-        "Size the corpus by COUNT only - never fetch the rows and never send a huge limit: request limit=1 (or limit=0 / per_page=1) and read the total from X-Total-Count / meta.total / the count field"
+        "COUNT-only, synthetic/own data, never fetch rows: predicate annihilation ?q=* / ?q=true / ?$filter=1 eq 1 / ?$filter=true / ?search=*:* / ?where=1=1 ; NoSQL ?filter[$ne]= / ?q[$gt]= / ?where[$exists]=true",
+        "Read the total safely via limit=1 or per_page=1 + X-Total-Count / meta.total - NEVER limit=0 (some backends treat it as no-limit) and never a large limit; the scoped-vs-unscoped COUNT differential is the proof, not the rows",
+        "Scope-param drop/swap (compare COUNTS only, never the rows): remove &tenant_id= / &org_id= / &scope=, or set scope=all / tenant_id=<other-synthetic-tenant>",
+        "Index/principal header routing (read-only GET, compare COUNTS not rows): Index: people-search | X-Search-Index: internal | X-Tenant-Id: <other> | X-Org-Id: <other> | X-Roles: admin"
       ]
     },
     {
