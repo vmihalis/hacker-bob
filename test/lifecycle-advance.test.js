@@ -763,3 +763,31 @@ test("deriveAdvanceAuthContext precedence table: operator authority > sticky --n
   assert.equal(D("pending", null, false, false), "pending");
   assert.equal(D("authenticated", null, false, false), "authenticated");   // never auto-downgrade
 });
+
+test("advanceSession rejects an invalid (non-blank) auth_status at the call boundary", () => {
+  withTempHome(() => {
+    const domain = "auth-invalid-arg.example.test";
+    bootstrapDomain(domain);
+    assert.throws(
+      () => advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "bogus" }),
+      (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be one of/.test(err.message),
+    );
+    // The rejected call must not have advanced the nucleus.
+    assert.equal(readSessionNucleus(domain).lifecycle_state, "SETUP");
+  });
+});
+
+test("legacy bounty_transition_phase adapter DROPS auth_status (no authority conflation via override_reason)", () => {
+  const tool = require("../mcp/lib/tools/advance-session.js");
+  const adapter = tool.aliases[0].arg_adapter;
+  // override_reason -> operator_force is lifecycle-bypass authority; it must NOT also carry an
+  // auth_status assertion through to bob_advance_session (where operator_force is auth authority).
+  const out = adapter({
+    target_domain: "x.test",
+    to_phase: "VERIFY",
+    override_reason: "bypass the gate",
+    auth_status: "authenticated",
+  });
+  assert.equal(out.override, "operator_force");
+  assert.equal(Object.prototype.hasOwnProperty.call(out, "auth_status"), false);
+});

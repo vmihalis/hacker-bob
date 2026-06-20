@@ -6,6 +6,9 @@ const {
   assertNonEmptyString,
 } = require("./validation.js");
 const {
+  AUTH_STATUS_VALUES,
+} = require("./constants.js");
+const {
   sessionDir,
   sessionNucleusPath,
   statePath,
@@ -543,6 +546,24 @@ function advanceSession(args) {
   const overrideReason = args.override_reason == null
     ? null
     : assertNonEmptyString(args.override_reason, "override_reason");
+  // Validate auth_status at the call boundary (not deep in buildSessionNucleus -> normalizeAuthContext)
+  // so a direct in-process caller gets a clear error. A blank/whitespace value is allowed here and
+  // treated as OMITTED downstream by deriveAdvanceAuthContext; only a non-blank invalid value throws.
+  if (args.auth_status != null) {
+    if (typeof args.auth_status !== "string") {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `auth_status must be a string; got ${typeof args.auth_status}`,
+      );
+    }
+    const trimmedAuth = args.auth_status.trim();
+    if (trimmedAuth !== "" && !AUTH_STATUS_VALUES.includes(trimmedAuth)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `auth_status must be one of ${AUTH_STATUS_VALUES.join(", ")}; got ${JSON.stringify(args.auth_status)}`,
+      );
+    }
+  }
 
   return withSessionLock(domain, () => {
     const priorNucleus = readSessionNucleus(domain);
@@ -584,6 +605,17 @@ function advanceSession(args) {
       );
     }
 
+    // Derive the next auth context FIRST — deriveAdvanceAuthContext performs the only fallible work
+    // left (the hasUsableAuthProfile auth.json read). Computing it before the override audit append
+    // upholds "all fallible work BEFORE durable writes": a throw here can never orphan an
+    // already-recorded governance.lifecycle.override event with no corresponding state transition.
+    const nextAuthContext = deriveAdvanceAuthContext(
+      priorNucleus.auth_context,
+      args.auth_status,
+      hasUsableAuthProfile(domain),
+      override === "operator_force",
+    );
+
     if (override === "operator_force") {
       appendSessionEvent({
         target_domain: domain,
@@ -600,12 +632,6 @@ function advanceSession(args) {
       });
     }
 
-    const nextAuthContext = deriveAdvanceAuthContext(
-      priorNucleus.auth_context,
-      args.auth_status,
-      hasUsableAuthProfile(domain),
-      override === "operator_force",
-    );
     const nextNucleus = buildSessionNucleus({
       target_domain: priorNucleus.target_domain,
       target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,

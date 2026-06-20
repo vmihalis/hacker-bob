@@ -29,7 +29,12 @@ const LEGACY_PHASE_TO_LIFECYCLE_STATE = Object.freeze({
 // `to_phase` enum to the canonical `to_state` enum and treats a populated
 // `override_reason` as an `operator_force` override (the legacy tool used
 // `override_reason` as both the opt-out flag and the audit string). `auth_status`
-// is forwarded to bob_advance_session as the optional governance auth-context update.
+// is DROPPED here, NOT forwarded: this shim maps override_reason -> operator_force,
+// and operator_force is auth-context AUTHORITY in bob_advance_session, so forwarding
+// auth_status through it would let a caller manufacture operator-level auth provenance
+// ("authenticated") as a side-effect of a lifecycle-gate bypass — conflating two
+// separate privilege grants. Auth context moves only through the canonical
+// bob_advance_session tool / governance events.
 function adaptLegacyTransitionPhaseArgs(args) {
   const safe = (args && typeof args === "object" && !Array.isArray(args)) ? args : {};
   const result = {};
@@ -49,11 +54,6 @@ function adaptLegacyTransitionPhaseArgs(args) {
     result.override = "operator_force";
     result.override_reason = safe.override_reason;
   }
-  // Forward only a non-blank auth_status — an omitted optional field must NOT become an
-  // empty string that then fails the canonical AUTH_STATUS_VALUES enum downstream.
-  if (typeof safe.auth_status === "string" && safe.auth_status.trim()) {
-    result.auth_status = safe.auth_status.trim();
-  }
   return result;
 }
 
@@ -69,8 +69,10 @@ const LEGACY_TRANSITION_PHASE_INPUT_SCHEMA = Object.freeze({
       type: "string",
       enum: [...AUTH_STATUS_VALUES],
       description:
-        "Forwarded to bob_advance_session as the optional governance auth-context update " +
-        "(same enum as the canonical tool). When omitted it is simply not forwarded.",
+        "Ignored by the bob_advance_session redirect — accepted for backward-compat but NOT " +
+        "forwarded. Auth context moves only through the canonical bob_advance_session tool, never " +
+        "through this lifecycle-bypass shim (forwarding it would conflate operator_force lifecycle " +
+        "authority with auth-context authority).",
     },
     override_reason: {
       type: "string",
@@ -144,7 +146,7 @@ module.exports = Object.freeze({
       "Deprecated alias for bob_advance_session. Accepts the legacy to_phase " +
       "enum {SURFACE_DISCOVERY, AUTH, EVALUATE, CHAIN, VERIFY, GRADE, REPORT, " +
       "EXPLORE}, maps each value to its lifecycle state, and forwards to " +
-      "bob_advance_session. The auth_status argument is forwarded; override_reason " +
+      "bob_advance_session. The auth_status argument is ignored; override_reason " +
       "implies operator_force. Removed in v2.1.0; prefer bob_advance_session " +
       "with the six-state lifecycle enum directly.",
     inputSchema: LEGACY_TRANSITION_PHASE_INPUT_SCHEMA,
