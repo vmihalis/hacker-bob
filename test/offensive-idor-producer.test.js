@@ -856,6 +856,30 @@ test("AC-6 negative: owner readback B-scope collides with A's own scope (same te
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: A and B share an INTEGER org_id (numeric tenant) → identities_collided_same_tenant (blocks)", () => withTempHome(async () => {
+  // Real REST APIs commonly use INTEGER tenant IDs. A and B both carry org_id:7 (a NUMBER), so they
+  // are provably the same tenant. Without numeric coercion these are typeof "number", escape the
+  // string-only scope reads, and the same-tenant BOLA would be mislabeled a cross-tenant IDOR; the
+  // scopeValueString coercion must surface them so #14 hard-blocks.
+  const domain = "idor-neg-integer-sametenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, org_id: 7, viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, org_id: 7, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-2 review hardening ──────────────────────────
 
 test("read-only guard: a verb-prefixed recorded endpoint (/api/reset/{id}) is rejected before any probe", () => withTempHome(async () => {

@@ -235,7 +235,17 @@ function buildAndSignOffensiveRow(domain, {
         `demonstratedSeverityOverride must be a known severity value: ${demonstratedSeverityOverride}`,
       );
     }
-    demonstratedSeverity = SEVERITY_VALUES[Math.max(overrideIdx, SEVERITY_VALUES.indexOf(registrySeverity))];
+    // The registry value MUST also be a known severity — otherwise its index is -1 and Math.max
+    // would silently elect the override regardless of direction (defeating the only-LOWER clamp).
+    // A registry typo is a programming error, so fail closed rather than mis-clamp a signed row.
+    const registryIdx = SEVERITY_VALUES.indexOf(registrySeverity);
+    if (registryIdx < 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `registry demonstrated-severity for ${toolId} is not a known severity value: ${registrySeverity}`,
+      );
+    }
+    demonstratedSeverity = SEVERITY_VALUES[Math.max(overrideIdx, registryIdx)];
   }
   // relationBooleans is spread into the row LAST (to document extra legs). It is
   // MAC-covered proof material, not a free-form bag, so it must neither override a

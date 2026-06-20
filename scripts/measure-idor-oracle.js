@@ -530,6 +530,31 @@ const CORPUS = [
     },
     provision: () => provisionFor({ readbackScope: "tenant-B" }),
   },
+  {
+    id: "C8", name: "CONTROL: A and B share an INTEGER org_id (numeric tenant) — Codex P2 guard",
+    klass: "control", fidelity: "synthetic", known_true: false, in_scope: true,
+    pathTemplate: "/api/blobs/{id}",
+    endpointPath: `/api/blobs/${OBJ_B}`,
+    note: "O_B and O_A both report org_id:7 as a NUMBER (real REST APIs use integer tenant IDs). Without numeric coercion these escape the string-only scope reads and the same-tenant BOLA would be minted as a cross-tenant IDOR. #14 must coerce + HARD-block. Locks the integer-tenant-id fix.",
+    predicted: "identities_collided_same_tenant",
+    fetchFn: (domain) => async ({ url, headers }) => {
+      const w = whoAndWhat(url, headers);
+      if (w.anon) return challenge(403);
+      const oc = ocLegs(w);
+      if (oc) return oc;
+      if (w.wantsOB) {
+        if (w.isB) return jsonResponse(200, { id: OBJ_B, org_id: 7, viewer_id: "viewer-B", details: { secret: { token: CANARY_B } } });
+        if (w.isA) return jsonResponse(200, { id: OBJ_B, org_id: 7, viewer_id: "viewer-A", details: { secret: { token: CANARY_B } } });
+        if (w.isC) return challenge(403);
+      }
+      if (w.wantsOA) {
+        if (w.isA) return jsonResponse(200, { id: OBJ_A, org_id: 7, viewer_id: "viewer-A", details: { secret: { token: CANARY_A } } });
+        return challenge(403);
+      }
+      return challenge(404);
+    },
+    provision: () => provisionFor({ readbackScope: "tenant-B" }),
+  },
 ];
 
 const GATE_LABEL = {

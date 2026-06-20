@@ -338,11 +338,25 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
+// Coerce an owning-scope field to its canonical string form: a non-empty trimmed string, OR a
+// finite number stringified. Integer org_id/tenant_id values are common in real REST APIs; without
+// this a numeric tenant id is typeof "number", silently escapes the string-only scope reads, and a
+// same-tenant BOLA (A and B both org_id:42) would be mislabeled a cross-tenant IDOR. Anything else
+// (null, boolean, object, NaN/Infinity) is not a usable scope value.
+function scopeValueString(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
 function ownScopeOf(parsedBody) {
   if (parsedBody == null || typeof parsedBody !== "object") return null;
   for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+    const value = scopeValueString(parsedBody[key]);
+    if (value != null) return value;
   }
   return null;
 }
@@ -360,8 +374,8 @@ function ownScopeIsPrivate(scope) {
 function tenantDiscriminator(parsedBody) {
   if (parsedBody == null || typeof parsedBody !== "object") return null;
   for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "string" && value.trim()) return { key, value: value.trim() };
+    const value = scopeValueString(parsedBody[key]);
+    if (value != null) return { key, value };
   }
   return null;
 }
@@ -374,8 +388,8 @@ function owningScopeValues(parsedBody) {
   if (parsedBody == null || typeof parsedBody !== "object") return [];
   const values = [];
   for (const key of OWNING_SCOPE_KEYS) {
-    const value = parsedBody[key];
-    if (typeof value === "string" && value.trim()) values.push(value.trim().toLowerCase());
+    const value = scopeValueString(parsedBody[key]);
+    if (value != null) values.push(value.toLowerCase());
   }
   return values;
 }
@@ -533,8 +547,10 @@ function blocked(outcome, reason, extra = {}) {
     offensive_outcome: outcome,
     reason,
     row_written: false,
-    confidence_signals: [],
     ...extra,
+    // A blocked outcome NEVER carries confidence signals — kept authoritative (after ...extra) so a
+    // caller's extra cannot accidentally attach a soft-gate signal to a hard block.
+    confidence_signals: [],
   };
 }
 

@@ -102,6 +102,7 @@
   "test/oss-evidence-reference.test.js",
   "test/offensive-proof-contract.test.js",
   "test/offensive-idor-producer.test.js",
+  "test/measure-idor-oracle-gate.test.js",
   "test/offensive-reflect-producer.test.js",
   "test/offensive-xss-exec-producer.test.js",
   "test/offensive-oob-collector.test.js",
