@@ -29,24 +29,24 @@
       "title": "Over-permissive search/list endpoints: filter-bypass mass extraction",
       "match": {
         "tech": ["api", "rest", "graphql", "json", "elasticsearch", "opensearch", "solr", "algolia", "search"],
-        "endpoints": ["/search", "/api/search", "/query", "/list", "/find", "/lookup", "/people", "/directory", "/members", "/export", "/report", "/autocomplete", "/suggest", "/typeahead", "/filter"],
+        "endpoints": ["/search", "/api/search", "/query", "/find", "/lookup", "/people", "/directory", "/autocomplete", "/suggest", "/typeahead"],
         "params": ["query", "search", "term", "keyword", "filter", "$filter", "where", "scope"],
         "hints": ["search", "list", "directory", "people search", "over-permissive", "mass extraction", "enumeration", "filter", "predicate", "elasticsearch", "autocomplete"]
       },
       "techniques": [
-        "When a search/list endpoint returns SCOPED results, attempt PREDICATE ANNIHILATION to collapse the server-side scope filter: inject an always-true predicate - `true`, `1 eq 1`, `OR 1=1`, an OData `$filter=1 eq 1` (or `$filter=true`), a Lucene/Elasticsearch `*:*` or `q=*`, or a NoSQL operator injection (`filter[$ne]=`, `q[$gt]=`, `where[$exists]=true`). Confirm with a RECORD-COUNT differential: scoped N vs annihilated M, M >> N proves the filter is attacker-controllable. SYNTHETIC/own data only - never page through real third-party records.",
-        "Attempt SCOPE-PARAM DROP / SWAP: remove or null the tenant/org/scope/account parameter, set it empty or to `*`/`all`, or substitute a SECOND synthetic tenant's id, then compare result sets. A server that filters only by a client-supplied scope (not the session principal) is broken object/function-level authorization, not merely 'over-permissive'.",
-        "Attempt HEADER-BASED ACCESS-CONTROL / INDEX ROUTING: add or swap headers that select the backend index, shard, or principal - e.g. an `Index:`/`X-Index`/`X-Search-Index` header pointing at another index (people-search, admin, internal), `X-Tenant-Id`/`X-Org-Id`, or role/group headers - to pivot to a broader index or another tenant's data the UI never exposes.",
-        "Use BOOLEAN/BLIND enumeration when the endpoint returns a filtered COUNT or yes/no but not rows: vary the predicate (true vs false, `a*` vs `zz*`) and confirm the count tracks attacker input before reporting - that proves the filter is reachable even without row exfiltration.",
-        "An 'over-permissive endpoint' is NOT automatically LOW: grade by the PROVEN cross-scope outcome. A masked record-count differential showing the endpoint returns other tenants'/users' records (or the full corpus) under an annihilated filter is an access-control break whose severity follows the data class and volume - try the predicate-annihilation, scope-drop and header-routing pivots BEFORE settling on LOW.",
-        "Confirm impact the SAFE way: report a MASKED record count (e.g. scoped=12 vs unscoped=9155), ONE synthetic/redacted sample row, and the exact request/response. Do NOT dump real records or real PII to prove the point."
+        "SYNTHETIC/own data only - never page through or exfiltrate real third-party records; confirm by COUNT. Try PREDICATE ANNIHILATION on a scoped search/list endpoint: an always-true predicate (`true`, `1 eq 1`, OData `$filter=1 eq 1`, Lucene `*:*`/`q=*`, NoSQL `filter[$ne]=`/`q[$gt]=`/`where[$exists]=true`) collapses the server-side scope filter. Prove it with a RECORD-COUNT differential (scoped N vs annihilated M, M >> N) - the count, not the rows.",
+        "Count-only, synthetic tenants only. Try SCOPE-PARAM DROP/SWAP: remove or null the tenant/org/scope param, set it empty or `*`/`all`, or substitute a SECOND SYNTHETIC tenant id, then diff the result COUNTS. A server that filters only by a client-supplied scope (not the session principal) is broken object/function-level authz, not merely 'over-permissive'.",
+        "Read-only, count-only. Try HEADER-BASED ACCESS-CONTROL / INDEX ROUTING: swap headers that select the backend index/shard/principal - `Index:`/`X-Index`/`X-Search-Index` pointing at another index (people-search, admin, internal), `X-Tenant-Id`/`X-Org-Id`, or role/group headers - to reach a broader index or another tenant's data the UI never exposes.",
+        "No row exfiltration needed. Use BOOLEAN/BLIND enumeration when the endpoint returns only a filtered COUNT or yes/no: vary the predicate (true vs false, `a*` vs `zz*`) and confirm the count tracks attacker input - that proves the filter is attacker-reachable.",
+        "An over-permissive endpoint is NOT automatically LOW - try the predicate-annihilation, scope-drop and header-routing pivots BEFORE grading, then grade by the PROVEN cross-scope outcome. A masked record-count showing other tenants'/users' records under an annihilated filter is an access-control break whose severity follows the data class and volume.",
+        "SAFE confirmation only: report a MASKED record count (e.g. scoped=12 vs unscoped=9155), ONE synthetic/redacted sample row, and the exact request/response. NEVER dump real records or real PII to prove the point."
       ],
       "payload_hints": [
         "Predicate annihilation: ?q=*  ?q=true  ?filter=true  ?$filter=1 eq 1  ?$filter=true  ?where=1=1  ?search=*:*  ?q=1 OR 1=1",
         "NoSQL operator injection: ?filter[$ne]=  ?q[$gt]=  ?where[$exists]=true  ?id[$ne]=null  (JSON body: {\"filter\":{\"$ne\":null}})",
         "Scope-param drop/swap: remove &tenant_id= / &org_id= / &scope=, or set scope=* / scope=all / tenant_id=<other-synthetic-tenant>, then diff the result count",
         "Index/principal header routing: Index: people-search  |  X-Search-Index: internal  |  X-Tenant-Id: <other>  |  X-Org-Id: <other>  |  X-Roles: admin",
-        "Size the corpus by COUNT only (do not exfiltrate rows): compare limit=1 vs limit=100000 and read the total / X-Total-Count / meta.total field, not the rows"
+        "Size the corpus by COUNT only - never fetch the rows and never send a huge limit: request limit=1 (or limit=0 / per_page=1) and read the total from X-Total-Count / meta.total / the count field"
       ]
     },
     {
