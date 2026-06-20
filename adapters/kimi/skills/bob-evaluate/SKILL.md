@@ -699,6 +699,11 @@ for pattern in ("/api/", "/graphql", "/admin", "/auth", "/oauth", "/upload", "/b
 (session / "js_endpoint_clusters.txt").write_text("\n".join(clusters) + ("\n" if clusters else ""))
 PY
 ```
+Smart-contract targets — on-chain inventory (do this before step 7 when the operator note names on-chain contracts, the target is a protocol/dApp, or contract addresses appear in the dashboard's network traffic or JS bundles):
+- Write `[SESSION]/onchain_inventory.json` listing every in-scope contract, verified from the operator note plus the dApp's network requests and JS bundles. Drive the SPA with the `bob_browser_*` tools when addresses are not in static HTML, and infer each address's chain from the RPC endpoints / chainId the frontend talks to.
+- Schema: `{ "version": 1, "contracts": [ { "name": "DistributionV6", "chain_family": "evm", "chain_id": 1, "contract_address": "0x...", "network": "ethereum-mainnet", "priority": "CRITICAL", "bug_class_hints": ["reward_accounting"], "high_value_flows": ["claim"], "evidence": ["..."] } ] }`. Per entry, `chain_family` (one of `evm|svm|aptos|sui|substrate|cosmwasm`) and `contract_address` are REQUIRED; `chain_id`, `network`, `priority`, `bug_class_hints`, `high_value_flows`, and `evidence` are optional. Step 7 turns each valid entry into a `smart_contract` surface and a ranked lead carrying the chain sub-shape; entries missing a known `chain_family` or an address are skipped.
+- Do not invent addresses — include only contracts verified on-chain or from authoritative target sources. Exclude testnets/staging and out-of-scope third-party contracts per the operator note.
+
 7. Compact summaries, ranked leads, and attack surface
 ```bash
 DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
@@ -749,6 +754,17 @@ takeovers = uniq(pattern_takeovers + subzy_takeovers, 200)
 sibling_candidates = lines("sibling-domain-candidates.txt", 50)
 brand_sibling_candidates = lines("brand-sibling-probe-candidates.txt", 20)
 brand_sibling_live = lines("brand_sibling_live.txt", 20)
+def read_json(name):
+    path = session / name
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(errors="ignore"))
+    except Exception:
+        return None
+_onchain = read_json("onchain_inventory.json")
+onchain_contracts = (_onchain.get("contracts", []) if isinstance(_onchain, dict)
+                     else _onchain if isinstance(_onchain, list) else [])
 interesting = uniq([p for p in archive_params if re.search(r'(?i)(id|uuid|user|account|org|team|tenant|redirect|url|file|token|code|plan|amount)', p)], 40)
 endpoint_pool = uniq([p for p in archive_paths if re.search(r'(?i)(api|graphql|admin|auth|oauth|upload|billing|checkout|export|invite|user|account)', p)] + js_endpoints, 160)
 cve_hints = []
@@ -810,13 +826,13 @@ surfaces = [{
 }]
 leads = []
 now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-def add_lead(title, source, hosts, endpoints, params, surface_type, hints, evidence, score, promote=None):
+def add_lead(title, source, hosts, endpoints, params, surface_type, hints, evidence, score, promote=None, chain_family=None, chain_id=None, contract_address=None, flows_override=None):
     if score <= 0:
         return
     if not hosts and not endpoints:
         return
     lead_id = "SL-" + str(len(leads) + 1)
-    leads.append({
+    lead = {
         "id": lead_id,
         "title": title[:160],
         "source": source,
@@ -831,11 +847,22 @@ def add_lead(title, source, hosts, endpoints, params, surface_type, hints, evide
         "priority": "CRITICAL" if score >= 85 else "HIGH" if score >= 60 else "MEDIUM" if score >= 35 else "LOW",
         "surface_type": surface_type,
         "bug_class_hints": uniq(hints, 20),
-        "high_value_flows": flows,
+        "high_value_flows": flows_override if flows_override is not None else flows,
         "evidence": uniq(evidence, 25),
         "confidence": "high" if score >= 70 else "medium" if score >= 40 else "low",
         "score": score,
-    })
+    }
+    # Smart-contract sub-shape: a surface_type=smart_contract lead MUST carry a
+    # known chain_family plus chain_id/contract_address so promotion routes it to
+    # the on-chain evaluator pack rather than emitting an unroutable surface that
+    # the append-time invariant (Y-D21) rejects.
+    if chain_family is not None:
+        lead["chain_family"] = chain_family
+    if chain_id is not None:
+        lead["chain_id"] = chain_id
+    if contract_address is not None:
+        lead["contract_address"] = contract_address
+    leads.append(lead)
 api_eps = [e for e in endpoint_pool if re.search(r'(?i)/api/|/v\d+/|graphql', e)]
 add_lead("Archived API and GraphQL endpoint cluster", "deep-surface-discovery", base_hosts, api_eps, interesting, "api", bug_hints or ["idor","authz"], [f"{len(api_eps)} API/GraphQL endpoints from CDX/Wayback or JS", f"params: {', '.join(interesting[:8])}"], 80 if api_eps and interesting else 65 if api_eps else 0)
 admin_eps = [e for e in endpoint_pool if re.search(r'(?i)admin|debug|internal|manage', e)]
@@ -865,6 +892,51 @@ elif brand_sibling_candidates:
     add_lead("Brand-linked sibling properties queued for review", "deep-surface-discovery", brand_sibling_candidates[:10], [], [], "unknown", [], [f"{len(brand_sibling_candidates)} brand-linked sibling candidates recorded; liveness check unavailable or produced no live hosts"], 35)
 if sibling_candidates:
     add_lead("Sibling domain candidates recorded for review", "deep-surface-discovery", sibling_candidates[:20], [], [], "unknown", [], [f"{len(sibling_candidates)} linked non-target-domain candidates recorded in sibling-domain-candidates.txt; the broad candidate set is not fed into CDX, nuclei, JS extraction, or active probing"], 35)
+# Smart-contract surfaces + leads from the verified on-chain inventory. For
+# on-chain targets the agent writes onchain_inventory.json during collection;
+# each in-scope contract becomes one smart_contract surface AND one ranked lead
+# carrying chain_family/chain_id/contract_address. The web-derived synthesis
+# above can never produce these. Entries missing a known chain_family or an
+# address are skipped, not emitted as unroutable surfaces.
+KNOWN_CHAIN_FAMILIES = {"evm", "svm", "aptos", "sui", "substrate", "cosmwasm"}
+PRIORITY_SCORE = {"CRITICAL": 90, "HIGH": 75, "MEDIUM": 50, "LOW": 35}
+for contract in (onchain_contracts if isinstance(onchain_contracts, list) else []):
+    if not isinstance(contract, dict):
+        continue
+    fam = str(contract.get("chain_family") or "").strip().lower()
+    addr = str(contract.get("contract_address") or "").strip()
+    if fam not in KNOWN_CHAIN_FAMILIES or not addr:
+        continue
+    cid = contract.get("chain_id")
+    net = str(contract.get("network") or (cid if cid is not None else "") or fam).strip()
+    host = f"onchain://{net}/{addr}"
+    title = str(contract.get("name") or contract.get("title") or addr)[:160]
+    sc_priority = str(contract.get("priority") or "HIGH").upper()
+    if sc_priority not in PRIORITY_SCORE:
+        sc_priority = "HIGH"
+    sc_score = PRIORITY_SCORE[sc_priority]
+    sc_hints = uniq(contract.get("bug_class_hints") or [], 20)
+    sc_flows = uniq(contract.get("high_value_flows") or [], 20)
+    sc_evidence = uniq(contract.get("evidence") or [f"{fam} contract {addr} from verified on-chain inventory"], 25)
+    sid = "sc-" + ((slug(title)[:32].rstrip("-") or fam) + "-" + re.sub(r'[^a-z0-9]', '', addr.lower())[-8:])
+    surfaces.append({
+        "id": sid,
+        "hosts": [host],
+        "tech_stack": uniq(contract.get("tech_stack") or [], 20),
+        "endpoints": [],
+        "interesting_params": [],
+        "nuclei_hits": [],
+        "priority": sc_priority,
+        "surface_type": "smart_contract",
+        "chain_family": fam,
+        "chain_id": cid,
+        "contract_address": addr,
+        "bug_class_hints": sc_hints,
+        "high_value_flows": sc_flows,
+        "evidence": sc_evidence,
+        "ranking": {"version": 1, "score": sc_score, "priority": sc_priority, "reasons": ["onchain_inventory_contract", "chain_family:" + fam]},
+    })
+    add_lead(title, "deep-surface-discovery", [host], [], [], "smart_contract", sc_hints, sc_evidence, sc_score, chain_family=fam, chain_id=cid, contract_address=addr, flows_override=sc_flows)
 counts = {
     "subdomains": len(lines("subdomains.txt")),
     "live_hosts": len(live),
@@ -883,6 +955,7 @@ counts = {
     "jwt_candidates": len(jwt_candidates),
     "takeover_candidates": len(takeovers),
     "tech_cve_hints": len(cve_hints),
+    "onchain_contracts": len([s for s in surfaces if s.get("surface_type") == "smart_contract"]),
     "surface_leads": len(leads),
 }
 summary = {
@@ -919,7 +992,7 @@ Use this backward-compatible attack surface schema:
     "interesting_params": ["id", "token", "redirect"],
     "nuclei_hits": ["..."],
     "priority": "CRITICAL|HIGH|MEDIUM|LOW",
-    "surface_type": "api|auth|cms|upload|billing|graphql|admin|mobile_api|js_endpoint|secrets|ci_cd|static|unknown",
+    "surface_type": "api|auth|cms|upload|billing|graphql|admin|mobile_api|js_endpoint|secrets|ci_cd|static|smart_contract|unknown",
     "bug_class_hints": ["idor", "authz", "ssrf", "xss", "upload", "business_logic", "jwt_oauth", "graphql", "takeover"],
     "high_value_flows": ["billing", "exports", "invites", "password reset", "admin", "uploads"],
     "evidence": ["live host shows 200 title Dashboard", "archived /api/v1/users?account_id=", "JS references Bearer token"],
@@ -931,6 +1004,7 @@ Use this backward-compatible attack surface schema:
 Rules for `attack_surface.json`:
 - Required per-surface fields remain: `id`, `hosts`, `tech_stack`, `endpoints`, `interesting_params`, `nuclei_hits`, and `priority`.
 - Optional enrichment fields are additive: `surface_type`, `bug_class_hints`, `high_value_flows`, `evidence`, and `ranking`. Omit optional fields only without support.
+- Smart-contract surfaces: set `surface_type: "smart_contract"` and additionally carry `chain_family` (one of `evm|svm|aptos|sui|substrate|cosmwasm`), `chain_id`, and `contract_address`; use `hosts: ["onchain://<network>/<address>"]`. `chain_family` and `contract_address` are REQUIRED for on-chain surfaces — capability routing rejects a `smart_contract` surface that lacks a known `chain_family`. Build one such surface per in-scope contract from `onchain_inventory.json`; the step-7 synthesis does this automatically.
 - Promote only evidence-backed surfaces; bulky collection noise belongs in temporary scratch, not JSON.
 - Never copy raw secret values or JWT-looking strings from `js_secrets.txt` or `jwt_candidates.txt` into JSON; record counts and local artifact names only.
 - Populate hints from evidence, not guesses: object IDs -> `idor`/`authz`; URL fetch/import/image params -> `ssrf`; upload/file paths -> `upload`; checkout/refund/coupon/plan flows -> `business_logic`; token/OAuth/JWKS/callback paths and JWT-shaped candidates -> `jwt_oauth`; GraphQL endpoints -> `graphql`; dangling CNAME patterns -> `takeover`.
@@ -1037,7 +1111,7 @@ Record proven findings immediately using `bob_record_candidate_claim` with all f
 `cvss_inputs` are structured CVSS v3.1 base-metric enums the MCP derives the vector from at report time. For a medium+ finding the write is rejected unless these are sufficient to derive a vector: supply at least `attack_vector` (`network`/`adjacent`/`local`/`physical`), `privileges_required` (`none`/`low`/`high`), and at least one impact dimension of `confidentiality`/`integrity`/`availability` (`none`/`low`/`high`); `attack_complexity`, `user_interaction`, and `scope` default and are optional. For routed `oss_native_code` findings, `attack_vector` is auto-derived from your `reachability_assertion` (`network` -> AV:N, `local` -> AV:L), so you can omit `attack_vector` and still supply `privileges_required` plus an impact dimension. Match the enums to the demonstrated impact; do not inflate beyond what you proved.
 Severity guidance: `critical` = RCE/admin takeover/mass prod data compromise; `high` = strong auth bypass/IDOR with sensitive data/stored XSS/injection/privesc; `medium` = real but narrower auth/CSRF/XSS; `low` = informative but still reportable.
 
-Before stopping, first ensure this assigned surface has at least one completion-status `bob_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Then make exactly one final `bob_write_wave_handoff` call for your assigned surface, then call `bob_finalize_agent_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
+Before stopping, first ensure this assigned surface has at least one completion-status `bob_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Pass your `wave`, `agent`, and `surface_id` on that call so the completion-status attempt is bound to this assigned run. Then make exactly one final `bob_write_wave_handoff` call for your assigned surface, then call `bob_finalize_agent_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
 - Required fields (ALL enforced by the tool's input schema — the call is REJECTED with `INVALID_ARGUMENTS` if any is missing): `target_domain`, `wave` (`wN`), `agent` (`aN`), `surface_id`, `surface_status`, `summary`, `content`, and `handoff_token`.
 - `handoff_token` is passed to you in your spawn prompt (the `Handoff token:` line) — copy it verbatim into the `bob_write_wave_handoff` call. `summary` is a concise account of what you tested and concluded.
 - Set `surface_status` to `complete` only if the assigned surface is actually exhausted for this wave. Use `partial` if more work on that surface should be requeued.

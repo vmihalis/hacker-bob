@@ -54,6 +54,19 @@ function normalizeOptionalString(value, fieldName, { maxChars = 240 } = {}) {
   return normalized.length > maxChars ? normalized.slice(0, maxChars) : normalized;
 }
 
+// chain_id is polymorphic across chain families: EVM uses a numeric id (e.g.
+// 42161), while svm/aptos/sui/substrate/cosmwasm key RPC pools by network NAME
+// (a string). Preserve a finite number as-is and otherwise normalize as a short
+// string, so the smart-contract sub-shape survives intake intact.
+function normalizeOptionalChainId(value) {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("chain_id must be a finite number when numeric");
+    return value;
+  }
+  return normalizeOptionalString(value, "chain_id", { maxChars: 40 });
+}
+
 function normalizeReachabilityMeta(value) {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -111,6 +124,14 @@ function normalizeSurfaceLead(input, context = {}) {
     created_at: input.created_at == null ? null : assertNonEmptyString(input.created_at, "created_at"),
     confidence: input.confidence == null ? null : assertEnumValue(input.confidence, LEAD_CONFIDENCE_VALUES, "confidence"),
     surface_type: normalizeOptionalString(input.surface_type, "surface_type", { maxChars: 80 }),
+    // Smart-contract sub-shape. Carried verbatim through intake so promotion
+    // can stamp it onto the surface.observed payload; capability routing
+    // (classifySurfaceCapability) requires chain_family for smart_contract
+    // surfaces, and assignment-brief selects the RPC pool from chain_family +
+    // chain_id. Dropping them here is what produced unroutable surfaces.
+    chain_family: normalizeOptionalString(input.chain_family, "chain_family", { maxChars: 40 }),
+    chain_id: normalizeOptionalChainId(input.chain_id),
+    contract_address: normalizeOptionalString(input.contract_address, "contract_address", { maxChars: 120 }),
     promoted_surface_id: input.promoted_surface_id == null
       ? null
       : assertNonEmptyString(input.promoted_surface_id, "promoted_surface_id"),
@@ -160,6 +181,9 @@ function mergeSurfaceLead(existing, incoming) {
     source_agent: existing.source_agent || incoming.source_agent,
     source_surface_id: existing.source_surface_id || incoming.source_surface_id,
     surface_type: existing.surface_type || incoming.surface_type,
+    chain_family: existing.chain_family || incoming.chain_family,
+    chain_id: existing.chain_id == null ? incoming.chain_id : existing.chain_id,
+    contract_address: existing.contract_address || incoming.contract_address,
     promote: existing.promote || incoming.promote,
     evaluator_run_avoided_recorded_at: existing.evaluator_run_avoided_recorded_at
       || incoming.evaluator_run_avoided_recorded_at,

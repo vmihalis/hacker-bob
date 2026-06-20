@@ -319,6 +319,8 @@ const SURFACE_INDEX_SCALAR_FIELDS = [
   "attack_vector",
   "severity_ceiling",
   "chain_family",
+  "chain_id",
+  "contract_address",
   "file_path",
   "language",
 ];

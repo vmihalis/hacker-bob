@@ -109,6 +109,45 @@ function normalizeTestResponse(response) {
   }));
 }
 
+function describeRequestError(error, seen) {
+  if (!error || typeof error !== "object") {
+    return String(error == null ? "" : error);
+  }
+  const visited = seen instanceof Set ? seen : new Set();
+  if (visited.has(error)) return "";
+  visited.add(error);
+  const code = typeof error.code === "string" ? error.code : "";
+  const baseMessage = typeof error.message === "string" ? error.message : String(error);
+  const inner = [];
+  if (Array.isArray(error.errors)) {
+    for (const item of error.errors) {
+      const described = describeRequestError(item, visited);
+      if (described) inner.push(described);
+    }
+  }
+  if (error.cause && error.cause !== error) {
+    const described = describeRequestError(error.cause, visited);
+    if (described) inner.push(described);
+  }
+  const distinct = [...new Set(inner.filter(Boolean))];
+  const head = code && !baseMessage.includes(code) ? `${baseMessage} (${code})` : baseMessage;
+  if (distinct.length === 0) return head;
+  return `${head}: ${distinct.join("; ")}`;
+}
+
+// Inner connection errors (AggregateError.errors[]) carry the RESOLVED IP:port
+// of the endpoint (e.g. "connect ECONNREFUSED 2606:4700:...:443"). redactRpcEndpointText
+// only redacts full URLs/secrets, not bare IP literals, so scrub them here before
+// the diagnostic reaches an agent — the host is already shown (redacted) via
+// displayUrl; its resolved IP adds no diagnostic value and should not leak.
+function scrubConnectionAddresses(text) {
+  if (typeof text !== "string") return text;
+  return text
+    .replace(/\[[0-9a-fA-F:]+\](?::\d+)?/g, "[ip]")
+    .replace(/(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}/g, "[ip]")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?/g, "[ip]");
+}
+
 function requestViaHttps(options, body, { timeoutMs, maxBytes, displayUrl, requestImpl = https.request } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -237,7 +276,7 @@ async function requestPublicHttpsText(url, {
       requestImpl,
     });
   } catch (error) {
-    const message = redactRpcEndpointText(error && error.message ? error.message : String(error));
+    const message = scrubConnectionAddresses(redactRpcEndpointText(describeRequestError(error) || String(error)));
     const wrapped = new Error(`SC HTTP request failed for ${displayUrl}: ${message}`);
     wrapped.cause = error;
     throw wrapped;
