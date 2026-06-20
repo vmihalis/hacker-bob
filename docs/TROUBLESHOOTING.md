@@ -63,7 +63,7 @@ Then look for `/skill:bob-evaluate`, `/skill:bob-status`, `/skill:bob-debug`, `/
 hacker-bob doctor /path/to/your/project --adapter kimi --json
 ```
 
-Kimi relies on prompt-side enforcement; no PreToolUse hooks ship until `~/.kimi/config.toml` wiring lands.
+Kimi installs the PreToolUse guard scripts under `.kimi/hooks/` and registers them in `~/.kimi/config.toml`, but this wiring is best-effort: the Kimi tool-name strings and PreToolUse payload shape are not pinned to a Kimi CLI version. Run `hacker-bob doctor /path/to/your/project --adapter kimi --json` and watch for the `kimi_hook_best_effort` warning; before relying on write enforcement on Kimi, verify a guard actually fires (e.g. attempt a blocked write to a session-dir `report.md`). Prompt-side discipline plus MCP-side validation remain the primary enforcement until that verification is done.
 
 ## Claude Restart Required
 

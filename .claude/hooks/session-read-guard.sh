@@ -62,6 +62,11 @@ BLOCKED_EXACT = {
     "report.md",
     "chains.md",
     ".handoff-signing-key.json",
+    # Sensitive session state: out-of-band interaction binding tokens and
+    # private-target/lab authorization carry secret-shaped material; force agents
+    # through MCP readers rather than the raw Read tool.
+    "oob-tokens.jsonl",
+    "lab-authorization.json",
     # Plane O O.7: OSS-target artifacts. Raw stdout/stderr from sandboxed
     # docker runs and inventory/env documents may carry secret-shaped tokens
     # from build output. Force agents through MCP readers.
