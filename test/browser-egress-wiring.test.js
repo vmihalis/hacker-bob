@@ -637,6 +637,7 @@ test("callBrowser forwards an explicit positive timeout_ms to the IPC deadline (
     await browserToolsShared.callBrowser("navigate", "bs-x", { url: "https://example.com", timeout_ms: 8000 });
     await browserToolsShared.callBrowser("snapshot", "bs-x", {});
     await browserToolsShared.callBrowser("wait_for", "bs-x", { timeout_ms: 0 });
+    await browserToolsShared.callBrowser("navigate", "bs-x", { url: "https://example.com", timeout_ms: 2_000_000_000 });
   } finally {
     browserSessions.sendCommand = original;
   }
@@ -646,6 +647,9 @@ test("callBrowser forwards an explicit positive timeout_ms to the IPC deadline (
   assert.equal(calls[1].options, undefined);
   // timeout_ms: 0 (Playwright "disable") is not a positive bound → default.
   assert.equal(calls[2].options, undefined);
+  // a pathological timeout is clamped to the max ceiling (+ margin), not honored
+  // verbatim — otherwise it would re-arm the "agent wedges forever" class.
+  assert.deepEqual(calls[3].options, { timeoutMs: 5 * 60 * 1000 + browserToolsShared.IPC_DEADLINE_MARGIN_MS });
 });
 
 test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when the subprocess never replies", async () => {
@@ -683,12 +687,14 @@ test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when 
 
 // ── driver-side per-operation timeout bounds ──
 
-test("browser-driver clamps non-positive timeout_ms to the per-operation default", () => {
+test("browser-driver clamps timeout_ms to the per-operation default below and a max ceiling above", () => {
   const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
-  // The clamp must guard timeout_ms with a `> 0` check so an agent-supplied 0
-  // (which Playwright treats as "no timeout") cannot disable the op bound.
   assert.match(driverSrc, /function resolveOpTimeout\(args, defaultMs\)/);
-  assert.match(driverSrc, /Number\.isFinite\(requested\)\s*&&\s*requested\s*>\s*0/);
+  // A non-positive timeout_ms (notably 0 = Playwright "no timeout") falls back
+  // to the default rather than disabling the bound.
+  assert.match(driverSrc, /!Number\.isFinite\(requested\)\s*\|\|\s*requested\s*<=\s*0/);
+  // A pathological positive value is clamped to a max ceiling, not honored.
+  assert.match(driverSrc, /Math\.min\(requested, MAX_OPERATION_TIMEOUT_MS\)/);
   // navigate and wait_for must route their timeout through the clamp.
   assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_NAVIGATE_TIMEOUT_MS\)/);
   assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_WAIT_FOR_TIMEOUT_MS\)/);
@@ -724,7 +730,8 @@ test("browser-driver evaluate returns a fast evaluate_timeout for a never-resolv
         { expression: "new Promise(function(){})", timeout_ms: 400 },
       ),
       (err) => {
-        assert.match(err.message, /evaluate_timeout|evaluate_failed/);
+        // Must be the distinct timeout signal, not a generic evaluate_failed.
+        assert.match(err.message, /evaluate_timeout/);
         return true;
       },
     );

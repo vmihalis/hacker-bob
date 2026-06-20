@@ -233,6 +233,17 @@ function initSession(args) {
   const requestedEgressProfile = args.egress_profile == null
     ? "default"
     : assertNonEmptyString(args.egress_profile, "egress_profile");
+  // A lab attestation certifies the operator owns the private target on their
+  // OWN network. A non-default (proxy-backed) egress profile would route the
+  // scan through the proxy's network instead — turning an attested private
+  // target into a private-address scan from someone else's vantage. Require
+  // direct egress so the scan originates from the attested lab network.
+  if (labAuthorization && requestedEgressProfile !== "default") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "lab_authorization requires the default (direct) egress profile: a proxy-backed egress would scan the attested private target from the proxy's network, not the operator's lab network",
+    );
+  }
 
   return withSessionLock(domain, () => {
     const dir = sessionDir(domain);

@@ -52,15 +52,20 @@ const DEFAULT_EVALUATE_TIMEOUT_MS = 15_000;
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 30_000;
 const MAX_EVAL_RESULT_BYTES = 256 * 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
+// Ceiling on any agent-supplied per-operation timeout, mirroring
+// browser-tools-shared.js. A non-positive value can't disable the bound and a
+// pathological value can't pin the single-page session far past its useful life.
+const MAX_OPERATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Agent-supplied timeout_ms is the per-operation deadline. A non-finite or
 // non-positive value — notably 0, which Playwright treats as "no timeout" —
 // must never disable the bound, or an agent could request an unbounded driver
 // op that pins the single-page session until the reaper. Clamp to the
-// operation default instead.
+// operation default below, and to MAX_OPERATION_TIMEOUT_MS above.
 function resolveOpTimeout(args, defaultMs) {
   const requested = Number(args && args.timeout_ms);
-  return Number.isFinite(requested) && requested > 0 ? requested : defaultMs;
+  if (!Number.isFinite(requested) || requested <= 0) return defaultMs;
+  return Math.min(requested, MAX_OPERATION_TIMEOUT_MS);
 }
 
 // Expression sandbox: agents must not turn the browser into a covert HTTP
