@@ -18019,6 +18019,36 @@ test("bob_read_assignment_brief selects over-permissive-search-list as a candida
   });
 });
 
+test("bob_read_assignment_brief selects over-permissive-search-list when evidence names a literal /_search path (recall by design; matcher spans freeform evidence)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-evidence-search-path",
+      hosts: [`https://${domain}`],
+      tech_stack: ["Custom"],
+      endpoints: ["/metrics"],
+      evidence: ["internal telemetry proxied through /_search for log search"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-evidence-search-path" }]);
+
+    // Documented behavior, pinned (the round-15 brutalist HIGH boundary): endpoint patterns are matched
+    // against the MERGED endpointText (technique-packs.js scoreTechniqueEntry), which spans `evidence`, so
+    // a LITERAL "/_search" path written into recon evidence scores 5 and selects the pack even though the
+    // structured endpoints list is just /metrics. This is INTENTIONAL recall, not a false positive: the
+    // patterns are slash-prefixed path fragments, so an evidence match means recon actually found a search
+    // path (an exposed /_search/ES backend IS an over-permissive-search target worth probing). The risk is
+    // self-limiting -- selection is candidate guidance, and the evaluator can only sample records from a
+    // real search/list endpoint, which /metrics is not. Pinned so the merged-input matching can't regress
+    // silently. (Contrast: evidence containing only the WORD "research" -- no "/search" path -- does not
+    // match, because the pattern requires the leading slash.)
+    const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    const ops = brief.technique_packs.selected.find((entry) => entry.id === "over-permissive-search-list");
+    assert.ok(ops, "a literal /_search path in evidence must select over-permissive-search-list (recall)");
+    assert.ok(ops.matched.includes("endpoint:/_search"), "must match via the /_search endpoint pattern against evidence text");
+  });
+});
+
 test("bob_read_assignment_brief knowledge remains bounded and excludes full source docs", () => {
   withTempHome(() => {
     const domain = "example.com";
