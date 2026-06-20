@@ -366,6 +366,20 @@ function tenantDiscriminator(parsedBody) {
   return null;
 }
 
+// All owning-scope VALUES present in a body across EVERY OWNING_SCOPE_KEYS alias (not just the
+// first-matched one). Lets the same-tenant guard detect a shared tenant value even when A and
+// B label it under different alias keys, or carry it under a SECONDARY key (e.g. A
+// owner_scope:"x" + tenant_id:"acme" vs B org_id:"acme"). Lowercased for a case-robust match.
+function owningScopeValues(parsedBody) {
+  if (parsedBody == null || typeof parsedBody !== "object") return [];
+  const values = [];
+  for (const key of OWNING_SCOPE_KEYS) {
+    const value = parsedBody[key];
+    if (typeof value === "string" && value.trim()) values.push(value.trim().toLowerCase());
+  }
+  return values;
+}
+
 // AC-5 PII tripwire (mint condition #17). Scan a body for PII shapes; any shape
 // that is not an exact-allowlisted synthetic identifier aborts the sign. Wires
 // detectPiiShapes (previously unwired). Returns the offending shapes (empty = ok).
@@ -1043,12 +1057,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // #14 TENANT DISCRIMINATOR — A and B present at a fixed key AND differ?
   const tenantB = tenantDiscriminator(p1Parsed);
   const tenantA = tenantDiscriminator(p3Parsed);
-  // PROVABLY SAME tenant: both identities carry a discriminator with the SAME VALUE —
-  // INCLUDING across different alias keys (B `org_id:"acme"` vs A `tenant_id:"acme"`). That is
-  // positive evidence AGAINST a cross-tenant break, so it stays a HARD refutation. A genuine
-  // same-tenant user-level BOLA would need a different proof; minting it here would mislabel
-  // it as THIS producer's cross-TENANT IDOR.
-  const tenantsProvablySame = !!(tenantA && tenantB && tenantA.value === tenantB.value);
+  // PROVABLY SAME tenant: A and B share ANY owning-scope VALUE, across EVERY alias key (not
+  // just the first-matched discriminator, and not just at the SAME key) — e.g. B `org_id:"acme"`
+  // vs A `tenant_id:"acme"`, or a match under a SECONDARY key. That is positive evidence AGAINST
+  // a cross-tenant break, so it stays a HARD refutation. A genuine same-tenant user-level BOLA
+  // would need a different proof; minting it here would mislabel it as THIS producer's
+  // cross-TENANT IDOR.
+  const bScopeValues = owningScopeValues(p1Parsed);
+  const aScopeValues = owningScopeValues(p3Parsed);
+  const tenantsProvablySame = aScopeValues.some((v) => bScopeValues.includes(v));
   if (tenantsProvablySame) {
     return fail("blocked_by_design", "identities_collided_same_tenant");
   }

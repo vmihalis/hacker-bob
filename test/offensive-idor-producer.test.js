@@ -1600,6 +1600,31 @@ test("AC-6 negative: same tenant under DIFFERENT alias keys (org_id vs tenant_id
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
+test("AC-6 negative: same tenant via a SECONDARY alias key (A owner_scope:x + tenant_id:acme, B org_id:acme) → identities_collided_same_tenant (blocks)", () => withTempHome(async () => {
+  // Brutalist PR#136: A's PRIMARY discriminator (owner_scope:"x") differs from B's
+  // (org_id:"acme"), but A ALSO carries tenant_id:"acme" — a value shared under a SECONDARY
+  // key. A same value ANYWHERE across the owning-scope keys = one tenant = HARD block, not a
+  // soft-gated mint. (A first-discriminator-only comparison would have missed this.)
+  const domain = "idor-neg-secondary-alias-same-tenant.example.test";
+  setupSession(domain);
+  const fetch_fn = soundFetchFn(domain, {
+    handler: ({ isA, isB, wantsOB, wantsOA }) => {
+      if (wantsOB && (isA || isB)) {
+        return jsonResponse(200, { id: OBJ_B, org_id: "acme", viewer_id: isB ? "viewer-B" : "viewer-A", details: { secret: { token: CANARY_B } } });
+      }
+      if (wantsOA && isA) {
+        return jsonResponse(200, { id: OBJ_A, owner_scope: "x", tenant_id: "acme", details: { secret: { token: CANARY_A } }, server_ts: "x" });
+      }
+      return null;
+    },
+  });
+  const result = await run(domain, { fetch_fn });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "identities_collided_same_tenant");
+  assert.equal(result.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 // ───────────────────────── round-12 review hardening ──────────────────────────
 
 test("AC-6 negative: a percent-encoded canary survives a stray literal % (100%) in the same deny body → p5_canary_in_deny_body", () => withTempHome(async () => {
