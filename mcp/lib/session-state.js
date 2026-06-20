@@ -509,9 +509,12 @@ function isSensitiveMaterialError(error) {
 // NORMALIZED nucleus value into state.json so the two stores can never disagree.
 function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile, operatorForced = false) {
   const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
-  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted.
+  // A blank/whitespace explicit value is NOT an assertion — treat it as omitted. A non-blank value
+  // is TRIMMED so a padded " authenticated " is honored as "authenticated" (and reaches the
+  // nucleus's normalizeAuthContext enum check trimmed) instead of being passed through raw, which
+  // would pass the trim-based call-boundary check yet throw deep on the padded enum value.
   const explicit = (typeof explicitAuthStatus === "string" && explicitAuthStatus.trim() !== "")
-    ? explicitAuthStatus
+    ? explicitAuthStatus.trim()
     : null;
   let nextStatus;
   if (explicit != null && operatorForced === true) {

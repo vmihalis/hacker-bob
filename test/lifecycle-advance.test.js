@@ -777,6 +777,20 @@ test("advanceSession rejects an invalid (non-blank) auth_status at the call boun
   });
 });
 
+test("advanceSession trims a padded auth_status (honored, not thrown deep, and the stores agree)", () => {
+  withTempHome(() => {
+    const domain = "auth-padded.example.test";
+    bootstrapDomain(domain);
+    // A padded "  authenticated  " passes the trim-based call-boundary check; it must also be
+    // TRIMMED before derivation so it is honored as "authenticated" (with a backing profile) rather
+    // than passed raw and throwing on the padded enum value deep in normalizeAuthContext.
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "  authenticated  " });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
+  });
+});
+
 test("legacy bounty_transition_phase adapter DROPS auth_status (no authority conflation via override_reason)", () => {
   const tool = require("../mcp/lib/tools/advance-session.js");
   const adapter = tool.aliases[0].arg_adapter;
