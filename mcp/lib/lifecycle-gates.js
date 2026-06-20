@@ -51,6 +51,19 @@ const TRANSITION_GATES = Object.freeze({
   "GRADE->REPORT": gateGradeToReport,
   "OPEN_FRONTIER->CLAIM_FREEZE": gateOpenFrontierToClaimFreeze,
   "CLAIM_FREEZE->VERIFY": gateClaimFreezeToVerify,
+  // I6 reopenability back-edges stay in ALLOWED_TRANSITIONS, but a routine
+  // requeue re-entry from VERIFY must not silently bounce an IN-PROGRESS
+  // verification snapshot. A VERIFY -> OPEN_FRONTIER move while a v2 attempt is
+  // live (the a7/distributor-v2 bounce) re-enters VERIFY later and triggers
+  // archiveCurrentV2Attempt (mcp/lib/verification.js), forcing a full re-freeze
+  // + re-verification. The gate refuses unless override:"operator_force" — the
+  // deliberate operator abandon-and-reopen path recorded as
+  // governance.lifecycle.override. GRADE -> OPEN_FRONTIER is intentionally NOT
+  // gated: reaching GRADE means verification already COMPLETED (gateVerifyToGrade
+  // required completeness), so the canonical grader-HOLD re-mine archives a
+  // finished attempt and re-freezes fresh — that is the intended flow, not a
+  // bounce. REPORT -> OPEN_FRONTIER (post-report re-mine) likewise stays open.
+  "VERIFY->OPEN_FRONTIER": gateVerificationReopen,
 });
 
 function compactError(error) {
@@ -333,6 +346,64 @@ function gateOpenFrontierToClaimFreeze(context) {
     blocker.mismatched_acknowledgements = mismatchedAcks;
   }
   blockers.push(blocker);
+  return blockers;
+}
+
+// I6-compatible reopen guard. The VERIFY/GRADE -> OPEN_FRONTIER back-edges
+// remain ALLOWED (operator re-entry is load-bearing), but when a live v2
+// verification attempt exists, re-entering OPEN_FRONTIER and then re-entering
+// VERIFY archives the in-flight attempt and re-freezes from scratch. A
+// requeued surface must not bounce that snapshot as a side effect of routine
+// frontier re-entry. The operator can still do it deliberately via
+// override:"operator_force" (advanceSession records a
+// governance.lifecycle.override event with this blocker list).
+function gateVerificationReopen(context) {
+  const blockers = [];
+  let state;
+  try {
+    ({ state } = readSessionStateStrict(context.target_domain));
+  } catch {
+    // No readable state means no in-flight attempt to protect; allow.
+    return blockers;
+  }
+  if (!state) return blockers;
+  let attemptId = typeof state.verification_attempt_id === "string" && state.verification_attempt_id.length > 0
+    ? state.verification_attempt_id
+    : null;
+  // state.json sometimes loses verification_attempt_id while the snapshot/round
+  // files still hold an in-flight v2 attempt (verification.js). Falling through
+  // there would let the exact a7/distributor-v2 bounce recur silently, so when
+  // the state field is absent, recover the attempt from the on-disk v2 files.
+  if (!attemptId) {
+    try {
+      const verification = require("./verification.js");
+      if (verification.hasCurrentV2Files(context.target_domain)) {
+        attemptId = verification.inferOrphanedAttemptId(context.target_domain);
+      }
+    } catch {
+      // verification module/files unavailable; nothing to protect.
+    }
+  }
+  if (!attemptId) return blockers;
+  blockers.push({
+    code: "verification_attempt_in_flight",
+    blocked_by: "verification_attempt_in_flight",
+    verification_attempt_id: attemptId,
+    verification_snapshot_hash:
+      typeof state.verification_snapshot_hash === "string"
+        ? state.verification_snapshot_hash
+        : null,
+    message:
+      `${context.from_state} -> OPEN_FRONTIER blocked: a verification attempt `
+      + `(${attemptId}) is in flight; re-entering the open frontier would force `
+      + "a re-freeze and re-verification of the frozen claim batch when VERIFY is "
+      + "re-entered",
+    remediation:
+      "finish the current verification (advance VERIFY -> GRADE), or, if you "
+      + "deliberately intend to discard the in-flight verification snapshot and "
+      + "re-open the frontier (e.g. to requeue a surface), rerun "
+      + "bob_advance_session with override=\"operator_force\"",
+  });
   return blockers;
 }
 

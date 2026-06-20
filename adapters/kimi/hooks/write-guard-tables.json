@@ -73,6 +73,7 @@
     "attack_surface.json",
     "deep-summary.json",
     "surface-discovery-summary.json",
+    "onchain_inventory.json",
     "scope-warnings.log",
     "deny-list.txt"
   ],

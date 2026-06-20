@@ -283,6 +283,7 @@ function actionForDashboardBottleneck(bottleneck) {
     hunter_handoff_failures: "Resume or reconcile the pending wave after hunter handoffs are complete.",
     repeated_hunter_stops: "Inspect repeated SubagentStop blockers before launching more hunters.",
     low_coverage: "Launch another wave for unexplored non-low surfaces before verification.",
+    coverage_blocked_pending: "Residual non-low surfaces recorded a validated blocker (handled, not neglected); no wave relaunch needed.",
     chain_phase_no_attempts: "Run chain-builder until every required chain path has a terminal attempt.",
     missing_verification: "Write a valid final verification round before grading.",
     missing_evidence: "Run the evidence agent before grading or reporting.",

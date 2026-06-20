@@ -829,6 +829,35 @@ function summarizeEvidenceArtifacts(targetDomain, finalReportableIds) {
   return summary;
 }
 
+// A recorded-blocker partial is a surface that is neither explored nor
+// terminally_blocked (so it still looks "open" to the frontier projection)
+// but whose handoff DID record a validated blocker in
+// state.blocked_prereq_history (e.g. auth_missing, key_material_missing, an
+// RPC archive/harness limit). The loop detector in wave-promotion-detector
+// only promotes such a surface to terminally_blocked on a 2-wave recurrence,
+// so on first occurrence it is genuinely handled yet indistinguishable from a
+// neglected surface to closed_pct. This helper recovers that distinction from
+// the already-validated history so analytics does not count handled blockers
+// as coverage gaps. Pure and side-effect-free for direct testing.
+function recordedBlockerPartialSurfaceIdSet(state, candidateSurfaceIds) {
+  const result = new Set();
+  if (!state || typeof state !== "object") return result;
+  const history = Array.isArray(state.blocked_prereq_history)
+    ? state.blocked_prereq_history
+    : [];
+  if (history.length === 0) return result;
+  const candidates = candidateSurfaceIds instanceof Set
+    ? candidateSurfaceIds
+    : new Set(candidateSurfaceIds || []);
+  for (const entry of history) {
+    if (!isPlainObject(entry)) continue;
+    const surfaceId = entry.surface_id;
+    if (typeof surfaceId !== "string" || !surfaceId) continue;
+    if (candidates.has(surfaceId)) result.add(surfaceId);
+  }
+  return result;
+}
+
 function summarizeAttackSurfaceCoverage(targetDomain, state) {
   // Surface coverage reads from currentSurfaces (Cycle F.5): the materialized
   // surface-index.json is the authoritative read source. The mtime reported
@@ -883,6 +912,16 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
   const exploredNonLow = nonLowSurfaces.filter((surface) => exploredSet.has(surface.id)).length;
   const blockedNonLow = nonLowSurfaces.filter((surface) => terminallyBlockedSet.has(surface.id)).length;
   const closedNonLow = exploredNonLow + blockedNonLow;
+  // Split the still-open non-low gap into surfaces that recorded a validated
+  // blocker (handled, not neglected) and the genuinely neglected remainder.
+  // recorded-blocker partials are open to the frontier projection because the
+  // loop detector only promotes them to terminally_blocked on recurrence.
+  const openNonLowIds = nonLowSurfaces
+    .filter((surface) => !exploredSet.has(surface.id) && !terminallyBlockedSet.has(surface.id))
+    .map((surface) => surface.id);
+  const recordedBlockerNonLowSet = recordedBlockerPartialSurfaceIdSet(state, openNonLowIds);
+  const recordedBlockerNonLow = recordedBlockerNonLowSet.size;
+  const neglectedNonLow = Math.max(0, openNonLowIds.length - recordedBlockerNonLow);
   return {
     exists: true,
     error: null,
@@ -890,6 +929,13 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
     non_low_total: nonLowSurfaces.length,
     non_low_explored: exploredNonLow,
     non_low_terminally_blocked: blockedNonLow,
+    // Additive: a non-low surface that is open to the frontier but has a
+    // recorded blocker in state.blocked_prereq_history is handled, not a gap.
+    // non_low_neglected is the real coverage gap; closed_or_blocked_pct counts
+    // recorded-blocker partials as off-the-queue alongside explored/blocked.
+    non_low_recorded_blocker_partial: recordedBlockerNonLow,
+    non_low_neglected: neglectedNonLow,
+    closed_or_blocked_pct: nonLowSurfaces.length ? Math.round(((closedNonLow + recordedBlockerNonLow) / nonLowSurfaces.length) * 100) : 100,
     // coverage_pct keeps the explored-only meaning for back-compat with
     // existing dashboards. closed_pct is the post-Cycle-2 measure that
     // also counts terminally_blocked surfaces (classified blocked, not
@@ -1048,4 +1094,5 @@ module.exports = {
   HANDOFF_ANALYTICS_MAX_FILES,
   WAVE_READINESS_MAX_ASSIGNMENT_FILES,
   readSessionArtifactSummary,
+  recordedBlockerPartialSurfaceIdSet,
 };

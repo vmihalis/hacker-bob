@@ -18,6 +18,13 @@ const LEAD_SCHEMA = {
     nuclei_hits: { type: "array", items: { type: "string" } },
     priority: { type: "string", enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
     surface_type: { type: "string" },
+    // Smart-contract sub-shape. additionalProperties defaults to false in the
+    // tool validator, so these must be declared or a smart_contract lead
+    // carrying its chain_family is rejected before it reaches intake. Routing
+    // requires chain_family; the brief's RPC pool needs chain_id.
+    chain_family: { type: "string" },
+    chain_id: { type: ["number", "string"] },
+    contract_address: { type: "string" },
     bug_class_hints: { type: "array", items: { type: "string" } },
     high_value_flows: { type: "array", items: { type: "string" } },
     evidence: { type: "array", items: { type: "string" } },
