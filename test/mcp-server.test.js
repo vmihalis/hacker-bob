@@ -17797,7 +17797,7 @@ test("bob_read_assignment_brief surfaces over-permissive-search-list for an Elas
   });
 });
 
-test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search surface (search endpoint + people-search hint + filter)", () => {
+test("bob_read_assignment_brief surfaces over-permissive-search-list for a people-search surface (search endpoint + people-search hint; filter/facet params are non-scoring)", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1, pending_wave: 1 });
@@ -17811,10 +17811,11 @@ test("bob_read_assignment_brief surfaces over-permissive-search-list for a peopl
     }]);
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-people-search" }]);
 
-    // Recall is driven by a real search signal (a /search endpoint + a "people search" hint), with the
-    // filter/facet params boosting rank -- this is the over-permissive people-search list, not a bare
-    // directory route. (A lone filter param defers to generic-rest-api, which keeps the entry from
-    // over-broadening onto unrelated lists.)
+    // Recall is driven by a real search signal: the /people/search endpoint (contains /search, +5) plus
+    // the "people search" hint in evidence (+4) = score 9. The filter/facet params do NOT contribute to
+    // scoring (match.params is []); they only mirror a realistic faceted-search surface, not a bare
+    // directory route. (A surface with ONLY a filter param scores 0 here and defers to generic-rest-api,
+    // which keeps the entry from over-broadening onto unrelated lists.)
     const brief = JSON.parse(readAssignmentBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
     assert.ok(brief.techniques.some((entry) => entry.id === "over-permissive-search-list"));
   });
