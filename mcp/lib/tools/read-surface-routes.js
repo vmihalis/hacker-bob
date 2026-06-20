@@ -10,7 +10,7 @@ function readSurfaceRoutes(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const routed = readSurfaceRoutesStrict(domain);
   const document = routed.document;
-  return JSON.stringify({
+  const payload = {
     target_domain: domain,
     surface_routes_path: routed.path,
     version: document.version,
@@ -18,7 +18,15 @@ function readSurfaceRoutes(args) {
     surface_count: document.routes.length,
     counts: countRoutesByCapabilityPack(document.routes),
     routes: document.routes,
-  });
+  };
+  // Surface quarantined routes + the repair hint so the orchestrator SEES a degraded routes file
+  // (e.g. a stale cross-version schema) and can re-run bob_route_surfaces — otherwise an all-stale
+  // file would read as surface_count:0 with no indication that routes were dropped or how to repair.
+  if (Array.isArray(routed.malformed_routes) && routed.malformed_routes.length > 0) {
+    payload.malformed_routes = routed.malformed_routes;
+    payload.repair_hint = routed.repair_hint;
+  }
+  return JSON.stringify(payload);
 }
 
 module.exports = Object.freeze({

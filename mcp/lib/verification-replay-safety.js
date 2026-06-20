@@ -61,9 +61,14 @@ function replaySafetyForTool(toolName) {
       replay_safety: DEFAULT_REPLAY_SAFETY,
     };
   }
+  // bob_http_confirm is a web live-request tool exposed to verifier/evidence
+  // bundles; govern its VERIFY probes under the SAME replay policy as the web
+  // replay tool (bob_http_scan) so concurrent rounds can't add ungoverned live
+  // requests. Resolve it via the pack whose replay_tool is bob_http_scan.
+  const lookupName = toolName === "bob_http_confirm" ? "bob_http_scan" : toolName;
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     if (!pack || !pack.verifier) continue;
-    if (pack.verifier.replay_tool === toolName || (pack.evidence && pack.evidence.runner === toolName)) {
+    if (pack.verifier.replay_tool === lookupName || (pack.evidence && pack.evidence.runner === lookupName)) {
       return {
         capability_pack: pack.id,
         replay_safety: pack.verifier.replay_safety || DEFAULT_REPLAY_SAFETY,

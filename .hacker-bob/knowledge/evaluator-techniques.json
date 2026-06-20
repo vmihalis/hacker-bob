@@ -25,6 +25,28 @@
       ]
     },
     {
+      "id": "over-permissive-search-list",
+      "title": "Over-permissive search/list endpoints: filter-bypass mass extraction",
+      "match": {
+        "tech": ["elasticsearch", "opensearch", "solr", "algolia", "full-text search"],
+        "endpoints": ["/search", "/api/search", "/_search", "/autocomplete", "/suggest", "/typeahead", "/elasticsearch", "/solr"],
+        "params": [],
+        "hints": ["people search", "over-permissive search", "full-text search"]
+      },
+      "techniques": [
+        "NOT auto-LOW: prove impact by sampling the exposed cross-scope data (5–10 records max, never the full corpus), then grade by what leaked. Mask the sample by default; show real values only in an authorized engagement.",
+        "Predicate annihilation: set the search/filter to an always-true predicate (`*`, `*:*`, empty, `true`, `1 eq 1`, `id>0`) to drop implicit scope. Count jump scoped→global proves the bypass; sample 5–10 (mask unless authorized).",
+        "Scope-param drop: remove/null the tenant/org/scope filter the UI sends (org_id, account, team) and resend. If the count now spans other tenants the scope was client-enforced; sample 5–10 (mask unless authorized).",
+        "Tenant/index header routing: vary tenant/index headers or path segments (X-Tenant-Id, X-Org-Id, Index:, X-Search-Index) to reach another tenant's index, then sample 5–10 from it (mask unless authorized)."
+      ],
+      "payload_hints": [
+        "Proof = a 5–10 record sample of the leaked data, never the full corpus. Authorized engagement (client/asset-owner, or a program whose policy permits retrieval) → real records; default/safe-harbor → mask the sample + schema + count.",
+        "Predicate annihilation: ?q=* / ?q=true / ?$filter=1 eq 1 / ?search=*:* / ?where=1=1 ; NoSQL ?filter[$ne]= / ?q[$gt]= / ?where[$exists]=true. Read the count, then pull 5–10 sample records (not the whole set).",
+        "Scope-param drop/swap: remove &tenant_id= / &org_id= / &scope=, or set scope=all / tenant_id=<other-tenant>; compare counts, then sample 5–10 records as proof.",
+        "Index/tenant header routing (GET): Index: people-search | X-Search-Index: internal | X-Tenant-Id: <other> | X-Org-Id: <other> — confirm by count, then sample 5–10."
+      ]
+    },
+    {
       "id": "graphql",
       "title": "GraphQL field-level authorization",
       "match": {

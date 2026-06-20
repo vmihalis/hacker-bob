@@ -26,7 +26,10 @@ async function handler(args = {}) {
     // adversarial expressions never reach the page context.
     const expression = assertExpressionSandbox(args.expression);
     ensureSessionMatchesDomain(sessionId, targetDomain);
-    const result = await callBrowser("evaluate", sessionId, { expression });
+    const result = await callBrowser("evaluate", sessionId, {
+      expression,
+      timeout_ms: Number.isFinite(args.timeout_ms) ? args.timeout_ms : undefined,
+    });
     return envelopeSuccess(result);
   } catch (err) {
     return envelopeFromError(err);
@@ -46,6 +49,7 @@ module.exports = Object.freeze({
         type: "string",
         description: "JavaScript expression evaluated in the page context. Forbidden tokens: XMLHttpRequest, fetch(, navigator.sendBeacon, new EventSource, new WebSocket — Bob refuses these because page-origin network calls bypass scope checks and the request audit. Use the HTTP-aware MCP tools instead.",
       },
+      timeout_ms: { type: "number", description: "Optional evaluate timeout (ms). Default 15000. A runaway expression returns error code evaluate_timeout; if it blocks the renderer the session is wedged — close it and start a new one." },
     },
     required: ["target_domain", "session_id", "expression"],
   },

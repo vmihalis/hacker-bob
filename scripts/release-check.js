@@ -199,11 +199,14 @@ function checkCanonicalPack(rootPackage) {
   // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
   // Raised again to 3.2 MB for the CVSS v3.1 + CWE annotation surfaces, now
   // measured against the lean tarball (mcp/node_modules excluded from the pack).
-  // Mirrors the test/package.test.js ceiling.
-  if (canonical.size < 3200000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.2 MB`);
+  // Raised to 3.3 MB for PR7 — the first container-runner-backed offensive tool
+  // surface (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
+  // channel) — which took the lean tarball past 3.2 MB. Mirrors the
+  // test/package.test.js ceiling (keep the two in lockstep).
+  if (canonical.size < 3300000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.3 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.2 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.3 MB`);
   }
 
   let foundDisallowed = false;

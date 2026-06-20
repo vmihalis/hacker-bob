@@ -1335,6 +1335,37 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // I10 adds bob_read_static_analysis_index to evaluator-shared. It is a
   // bounded read-only query over scrubbed static-analysis-index.jsonl rows;
   // budgets bump by +1 (SC 42→43, web 44→45).
+  // PR3 adds bob_http_confirm to evaluator-web only. It is the trusted
+  // read-only NEGATIVE-ONLY differential confirmer: it appends http-audit.jsonl
+  // records for its probes (never writes signed offensive-runs rows); web budget
+  // bumps by +1 (web 45→46), while SC remains unchanged.
+  // PR-C adds bob_http_idor_confirm to evaluator-web ONLY (narrow on purpose:
+  // check:authority-inventory asserts no read-only/verifier/evidence role
+  // inherits the signed-row producer). It is opaque-context (server-derived
+  // request, no brief surfacing); web budget bumps by +1 (web 46→47), SC
+  // unchanged.
+  // Find-axis MVP adds bob_http_xss_reflect to evaluator-web ONLY (same narrow
+  // grant as the IDOR producer; check:authority-inventory asserts no read-only/
+  // verifier/evidence role inherits this signed-row producer). It is
+  // opaque-context (server-derived request, no brief surfacing); web budget bumps
+  // by +1 (web 47→48), SC unchanged.
+  // Browser-execution confirm adds bob_http_xss_confirm to evaluator-web ONLY
+  // (same narrow grant; the FIRST HIGH-ceiling signed producer). It drives Bob's
+  // own headless browser but is opaque-context (server-derived request, masked
+  // oracle return, no brief surfacing); web budget bumps by +1 (web 48→49), SC
+  // unchanged.
+  // PR6 adds bob_oob_mint + bob_oob_poll to evaluator-web ONLY (same narrow grant;
+  // mint is a non-signing allocator, poll is the MEDIUM-ceiling OOB signed-row
+  // producer). Both are opaque-context (server-derived/server-minted, masked oracle
+  // return, no brief surfacing); web budget bumps by +2 (web 49→51), SC unchanged.
+  // PR7 adds bob_nuclei_scan to evaluator-web ONLY (same narrow grant; the FIRST
+  // container-runner-backed tool — DETECTION-only, never signs). Opaque-context
+  // (masked lead summary, no brief surfacing); web budget bumps by +1 (web 51→52),
+  // SC unchanged.
+  // CORS prover adds bob_http_cors_confirm to evaluator-web ONLY (same narrow grant;
+  // the in-process MEDIUM-ceiling reflected-origin signed-row producer). Opaque-context
+  // (server-minted origins, masked oracle return, no brief surfacing); web budget bumps
+  // by +1 (web 52→53), SC unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
@@ -1344,7 +1375,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 45 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 53 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
@@ -1365,10 +1396,14 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
   // read-only file probes (file_exists / file_contains / regex_match)
   // against the bound repo without taking the docker path.
+  // PR3 adds bob_http_confirm: read-only against the target and negative-only
+  // (never writes signed offensive-runs rows), but it appends http-audit.jsonl
+  // records for its probes, so it is a session-artifact writer (mutating).
   assert.deepEqual(
     mutating.sort(),
     [
       "bob_evm_fetch_source",
+      "bob_http_confirm",
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
@@ -1482,11 +1517,23 @@ test("settings.json registers session guards on Bash, Read, and Write", () => {
   assert.ok(bash.hooks.some((h) => h.command.includes("session-read-guard.sh")));
 });
 
-test("settings hooks do not register matchers on MCP tool names directly", () => {
+test("settings hooks register only the write-confirm HITL gate on MCP tools (never a scope/enforcement guard)", () => {
   const settings = JSON.parse(readFile(".claude/settings.json"));
-  const matchers = (settings.hooks.PreToolUse || []).map((e) => e.matcher);
-  for (const matcher of matchers) {
-    assert.ok(!matcher.startsWith(MCP_PERMISSION_PREFIX), `MCP tool matcher ${matcher} should not be in settings`);
+  // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS the
+  // operator before a target-mutating bob_http_scan (inert unless BOB_HTTP_WRITE_CONFIRM is set) and
+  // does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where a hook edit can't bypass
+  // it. Any other MCP-tool matcher, or a scope/enforcement guard on an MCP tool, remains forbidden.
+  // Anchored exact-command match — a bare substring check would pass on a chained command, weakening
+  // this security contract; the only allowed MCP-tool hook command is exactly the write-confirm gate.
+  const isWriteConfirmOnlyCommand = (command) =>
+    /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+  const mcpEntries = (settings.hooks.PreToolUse || []).filter((e) => e.matcher.startsWith(MCP_PERMISSION_PREFIX));
+  for (const entry of mcpEntries) {
+    assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", `unexpected MCP-tool matcher ${entry.matcher} in settings`);
+    assert.ok(
+      (entry.hooks || []).every((h) => isWriteConfirmOnlyCommand(h.command)),
+      "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
+    );
   }
 });
 

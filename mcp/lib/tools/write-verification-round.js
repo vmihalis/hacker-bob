@@ -100,6 +100,7 @@ module.exports = wrapWriteTool({
             },
             "confidence_reasons": {
               "type": "array",
+              "description": "Effective confidence reasons for this result. NOTE: `exploit_replay_confirmed` is a proof claim — on web-scoped sessions the runtime preserves it (in any of the three reason arrays) ONLY when it backs a validated, exploit-proven severity rise; otherwise it is stripped from the persisted, content-hashed round artifact so it cannot stand as a false proof signal.",
               "items": {
                 "type": "string",
                 "enum": [
@@ -110,7 +111,8 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "exploit_replay_confirmed"
                 ]
               }
             },
@@ -138,7 +140,8 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "exploit_replay_confirmed"
                 ]
               }
             },
@@ -154,7 +157,8 @@ module.exports = wrapWriteTool({
                   "manual_inference",
                   "roast_disagreement",
                   "disambiguation_failed",
-                  "agreement_not_replayed"
+                  "agreement_not_replayed",
+                  "exploit_replay_confirmed"
                 ]
               }
             }
@@ -188,4 +192,3 @@ module.exports = wrapWriteTool({
   sensitive_output: false,
   session_artifacts_written: ["brutalist.json","balanced.json","verified-final.json","verification-manifest.json"],
 });
-

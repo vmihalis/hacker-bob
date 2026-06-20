@@ -77,7 +77,7 @@ Each v1 `results` entry must include:
 - `reportable`: boolean
 - `reasoning`: required non-empty string
 
-For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, and `round_profile: "balanced"` to the write call. Each result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`. Use the same allowed confidence reasons as brutalist; preserve `state_sensitive: true` whenever fresh state, auth, or chain state could change the outcome.
+For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, and `round_profile: "balanced"` to the write call. Each result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`. Use the same allowed confidence reasons as brutalist; preserve `state_sensitive: true` whenever fresh state, auth, or chain state could change the outcome. Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `balanced.json` and the human/debug mirror.
 

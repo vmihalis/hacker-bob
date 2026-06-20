@@ -81,26 +81,31 @@ const RECOMMENDED_READS_HARD_CAP = 16;
 // surface, not a "top N across everything" render-cap (X-P9).
 const RECOMMENDED_READS_PER_SURFACE = 3;
 
-// Closed bundle list that defines the universe of evaluator-callable tools
-// per Surface kind. Used to build `allowed_tools_for_node[]` deterministically
-// without re-reading role-model.js (which would couple this pure function to
-// a side-effecting import chain).
-const EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK = Object.freeze({
-  web: Object.freeze(["evaluator-shared", "evaluator-web"]),
-  smart_contract_evm: Object.freeze(["evaluator-shared", "evaluator-evm"]),
-  smart_contract_svm: Object.freeze(["evaluator-shared", "evaluator-svm"]),
-  smart_contract_aptos: Object.freeze(["evaluator-shared", "evaluator-move"]),
-  smart_contract_sui: Object.freeze(["evaluator-shared", "evaluator-move"]),
-  smart_contract_substrate: Object.freeze(["evaluator-shared", "evaluator-substrate"]),
-  smart_contract_cosmwasm: Object.freeze(["evaluator-shared", "evaluator-cosmwasm"]),
-  oss_dependency: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_native_code: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_api_schema: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_authz: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_ci_cd: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_secrets_config: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-  oss_docs_behavior: Object.freeze(["evaluator-shared", "evaluator-oss"]),
-});
+// Per-pack evaluator role bundles that define the universe of
+// evaluator-callable tools per Surface kind, used to build
+// `allowed_tools_for_node[]` deterministically. DERIVED:
+// `CAPABILITY_PACKS[*].role_bundles` in capability-packs.js is the single
+// source of truth, and this frozen projection exists only so a pack/bundle
+// edit lands in exactly one place. (Was a hand-written literal that drifted
+// from the manifest — OSS packs were mapped to a non-existent "evaluator-oss"
+// bundle that no tool declares, so toolNamesForRoleBundle() resolved empty and
+// every OSS surface was dispatched without its tools.) CAPABILITY_PACKS is a
+// frozen constant imported above, so this stays deterministic and sits above
+// the purity divider.
+const EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK = Object.freeze(
+  Object.fromEntries(
+    Object.entries(CAPABILITY_PACKS).map(([packId, pack]) => {
+      const bundles = Array.isArray(pack.role_bundles) ? pack.role_bundles : [];
+      if (bundles.length === 0) {
+        throw new Error(
+          `capability-pack-derivation: capability pack "${packId}" declares no `
+          + "role_bundles; every pack must carry at least one bundle in capability-packs.js",
+        );
+      }
+      return [packId, Object.freeze(bundles.slice())];
+    }),
+  ),
+);
 
 // Defensive default when a Surface node's metadata doesn't classify into a
 // known capability pack. The web pack is the historical default and is the

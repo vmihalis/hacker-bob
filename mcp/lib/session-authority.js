@@ -82,7 +82,12 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_foundry_run: "smart_contract_contextual",
   bob_get_context_budget: "mode_dependent_session",
   bob_halmos_run: "smart_contract_contextual",
+  bob_http_confirm: "scoped_http_network",
+  bob_http_cors_confirm: "scoped_http_network",
+  bob_http_idor_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
+  bob_http_xss_confirm: "scoped_http_network",
+  bob_http_xss_reflect: "scoped_http_network",
   bob_import_http_traffic: "scoped_http_network",
   bob_import_static_artifact: "initialized_session_mutation",
   bob_ingest_audit_report: "initialized_session_mutation",
@@ -101,6 +106,16 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // bundle for _write-base.js auto-emit on INVALID_ARGUMENTS retry success.
   bob_emit_runtime_drift: "initialized_session_mutation",
   bob_merge_wave_handoffs: "initialized_session_read",
+  // PR7 nuclei detection scan — runs in the wide-open offensive container and issues
+  // target traffic, so same scoped_http_network class as the other offensive producers
+  // (it needs an initialized session + an in-scope target_url). DETECTION-only: never
+  // signs a row.
+  bob_nuclei_scan: "scoped_http_network",
+  // PR6 OOB collector. Same class as the other offensive HTTP producers + the
+  // scope-exempt bob_public_intel: mint writes the binding (no network), poll is
+  // the one aim-exempt egress to the constant Bob-owned sink.
+  bob_oob_mint: "scoped_http_network",
+  bob_oob_poll: "scoped_http_network",
   bob_promote_surface_leads: "initialized_session_mutation",
   bob_propose_friction_promotion: "initialized_session_mutation",
   // Plane Y Cycle Y.7 — adversarial transcript scan (Y-D6 + Y-P9). Pure

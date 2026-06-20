@@ -112,6 +112,16 @@ test("normalizePipelineEvent accepts evaluator_run_avoided and coerces counts", 
   });
 });
 
+test("severity_clamped event records an authoritative clamped count", () => {
+  const written = normalizePipelineEvent("example.com", "severity_clamped", {
+    status: "balanced",
+    source: "bob_write_verification_round",
+    counts: { clamped: 3 },
+  });
+  assert.equal(written.type, "severity_clamped");
+  assert.deepEqual(written.counts, { clamped: 3 });
+});
+
 test("readPipelineEvents does not backfill over an existing malformed event log", () => {
   withTempHome(() => {
     const filePath = pipelineEventsJsonlPath("example.com");

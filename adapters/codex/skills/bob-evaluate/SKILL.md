@@ -139,14 +139,14 @@ The friction-scanner registry in `mcp/lib/friction-scanners.js` is closed and fr
 
 ## STATE: OPEN_FRONTIER
 <!-- @precondition: partial_surfaces_drained -->
-**Entry conditions.** SETUP complete: seed map routed (web mode) or repo inventory and env prep settled (repo mode), auth context resolved, nucleus hash stable. The frontier ledger and task queue are active. Re-entry from `CLAIM_FREEZE`, `VERIFY`, `GRADE`, or `REPORT` is server-authorized (claim freeze is bidirectional with the frontier). **Lenses likely requested:** `behavior_probe`, `control_check`, `claim_development`, `coverage_closeout` for web surfaces; `code_surface_scout`, `taint_trace`, `fuzz_run` for repo surfaces. Operators may request a focused lens via a manual wave but the scheduler still owns lens routing. **MCP tools:** `bob_read_state_summary`, `bob_wave_status`, `bob_schedule_tasks`, `bob_start_next_wave`, `bob_start_wave`, `bob_apply_wave_merge`, `bob_read_assignment_brief`, `bob_record_candidate_claim`, `bob_log_coverage`, `bob_append_frontier_event`, `bob_materialize_frontier`, `bob_read_queue_policy`, `bob_set_queue_policy`, `bob_clear_terminal_block`, `bob_advance_session` (target `CLAIM_FREEZE`).
+**Entry conditions.** SETUP complete: seed map routed (web mode) or repo inventory and env prep settled (repo mode), auth context resolved, nucleus hash stable. The frontier ledger and task queue are active. Re-entry from `CLAIM_FREEZE`, `VERIFY`, `GRADE`, or `REPORT` is server-authorized (claim freeze is bidirectional with the frontier). **Lenses likely requested:** `behavior_probe`, `control_check`, `claim_development`, `coverage_closeout` for web surfaces; `code_surface_scout`, `taint_trace`, `fuzz_run` for repo surfaces. Operators may request a focused lens via a manual wave but the scheduler still owns lens routing. **MCP tools:** `bob_read_state_summary`, `bob_wave_status` (`coverage`/`unexplored_high`/`transition_blockers` check before freeze), `bob_schedule_tasks`, `bob_start_next_wave`, `bob_start_wave`, `bob_apply_wave_merge`, `bob_read_assignment_brief`, `bob_record_candidate_claim`, `bob_log_coverage`, `bob_append_frontier_event`, `bob_materialize_frontier`, `bob_read_queue_policy`, `bob_set_queue_policy`, `bob_clear_terminal_block`, `bob_advance_session` (target `CLAIM_FREEZE`).
 
 Read `bob_read_state_summary.data` before every wave. Treat MCP ranking from `bob_wave_status.data`, `bob_start_next_wave.data.plan`, and `bob_read_assignment_brief.data.ranking_summary` as runtime prioritization. `explored` means closure events for completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` and promoted deep leads route later waves. Standard wave assignment policy is MCP-owned by `bob_start_next_wave`; `bob_start_wave` is reserved for explicit manual focused waves (e.g., grader-feedback regression).
 
 Before spawning a wave:
 1. Call `bob_start_next_wave({ target_domain })` and use `result.data`.
 2. On `decision === "pending_wave_settle"`, call the `next_action` tool or stop and require `$bob-evaluate resume [domain]`.
-3. On `decision === "no_assignable_candidates"`, stop wave launching and let the lifecycle gate decide whether `CLAIM_FREEZE` is allowed.
+3. On `decision === "no_assignable_candidates"`, before letting the lifecycle gate decide on `CLAIM_FREEZE`, call `bob_wave_status({ target_domain })` and read `coverage` + `transition_blockers` (both computed from frontier readiness at EVERY lifecycle state — unlike the `low_coverage`/`bottlenecks` health flags in `bob_read_pipeline_analytics`, which only populate at `CLAIM_FREEZE`+, and unlike the analytics coverage summary, which carries aggregate counts only). If `coverage.unexplored_high > 0` (high-value surfaces still genuinely unexplored, not merely terminally blocked), do NOT silently freeze — but also do NOT blindly re-call `bob_start_next_wave`: `no_assignable_candidates` is terminal for the CURRENT frontier/queue state and the scheduler already owns deep-lead promotion, so re-invoking it WITHOUT an intervening state change returns the same `no_assignable_candidates` (a futile spin). Instead STOP and report the coverage gap to the operator using ONLY what the data actually carries: `coverage.unexplored_high_surface_ids` lists exactly which HIGH/CRITICAL surface IDs are uncovered — name them. For the WHY, read it off the SPECIFIC blockers that carry a reason — the `blocked_high_surfaces` entry names surfaces terminally blocked by missing prerequisites (clear via `bob_clear_terminal_block`), and the `open_requeue_coverage` entry names surfaces with unfinished needs-auth/promising/requeue work — and attribute a reason to an uncovered ID ONLY when one of those blockers actually lists it. The `unexplored_high_surfaces` blocker itself carries just the IDs with a generic message, so do NOT invent a per-surface reason for an uncovered ID that no specific blocker explains: report it as unexplored and ask the operator what it needs. Then ask the operator to either supply what those surfaces need and re-enter or confirm freezing with the coverage gap recorded. Only re-attempt a wave AFTER a state-changing action (operator re-entry, `bob_set_queue_policy`, new auth); only once coverage is adequate or the operator confirms, let the lifecycle gate decide whether `CLAIM_FREEZE` is allowed. Advisory only — never re-invoke the scheduler against unchanged state.
 4. Spawn evaluators only when `started === true` and `next_action.kind === "spawn_evaluators"`. Use top-level `result.data.assignments`; the MCP capability router has already chosen the correct evaluator family per surface — do not branch by `chain_family`. Use each assignment's `evaluator_agent` as the subagent type and its `handoff_token` only in its spawn prompt.
 
 Generic evaluator spawn template (uses the routed `assignment.evaluator_agent`; the brief itself carries chain-specific context):
@@ -187,7 +187,7 @@ Geofence triggers for the orchestrator are repeated first-party timeouts, repeat
 
 Launch-turn barrier: after spawning evaluators, report wave number, agent count, and assignments; never call `bob_apply_wave_merge`, `bob_wave_status`, `bob_wave_handoff_status`, or `bob_merge_wave_handoffs` in the same turn that spawned evaluators; wait for background completion notifications. If context is lost, the user can run `$bob-evaluate resume [domain]`.
 
-Wave settlement: call `bob_read_state_summary({ target_domain })` and use `result.data.state`. If `state.pending_wave` is null, skip merge and continue from the current lifecycle state. Otherwise call `bob_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge, force_merge_reason })` and use `result.data` (include `force_merge_reason` when `force_merge` is true). On `"pending"` report the pending count and stop; on `"merged"` use returned `state`, `merge`, `findings`, and `readiness`. `bob_apply_wave_merge` owns settlement-side state mutation. Use `merge.requeue_surface_ids` for the next wave (already excludes terminally-blocked surfaces); surface `unexpected_agents` in output only. If `merge.terminally_blocked_promoted` is non-empty, report the promoted surfaces and the blocker tuples to the operator before the next wave — these are classified blocked, not neglected. When the operator confirms the missing prerequisite material is now registered, call `bob_clear_terminal_block({ target_domain, surface_id, reason })` (>= 20 char reason) before assigning the surface again. When a worker handoff summary or `bob_apply_wave_merge` surfaces STATE_CONFLICT errors carrying `wrong_mode` / `lifecycle_phase_mismatch` / `stage_mismatch` codes, call `bob_emit_runtime_drift({ target_domain, run_id, drift_signature: "wrong_mode_tool_call", rationale, details: { tool, session_mode, expected_mode } })` so the runtime drift ledger captures the agent's mode confusion. After a successful `bob_apply_wave_merge` (decision `"merged"`), inspect `merge.frontier_event_summary.capability_frictions[]` for `(wanted_tool, friction_kind, surface_id)` groups whose recorded count reaches `queue-policy.friction_promotion_threshold` (default 2). For every qualifying `tool_absent` group, call `bob_propose_friction_promotion({ target_domain, wanted_tool, friction_kind: "tool_absent", surface_id })` immediately. For `tool_inadequate` groups, FIRST ask the operator to confirm (Y-P11 synthetic-quarantine); only after operator approval call with `friction_kind: "tool_inadequate", include_inadequacy: true`. Promotions are idempotent — matching friction_event_ids short-circuit with `{ promoted: false, idempotent: true }`; call once per merge and ignore idempotent returns. Also call `bob_scan_transcript_for_friction({ target_domain, wave_number: state.pending_wave })` so the closed-registry friction scanners (`bash_curl`, `bash_wget`, `bash_raw_http`, `bash_cat_ledger`, `mcp_invocation_failure_scanner`, `silent_lead_threshold_drop`) run mechanically against worker transcripts and synthesize any `capability_friction_observed` events the agents failed to log voluntarily (Y-P11 voluntary+synthetic coexistence). This is a best-effort tripwire — synthetic frictions are marked `synthetic_origin: true` and quarantined from satisfiability decisions until promoted via `bob_propose_friction_promotion` (Y-P9). After merge, continue automatically to the next wave decision or to impact-correlation drainage.
+Wave settlement: call `bob_read_state_summary({ target_domain })` and use `result.data.state`. If `state.pending_wave` is null, skip merge and continue from the current lifecycle state. Otherwise call `bob_apply_wave_merge({ target_domain, wave_number: state.pending_wave, force_merge, force_merge_reason })` and use `result.data` (include `force_merge_reason` when `force_merge` is true). On `"pending"` report the pending count and stop; on `"merged"` use returned `state`, `merge`, `findings`, and `readiness`. `bob_apply_wave_merge` owns settlement-side state mutation. Use `merge.requeue_surface_ids` for the next wave (already excludes terminally-blocked surfaces); surface `unexpected_agents` in output only. If `merge.terminally_blocked_promoted` is non-empty, report the promoted surfaces and the blocker tuples to the operator before the next wave — these are classified blocked, not neglected. When the operator confirms the missing prerequisite material is now registered, call `bob_clear_terminal_block({ target_domain, surface_id, reason })` (>= 20 char reason) before assigning the surface again. When a worker handoff summary or `bob_apply_wave_merge` surfaces STATE_CONFLICT errors carrying `wrong_mode` / `lifecycle_phase_mismatch` / `stage_mismatch` codes, call `bob_emit_runtime_drift({ target_domain, run_id, drift_signature: "wrong_mode_tool_call", rationale, details: { tool, session_mode, expected_mode } })` so the runtime drift ledger captures the agent's mode confusion. After a successful `bob_apply_wave_merge` (decision `"merged"`), the SERVER has already (a) auto-proposed every qualifying `tool_absent` group at `queue-policy.friction_promotion_threshold` (the threshold counts voluntary AND synthetic frictions for the same `(wanted_tool, surface_id)` — they coexist by design, Y-P11), and (b) run the one invocation-free scanner (`handoff_ledger_diff`) server-side. Read `result.data.friction_mechanization` for the summary; do NOT re-propose a `tool_absent` group — it is mechanized. Your two residual jobs: (1) `tool_inadequate` groups are operator-gated (Y-P11) and are NEVER auto-promoted — when `friction_mechanization` or a handoff surfaces a `tool_inadequate` co-presence signal, ask the operator, then call `bob_propose_friction_promotion({ target_domain, wanted_tool, friction_kind: "tool_inadequate", surface_id, include_inadequacy: true })`. (2) For coverage the server cannot witness (transcript regex, `mcp_invocation_failure`, `evidence_size`, `handoff_invocation_diff` — all need a transcript or an invocation stream), call `bob_scan_transcript_for_friction({ target_domain, run_id, node_id, transcript_text, tool_invocations })` with a worker's actual run coordinates, transcript, and recorded invocations, then forward its `friction_records` through `bob_log_capability_friction`. Re-forwarding a synthetic VERBATIM (same `detected_by: "adversarial_transcript_scan"`) is a Y-P3 no-op; do NOT change its `detected_by` to your own `agent_self_report` — a voluntary report is a distinct, intentionally-coexisting signal, not a duplicate to suppress. After merge, continue automatically to the next wave decision or to impact-correlation drainage.
 
 **Handoff receipt — deep-surface-discovery ranked_leads (Y.12 rev 4.1 producer-side coherence).** When a `deep-surface-discovery` handoff summary contains a `ranked_leads[]` array (the producer trace registered as `surface_discovery_ranked_leads` in `mcp/lib/stigmergic-producers.js`), the orchestrator MUST call `bob_record_surface_leads({ target_domain, source: "deep-surface-discovery", source_wave: <wave_id>, source_agent: "deep-surface-discovery", leads: ranked_leads })` BEFORE proceeding to the next dispatch (no `bob_start_next_wave`, no evaluator spawn, no `bob_advance_session`) so the full lead set reaches the `surface-leads.json` ledger. Each lead entry MUST carry a non-empty `rationale` string (≤512 chars) explaining why the lead was ranked. When `queue-policy.lead_rationale_required_when_below_threshold === true`, `bob_record_surface_leads` rejects with `INVALID_ARGUMENTS` any lead whose `score` is below the policy `min_score` and whose `rationale` is missing or empty; surface the structured `remediation` to the operator and either fill in rationales, raise the lead's score, or set the queue-policy toggle to false. This producer-side enforcement is the structural complement to the Y.7 `silent_lead_threshold_drop` runtime tripwire — together they catch the field-observed pattern where 3 ranked_leads in a handoff summary silently collapsed to 1 entry in the ledger. `bob_promote_surface_leads` is unchanged: it is the batch-mode filter-by-score promotion path and has no per-lead promote/demote axis.
 
@@ -315,7 +315,7 @@ Execution contract:
 
 1. Binary check
 ```bash
-mkdir -p "[SESSION]" && { for t in subfinder nuclei curl python3; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; command -v httpx >/dev/null && echo "OK:httpx" || { [ -x ~/go/bin/httpx ] && echo "OK:httpx" || echo "MISSING:httpx"; }; command -v katana >/dev/null && echo "OK:katana" || { [ -x ~/go/bin/katana ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
+mkdir -p "[SESSION]" && { for t in subfinder nuclei curl python3; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; { H=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; }&&{ H="$c"; break; }; done; [ -n "$H" ] && echo "OK:httpx" || echo "MISSING:httpx"; }; { K=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; }&&{ K="$c"; break; }; done; [ -n "$K" ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
 ```
 2. Subdomain aggregation
 ```bash
@@ -326,9 +326,16 @@ tmp="$(mktemp "${TMPDIR:-/tmp}/bob-surface-discovery-subdomains.XXXXXX")" && sor
 ```
 3. Live hosts
 ```bash
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober). Skip ONLY a python-interpreter #!-script
+# shadow (the "httpx" HTTP client that masks ~/go/bin/httpx and silently empties recon); compiled
+# binaries AND shell shims (asdf/mise/nix proxying to the real PD binary) are accepted.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { HTTPX="$c"; break; }; done
 : > "[SESSION]/live_hosts.txt"
 if [ -n "$HTTPX" ]; then timeout 75 "$HTTPX" -l "[SESSION]/subdomains.txt" -silent -follow-redirects -tech-detect -title -status-code -content-length -o "[SESSION]/live_hosts.txt" 2>/dev/null || true; fi
+# Make a STARVED recon visible instead of silently masking it with the apex fallback below: if real
+# subdomains were enumerated but httpx probed 0 live hosts (or httpx was unresolved), record a DEGRADED
+# marker so the orchestrator/operator knows breadth collapsed (usually a missing/shadowed PD httpx).
+if [ ! -s "[SESSION]/live_hosts.txt" ] && [ -s "[SESSION]/subdomains.txt" ]; then nsub="$(wc -l < "[SESSION]/subdomains.txt" | tr -d ' ')"; if [ -n "$HTTPX" ]; then hx="httpx_ran_0_live"; else hx="httpx_unresolved"; fi; echo "DEGRADED:live_hosts_empty:${nsub}_subdomains:${hx}" >> "[SESSION]/surface-discovery-tools.txt"; fi
 if [ ! -s "[SESSION]/live_hosts.txt" ]; then printf "https://%s\nhttps://www.%s\n" "[DOMAIN]" "[DOMAIN]" > "[SESSION]/live_hosts.txt"; fi
 ```
 4. First-party family discovery
@@ -358,7 +365,10 @@ for host, count in counts.most_common():
 picked = sorted(set(picked[:5]))
 (session / "family_candidates.txt").write_text("\n".join(picked) + ("\n" if picked else ""))
 PY
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober). Skip ONLY a python-interpreter #!-script
+# shadow (the "httpx" HTTP client that masks ~/go/bin/httpx and silently empties recon); compiled
+# binaries AND shell shims (asdf/mise/nix proxying to the real PD binary) are accepted.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { HTTPX="$c"; break; }; done
 if [ -s "[SESSION]/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 "$HTTPX" -l "[SESSION]/family_candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "[SESSION]/family_live.txt" 2>/dev/null || true; else : > "[SESSION]/family_live.txt"; fi
 ```
 5. URL discovery with CDX/Wayback and Katana
@@ -368,7 +378,7 @@ if [ -s "[SESSION]/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 
 while read -r root; do timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; timeout 30 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=10000" 2>/dev/null >> "[SESSION]/all_urls.txt" || true; done < "[SESSION]/cdx_roots.txt"
 { printf "https://%s\nhttps://www.%s\n" "[DOMAIN]" "[DOMAIN]"; awk '{print $1}' "[SESSION]/live_hosts.txt" 2>/dev/null; awk '{print $1}' "[SESSION]/family_live.txt" 2>/dev/null; } | sort -u | head -n 20 > "[SESSION]/crawl_roots.txt"
 : > "[SESSION]/katana_urls.txt"
-KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
+KATANA=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { KATANA="$c"; break; }; done
 if [ -n "$KATANA" ] && [ -s "[SESSION]/crawl_roots.txt" ]; then timeout 90 "$KATANA" -list "[SESSION]/crawl_roots.txt" -silent -d 2 -jc -fs rdn -rl 20 -timeout 8 -o "[SESSION]/katana_urls.txt" 2>/dev/null || true; fi
 cat "[SESSION]/katana_urls.txt" >> "[SESSION]/all_urls.txt" 2>/dev/null || true
 sort -u -o "[SESSION]/all_urls.txt" "[SESSION]/all_urls.txt"
@@ -472,7 +482,7 @@ Execution contract:
 
 1. Binary check and workspace setup
 ```bash
-mkdir -p "[SESSION]" && { for t in subfinder amass assetfinder chaos curl python3 nuclei dig; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; for t in dnsx tlsx subzy; do command -v "$t" >/dev/null && echo "OK:$t" || { [ -x "$HOME/go/bin/$t" ] && echo "OK:$t" || echo "MISSING:$t"; }; done; command -v httpx >/dev/null && echo "OK:httpx" || { [ -x ~/go/bin/httpx ] && echo "OK:httpx" || echo "MISSING:httpx"; }; command -v katana >/dev/null && echo "OK:katana" || { [ -x ~/go/bin/katana ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
+mkdir -p "[SESSION]" && { for t in subfinder amass assetfinder chaos curl python3 nuclei dig; do command -v "$t" >/dev/null && echo "OK:$t" || echo "MISSING:$t"; done; for t in dnsx tlsx subzy; do tb=""; for c in "$HOME/go/bin/$t" "$(command -v "$t" 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; }&&{ tb="$c"; break; }; done; [ -n "$tb" ] && echo "OK:$t" || echo "MISSING:$t"; done; { H=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; }&&{ H="$c"; break; }; done; [ -n "$H" ] && echo "OK:httpx" || echo "MISSING:httpx"; }; { K=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ]&&[ -x "$c" ]&&! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; }&&{ K="$c"; break; }; done; [ -n "$K" ] && echo "OK:katana" || echo "MISSING:katana"; }; JWT_TOOL="$(command -v jwt_tool 2>/dev/null || command -v jwt_tool.py 2>/dev/null || true)"; [ -z "$JWT_TOOL" ] && [ -x "$HOME/jwt_tool/jwt_tool.py" ] && JWT_TOOL="$HOME/jwt_tool/jwt_tool.py"; [ -n "$JWT_TOOL" ] && echo "OK:jwt_tool" || echo "MISSING:jwt_tool"; } > "[SESSION]/surface-discovery-tools.txt"
 ```
 2. Passive subdomain and CT aggregation
 ```bash
@@ -513,10 +523,13 @@ trap 'rm -rf "$scratch"' EXIT
 httpx_json="$scratch/httpx.jsonl"
 dnsx_json="$scratch/dnsx.jsonl"
 tlsx_json="$scratch/tlsx.jsonl"
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
-DNSX="$(command -v dnsx 2>/dev/null || true)"; [ -z "$DNSX" ] && [ -x ~/go/bin/dnsx ] && DNSX="$HOME/go/bin/dnsx"
-TLSX="$(command -v tlsx 2>/dev/null || true)"; [ -z "$TLSX" ] && [ -x ~/go/bin/tlsx ] && TLSX="$HOME/go/bin/tlsx"
-SUBZY="$(command -v subzy 2>/dev/null || true)"; [ -z "$SUBZY" ] && [ -x ~/go/bin/subzy ] && SUBZY="$HOME/go/bin/subzy"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober). Skip ONLY a python-interpreter #!-script
+# shadow (the "httpx" HTTP client that masks ~/go/bin/httpx and silently empties recon); compiled
+# binaries AND shell shims (asdf/mise/nix proxying to the real PD binary) are accepted.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { HTTPX="$c"; break; }; done
+DNSX=""; for c in "$HOME/go/bin/dnsx" "$(command -v dnsx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { DNSX="$c"; break; }; done
+TLSX=""; for c in "$HOME/go/bin/tlsx" "$(command -v tlsx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { TLSX="$c"; break; }; done
+SUBZY=""; for c in "$HOME/go/bin/subzy" "$(command -v subzy 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { SUBZY="$c"; break; }; done
 : > "$httpx_json"; : > "$dnsx_json"; : > "$tlsx_json"; : > "$SESSION/live_hosts.txt"; : > "$SESSION/cname_records.txt"; : > "$SESSION/dns_records.txt"; : > "$SESSION/tlsx_sans.txt"; : > "$SESSION/takeover_probe_hosts.txt"; : > "$SESSION/subzy_takeovers.txt"
 if [ -n "$HTTPX" ]; then timeout 180 "$HTTPX" -l "$SESSION/subdomains.txt" -silent -follow-redirects -tech-detect -title -status-code -content-length -json -o "$httpx_json" 2>/dev/null || true; fi
 python3 - "$SESSION" "$httpx_json" <<'PY'
@@ -537,6 +550,10 @@ for line in httpx_path.read_text(errors="ignore").splitlines():
     rows.append(f"{url} [{status}] [{tech}] {title}".strip())
 (session / "live_hosts.txt").write_text("\n".join(rows) + ("\n" if rows else ""))
 PY
+# Surface a STARVED recon instead of silently masking it with the apex fallback below: real subdomains
+# enumerated but 0 live hosts probed (or httpx unresolved) is recorded as a DEGRADED marker so the
+# orchestrator/operator sees breadth collapsed (usually a missing/shadowed ProjectDiscovery httpx).
+if [ ! -s "$SESSION/live_hosts.txt" ] && [ -s "$SESSION/subdomains.txt" ]; then nsub="$(wc -l < "$SESSION/subdomains.txt" | tr -d ' ')"; if [ -n "$HTTPX" ]; then hx="httpx_ran_0_live"; else hx="httpx_unresolved"; fi; echo "DEGRADED:live_hosts_empty:${nsub}_subdomains:${hx}" >> "$SESSION/surface-discovery-tools.txt"; fi
 if [ ! -s "$SESSION/live_hosts.txt" ]; then printf "https://%s\nhttps://www.%s\n" "$DOMAIN" "$DOMAIN" > "$SESSION/live_hosts.txt"; fi
 if command -v dig >/dev/null; then awk '{print $1}' "$SESSION/subdomains.txt" | head -n 500 | while read -r h; do timeout 4 dig +short CNAME "$h" 2>/dev/null | sed "s#^#$h #" >> "$SESSION/cname_records.txt" || true; timeout 4 dig +short A "$h" 2>/dev/null | sed "s#^#$h A #" >> "$SESSION/dns_records.txt" || true; done; fi
 if [ -n "$DNSX" ]; then timeout 120 "$DNSX" -l "$SESSION/subdomains.txt" -silent -a -aaaa -cname -resp -json -o "$dnsx_json" 2>/dev/null || true; fi
@@ -635,7 +652,10 @@ brand_candidates = sorted(set(brand_siblings[:5]))
 (session / "sibling-domain-candidates.txt").write_text("\n".join(sibling_candidates) + ("\n" if sibling_candidates else ""))
 (session / "brand-sibling-probe-candidates.txt").write_text("\n".join(brand_candidates) + ("\n" if brand_candidates else ""))
 PY
-HTTPX="$(command -v httpx 2>/dev/null || true)"; [ -z "$HTTPX" ] && [ -x ~/go/bin/httpx ] && HTTPX="$HOME/go/bin/httpx"
+# Resolve the ProjectDiscovery httpx (a compiled host-prober). Skip ONLY a python-interpreter #!-script
+# shadow (the "httpx" HTTP client that masks ~/go/bin/httpx and silently empties recon); compiled
+# binaries AND shell shims (asdf/mise/nix proxying to the real PD binary) are accepted.
+HTTPX=""; for c in "$HOME/go/bin/httpx" "$(command -v httpx 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { HTTPX="$c"; break; }; done
 if [ -s "$SESSION/family_candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 90 "$HTTPX" -l "$SESSION/family_candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "$SESSION/family_live.txt" 2>/dev/null || true; else : > "$SESSION/family_live.txt"; fi
 : > "$SESSION/brand_sibling_live.txt"
 if [ -s "$SESSION/brand-sibling-probe-candidates.txt" ] && [ -n "$HTTPX" ]; then timeout 30 "$HTTPX" -l "$SESSION/brand-sibling-probe-candidates.txt" -silent -follow-redirects -tech-detect -title -status-code -o "$SESSION/brand_sibling_live.txt" 2>/dev/null || true; fi
@@ -648,7 +668,7 @@ DOMAIN="[DOMAIN]"; SESSION="[SESSION]"
 while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; timeout 50 curl -ks "https://web.archive.org/cdx/search/cdx?url=*.$root/*&output=text&fl=original&collapse=urlkey&limit=20000" 2>/dev/null >> "$SESSION/all_urls.txt" || true; done < "$SESSION/cdx_roots.txt"
 { awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 80 > "$SESSION/crawl_roots.txt"
 : > "$SESSION/katana_urls.txt"
-KATANA="$(command -v katana 2>/dev/null || true)"; [ -z "$KATANA" ] && [ -x ~/go/bin/katana ] && KATANA="$HOME/go/bin/katana"
+KATANA=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { KATANA="$c"; break; }; done
 if [ -n "$KATANA" ] && [ -s "$SESSION/crawl_roots.txt" ]; then timeout 180 "$KATANA" -list "$SESSION/crawl_roots.txt" -silent -d 2 -jc -kf robotstxt,sitemapxml -fs rdn -rl 20 -timeout 8 -o "$SESSION/katana_urls.txt" 2>/dev/null || true; fi
 cat "$SESSION/katana_urls.txt" >> "$SESSION/all_urls.txt" 2>/dev/null || true
 sort -u -o "$SESSION/all_urls.txt" "$SESSION/all_urls.txt"
@@ -1035,8 +1055,8 @@ Record proven findings immediately using `bob_record_candidate_claim` with all f
 Severity guidance: `critical` = RCE/admin takeover/mass prod data compromise; `high` = strong auth bypass/IDOR with sensitive data/stored XSS/injection/privesc; `medium` = real but narrower auth/CSRF/XSS; `low` = informative but still reportable.
 
 Before stopping, first ensure this assigned surface has at least one completion-status `bob_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Then make exactly one final `bob_write_wave_handoff` call for your assigned surface, then call `bob_finalize_agent_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
-- Required fields: `target_domain`, `wave` (`wN`), `agent` (`aN`), `surface_id`, `surface_status`, `content`
-- Also required: `handoff_token` from your spawn prompt and a concise `summary` of what you tested and concluded.
+- Required fields (ALL enforced by the tool's input schema — the call is REJECTED with `INVALID_ARGUMENTS` if any is missing): `target_domain`, `wave` (`wN`), `agent` (`aN`), `surface_id`, `surface_status`, `summary`, `content`, and `handoff_token`.
+- `handoff_token` is passed to you in your spawn prompt (the `Handoff token:` line) — copy it verbatim into the `bob_write_wave_handoff` call. `summary` is a concise account of what you tested and concluded.
 - Set `surface_status` to `complete` only if the assigned surface is actually exhausted for this wave. Use `partial` if more work on that surface should be requeued.
 - Optional fields: `chain_notes` (short freeform strings for chain analysis), `blocked_harness_runs` (objects with `kind`, `harness`, `reason`, optional `needed_for`), `bypass_attempts` (objects with `condition`, `attempt_summary`, `outcome`, optional `finding_id`), `dead_ends`, `waf_blocked_endpoints`, `lead_surface_ids`, `surface_leads`
 
@@ -1727,7 +1747,7 @@ Each v1 `results` entry must include:
 
 For v2, the round must cover exactly the snapshot finding IDs and every `results` entry must also include:
 - `confidence`: `high|medium|low`
-- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`
+- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`, `exploit_replay_confirmed`
 - `state_sensitive`: boolean; set true when target state, auth state, chain state, or fresh replay timing could change the result
 - `artifact_hashes`: object of bounded replay/audit artifact hashes when available, otherwise `{}`
 
@@ -1737,6 +1757,7 @@ Suggested v2 confidence mapping:
 - Tooling/RPC blocked: include `tooling_blocked`, usually deny/fail closed unless local policy says otherwise.
 - Roast disagreement: include `roast_disagreement`.
 - Manual inference without replay: include `manual_inference`.
+- Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `brutalist.json` and the human/debug mirror.
 
@@ -1861,7 +1882,7 @@ Each v1 `results` entry must include:
 - `reportable`: boolean
 - `reasoning`: required non-empty string
 
-For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, and `round_profile: "balanced"` to the write call. Each result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`. Use the same allowed confidence reasons as brutalist; preserve `state_sensitive: true` whenever fresh state, auth, or chain state could change the outcome.
+For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, and `round_profile: "balanced"` to the write call. Each result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`. Use the same allowed confidence reasons as brutalist; preserve `state_sensitive: true` whenever fresh state, auth, or chain state could change the outcome. Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `balanced.json` and the human/debug mirror.
 
@@ -1975,7 +1996,7 @@ Each v1 `results` entry must include:
 - `reportable`: boolean
 - `reasoning`: required non-empty string
 
-For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, `round_profile: "final"`, and `adjudication_plan_hash` to the write call. Every result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`; optional `inherited_confidence_reasons` and `resolved_confidence_reasons` are allowed.
+For v2, add top-level `verification_attempt_id`, `verification_snapshot_hash`, `round_profile: "final"`, and `adjudication_plan_hash` to the write call. Every result must also include `confidence`, `confidence_reasons`, `state_sensitive`, and `artifact_hashes`; optional `inherited_confidence_reasons` and `resolved_confidence_reasons` are allowed. Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `verified-final.json` and the human/debug mirror.
 

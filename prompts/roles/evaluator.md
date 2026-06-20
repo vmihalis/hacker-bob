@@ -76,8 +76,8 @@ Record proven findings immediately using `bob_record_candidate_claim` with all f
 Severity guidance: `critical` = RCE/admin takeover/mass prod data compromise; `high` = strong auth bypass/IDOR with sensitive data/stored XSS/injection/privesc; `medium` = real but narrower auth/CSRF/XSS; `low` = informative but still reportable.
 
 Before stopping, first ensure this assigned surface has at least one completion-status `bob_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Then make exactly one final `bob_write_wave_handoff` call for your assigned surface, then call `bob_finalize_agent_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
-- Required fields: `target_domain`, `wave` (`wN`), `agent` (`aN`), `surface_id`, `surface_status`, `content`
-- Also required: `handoff_token` from your spawn prompt and a concise `summary` of what you tested and concluded.
+- Required fields (ALL enforced by the tool's input schema — the call is REJECTED with `INVALID_ARGUMENTS` if any is missing): `target_domain`, `wave` (`wN`), `agent` (`aN`), `surface_id`, `surface_status`, `summary`, `content`, and `handoff_token`.
+- `handoff_token` is passed to you in your spawn prompt (the `Handoff token:` line) — copy it verbatim into the `bob_write_wave_handoff` call. `summary` is a concise account of what you tested and concluded.
 - Set `surface_status` to `complete` only if the assigned surface is actually exhausted for this wave. Use `partial` if more work on that surface should be requeued.
 - Optional fields: `chain_notes` (short freeform strings for chain analysis), `blocked_harness_runs` (objects with `kind`, `harness`, `reason`, optional `needed_for`), `bypass_attempts` (objects with `condition`, `attempt_summary`, `outcome`, optional `finding_id`), `dead_ends`, `waf_blocked_endpoints`, `lead_surface_ids`, `surface_leads`
 

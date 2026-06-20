@@ -26,6 +26,15 @@ function sessionDir(domain) {
   return path.join(sessionsRoot(), safe);
 }
 
+// bob_init_session (lab-target-attest.recordLabAuthorization) when the operator
+// attests ownership of a loopback/RFC1918 target. Audit-graded (see
+// AUDIT_GRADED_BASENAMES) so an agent cannot forge it via the Write tool to
+// self-grant a private-target scan. The scope kernel reads it to permit the
+// otherwise-rejected private target_domain.
+function labAuthorizationPath(domain) {
+  return path.join(sessionDir(domain), "lab-authorization.json");
+}
+
 // Canonical session root. Cycle P.2 of the frontier-topology realization
 // hypergraph moves the session root from `~/bounty-agent-sessions` to
 // `~/hacker-bob-sessions`. Per Risk R6, the legacy root is *preserved*: it is
@@ -344,6 +353,29 @@ function repoCommandRunsJsonlPath(domain) {
   return path.join(sessionDir(domain), "repo-command-runs.jsonl");
 }
 
+// Offensive proof ledger for safe web exploit attempts. This mirrors
+// repo-command-runs.jsonl as an append-only MCP-owned ledger, but is
+// audit-graded because exploit proof rows become the un-fakeable claim gate.
+function offensiveRunsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "offensive-runs.jsonl");
+}
+
+// Raw request/response capture files for bob_http_confirm. These are
+// read-guarded because they can contain target bytes and synthetic proof
+// material; rows in offensive-runs.jsonl carry only paths and hashes.
+function offensiveRunsDir(domain) {
+  return path.join(sessionDir(domain), "offensive-runs");
+}
+
+// PR6 OOB collector — the token->surface binding ledger. AUDIT-GRADED (see
+// AUDIT_GRADED_BASENAMES): each row binds a server-minted OOB token to the
+// in-scope canonical_target + surface_id resolved at mint time, and bob_oob_poll
+// re-reads it to stamp the signed row's target/surface, so an agent Write here
+// would be the OOB analogue of the #111 cross-surface laundering vector.
+function oobTokensJsonlPath(domain) {
+  return path.join(sessionDir(domain), "oob-tokens.jsonl");
+}
+
 // Cycle O.4: repo-runs/<run_id>.{stdout,stderr} are the bounded (16 MB
 // each) capture files for each docker run. Lives under sessionDir so
 // session-read-guard.sh can extend BLOCKED_DIRS to it in cycle O.7.
@@ -409,6 +441,10 @@ function repoDockerfilePath(domain) {
 //   * verification-input-snapshot   — frozen verifier input
 //   * Plus any future hash-bound artifact added to AUDIT_GRADED_PATHS.
 const AUDIT_GRADED_BASENAMES = Object.freeze([
+  // Operator-attested lab/private-target authorization. MCP-write-only (written
+  // only by bob_init_session) so a prompt-injected agent cannot forge it via the
+  // Write tool to self-grant a loopback/RFC1918 scan past the public-DNS gate.
+  "lab-authorization.json",
   "report.md",
   "chains.md",
   "evidence-packs.md",
@@ -424,6 +460,16 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   "report-snapshots.jsonl",
   "report-amendments.jsonl",
   "chain-attempts.jsonl",
+  // Deliberate asymmetry: repo-command-runs.jsonl is MCP-owned but not
+  // audit-graded; offensive-runs.jsonl is both because exploit-proof claims
+  // are structurally rejected unless backed by a real row in this ledger.
+  "offensive-runs.jsonl",
+  // PR6: the OOB token->surface binding ledger. Audit-graded because bob_oob_poll
+  // re-reads it to stamp the signed row's in-scope target + surface_id; an agent
+  // Write would forge that binding (the OOB analogue of the #111 surface gate). The
+  // ledger READ is additionally O_NOFOLLOW/realpath-hardened in oob-collector.js so
+  // a Bash-planted symlink cannot smuggle a binding either.
+  "oob-tokens.jsonl",
   "diff-impact.json",
   // Verification-round mirrors live at the session root with fixed names.
   "brutalist.json",
@@ -439,6 +485,7 @@ const AUDIT_GRADED_RELATIVE_DIRS = Object.freeze([
   "verification-replay-leases",
   "wave-handoffs",
   "claim-freeze",
+  "offensive-runs",
 ]);
 
 // Wave-handoff per-agent files live at the session root and follow the
@@ -454,6 +501,106 @@ const AUDIT_GRADED_PATHS = Object.freeze({
   basenames: AUDIT_GRADED_BASENAMES,
   relative_dirs: AUDIT_GRADED_RELATIVE_DIRS,
   filename_patterns: AUDIT_GRADED_FILENAME_PATTERNS,
+});
+
+// CR-2: single source of truth for the external PreToolUse write-guard hooks
+// (.claude/hooks/session-write-guard.sh and adapters/kimi/hooks/session-write-guard.sh).
+// The hooks MUST NOT hand-maintain their own classification tables; they read
+// the rendered projection produced by scripts/generate-write-guard-tables.js,
+// which is asserted equal to this data by `npm run test:prompts`.
+//
+// Three sets, evaluated in this precedence inside the hook:
+//   1. AUDIT_GRADED  -> block (MCP renders these server-side; never agent Write)
+//   2. MCP_OWNED     -> block (structured state the agent must write via MCP tools)
+//   3. AGENT_WRITABLE-> allow (compact scratch / discovery / report-input)
+//   default          -> block (unknown file in session dir)
+//
+// report.md and chains.md are DELIBERATELY ABSENT from AGENT_WRITABLE: they are
+// in AUDIT_GRADED_BASENAMES (MCP-rendered via bob_compose_report /
+// bob_write_chain_rollup). Listing them as agent-writable was the classification
+// contradiction this registry closes.
+//
+// SCOPE: the audit_graded_* sub-sets below are re-exported BY REFERENCE from
+// AUDIT_GRADED_PATHS, so a new audit-graded basename/pattern/dir is closed
+// automatically. HOOK_MCP_OWNED_BASENAMES is a HAND-MAINTAINED list and is NOT
+// derived from the path-function inventory; the full MCP-owned basename
+// inventory cross-check is a separate follow-up (the complementary
+// plain-MCP-owned surface is out of this registry's closure guarantee).
+const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
+  "state.json",
+  "coverage.jsonl",
+  "technique-attempts.jsonl",
+  "technique-pack-reads.jsonl",
+  "findings.jsonl",
+  "findings.md",
+  "SESSION_HANDOFF.md",
+  "auth.json",
+  "http-audit.jsonl",
+  "traffic.jsonl",
+  "public-intel.json",
+  "Dockerfile.bob",
+  "repo-checks.jsonl",
+  "repo-command-runs.jsonl",
+  "repo-env.json",
+  "repo-inventory.json",
+  "surface-routes.json",
+  "static-artifacts.jsonl",
+  "static-analysis-results.jsonl",
+  "static-analysis-index.jsonl",
+  "static-scan-results.jsonl",
+  "pipeline-events.jsonl",
+  ".handoff-signing-key.json",
+]);
+// NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
+// diff-impact are intentionally NOT repeated here — they are already in
+// AUDIT_GRADED_BASENAMES and enter the BLOCK set via audit_graded_basenames.
+// Repeating them would re-introduce drift; the class test asserts the two sets
+// are disjoint, so an accidental duplicate is caught.
+
+// MCP-owned by basename-pattern (per-wave artifacts at the session root).
+const HOOK_MCP_OWNED_FILENAME_PATTERNS = Object.freeze([
+  /^wave-[0-9]+-assignments\.json$/,
+  /^live-dead-ends-w[0-9]+-a[0-9]+\.jsonl$/,
+  // handoff-w<N>-a<N>.json|md is already covered by AUDIT_GRADED_FILENAME_PATTERNS.
+]);
+
+// Whole directories that are MCP-owned regardless of filename (matched by
+// session-RELATIVE path component, same as MCP_OWNED_DIRS in the hook today).
+const HOOK_MCP_OWNED_DIRS = Object.freeze([
+  "static-imports",
+]);
+
+// Compact scratch / discovery / report-INPUT artifacts the agent may Write.
+// report.md and chains.md are NOT here — they are audit-graded.
+const HOOK_AGENT_WRITABLE_BASENAMES = Object.freeze([
+  "attack_surface.json",
+  "deep-summary.json",
+  "surface-discovery-summary.json",
+  "scope-warnings.log",
+  "deny-list.txt",
+]);
+
+const HOOK_AGENT_WRITABLE_FILENAME_PATTERNS = Object.freeze([
+  /^.*\.txt$/,
+]);
+
+// The projection both the generator and any in-process guard consume. The
+// audit-graded sets are re-exported by reference so a new audit-graded basename
+// automatically becomes a hook BLOCK with no second edit. regex `.source` is
+// exported (string form) so the JSON manifest is serializable and the Python
+// hooks can compile identical patterns.
+const WRITE_GUARD_TABLES = Object.freeze({
+  // BLOCK precedence 1: audit-graded (MCP-rendered). Reuses AUDIT_GRADED_PATHS.
+  audit_graded_basenames: AUDIT_GRADED_BASENAMES,
+  audit_graded_filename_patterns: AUDIT_GRADED_FILENAME_PATTERNS.map((re) => re.source),
+  audit_graded_relative_dirs: AUDIT_GRADED_RELATIVE_DIRS,
+  // BLOCK precedence 2: MCP-owned structured state.
+  mcp_owned_basenames: HOOK_MCP_OWNED_BASENAMES,
+  mcp_owned_filename_patterns: HOOK_MCP_OWNED_FILENAME_PATTERNS.map((re) => re.source),
+  mcp_owned_dirs: HOOK_MCP_OWNED_DIRS,
+  // ALLOW precedence 3: agent-writable scratch.
+  agent_writable_basenames: HOOK_AGENT_WRITABLE_BASENAMES,
+  agent_writable_filename_patterns: HOOK_AGENT_WRITABLE_FILENAME_PATTERNS.map((re) => re.source),
 });
 
 // Y.3 Stage c (Y-P14b / O4) — threshold above which a cited response body MUST
@@ -518,6 +665,7 @@ function isAuditGradedPath(absolutePath, target_domain) {
 
 module.exports = {
   AUDIT_GRADED_PATHS,
+  WRITE_GUARD_TABLES,
   LARGE_BODY_THRESHOLD_BYTES,
   TELEMETRY_DIR_NAME,
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
@@ -535,6 +683,9 @@ module.exports = {
   pipelineEventsJsonlPath,
   proofBundlePaths,
   publicIntelPath,
+  offensiveRunsDir,
+  offensiveRunsJsonlPath,
+  oobTokensJsonlPath,
   queuePolicyPath,
   reportMarkdownPath,
   resolveEvidencePath,
@@ -547,6 +698,7 @@ module.exports = {
   repoRunsDir,
   repoWorkDir,
   scopeWarningsPath,
+  labAuthorizationPath,
   sessionDir,
   sessionEventsJsonlPath,
   sessionLockPath,

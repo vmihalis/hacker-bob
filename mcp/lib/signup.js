@@ -5,6 +5,9 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { assertNonEmptyString } = require("./validation.js");
 const { authStore } = require("./auth.js");
+const { ERROR_CODES, ToolError } = require("./envelope.js");
+const { emailMatchesOperatorDenylist } = require("./pii-detector.js");
+const { tempMailboxIsKnown } = require("./temp-email.js");
 const {
   assertSafeResolvedRequestUrl,
   safeFetch,
@@ -136,6 +139,37 @@ function normalizeAutoSignupResult(result, signupUrl) {
     auth_evidence: evidence,
   };
   return normalized;
+}
+
+function operatorIdentifiersFromEnv() {
+  return String(process.env.BOB_OPERATOR_IDENTIFIERS || "")
+    .split(",")
+    .map((identifier) => identifier.trim())
+    .filter(Boolean);
+}
+
+function assertSignupEmailAllowed(email, options = {}) {
+  const operatorIdentifiers = Object.prototype.hasOwnProperty.call(options || {}, "operatorIdentifiers")
+    ? options.operatorIdentifiers
+    : operatorIdentifiersFromEnv();
+
+  if (emailMatchesOperatorDenylist(email, operatorIdentifiers)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "the supplied email matches a configured operator identifier and was refused",
+      { code: "auto_signup_operator_identifier_rejected" },
+    );
+  }
+
+  if (!tempMailboxIsKnown(email)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "bob_auto_signup requires an email created via bob_temp_email in this running MCP process; call bob_temp_email and pass the returned address verbatim (the match is exact and case-sensitive).",
+      { code: "auto_signup_email_not_temp_provisioned" },
+    );
+  }
+
+  return true;
 }
 
 async function signupDetect(args) {
@@ -294,6 +328,7 @@ async function autoSignup(args) {
   const signupUrl = assertNonEmptyString(args.signup_url, "signup_url");
   const email = assertNonEmptyString(args.email, "email");
   const password = assertNonEmptyString(args.password, "password");
+  assertSignupEmailAllowed(email);
   const profileName = args.profile_name || "attacker";
   const name = args.name || "Evaluator Test";
   const requestedEgressProfile = args.egress_profile == null
@@ -445,6 +480,22 @@ async function autoSignup(args) {
               headers: result.headers || {},
               local_storage: result.local_storage || {},
               credentials: { email, password },
+            }, {
+              // PR-PROV: stamp synthetic-identity provenance so the IDOR signed-row
+              // producer (bob_http_idor_confirm, mint condition #18) can use this
+              // identity. Sound to assert HERE because we are downstream of
+              // assertSignupEmailAllowed (signup.js:331 → tempMailboxIsKnown +
+              // emailMatchesOperatorDenylist): `email` (signup.js:329, the gated INPUT
+              // arg — never target-controlled result.*) is a live bob_temp_email mailbox
+              // this process itself minted, and is not an operator identifier. Passed as
+              // the 2nd positional arg, which the MCP tool dispatcher never supplies, so
+              // bob_auth_store can never forge these onto a real (operator-pasted) identity.
+              provenance: {
+                synthetic: true,
+                email_origin: "temp_email",
+                provisioned_via: "bob_auto_signup",
+                email,
+              },
             });
             result.auth_stored = true;
             result.auth_profile = profileName;
@@ -462,6 +513,7 @@ async function autoSignup(args) {
 }
 
 module.exports = {
+  assertSignupEmailAllowed,
   authEvidenceFromResult,
   autoSignup,
   hasAuthEvidence,

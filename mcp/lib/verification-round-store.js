@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const {
   SEVERITY_VALUES,
   VERIFICATION_CONFIDENCE_REASON_VALUES,
@@ -17,6 +18,7 @@ const {
   parseFindingId,
 } = require("./validation.js");
 const {
+  statePath,
   verificationRoundPaths,
 } = require("./paths.js");
 const {
@@ -41,9 +43,315 @@ const {
 const {
   findingIdSetForVerificationContext,
 } = require("./verification-finding-id-adapter.js");
+const {
+  readCurrentClaimFreeze,
+} = require("./claim-freeze.js");
+const {
+  readOffensiveRunRecords,
+  offensiveRunRowSatisfiesEvidence,
+  OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
+} = require("./claims.js");
+const {
+  readHandoffSigningKey,
+} = require("./handoff-signing-key.js");
+const {
+  sessionNucleusFromState,
+} = require("./governance-contracts.js");
+const {
+  readSessionStateStrict,
+} = require("./session-state-store.js");
 
 function verificationLib() {
   return require("./verification.js");
+}
+
+const VERIFY_SEVERITY_RANK = Object.freeze({
+  info: 1,
+  informational: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  critical: 5,
+});
+
+function verifySeverityRank(severity) {
+  return (typeof severity === "string" && VERIFY_SEVERITY_RANK[severity.toLowerCase()]) || 0;
+}
+
+function toRoundSeverity(claimSeverity) {
+  return claimSeverity === "informational" ? "info" : claimSeverity;
+}
+
+const VERIFY_SEVERITY_BY_RANK = Object.freeze({
+  1: "info",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "critical",
+});
+
+function severityForVerifyRank(rank) {
+  return VERIFY_SEVERITY_BY_RANK[rank] || null;
+}
+
+function rowAttemptFreshForState(row, sessionState) {
+  return row.verification_attempt_id == null
+    || (
+      row.verification_attempt_id === sessionState.verification_attempt_id
+      && (
+        row.verification_snapshot_hash == null
+        || row.verification_snapshot_hash === sessionState.verification_snapshot_hash
+      )
+    );
+}
+
+// The three v2 result fields that can carry confidence reasons. An unvalidated
+// `exploit_replay_confirmed` proof claim must be stripped from all of them.
+const REASON_ARRAY_FIELDS = Object.freeze([
+  "confidence_reasons",
+  "inherited_confidence_reasons",
+  "resolved_confidence_reasons",
+]);
+
+// MUTATES `results` in place: lowers `result.severity` for each unproven
+// severity rise, and strips a `exploit_replay_confirmed` reason that did not
+// back a validated rise. Returns the list of clamps applied:
+// [{ finding_id, from, to }]. The in-place mutation is load-bearing — the same
+// array is serialized into the persisted round document by the caller (hence
+// the explicit "InPlace" name).
+//
+// SCOPE: this is an anti-inflation guard for WEB-SCOPED sessions
+// (scope_policy.target_url set), applied UNIFORMLY to every finding in such a
+// session. We deliberately do NOT carve out smart-contract findings. The
+// web/smart_contract axis is per-finding, but every per-finding and
+// per-session SC signal available before VERIFY is agent-influenced — claim
+// surface_ids / payload (agent-recorded), and even surface routes (an evaluator
+// can inject a synthetic smart-contract surface.observed via
+// bob_append_frontier_event that routing then classifies). A spoofable SC
+// exemption is strictly worse than none: it is an inflation bypass. The only
+// trusted, non-agent signal is the init-time session scope, so the guard keys
+// off that alone. Consequence: in a cross-stack web+SC session a smart-contract
+// finding is also held to its FROZEN (evaluator-recorded) severity unless
+// exploit-proven — the evaluator's assessment is the trusted baseline, and an
+// unproven verification-time raise above it is clamped, exactly as for web.
+// (Pure smart-contract engagements are repo-scoped — no target_url — and are
+// untouched by this guard.)
+function clampResultSeveritiesInPlace(domain, results) {
+  let nucleus;
+  let sessionState;
+  try {
+    // Derive web-scope from the VALIDATED session state (the write tool authority
+    // validates state.json before this handler), NOT from session-nucleus.json.
+    // The nucleus file is not write-guarded, so reading it would let a corrupt
+    // or semantically-drifted nucleus (target_url removed / swapped for
+    // target_repo) silently disable the guard on a session whose state still
+    // authorizes a web target. State is the trustworthy scope authority here.
+    sessionState = readSessionStateStrict(domain).state;
+    nucleus = sessionNucleusFromState(sessionState);
+  } catch (error) {
+    // Distinguish "no state file yet" (a partially-seeded / pre-state session:
+    // pass through, nothing to guard) from a state file that EXISTS but is
+    // unreadable/corrupt (transient I/O, partial write, parse error: fail closed
+    // rather than silently skip the guard). In production neither occurs — the
+    // write tool authority validates state.json before this handler runs.
+    if (fs.existsSync(statePath(domain))) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `severity-rise guard could not read session state: ${error.message || String(error)}`,
+      );
+    }
+    return [];
+  }
+  if (!nucleus || nucleus.scope_policy == null || nucleus.scope_policy.target_url == null) return [];
+
+  let freeze;
+  try {
+    freeze = readCurrentClaimFreeze(domain);
+  } catch (error) {
+    // Defense-in-depth: a corrupt freeze is already rejected upstream of this
+    // guard (v1 via findingIdSetForVerificationContext; v2 via the snapshot
+    // freshness check assertSnapshotMatchesFreeze), so this branch is not the
+    // first reader. If it is ever reached, fail closed rather than skip the
+    // guard. A missing freeze returns null (handled below) — only a corrupt
+    // one throws.
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `severity-rise guard could not read claim freeze: ${error.message || String(error)}`,
+    );
+  }
+  if (!freeze || !Array.isArray(freeze.claims)) return [];
+
+  const exploitRunClaimIds = new Map();
+  for (const claim of freeze.claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+    const claimKey = typeof claim.claim_id === "string" && claim.claim_id
+      ? claim.claim_id
+      : JSON.stringify(refs.filter((ref) => ref && ref.kind === "finding"));
+    for (const ref of refs) {
+      if (!ref || ref.kind !== "exploit_run" || typeof ref.run_id !== "string") continue;
+      const set = exploitRunClaimIds.get(ref.run_id) || new Set();
+      set.add(claimKey);
+      exploitRunClaimIds.set(ref.run_id, set);
+    }
+  }
+  const duplicateExploitRunIds = new Set(
+    Array.from(exploitRunClaimIds.entries())
+      .filter(([, claimIds]) => claimIds.size > 1)
+      .map(([runId]) => runId),
+  );
+
+  const byFinding = new Map();
+  for (const claim of freeze.claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const rank = verifySeverityRank(claim.severity);
+    const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+    const findingIds = refs
+      .filter((ref) => ref && ref.kind === "finding" && typeof ref.finding_id === "string")
+      .map((ref) => ref.finding_id);
+    // Bind exploit_run refs to a finding ONLY when the claim references exactly
+    // one finding. Cross-finding row binding is server-enforced at record time
+    // via run_id single-use. As a defense-in-depth backstop, if a forged/corrupt
+    // freeze contains the same run_id on multiple claims, drop it from all.
+    //
+    // Surface binding (issue #111): mirror the record-time gate. Capture the OWNING
+    // claim's single surface_id alongside each exploit_run ref so the row-eligibility
+    // loop below can require row.surface_id === that surface (a higher-severity row
+    // produced for a different surface can never unlock a rise). Compute it INSIDE
+    // this per-claim loop (NOT hoisted) because a finding can accumulate refs from
+    // multiple claims; null when the (possibly forged) freeze claim does not carry
+    // exactly one surface, which makes the row ineligible and clamps to baseline.
+    // Trim and treat an empty/whitespace single surface as null (no surface),
+    // symmetric with the record gate (which trims the row side and fail-closes on
+    // an empty surface) so a degenerate/forged freeze cannot let an empty claim
+    // surface match an (also empty) row's surface_id.
+    const claimSurfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+    const rawClaimSurfaceId = claimSurfaceIds.length === 1 ? claimSurfaceIds[0] : null;
+    const claimSurfaceId = typeof rawClaimSurfaceId === "string" && rawClaimSurfaceId.trim() !== ""
+      ? rawClaimSurfaceId.trim()
+      : null;
+    const exploitRunRefs = findingIds.length === 1
+      ? refs
+        .filter((ref) => (
+          ref
+          && ref.kind === "exploit_run"
+          && typeof ref.run_id === "string"
+          && !duplicateExploitRunIds.has(ref.run_id)
+        ))
+        .map((ref) => ({ ref, surfaceId: claimSurfaceId }))
+      : [];
+    for (const findingId of findingIds) {
+      const current = byFinding.get(findingId)
+        || { maxRank: 0, maxSeverity: null, exploitRunRefs: [] };
+      if (rank > current.maxRank) {
+        current.maxRank = rank;
+        current.maxSeverity = claim.severity;
+      }
+      for (const entry of exploitRunRefs) current.exploitRunRefs.push(entry);
+      byFinding.set(findingId, current);
+    }
+  }
+
+  const clamps = [];
+  let runRows = null;
+  let signingKey = null;
+  for (const result of results) {
+    if (!result || typeof result.severity !== "string") continue;
+
+    const hasExploitReplaySignal = Array.isArray(result.confidence_reasons)
+      && result.confidence_reasons.includes("exploit_replay_confirmed");
+    let provenRise = false;
+
+    const base = byFinding.get(result.finding_id);
+    let maxDemonstratedRank = 0;
+    if (base && base.exploitRunRefs.length > 0) {
+      if (runRows === null) runRows = readOffensiveRunRecords(domain);
+      if (runRows.length > 0) {
+        if (signingKey === null) signingKey = readHandoffSigningKey(domain);
+        for (const { ref, surfaceId } of base.exploitRunRefs) {
+          for (const row of runRows) {
+            if (
+              offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
+              && rowAttemptFreshForState(row, sessionState)
+              // Surface binding (issue #111): mirror the record gate. The row's
+              // surface_id must equal the owning claim's single surface. surfaceId
+              // === null (claim not exactly-1-surface, OR an empty/whitespace
+              // surface — both fail closed above) drops the row → maxDemonstratedRank
+              // stays 0 → provenRise false → clamp to baseline. Purely subtractive.
+              && surfaceId !== null
+              && typeof row.surface_id === "string"
+              && row.surface_id.trim() === surfaceId
+            ) {
+              // Per-tool demonstrated_severity ceiling (PR-A), applied HERE too so the cap is a true
+              // system invariant — enforced at the record gate, the CLAIM_FREEZE->VERIFY gate, AND
+              // this verify-time severity-rise path. Cap the row's demonstrated rank at its tool's
+              // ceiling before it can unlock a rise: a forged/over-ceiling row, or a session advanced
+              // past the gate with operator_force, cannot raise severity above the tool's ceiling. An
+              // unknown/forged tool_id fail-closes to "info" (lowest tier).
+              const toolCeilRank = verifySeverityRank(
+                OFFENSIVE_TOOL_DEMONSTRATED_CEILING[row.tool_id] ?? "info",
+              );
+              const cappedRowRank = Math.min(verifySeverityRank(row.demonstrated_severity), toolCeilRank);
+              maxDemonstratedRank = Math.max(maxDemonstratedRank, cappedRowRank);
+            }
+          }
+        }
+      }
+    }
+    if (base && base.maxRank > 0 && verifySeverityRank(result.severity) > base.maxRank) {
+      // A rise above the frozen baseline. The exploit-backed allow-path requires
+      // proof bound to the ASSERTED severity, not merely that some exploit row
+      // exists. A matching, MAC-signed row must carry a `demonstrated_severity`
+      // (the impact tier the safe exploit actually demonstrated, MAC-covered so
+      // it can't be forged) that meets or exceeds `result.severity` — a
+      // low-severity row (e.g. PR3's read-only synthetic-id confirmer) can never
+      // unlock a critical rise. The allow-path is now live for rows produced by
+      // trusted MCP code, with run_id single-use enforced at record time and
+      // stale non-null verification attempts rejected here. Null attempts are
+      // evaluate-time rows and fall back to the freeze's content-hash binding.
+      const assertedRank = verifySeverityRank(result.severity);
+      if (hasExploitReplaySignal && base.exploitRunRefs.length > 0) {
+        provenRise = maxDemonstratedRank >= assertedRank;
+      }
+      if (!provenRise) {
+        const from = result.severity;
+        const to = toRoundSeverity(base.maxSeverity);
+        if (to !== from) {
+          result.severity = to;
+          clamps.push({ finding_id: result.finding_id, from, to });
+        }
+      }
+    }
+
+    // NOTE: there is intentionally NO unconditional "clamp to the exploit row's
+    // demonstrated_severity" here. The record gate (assertExploitedClaimHasProof)
+    // already forbids an exploited_safely claim from being frozen above its cited
+    // rows' demonstrated tier, so an exploit-backed claim can never carry an
+    // unproven-high baseline. Clamping unconditionally would instead corrupt a
+    // finding whose higher baseline comes from a SEPARATE non-exploit claim (e.g.
+    // a medium static-analysis finding alongside a low synthetic-id confirm),
+    // lowering a legitimate medium to low on the strength of unrelated proof. The
+    // rise-guard above (provenRise) is the only place the demonstrated ceiling
+    // applies — to the exploit-backed rise it is actually validating.
+
+    // `exploit_replay_confirmed` is a proof claim. Keep it ONLY when it backed a
+    // validated severity rise; on a non-rise, an unproven (clamped) rise, or a
+    // finding with no frozen baseline, strip it from ALL THREE persisted reason
+    // arrays (confidence_reasons + the inherited_/resolved_ provenance arrays,
+    // which the tool schema also permits to carry it) so the content-hashed round
+    // artifact never carries a false exploit-proof audit signal — in any field.
+    const exploitReasonAnywhere = REASON_ARRAY_FIELDS.some((field) => (
+      Array.isArray(result[field]) && result[field].includes("exploit_replay_confirmed")
+    ));
+    if (exploitReasonAnywhere && !provenRise) {
+      for (const field of REASON_ARRAY_FIELDS) {
+        if (Array.isArray(result[field])) {
+          result[field] = result[field].filter((reason) => reason !== "exploit_replay_confirmed");
+        }
+      }
+    }
+  }
+  return clamps;
 }
 
 function normalizeStringEnumArray(value, fieldName, allowedValues, { required = false } = {}) {
@@ -206,6 +514,26 @@ function normalizeVerificationRoundDocument(document, { expectedDomain, expected
     normalized.results.sort((a, b) => a.finding_id.localeCompare(b.finding_id));
   }
 
+  // Durable clamp audit. Preserved with the exact {finding_id, from, to} shape it
+  // was written with so the v2 final_verification_hash recomputes consistently on
+  // read; from/to are enum-validated so a tampered artifact cannot inject bogus
+  // severity transitions.
+  if (document.severity_clamps != null) {
+    if (!Array.isArray(document.severity_clamps)) {
+      throw new Error("severity_clamps must be an array");
+    }
+    normalized.severity_clamps = document.severity_clamps.map((clamp, index) => {
+      if (clamp == null || typeof clamp !== "object" || Array.isArray(clamp)) {
+        throw new Error(`severity_clamps[${index}] must be an object`);
+      }
+      return {
+        finding_id: parseFindingId(clamp.finding_id),
+        from: assertEnumValue(clamp.from, SEVERITY_VALUES, `severity_clamps[${index}].from`),
+        to: assertEnumValue(clamp.to, SEVERITY_VALUES, `severity_clamps[${index}].to`),
+      };
+    });
+  }
+
   if (expectedDomain != null && normalized.target_domain !== expectedDomain) {
     throw new Error(`verification round target_domain mismatch: expected ${expectedDomain}`);
   }
@@ -342,6 +670,8 @@ function writeVerificationRound(args) {
     }
   }
 
+  const severityClamps = clampResultSeveritiesInPlace(domain, results);
+
   const document = {
     version: schemaVersion,
     target_domain: domain,
@@ -349,6 +679,11 @@ function writeVerificationRound(args) {
     notes,
     results,
   };
+  // Durable, authoritative clamp audit: record every {finding_id, from, to} in
+  // the persisted (content-hashed, for v2) round document so a runtime clamp is
+  // reconstructable from the artifact itself — not only the ephemeral response
+  // or the best-effort pipeline event. Omitted when nothing was clamped.
+  if (severityClamps.length > 0) document.severity_clamps = severityClamps;
   if (schemaVersion === 2) {
     document.verification_attempt_id = v2State.verification_attempt_id;
     document.verification_snapshot_hash = v2State.verification_snapshot_hash;
@@ -371,6 +706,11 @@ function writeVerificationRound(args) {
     results_count: results.length,
     written_json: paths.json,
   };
+  // Audit signal: surface the clamp so an operator (and the agent that
+  // submitted the higher severity) can tell a verifier's choice from a runtime
+  // clamp. Without this the persisted severity differs silently from the
+  // submitted one.
+  if (severityClamps.length > 0) response.severity_clamps = severityClamps;
   if (schemaVersion === 2) {
     response.verification_attempt_id = v2State.verification_attempt_id;
     response.verification_snapshot_hash = v2State.verification_snapshot_hash;
@@ -392,6 +732,16 @@ function writeVerificationRound(args) {
       confirmed: results.filter((result) => result.disposition === "confirmed").length,
     },
   }, safeGovernanceContextForDomain(domain));
+  if (severityClamps.length > 0) {
+    // Lightweight signal only: the authoritative, per-finding clamp audit lives
+    // in the persisted round document's `severity_clamps`. counts.clamped is the
+    // exact (uncapped) count, so this event never diverges from the record.
+    safeAppendPipelineEventDirect(domain, "severity_clamped", {
+      status: round,
+      source: "bob_write_verification_round",
+      counts: { clamped: severityClamps.length },
+    }, safeGovernanceContextForDomain(domain));
+  }
   if (schemaVersion === 2) verificationLib().refreshVerificationManifest(domain, { throw_on_error: true });
   return JSON.stringify(response);
   });
@@ -420,5 +770,6 @@ module.exports = {
   renderVerificationRoundMarkdown,
   requirePriorVerificationRound,
   sortVerificationResultsByFindingIds,
+  verifySeverityRank,
   writeVerificationRound,
 };

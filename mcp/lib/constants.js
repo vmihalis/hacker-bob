@@ -5,6 +5,15 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
+const OFFENSIVE_OUTCOME_VALUES = ["exploited_safely", "blocked_by_defense", "blocked_by_infra"];
+const SAFE_ORACLE_KINDS = [
+  "out_of_band_interaction",
+  "reflected_canary",
+  "differential_response",
+  "benign_state_change",
+  "blind_boolean_timing",
+  "benign_command_marker",
+];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -67,6 +76,7 @@ const VERIFICATION_CONFIDENCE_REASON_VALUES = [
   "roast_disagreement",
   "disambiguation_failed",
   "agreement_not_replayed",
+  "exploit_replay_confirmed",
 ];
 const VERIFICATION_REASONING_DIVERGENCE_VALUES = [
   "none",
@@ -176,8 +186,10 @@ module.exports = {
   GRADE_VERDICT_VALUES,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
+  OFFENSIVE_OUTCOME_VALUES,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
+  SAFE_ORACLE_KINDS,
   SESSION_LOCK_NAME,
   SESSION_LOCK_STALE_MS,
   SESSION_PUBLIC_STATE_FIELDS,

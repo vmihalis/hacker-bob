@@ -69,7 +69,7 @@ Each v1 `results` entry must include:
 
 For v2, the round must cover exactly the snapshot finding IDs and every `results` entry must also include:
 - `confidence`: `high|medium|low`
-- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`
+- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`, `exploit_replay_confirmed`
 - `state_sensitive`: boolean; set true when target state, auth state, chain state, or fresh replay timing could change the result
 - `artifact_hashes`: object of bounded replay/audit artifact hashes when available, otherwise `{}`
 
@@ -79,6 +79,7 @@ Suggested v2 confidence mapping:
 - Tooling/RPC blocked: include `tooling_blocked`, usually deny/fail closed unless local policy says otherwise.
 - Roast disagreement: include `roast_disagreement`.
 - Manual inference without replay: include `manual_inference`.
+- Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `brutalist.json` and the human/debug mirror.
 
