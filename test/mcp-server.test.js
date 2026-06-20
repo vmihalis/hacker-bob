@@ -7531,7 +7531,9 @@ test("tokenized wave handoffs require the correct token and report verified prov
       agent: "a1",
       surface_id: "surface-a",
       surface_status: "complete",
-      handoff_token: "wrong-token-value",
+      // Well-formed length (32 chars, matching generateHandoffToken's base64url(24)) but the WRONG
+      // value, so it clears the schema minLength and exercises the sha256-mismatch path.
+      handoff_token: "x".repeat(32),
       summary: "Tested the assigned surface.",
       content: "# handoff",
     });
