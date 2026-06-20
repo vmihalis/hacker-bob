@@ -43,7 +43,7 @@
         "COUNT-only, synthetic/own data, never fetch rows. Predicate annihilation: ?q=* / ?q=true / ?$filter=1 eq 1 / ?search=*:* / ?where=1=1 ; NoSQL ?filter[$ne]= / ?q[$gt]= / ?where[$exists]=true",
         "Read totals from response METADATA only (X-Total-Count / meta.total / a count or HEAD request); do NOT page rows from the unscoped/annihilated query — even limit=1 returns one real row. Compare scoped vs unscoped totals.",
         "Scope-param drop/swap (compare COUNTS only, never rows): remove &tenant_id= / &org_id= / &scope=, or set scope=all / tenant_id=<other-synthetic-tenant>.",
-        "Index/principal header routing (read-only GET, compare COUNTS not rows): Index: people-search | X-Search-Index: internal | X-Tenant-Id: <other> | X-Org-Id: <other> | X-Roles: admin"
+        "Index/tenant header routing (read-only GET, compare COUNTS not rows): Index: people-search | X-Search-Index: internal | X-Tenant-Id: <other> | X-Org-Id: <other>"
       ]
     },
     {

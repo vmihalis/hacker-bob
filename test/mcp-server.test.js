@@ -17834,9 +17834,9 @@ test("bob_read_assignment_brief does NOT surface over-permissive-search-list for
 });
 
 test("over-permissive-search-list guidance fits the 240-char summary cap with the grading thesis front-loaded", () => {
-  // technique-packs.js caps each summary item at TECHNIQUE_SUMMARY_ITEM_MAX_CHARS = 240; keep every
-  // technique/payload_hint within it so summary-mode briefs never truncate the safety or grading guidance.
-  const SUMMARY_ITEM_MAX_CHARS = 240;
+  // Track the production cap (imported above) rather than a local literal, so this guard stays correct
+  // if the cap changes: keep every technique/payload_hint within it so summary-mode briefs never
+  // truncate the safety or grading guidance.
   const knowledge = JSON.parse(fs.readFileSync(
     path.join(__dirname, "..", ".hacker-bob", "knowledge", "evaluator-techniques.json"),
     "utf8",
@@ -17844,11 +17844,11 @@ test("over-permissive-search-list guidance fits the 240-char summary cap with th
   const entry = knowledge.entries.find((e) => e.id === "over-permissive-search-list");
   assert.ok(entry, "over-permissive-search-list entry must exist");
   for (const technique of entry.techniques) {
-    assert.ok(technique.length <= SUMMARY_ITEM_MAX_CHARS,
+    assert.ok(technique.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
       `technique exceeds summary cap (${technique.length}): ${technique.slice(0, 60)}`);
   }
   for (const hint of entry.payload_hints) {
-    assert.ok(hint.length <= SUMMARY_ITEM_MAX_CHARS,
+    assert.ok(hint.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
       `payload_hint exceeds summary cap (${hint.length}): ${hint.slice(0, 60)}`);
   }
   // The grading thesis ("NOT auto-LOW") and the PII guard must ride the first surfaced item so they
