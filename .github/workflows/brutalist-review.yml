@@ -67,6 +67,12 @@ jobs:
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           codex-auth: ${{ secrets.CODEX_AUTH }}
           minimum-severity: medium
+          # Coding-agent PRs are huge: the action's old default (80000) truncated
+          # a real 1.39M-char diff to ~78K (94% dropped), so the review silently
+          # missed almost everything. Pin a high explicit cap that works on the
+          # currently-pinned action (v1.14.7) without waiting on a re-pin.
+          # (brutalist-mcp v1.15.1 raises the built-in default to 2000000 too.)
+          max-diff-chars: '2000000'
       - name: Report advisory reviewer failure
         if: steps.brutalist-review.outcome == 'failure'
         env:
