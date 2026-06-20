@@ -56,10 +56,11 @@ jobs:
         id: brutalist-review
         # Advisory reviewer only; CI remains the hard merge gate.
         continue-on-error: true
-        # Pinned to the immutable v1.15.0 commit SHA, not the mutable tag — this
-        # action receives credentials below, so it must not move. v1.15.0 raises
-        # the orchestrator turn cap 20→50 (was hitting "max turns (20)" on large PRs).
-        uses: ejmockler/brutalist-mcp/packages/github-action@93b4ec30bf6987970432d7d53662aa28d390a9b0 # v1.15.0
+        # Tracks the moving @v1 tag — repointed to each release by the upstream
+        # move-tags automation — so this repo auto-updates. Trust root is the
+        # owner-controlled ejmockler/brutalist-mcp repo + release pipeline.
+        # @v1 ships the turn-cap 20→50 fix (was hitting "max turns (20)" on large PRs).
+        uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
           BRUTALIST_TIMEOUT: "600000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
