@@ -38,6 +38,7 @@ const {
   detectTerminalPromotions,
   inspectSchedulerDecisionIntegrity,
 } = require("./wave-promotion-detector.js");
+const { mechanizeWaveFriction } = require("../friction-mechanization.js");
 
 function emitWaveMergedPipelineEvents({
   domain,
@@ -276,6 +277,20 @@ function applyWaveMerge(args) {
     appendHandoffLeadSurfaceFrontierEvents(domain, merge.lead_surface_ids, waveNumber);
     try { scheduleMaterialization(domain); } catch {}
 
+    // CR-3 / I4 — mechanized friction trigger. Auto-propose tool_absent groups
+    // at threshold (the load-bearing invariant) and run the one
+    // server-witnessable scanner (handoff_ledger_diff, advisory). Synthetics
+    // forward under the Y-P3 5-tuple (collapse only same-detected_by dups; a
+    // voluntary report coexists, Y-P11). tool_inadequate stays operator-gated.
+    // Best-effort: never fails the merge, but a swallowed bug is surfaced as
+    // friction_mechanization.error so the e2e test can assert the non-error path.
+    let frictionMechanization = null;
+    try {
+      frictionMechanization = mechanizeWaveFriction(domain, merge.run_contexts || []);
+    } catch (error) {
+      frictionMechanization = { error: "mechanization_skipped", reason: String(error && error.message || error) };
+    }
+
     emitWaveMergedPipelineEvents({
       domain,
       state,
@@ -300,6 +315,7 @@ function applyWaveMerge(args) {
       scheduler_decision_integrity: schedulerDecisionIntegrity,
       merge: serializeMergeResult({ merge, filteredRequeueSurfaceIds, promotions }),
       findings,
+      friction_mechanization: frictionMechanization,
       state: compactSessionState(nextState),
     });
   });

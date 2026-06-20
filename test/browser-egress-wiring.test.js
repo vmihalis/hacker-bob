@@ -26,6 +26,13 @@ const browserSessions = require("../mcp/lib/browser-sessions.js");
 const browserToolsShared = require("../mcp/lib/browser-tools-shared.js");
 
 const PATCHRIGHT_AVAILABLE = browserSessions.isPatchrightAvailable();
+// Tests that launch a real browser run only where a headless driver session can
+// be hosted: a Chromium binary present AND no BOB_SKIP_BROWSER_TESTS opt-out
+// (CI that ships Chrome but can't start a headless session sets it). The
+// egress/stub tests below only need the package (they monkeypatch startSession),
+// so they stay on PATCHRIGHT_AVAILABLE.
+const BROWSER_LAUNCHABLE =
+  !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
 
 function loadHandler(toolName) {
   const moduleSlug = toolName.replace(/^bob_/, "").replace(/_/g, "-");
@@ -617,6 +624,125 @@ test("browserSessions.startSession: no proxy → BOB_BROWSER_DRIVER_INIT carries
   await browserSessions.closeSession(session.session_id).catch(() => {});
 });
 
+// ── IPC deadline tracks the command's operation timeout ──
+
+test("callBrowser forwards an explicit positive timeout_ms to the IPC deadline (+ margin), and omits it otherwise", async () => {
+  const calls = [];
+  const original = browserSessions.sendCommand;
+  browserSessions.sendCommand = async (sessionId, command, args, options) => {
+    calls.push({ command, options });
+    return { ok: true };
+  };
+  try {
+    await browserToolsShared.callBrowser("navigate", "bs-x", { url: "https://example.com", timeout_ms: 8000 });
+    await browserToolsShared.callBrowser("snapshot", "bs-x", {});
+    await browserToolsShared.callBrowser("wait_for", "bs-x", { timeout_ms: 0 });
+    await browserToolsShared.callBrowser("navigate", "bs-x", { url: "https://example.com", timeout_ms: 2_000_000_000 });
+  } finally {
+    browserSessions.sendCommand = original;
+  }
+  // navigate carried an explicit timeout → IPC deadline = timeout + margin.
+  assert.deepEqual(calls[0].options, { timeoutMs: 8000 + browserToolsShared.IPC_DEADLINE_MARGIN_MS });
+  // snapshot has no operation timeout → falls back to the registry default.
+  assert.equal(calls[1].options, undefined);
+  // timeout_ms: 0 (Playwright "disable") is not a positive bound → default.
+  assert.equal(calls[2].options, undefined);
+  // a pathological timeout is clamped to the max ceiling (+ margin), not honored
+  // verbatim — otherwise it would re-arm the "agent wedges forever" class.
+  assert.deepEqual(calls[3].options, { timeoutMs: 5 * 60 * 1000 + browserToolsShared.IPC_DEADLINE_MARGIN_MS });
+});
+
+test("sendCommand rejects at the passed IPC deadline, not the 90s ceiling, when the subprocess never replies", async () => {
+  const captured = [];
+  const session = await browserSessions.startSession({
+    targetDomain: "example.com",
+    targetUrl: "https://example.com",
+    headless: true,
+    spawnFn: makeSpawnStub(captured), // ready handshake only; never answers commands
+    patchrightCheck: () => true,
+  });
+  // The stub child is a plain EventEmitter (no real OS handle) and
+  // raceWithTimeout's timer is unref'd, so nothing keeps the event loop alive
+  // while the 300ms deadline is pending — the loop can drain before it fires,
+  // leaving the promise unsettled (a flaky cancelledByParent in CI). Hold a
+  // ref'd handle until the rejection settles to make the timing deterministic.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      () => browserSessions.sendCommand(session.session_id, "navigate", {}, { timeoutMs: 300 }),
+      (err) => {
+        assert.match(err.message, /browser_command_timeout:navigate/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - start;
+    // Proves the deadline honored the passed 300ms, not COMMAND_TIMEOUT_MS (90s).
+    assert.ok(elapsed < 5000, `expected fast IPC timeout, took ${elapsed}ms`);
+  } finally {
+    clearInterval(keepAlive);
+    await browserSessions.closeSession(session.session_id).catch(() => {});
+  }
+});
+
+// ── driver-side per-operation timeout bounds ──
+
+test("browser-driver clamps timeout_ms to the per-operation default below and a max ceiling above", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  assert.match(driverSrc, /function resolveOpTimeout\(args, defaultMs\)/);
+  // A non-positive timeout_ms (notably 0 = Playwright "no timeout") falls back
+  // to the default rather than disabling the bound.
+  assert.match(driverSrc, /!Number\.isFinite\(requested\)\s*\|\|\s*requested\s*<=\s*0/);
+  // A pathological positive value is clamped to a max ceiling, not honored.
+  assert.match(driverSrc, /Math\.min\(requested, MAX_OPERATION_TIMEOUT_MS\)/);
+  // navigate and wait_for must route their timeout through the clamp.
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_NAVIGATE_TIMEOUT_MS\)/);
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_WAIT_FOR_TIMEOUT_MS\)/);
+});
+
+test("browser-driver bounds page.evaluate with a wall-clock race", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  // page.evaluate takes no Playwright timeout, so it must be raced against a
+  // timer or a runaway expression pins the session to the 90s IPC ceiling.
+  assert.match(driverSrc, /Promise\.race\(\[\s*evalPromise/);
+  assert.match(driverSrc, /evaluate_timeout after \$\{timeout\}ms/);
+  assert.match(driverSrc, /resolveOpTimeout\(args, DEFAULT_EVALUATE_TIMEOUT_MS\)/);
+});
+
+test("browser-driver passes an explicit timeout to page.screenshot", () => {
+  const driverSrc = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+  assert.match(driverSrc, /\.screenshot\(\{[^}]*timeout:\s*DEFAULT_SCREENSHOT_TIMEOUT_MS/);
+});
+
+test("browser-driver evaluate returns a fast evaluate_timeout for a never-resolving expression", { skip: !BROWSER_LAUNCHABLE }, async () => {
+  // Real Chromium; no navigation needed — the initial page is about:blank.
+  const session = await browserSessions.startSession({
+    targetDomain: "example.com",
+    targetUrl: "https://example.com",
+    headless: true,
+  });
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      () => browserSessions.sendCommand(
+        session.session_id,
+        "evaluate",
+        { expression: "new Promise(function(){})", timeout_ms: 400 },
+      ),
+      (err) => {
+        // Must be the distinct timeout signal, not a generic evaluate_failed.
+        assert.match(err.message, /evaluate_timeout/);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - start;
+    // The driver race fires at ~400ms; the 90s IPC ceiling is never reached.
+    assert.ok(elapsed < 6000, `expected fast evaluate timeout, took ${elapsed}ms`);
+  } finally {
+    await browserSessions.closeSession(session.session_id).catch(() => {});
+  }
+});
+
 // ── browser-driver source-level contracts (no Chromium required) ──
 
 test("browser-driver.js threads proxy into chromium.launch({ proxy }) (source check)", () => {
@@ -676,7 +802,7 @@ test("bob_browser_session_start_recording inputSchema declares optional egress_p
 // refused). Anything else (e.g. successful navigation, off-target IP) would
 // mean the proxy config was dropped.
 
-test("patchright smoke: Chromium attempts to dial the configured proxy (connection error proves the proxy was honored)", { skip: !PATCHRIGHT_AVAILABLE }, async () => {
+test("patchright smoke: Chromium attempts to dial the configured proxy (connection error proves the proxy was honored)", { skip: !BROWSER_LAUNCHABLE }, async () => {
   await withDefaultEgressConfig({
     version: 1,
     profiles: [
