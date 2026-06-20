@@ -727,6 +727,11 @@ const HOOK_AGENT_WRITABLE_BASENAMES = Object.freeze([
   "attack_surface.json",
   "deep-summary.json",
   "surface-discovery-summary.json",
+  // Agent-written on-chain inventory: the deep-surface-discovery agent (which
+  // has Write but not bob_record_surface_leads) builds this scratch input during
+  // collection; step-7 reads it to synthesize smart_contract surfaces/leads.
+  // Like attack_surface.json it is agent scratch, not MCP-owned state.
+  "onchain_inventory.json",
   "scope-warnings.log",
   "deny-list.txt",
 ]);

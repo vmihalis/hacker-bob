@@ -198,6 +198,8 @@
   "test/offensive-runner.test.js",
   "test/offensive-image.test.js",
   "test/lifecycle-state-drift.test.js",
+  "test/lifecycle-verification-reopen-gate.test.js",
+  "test/recorded-blocker-partial-coverage.test.js",
   "test/evidence-gate-lifecycle.test.js",
   "test/belief-differential-tester.test.js",
   "test/belief-elicitation.test.js",

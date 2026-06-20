@@ -381,6 +381,52 @@ test("bob_promote_surface_leads preserves assigned lead surfaces already in atta
   });
 });
 
+// Y-D21 — the producer thread: a smart_contract lead's chain_family/chain_id/
+// contract_address must survive record → promote → surface-index, or capability
+// routing throws on the materialized surface and no evaluator wave can launch.
+test("Y-D21: a smart_contract lead carries chain_family/chain_id/contract_address through record→promote→surface-index", () => {
+  withTempHome(() => {
+    const domain = "yd21-sc-lead.example.com";
+    seedSession(domain);
+    const recorded = JSON.parse(recordSurfaceLeadsTool.handler({
+      target_domain: domain,
+      source: "deep-surface-discovery",
+      leads: [
+        makeLead({
+          title: "DistributorV2 cross-pool reward accounting",
+          hosts: ["onchain://ethereum-mainnet/0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A"],
+          endpoints: [],
+          interesting_params: [],
+          surface_type: "smart_contract",
+          chain_family: "evm",
+          chain_id: 42161,
+          contract_address: "0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A",
+          confidence: "high",
+          score: 93,
+        }),
+      ],
+    }));
+    assert.equal(recorded.recorded, 1);
+
+    const promoted = JSON.parse(promoteSurfaceLeadsTool.handler({
+      target_domain: domain,
+      limit: 5,
+      min_score: 60,
+    }));
+    assert.equal(promoted.promoted, 1);
+    const surfaceId = promoted.promoted_surface_ids[0];
+
+    const surface = currentSurfaces(domain).surfaces.find((s) => s.id === surfaceId);
+    assert.ok(surface, "promoted smart_contract lead materialized into the surface set");
+    assert.equal(surface.surface_type, "smart_contract");
+    assert.equal(surface.chain_family, "evm",
+      "chain_family must survive the lead pipeline (routing requires it)");
+    assert.equal(surface.chain_id, "42161",
+      "chain_id must reach the surface (assignment-brief selects the RPC pool from it)");
+    assert.equal(surface.contract_address, "0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A");
+  });
+});
+
 test("uniqueSurfaceId is a deterministic function of lead identity (re-promotion stable, distinct leads distinct)", () => {
   const { _internals } = require("../mcp/lib/lead-promotion.js");
   const lead = { id: "L1", key: "k1", title: "Admin API", hosts: ["https://a.example.com"], endpoints: ["/api/admin"] };
