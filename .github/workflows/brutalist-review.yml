@@ -58,7 +58,7 @@ jobs:
         continue-on-error: true
         # Pinned to the immutable v1.15.0 commit SHA, not the mutable tag — this
         # action receives credentials below, so it must not move.
-        uses: ejmockler/brutalist-mcp/packages/github-action@93b4ec30bf6987970432d7d53662aa28d390a9b0 # v1.15.0
+        uses: ejmockler/brutalist-mcp/packages/github-action@745a706a89332c63532a4f0ce3b72c099494fe98 # v1.15.1
         env:
           BRUTALIST_TIMEOUT: "600000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
