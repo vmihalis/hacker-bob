@@ -783,8 +783,15 @@ test("deriveAdvanceAuthContext self-guards an invalid explicit value (exported f
     () => deriveAdvanceAuthContext({ auth_status: "pending" }, "bogus", false, false),
     (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be one of/.test(err.message),
   );
-  // A blank/whitespace explicit value is still allowed (treated as omitted → derive).
+  // A NON-STRING (non-null) value is rejected outright (fail-closed, matching advanceSession's
+  // boundary) rather than silently treated as omitted.
+  assert.throws(
+    () => deriveAdvanceAuthContext({ auth_status: "pending" }, 42, false, false),
+    (err) => err && err.code === "INVALID_ARGUMENTS" && /auth_status must be a string/.test(err.message),
+  );
+  // A blank/whitespace explicit value is still allowed (treated as omitted → derive); so is null/omitted.
   assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, "   ", true, false).auth_status, "authenticated");
+  assert.equal(deriveAdvanceAuthContext({ auth_status: "pending" }, null, true, false).auth_status, "authenticated");
 });
 
 test("advanceSession emits a governance.auth_context.replaced audit event ONLY when auth_status changes", () => {
@@ -800,6 +807,14 @@ test("advanceSession emits a governance.auth_context.replaced audit event ONLY w
     assert.equal(afterChange[0].payload.to_auth_status, "authenticated");
     assert.equal(afterChange[0].payload.had_usable_profile, true);
     assert.equal(afterChange[0].payload.explicit_auth_status_supplied, false);
+    // ATOMIC PROVENANCE: the canonical lifecycle.advanced event ALSO carries the transition, so the
+    // auth move is reconstructable from that single durable append even if the best-effort companion
+    // above ever fails to write.
+    const advanced = lifecycleAdvancedEvents(domain);
+    const changedAdvance = advanced.find((e) => e.payload.auth_status_changed === true);
+    assert.ok(changedAdvance, "the advance that changed auth_status carries it on the canonical event");
+    assert.equal(changedAdvance.payload.from_auth_status, "pending");
+    assert.equal(changedAdvance.payload.to_auth_status, "authenticated");
     // A LATER advance that does not change auth_status (still authenticated) emits NO new event.
     advanceSession({
       target_domain: domain,

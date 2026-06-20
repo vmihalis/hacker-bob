@@ -390,6 +390,15 @@ const CREDENTIAL_HEADER_NAMES = Object.freeze(new Set(["authorization", "cookie"
 // or a candidate auth domain whose body holds usable credential material. Lets advanceSession
 // derive auth_status from the PRESENCE of usable credentials without coupling the session
 // lifecycle to a specific profile name.
+//
+// NAME-AGNOSTIC BY DESIGN (Codex PR#138 review): a profile named `victim`, `admin`, or `idor_target`
+// — stored to replay captured credentials for access-control / IDOR testing — also satisfies this.
+// That is intentional: the operator plan advances auth_status when an attacker OR victim profile is
+// persisted, and `auth_status` is an advisory session MILESTONE meaning "this session holds at least
+// one usable credential profile (any principal)", NOT a claim that a specific principal authenticated.
+// It grants no capability (a stale/unintended credential 401s on use), so the name-agnostic read is
+// the SAFE simplification; coupling the milestone to caller-chosen profile names would be fragile
+// (names are free-form: attacker/victim/admin/tenant_b/...) for no security gain.
 function hasUsableAuthProfile(domain) {
   assertSafeDomain(domain);
   for (const candidateDomain of candidateAuthDomains(domain, `https://${domain}/`)) {
