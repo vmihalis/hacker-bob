@@ -281,9 +281,16 @@ test("ownScopeIsPrivate rejects shared/default/demo/sandbox heuristic scopes", (
   assert.equal(ownScopeIsPrivate(null), false);
 });
 
-test("tenantDiscriminator reads the first well-known key", () => {
+test("tenantDiscriminator reads the first well-known key (and coerces only SAFE integers)", () => {
   assert.deepEqual(tenantDiscriminator({ owner_scope: "B" }), { key: "owner_scope", value: "B" });
   assert.equal(tenantDiscriminator({}), null);
+  // Integer tenant IDs (common in real REST APIs) are coerced to their string form.
+  assert.deepEqual(tenantDiscriminator({ org_id: 7 }), { key: "org_id", value: "7" });
+  // A precision-unsafe magnitude (>= 2^53) is NOT coerced — its String() form is unreliable and
+  // could collide two distinct tenants; reject it so the read soft-gates instead of mis-comparing.
+  assert.equal(tenantDiscriminator({ org_id: Number.MAX_SAFE_INTEGER + 1 }), null);
+  // A float is not a tenant id either.
+  assert.equal(tenantDiscriminator({ org_id: 42.5 }), null);
 });
 
 test("piiScan EXACT-matches provisioned mailboxes only (no eval_* prefix hole), aborts on foreign PII", () => {

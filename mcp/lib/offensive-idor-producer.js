@@ -338,17 +338,22 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
-// Coerce an owning-scope field to its canonical string form: a non-empty trimmed string, OR a
-// finite number stringified. Integer org_id/tenant_id values are common in real REST APIs; without
-// this a numeric tenant id is typeof "number", silently escapes the string-only scope reads, and a
-// same-tenant BOLA (A and B both org_id:42) would be mislabeled a cross-tenant IDOR. Anything else
-// (null, boolean, object, NaN/Infinity) is not a usable scope value.
+// Coerce an owning-scope field to its canonical string form: a non-empty trimmed string, OR a SAFE
+// integer stringified. Integer org_id/tenant_id values are common in real REST APIs; without this a
+// numeric tenant id is typeof "number", silently escapes the string-only scope reads, and a
+// same-tenant BOLA (A and B both org_id:42) would be mislabeled a cross-tenant IDOR. Only
+// Number.isSafeInteger values are coerced: a 64-bit id above 2^53 already lost precision in
+// JSON.parse (9007199254740993 -> ...992), so its String() form is unreliable for tenant comparison
+// and could COLLIDE two distinct tenants — reject it (-> null = no usable scope value, the
+// conservative direction: the read soft-gates rather than risk a precision-wrong same-tenant
+// verdict). A float (42.5) is likewise not a tenant id. Anything else (null, boolean, object,
+// NaN/Infinity, unsafe-magnitude number) is also not a usable scope value.
 function scopeValueString(value) {
   if (typeof value === "string") {
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
   }
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
   return null;
 }
 
