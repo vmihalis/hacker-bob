@@ -6,6 +6,10 @@ import subprocess
 import sys
 
 HOOK = os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "session-write-guard.sh")
+KIMI_HOOK = os.path.join(os.path.dirname(__file__), "..", "adapters", "kimi", "hooks", "session-write-guard.sh")
+# The Claude and Kimi write guards must enforce IDENTICAL policy (no split-brain).
+# Both parse the same PreToolUse envelope, so the same cases run against both.
+HOOKS = [("claude", HOOK), ("kimi", KIMI_HOOK)]
 HOME = os.path.expanduser("~")
 SESSION = f"{HOME}/hacker-bob-sessions/example.com"
 
@@ -72,6 +76,9 @@ TESTS = [
      2),
     ("Write to MCP-owned repo-command-runs.jsonl → block",
      {"tool_input": {"file_path": f"{SESSION}/repo-command-runs.jsonl", "content": "test"}},
+     2),
+    ("Write to MCP-owned offensive-runs.jsonl → block",
+     {"tool_input": {"file_path": f"{SESSION}/offensive-runs.jsonl", "content": "test"}},
      2),
     ("Write to MCP-owned static-artifacts.jsonl → block",
      {"tool_input": {"file_path": f"{SESSION}/static-artifacts.jsonl", "content": "test"}},
@@ -159,6 +166,21 @@ TESTS = [
     ("Bash >> to MCP-owned repo-command-runs.jsonl → block",
      {"tool_input": {"command": f"cat data >> {SESSION}/repo-command-runs.jsonl"}},
      2),
+    ("Bash >> to MCP-owned offensive-runs.jsonl → block",
+     {"tool_input": {"command": f"cat data >> {SESSION}/offensive-runs.jsonl"}},
+     2),
+    ("Bash cd-then-relative-redirect to offensive-runs.jsonl → block",
+     {"tool_input": {"command": f"cd {SESSION} && printf '{{}}' >> offensive-runs.jsonl"}},
+     2),
+    ("Bash cd-dashdash-then-relative-redirect to offensive-runs.jsonl → block",
+     {"tool_input": {"command": f"cd -- {SESSION} && printf '{{}}' >> offensive-runs.jsonl"}},
+     2),
+    ("Bash cd-then-relative-redirect to repo-command-runs.jsonl → block",
+     {"tool_input": {"command": f"cd {SESSION} && echo data >> repo-command-runs.jsonl"}},
+     2),
+    ("Bash cd-then-relative-redirect to allowed notes.txt → allow",
+     {"tool_input": {"command": f"cd {SESSION} && echo hi >> notes.txt"}},
+     0),
     ("Bash > to MCP-owned static-scan-results.jsonl → block",
      {"tool_input": {"command": f"echo data > {SESSION}/static-scan-results.jsonl"}},
      2),
@@ -261,56 +283,71 @@ TESTS = [
 
 
 def main():
+    import tempfile
+    import shutil
+
     passed = 0
     failed = 0
 
-    for desc, payload, expected in TESTS:
-        result = subprocess.run(
-            ["bash", HOOK],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-        )
-        ok = result.returncode == expected
+    def record(ok, desc, expected, got, stderr):
+        nonlocal passed, failed
         status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
         print(f"  {status}: {desc}")
         if not ok:
-            print(f"         expected exit {expected}, got {result.returncode}")
-            if result.stderr.strip():
-                print(f"         stderr: {result.stderr.strip()}")
+            print(f"         expected exit {expected}, got {got}")
+            if stderr.strip():
+                print(f"         stderr: {stderr.strip()}")
             failed += 1
         else:
             passed += 1
 
-    # Liveness: a missing/unreadable manifest must FAIL CLOSED (block), not
-    # silently allow. The hook sets WRITE_GUARD_TABLES_FILE to
-    # "$(dirname "$0")/write-guard-tables.json", so copy the hook into a temp dir
-    # with NO manifest beside it; the load then fails and the write is blocked.
-    import tempfile
-    import shutil
-    with tempfile.TemporaryDirectory() as tmp:
-        hook_copy = os.path.join(tmp, "session-write-guard.sh")
-        shutil.copyfile(HOOK, hook_copy)
-        # No write-guard-tables.json beside hook_copy → fail closed.
-        live = subprocess.run(
-            ["bash", hook_copy],
-            input=json.dumps(
-                {"tool_input": {"file_path": f"{SESSION}/anything.json", "content": "x"}}
-            ),
-            capture_output=True,
-            text=True,
-        )
-        desc = "Manifest missing → fail closed (block)"
-        ok = live.returncode == 2
-        status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
-        print(f"  {status}: {desc}")
-        if not ok:
-            print(f"         expected exit 2, got {live.returncode}")
-            if live.stderr.strip():
-                print(f"         stderr: {live.stderr.strip()}")
-            failed += 1
-        else:
-            passed += 1
+    for adapter, hook in HOOKS:
+        print(f"\n=== {adapter} write guard ===")
+        for desc, payload, expected in TESTS:
+            result = subprocess.run(
+                ["bash", hook],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+            )
+            record(result.returncode == expected, f"[{adapter}] {desc}",
+                   expected, result.returncode, result.stderr)
+
+        # Liveness 1: a missing/unreadable manifest must FAIL CLOSED (block). The
+        # hook sets WRITE_GUARD_TABLES_FILE to "$(dirname "$0")/write-guard-tables.json",
+        # so copy the hook into a temp dir with NO manifest beside it.
+        with tempfile.TemporaryDirectory() as tmp:
+            hook_copy = os.path.join(tmp, "session-write-guard.sh")
+            shutil.copyfile(hook, hook_copy)
+            live = subprocess.run(
+                ["bash", hook_copy],
+                input=json.dumps(
+                    {"tool_input": {"file_path": f"{SESSION}/anything.json", "content": "x"}}
+                ),
+                capture_output=True,
+                text=True,
+            )
+            record(live.returncode == 2, f"[{adapter}] Manifest missing -> fail closed (block)",
+                   2, live.returncode, live.stderr)
+
+        # Liveness 2: a structurally-WRONG manifest (valid JSON, missing a key)
+        # must ALSO fail closed with exit 2 — KeyError must not leak an unhandled
+        # exit 1 that a host could treat as a framework error and fail open.
+        with tempfile.TemporaryDirectory() as tmp:
+            hook_copy = os.path.join(tmp, "session-write-guard.sh")
+            shutil.copyfile(hook, hook_copy)
+            with open(os.path.join(tmp, "write-guard-tables.json"), "w", encoding="utf-8") as fh:
+                json.dump({"audit_graded_basenames": ["report.md"]}, fh)  # missing other keys
+            live = subprocess.run(
+                ["bash", hook_copy],
+                input=json.dumps(
+                    {"tool_input": {"file_path": f"{SESSION}/anything.json", "content": "x"}}
+                ),
+                capture_output=True,
+                text=True,
+            )
+            record(live.returncode == 2, f"[{adapter}] Manifest incomplete (missing key) -> fail closed (block)",
+                   2, live.returncode, live.stderr)
 
     print(f"\n  {passed}/{passed + failed} passed")
     return 0 if failed == 0 else 1

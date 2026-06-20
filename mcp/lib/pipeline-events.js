@@ -44,6 +44,7 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "verification_attempt_archived",
   "verification_archive_pruned",
   "verification_written",
+  "severity_clamped",
   "evidence_written",
   "proof_bundle_written",
   "grade_written",

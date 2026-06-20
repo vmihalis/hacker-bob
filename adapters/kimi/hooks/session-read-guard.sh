@@ -15,7 +15,14 @@ import shlex
 import sys
 
 
-SESSIONS_ROOT = pathlib.Path.home() / "bounty-agent-sessions"
+# Cycle P.2: guard both the canonical `hacker-bob-sessions` root and the
+# legacy `bounty-agent-sessions` root so direct reads remain blocked during
+# the v2.0/v2.1 coexistence window.
+SESSIONS_ROOTS = (
+    pathlib.Path.home() / "hacker-bob-sessions",
+    pathlib.Path.home() / "bounty-agent-sessions",
+)
+SESSIONS_ROOT = SESSIONS_ROOTS[0]
 
 BLOCKED_EXACT = {
     "state.json",
@@ -26,6 +33,7 @@ BLOCKED_EXACT = {
     "technique-attempts.jsonl",
     "technique-pack-reads.jsonl",
     "chain-attempts.jsonl",
+    "diff-impact.json",
     "brutalist.json",
     "brutalist.md",
     "balanced.json",
@@ -40,23 +48,56 @@ BLOCKED_EXACT = {
     "http-audit.jsonl",
     "traffic.jsonl",
     "public-intel.json",
+    "Dockerfile.bob",
+    "repo-checks.jsonl",
+    "repo-command-runs.jsonl",
+    "repo-env.json",
+    "repo-inventory.json",
     "surface-routes.json",
     "static-artifacts.jsonl",
+    "static-analysis-results.jsonl",
+    "static-analysis-index.jsonl",
     "static-scan-results.jsonl",
     "pipeline-events.jsonl",
     "report.md",
     "chains.md",
+    ".handoff-signing-key.json",
+    # Sensitive session state: out-of-band interaction binding tokens and
+    # private-target/lab authorization carry secret-shaped material; force agents
+    # through MCP readers rather than the raw Read tool.
+    "oob-tokens.jsonl",
+    "lab-authorization.json",
+    # Plane O O.7: OSS-target artifacts. Raw stdout/stderr from sandboxed
+    # docker runs and inventory/env documents may carry secret-shaped tokens
+    # from build output. Force agents through MCP readers.
+    "repo-checks.jsonl",
+    "repo-command-runs.jsonl",
+    "repo-env.json",
+    "Dockerfile.bob",
+    "repo-inventory.json",
+    # PR #108 review (Codex P1): the offensive proof ledger carries run ids,
+    # target URLs, safe-oracle canaries, and capture hashes. Read-guard it like
+    # its write-guarded sibling repo-command-runs.jsonl so agents cannot bypass
+    # the MCP readers to harvest target/canary material directly.
+    "offensive-runs.jsonl",
 }
 
 ALLOWED_EXACT = {
     "attack_surface.json",
     "deep-summary.json",
-    "recon-summary.json",
+    "surface-discovery-summary.json",
     "surface-leads.json",
 }
 
 BLOCKED_DIRS = {
     "static-imports",
+    # Plane O O.7: raw docker-run stdout/stderr (`repo-runs/`), any
+    # in-container scratch space (`repo-work/`), and S14 materialized
+    # control checkouts (`repo-checkouts/`) must stay opaque to agents.
+    "repo-runs",
+    "offensive-runs",
+    "repo-work",
+    "repo-checkouts",
 }
 
 BLOCKED_PATTERNS = [
@@ -65,7 +106,7 @@ BLOCKED_PATTERNS = [
     re.compile(r"^live-dead-ends-w[1-9][0-9]*-a[1-9][0-9]*\.jsonl$"),
 ]
 
-RISKY_PATH_RE = re.compile(r"(?:^|[._/\-])(raw|proof|poc|dump|body|exploit)(?:[._/\-]|$)", re.I)
+RISKY_PATH_RE = re.compile(r"(?:^|[._/\-])(raw|proof|poc|dump|body|impact proof)(?:[._/\-]|$)", re.I)
 PATH_FRAGMENT_RE = re.compile(r"(~|\$\{?SESSION\}?|\$\{?HOME\}?|/)[^\s'\";|&)<>,]*")
 READ_COMMANDS = {
     "awk",
@@ -89,7 +130,8 @@ READ_COMMANDS = {
 RECURSIVE_READ_COMMANDS = {"grep", "rg"}
 
 
-def expand_path_text(path_text):
+def resolve_path(raw_path):
+    path_text = str(raw_path).strip().strip("\"'")
     env_session = os.environ.get("SESSION", "")
     if env_session:
         path_text = path_text.replace("${SESSION}", env_session).replace("$SESSION", env_session)
@@ -97,62 +139,96 @@ def expand_path_text(path_text):
     path_text = path_text.replace("${HOME}", home).replace("$HOME", home)
     if path_text.startswith("~"):
         path_text = os.path.expanduser(path_text)
-    return path_text
-
-
-def resolve_path(raw_path, base_dir=None):
-    path_text = expand_path_text(str(raw_path).strip().strip("\"'"))
-    path = pathlib.Path(path_text)
-    if not path.is_absolute():
-        base = pathlib.Path(base_dir) if base_dir is not None else pathlib.Path(os.getcwd())
-        path = base / path
-    return path
+    return pathlib.Path(path_text)
 
 
 def is_in_session_dir(resolved):
-    try:
-        resolved.resolve(strict=False).relative_to(SESSIONS_ROOT.resolve(strict=False))
-        return True
-    except (ValueError, OSError):
-        return False
+    for root in SESSIONS_ROOTS:
+        try:
+            resolved.resolve(strict=False).relative_to(root.resolve(strict=False))
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
 
 
-def check_file(raw_path, *, block_session_dirs=False, base_dir=None):
-    resolved = resolve_path(raw_path, base_dir=base_dir)
-    if not is_in_session_dir(resolved):
-        return None
+def session_root_for(resolved):
+    for root in SESSIONS_ROOTS:
+        try:
+            resolved.resolve(strict=False).relative_to(root.resolve(strict=False))
+            return root
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+def extract_cd_targets(command):
+    """Directories the command cd's/pushd's into. PR #108 review (Codex P1): the
+    read guard must resolve relative reads against the shell's cwd, not the hook
+    process cwd, or `cd <session_dir> && cat offensive-runs.jsonl` reads the
+    ledger (and every other blocked file) directly. Mirrors the
+    session-write-guard fix; honors the `--` option terminator and cd flags."""
+    bases = []
+    for match in re.finditer(r"\b(?:cd|pushd)\s+(?:-[A-Za-z]+\s+|--\s+)*([\"']?)([^\"'\s;|&]+)\1", command):
+        raw = match.group(2)
+        if raw.startswith("-") or raw in {"-", "~-", "&&", "||"}:
+            continue
+        bases.append(resolve_path(raw))
+    return bases
+
+
+def _evaluate_resolved(resolved, block_session_dirs):
+    """Returns (in_session, blocked_name). in_session=False means the path is
+    outside every session root; blocked_name is a filename to block or None to
+    allow when in_session."""
+    root = session_root_for(resolved)
+    if root is None:
+        return (False, None)
 
     try:
         session_relative_parts = resolved.resolve(strict=False).relative_to(
-            SESSIONS_ROOT.resolve(strict=False)
+            root.resolve(strict=False)
         ).parts
     except (ValueError, OSError):
         session_relative_parts = ()
 
     if block_session_dirs and len(session_relative_parts) <= 1:
-        return resolved.name or "session directory"
+        return (True, resolved.name or "session directory")
 
     filename = resolved.name
     if filename in ALLOWED_EXACT:
-        return None
+        return (True, None)
     if any(part in BLOCKED_DIRS for part in resolved.parts):
-        return filename
+        return (True, filename)
     if filename in BLOCKED_EXACT:
-        return filename
+        return (True, filename)
     if any(pattern.match(filename) for pattern in BLOCKED_PATTERNS):
-        return filename
+        return (True, filename)
     session_relative = str(resolved)
     if RISKY_PATH_RE.search(session_relative):
-        return filename
+        return (True, filename)
+    return (True, None)
+
+
+def check_file(raw_path, *, block_session_dirs=False, base_dirs=None):
+    resolved = resolve_path(raw_path)
+    candidates = [resolved]
+    if not resolved.is_absolute() and base_dirs:
+        for base in base_dirs:
+            candidates.append(base / resolved)
+    for candidate in candidates:
+        in_session, blocked_name = _evaluate_resolved(candidate, block_session_dirs)
+        if in_session:
+            return blocked_name
     return None
 
 
 def block(blocked):
     print(
         f"BLOCKED: Direct read of '{blocked}' in a Bob session directory. "
-        "Use MCP readers such as bounty_read_session_summary, "
-        "bounty_read_state_summary, bounty_read_findings, and "
-        "bounty_read_http_audit instead.",
+        "Use MCP readers such as bob_read_session_summary, "
+        "bob_read_state_summary, bob_read_candidate_claims, and "
+        "bob_read_http_audit instead.",
         file=sys.stderr,
     )
     raise SystemExit(2)
@@ -167,6 +243,7 @@ def looks_like_path(token):
         token.startswith("/")
         or token.startswith("~")
         or token.startswith("$")
+        or "hacker-bob-sessions" in token
         or "bounty-agent-sessions" in token
         or token.endswith((".json", ".jsonl", ".md", ".txt", ".har"))
         or "/" in token
@@ -186,38 +263,29 @@ def check_bash_command(command):
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
-        return
-    base_dir = os.getcwd()
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
+        print(
+            "BLOCKED: Command cannot be safely parsed. "
+            "Refusing to allow potentially unsafe shell operation.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    base_dirs = extract_cd_targets(command)
+    for index, token in enumerate(tokens):
         command_name = pathlib.PurePosixPath(token).name
-
-        if command_name == "cd":
-            if index + 1 < len(tokens):
-                target_raw = tokens[index + 1]
-                if target_raw not in {"|", ";", "&&", "||"} and not target_raw.startswith("-"):
-                    target = expand_path_text(target_raw.strip().strip("\"'"))
-                    tp = pathlib.Path(target)
-                    if not tp.is_absolute():
-                        tp = pathlib.Path(base_dir) / tp
-                    base_dir = str(tp)
-                index += 2
-                continue
-            index += 1
+        if command_name not in READ_COMMANDS:
             continue
-
-        if command_name in READ_COMMANDS:
-            block_session_dirs = command_name in RECURSIVE_READ_COMMANDS
-            for candidate in tokens[index + 1:]:
-                if candidate in {"|", ";", "&&", "||"}:
-                    break
-                for path_candidate in candidate_paths(candidate):
-                    blocked = check_file(path_candidate, block_session_dirs=block_session_dirs, base_dir=base_dir)
-                    if blocked:
-                        block(blocked)
-
-        index += 1
+        block_session_dirs = command_name in RECURSIVE_READ_COMMANDS
+        for candidate in tokens[index + 1:]:
+            if candidate in {"|", ";", "&&", "||"}:
+                break
+            for path_candidate in candidate_paths(candidate):
+                blocked = check_file(
+                    path_candidate,
+                    block_session_dirs=block_session_dirs,
+                    base_dirs=base_dirs,
+                )
+                if blocked:
+                    block(blocked)
 
 
 payload = {}

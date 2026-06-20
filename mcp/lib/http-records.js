@@ -78,6 +78,11 @@ function normalizeHttpAuditRecord(record, { expectedDomain = null, lineNumber = 
       wave: record.wave == null ? null : parseWaveId(record.wave),
       agent: record.agent == null ? null : parseAgentId(record.agent),
       surface_id: normalizeOptionalText(record.surface_id, "surface_id"),
+      // The originating tool (auditConfirmRequest stamps this for the offensive confirmers; null for
+      // bob_http_scan). Persisted so the circuit breaker can tell a faithful-auth bob_http_scan 403
+      // (auth_profile truthful) from an offensive-confirmer probe (audited WITHOUT auth_profile, so a
+      // genuine authenticated block would otherwise look like a healable unauth challenge).
+      tool: normalizeOptionalText(record.tool, "tool"),
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       checkpoint_mode: normalizeOptionalText(record.checkpoint_mode, "checkpoint_mode"),
       block_internal_hosts: record.block_internal_hosts == null
@@ -350,18 +355,103 @@ function normalizeHttpAuditSummaryLimit(value) {
   return Math.max(0, Math.min(HTTP_AUDIT_SUMMARY_MAX_ITEMS, Math.trunc(value)));
 }
 
-function isCircuitBreakerFailure(record) {
-  if (record.status === 403 || record.status === 429) return true;
+function recordHasAuthProfile(record) {
+  return typeof record.auth_profile === "string" && record.auth_profile.length > 0;
+}
+
+// GENUINE block signals — always count toward the breaker, NEVER reclassified:
+//   429 (rate-limit); timeouts / connection resets; AND a 403 returned DESPITE an attached auth
+//   profile (the server blocks even an authenticated session). These keep a real WAF/rate-limit
+//   trip a hard stop.
+function isHardBlockFailure(record) {
+  if (record.status === 429) return true;
+  if (record.status === 403 && recordHasAuthProfile(record)) return true;
   if (["request_error", "network_unreachable_target"].includes(record.scope_decision) && /timeout|abort|econnreset|connection reset/i.test(record.error || "")) return true;
   return false;
 }
 
+// A 403 sent WITHOUT any auth profile is a CANDIDATE auth-challenge — the expected response when an
+// authenticated endpoint is probed unauthenticated. It is reclassified as benign ONLY on positive,
+// temporally-ordered evidence (a later authenticated 2xx to the same host+path); with no such
+// success it STILL counts as a block, so a pure WAF wall stays tripped.
+function isUnauthenticatedForbidden(record) {
+  return record.status === 403 && !recordHasAuthProfile(record);
+}
+
+// Back-compat: any record that was a "failure" before is still a failure (hard block OR candidate
+// auth-challenge). The reclassification happens in buildCircuitBreakerSummary, not here.
+function isCircuitBreakerFailure(record) {
+  return isHardBlockFailure(record) || isUnauthenticatedForbidden(record);
+}
+
+function circuitBreakerRecordKey(record) {
+  // Origin (scheme://host:port), not bare hostname: different services on the same host — a non-default
+  // port, or http vs https — block INDEPENDENTLY, so a success on one must not heal a block on another.
+  let origin = "";
+  try { origin = new URL(record.url).origin; } catch { origin = ""; }
+  if (!origin || origin === "null") origin = record.host || hostnameFromUrl(record.url) || "unknown";
+  let path = typeof record.path === "string" && record.path ? record.path : "";
+  if (!path) {
+    try { path = new URL(record.url).pathname; } catch { path = ""; }
+  }
+  // Method + egress are part of the key so an authenticated GET 2xx cannot "heal" a blocked POST on
+  // the same path (method-specific WAF/CSRF/rate-limit), and a success on one egress profile cannot
+  // heal a per-egress block reached through another.
+  const method = (typeof record.method === "string" && record.method ? record.method : "GET").toUpperCase();
+  const egress = (typeof record.egress_profile === "string" && record.egress_profile) ? record.egress_profile : "default";
+  // The egress IDENTITY hash (not just the profile NAME) is part of the key: two different proxy
+  // identities can share a profile name (reconfigured/legacy), and a success through one identity
+  // must not heal a block reached through another.
+  const egressId = (typeof record.egress_profile_identity_hash === "string" && record.egress_profile_identity_hash) ? record.egress_profile_identity_hash : "";
+  // JSON-encode the tuple: JSON escapes any interior delimiter/quote/newline in a component (e.g. an
+  // egress_profile name containing a newline), so two distinct tuples can NEVER collapse to one key —
+  // no manual sanitization or "no component contains X" invariant required. The key is only ever a Map
+  // key within a single summary computation (never persisted or parsed back), so the format is free.
+  return JSON.stringify([origin, method, path, egress, egressId]);
+}
+
 function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCUIT_BREAKER_THRESHOLD } = {}) {
-  const relevantRecords = (surface ? records.filter((record) => recordMatchesSurface(record, surface)) : records)
-    .filter(isCircuitBreakerFailure);
+  const relevant = surface ? records.filter((record) => recordMatchesSurface(record, surface)) : records;
+
+  // Index the LATEST authenticated 2xx success per host+path. An unauthenticated 403 is a benign
+  // auth-challenge (not a host block) once a later authenticated request to the SAME host+path
+  // actually succeeds. This is the ONLY path that reclassifies a 403 — a genuine WAF/rate-limit
+  // block produces no such authed success, so it stays counted (and tripped). No traffic is sent
+  // and no live block is bypassed; this only stops double-counting historical unauth challenges
+  // once the data itself shows the now-attached session passes.
+  const latestAuthedSuccessTs = new Map();
+  for (const record of relevant) {
+    if (recordHasAuthProfile(record) && Number.isInteger(record.status) && record.status >= 200 && record.status < 300) {
+      const key = circuitBreakerRecordKey(record);
+      const ts = Date.parse(record.ts);
+      if (!Number.isNaN(ts) && (!latestAuthedSuccessTs.has(key) || ts > latestAuthedSuccessTs.get(key))) {
+        latestAuthedSuccessTs.set(key, ts);
+      }
+    }
+  }
+
+  const failures = relevant.filter(isCircuitBreakerFailure);
   const byHost = new Map();
-  for (const record of relevantRecords) {
+  const authChallengeByHost = new Map();
+  for (const record of failures) {
     const host = record.host || hostnameFromUrl(record.url) || "unknown";
+
+    // Reclassify an unauthenticated 403 as an auth-challenge ONLY with positive, temporally-ordered
+    // evidence: a later authenticated 2xx on the same host+path+method+egress. Hard blocks (429,
+    // timeouts, 403 despite auth) are never reclassified. The !record.tool gate restricts healing to
+    // the faithful-auth path (bob_http_scan records auth_profile truthfully); offensive confirmers
+    // audit via auditConfirmRequest WITHOUT an auth_profile but DO stamp tool, so a genuine
+    // AUTHENTICATED block from a confirmer (recorded auth_profile:null) is never healed.
+    if (isUnauthenticatedForbidden(record) && !record.tool) {
+      const healedTs = latestAuthedSuccessTs.get(circuitBreakerRecordKey(record));
+      const recordTs = Date.parse(record.ts);
+      if (healedTs != null && !Number.isNaN(recordTs) && healedTs > recordTs) {
+        if (!authChallengeByHost.has(host)) authChallengeByHost.set(host, { host, auth_challenge_403: 0 });
+        authChallengeByHost.get(host).auth_challenge_403 += 1;
+        continue;
+      }
+    }
+
     if (!byHost.has(host)) {
       byHost.set(host, {
         host,
@@ -404,6 +494,12 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
   const belowThreshold = sortedItems.filter(
     (item) => item.failures > 0 && item.failures < threshold,
   );
+  // Auditable, separate channel: unauthenticated 403s that a later authed success healed. Surfaced
+  // (never hidden) but NOT counted toward the breaker.
+  const authChallengeAll = Array.from(authChallengeByHost.values()).sort((a, b) => a.host.localeCompare(b.host));
+  const authChallengeCount = authChallengeAll.reduce((sum, h) => sum + h.auth_challenge_403, 0);
+  // Keep the full scalar count, but cap the returned host list so the response stays bounded.
+  const authChallengeHosts = authChallengeAll.slice(0, HTTP_AUDIT_SUMMARY_MAX_ITEMS);
 
   return {
     threshold,
@@ -411,8 +507,10 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
     tripped_count: tripped.length,
     below_threshold_hosts: belowThreshold,
     below_threshold_count: belowThreshold.length,
+    auth_challenge_hosts: authChallengeHosts,
+    auth_challenge_403_count: authChallengeCount,
     note: tripped.length
-      ? "Repeated 403/429/timeout results on these hosts. Prefer fewer replay variants, authenticated traffic-derived requests, or a different surface."
+      ? "Repeated genuine block signals (429/timeout, or 403 even with an auth profile) on these hosts. Prefer fewer replay variants or a different surface; do NOT bypass a live block. (Unauthenticated 403s already healed by a later authenticated success are excluded and reported under auth_challenge_hosts.)"
       : null,
   };
 }
@@ -1648,6 +1746,8 @@ module.exports = {
   headerNamesFromInput,
   importHttpTraffic,
   isCircuitBreakerFailure,
+  isHardBlockFailure,
+  isUnauthenticatedForbidden,
   isNetworkUnreachableRecord,
   normalizeHttpAuditRecord,
   normalizeImportedTrafficEntry,

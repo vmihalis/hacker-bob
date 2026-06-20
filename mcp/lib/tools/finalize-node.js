@@ -97,6 +97,20 @@ function safeSurfaceRouteMap(targetDomain) {
   const map = {};
   const doc = result && result.document;
   if (!doc || !Array.isArray(doc.routes)) return map;
+  // readSurfaceRoutesStrict is now tolerant: it QUARANTINES stale/duplicate routes (it used to throw,
+  // which the catch above turned into a silent empty {} — losing ALL routes). The valid routes survive
+  // in doc.routes; the quarantined ones are omitted from this metadata map. Surface a diagnostic so a
+  // fully- or partially-corrupt routing artifact is not silently indistinguishable from "no routes were
+  // set up". This map only enriches one-hop graph context, so we degrade gracefully (no throw) — unlike
+  // getContextBudget/findRoutedSurface, where a wrong/missing route must hard-fail the operation.
+  if (Array.isArray(result.malformed_routes) && result.malformed_routes.length > 0) {
+    const quarantinedIds = result.malformed_routes
+      .map((m) => (m && m.surface_id) || `routes[${m && m.index}]`)
+      .join(", ");
+    process.stderr.write(
+      `WARNING: surface-routes.json has ${result.malformed_routes.length} quarantined route(s) [${quarantinedIds}] omitted from the surface metadata map; re-run bob_route_surfaces to regenerate (${doc.routes.length} valid route(s) retained).\n`,
+    );
+  }
   for (const route of doc.routes) {
     if (!route || typeof route !== "object") continue;
     const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;

@@ -42,7 +42,7 @@ module.exports = wrapWriteTool({
       },
       "handoff_token": {
         "type": "string",
-        "minLength": 16
+        "minLength": 32
       },
       "summary": {
         "type": "string",
@@ -198,7 +198,8 @@ module.exports = wrapWriteTool({
       "surface_id",
       "surface_status",
       "summary",
-      "content"
+      "content",
+      "handoff_token"
     ]
   },
   handler: writeWaveHandoff,

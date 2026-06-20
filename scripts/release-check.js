@@ -199,11 +199,16 @@ function checkCanonicalPack(rootPackage) {
   // Y.3 Stage c substrate growth, plus packable Plane-Delta graph JSON docs.
   // Raised to 3.3 MB alongside the capability-layer + native-fuzz surfaces,
   // measured against the lean tarball (mcp/node_modules excluded from the pack).
-  // Mirrors the test/package.test.js ceiling.
-  if (canonical.size < 3300000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.3 MB`);
+  // Also raised to 3.3 MB for the container-runner-backed offensive tool surface
+  // (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
+  // channel), which took the lean tarball past 3.2 MB. Mirrors the
+  // test/package.test.js ceiling (keep the two in lockstep).
+  // Raised to 3.6 MB in core when the full offensive arsenal merged on top of core's
+  // belief/OSS-repro superset (~3.42 MB lean tarball). Lockstep with test/package.test.js.
+  if (canonical.size < 3600000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.6 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.3 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.6 MB`);
   }
 
   let foundDisallowed = false;

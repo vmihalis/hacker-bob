@@ -9,6 +9,15 @@ const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
 // signature-verified. An absent (or unparseable, tolerantly dropped) marker is
 // read as signature-verified; the marker is never auto-materialized.
 const SIGNATURE_VERIFICATION_STATUS_VALUES = ["signed", "unsigned"];
+const OFFENSIVE_OUTCOME_VALUES = ["exploited_safely", "blocked_by_defense", "blocked_by_infra"];
+const SAFE_ORACLE_KINDS = [
+  "out_of_band_interaction",
+  "reflected_canary",
+  "differential_response",
+  "benign_state_change",
+  "blind_boolean_timing",
+  "benign_command_marker",
+];
 const ATTACK_VECTOR_VALUES = ["network", "local", "unknown"];
 const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // X.3 / X-P6: closed enum of TaskGraph node + surface kinds. Distinct from
@@ -73,6 +82,7 @@ const VERIFICATION_CONFIDENCE_REASON_VALUES = [
   "agreement_not_replayed",
   "unruled_confounder",
   "missing_control",
+  "exploit_replay_confirmed",
 ];
 const VERIFICATION_REASONING_DIVERGENCE_VALUES = [
   "none",
@@ -194,8 +204,10 @@ module.exports = {
   GRADE_VERDICT_VALUES,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
+  OFFENSIVE_OUTCOME_VALUES,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
+  SAFE_ORACLE_KINDS,
   SESSION_LOCK_NAME,
   SESSION_LOCK_STALE_MS,
   SESSION_PUBLIC_STATE_FIELDS,

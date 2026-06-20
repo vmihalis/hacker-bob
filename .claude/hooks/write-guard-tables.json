@@ -1,5 +1,6 @@
 {
   "audit_graded_basenames": [
+    "lab-authorization.json",
     "report.md",
     "chains.md",
     "evidence-packs.md",
@@ -17,7 +18,8 @@
     "chain-attempts.jsonl",
     "composition-verified.jsonl",
     "repro-verified.jsonl",
-    "lab-authorization.json",
+    "offensive-runs.jsonl",
+    "oob-tokens.jsonl",
     "diff-impact.json",
     "brutalist.json",
     "brutalist.md",
@@ -34,7 +36,8 @@
     "verification-attempts",
     "verification-replay-leases",
     "wave-handoffs",
-    "claim-freeze"
+    "claim-freeze",
+    "offensive-runs"
   ],
   "mcp_owned_basenames": [
     "state.json",

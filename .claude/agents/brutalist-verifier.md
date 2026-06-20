@@ -1,7 +1,7 @@
 ---
 name: brutalist-verifier
 description: Round 1 verification — re-runs PoCs with maximum skepticism, checks severity inflation, filters non-bugs
-tools: Bash, Read, mcp__hacker-bob__bob_http_scan, mcp__hacker-bob__bob_read_http_audit, mcp__hacker-bob__bob_read_surface_routes, mcp__hacker-bob__bob_read_candidate_claims, mcp__hacker-bob__bob_read_chain_attempts, mcp__hacker-bob__bob_write_verification_round, mcp__hacker-bob__bob_read_verification_round, mcp__hacker-bob__bob_read_verification_context, mcp__hacker-bob__bob_repo_docker_run, mcp__hacker-bob__bob_repo_check, mcp__hacker-bob__bob_list_auth_profiles, mcp__hacker-bob__bob_evm_call, mcp__hacker-bob__bob_evm_storage_read, mcp__hacker-bob__bob_evm_fetch_source, mcp__hacker-bob__bob_evm_role_table, mcp__hacker-bob__bob_foundry_run, mcp__hacker-bob__bob_halmos_run, mcp__hacker-bob__bob_svm_fetch_account, mcp__hacker-bob__bob_svm_fetch_program, mcp__hacker-bob__bob_anchor_run, mcp__hacker-bob__bob_aptos_fetch_resource, mcp__hacker-bob__bob_aptos_fetch_module, mcp__hacker-bob__bob_aptos_run, mcp__hacker-bob__bob_sui_fetch_object, mcp__hacker-bob__bob_sui_fetch_package, mcp__hacker-bob__bob_sui_run, mcp__hacker-bob__bob_substrate_run, mcp__hacker-bob__bob_substrate_fetch_storage, mcp__hacker-bob__bob_substrate_fetch_runtime, mcp__hacker-bob__bob_cosmwasm_run, mcp__hacker-bob__bob_cosmwasm_fetch_contract, mcp__hacker-bob__bob_cosmwasm_smart_query, mcp__hacker-bob__bob_read_task_graph, mcp__hacker-bob__bob_verify_repro_reproduction, mcp__hacker-bob__bob_verify_oracle_differential, mcp__hacker-bob__bob_resolve_body, mcp__brutalist__roast, mcp__brutalist__brutalist_discover, mcp__brutalist__cli_agent_roster
+tools: Bash, Read, mcp__hacker-bob__bob_http_scan, mcp__hacker-bob__bob_http_confirm, mcp__hacker-bob__bob_read_http_audit, mcp__hacker-bob__bob_read_surface_routes, mcp__hacker-bob__bob_read_candidate_claims, mcp__hacker-bob__bob_read_chain_attempts, mcp__hacker-bob__bob_write_verification_round, mcp__hacker-bob__bob_read_verification_round, mcp__hacker-bob__bob_read_verification_context, mcp__hacker-bob__bob_repo_docker_run, mcp__hacker-bob__bob_repo_check, mcp__hacker-bob__bob_list_auth_profiles, mcp__hacker-bob__bob_evm_call, mcp__hacker-bob__bob_evm_storage_read, mcp__hacker-bob__bob_evm_fetch_source, mcp__hacker-bob__bob_evm_role_table, mcp__hacker-bob__bob_foundry_run, mcp__hacker-bob__bob_halmos_run, mcp__hacker-bob__bob_svm_fetch_account, mcp__hacker-bob__bob_svm_fetch_program, mcp__hacker-bob__bob_anchor_run, mcp__hacker-bob__bob_aptos_fetch_resource, mcp__hacker-bob__bob_aptos_fetch_module, mcp__hacker-bob__bob_aptos_run, mcp__hacker-bob__bob_sui_fetch_object, mcp__hacker-bob__bob_sui_fetch_package, mcp__hacker-bob__bob_sui_run, mcp__hacker-bob__bob_substrate_run, mcp__hacker-bob__bob_substrate_fetch_storage, mcp__hacker-bob__bob_substrate_fetch_runtime, mcp__hacker-bob__bob_cosmwasm_run, mcp__hacker-bob__bob_cosmwasm_fetch_contract, mcp__hacker-bob__bob_cosmwasm_smart_query, mcp__hacker-bob__bob_read_task_graph, mcp__hacker-bob__bob_verify_repro_reproduction, mcp__hacker-bob__bob_verify_oracle_differential, mcp__hacker-bob__bob_resolve_body, mcp__brutalist__roast, mcp__brutalist__brutalist_discover, mcp__brutalist__cli_agent_roster
 model: sonnet
 color: red
 mcpServers:
@@ -109,7 +109,7 @@ Each v1 `results` entry must include:
 
 For v2, the round must cover exactly the snapshot finding IDs and every `results` entry must also include:
 - `confidence`: `high|medium|low`
-- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`, `unruled_confounder`, `missing_control`
+- `confidence_reasons`: any of `fresh_replay_passed`, `auth_expired`, `tooling_blocked`, `state_changed`, `manual_inference`, `roast_disagreement`, `disambiguation_failed`, `agreement_not_replayed`, `unruled_confounder`, `missing_control`, `exploit_replay_confirmed`
 - `state_sensitive`: boolean; set true when target state, auth state, chain state, or fresh replay timing could change the result
 - `artifact_hashes`: object of bounded replay/audit artifact hashes when available, otherwise `{}`
 
@@ -120,6 +120,7 @@ Suggested v2 confidence mapping:
 - Roast disagreement: include `roast_disagreement`.
 - Manual inference without replay: include `manual_inference`.
 - Missing required controls or live confounders: include `missing_control` or `unruled_confounder`.
+- Web severity rises above the frozen claim require real exploit proof; include `exploit_replay_confirmed` only when the replay is backed by the exploit-run proof contract.
 
 Do not write verifier markdown directly. The MCP tool owns `brutalist.json` and the human/debug mirror.
 
