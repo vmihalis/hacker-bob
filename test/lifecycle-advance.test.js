@@ -664,3 +664,65 @@ test("auth_status stays 'pending' when the stored profile carries no credential 
     assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
   });
 });
+
+test("auth_status stays 'pending' when the stored profile carries ONLY a non-credential header (positive-inclusion)", () => {
+  withTempHome(() => {
+    const domain = "auth-noncred-header.example.test";
+    bootstrapDomain(domain);
+    // A profile with a header that is NOT a session credential (X-Debug) must not promote the
+    // session — hasUsableAuthProfile is a positive allowlist (Authorization/Cookie), not "any key
+    // that isn't known metadata", so an unrecognized header cannot silently auth the session.
+    authStore({ target_domain: domain, profile_name: "attacker", headers: { "X-Debug": "true" } });
+    advanceTopology(domain, "OPEN_FRONTIER");
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("auth_status: a prior explicit 'unauthenticated' is carried forward across a later advance even when a profile exists", () => {
+  withTempHome(() => {
+    const domain = "auth-noauth-sticky.example.test";
+    bootstrapDomain(domain);
+    // A usable profile is captured, but the operator ran --no-auth (explicit unauthenticated).
+    authStore({ target_domain: domain, profile_name: "attacker", cookies: { sess: "abc123" } });
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "unauthenticated" });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+    // A LATER advance that omits auth_status must NOT silently flip it back to "authenticated"
+    // just because a profile is on disk — the operator-asserted negative is sticky.
+    advanceSession({
+      target_domain: domain,
+      to_state: "CLAIM_FREEZE",
+      override: "operator_force",
+      override_reason: "auth-status carry-forward test bypasses the freeze content gate",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "unauthenticated");
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "unauthenticated");
+  });
+});
+
+test("auth_status: an explicit 'authenticated' with NO stored profile and NO operator_force is NOT honored (no forged provenance)", () => {
+  withTempHome(() => {
+    const domain = "auth-forge-guard.example.test";
+    bootstrapDomain(domain);
+    // No profile is stored. A plain caller asserting "authenticated" must not be able to forge
+    // credential provenance — the unbacked positive claim is ignored and derivation keeps it pending.
+    advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER", auth_status: "authenticated" });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "pending");
+  });
+});
+
+test("auth_status: an explicit 'authenticated' under operator_force IS honored (operator authority)", () => {
+  withTempHome(() => {
+    const domain = "auth-force-authed.example.test";
+    bootstrapDomain(domain);
+    // operator_force is the deliberate operator-authority path — an explicit "authenticated" is
+    // honored even with no profile (the operator vouches for the credential context).
+    advanceSession({
+      target_domain: domain,
+      to_state: "OPEN_FRONTIER",
+      auth_status: "authenticated",
+      override: "operator_force",
+      override_reason: "operator vouches for an out-of-band authenticated context",
+    });
+    assert.equal(readSessionNucleus(domain).auth_context.auth_status, "authenticated");
+  });
+});

@@ -49,8 +49,10 @@ function adaptLegacyTransitionPhaseArgs(args) {
     result.override = "operator_force";
     result.override_reason = safe.override_reason;
   }
-  if (typeof safe.auth_status === "string") {
-    result.auth_status = safe.auth_status;
+  // Forward only a non-blank auth_status — an omitted optional field must NOT become an
+  // empty string that then fails the canonical AUTH_STATUS_VALUES enum downstream.
+  if (typeof safe.auth_status === "string" && safe.auth_status.trim()) {
+    result.auth_status = safe.auth_status.trim();
   }
   return result;
 }
@@ -65,9 +67,10 @@ const LEGACY_TRANSITION_PHASE_INPUT_SCHEMA = Object.freeze({
     },
     auth_status: {
       type: "string",
-      enum: ["authenticated", "unauthenticated"],
+      enum: [...AUTH_STATUS_VALUES],
       description:
-        "Forwarded to bob_advance_session as the optional governance auth-context update.",
+        "Forwarded to bob_advance_session as the optional governance auth-context update " +
+        "(same enum as the canonical tool). When omitted it is simply not forwarded.",
     },
     override_reason: {
       type: "string",

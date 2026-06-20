@@ -378,9 +378,18 @@ function listAuthProfiles(args) {
   });
 }
 
+// The outbound SESSION-CREDENTIAL header names (lowercased) that mark a profile as carrying
+// usable authentication material. buildHeaderProfile flattens a stored cookie jar into a
+// "Cookie" header and a stored JWT into "Authorization: Bearer …", so these two are the
+// canonical signal that a profile authenticates a request. This is a POSITIVE allowlist — the
+// inverse of PROFILE_METADATA_KEYS — so hasUsableAuthProfile never treats an unrecognized key
+// as a credential (see below).
+const CREDENTIAL_HEADER_NAMES = Object.freeze(new Set(["authorization", "cookie"]));
+
 // True iff auth.json carries at least one stored profile (any name) for the session domain
-// or a candidate auth domain. Lets advanceSession derive auth_status from the PRESENCE of
-// usable credentials without coupling the session lifecycle to a specific profile name.
+// or a candidate auth domain whose body holds usable credential material. Lets advanceSession
+// derive auth_status from the PRESENCE of usable credentials without coupling the session
+// lifecycle to a specific profile name.
 function hasUsableAuthProfile(domain) {
   assertSafeDomain(domain);
   for (const candidateDomain of candidateAuthDomains(domain, `https://${domain}/`)) {
@@ -388,12 +397,20 @@ function hasUsableAuthProfile(domain) {
     try { doc = readAuthJson(resolveAuthJsonPath(candidateDomain)); } catch { doc = null; }
     const migrated = migrateAuthJson(doc);
     for (const profile of Object.values(migrated.profiles || {})) {
-      // "Usable" requires at least one ACTUAL credential — an outbound header (Authorization,
-      // Cookie, X-*) — not merely a non-null object. A profile that is empty or carries only
-      // Bob-LOCAL metadata (e.g. bob_auth_store called with just a profile_name, no
-      // headers/cookies/storage) is NOT authenticated material.
+      // POSITIVE-INCLUSION: a profile is "usable" only when it carries an outbound session
+      // credential (Authorization or Cookie) with a non-empty string value. An ALLOWLIST — not
+      // "any key not in PROFILE_METADATA_KEYS" — so a future profile field added for telemetry/
+      // annotation can never SILENTLY promote a session to "authenticated" (the exclusion-list
+      // form would, and the carry-forward rule never auto-downgrades, so one false upgrade would
+      // stick for the session lifetime). An empty or metadata-only profile (bob_auth_store called
+      // with just a profile_name) has no credential header → not authenticated. A profile whose
+      // ONLY credential is a bespoke header (e.g. X-Api-Key) also reads as not-yet-authenticated;
+      // that false-negative is the SAFE direction for a trust signal (the session stays "pending"
+      // and auth tasks still run, rather than over-claiming credential provenance).
       if (profile && typeof profile === "object"
-        && Object.keys(profile).some((key) => !PROFILE_METADATA_KEYS.has(key))) {
+        && Object.entries(profile).some(([key, value]) =>
+          CREDENTIAL_HEADER_NAMES.has(String(key).toLowerCase())
+          && typeof value === "string" && value.trim() !== "")) {
         return true;
       }
     }

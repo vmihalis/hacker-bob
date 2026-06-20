@@ -475,22 +475,40 @@ function isSensitiveMaterialError(error) {
 }
 
 // Option C (auth_status): derive auth_status on every lifecycle advance so it reflects
-// reality instead of staying "pending" forever (the field has no other setter). Precedence:
-//  (1) an explicit caller-supplied auth_status wins — honors `--no-auth` advancing with
-//      "unauthenticated" and any explicit operator value;
-//  (2) otherwise, if a usable auth profile is stored, the session is "authenticated";
-//  (3) otherwise carry the prior status forward — only the explicit path (1) ever sets
-//      "unauthenticated"; we never silently auto-downgrade.
+// reality instead of staying "pending" forever (the field has no other setter).
+//
+// SEMANTICS — auth_status is a session-lifetime MILESTONE (the highest/operator-asserted auth
+// state reached), NOT a real-time per-request credential probe: it is recomputed only at advance
+// time from profile PRESENCE, and once "authenticated"/"unauthenticated" it is sticky absent an
+// explicit caller change. Credential deletion BETWEEN advances is therefore not auto-detected; a
+// consumer needing a live "are credentials present right now" answer must call
+// hasUsableAuthProfile directly rather than trust this field.
+//
+// Precedence:
+//  (1) An explicit caller-supplied auth_status wins — EXCEPT an UNBACKED positive claim:
+//      "authenticated" is honored only when a usable profile is actually present OR the caller
+//      carries operator_force authority. This stops any bob_advance_session caller (including a
+//      prompt-injected evaluator) from forging credential provenance with nothing in the auth
+//      store. Negative/neutral assertions ("unauthenticated" via `--no-auth`, "pending") need no
+//      evidence and are always honored.
+//  (2) A prior EXPLICIT "unauthenticated" is carried forward (NOT auto-upgraded) when the caller
+//      omits auth_status, even if a profile now exists — a `--no-auth`/resumed run stays
+//      unauthenticated until the operator explicitly changes it.
+//  (3) Otherwise, a usable stored profile means "authenticated".
+//  (4) Otherwise carry the prior status forward (default "pending"); never silently auto-downgrade.
 // buildSessionNucleus -> normalizeAuthContext validates the resulting enum.
-function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile) {
+function deriveAdvanceAuthContext(priorAuthContext, explicitAuthStatus, hasProfile, operatorForced = false) {
   const prior = (priorAuthContext && typeof priorAuthContext === "object") ? priorAuthContext : {};
   let nextStatus;
-  if (explicitAuthStatus != null) {
-    nextStatus = explicitAuthStatus;
+  if (explicitAuthStatus != null
+    && (explicitAuthStatus !== "authenticated" || hasProfile || operatorForced === true)) {
+    nextStatus = explicitAuthStatus;                       // (1) honored explicit value
+  } else if (prior.auth_status === "unauthenticated") {
+    nextStatus = "unauthenticated";                        // (2) sticky operator-asserted negative
   } else if (hasProfile) {
-    nextStatus = "authenticated";
+    nextStatus = "authenticated";                          // (3) usable stored credentials
   } else {
-    nextStatus = prior.auth_status || "pending";
+    nextStatus = prior.auth_status || "pending";           // (4) carry forward / default
   }
   return { ...prior, auth_status: nextStatus };
 }
@@ -574,6 +592,7 @@ function advanceSession(args) {
       priorNucleus.auth_context,
       args.auth_status,
       hasUsableAuthProfile(domain),
+      override === "operator_force",
     );
     const nextNucleus = buildSessionNucleus({
       target_domain: priorNucleus.target_domain,
