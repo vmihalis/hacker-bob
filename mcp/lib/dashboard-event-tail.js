@@ -69,8 +69,14 @@ function stripControlChars(value) {
   return out;
 }
 
+// Sanitize a value for the SSE `id:` line / Last-Event-ID cursor: strip control
+// chars (SSE field-injection guard) AND redact. An operator-supplied explicit
+// frontier event_id is embedded verbatim here (bob_append_frontier_event accepts
+// explicit ids), so a secret-shaped id must be masked too (S1/S7) — the payload
+// copy is already redacted, the id line was not. Redaction is deterministic, so
+// the cursor still round-trips for Last-Event-ID resume.
 function sanitizeIdComponent(value) {
-  return stripControlChars(value == null ? "" : value).slice(0, 256);
+  return redactTextSensitiveValues(stripControlChars(value == null ? "" : value)).slice(0, 256);
 }
 
 // Surface a string safely: strip control chars, run the repo redactor (masks
@@ -235,6 +241,14 @@ function frameKey(frame) {
   };
 }
 
+// Total order = (ts_ms, source_rank, record_id). The record_id tiebreaker is a
+// content hash, NOT append order — so two frames sharing an exact millisecond AND
+// source are ordered by hash. Accepted, documented consequence: the live poll's
+// high-water-mark (startSseEventStream) can skip a same-ms/same-source frame that
+// is appended late but hashes lower than the last one emitted. It still appears
+// on any full backlog read (fresh connect / snapshot auto-refresh), so the live
+// ticker self-heals; a perfect fix needs server-side per-event sequence numbers,
+// which this content-addressed, front-trim-safe cursor model deliberately avoids.
 function compareFrameKeys(a, b) {
   if (a.ts_ms !== b.ts_ms) return a.ts_ms - b.ts_ms;
   if (a.source_rank !== b.source_rank) return a.source_rank - b.source_rank;
@@ -290,15 +304,21 @@ function sessionLedgerStamp(domain) {
 }
 
 // Resume helper: return the frames strictly after the Last-Event-ID cursor.
-// `resync` is true when the cursor itself is no longer present AND every
-// surviving frame sorts after it — i.e. the cursor (and possibly frames after
-// it) were trimmed off the front, so the client must assume a gap.
+// `resync` is true when the cursor is gone AND its OWN source ledger has been
+// front-trimmed past it (every surviving frame from that source sorts after the
+// cursor). The two ledgers trim independently at their max-records cap, so the
+// check must be PER-SOURCE: a peer ledger that still holds an older frame must
+// not mask a real front-trim gap in the cursor's source.
 function framesAfter(frames, lastEventId) {
   const cursor = parseCursor(lastEventId);
   if (!cursor) return { frames, resync: false };
   const after = frames.filter((frame) => compareFrameKeys(frameKey(frame), cursor) > 0);
   const cursorPresent = frames.some((frame) => frame.id === lastEventId);
-  const resync = !cursorPresent && frames.length > 0 && after.length === frames.length;
+  // [].every(...) === true handles a fully-trimmed cursor source (→ resync).
+  const sourceTrimmedPastCursor = frames
+    .filter((frame) => frameKey(frame).source_rank === cursor.source_rank)
+    .every((frame) => compareFrameKeys(frameKey(frame), cursor) > 0);
+  const resync = !cursorPresent && frames.length > 0 && sourceTrimmedPastCursor;
   return { frames: after, resync };
 }
 

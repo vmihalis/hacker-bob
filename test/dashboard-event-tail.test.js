@@ -212,6 +212,25 @@ test("frame ids strip control chars so SSE fields cannot be injected", () => {
   });
 });
 
+test("a secret-shaped explicit frontier event_id is redacted in the frame id, not just the payload", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      {
+        event_id: "FE-Authorization: Bearer sk-id-leak-9999",
+        ts: "2026-06-21T10:00:00.000Z",
+        kind: "surface.observed",
+        target_domain: domain,
+        payload: {},
+      },
+    ]);
+    const frames = readSessionEventFrames(domain);
+    // the id line / Last-Event-ID cursor must not carry the secret token
+    assert.ok(!frames[0].id.includes("sk-id-leak-9999"), "secret-shaped id redacted in SSE id line");
+    assert.ok(!frames[0].record_id.includes("sk-id-leak-9999"), "secret-shaped id redacted in record_id");
+  });
+});
+
 test("framesAfter resumes strictly after a present Last-Event-ID (no dup, no gap, no resync)", () => {
   withTempHome(() => {
     const domain = "tail.example";
@@ -239,6 +258,31 @@ test("framesAfter flags resync when the cursor was trimmed off the front", () =>
     const resumed = framesAfter(frames, "2026-06-21T09:59:00.000Z|frontier|FE-1");
     assert.equal(resumed.resync, true);
     assert.equal(resumed.frames.length, 2);
+  });
+});
+
+test("framesAfter signals resync per-source: a peer ledger's older frame does not mask a front-trim gap", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    // frontier front-trimmed past the cursor: only T>=20 survive
+    writeFrontier(domain, [
+      frontierRecord("FE-20", "2026-06-21T10:00:20.000Z", "surface.observed", {}),
+      frontierRecord("FE-21", "2026-06-21T10:00:21.000Z", "surface.observed", {}),
+    ]);
+    // pipeline still retains an OLDER frame (T=5), below the frontier cursor
+    writePipeline(domain, [
+      normalizePipelineEvent(domain, "wave_started", { ts: "2026-06-21T10:00:05.000Z", wave: 1 }),
+    ]);
+    const frames = readSessionEventFrames(domain);
+    // resume from a frontier cursor at T=10 that was trimmed off the front
+    const resumed = framesAfter(frames, "2026-06-21T10:00:10.000Z|frontier|FE-10");
+    assert.equal(
+      resumed.resync,
+      true,
+      "frontier front-trim gap is signaled despite the surviving older pipeline frame",
+    );
+    // the surviving older pipeline frame (T=5) is below the cursor → not replayed
+    assert.deepEqual(resumed.frames.map((f) => f.record_id), ["FE-20", "FE-21"]);
   });
 });
 

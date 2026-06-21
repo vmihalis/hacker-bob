@@ -726,6 +726,10 @@ function startSseEventStream(req, res, domain, url) {
       const stamp = sessionLedgerStamp(domain);
       if (stamp === lastStamp) return;
       lastStamp = stamp;
+      // High-water-mark tail: emit frames ordered after the last one sent. A
+      // same-ms/same-source frame appended late but hashing lower than lastKey is
+      // skipped here by design (see compareFrameKeys) — it still renders on the
+      // next full backlog read / snapshot refresh, so the live ticker self-heals.
       for (const frame of readSessionEventFrames(domain)) {
         if (lastKey == null || compareFrameKeys(frameKey(frame), lastKey) > 0) emit(frame);
       }
