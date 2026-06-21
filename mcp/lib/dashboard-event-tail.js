@@ -111,6 +111,22 @@ function safeStr(value, max = 200) {
   return scrub(value).slice(0, max);
 }
 
+// A frontier string value (caller-supplied `tags[]` and allowlisted `payload.*`
+// scalars) reaches the wire ONLY if, after scrubbing, it is a single STRUCTURAL
+// TOKEN — an enum / id / state-code shape: word chars plus `. : / + -`, length
+// 1..64, no whitespace or freeform punctuation. This drops freeform prose
+// (operator notes, identity labels, and pasted tokens that miss the secret
+// regexes) from the frontier projection BY CONSTRUCTION, matching the pipeline
+// allowlist's no-freeform posture rather than relying on redaction completeness.
+// Scrub runs first, so a redacted secret stays "REDACTED" (itself a token) and a
+// secret masked into a spaced form is dropped. Returns null when not a token.
+const STRUCTURAL_TOKEN_RE = /^[\w.:/+-]{1,64}$/;
+function structuralTokenOrNull(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = safeStr(value, 64);
+  return STRUCTURAL_TOKEN_RE.test(cleaned) ? cleaned : null;
+}
+
 // Tolerant JSONL read: skip blank/partial/corrupt lines instead of throwing.
 // A genuine IO error other than ENOENT (e.g. EACCES) is surfaced; a missing
 // ledger is simply an empty stream.
@@ -173,8 +189,11 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
   }
 }
 
-// Frontier events are structured + append-time validated; surface an
-// allowlisted, redacted projection so no raw/freeform content can leak.
+// Frontier events are structured + append-time validated; surface an allowlisted,
+// redacted projection so no raw/freeform content can leak. Top-level fields are a
+// fixed structural-id/enum/hash allowlist; the variable surfaces (`tags[]` and
+// allowlisted `payload.*` scalars) are additionally shape-gated to structural
+// tokens, so freeform values are dropped by construction (not just scrubbed).
 function compactFrontierEvent(record) {
   const out = {};
   for (const key of [
@@ -185,19 +204,31 @@ function compactFrontierEvent(record) {
   ]) {
     if (typeof record[key] === "string" && record[key]) out[key] = safeStr(record[key], 256);
   }
+  // `tags` are caller-supplied via bob_append_frontier_event (normalized, not a
+  // closed enum), so shape-gate each: structural labels (`money-movement`,
+  // `auth`) reach the wire, freeform/identity tags and pasted prose are dropped.
   if (Array.isArray(record.tags)) {
-    const tags = record.tags
-      .filter((tag) => typeof tag === "string")
-      .slice(0, 12)
-      .map((tag) => safeStr(tag, 64));
+    const tags = [];
+    for (const tag of record.tags) {
+      const token = structuralTokenOrNull(tag);
+      if (token) tags.push(token);
+      if (tags.length >= 12) break;
+    }
     if (tags.length) out.tags = tags;
   }
   if (record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)) {
     const payload = {};
     for (const [key, value] of Object.entries(record.payload)) {
       if (!FRONTIER_PAYLOAD_KEY_ALLOWLIST.has(key)) continue;
-      if (typeof value === "string") payload[key] = safeStr(value, 200);
-      else if (typeof value === "number" || typeof value === "boolean") payload[key] = value;
+      // allowlisted payload keys are enums/ids/states — shape-gate their string
+      // values so a freeform note in payload.status/decision/etc. is dropped by
+      // construction, not merely scrubbed. Numbers/booleans pass through.
+      if (typeof value === "string") {
+        const token = structuralTokenOrNull(value);
+        if (token !== null) payload[key] = token;
+      } else if (typeof value === "number" || typeof value === "boolean") {
+        payload[key] = value;
+      }
     }
     if (Object.keys(payload).length) out.payload = payload;
   }

@@ -117,17 +117,19 @@ test("missing ledgers yield an empty stream (no throw)", () => {
   });
 });
 
-test("payload is key-allowlisted + redacted: nested dropped, freeform scalar dropped, secrets masked", () => {
+test("payload is key-allowlisted + shape-gated: nested dropped, freeform scalar dropped, structural token kept, secrets masked", () => {
   withTempHome(() => {
     const domain = "tail.example";
     writeFrontier(domain, [
       frontierRecord("FE-x", "2026-06-21T10:00:00.000Z", "observation.recorded", {
-        surface_type: "web_route",         // allowlisted scalar → kept
+        surface_type: "web_route",         // allowlisted structural token → kept
+        status: "verifying",               // allowlisted structural token → kept
         count: 3,                          // allowlisted numeric → kept
+        decision: "skip for now per operator",     // allowlisted but FREEFORM (spaces) → dropped
         nested: { secret: "SHOULD_NOT_LEAK" },     // non-primitive → dropped
         list: ["SHOULD_NOT_LEAK_TOO"],             // non-primitive → dropped
         token: "SHOULD_NOT_LEAK_SCALAR",           // non-allowlisted scalar → dropped
-        status: "Authorization: Bearer sk-secret-abc", // allowlisted but redacted
+        severity: "Authorization: Bearer sk-secret-abc", // allowlisted but secret → not on wire
       }),
     ]);
     const frames = readSessionEventFrames(domain);
@@ -135,10 +137,40 @@ test("payload is key-allowlisted + redacted: nested dropped, freeform scalar dro
     assert.ok(!serialized.includes("SHOULD_NOT_LEAK"), "nested object dropped");
     assert.ok(!serialized.includes("SHOULD_NOT_LEAK_TOO"), "array dropped");
     assert.ok(!serialized.includes("SHOULD_NOT_LEAK_SCALAR"), "non-allowlisted scalar dropped");
-    assert.ok(!serialized.includes("sk-secret-abc"), "secret in an allowlisted field is redacted");
+    assert.ok(!serialized.includes("sk-secret-abc"), "secret in an allowlisted field is not on the wire");
+    assert.ok(!serialized.includes("skip for now"), "freeform allowlisted value dropped by shape gate");
     assert.equal(frames[0].event.payload.surface_type, "web_route");
+    assert.equal(frames[0].event.payload.status, "verifying");
     assert.equal(frames[0].event.payload.count, 3);
+    assert.equal(frames[0].event.payload.decision, undefined, "freeform decision dropped by shape gate");
     assert.equal(frames[0].event.payload.token, undefined);
+  });
+});
+
+test("frontier tags are shape-gated: structural labels kept, freeform/secret tags dropped", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      {
+        event_id: "FE-tags",
+        ts: "2026-06-21T10:00:00.000Z",
+        kind: "surface.observed",
+        target_domain: domain,
+        tags: [
+          "money-movement",                            // structural label → kept
+          "auth",                                      // structural label → kept
+          "operator note SHOULD_NOT_LEAK",             // freeform (spaces) → dropped
+          "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",  // bare secret → scrubbed before the wire
+        ],
+        payload: {},
+      },
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    const serialized = JSON.stringify(ev);
+    assert.ok(ev.tags.includes("money-movement"), "structural tag kept");
+    assert.ok(ev.tags.includes("auth"), "structural tag kept");
+    assert.ok(!serialized.includes("SHOULD_NOT_LEAK"), "freeform tag dropped by shape gate");
+    assert.ok(!serialized.includes("ghp_"), "bare-secret tag not on the wire");
   });
 });
 
@@ -161,17 +193,20 @@ test("enforceFrameBudget truncates oversized events under MAX_FRAME_BYTES (byte-
   assert.equal(enforceFrameBudget(small, "frontier"), small);
 });
 
-test("every streamed frame stays within the byte budget regardless of redaction", () => {
+test("oversized freeform frontier payload values are stripped by the shape gate, keeping frames within budget", () => {
   withTempHome(() => {
     const domain = "tail.example";
     const payload = {};
     for (const key of ["surface_type", "framework", "method", "status", "kind"]) {
-      payload[key] = "web route api handler ".repeat(60);
+      payload[key] = "web route api handler ".repeat(60); // freeform (spaces) + huge
     }
     writeFrontier(domain, [frontierRecord("FE-big", "2026-06-21T10:00:00.000Z", "observation.recorded", payload)]);
-    const frames = readSessionEventFrames(domain);
-    // the per-frame byte cap holds whether or not redaction shrank the payload
-    assert.ok(Buffer.byteLength(JSON.stringify(frames[0].event), "utf8") <= MAX_FRAME_BYTES);
+    const ev = readSessionEventFrames(domain)[0].event;
+    // freeform values never reach the wire (dropped by construction) ...
+    assert.equal(ev.payload, undefined, "all-freeform payload dropped → no payload object");
+    assert.ok(!JSON.stringify(ev).includes("web route api handler"), "no freeform prose on the wire");
+    // ... and the frame is comfortably within the byte budget
+    assert.ok(Buffer.byteLength(JSON.stringify(ev), "utf8") <= MAX_FRAME_BYTES);
   });
 });
 
