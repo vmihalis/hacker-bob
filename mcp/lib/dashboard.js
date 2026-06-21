@@ -14,9 +14,11 @@ const {
 } = require("./paths.js");
 const {
   readSessionEventFrames,
+  sessionLedgerStamp,
   framesAfter,
   frameKey,
   compareFrameKeys,
+  parseCursor,
 } = require("./dashboard-event-tail.js");
 
 const DASHBOARD_VERSION = 1;
@@ -644,7 +646,10 @@ function writeSseComment(res, text) {
 }
 
 function writeSseFrame(res, frame) {
-  res.write(`id: ${frame.id}\nevent: ${frame.source}\ndata: ${JSON.stringify(frame.event)}\n\n`);
+  // frame.id is already control-char-sanitized at construction; strip CR/LF here
+  // too as defense-in-depth against SSE field injection on the wire.
+  const safeId = String(frame.id).replace(/[\r\n]/g, "");
+  res.write(`id: ${safeId}\nevent: ${frame.source}\ndata: ${JSON.stringify(frame.event)}\n\n`);
 }
 
 function parseBacklog(url) {
@@ -657,6 +662,18 @@ function parseBacklog(url) {
   }
 }
 
+// Poll/heartbeat cadence — env-overridable for deterministic, fast tests; the
+// production defaults (1 s / 15 s) are unchanged when the vars are unset.
+function ssePollMs() {
+  const value = Number(process.env.BOB_SSE_POLL_MS);
+  return Number.isFinite(value) && value > 0 ? value : SSE_POLL_MS;
+}
+
+function sseHeartbeatMs() {
+  const value = Number(process.env.BOB_SSE_HEARTBEAT_MS);
+  return Number.isFinite(value) && value > 0 ? value : SSE_HEARTBEAT_MS;
+}
+
 // Read-only live tail: open the stream, emit the resume backlog (or frames after
 // Last-Event-ID), then poll both ledgers and flush newly-appended frames. Pure
 // observer — never writes session state (S2). Timers are unref'd and torn down on
@@ -665,7 +682,10 @@ function startSseEventStream(req, res, domain, url) {
   const backlog = parseBacklog(url);
   const lastEventId = req.headers["last-event-id"];
   openEventStream(res);
-  let lastKey = null;
+  // Seed lastKey from the resume cursor so a caught-up reconnect (Last-Event-ID
+  // == newest frame) does NOT re-send the whole history on the first poll tick.
+  let lastKey = lastEventId ? parseCursor(lastEventId) : null;
+  let lastStamp = null;
 
   const emit = (frame) => {
     writeSseFrame(res, frame);
@@ -684,22 +704,27 @@ function startSseEventStream(req, res, domain, url) {
       // backlog=0: send nothing historical, but only stream frames newer than now.
       lastKey = frameKey(frames[frames.length - 1]);
     }
+    lastStamp = sessionLedgerStamp(domain);
   } catch (error) {
     writeSseComment(res, `tail-error ${error && error.message ? error.message : error}`);
   }
 
   const poll = setInterval(() => {
     try {
+      // skip the O(N) read+parse+sort when neither ledger has changed since last tick
+      const stamp = sessionLedgerStamp(domain);
+      if (stamp === lastStamp) return;
+      lastStamp = stamp;
       for (const frame of readSessionEventFrames(domain)) {
         if (lastKey == null || compareFrameKeys(frameKey(frame), lastKey) > 0) emit(frame);
       }
     } catch {
       // transient read race against a concurrent append — skip this tick
     }
-  }, SSE_POLL_MS);
+  }, ssePollMs());
   if (typeof poll.unref === "function") poll.unref();
 
-  const heartbeat = setInterval(() => writeSseComment(res, "ping"), SSE_HEARTBEAT_MS);
+  const heartbeat = setInterval(() => writeSseComment(res, "ping"), sseHeartbeatMs());
   if (typeof heartbeat.unref === "function") heartbeat.unref();
 
   const cleanup = () => {

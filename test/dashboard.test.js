@@ -276,6 +276,7 @@ test("dashboard server serves HTML and API JSON", async () => {
       assert.equal(parsed.filters.repo_only, true);
       assert.equal(parsed.filters.limit, 5);
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -301,6 +302,7 @@ test("dashboard server warns when binding outside loopback", async () => {
       assert.match(warning, /unauthenticated/);
       assert.match(warning, /0\.0\.0\.0/);
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -331,6 +333,7 @@ test("dashboard SSE route streams folded frontier + pipeline frames", async () =
       const frontier = sse.events.find((e) => e.event === "frontier");
       assert.equal(JSON.parse(frontier.data).event_id, "FE-1");
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -360,6 +363,7 @@ test("dashboard SSE route resumes after Last-Event-ID without replaying the curs
       assert.ok(!resumedIds.includes(cursor), "does not replay the cursor frame");
       assert.deepEqual(resumedIds, ids.slice(1));
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -376,6 +380,7 @@ test("dashboard SSE route refuses off-loopback with 403 loopback_only", async ()
       assert.equal(res.statusCode, 403);
       assert.match(res.body, /loopback_only/);
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -397,9 +402,47 @@ test("dashboard SSE route survives a partial trailing ledger line", async () => 
       const ids = sse.events.filter((e) => e.id).map((e) => e.id);
       assert.ok(ids.some((id) => id.includes("FE-ok")), "valid frame still streamed past the partial line");
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
+    }
+  });
+});
+
+test("dashboard SSE route does not re-send history when resuming already caught up", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-caughtup.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-1", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+
+    // fast poll + short heartbeat so the test exercises several poll ticks
+    // (and tears down) quickly; restored in finally.
+    const prevPoll = process.env.BOB_SSE_POLL_MS;
+    const prevHeartbeat = process.env.BOB_SSE_HEARTBEAT_MS;
+    process.env.BOB_SSE_POLL_MS = "40";
+    process.env.BOB_SSE_HEARTBEAT_MS = "120";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      const newest = ids[ids.length - 1];
+      // reconnect caught-up; ~7 poll ticks elapse — must still receive no frames
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events`, {
+        headers: { "last-event-id": newest },
+        settleMs: 300,
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.deepEqual(resumedIds, [], "caught-up resume streams nothing (poll did not re-send history)");
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+      if (prevPoll === undefined) delete process.env.BOB_SSE_POLL_MS;
+      else process.env.BOB_SSE_POLL_MS = prevPoll;
+      if (prevHeartbeat === undefined) delete process.env.BOB_SSE_HEARTBEAT_MS;
+      else process.env.BOB_SSE_HEARTBEAT_MS = prevHeartbeat;
     }
   });
 });
