@@ -42,6 +42,9 @@ const {
 
 // Per-frame `data:` payload cap (REVIEW context-budget: 2 KB, BYTE-measured).
 const MAX_FRAME_BYTES = 2048;
+// Bound how much of a ledger we read into memory — beyond this we tail-read the
+// last MAX_LEDGER_READ_BYTES, so a large/runaway ledger cannot OOM the process.
+const MAX_LEDGER_READ_BYTES = 8 * 1024 * 1024;
 // Lower rank sorts first when two frames share a timestamp.
 const SOURCE_RANK = Object.freeze({ frontier: 0, pipeline: 1 });
 
@@ -79,25 +82,43 @@ function safeStr(value, max = 200) {
 // Tolerant JSONL read: skip blank/partial/corrupt lines instead of throwing.
 // A genuine IO error other than ENOENT (e.g. EACCES) is surfaced; a missing
 // ledger is simply an empty stream.
-function readJsonlTolerant(filePath) {
-  let raw;
+function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
+  let fd;
   try {
-    raw = fs.readFileSync(filePath, "utf8");
+    fd = fs.openSync(filePath, "r");
   } catch (error) {
     if (error && error.code === "ENOENT") return [];
     throw error;
   }
-  const records = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const text = line.trim();
-    if (!text) continue;
-    try {
-      records.push(JSON.parse(text));
-    } catch {
-      // partial trailing line or corrupt row — skip
+  try {
+    const size = fs.fstatSync(fd).size;
+    const length = size > maxBytes ? maxBytes : size;
+    const start = size > maxBytes ? size - maxBytes : 0;
+    let raw = "";
+    if (length > 0) {
+      const buffer = Buffer.allocUnsafe(length);
+      const read = fs.readSync(fd, buffer, 0, length, start);
+      raw = buffer.toString("utf8", 0, read);
     }
+    // when we tail-read past the head, the first line is partial — drop it
+    if (start > 0) {
+      const newline = raw.indexOf("\n");
+      raw = newline >= 0 ? raw.slice(newline + 1) : "";
+    }
+    const records = [];
+    for (const line of raw.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        records.push(JSON.parse(text));
+      } catch {
+        // partial trailing line or corrupt row — skip
+      }
+    }
+    return records;
+  } finally {
+    fs.closeSync(fd);
   }
-  return records;
 }
 
 // Frontier events are structured + append-time validated; surface an
@@ -125,6 +146,17 @@ function compactFrontierEvent(record) {
       else if (typeof value === "number" || typeof value === "boolean") payload[key] = value;
     }
     if (Object.keys(payload).length) out.payload = payload;
+  }
+  return out;
+}
+
+// Pipeline events are surfaced via normalizePipelineEventForRead, which caps but
+// does not redact freeform fields (status / source / *_reason) — redact every
+// string value on the read path too (S1/S7), matching the frontier treatment.
+function redactPipelineEvent(event) {
+  const out = {};
+  for (const [key, value] of Object.entries(event)) {
+    out[key] = typeof value === "string" ? safeStr(value, 1000) : value;
   }
   return out;
 }
@@ -165,9 +197,9 @@ function buildFrames(domain, source, records) {
       // content-addressed PE-<hash> from the normalized projection.
       const normalized = normalizePipelineEventForRead(record, domain);
       if (!normalized) continue;
-      event = normalized;
       ts = normalized.ts;
       baseRecordId = `PE-${hashCanonicalJson(normalized).slice(0, 24)}`;
+      event = redactPipelineEvent(normalized);
     }
     if (typeof ts !== "string" || !ts) continue;
     const tsMs = timestampMs(ts);

@@ -252,3 +252,32 @@ test("framesAfter with no cursor returns all frames and no resync", () => {
     assert.equal(resumed.frames.length, 1);
   });
 });
+
+test("readJsonlTolerant tail-reads under a byte cap and drops the partial first line", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const filePath = frontierEventsJsonlPath(domain);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const lines = [];
+    for (let i = 0; i < 6; i += 1) lines.push(JSON.stringify({ n: i, pad: "y".repeat(50) }));
+    fs.writeFileSync(filePath, lines.join("\n") + "\n", "utf8");
+
+    assert.equal(readJsonlTolerant(filePath).length, 6, "full read returns all records");
+    const capped = readJsonlTolerant(filePath, 140);
+    assert.ok(capped.length >= 1 && capped.length < 6, "tail-read returns a bounded suffix");
+    assert.ok(capped.every((r) => typeof r.n === "number"), "no partial/corrupt record survives the tail read");
+  });
+});
+
+test("pipeline event freeform string fields are redacted on the stream", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const event = normalizePipelineEvent(domain, "evaluator_stopped", {
+      ts: "2026-06-21T10:00:00.000Z",
+      status: "stopped via Authorization: Bearer sk-leak-xyz",
+    });
+    writePipeline(domain, [event]);
+    const frames = readSessionEventFrames(domain);
+    assert.ok(!JSON.stringify(frames[0].event).includes("sk-leak-xyz"), "pipeline freeform field redacted on read");
+  });
+});

@@ -696,8 +696,16 @@ function startSseEventStream(req, res, domain, url) {
     const frames = readSessionEventFrames(domain);
     if (lastEventId) {
       const resumed = framesAfter(frames, lastEventId);
-      if (resumed.resync) res.write('event: resync\ndata: {"reason":"trim_gap"}\n\n');
-      resumed.frames.forEach(emit);
+      let toSend = resumed.frames;
+      let resync = resumed.resync;
+      // bound a resume flush to the backlog cap — a very old cursor must not
+      // replay unbounded history; acknowledge the elided gap with a resync.
+      if (toSend.length > SSE_MAX_BACKLOG) {
+        toSend = toSend.slice(-SSE_MAX_BACKLOG);
+        resync = true;
+      }
+      if (resync) res.write('event: resync\ndata: {"reason":"trim_gap"}\n\n');
+      toSend.forEach(emit);
     } else if (backlog > 0) {
       frames.slice(-backlog).forEach(emit);
     } else if (frames.length) {
@@ -705,8 +713,9 @@ function startSseEventStream(req, res, domain, url) {
       lastKey = frameKey(frames[frames.length - 1]);
     }
     lastStamp = sessionLedgerStamp(domain);
-  } catch (error) {
-    writeSseComment(res, `tail-error ${error && error.message ? error.message : error}`);
+  } catch {
+    // generic marker only — never echo fs error text (it can disclose session paths)
+    writeSseComment(res, "tail-error");
   }
 
   const poll = setInterval(() => {
