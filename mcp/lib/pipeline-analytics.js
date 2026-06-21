@@ -746,21 +746,43 @@ function analyzeSession(targetDomain, {
   }
 
   const coverage = artifacts.attack_surface_coverage;
+  // A non-low surface that is open to the frontier but recorded a validated
+  // blocker (key_material_missing, RPC/archive limit, auth_missing, ...) is
+  // handled, not neglected. non_low_neglected is the real coverage gap;
+  // recorded-blocker partials are reported separately so the operator is not
+  // told to relaunch a wave for surfaces that are blocked on a prerequisite.
+  const neglectedNonLow = Number.isFinite(coverage.non_low_neglected)
+    ? coverage.non_low_neglected
+    : null;
   if (
     lifecycleAtLeast(lifecycleState, "CLAIM_FREEZE") &&
     coverage.non_low_total > 0 &&
     Number.isFinite(coverage.closed_pct) &&
     coverage.closed_pct < 100
   ) {
-    issues.push(issue("low_coverage", "needs_attention", "Non-low attack surface coverage is below the wave policy target — this counts BOTH explored AND terminally_blocked as closed; the gap is genuinely unexplored.", {
-      coverage_pct: coverage.coverage_pct,
-      closed_pct: coverage.closed_pct,
-      non_low_explored: coverage.non_low_explored,
-      non_low_terminally_blocked: coverage.non_low_terminally_blocked,
-      non_low_total: coverage.non_low_total,
-      unexplored_high: coverage.unexplored_high,
-      blocked_high: coverage.blocked_high,
-    }));
+    const recordedBlockerPartial = Number.isFinite(coverage.non_low_recorded_blocker_partial)
+      ? coverage.non_low_recorded_blocker_partial
+      : 0;
+    const onlyBlockedRemains = neglectedNonLow === 0 && recordedBlockerPartial > 0;
+    issues.push(issue(
+      onlyBlockedRemains ? "coverage_blocked_pending" : "low_coverage",
+      onlyBlockedRemains ? "healthy" : "needs_attention",
+      onlyBlockedRemains
+        ? "All remaining non-low surfaces recorded a validated blocker (handled, not neglected); the residual gap is blocked-pending, not unexplored."
+        : "Non-low attack surface coverage is below the wave policy target — the gap is genuinely neglected (no recorded blocker). Explored, terminally_blocked, and recorded-blocker partials are excluded from the gap.",
+      {
+        coverage_pct: coverage.coverage_pct,
+        closed_pct: coverage.closed_pct,
+        closed_or_blocked_pct: coverage.closed_or_blocked_pct,
+        non_low_explored: coverage.non_low_explored,
+        non_low_terminally_blocked: coverage.non_low_terminally_blocked,
+        non_low_recorded_blocker_partial: recordedBlockerPartial,
+        non_low_neglected: neglectedNonLow,
+        non_low_total: coverage.non_low_total,
+        unexplored_high: coverage.unexplored_high,
+        blocked_high: coverage.blocked_high,
+      },
+    ));
   }
 
   const chainWorkRequired = artifacts.findings.total >= 2 || artifacts.chain_handoffs.chain_notes_count > 0;
@@ -1004,6 +1026,7 @@ function actionForBottleneck(bottleneck) {
     network_unreachable_target: "Log blocked coverage/dead-end context, then choose an explicit egress profile if the operator approves a regional retry.",
     auth_failures: "Refresh or recapture auth profiles before additional authenticated testing.",
     low_coverage: "Launch another wave for unexplored non-low surfaces before verification.",
+    coverage_blocked_pending: "Residual non-low surfaces recorded a validated blocker (handled, not neglected); no wave relaunch needed.",
     chain_phase_no_attempts: "Run the chain-builder again so it records terminal chain attempts, or transition with an explicit override reason.",
     verification_dropoff: "Review final verification inputs because recorded findings are not surviving as reportable.",
     grade_hold: "Use grader feedback to launch a targeted EVALUATE wave, then re-run CHAIN -> VERIFY before grading again.",

@@ -8,6 +8,7 @@ const path = require("path");
 
 const {
   appendFrontierEvent,
+  readFrontierEvents,
 } = require("../mcp/lib/frontier-events.js");
 const {
   materializeFrontier,
@@ -19,6 +20,7 @@ const {
   surfaceIndexPath,
   attackSurfacePath,
   sessionDir,
+  frontierEventsJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   ingestSchemaDoc,
@@ -361,5 +363,133 @@ test("legacy attack_surface.json write path is preserved (dual-write check)", ()
     assert.ok(surface);
     assert.equal(surface.observations.length, 1);
     assert.equal(surface.observations[0].kind, "http_route");
+  });
+});
+
+// Y-D21 — producer-boundary surface integrity (smart_contract => chain_family),
+// enforced fail-closed at the single append funnel rather than at far-downstream
+// capability routing.
+test("Y-D21: appendFrontierEvent rejects a smart_contract surface.observed missing chain_family", () => {
+  withTempHome(() => {
+    const domain = "yd21-missing.example.com";
+    ensureSessionDir(domain);
+    assert.throws(
+      () => appendFrontierEvent({
+        target_domain: domain,
+        kind: "surface.observed",
+        surface_id: "sc-no-family",
+        payload: { surface_type: "smart_contract", title: "no family" },
+      }),
+      (err) => err && err.code === "INVALID_ARGUMENTS" && /chain_family/.test(err.message)
+        && err.details && err.details.surface_id === "sc-no-family",
+      "smart_contract surface.observed without chain_family must be rejected at append",
+    );
+    // Fail-closed: the malformed event never reached the ledger.
+    assert.equal(fs.existsSync(frontierEventsJsonlPath(domain)), false);
+  });
+});
+
+test("Y-D21: appendFrontierEvent rejects a smart_contract surface.observed with an unknown chain_family", () => {
+  withTempHome(() => {
+    const domain = "yd21-unknown.example.com";
+    ensureSessionDir(domain);
+    assert.throws(
+      () => appendFrontierEvent({
+        target_domain: domain,
+        kind: "surface.observed",
+        surface_id: "sc-bad-family",
+        payload: { surface_type: "smart_contract", chain_family: "bitcoin" },
+      }),
+      (err) => err && err.code === "INVALID_ARGUMENTS" && /chain_family/.test(err.message),
+      "an unknown chain_family must still be rejected (keeps the routing 'register a pack' contract)",
+    );
+  });
+});
+
+test("Y-D21: known chain_family is accepted and chain_family/chain_id/contract_address materialize onto the surface", () => {
+  withTempHome(() => {
+    const domain = "yd21-ok.example.com";
+    ensureSessionDir(domain);
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: "sc-distributor",
+      payload: {
+        surface_type: "smart_contract",
+        chain_family: "evm",
+        chain_id: "42161",
+        contract_address: "0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A",
+        title: "DistributorV2",
+      },
+    });
+    const views = materializeFrontier(domain, {
+      write: true,
+      now: new Date("2026-06-20T13:00:00.000Z"),
+    });
+    const surface = views.surface_index.surfaces.find((s) => s.surface_id === "sc-distributor");
+    assert.ok(surface, "smart_contract surface materialized");
+    assert.equal(surface.surface_type, "smart_contract");
+    assert.equal(surface.chain_family, "evm");
+    assert.equal(surface.chain_id, "42161");
+    assert.equal(surface.contract_address, "0xDf1AC1AC255d91F5f4B1E3B4Aef57c5350F64C7A");
+  });
+});
+
+test("Y-D21: surface_type/chain_family casing and dashes are normalized by the guard", () => {
+  withTempHome(() => {
+    const domain = "yd21-casing.example.com";
+    ensureSessionDir(domain);
+    assert.doesNotThrow(() => appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: "sc-cased",
+      payload: { surface_type: "Smart-Contract", chain_family: "EVM" },
+    }));
+  });
+});
+
+test("Y-D21: non-smart_contract surface.observed without chain_family is accepted (no false positive)", () => {
+  withTempHome(() => {
+    const domain = "yd21-web.example.com";
+    ensureSessionDir(domain);
+    assert.doesNotThrow(() => appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: "web-login",
+      payload: { surface_type: "web_endpoint", title: "login" },
+    }));
+    // The wave-handoff re-stamp path carries no surface_type at all and must pass.
+    assert.doesNotThrow(() => appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: "web-login",
+      payload: { wave: 1, labels: ["promoted_surface_lead"] },
+    }));
+  });
+});
+
+test("Y-D21: the read/replay path is lenient — a pre-existing chain_family-less SC event does not brick reload", () => {
+  withTempHome(() => {
+    const domain = "yd21-legacy.example.com";
+    ensureSessionDir(domain);
+    // Simulate a ledger written before Y-D21: a chain_family-less smart_contract
+    // surface.observed appended directly, bypassing the append-time guard.
+    const legacyEvent = {
+      version: 1,
+      event_id: "FE-legacy-sc",
+      ts: "2026-06-01T00:00:00.000Z",
+      target_domain: domain,
+      plane: "frontier",
+      kind: "surface.observed",
+      surface_id: "sc-legacy",
+      payload: { surface_type: "smart_contract", title: "legacy, no chain_family" },
+    };
+    fs.writeFileSync(frontierEventsJsonlPath(domain), `${JSON.stringify(legacyEvent)}\n`);
+    // Read and re-materialize must NOT throw (append-only enforcement).
+    assert.doesNotThrow(() => readFrontierEvents(domain));
+    assert.doesNotThrow(() => materializeFrontier(domain, {
+      write: true,
+      now: new Date("2026-06-20T13:00:00.000Z"),
+    }));
   });
 });

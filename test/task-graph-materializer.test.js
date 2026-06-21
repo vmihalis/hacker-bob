@@ -166,7 +166,7 @@ function seedFourKindFixture(domain) {
     kind: "surface.observed",
     ts: "2026-05-31T01:00:01.000Z",
     surface_id: "surface:evm-vault",
-    payload: { title: "EVM vault", surface_type: "smart_contract" },
+    payload: { title: "EVM vault", surface_type: "smart_contract", chain_family: "evm" },
   });
 
   // Hypothesis

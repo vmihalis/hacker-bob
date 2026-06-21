@@ -268,11 +268,26 @@ function evaluateTechniqueAttemptRequirement(marker, assignment) {
     };
   }
 
+  // wave/agent are OPTIONAL on bob_log_technique_attempt (technique-packs.js
+  // resolves the route directly when they are omitted), so a valid
+  // completion-status attempt may be recorded with no wave/agent at all. Only
+  // reject on a wave/agent MISMATCH (a value that belongs to a different run);
+  // an absent wave/agent on a same-domain, same-surface, completion-status
+  // attempt satisfies the requirement. This prevents a phantom
+  // missing_technique_attempt_log on a genuinely-evaluated surface.
+  //
+  // Accepted residual: an attempt logged WITHOUT wave/agent for a stable
+  // surface_id that is later requeued into a new wave would also satisfy that
+  // new wave's finalize. This is bounded and acceptable — the gate is an
+  // anti-laziness signal, not a security boundary; the wave handoff itself
+  // stays wave-bound (a lazy later-wave run must still produce a fresh handoff),
+  // and the evaluator prompt now mandates passing wave/agent, so a compliant
+  // attempt carries the wave and is mismatch-rejected for any other wave.
   const matchingAttempt = attempts.find((attempt) =>
     attempt.target_domain === marker.target_domain &&
-    attempt.wave === marker.wave &&
-    attempt.agent === marker.agent &&
     attempt.surface_id === marker.surface_id &&
+    (attempt.wave == null || attempt.wave === marker.wave) &&
+    (attempt.agent == null || attempt.agent === marker.agent) &&
     TECHNIQUE_ATTEMPT_COMPLETION_STATUSES.has(attempt.status)
   );
   if (matchingAttempt) return null;

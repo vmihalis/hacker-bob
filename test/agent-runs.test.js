@@ -5,8 +5,11 @@ const os = require("os");
 const path = require("path");
 
 const {
+  appendAgentRun,
+  latestAgentRunForWaveAgent,
   readAgentRuns,
   settleAgentRunFromHandoff,
+  syntheticTaskIdForWaveAssignment,
 } = require("../mcp/lib/agent-runs.js");
 const {
   signHandoffProvenance,
@@ -82,4 +85,44 @@ test("agent run settlement rejects unsigned handoff payloads", () => {
     }),
     /signature is required/,
   );
+});
+
+test("duplicate settled rows are idempotent at the reader and a later failed row cannot unsettle them", () => {
+  withTempHome(() => {
+    const targetDomain = "dedupe.example.com";
+    const wave = "w1";
+    const agent = "a4";
+    const surfaceId = "surface:money";
+    const taskId = syntheticTaskIdForWaveAssignment({
+      targetDomain,
+      wave,
+      agent,
+      surfaceId,
+    });
+    const base = {
+      target_domain: targetDomain,
+      task_id: taskId,
+      agent_id: agent,
+      input_refs: [{ kind: "wave_surface", wave, surface_id: surfaceId }],
+    };
+    // Four settled rows from a re-finalize loop, with monotonically increasing
+    // ended_at (each settle defaults ended_at to now()).
+    appendAgentRun({ ...base, status: "settled", started_at: "2026-05-26T05:00:00.000Z", ended_at: "2026-05-26T05:05:00.000Z" });
+    appendAgentRun({ ...base, status: "settled", started_at: "2026-05-26T05:00:00.000Z", ended_at: "2026-05-26T05:06:00.000Z" });
+    appendAgentRun({ ...base, status: "settled", started_at: "2026-05-26T05:00:00.000Z", ended_at: "2026-05-26T05:07:00.000Z" });
+    appendAgentRun({ ...base, status: "settled", started_at: "2026-05-26T05:00:00.000Z", ended_at: "2026-05-26T05:08:00.000Z" });
+
+    // Duplicate settled rows must resolve to settled (count-insensitive).
+    const afterSettled = latestAgentRunForWaveAgent(targetDomain, { wave, agent, surfaceId });
+    assert.equal(afterSettled.status, "settled");
+
+    // A later stop attempt that fails finalization appends a `failed` row whose
+    // ended_at is EARLIER than the winning settled row (the settle already
+    // happened). latest-by-ended_at must keep the run settled; latest-by-append
+    // order would wrongly flip it to failed.
+    appendAgentRun({ ...base, status: "failed", started_at: "2026-05-26T05:00:00.000Z", ended_at: "2026-05-26T05:07:30.000Z", failure_reason: "runaway stop loop" });
+
+    const afterLateFailed = latestAgentRunForWaveAgent(targetDomain, { wave, agent, surfaceId });
+    assert.equal(afterLateFailed.status, "settled");
+  });
 });
