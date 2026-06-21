@@ -46,6 +46,17 @@ The cost is real: a preventive control (frontmatter allow-list) is replaced with
 6. Your `agent_output` MUST include at least one of: `tool_invocations[]`, `evidence_refs[]`, `cli_pack_invocations[]`, `findings[]`. The empty-object output is refused at finalize.
 7. The orchestrator runs `bob_finalize_node(target_domain, node_id, prep_token, agent_output)`. The mechanical verifier runs FIRST (X-P3); LLM adjudication only on mechanical pass.
 
+## Signed offensive producers (only when `allowed_tools_for_node[]` permits them)
+
+If your dispatched node's allow-list includes the signed offensive producers, they mint tamper-evident `offensive-runs` rows on a fail-closed differential (server-minted payloads — pass only selectors, never raw payloads or operator data). The exact call shape and the distinct `oracle_kind` per tool matter (a wrong `oracle_kind` is a schema rejection):
+
+- `bob_http_xss_reflect({ target_domain, surface_id, param_locus, oracle_kind: "reflected_context" })` → MEDIUM reflected-sink discovery (`param_locus` = the ordinal of a recorded query param). Lift to HIGH with `bob_http_xss_confirm({ target_domain, surface_id, param_locus, oracle_kind: "script_execution" })` — note the distinct `oracle_kind: "script_execution"`, NOT `"reflected_context"`.
+- `bob_http_cors_confirm({ target_domain, surface_id })` → MEDIUM credentialed cross-origin read.
+- `bob_oob_mint({ target_domain, surface_id, oracle_kind: "out_of_band_interaction" })` → plant the returned token via `bob_http_scan` (audited; never curl) → `bob_oob_poll({ target_domain, token_handle })`.
+- `bob_http_idor_confirm` is INERT (`blocked_by_design`); prove IDOR via an `auth_profile="victim"` replay differential instead.
+
+On `row_written: true` / `offensive_outcome: "exploited_safely"`, cite the row when you record the finding: `exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind } }` with `safe_oracle.kind` = `"reflected_canary"` for the xss/cors producers and `"out_of_band_interaction"` for oob, plus an `evidence_refs[]` entry `kind: "exploit_run"` carrying the producer's returned `run_id`, `tool_id`, `target`, `offensive_outcome`, `command_hash`, `exit_code`, `stdout_hash`, `stderr_hash`, at the row's stamped `demonstrated_severity` (a higher claim severity is rejected).
+
 ## Family tag
 
 Your spawn description carries a bracketed `family_tag` (e.g., `evaluator-spawn[web|evm]` for a web↔EVM transition, `evaluator-spawn[evm]` for an EVM-only Hypothesis node). The tag is derived from the dispatched node's endpoint capability-pack chain families, joined by `|` and sorted. Operator status surfaces render the bracketed tag so reviewers can see which stack mix the spawn covered.
