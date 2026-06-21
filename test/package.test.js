@@ -166,7 +166,13 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // + the runner detection channel) plus its regenerated agent/skill/settings
     // surfaces. The lean tarball had fallen to ~5 KB of headroom under 3.2 MB; this
     // restores a comfortable margin (lean pack ~3.20 MB) without trimming assets.
-    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
+    // Raised to 3.4 MB: accumulated offensive-surface growth since PR7 (the signed
+    // producer tools + their regenerated agent/skill/settings surfaces) had eaten
+    // the headroom back down to ~5 KB, and the primitive→producer evaluator prose
+    // (evaluator + evaluator-spawn roles) crossed it. Lean pack ~3.30 MB; bump
+    // restores margin without trimming assets (the 921 KB docs/hacker-bob-social.png
+    // remains the obvious trim target if a future budget squeeze warrants it).
+    assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
