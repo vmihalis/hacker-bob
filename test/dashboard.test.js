@@ -425,13 +425,16 @@ test("dashboard SSE route does not re-send history when resuming already caught 
     const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
     try {
       const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(first.statusCode, 200);
       const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length >= 1, "precondition: first connect received at least one frame");
       const newest = ids[ids.length - 1];
       // reconnect caught-up; ~7 poll ticks elapse — must still receive no frames
       const resumed = await collectSse(`${started.url}api/session/${domain}/events`, {
         headers: { "last-event-id": newest },
         settleMs: 300,
       });
+      assert.equal(resumed.statusCode, 200, "precondition: resumed connection established");
       const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
       assert.deepEqual(resumedIds, [], "caught-up resume streams nothing (poll did not re-send history)");
     } finally {

@@ -197,6 +197,9 @@ function buildFrames(domain, source, records) {
       // content-addressed PE-<hash> from the normalized projection.
       const normalized = normalizePipelineEventForRead(record, domain);
       if (!normalized) continue;
+      // reject a present-but-unparseable pipeline ts (normalize would silently
+      // substitute "now", fabricating order); absent ts is allowed (→ now).
+      if (typeof record.ts === "string" && record.ts.trim() && timestampMs(record.ts) <= 0) continue;
       ts = normalized.ts;
       baseRecordId = `PE-${hashCanonicalJson(normalized).slice(0, 24)}`;
       event = redactPipelineEvent(normalized);

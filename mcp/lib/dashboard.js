@@ -693,6 +693,9 @@ function startSseEventStream(req, res, domain, url) {
   };
 
   try {
+    // capture the change-stamp BEFORE reading so an append landing during/after
+    // the read is never marked "caught up" — the next poll sees a changed stamp.
+    lastStamp = sessionLedgerStamp(domain);
     const frames = readSessionEventFrames(domain);
     if (lastEventId) {
       const resumed = framesAfter(frames, lastEventId);
@@ -712,7 +715,6 @@ function startSseEventStream(req, res, domain, url) {
       // backlog=0: send nothing historical, but only stream frames newer than now.
       lastKey = frameKey(frames[frames.length - 1]);
     }
-    lastStamp = sessionLedgerStamp(domain);
   } catch {
     // generic marker only — never echo fs error text (it can disclose session paths)
     writeSseComment(res, "tail-error");
