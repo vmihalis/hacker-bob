@@ -16,6 +16,7 @@ const {
   readSessionEventFrames,
   framesAfter,
   readJsonlTolerant,
+  enforceFrameBudget,
 } = require("../mcp/lib/dashboard-event-tail.js");
 
 function withTempHome(fn) {
@@ -116,37 +117,98 @@ test("missing ledgers yield an empty stream (no throw)", () => {
   });
 });
 
-test("compaction drops nested payload objects so no raw body can leak", () => {
+test("payload is key-allowlisted + redacted: nested dropped, freeform scalar dropped, secrets masked", () => {
   withTempHome(() => {
     const domain = "tail.example";
     writeFrontier(domain, [
       frontierRecord("FE-x", "2026-06-21T10:00:00.000Z", "observation.recorded", {
-        surface_type: "web_route",
-        count: 3,
-        nested: { secret: "SHOULD_NOT_LEAK" },
-        list: ["SHOULD_NOT_LEAK_TOO"],
+        surface_type: "web_route",         // allowlisted scalar → kept
+        count: 3,                          // allowlisted numeric → kept
+        nested: { secret: "SHOULD_NOT_LEAK" },     // non-primitive → dropped
+        list: ["SHOULD_NOT_LEAK_TOO"],             // non-primitive → dropped
+        token: "SHOULD_NOT_LEAK_SCALAR",           // non-allowlisted scalar → dropped
+        status: "Authorization: Bearer sk-secret-abc", // allowlisted but redacted
       }),
     ]);
     const frames = readSessionEventFrames(domain);
     const serialized = JSON.stringify(frames[0].event);
     assert.ok(!serialized.includes("SHOULD_NOT_LEAK"), "nested object dropped");
     assert.ok(!serialized.includes("SHOULD_NOT_LEAK_TOO"), "array dropped");
+    assert.ok(!serialized.includes("SHOULD_NOT_LEAK_SCALAR"), "non-allowlisted scalar dropped");
+    assert.ok(!serialized.includes("sk-secret-abc"), "secret in an allowlisted field is redacted");
     assert.equal(frames[0].event.payload.surface_type, "web_route");
     assert.equal(frames[0].event.payload.count, 3);
+    assert.equal(frames[0].event.payload.token, undefined);
   });
 });
 
-test("oversized frames are truncated under MAX_FRAME_BYTES with a _truncated flag", () => {
+test("enforceFrameBudget truncates oversized events under MAX_FRAME_BYTES (byte-measured)", () => {
+  // direct, redaction-independent check of the budget logic
+  const big = {
+    event_id: "FE-big",
+    ts: "2026-06-21T10:00:00.000Z",
+    kind: "observation.recorded",
+    note: "x".repeat(5000),
+  };
+  const result = enforceFrameBudget(big, "frontier");
+  assert.equal(result._truncated, true);
+  assert.equal(result.event_id, "FE-big");
+  assert.equal(result.kind, "observation.recorded");
+  assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_FRAME_BYTES);
+
+  // a within-budget event is returned untouched
+  const small = { event_id: "FE-small", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed" };
+  assert.equal(enforceFrameBudget(small, "frontier"), small);
+});
+
+test("every streamed frame stays within the byte budget regardless of redaction", () => {
   withTempHome(() => {
     const domain = "tail.example";
     const payload = {};
-    for (let i = 0; i < 40; i += 1) payload[`k${i}`] = "x".repeat(200);
+    for (const key of ["surface_type", "framework", "method", "status", "kind"]) {
+      payload[key] = "web route api handler ".repeat(60);
+    }
     writeFrontier(domain, [frontierRecord("FE-big", "2026-06-21T10:00:00.000Z", "observation.recorded", payload)]);
-
     const frames = readSessionEventFrames(domain);
-    assert.equal(frames[0].event._truncated, true);
-    assert.equal(frames[0].event.event_id, "FE-big");
-    assert.ok(JSON.stringify(frames[0].event).length <= MAX_FRAME_BYTES);
+    // the per-frame byte cap holds whether or not redaction shrank the payload
+    assert.ok(Buffer.byteLength(JSON.stringify(frames[0].event), "utf8") <= MAX_FRAME_BYTES);
+  });
+});
+
+test("records with an unparseable or empty timestamp are rejected", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      frontierRecord("FE-good", "2026-06-21T10:00:00.000Z", "surface.observed", {}),
+      frontierRecord("FE-bad", "not-a-timestamp", "surface.observed", {}),
+      frontierRecord("FE-empty", "", "surface.observed", {}),
+    ]);
+    const frames = readSessionEventFrames(domain);
+    assert.deepEqual(frames.map((f) => f.record_id), ["FE-good"]);
+  });
+});
+
+test("two same-content pipeline events at the same ts are not deduped (ids disambiguated)", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const event = normalizePipelineEvent(domain, "wave_started", { ts: "2026-06-21T10:00:00.000Z", wave: 1 });
+    writePipeline(domain, [event, event]);
+    const frames = readSessionEventFrames(domain);
+    assert.equal(frames.length, 2, "both surface, not silently deduped");
+    assert.notEqual(frames[0].record_id, frames[1].record_id, "record ids disambiguated");
+  });
+});
+
+test("frame ids strip control chars so SSE fields cannot be injected", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      { event_id: "FE-evil\ninjected", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} },
+    ]);
+    const frames = readSessionEventFrames(domain);
+    assert.ok(!frames[0].id.includes("\n"), "no newline in frame id");
+    assert.ok(!frames[0].record_id.includes("\n"), "no newline in record id");
+    assert.equal(frames[0].record_id, "FE-evilinjected");
   });
 });
 

@@ -274,6 +274,7 @@ module.exports = {
   stripControlChars,
   readJsonlTolerant,
   compactFrontierEvent,
+  enforceFrameBudget,
   readSessionEventFrames,
   sessionLedgerStamp,
   framesAfter,
