@@ -7,10 +7,17 @@ const {
   readPipelineAnalytics,
 } = require("./pipeline-analytics.js");
 const {
+  assertSafeDomain,
   repoInventoryPath,
   sessionsRoot,
   statePath,
 } = require("./paths.js");
+const {
+  readSessionEventFrames,
+  framesAfter,
+  frameKey,
+  compareFrameKeys,
+} = require("./dashboard-event-tail.js");
 
 const DASHBOARD_VERSION = 1;
 const DEFAULT_HOST = "127.0.0.1";
@@ -20,6 +27,12 @@ const MAX_WINDOW_DAYS = 365;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const JSON_READ_MAX_BYTES = 2 * 1024 * 1024;
+
+// X8 live-observability SSE route tunables.
+const SSE_DEFAULT_BACKLOG = 200;
+const SSE_MAX_BACKLOG = 1000;
+const SSE_POLL_MS = 1000;
+const SSE_HEARTBEAT_MS = 15000;
 
 function dashboardUsageText() {
   return `Usage:
@@ -446,6 +459,8 @@ function renderDashboardHtml(options) {
       <aside>
         <h2>Bottlenecks</h2>
         <div id="bottlenecks" class="list"></div>
+        <h2 style="margin-top:18px">Live <span id="liveStatus" class="muted" style="font-size:12px"></span></h2>
+        <div id="live" class="list"></div>
       </aside>
     </section>
   </main>
@@ -457,6 +472,12 @@ function renderDashboardHtml(options) {
     const stats = document.getElementById("stats");
     const sessions = document.getElementById("sessions");
     const bottlenecks = document.getElementById("bottlenecks");
+    const live = document.getElementById("live");
+    const liveStatus = document.getElementById("liveStatus");
+    let liveSource = null;
+    let liveDomain = null;
+    let refreshTimer = null;
+    const REFRESH_ON = new Set(["finding_recorded", "wave_merged", "grade_written", "report_written", "verification_written"]);
     repoOnly.checked = initialOptions.repo_only;
     windowDays.value = initialOptions.window_days;
     limit.value = initialOptions.limit;
@@ -482,6 +503,49 @@ function renderDashboardHtml(options) {
       const date = new Date(ts);
       return Number.isNaN(date.getTime()) ? ts : date.toLocaleString();
     }
+    function scheduleRefresh() {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => { refreshTimer = null; load().catch(() => {}); }, 1500);
+    }
+    function liveLine(frame) {
+      const node = document.createElement("div");
+      node.className = "item";
+      const ev = frame && frame.event ? frame.event : {};
+      const title = document.createElement("div");
+      title.appendChild(badge(ev.type || ev.kind || frame.source || "event"));
+      const meta = document.createElement("div");
+      meta.className = "muted";
+      meta.textContent = (text(ev.surface_id || ev.claim_id || "") + " " + formatActivity(ev.ts)).trim();
+      node.append(title, meta);
+      return node;
+    }
+    function subscribeLive(domain) {
+      if (typeof EventSource === "undefined" || !domain) return;
+      if (liveSource && liveDomain === domain) return;
+      if (liveSource) { try { liveSource.close(); } catch (e) {} }
+      liveDomain = domain;
+      clear(live);
+      liveStatus.textContent = "· " + domain;
+      let source;
+      try {
+        source = new EventSource("/api/session/" + encodeURIComponent(domain) + "/events?backlog=20");
+      } catch (e) {
+        liveStatus.textContent = "· unavailable";
+        return;
+      }
+      liveSource = source;
+      const onFrame = (event) => {
+        let parsed;
+        try { parsed = JSON.parse(event.data); } catch (e) { return; }
+        live.insertBefore(liveLine({ source: event.type, event: parsed }), live.firstChild);
+        while (live.childNodes.length > 25) live.removeChild(live.lastChild);
+        if (parsed && REFRESH_ON.has(parsed.type)) scheduleRefresh();
+      };
+      source.addEventListener("frontier", onFrame);
+      source.addEventListener("pipeline", onFrame);
+      source.addEventListener("resync", () => { clear(live); });
+      source.onerror = () => { liveStatus.textContent = "· reconnecting " + domain; };
+    }
     async function load() {
       const params = new URLSearchParams({
         repo_only: repoOnly.checked ? "true" : "false",
@@ -504,6 +568,9 @@ function renderDashboardHtml(options) {
       clear(sessions);
       for (const session of snapshot.sessions) {
         const row = document.createElement("tr");
+        row.style.cursor = "pointer";
+        row.title = "Live-tail this session";
+        row.addEventListener("click", () => subscribeLive(session.target_domain));
         const name = cell(row, session.target_domain);
         if (session.repo && session.repo.root_path) {
           const path = document.createElement("div");
@@ -551,12 +618,97 @@ function renderDashboardHtml(options) {
         empty.textContent = "No active bottlenecks.";
         bottlenecks.appendChild(empty);
       }
+      if (!liveDomain && snapshot.sessions.length) {
+        subscribeLive(snapshot.sessions[0].target_domain);
+      }
     }
     document.getElementById("refresh").addEventListener("click", () => load().catch((error) => alert(error.message)));
     load().catch((error) => { sessions.innerHTML = "<tr><td colspan=\\"6\\"></td></tr>"; sessions.querySelector("td").textContent = error.message; });
   </script>
 </body>
 </html>`;
+}
+
+function openEventStream(res) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    // Defeat reverse-proxy/response buffering so frames flush immediately.
+    "x-accel-buffering": "no",
+  });
+}
+
+function writeSseComment(res, text) {
+  res.write(`: ${String(text).replace(/[\r\n]+/g, " ").slice(0, 200)}\n\n`);
+}
+
+function writeSseFrame(res, frame) {
+  res.write(`id: ${frame.id}\nevent: ${frame.source}\ndata: ${JSON.stringify(frame.event)}\n\n`);
+}
+
+function parseBacklog(url) {
+  const raw = url.searchParams.get("backlog");
+  if (raw == null || raw === "") return SSE_DEFAULT_BACKLOG;
+  try {
+    return parseInteger(raw, "backlog", { min: 0, max: SSE_MAX_BACKLOG });
+  } catch {
+    return SSE_DEFAULT_BACKLOG;
+  }
+}
+
+// Read-only live tail: open the stream, emit the resume backlog (or frames after
+// Last-Event-ID), then poll both ledgers and flush newly-appended frames. Pure
+// observer — never writes session state (S2). Timers are unref'd and torn down on
+// disconnect so no handle leaks.
+function startSseEventStream(req, res, domain, url) {
+  const backlog = parseBacklog(url);
+  const lastEventId = req.headers["last-event-id"];
+  openEventStream(res);
+  let lastKey = null;
+
+  const emit = (frame) => {
+    writeSseFrame(res, frame);
+    lastKey = frameKey(frame);
+  };
+
+  try {
+    const frames = readSessionEventFrames(domain);
+    if (lastEventId) {
+      const resumed = framesAfter(frames, lastEventId);
+      if (resumed.resync) res.write('event: resync\ndata: {"reason":"trim_gap"}\n\n');
+      resumed.frames.forEach(emit);
+    } else if (backlog > 0) {
+      frames.slice(-backlog).forEach(emit);
+    } else if (frames.length) {
+      // backlog=0: send nothing historical, but only stream frames newer than now.
+      lastKey = frameKey(frames[frames.length - 1]);
+    }
+  } catch (error) {
+    writeSseComment(res, `tail-error ${error && error.message ? error.message : error}`);
+  }
+
+  const poll = setInterval(() => {
+    try {
+      for (const frame of readSessionEventFrames(domain)) {
+        if (lastKey == null || compareFrameKeys(frameKey(frame), lastKey) > 0) emit(frame);
+      }
+    } catch {
+      // transient read race against a concurrent append — skip this tick
+    }
+  }, SSE_POLL_MS);
+  if (typeof poll.unref === "function") poll.unref();
+
+  const heartbeat = setInterval(() => writeSseComment(res, "ping"), SSE_HEARTBEAT_MS);
+  if (typeof heartbeat.unref === "function") heartbeat.unref();
+
+  const cleanup = () => {
+    clearInterval(poll);
+    clearInterval(heartbeat);
+  };
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
 }
 
 function routeDashboardRequest(req, res, baseOptions, context = {}) {
@@ -577,6 +729,32 @@ function routeDashboardRequest(req, res, baseOptions, context = {}) {
     } catch (error) {
       sendJson(res, 400, { error: error && error.message ? error.message : String(error) }, headOnly);
     }
+    return;
+  }
+  const sseMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/events$/);
+  if (sseMatch) {
+    // Unauthenticated live tail of session internals — hard-refuse off-loopback
+    // (stronger than the server's warn-only bind posture).
+    if (!isLoopbackHost(baseOptions.host)) {
+      sendJson(res, 403, { error: "loopback_only" }, headOnly);
+      return;
+    }
+    let domain;
+    try {
+      domain = assertSafeDomain(decodeURIComponent(sseMatch[1]));
+    } catch {
+      sendJson(res, 400, { error: "invalid_domain" }, headOnly);
+      return;
+    }
+    if (headOnly) {
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      res.end();
+      return;
+    }
+    startSseEventStream(req, res, domain, url);
     return;
   }
   sendJson(res, 404, { error: "not_found" }, headOnly);
@@ -623,5 +801,6 @@ module.exports = {
   dashboardUsageText,
   normalizeDashboardOptions,
   parseDashboardArgs,
+  renderDashboardHtml,
   startDashboardServer,
 };

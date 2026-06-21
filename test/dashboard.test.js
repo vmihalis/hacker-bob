@@ -13,6 +13,7 @@ const {
 const {
   repoInventoryPath,
   pipelineEventsJsonlPath,
+  frontierEventsJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   initSession,
@@ -97,6 +98,49 @@ function appendPipelineEvent(domain, type, fields) {
     `${JSON.stringify(normalizePipelineEvent(domain, type, fields))}\n`,
     "utf8",
   );
+}
+
+function appendFrontierRaw(domain, record) {
+  fs.appendFileSync(frontierEventsJsonlPath(domain), `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function parseSse(raw) {
+  const events = [];
+  for (const block of raw.split("\n\n")) {
+    if (!block.trim()) continue;
+    const ev = {};
+    for (const line of block.split("\n")) {
+      if (line.startsWith("id:")) ev.id = line.slice(3).trim();
+      else if (line.startsWith("event:")) ev.event = line.slice(6).trim();
+      else if (line.startsWith("data:")) ev.data = line.slice(5).trim();
+      else if (line.startsWith(":")) ev.comment = `${ev.comment || ""}${line.slice(1).trim()}`;
+    }
+    if (ev.id || ev.event || ev.data) events.push(ev);
+  }
+  return events;
+}
+
+// SSE responses never "end"; read for a short settle window, then tear down.
+function collectSse(url, { headers = {}, settleMs = 300 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
+    const req = http.get(url, { headers }, (res) => {
+      let buf = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { buf += chunk; });
+      res.on("error", () => {});
+      setTimeout(() => {
+        req.destroy();
+        finish({ statusCode: res.statusCode, raw: buf, events: parseSse(buf) });
+      }, settleMs);
+    });
+    req.on("error", () => finish({ statusCode: 0, raw: "", events: [] }));
+  });
 }
 
 test("dashboard arg parser handles local server and JSON flags", () => {
@@ -256,6 +300,102 @@ test("dashboard server warns when binding outside loopback", async () => {
     try {
       assert.match(warning, /unauthenticated/);
       assert.match(warning, /0\.0\.0\.0/);
+    } finally {
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route streams folded frontier + pipeline frames", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-stream.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, {
+      event_id: "FE-1",
+      ts: "2026-06-21T10:00:00.000Z",
+      kind: "surface.observed",
+      target_domain: domain,
+      payload: { surface_type: "web_route" },
+    });
+    appendPipelineEvent(domain, "finding_recorded", { ts: "2026-06-21T10:00:01.000Z", surface_id: "S-1" });
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const sse = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(sse.statusCode, 200);
+      const sources = sse.events.map((e) => e.event);
+      assert.ok(sources.includes("frontier"), "streams a frontier frame");
+      assert.ok(sources.includes("pipeline"), "streams a pipeline frame (the verification/wave/finding merge)");
+      const frontier = sse.events.find((e) => e.event === "frontier");
+      assert.equal(JSON.parse(frontier.data).event_id, "FE-1");
+    } finally {
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route resumes after Last-Event-ID without replaying the cursor", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-resume.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-1", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+    appendFrontierRaw(domain, { event_id: "FE-2", ts: "2026-06-21T10:00:01.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      // initSession seeds its own frontier/pipeline events, so assert resume
+      // relative to the actual ordered frame list rather than a fixed count.
+      assert.ok(ids.length >= 2, "more than one frame to resume across");
+      const cursor = ids[0];
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events`, {
+        headers: { "last-event-id": cursor },
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(!resumedIds.includes(cursor), "does not replay the cursor frame");
+      assert.deepEqual(resumedIds, ids.slice(1));
+    } finally {
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route refuses off-loopback with 403 loopback_only", async () => {
+  await withTempHome(async () => {
+    const started = await startDashboardServer({ host: "0.0.0.0", port: 0 }, { stderr: { write() {} } });
+    try {
+      const port = started.server.address().port;
+      const res = await requestText(`http://127.0.0.1:${port}/api/session/x.example/events`);
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route survives a partial trailing ledger line", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-tolerant.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-ok", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+    fs.appendFileSync(frontierEventsJsonlPath(domain), '{"event_id":"FE-partial","ts":"2026', "utf8");
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const sse = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(sse.statusCode, 200);
+      const ids = sse.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.some((id) => id.includes("FE-ok")), "valid frame still streamed past the partial line");
     } finally {
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
