@@ -336,7 +336,7 @@ test("pipeline read path DROPS freeform fields (key allowlist) and keeps structu
   });
 });
 
-test("pipeline redaction is deep: nested counts{} keys are redacted, not just top-level strings", () => {
+test("pipeline counts{} (arbitrary freeform keys) is dropped by the allowlist", () => {
   withTempHome(() => {
     const domain = "tail.example";
     const event = normalizePipelineEvent(domain, "wave_started", {
@@ -345,11 +345,9 @@ test("pipeline redaction is deep: nested counts{} keys are redacted, not just to
       counts: { "Authorization: Bearer sk-counts-leak-9999": 3 },
     });
     writePipeline(domain, [event]);
-    const frames = readSessionEventFrames(domain);
-    assert.ok(
-      !JSON.stringify(frames[0].event).includes("sk-counts-leak-9999"),
-      "secret-shaped nested counts key is redacted on the stream",
-    );
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.equal(ev.counts, undefined, "counts dropped (arbitrary, un-enumerated keys)");
+    assert.ok(!JSON.stringify(ev).includes("sk-counts-leak-9999"), "no counts-key content reaches the wire");
   });
 });
 
@@ -362,6 +360,19 @@ test("frontier rows whose target_domain mismatches the session are dropped (doma
     ]);
     const frames = readSessionEventFrames(domain);
     assert.deepEqual(frames.map((f) => f.record_id), ["FE-mine"], "cross-domain frontier row dropped, matching the pipeline path");
+  });
+});
+
+test("frontier top-level freeform `actor` is dropped from live frames (kept: structural ids)", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      { event_id: "FE-a", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, actor: "operator-SHOULD_NOT_LEAK", surface_id: "S1", payload: {} },
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.equal(ev.actor, undefined, "freeform/identity actor dropped");
+    assert.equal(ev.surface_id, "S1", "structural surface_id retained");
+    assert.ok(!JSON.stringify(ev).includes("SHOULD_NOT_LEAK"), "no actor content on the wire");
   });
 });
 

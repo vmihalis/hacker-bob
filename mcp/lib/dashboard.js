@@ -802,7 +802,10 @@ function startSseEventStream(req, res, domain, url, sseState) {
   if (typeof heartbeat.unref === "function") heartbeat.unref();
 }
 
-function routeDashboardRequest(req, res, baseOptions, context = {}, sseState = { active: 0 }) {
+// sseState is REQUIRED (no default): a per-call `{ active: 0 }` default would give each
+// request a fresh counter and silently defeat the connection cap. startDashboardServer
+// is the sole caller and always threads its per-server sseState.
+function routeDashboardRequest(req, res, baseOptions, context = {}, sseState) {
   const headOnly = req.method === "HEAD";
   if (req.method !== "GET" && req.method !== "HEAD") {
     sendJson(res, 405, { error: "method_not_allowed" }, headOnly);

@@ -59,14 +59,15 @@ const FRONTIER_PAYLOAD_KEY_ALLOWLIST = new Set([
 
 // Structural / enum / numeric / boolean pipeline-event keys safe to surface. The
 // pipeline read projection (normalizePipelineEventForRead) also carries freeform text
-// (status, source, *_reason, agent) and identity metadata (started_by, egress_*); those
-// are DROPPED by construction here rather than relying on redaction completeness — that
-// is the root-cause fix for the recurring "bare secret on the wire" findings. The
-// ticker's display fields (type, kind, surface_id, ts) are all retained.
+// (status, source, *_reason, agent), identity metadata (started_by, egress_*), and a
+// `counts{}` object whose KEYS are arbitrary (un-enumerated) labels — all DROPPED by
+// construction here rather than relying on redaction completeness, the root-cause fix
+// for the recurring "bare secret on the wire" findings. The ticker's display fields
+// (type, kind, surface_id, ts) are all retained.
 const PIPELINE_KEY_ALLOWLIST = new Set([
   "type", "ts", "kind", "surface_id",
   "lifecycle_state", "from_state", "to_state", "block_code", "checkpoint_mode",
-  "wave_number", "counts",
+  "wave_number",
   "force_merge", "override", "proxy_configured", "block_internal_hosts", "legacy_migration",
 ]);
 
@@ -177,8 +178,10 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
 function compactFrontierEvent(record) {
   const out = {};
   for (const key of [
+    // structural ids + content hash only; `actor` (freeform/identity) is dropped to
+    // match the pipeline allowlist's no-freeform posture.
     "event_id", "ts", "kind", "surface_id", "frontier_item_id",
-    "task_id", "claim_id", "actor", "event_hash",
+    "task_id", "claim_id", "event_hash",
   ]) {
     if (typeof record[key] === "string" && record[key]) out[key] = safeStr(record[key], 256);
   }
