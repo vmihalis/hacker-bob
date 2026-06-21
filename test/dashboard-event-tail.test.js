@@ -325,3 +325,32 @@ test("pipeline event freeform string fields are redacted on the stream", () => {
     assert.ok(!JSON.stringify(frames[0].event).includes("sk-leak-xyz"), "pipeline freeform field redacted on read");
   });
 });
+
+test("pipeline redaction is deep: nested counts{} keys are redacted, not just top-level strings", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const event = normalizePipelineEvent(domain, "wave_started", {
+      ts: "2026-06-21T10:00:00.000Z",
+      wave: 1,
+      counts: { "Authorization: Bearer sk-counts-leak-9999": 3 },
+    });
+    writePipeline(domain, [event]);
+    const frames = readSessionEventFrames(domain);
+    assert.ok(
+      !JSON.stringify(frames[0].event).includes("sk-counts-leak-9999"),
+      "secret-shaped nested counts key is redacted on the stream",
+    );
+  });
+});
+
+test("frontier rows whose target_domain mismatches the session are dropped (domain affinity)", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      frontierRecord("FE-mine", "2026-06-21T10:00:00.000Z", "surface.observed", {}), // target_domain = tail.example
+      { event_id: "FE-other", ts: "2026-06-21T10:00:01.000Z", kind: "surface.observed", target_domain: "evil.example", payload: {} },
+    ]);
+    const frames = readSessionEventFrames(domain);
+    assert.deepEqual(frames.map((f) => f.record_id), ["FE-mine"], "cross-domain frontier row dropped, matching the pipeline path");
+  });
+});

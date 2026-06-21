@@ -156,13 +156,32 @@ function compactFrontierEvent(record) {
   return out;
 }
 
+// Redact a value of any shape: every string at any depth goes through the repo
+// redactor, and nested object KEYS too (e.g. a `counts{}` sub-object whose labels
+// are freeform) — the module contract (header) is that NO string reaches the wire
+// unredacted, and a shallow pass would let nested keys/values through verbatim.
+// Numbers / booleans / null pass through unchanged.
+function redactDeepValue(value) {
+  if (typeof value === "string") return safeStr(value, 1000);
+  if (Array.isArray(value)) return value.map(redactDeepValue);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, nested] of Object.entries(value)) {
+      out[safeStr(key, 200)] = redactDeepValue(nested);
+    }
+    return out;
+  }
+  return value;
+}
+
 // Pipeline events are surfaced via normalizePipelineEventForRead, which caps but
-// does not redact freeform fields (status / source / *_reason) — redact every
-// string value on the read path too (S1/S7), matching the frontier treatment.
+// does not redact freeform fields (status / source / *_reason / counts labels) —
+// deeply redact on the read path (S1/S7), matching the frontier treatment. Top-level
+// keys are the structural event schema and are preserved; their values are redacted.
 function redactPipelineEvent(event) {
   const out = {};
   for (const [key, value] of Object.entries(event)) {
-    out[key] = typeof value === "string" ? safeStr(value, 1000) : value;
+    out[key] = redactDeepValue(value);
   }
   return out;
 }
@@ -192,6 +211,10 @@ function buildFrames(domain, source, records) {
     let baseRecordId;
     let ts;
     if (source === "frontier") {
+      // domain affinity: the pipeline path rejects cross-domain rows
+      // (normalizePipelineEventForRead); mirror it here as defense-in-depth against
+      // a corrupt/mis-routed row in the per-domain frontier ledger. Absent → allow.
+      if (typeof record.target_domain === "string" && record.target_domain && record.target_domain !== domain) continue;
       event = compactFrontierEvent(record);
       ts = typeof record.ts === "string" ? record.ts : null;
       baseRecordId = typeof record.event_id === "string" && record.event_id

@@ -35,6 +35,11 @@ const SSE_DEFAULT_BACKLOG = 200;
 const SSE_MAX_BACKLOG = 1000;
 const SSE_POLL_MS = 1000;
 const SSE_HEARTBEAT_MS = 15000;
+// Bound concurrent live-tail streams so N runaway/leaked connections can't each
+// drive a full-ledger read+parse+sort per poll tick. Loopback operator tool, so
+// this is a generous safety ceiling, not a tuning knob.
+const SSE_MAX_CONNECTIONS = 64;
+let sseActiveConnections = 0;
 
 function dashboardUsageText() {
   return `Usage:
@@ -81,6 +86,25 @@ function isLoopbackHost(host) {
     const value = Number(part);
     return value >= 0 && value <= 255;
   });
+}
+
+// Anti-DNS-rebinding: a loopback bind is not self-protecting. A page on
+// attacker.example can re-resolve its own hostname to 127.0.0.1, become
+// same-origin to the browser, and reach this loopback server with
+// `Host: attacker.example`. So when bound to loopback we additionally require the
+// request's Host header to be a loopback name; a rebound request fails this.
+// Parsed via URL so the port is stripped and IPv6 brackets are handled; a missing
+// or unparseable Host fails closed.
+function requestHostIsLoopback(req) {
+  const header = req && req.headers && req.headers.host;
+  if (!header) return false;
+  let hostname;
+  try {
+    hostname = new URL(`http://${header}`).hostname;
+  } catch {
+    return false;
+  }
+  return isLoopbackHost(hostname);
 }
 
 function normalizeDashboardOptions(options = {}) {
@@ -674,11 +698,29 @@ function sseHeartbeatMs() {
   return Number.isFinite(value) && value > 0 ? value : SSE_HEARTBEAT_MS;
 }
 
+// Concurrency ceiling — env-overridable for deterministic tests; default unchanged.
+function sseMaxConnections() {
+  const value = Number(process.env.BOB_SSE_MAX_CONNECTIONS);
+  return Number.isFinite(value) && value > 0 ? value : SSE_MAX_CONNECTIONS;
+}
+
 // Read-only live tail: open the stream, emit the resume backlog (or frames after
 // Last-Event-ID), then poll both ledgers and flush newly-appended frames. Pure
 // observer — never writes session state (S2). Timers are unref'd and torn down on
 // disconnect so no handle leaks.
 function startSseEventStream(req, res, domain, url) {
+  // Refuse past the concurrency ceiling BEFORE opening the stream (headers unsent).
+  if (sseActiveConnections >= sseMaxConnections()) {
+    sendJson(res, 503, { error: "too_many_streams" });
+    return;
+  }
+  sseActiveConnections += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    sseActiveConnections -= 1;
+  };
   const backlog = parseBacklog(url);
   const lastEventId = req.headers["last-event-id"];
   openEventStream(res);
@@ -745,6 +787,7 @@ function startSseEventStream(req, res, domain, url) {
   const cleanup = () => {
     clearInterval(poll);
     clearInterval(heartbeat);
+    release();
   };
   req.on("close", cleanup);
   res.on("close", cleanup);
@@ -763,6 +806,12 @@ function routeDashboardRequest(req, res, baseOptions, context = {}) {
     return;
   }
   if (url.pathname === "/api/snapshot") {
+    // Same DNS-rebinding defense as the SSE route: when bound to loopback, refuse a
+    // non-loopback Host header so a rebound page cannot read session aggregates.
+    if (isLoopbackHost(baseOptions.host) && !requestHostIsLoopback(req)) {
+      sendJson(res, 403, { error: "loopback_only" }, headOnly);
+      return;
+    }
     try {
       const options = optionsFromUrl(url, baseOptions);
       sendJson(res, 200, buildDashboardSnapshot(options, context), headOnly);
@@ -776,6 +825,11 @@ function routeDashboardRequest(req, res, baseOptions, context = {}) {
     // Unauthenticated live tail of session internals — hard-refuse off-loopback
     // (stronger than the server's warn-only bind posture).
     if (!isLoopbackHost(baseOptions.host)) {
+      sendJson(res, 403, { error: "loopback_only" }, headOnly);
+      return;
+    }
+    // Bound to loopback → also reject a non-loopback Host header (DNS-rebinding).
+    if (!requestHostIsLoopback(req)) {
       sendJson(res, 403, { error: "loopback_only" }, headOnly);
       return;
     }

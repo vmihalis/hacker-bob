@@ -63,6 +63,30 @@ function requestText(url) {
   });
 }
 
+function requestWithHeaders(url, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { headers }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => resolve({ statusCode: res.statusCode, body }));
+    });
+    req.on("error", reject);
+  });
+}
+
+// Open an SSE connection and resolve once the response headers arrive (the stream
+// is open and its concurrency slot is occupied server-side). Caller must destroy().
+function openHeldSse(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      res.on("data", () => {});
+      resolve({ destroy: () => req.destroy() });
+    });
+    req.on("error", reject);
+  });
+}
+
 function seedRepoSession(domain, repoPath) {
   JSON.parse(initSession({
     target_domain: domain,
@@ -380,6 +404,70 @@ test("dashboard SSE route refuses off-loopback with 403 loopback_only", async ()
       assert.equal(res.statusCode, 403);
       assert.match(res.body, /loopback_only/);
     } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route rejects a non-loopback Host header (DNS-rebinding defense)", async () => {
+  await withTempHome(async () => {
+    const domain = "rebind.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const port = started.server.address().port;
+      // TCP to loopback but a spoofed Host = a rebound attacker page
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/session/${domain}/events`, { host: "evil.example" });
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard snapshot route rejects a non-loopback Host header (DNS-rebinding defense)", async () => {
+  await withTempHome(async () => {
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const port = started.server.address().port;
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/snapshot`, { host: "evil.example:9999" });
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route caps concurrent connections (503 past the ceiling)", async () => {
+  await withTempHome(async () => {
+    const domain = "cap.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const prev = process.env.BOB_SSE_MAX_CONNECTIONS;
+    process.env.BOB_SSE_MAX_CONNECTIONS = "1";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    let held;
+    try {
+      const port = started.server.address().port;
+      // occupy the single slot, then a second connection must be refused
+      held = await openHeldSse(`http://127.0.0.1:${port}/api/session/${domain}/events`);
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/session/${domain}/events`, {});
+      assert.equal(res.statusCode, 503);
+      assert.match(res.body, /too_many_streams/);
+    } finally {
+      if (held) held.destroy();
+      if (prev === undefined) delete process.env.BOB_SSE_MAX_CONNECTIONS;
+      else process.env.BOB_SSE_MAX_CONNECTIONS = prev;
       started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
