@@ -203,10 +203,13 @@ function checkCanonicalPack(rootPackage) {
   // surface (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
   // channel) — which took the lean tarball past 3.2 MB. Mirrors the
   // test/package.test.js ceiling (keep the two in lockstep).
-  if (canonical.size < 3300000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.3 MB`);
+  // Raised to 3.4 MB: accumulated offensive-surface growth since PR7 plus the
+  // primitive→producer evaluator prose (P12) crossed 3.3 MB (lean pack ~3.30 MB).
+  // Stays in lockstep with test/package.test.js.
+  if (canonical.size < 3400000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.4 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.3 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.4 MB`);
   }
 
   let foundDisallowed = false;
