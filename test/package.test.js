@@ -166,7 +166,14 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // + the runner detection channel) plus its regenerated agent/skill/settings
     // surfaces. The lean tarball had fallen to ~5 KB of headroom under 3.2 MB; this
     // restores a comfortable margin (lean pack ~3.20 MB) without trimming assets.
-    assert.ok(pack.size < 3300000, `npm pack size ${pack.size} exceeds 3.3 MB threshold`);
+    // Raised to 3.4 MB for X8 — the live in-run observability runtime
+    // (mcp/lib/dashboard-event-tail.js + the SSE event-stream route/client added to
+    // mcp/lib/dashboard.js). The lean tarball had fallen to ~0 KB of STABLE headroom
+    // under 3.3 MB and npm-pack tarball size is non-deterministic by ~3 KB across runs
+    // (CI measured 3,300,833 B on the same commit a parallel run packed under 3.3 MB),
+    // so the threshold was actively flapping; this restores a stable margin (lean pack
+    // ~3.30 MB) without trimming shipped assets.
+    assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
