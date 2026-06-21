@@ -57,6 +57,19 @@ const FRONTIER_PAYLOAD_KEY_ALLOWLIST = new Set([
   "from_state", "to_state", "node_kind", "count", "total", "score",
 ]);
 
+// Structural / enum / numeric / boolean pipeline-event keys safe to surface. The
+// pipeline read projection (normalizePipelineEventForRead) also carries freeform text
+// (status, source, *_reason, agent) and identity metadata (started_by, egress_*); those
+// are DROPPED by construction here rather than relying on redaction completeness — that
+// is the root-cause fix for the recurring "bare secret on the wire" findings. The
+// ticker's display fields (type, kind, surface_id, ts) are all retained.
+const PIPELINE_KEY_ALLOWLIST = new Set([
+  "type", "ts", "kind", "surface_id",
+  "lifecycle_state", "from_state", "to_state", "block_code", "checkpoint_mode",
+  "wave_number", "counts",
+  "force_merge", "override", "proxy_configured", "block_internal_hosts", "legacy_migration",
+]);
+
 // Drop ASCII control chars (code < 32) and DEL (127) so a crafted ledger value
 // cannot inject SSE fields (CR/LF) when used in a frame id, and so no control
 // bytes reach the wire. Printable characters are preserved exactly.
@@ -69,25 +82,17 @@ function stripControlChars(value) {
   return out;
 }
 
-// redactTextSensitiveValues (mcp/redaction.js) masks URL / Authorization / secret-
-// assignment FORMS, but NOT bare standalone tokens (AKIA…, ghp_…, eyJ… JWTs, PEM
-// keys). sensitive-material's SENSITIVE_VALUE_RE — the canonical write-time secret
-// definition — does. The two ledgers validate only a couple of freeform fields at
-// write time, so a bare token in e.g. pipeline `status`/`source` could otherwise
-// reach the unauthenticated wire. Apply the canonical patterns on the read path too.
-const BARE_SECRET_RES = SENSITIVE_VALUE_RE.map(
-  (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`),
-);
-function maskBareSecrets(text) {
-  let out = text;
-  for (const re of BARE_SECRET_RES) out = out.replace(re, "REDACTED");
-  return out;
-}
-
-// Run BOTH redactors: the form-based repo redactor and the bare-token secret
-// patterns. Used by every surfaced string.
+// Scrub a value for the wire: strip control chars, run the form-based repo redactor
+// (mcp/redaction.js — masks URL / Authorization / assignment FORMS), then if ANY
+// canonical secret shape (sensitive-material's SENSITIVE_VALUE_RE, which also covers
+// bare AKIA/ghp_/JWT/PEM/Cookie tokens) still matches, redact the WHOLE value.
+// Whole-value, not match-only: several patterns match only a MARKER
+// (`-----BEGIN PRIVATE KEY-----`, `Cookie:`) and masking just the marker would leave
+// the secret BODY on the wire. .test() uses the non-global patterns (no lastIndex
+// state). This is defense-in-depth behind the pipeline key allowlist below.
 function scrub(value) {
-  return maskBareSecrets(redactTextSensitiveValues(stripControlChars(value == null ? "" : value)));
+  const cleaned = redactTextSensitiveValues(stripControlChars(value == null ? "" : value));
+  return SENSITIVE_VALUE_RE.some((re) => re.test(cleaned)) ? "REDACTED" : cleaned;
 }
 
 // Sanitize a value for the SSE `id:` line / Last-Event-ID cursor: strip control
@@ -122,9 +127,15 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
   if (!link.isFile()) return [];
   let fd;
   try {
-    fd = fs.openSync(filePath, "r");
+    // O_NOFOLLOW closes the lstat→open TOCTOU (a symlink swapped in after the lstat
+    // throws ELOOP instead of being followed); O_NONBLOCK means a swapped-in FIFO
+    // returns a fd instead of blocking the event loop (the fstat check below rejects
+    // it). Both degrade to 0 where unsupported, leaving the lstat guard.
+    const noFollow = fs.constants.O_NOFOLLOW || 0;
+    const nonBlock = fs.constants.O_NONBLOCK || 0;
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow | nonBlock);
   } catch (error) {
-    if (error && error.code === "ENOENT") return [];
+    if (error && (error.code === "ENOENT" || error.code === "ELOOP")) return [];
     throw error;
   }
   try {
@@ -208,13 +219,14 @@ function redactDeepValue(value) {
   return value;
 }
 
-// Pipeline events are surfaced via normalizePipelineEventForRead, which caps but
-// does not redact freeform fields (status / source / *_reason / counts labels) —
-// deeply redact on the read path (S1/S7), matching the frontier treatment. Top-level
-// keys are the structural event schema and are preserved; their values are redacted.
+// Surface ONLY allowlisted structural pipeline keys (PIPELINE_KEY_ALLOWLIST) — freeform
+// text and identity metadata are dropped by construction, so the wire cannot carry an
+// operator-pasted secret regardless of redaction completeness. Allowlisted values are
+// STILL scrubbed as defense in depth (scrub strings; redact nested counts{} keys).
 function redactPipelineEvent(event) {
   const out = {};
   for (const [key, value] of Object.entries(event)) {
+    if (!PIPELINE_KEY_ALLOWLIST.has(key)) continue;
     out[key] = redactDeepValue(value);
   }
   return out;
@@ -355,13 +367,15 @@ function readSessionEventFrames(domain, { sources = ["frontier", "pipeline"] } =
 }
 
 // Cheap change-stamp over the two ledgers (size+mtime) so the SSE poll can skip
-// the O(N) read+parse+sort when nothing has been appended.
+// the O(N) read+parse+sort when nothing has been appended. Uses lstat (NOT stat) to
+// match readJsonlTolerant's no-follow posture: a symlinked ledger is stamped by the
+// link itself and the reader rejects it, so the two never disagree on a swapped path.
 function sessionLedgerStamp(domain) {
   const safe = assertSafeDomain(domain);
   const parts = [];
   for (const filePath of [frontierEventsJsonlPath(safe), pipelineEventsJsonlPath(safe)]) {
     try {
-      const stat = fs.statSync(filePath);
+      const stat = fs.lstatSync(filePath);
       parts.push(`${stat.size}:${stat.mtimeMs}`);
     } catch {
       parts.push("0:0");

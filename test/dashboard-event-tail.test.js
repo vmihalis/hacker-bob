@@ -313,16 +313,26 @@ test("readJsonlTolerant tail-reads under a byte cap and drops the partial first 
   });
 });
 
-test("pipeline event freeform string fields are redacted on the stream", () => {
+test("pipeline read path DROPS freeform fields (key allowlist) and keeps structural ones", () => {
   withTempHome(() => {
     const domain = "tail.example";
     const event = normalizePipelineEvent(domain, "evaluator_stopped", {
       ts: "2026-06-21T10:00:00.000Z",
-      status: "stopped via Authorization: Bearer sk-leak-xyz",
+      surface_id: "S-keep",     // allowlisted → kept
+      kind: "evaluator",        // allowlisted → kept
+      status: "stopped via Authorization: Bearer sk-leak-xyz", // freeform → dropped
+      source: "operator-note-SHOULD_NOT_LEAK",                 // freeform → dropped
+      agent: "agent-SHOULD_NOT_LEAK",                          // freeform → dropped
     });
     writePipeline(domain, [event]);
-    const frames = readSessionEventFrames(domain);
-    assert.ok(!JSON.stringify(frames[0].event).includes("sk-leak-xyz"), "pipeline freeform field redacted on read");
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.equal(ev.surface_id, "S-keep", "structural surface_id surfaced");
+    assert.equal(ev.kind, "evaluator", "structural kind surfaced");
+    assert.equal(ev.status, undefined, "freeform status dropped by the allowlist");
+    assert.equal(ev.source, undefined, "freeform source dropped by the allowlist");
+    assert.equal(ev.agent, undefined, "freeform agent dropped by the allowlist");
+    const s = JSON.stringify(ev);
+    assert.ok(!s.includes("SHOULD_NOT_LEAK") && !s.includes("sk-leak-xyz"), "no freeform content reaches the wire");
   });
 });
 
@@ -355,17 +365,34 @@ test("frontier rows whose target_domain mismatches the session are dropped (doma
   });
 });
 
-test("bare standalone secret tokens (ghp_/AKIA) in pipeline fields are masked on the stream", () => {
+test("a marker-only secret (PEM) in an allowlisted field is redacted WHOLE, not just the marker", () => {
   withTempHome(() => {
     const domain = "tail.example";
-    const event = normalizePipelineEvent(domain, "evaluator_stopped", {
-      ts: "2026-06-21T10:00:00.000Z",
-      status: "leak ghp_ABCDEFGHIJKLMNOPQRSTUV0123456789 and AKIA1234567890ABCDEF here",
-    });
-    writePipeline(domain, [event]);
+    // payload.status is allowlisted but still scrubbed. A PEM header is a marker-only
+    // regex match; masking only the marker would leave the key body on the wire.
+    writeFrontier(domain, [
+      frontierRecord("FE-pem", "2026-06-21T10:00:00.000Z", "observation.recorded", {
+        status: "-----BEGIN PRIVATE KEY-----MIIBODYSECRETzzz-----END PRIVATE KEY-----",
+        severity: "high", // an ordinary allowlisted value still passes through
+      }),
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    const s = JSON.stringify(ev);
+    assert.ok(!s.includes("MIIBODYSECRET"), "PEM body redacted (whole value), not just the BEGIN marker");
+    assert.equal(ev.payload.severity, "high", "an ordinary allowlisted value is unaffected");
+  });
+});
+
+test("a bare standalone secret token (AKIA) in an allowlisted field is redacted", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      frontierRecord("FE-tok", "2026-06-21T10:00:00.000Z", "observation.recorded", {
+        status: "AKIA1234567890ABCDEF",
+      }),
+    ]);
     const s = JSON.stringify(readSessionEventFrames(domain)[0].event);
-    assert.ok(!s.includes("ghp_ABCDEFGHIJKLMNOPQRSTUV0123456789"), "bare GitHub token masked (redactTextSensitiveValues misses these)");
-    assert.ok(!/AKIA1234567890ABCDEF/.test(s), "bare AWS key masked");
+    assert.ok(!/AKIA1234567890ABCDEF/.test(s), "bare AWS key redacted (redactTextSensitiveValues alone misses these)");
   });
 });
 

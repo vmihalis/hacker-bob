@@ -37,9 +37,10 @@ const SSE_POLL_MS = 1000;
 const SSE_HEARTBEAT_MS = 15000;
 // Bound concurrent live-tail streams so N runaway/leaked connections can't each
 // drive a full-ledger read+parse+sort per poll tick. Loopback operator tool, so
-// this is a generous safety ceiling, not a tuning knob.
+// this is a generous safety ceiling, not a tuning knob. The live count lives on a
+// per-server sseState object (threaded from startDashboardServer), NOT a module
+// global — two servers in one process (tests, embedding) must not share the cap.
 const SSE_MAX_CONNECTIONS = 64;
-let sseActiveConnections = 0;
 
 function dashboardUsageText() {
   return `Usage:
@@ -708,20 +709,20 @@ function sseMaxConnections() {
 // Last-Event-ID), then poll both ledgers and flush newly-appended frames. Pure
 // observer — never writes session state (S2). Timers are unref'd and torn down on
 // disconnect so no handle leaks.
-function startSseEventStream(req, res, domain, url) {
+function startSseEventStream(req, res, domain, url, sseState) {
   // Refuse past the concurrency ceiling BEFORE opening the stream (headers unsent).
-  if (sseActiveConnections >= sseMaxConnections()) {
+  if (sseState.active >= sseMaxConnections()) {
     sendJson(res, 503, { error: "too_many_streams" });
     return;
   }
-  sseActiveConnections += 1;
+  sseState.active += 1;
   let released = false;
   let poll = null;
   let heartbeat = null;
   const release = () => {
     if (released) return;
     released = true;
-    sseActiveConnections -= 1;
+    sseState.active -= 1;
   };
   const cleanup = () => {
     if (poll) clearInterval(poll);
@@ -773,6 +774,7 @@ function startSseEventStream(req, res, domain, url) {
   } catch {
     // generic marker only — never echo fs error text (it can disclose session paths)
     writeSseComment(res, "tail-error");
+    lastStamp = null; // a failed initial read must be retried by the poll, not skipped
   }
 
   poll = setInterval(() => {
@@ -780,7 +782,6 @@ function startSseEventStream(req, res, domain, url) {
       // skip the O(N) read+parse+sort when neither ledger has changed since last tick
       const stamp = sessionLedgerStamp(domain);
       if (stamp === lastStamp) return;
-      lastStamp = stamp;
       // High-water-mark tail: emit frames ordered after the last one sent. A
       // same-ms/same-source frame appended late but hashing lower than lastKey is
       // skipped here by design (see compareFrameKeys) — it still renders on the
@@ -788,8 +789,11 @@ function startSseEventStream(req, res, domain, url) {
       for (const frame of readSessionEventFrames(domain)) {
         if (lastKey == null || compareFrameKeys(frameKey(frame), lastKey) > 0) emit(frame);
       }
+      // advance the stamp ONLY after a successful read+flush — a transient throw
+      // (EACCES / open race) must not consume the change and skip those events.
+      lastStamp = stamp;
     } catch {
-      // transient read race against a concurrent append — skip this tick
+      // transient read race against a concurrent append — retry next tick (stamp kept)
     }
   }, ssePollMs());
   if (typeof poll.unref === "function") poll.unref();
@@ -798,7 +802,7 @@ function startSseEventStream(req, res, domain, url) {
   if (typeof heartbeat.unref === "function") heartbeat.unref();
 }
 
-function routeDashboardRequest(req, res, baseOptions, context = {}) {
+function routeDashboardRequest(req, res, baseOptions, context = {}, sseState = { active: 0 }) {
   const headOnly = req.method === "HEAD";
   if (req.method !== "GET" && req.method !== "HEAD") {
     sendJson(res, 405, { error: "method_not_allowed" }, headOnly);
@@ -852,7 +856,7 @@ function routeDashboardRequest(req, res, baseOptions, context = {}) {
       res.end();
       return;
     }
-    startSseEventStream(req, res, domain, url);
+    startSseEventStream(req, res, domain, url, sseState);
     return;
   }
   sendJson(res, 404, { error: "not_found" }, headOnly);
@@ -872,7 +876,9 @@ function startDashboardServer(options = {}, context = {}) {
       process.stderr.write(warning);
     }
   }
-  const server = http.createServer((req, res) => routeDashboardRequest(req, res, normalized, context));
+  // Per-server SSE connection state (not a module global) — see SSE_MAX_CONNECTIONS.
+  const sseState = { active: 0 };
+  const server = http.createServer((req, res) => routeDashboardRequest(req, res, normalized, context, sseState));
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(normalized.port, normalized.host, () => {
