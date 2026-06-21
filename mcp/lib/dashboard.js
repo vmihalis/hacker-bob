@@ -716,11 +716,24 @@ function startSseEventStream(req, res, domain, url) {
   }
   sseActiveConnections += 1;
   let released = false;
+  let poll = null;
+  let heartbeat = null;
   const release = () => {
     if (released) return;
     released = true;
     sseActiveConnections -= 1;
   };
+  const cleanup = () => {
+    if (poll) clearInterval(poll);
+    if (heartbeat) clearInterval(heartbeat);
+    release();
+  };
+  // Register teardown BEFORE the catch-up read so a client that disconnects during
+  // the initial read/flush still releases its slot and never leaks the timers.
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
+
   const backlog = parseBacklog(url);
   const lastEventId = req.headers["last-event-id"];
   openEventStream(res);
@@ -762,7 +775,7 @@ function startSseEventStream(req, res, domain, url) {
     writeSseComment(res, "tail-error");
   }
 
-  const poll = setInterval(() => {
+  poll = setInterval(() => {
     try {
       // skip the O(N) read+parse+sort when neither ledger has changed since last tick
       const stamp = sessionLedgerStamp(domain);
@@ -781,17 +794,8 @@ function startSseEventStream(req, res, domain, url) {
   }, ssePollMs());
   if (typeof poll.unref === "function") poll.unref();
 
-  const heartbeat = setInterval(() => writeSseComment(res, "ping"), sseHeartbeatMs());
+  heartbeat = setInterval(() => writeSseComment(res, "ping"), sseHeartbeatMs());
   if (typeof heartbeat.unref === "function") heartbeat.unref();
-
-  const cleanup = () => {
-    clearInterval(poll);
-    clearInterval(heartbeat);
-    release();
-  };
-  req.on("close", cleanup);
-  res.on("close", cleanup);
-  res.on("error", cleanup);
 }
 
 function routeDashboardRequest(req, res, baseOptions, context = {}) {

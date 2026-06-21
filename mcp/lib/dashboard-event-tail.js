@@ -34,7 +34,7 @@ const {
   pipelineEventsJsonlPath,
 } = require("./paths.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
-const { redactTextSensitiveValues } = require("./sensitive-material.js");
+const { redactTextSensitiveValues, SENSITIVE_VALUE_RE } = require("./sensitive-material.js");
 const {
   normalizePipelineEventForRead,
   timestampMs,
@@ -69,26 +69,57 @@ function stripControlChars(value) {
   return out;
 }
 
-// Sanitize a value for the SSE `id:` line / Last-Event-ID cursor: strip control
-// chars (SSE field-injection guard) AND redact. An operator-supplied explicit
-// frontier event_id is embedded verbatim here (bob_append_frontier_event accepts
-// explicit ids), so a secret-shaped id must be masked too (S1/S7) — the payload
-// copy is already redacted, the id line was not. Redaction is deterministic, so
-// the cursor still round-trips for Last-Event-ID resume.
-function sanitizeIdComponent(value) {
-  return redactTextSensitiveValues(stripControlChars(value == null ? "" : value)).slice(0, 256);
+// redactTextSensitiveValues (mcp/redaction.js) masks URL / Authorization / secret-
+// assignment FORMS, but NOT bare standalone tokens (AKIA…, ghp_…, eyJ… JWTs, PEM
+// keys). sensitive-material's SENSITIVE_VALUE_RE — the canonical write-time secret
+// definition — does. The two ledgers validate only a couple of freeform fields at
+// write time, so a bare token in e.g. pipeline `status`/`source` could otherwise
+// reach the unauthenticated wire. Apply the canonical patterns on the read path too.
+const BARE_SECRET_RES = SENSITIVE_VALUE_RE.map(
+  (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`),
+);
+function maskBareSecrets(text) {
+  let out = text;
+  for (const re of BARE_SECRET_RES) out = out.replace(re, "REDACTED");
+  return out;
 }
 
-// Surface a string safely: strip control chars, run the repo redactor (masks
-// known secret patterns), cap length.
+// Run BOTH redactors: the form-based repo redactor and the bare-token secret
+// patterns. Used by every surfaced string.
+function scrub(value) {
+  return maskBareSecrets(redactTextSensitiveValues(stripControlChars(value == null ? "" : value)));
+}
+
+// Sanitize a value for the SSE `id:` line / Last-Event-ID cursor: strip control
+// chars (SSE field-injection guard) AND scrub secrets. An operator-supplied
+// explicit frontier event_id is embedded verbatim here (bob_append_frontier_event
+// accepts explicit ids), so a secret-shaped id must be masked too (S1/S7). Scrub is
+// deterministic, so the cursor still round-trips for Last-Event-ID resume.
+function sanitizeIdComponent(value) {
+  return scrub(value).slice(0, 256);
+}
+
+// Surface a string safely: strip control chars, scrub secret forms AND bare
+// tokens, cap length.
 function safeStr(value, max = 200) {
-  return redactTextSensitiveValues(stripControlChars(value)).slice(0, max);
+  return scrub(value).slice(0, max);
 }
 
 // Tolerant JSONL read: skip blank/partial/corrupt lines instead of throwing.
 // A genuine IO error other than ENOENT (e.g. EACCES) is surfaced; a missing
 // ledger is simply an empty stream.
 function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
+  // Reject non-regular files BEFORE opening: a symlink would let the unauthenticated
+  // tail read outside the session root, and a FIFO would block the event loop on
+  // open. lstat does not follow the symlink; a missing ledger is just an empty stream.
+  let link;
+  try {
+    link = fs.lstatSync(filePath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  }
+  if (!link.isFile()) return [];
   let fd;
   try {
     fd = fs.openSync(filePath, "r");
@@ -97,7 +128,10 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
     throw error;
   }
   try {
-    const size = fs.fstatSync(fd).size;
+    const stat = fs.fstatSync(fd);
+    // TOCTOU guard: the opened fd must still be a regular file (not swapped post-lstat)
+    if (!stat.isFile()) return [];
+    const size = stat.size;
     const length = size > maxBytes ? maxBytes : size;
     const start = size > maxBytes ? size - maxBytes : 0;
     let raw = "";
@@ -186,8 +220,12 @@ function redactPipelineEvent(event) {
   return out;
 }
 
-// Hard-cap a frame's serialized event by BYTE length; on overflow, collapse to a
-// minimal, id-preserving, flagged stub.
+// Hard-cap a frame's serialized event by BYTE length AND fail-safe-screen it for
+// any residual secret shape (defense in depth beyond the per-field scrub — catches
+// anything a non-string/overlooked path slipped through). On either, collapse to a
+// minimal, id-preserving, flagged stub; the stub fields (event_id already scrubbed,
+// ts, enum kind/type) carry no secret. SENSITIVE_VALUE_RE (non-global) is used for
+// the membership test to avoid the stateful-lastIndex footgun of the global copies.
 function enforceFrameBudget(event, source) {
   let data;
   try {
@@ -195,8 +233,12 @@ function enforceFrameBudget(event, source) {
   } catch {
     data = "";
   }
-  if (data && Buffer.byteLength(data, "utf8") <= MAX_FRAME_BYTES) return event;
-  const minimal = { event_id: event.event_id, ts: event.ts, _truncated: true };
+  const oversized = !data || Buffer.byteLength(data, "utf8") > MAX_FRAME_BYTES;
+  const secretShape = data ? SENSITIVE_VALUE_RE.some((re) => re.test(data)) : false;
+  if (!oversized && !secretShape) return event;
+  const minimal = { event_id: event.event_id, ts: event.ts };
+  if (oversized) minimal._truncated = true;
+  if (secretShape) minimal._redacted = true;
   if (source === "frontier" && typeof event.kind === "string") minimal.kind = event.kind;
   if (source === "pipeline" && typeof event.type === "string") minimal.type = event.type;
   return minimal;
@@ -226,9 +268,11 @@ function buildFrames(domain, source, records) {
       // content-addressed PE-<hash> from the normalized projection.
       const normalized = normalizePipelineEventForRead(record, domain);
       if (!normalized) continue;
-      // reject a present-but-unparseable pipeline ts (normalize would silently
-      // substitute "now", fabricating order); absent ts is allowed (→ now).
-      if (typeof record.ts === "string" && record.ts.trim() && timestampMs(record.ts) <= 0) continue;
+      // require a valid PERSISTED ts: normalizePipelineEventForRead fills a missing
+      // OR unparseable ts with now(), which re-hashes the PE-<id> on every read and
+      // replays the row as a fresh event each poll. Drop such rows (matching the
+      // frontier branch, which drops non-string/empty ts via the shared check below).
+      if (!(typeof record.ts === "string" && record.ts.trim() && timestampMs(record.ts) > 0)) continue;
       ts = normalized.ts;
       baseRecordId = `PE-${hashCanonicalJson(normalized).slice(0, 24)}`;
       event = redactPipelineEvent(normalized);

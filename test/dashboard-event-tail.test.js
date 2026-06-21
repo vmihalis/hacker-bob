@@ -354,3 +354,54 @@ test("frontier rows whose target_domain mismatches the session are dropped (doma
     assert.deepEqual(frames.map((f) => f.record_id), ["FE-mine"], "cross-domain frontier row dropped, matching the pipeline path");
   });
 });
+
+test("bare standalone secret tokens (ghp_/AKIA) in pipeline fields are masked on the stream", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const event = normalizePipelineEvent(domain, "evaluator_stopped", {
+      ts: "2026-06-21T10:00:00.000Z",
+      status: "leak ghp_ABCDEFGHIJKLMNOPQRSTUV0123456789 and AKIA1234567890ABCDEF here",
+    });
+    writePipeline(domain, [event]);
+    const s = JSON.stringify(readSessionEventFrames(domain)[0].event);
+    assert.ok(!s.includes("ghp_ABCDEFGHIJKLMNOPQRSTUV0123456789"), "bare GitHub token masked (redactTextSensitiveValues misses these)");
+    assert.ok(!/AKIA1234567890ABCDEF/.test(s), "bare AWS key masked");
+  });
+});
+
+test("enforceFrameBudget fail-safe stubs a frame whose serialized form still carries a secret shape", () => {
+  // a value that bypassed the per-field scrub (e.g. an overlooked path) must not stream
+  const evt = { event_id: "FE-x", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", leaked: "AKIA1234567890ABCDEF" };
+  const result = enforceFrameBudget(evt, "frontier");
+  assert.equal(result._redacted, true, "secret-shaped frame collapsed to a flagged stub");
+  assert.ok(!JSON.stringify(result).includes("AKIA1234567890ABCDEF"), "secret value not in the stub");
+  assert.equal(result.event_id, "FE-x");
+  assert.equal(result.kind, "surface.observed");
+});
+
+test("pipeline rows with a missing ts are dropped (no now()-substituted unstable id); valid-ts rows surface", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const filePath = pipelineEventsJsonlPath(domain);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const valid = normalizePipelineEvent(domain, "wave_started", { ts: "2026-06-21T10:00:00.000Z", wave: 2 });
+    const noTs = { type: "wave_started", wave: 1 }; // no ts → normalize would fill now()
+    fs.writeFileSync(filePath, `${[JSON.stringify(noTs), JSON.stringify(valid)].map((l) => l).join("\n")}\n`, "utf8");
+    const frames = readSessionEventFrames(domain);
+    assert.equal(frames.length, 1, "only the valid-ts row surfaces");
+    assert.equal(frames[0].ts, "2026-06-21T10:00:00.000Z");
+  });
+});
+
+test("readJsonlTolerant rejects a symlinked ledger (no follow outside the session root)", () => {
+  withTempHome((home) => {
+    const domain = "tail.example";
+    const filePath = frontierEventsJsonlPath(domain);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const outside = path.join(home, "outside-secrets.jsonl");
+    fs.writeFileSync(outside, `${JSON.stringify({ event_id: "FE-outside", ts: "2026-06-21T10:00:00.000Z", kind: "x", target_domain: domain })}\n`, "utf8");
+    fs.symlinkSync(outside, filePath);
+    assert.deepEqual(readJsonlTolerant(filePath), [], "symlinked ledger is not followed");
+    assert.deepEqual(readSessionEventFrames(domain), [], "folded stream is empty for a symlinked ledger");
+  });
+});
