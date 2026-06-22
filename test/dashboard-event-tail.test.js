@@ -371,6 +371,22 @@ test("pipeline read path DROPS freeform fields (key allowlist) and keeps structu
   });
 });
 
+test("pipeline freeform surface_id (evidence mode) is dropped by the shape gate, structural kind kept", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const event = normalizePipelineEvent(domain, "evaluator_stopped", {
+      ts: "2026-06-21T10:00:00.000Z",
+      surface_id: "evidence topic with spaces SHOULD_NOT_LEAK", // freeform evidence topic → dropped
+      kind: "evaluator",                                        // structural → kept
+    });
+    writePipeline(domain, [event]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.equal(ev.surface_id, undefined, "freeform pipeline surface_id dropped");
+    assert.equal(ev.kind, "evaluator", "structural kind kept");
+    assert.ok(!JSON.stringify(ev).includes("SHOULD_NOT_LEAK"), "no freeform surface_id content on the wire");
+  });
+});
+
 test("pipeline counts{} (arbitrary freeform keys) is dropped by the allowlist", () => {
   withTempHome(() => {
     const domain = "tail.example";
@@ -408,6 +424,42 @@ test("frontier top-level freeform `actor` is dropped from live frames (kept: str
     assert.equal(ev.actor, undefined, "freeform/identity actor dropped");
     assert.equal(ev.surface_id, "S1", "structural surface_id retained");
     assert.ok(!JSON.stringify(ev).includes("SHOULD_NOT_LEAK"), "no actor content on the wire");
+  });
+});
+
+test("an overlong all-token-char value is dropped, not truncated-and-emitted (P1: no prefix leak)", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    // all token chars + >64 long + NOT a known secret shape (an opaque sk_live_-style
+    // token). The gate must REJECT it on length, never truncate to a passing prefix.
+    const opaque = "LEAKPREFIX_" + "x".repeat(100);
+    writeFrontier(domain, [
+      {
+        event_id: "FE-long", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed",
+        target_domain: domain, tags: [opaque], payload: { status: opaque },
+      },
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    const s = JSON.stringify(ev);
+    assert.ok(!s.includes("LEAKPREFIX"), "no truncated 64-char prefix of the overlong token on the wire");
+    assert.equal(ev.tags, undefined, "overlong tag dropped (not truncated)");
+    assert.equal(ev.payload, undefined, "overlong payload value dropped → no payload object");
+  });
+});
+
+test("frontier top-level ids are shape-gated: a freeform surface_id is dropped, a structural one kept", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      { event_id: "FE-f", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, surface_id: "evidence topic with spaces SHOULD_NOT_LEAK", payload: {} },
+      { event_id: "FE-s", ts: "2026-06-21T10:00:01.000Z", kind: "surface.observed", target_domain: domain, surface_id: "auth-login-form", payload: {} },
+    ]);
+    const frames = readSessionEventFrames(domain);
+    const f = frames.find((x) => x.record_id === "FE-f").event;
+    const ok = frames.find((x) => x.record_id === "FE-s").event;
+    assert.equal(f.surface_id, undefined, "freeform top-level surface_id dropped");
+    assert.ok(!JSON.stringify(f).includes("SHOULD_NOT_LEAK"), "no freeform id content on the wire");
+    assert.equal(ok.surface_id, "auth-login-form", "structural top-level surface_id kept");
   });
 });
 

@@ -105,25 +105,24 @@ function sanitizeIdComponent(value) {
   return scrub(value).slice(0, 256);
 }
 
-// Surface a string safely: strip control chars, scrub secret forms AND bare
-// tokens, cap length.
-function safeStr(value, max = 200) {
-  return scrub(value).slice(0, max);
-}
-
-// A frontier string value (caller-supplied `tags[]` and allowlisted `payload.*`
-// scalars) reaches the wire ONLY if, after scrubbing, it is a single STRUCTURAL
-// TOKEN — an enum / id / state-code shape: word chars plus `. : / + -`, length
-// 1..64, no whitespace or freeform punctuation. This drops freeform prose
-// (operator notes, identity labels, and pasted tokens that miss the secret
-// regexes) from the frontier projection BY CONSTRUCTION, matching the pipeline
-// allowlist's no-freeform posture rather than relying on redaction completeness.
-// Scrub runs first, so a redacted secret stays "REDACTED" (itself a token) and a
-// secret masked into a spaced form is dropped. Returns null when not a token.
-const STRUCTURAL_TOKEN_RE = /^[\w.:/+-]{1,64}$/;
-function structuralTokenOrNull(value) {
+// A wire-bound string value (caller-supplied `tags[]`, allowlisted frontier
+// top-level ids, and allowlisted `payload.*` / pipeline scalars) reaches the wire
+// ONLY if, after scrubbing, it is a single STRUCTURAL TOKEN — an enum / id /
+// state-code shape: word chars plus `. : / + -`, length 1..maxLen, no whitespace
+// or freeform punctuation. This drops freeform prose (operator notes, identity
+// labels, and opaque tokens that miss the secret regexes) from BOTH projections
+// BY CONSTRUCTION, rather than relying on redaction completeness. Scrub runs first
+// (a redacted secret stays "REDACTED", itself a token; a secret masked into a
+// spaced form is dropped). The length bound is enforced by REJECTING an overlong
+// scrubbed value — NEVER by truncating first, which would let an overlong
+// all-token-char value pass on its prefix. Returns null when not a token.
+const STRUCTURAL_TOKEN_RE = /^[\w.:/+-]+$/;
+const STRUCTURAL_TOKEN_MAX = 64;   // enums / labels / state codes
+const STRUCTURAL_ID_MAX = 128;     // longer structural ids / content hashes
+function structuralTokenOrNull(value, maxLen = STRUCTURAL_TOKEN_MAX) {
   if (typeof value !== "string") return null;
-  const cleaned = safeStr(value, 64);
+  const cleaned = scrub(value);
+  if (cleaned.length < 1 || cleaned.length > maxLen) return null;
   return STRUCTURAL_TOKEN_RE.test(cleaned) ? cleaned : null;
 }
 
@@ -196,13 +195,13 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
 // tokens, so freeform values are dropped by construction (not just scrubbed).
 function compactFrontierEvent(record) {
   const out = {};
-  for (const key of [
-    // structural ids + content hash only; `actor` (freeform/identity) is dropped to
-    // match the pipeline allowlist's no-freeform posture.
-    "event_id", "ts", "kind", "surface_id", "frontier_item_id",
-    "task_id", "claim_id", "event_hash",
-  ]) {
-    if (typeof record[key] === "string" && record[key]) out[key] = safeStr(record[key], 256);
+  // structural ids + content hash + enum kind, each shape-gated to a structural
+  // token (a freeform/opaque value is dropped, not just scrubbed). `event_id` is
+  // omitted here — buildFrames sets it authoritatively to the sanitized
+  // Last-Event-ID cursor. `actor` and any other freeform top-level field is dropped.
+  for (const key of ["ts", "kind", "surface_id", "frontier_item_id", "task_id", "claim_id", "event_hash"]) {
+    const token = structuralTokenOrNull(record[key], STRUCTURAL_ID_MAX);
+    if (token !== null) out[key] = token;
   }
   // `tags` are caller-supplied via bob_append_frontier_event (normalized, not a
   // closed enum), so shape-gate each: structural labels (`money-movement`,
@@ -235,33 +234,21 @@ function compactFrontierEvent(record) {
   return out;
 }
 
-// Redact a value of any shape: every string at any depth goes through the repo
-// redactor, and nested object KEYS too (e.g. a `counts{}` sub-object whose labels
-// are freeform) — the module contract (header) is that NO string reaches the wire
-// unredacted, and a shallow pass would let nested keys/values through verbatim.
-// Numbers / booleans / null pass through unchanged.
-function redactDeepValue(value) {
-  if (typeof value === "string") return safeStr(value, 1000);
-  if (Array.isArray(value)) return value.map(redactDeepValue);
-  if (value && typeof value === "object") {
-    const out = {};
-    for (const [key, nested] of Object.entries(value)) {
-      out[safeStr(key, 200)] = redactDeepValue(nested);
-    }
-    return out;
-  }
-  return value;
-}
-
 // Surface ONLY allowlisted structural pipeline keys (PIPELINE_KEY_ALLOWLIST) — freeform
-// text and identity metadata are dropped by construction, so the wire cannot carry an
-// operator-pasted secret regardless of redaction completeness. Allowlisted values are
-// STILL scrubbed as defense in depth (scrub strings; redact nested counts{} keys).
+// text and identity metadata are dropped by construction. Allowlisted STRING values are
+// additionally shape-gated to a structural token (so a freeform evidence-mode surface_id,
+// or any opaque value that misses the secret regexes, is dropped — not merely scrubbed);
+// numbers/booleans pass through; any other shape is dropped.
 function redactPipelineEvent(event) {
   const out = {};
   for (const [key, value] of Object.entries(event)) {
     if (!PIPELINE_KEY_ALLOWLIST.has(key)) continue;
-    out[key] = redactDeepValue(value);
+    if (typeof value === "string") {
+      const token = structuralTokenOrNull(value, STRUCTURAL_ID_MAX);
+      if (token !== null) out[key] = token;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      out[key] = value;
+    }
   }
   return out;
 }

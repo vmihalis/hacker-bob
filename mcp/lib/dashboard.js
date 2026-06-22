@@ -570,7 +570,10 @@ function renderDashboardHtml(options) {
       };
       source.addEventListener("frontier", onFrame);
       source.addEventListener("pipeline", onFrame);
-      source.addEventListener("resync", () => { clear(live); });
+      // a resync means frames were elided (trim gap or backlog cap); clear the live
+      // list AND reload the snapshot so counters/rows reconcile across the gap (an
+      // omitted finding/wave/verification/grade event would otherwise leave them stale).
+      source.addEventListener("resync", () => { clear(live); scheduleRefresh(); });
       source.onerror = () => { liveStatus.textContent = "· reconnecting " + domain; };
     }
     async function load() {
@@ -757,10 +760,13 @@ function startSseEventStream(req, res, domain, url, sseState) {
       const resumed = framesAfter(frames, lastEventId);
       let toSend = resumed.frames;
       let resync = resumed.resync;
-      // bound a resume flush to the backlog cap — a very old cursor must not
-      // replay unbounded history; acknowledge the elided gap with a resync.
-      if (toSend.length > SSE_MAX_BACKLOG) {
-        toSend = toSend.slice(-SSE_MAX_BACKLOG);
+      // bound a resume flush to the caller's per-request backlog (itself capped at
+      // SSE_MAX_BACKLOG) — a reconnect with ?backlog=20 must not replay up to 1000
+      // missed frames; acknowledge the elided gap with a resync. slice(-0) returns the
+      // whole array, so a backlog of 0 sends nothing (and resyncs) rather than everything.
+      const resumeCap = Math.min(backlog, SSE_MAX_BACKLOG);
+      if (toSend.length > resumeCap) {
+        toSend = resumeCap > 0 ? toSend.slice(-resumeCap) : [];
         resync = true;
       }
       if (resync) res.write('event: resync\ndata: {"reason":"trim_gap"}\n\n');

@@ -292,6 +292,11 @@ test("dashboard server serves HTML and API JSON", async () => {
       assert.equal(html.statusCode, 200);
       assert.match(html.body, /Hacker Bob Dashboard/);
       assert.match(html.body, /if \(avoided > 0\)/);
+      // a resync (trim gap / backlog cap) must reload the snapshot, not just clear the live list
+      assert.ok(
+        html.body.includes('addEventListener("resync", () => { clear(live); scheduleRefresh(); })'),
+        "resync handler reloads the snapshot to reconcile counters across the gap",
+      );
 
       const api = await requestText(`${started.url}api/snapshot?repo_only=true&limit=5`);
       assert.equal(api.statusCode, 200);
@@ -386,6 +391,35 @@ test("dashboard SSE route resumes after Last-Event-ID without replaying the curs
       const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
       assert.ok(!resumedIds.includes(cursor), "does not replay the cursor frame");
       assert.deepEqual(resumedIds, ids.slice(1));
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route honors the per-request backlog when resuming (caps + resync)", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-backlog.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    for (let i = 0; i < 6; i++) {
+      appendFrontierRaw(domain, { event_id: `FE-${i}`, ts: `2026-06-21T10:00:0${i}.000Z`, kind: "surface.observed", target_domain: domain, payload: {} });
+    }
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length > 3, "enough frames to exceed a backlog of 2");
+      const cursor = ids[0];
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events?backlog=2`, {
+        headers: { "last-event-id": cursor },
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.equal(resumedIds.length, 2, "resume flush capped at the requested backlog, not SSE_MAX_BACKLOG");
+      assert.deepEqual(resumedIds, ids.slice(-2), "the newest `backlog` missed frames are sent");
+      assert.ok(resumed.events.some((e) => e.event === "resync"), "the elided gap is acknowledged with a resync");
     } finally {
       started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
