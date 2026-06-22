@@ -160,8 +160,15 @@ The manual, fail-closed edits:
   is refused under `block_internal_hosts`.
 - `authed_fetch` does not follow redirects (`redirect:"manual"`), self-aborts on timeout,
   and caps the body in bytes.
+- The trusted `authed_fetch` op (priming nav + the credentialed fetch) is NOT recorded into
+  the agent-readable network log / record buffer — its cookies/headers never leak to agents.
 - Page-controlled fetch is an accepted residual (see transport section) — mitigated by
   `waitUntil:"commit"` + the differential design, not by an unreliable native-fetch capture.
+- Priming-redirect under `block_internal_hosts` is an accepted residual: a server-driven 3xx
+  during the priming nav could fire one request to an internal host before the drift guard.
+  It is NOT blocked with a catch-all network-route interceptor — that is forbidden (it aborts
+  Kasada/CDN/OAuth subresource loads, defeating the WAF-bypass purpose). Bounded by the
+  producer's refusal under `block_internal_hosts`, the pin, the drift guard, and the scope check.
 - Every request audited via `auditConfirmRequest`; refuse under `block_internal_hosts`.
 - `demonstrated_severity` stamped from the frozen registry, never agent-supplied; the
   per-tool ceiling bounds blast radius to a fabricated HIGH at worst (the #131 same-UID

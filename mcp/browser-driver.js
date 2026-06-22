@@ -206,6 +206,11 @@ class BrowserDriver {
     // process environment). null/empty = unauthenticated (the control arm of the mass-read
     // differential). Tracked only to reject a second, conflicting injection.
     this.authCookiesApplied = false;
+    // Set to { host } for the duration of a trusted authed_fetch op so attachListeners() skips
+    // recording its (credentialed) requests into the agent-readable log / record buffer. null =
+    // idle. (NOT a network interceptor — see the no-context.route invariant in
+    // browser-driver-tools.test.js; the host is kept for diagnostics only.)
+    this.authedFetchOp = null;
   }
 
   async start() {
@@ -334,6 +339,11 @@ class BrowserDriver {
 
   attachListeners() {
     this.page.on("request", (request) => {
+      // Do NOT record the trusted authed_fetch op (priming nav + the credentialed fetch): its
+      // headers/cookies carry the producer's auth material and must not leak into the
+      // agent-readable request log or the record-mode buffer (which is flushed to the audit
+      // trail). These are server-side producer requests, not agent-observable recon traffic.
+      if (this.authedFetchOp) return;
       const headers = {};
       try {
         const raw = request.headers() || {};
@@ -790,6 +800,32 @@ class BrowserDriver {
       }
     }
     const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
+    // Trusted-op flag: suppress logging of the priming nav + the credentialed fetch from the
+    // agent-readable request log / record buffer (they carry the producer's auth). Cleared in
+    // the finally so a thrown op can't leave logging suppressed for later agent traffic.
+    //
+    // ACCEPTED RESIDUAL — priming redirect under block_internal_hosts: page.goto follows
+    // redirects, so a server-driven 3xx to an internal host could fire ONE request before the
+    // origin-drift guard rejects the fetch. We deliberately do NOT block it with a catch-all
+    // network-route interceptor — that is forbidden (browser-driver-tools.test.js): such an
+    // interceptor aborts page-decided subresource loads (Kasada/Akamai anti-bot, CDN bundles,
+    // OAuth callbacks), the exact WAF-protected flows this transport exists to survive, so it
+    // would defeat the transport's purpose. Bounded instead by: the producer REFUSES under
+    // block_internal_hosts (this is a direct-driver defense-in-depth path); the pin connects the
+    // target host to a validated IP; the origin-drift guard refuses the fetch after any
+    // redirect; and the scope check validates the URL's resolved IP under block_internal_hosts.
+    this.authedFetchOp = { host: fetchHost };
+    try {
+      return await this.runAuthedFetchOp({ origin, url, method, headers, body, timeout });
+    } finally {
+      this.authedFetchOp = null;
+    }
+  }
+
+  // Executes the priming navigation + the in-page credentialed fetch for authedFetch(). Split
+  // out so authedFetch() can wrap it in the trusted-op guards (request-log suppression + the
+  // strict per-host request abort) with a single try/finally cleanup.
+  async runAuthedFetchOp({ origin, url, method, headers, body, timeout }) {
     // waitUntil:"commit" returns as soon as the response begins — it minimizes execution of
     // the (authenticated) origin page's own JS before the in-page fetch. Same-origin context
     // is still required (a cross-origin fetch would be CORS-opaque), so a minimal navigation

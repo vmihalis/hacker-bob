@@ -195,6 +195,22 @@ test("authed_fetch REQUIRES the DNS pin on every call (not opt-in) + internal/pr
   assert.match(DRIVER_SRC, /cannot enforce block_internal_hosts through an egress proxy/);
 });
 
+test("authed_fetch requests are NOT recorded into the agent-readable request log (no auth leak)", () => {
+  // round-6: a per-op flag suppresses logging of the priming nav + the credentialed fetch so
+  // the producer's cookies/headers never enter this.requests / recordedRequests.
+  assert.match(DRIVER_SRC, /if \(this\.authedFetchOp\) return;/);
+  assert.match(DRIVER_SRC, /this\.authedFetchOp = \{ host: fetchHost \}/);
+  assert.match(DRIVER_SRC, /this\.authedFetchOp = null/);
+});
+
+test("authed_fetch does NOT install a context.route interceptor (transport must survive Kasada/CDN/OAuth)", () => {
+  // The priming-redirect residual is dispositioned, NOT fixed with a network interceptor: a
+  // context.route('**/*') would abort page-decided subresource loads (the no-route invariant in
+  // browser-driver-tools.test.js). Guard against reintroducing it here too.
+  assert.doesNotMatch(DRIVER_SRC, /context\.route\s*\(\s*["'`]\*\*\/\*["'`]/);
+  assert.match(DRIVER_SRC, /ACCEPTED RESIDUAL — priming redirect under block_internal_hosts/);
+});
+
 test("authed_fetch scope-checks the URL and guards origin drift", () => {
   assert.match(DRIVER_SRC, /assertSafeResolvedRequestUrl\(url, this\.targetDomain/);
   assert.match(DRIVER_SRC, /authed_fetch_origin_drift/);
@@ -343,6 +359,33 @@ test("authed_fetch carries injected cookie auth and captures the body (authed vs
   } finally {
     if (authedSession) await browserSessions.closeSession(authedSession.session_id).catch(() => {});
     if (controlSession) await browserSessions.closeSession(controlSession.session_id).catch(() => {});
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch credentialed request is absent from the agent-readable network log", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+      authCookies: [{ name: "massread_auth", value: "letmein", url: origin }],
+    });
+    const authed = await browserSessions.sendCommand(session.session_id, "authed_fetch", {
+      url: `${origin}/api/listing`, method: "GET",
+    });
+    assert.equal(authed.status, 200);
+    const log = await browserSessions.sendCommand(session.session_id, "network_requests", {});
+    const leaked = (log.requests || []).filter((r) => r.url && r.url.includes("/api/listing"));
+    assert.deepEqual(leaked, [], "the credentialed authed_fetch request must not appear in the network log");
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
     await new Promise((r) => server.close(r));
   }
 });
