@@ -42,6 +42,8 @@ const crypto = require("crypto");
 
 const {
   assertSafeResolvedRequestUrl,
+  assertSafeRequestUrl,
+  resolveSafeAddress,
 } = require("./lib/safe-fetch.js");
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -164,7 +166,7 @@ function sanitizeDomainForPath(domain) {
 // ── Driver core ──
 
 class BrowserDriver {
-  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode, proxy, authCookies }) {
+  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode, proxy }) {
     this.sessionId = sessionId;
     this.targetDomain = targetDomain;
     this.targetUrl = targetUrl;
@@ -190,12 +192,17 @@ class BrowserDriver {
     this.proxy = proxy && typeof proxy === "object" && typeof proxy.server === "string"
       ? proxy
       : null;
-    // Session-level cookie auth for the trusted `authed_fetch` transport, supplied by the
-    // in-process offensive producer (NEVER by an agent). Playwright cookie-object shape
-    // ({ name, value, domain, path, ... }); applied to the context so an in-page
-    // credentials:"include" fetch carries them. null/empty = unauthenticated (the control
-    // arm of the mass-read differential).
-    this.authCookies = Array.isArray(authCookies) ? authCookies : null;
+    // DNS-rebinding pin: host(lowercased) -> IP literal that Node validated at launch. The
+    // browser is started with --host-resolver-rules so Chrome connects to the SAME IP we
+    // checked, closing the TOCTOU where the static scope check passes for a hostname but the
+    // browser independently re-resolves it to an internal/attacker IP. Empty under an egress
+    // proxy (DNS resolves at the proxy, not locally) or if launch-time resolution failed.
+    this.pinnedHosts = new Map();
+    // Session-level cookie auth for the trusted `authed_fetch` transport arrives AFTER ready
+    // via the server-side-only `set_auth_cookies` stdin command (never an agent, never the
+    // process environment). null/empty = unauthenticated (the control arm of the mass-read
+    // differential). Tracked only to reject a second, conflicting injection.
+    this.authCookiesApplied = false;
   }
 
   async start() {
@@ -210,6 +217,29 @@ class BrowserDriver {
       throw err;
     }
 
+    // DNS-rebinding pin (round-3): resolve the target host ONCE in Node and force Chrome to
+    // connect to that exact IP via --host-resolver-rules. Without this, the browser does its
+    // own DNS resolution when authed_fetch navigates/fetches, so an attacker-controlled record
+    // could return a public IP to our scope check and a private IP (169.254.169.254 / 127.x)
+    // to Chrome. Skipped under a proxy (egress DNS happens at the proxy). Best-effort: a
+    // resolution failure leaves the host unpinned, and authed_fetch then fails closed under
+    // block_internal_hosts (see authedFetch).
+    const resolverRules = [];
+    if (!this.proxy) {
+      try {
+        const pinHost = new URL(this.targetUrl).hostname.toLowerCase();
+        const { address } = await resolveSafeAddress(pinHost, { blockInternalHosts: false });
+        if (address) {
+          this.pinnedHosts.set(pinHost, address);
+          // Chrome resolver-rules want IPv6 literals bracketed; MAP carries the port through.
+          const ipForRule = address.includes(":") ? `[${address}]` : address;
+          resolverRules.push(`MAP ${pinHost} ${ipForRule}`);
+        }
+      } catch {
+        // leave unpinned — authed_fetch enforces the consequence
+      }
+    }
+
     const launchOptions = {
       headless: this.headless,
       args: [
@@ -221,6 +251,11 @@ class BrowserDriver {
       ],
       ignoreDefaultArgs: ["--enable-automation"],
     };
+    if (resolverRules.length) {
+      // MAP only matches the pinned host; other hosts (CDNs, third-party subresources) still
+      // resolve normally, so this does not break legitimate page loads.
+      launchOptions.args.push(`--host-resolver-rules=${resolverRules.join(",")}`);
+    }
     // Proxy is composed with — not in place of — the anti-detection stack:
     // channel=chrome, the AutomationControlled disable flag, and the
     // ignoreDefaultArgs filter all still apply, so the proxy carries a real
@@ -255,13 +290,6 @@ class BrowserDriver {
       reducedMotion: "no-preference",
       serviceWorkers: "allow",
     });
-
-    // Inject producer-supplied cookie auth (trusted; never agent-supplied) so the
-    // `authed_fetch` in-page fetch carries it via credentials:"include". Bearer/custom
-    // headers are passed per-request in authed_fetch instead.
-    if (this.authCookies && this.authCookies.length) {
-      await this.context.addCookies(this.authCookies);
-    }
 
     await this.installScopedRequestGuard();
     this.page = await this.context.newPage();
@@ -429,6 +457,12 @@ class BrowserDriver {
         // TRUSTED, server-side-only transport — no bob_browser_* MCP tool maps to it, so
         // an agent cannot reach it; only the in-process offensive mass-read producer does.
         return await this.authedFetch(args);
+      case "set_auth_cookies":
+        // TRUSTED, server-side-only — injects producer-supplied cookie auth for the
+        // authed_fetch transport. Like authed_fetch, no bob_browser_* MCP tool maps to it, so
+        // an agent cannot inject auth. Cookies arrive over stdin (never the process env), and
+        // each is scope-validated against target_domain before it reaches the context.
+        return await this.setAuthCookies(args);
       case "network_requests":
         return await this.networkRequests(args);
       case "console_messages":
@@ -609,6 +643,51 @@ class BrowserDriver {
     return { result: safeJsonClone(result, MAX_EVAL_RESULT_BYTES) };
   }
 
+  // TRUSTED, server-side-only — inject producer-supplied cookie auth for authed_fetch.
+  // Cookies arrive over the stdin IPC channel (NEVER the process environment, so no child
+  // process or /proc/<pid>/environ snapshot can leak them), and EACH cookie's target host is
+  // scope-validated against target_domain before it reaches the browser context — an
+  // out-of-scope cookie (one that would be sent to a non-target origin) is rejected fail-closed.
+  async setAuthCookies(args) {
+    const cookies = args && Array.isArray(args.cookies) ? args.cookies : null;
+    if (!cookies || !cookies.length) {
+      throw new Error("set_auth_cookies.cookies must be a non-empty array");
+    }
+    if (this.authCookiesApplied) {
+      // One injection per session: re-injection would let a later call widen the cookie set.
+      throw new Error("set_auth_cookies_already_applied");
+    }
+    for (const cookie of cookies) {
+      if (!cookie || typeof cookie !== "object") {
+        throw new Error("set_auth_cookies: each cookie must be an object");
+      }
+      // Validate where this cookie can be sent. Playwright accepts either a `url` or a
+      // `domain`+`path` pair; both must resolve to an in-scope host or we refuse the whole
+      // batch (a single out-of-scope cookie taints the session).
+      let scopeUrl = null;
+      if (typeof cookie.url === "string" && cookie.url) {
+        scopeUrl = cookie.url;
+      } else if (typeof cookie.domain === "string" && cookie.domain) {
+        const host = cookie.domain.replace(/^\./, "");
+        scopeUrl = `https://${host}${typeof cookie.path === "string" && cookie.path ? cookie.path : "/"}`;
+      } else {
+        throw new Error("set_auth_cookies: each cookie needs a url or a domain");
+      }
+      try {
+        assertSafeRequestUrl(scopeUrl, this.targetDomain);
+      } catch (err) {
+        const e = new Error(
+          `set_auth_cookies_scope_blocked: cookie target ${scopeUrl} is outside ${this.targetDomain}: ${err && err.message ? err.message : err}`,
+        );
+        e.code = "scope_blocked";
+        throw e;
+      }
+    }
+    await this.context.addCookies(cookies);
+    this.authCookiesApplied = true;
+    return { ok: true, count: cookies.length };
+  }
+
   // TRUSTED, server-side-only transport (NOT agent-reachable — no MCP tool maps to the
   // "authed_fetch" command). Issues an authenticated request from the PAGE context so it
   // carries the real Chrome TLS/HTTP-2 fingerprint and survives a WAF/Cloudflare that
@@ -655,6 +734,20 @@ class BrowserDriver {
       wrapped.code = "scope_blocked";
       throw wrapped;
     }
+    // DNS-rebinding enforcement (round-3). When NOT proxied, Chrome resolves DNS itself, so a
+    // scope-passing hostname could still connect to an internal/attacker IP between our check
+    // and the browser's connection. We only consider a host rebind-safe if it was pinned at
+    // launch (--host-resolver-rules pins Chrome to the Node-validated IP). Under
+    // block_internal_hosts an unpinned host is refused fail-closed — we cannot keep the
+    // no-internal-host promise for a host the browser may re-resolve. (Under a proxy, DNS
+    // resolves at the proxy, so the launch pin does not apply and this check is skipped.)
+    if (!this.proxy && blockInternalHosts && !this.pinnedHosts.has(parsed.hostname.toLowerCase())) {
+      const e = new Error(
+        `scope_blocked: authed_fetch host ${parsed.hostname} was not DNS-pinned at launch; refusing under block_internal_hosts (DNS rebinding cannot be ruled out)`,
+      );
+      e.code = "scope_blocked";
+      throw e;
+    }
     const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
     // waitUntil:"commit" returns as soon as the response begins — it minimizes execution of
     // the (authenticated) origin page's own JS before the in-page fetch. Same-origin context
@@ -676,33 +769,55 @@ class BrowserDriver {
     const fetchInit = { method, headers, credentials: "include", redirect: "manual" };
     if (body != null && method !== "GET") fetchInit.body = body;
     // Built server-side from validated inputs; runs in the page world (real Chrome stack).
-    // The body is STREAM-read with a hard cap enforced WHILE reading, so an oversized/hostile
-    // response cannot buffer unbounded memory in the renderer before the slice.
+    // Hardening (round-3):
+    //  • self-aborts via AbortSignal.timeout (timeout + grace) so a hung request does not
+    //    linger in the renderer after the wall-clock race rejects — the grace lets the
+    //    deterministic wall-clock timeout win the race while the abort guarantees cleanup;
+    //  • streams the body with a hard cap measured in BYTES (Uint8Array.byteLength), not
+    //    UTF-16 code units, enforced WHILE reading, so an oversized/hostile response cannot
+    //    buffer unbounded memory and "2 MiB" means 2 MiB.
+    // ACCEPTED RESIDUAL — page-controlled fetch: the request runs in the page world, so a
+    // hostile target page could in principle override window.fetch / Response to forge the
+    // result. This is INHERENT to the transport's purpose: carrying the real Chrome TLS/HTTP-2
+    // fingerprint REQUIRES the page network stack (a Node-side context.request is CF-403'd —
+    // the gap this transport exists to close), and capturing a "native" fetch reference is
+    // unreliable under the Patchright stealth driver (its fetch wrapper rejects a detached
+    // call). Compensating controls: waitUntil:"commit" minimizes page-script execution before
+    // the fetch, and the authed-vs-control DIFFERENTIAL bounds the integrity impact — page
+    // code cannot tell which arm it is serving, and a target forging a vuln against itself is
+    // not a coherent threat. The producer treats a single capture as evidence, not proof.
+    const fetchInitJson = JSON.stringify(fetchInit);
+    const inPageAbortMs = timeout + 1000;
     const expr = `(async () => {
-      const __r = await fetch(${JSON.stringify(url)}, ${JSON.stringify(fetchInit)});
+      const __init = ${fetchInitJson};
+      try { __init.signal = AbortSignal.timeout(${inPageAbortMs}); } catch (e) {}
+      const __r = await fetch(${JSON.stringify(url)}, __init);
       const __cap = ${MAX_AUTHED_FETCH_BODY_BYTES};
-      let __acc = "";
+      let __bytes = 0;
       let __truncated = false;
+      const __dec = new TextDecoder();
+      const __parts = [];
       if (__r.body && typeof __r.body.getReader === "function") {
         const __reader = __r.body.getReader();
-        const __dec = new TextDecoder();
         for (;;) {
           const { done, value } = await __reader.read();
           if (done) break;
-          __acc += __dec.decode(value, { stream: true });
-          if (__acc.length >= __cap) {
-            __acc = __acc.slice(0, __cap);
+          let __chunk = value;
+          if (__bytes + __chunk.byteLength > __cap) {
+            __chunk = __chunk.subarray(0, __cap - __bytes);
             __truncated = true;
-            try { await __reader.cancel(); } catch (e) {}
-            break;
           }
+          __bytes += __chunk.byteLength;
+          __parts.push(__dec.decode(__chunk, { stream: true }));
+          if (__truncated) { try { await __reader.cancel(); } catch (e) {} break; }
         }
+        __parts.push(__dec.decode());
       } else {
-        const __t = await __r.text();
-        __truncated = __t.length > __cap;
-        __acc = __t.slice(0, __cap);
+        const __buf = new Uint8Array(await __r.arrayBuffer());
+        __truncated = __buf.byteLength > __cap;
+        __parts.push(__dec.decode(__buf.subarray(0, __cap)));
       }
-      return { status: __r.status, type: __r.type, final_url: __r.url, body: __acc, body_truncated: __truncated };
+      return { status: __r.status, type: __r.type, final_url: __r.url, body: __parts.join(""), body_truncated: __truncated };
     })()`;
     // Same wall-clock race as evaluate() so a hung fetch returns a precise timeout instead
     // of pinning the single-page session until the IPC backstop fires.
@@ -893,10 +1008,10 @@ async function main() {
     && typeof initConfig.proxy.server === "string"
     ? initConfig.proxy
     : null;
-  // Session cookie auth for the trusted authed_fetch transport — supplied by the
-  // in-process offensive producer (never an agent). Pass-through array of Playwright
-  // cookie objects; the driver validates the shape via context.addCookies.
-  const authCookies = Array.isArray(initConfig.auth_cookies) ? initConfig.auth_cookies : null;
+  // NOTE: cookie auth for the trusted authed_fetch transport is NO LONGER carried in the init
+  // env — it arrives after ready via the server-side-only `set_auth_cookies` stdin command, so
+  // auth secrets never touch the process environment (no child/renderer inheritance, no
+  // /proc/<pid>/environ snapshot).
 
   if (!targetDomain) {
     writeResponse({ ready: false, error: "init_invalid: target_domain is required" });
@@ -917,10 +1032,11 @@ async function main() {
     return;
   }
 
-  // Scrub the init env BEFORE launching Chromium so the browser's child/renderer processes
-  // do NOT inherit auth material (cookies) or proxy credentials via their environment. (The
-  // driver's own /proc/environ retains the spawn-time value — the documented same-UID
-  // boundary, #131 — but cross-process child inheritance is the avoidable delta, closed here.)
+  // Scrub the init env BEFORE launching Chromium so the browser's child/renderer processes do
+  // NOT inherit proxy credentials via their environment. (The driver's own /proc/environ
+  // retains the spawn-time value — the documented same-UID boundary, #131 — but cross-process
+  // child inheritance is the avoidable delta, closed here. Cookie auth is no longer in the env
+  // at all; it arrives over stdin via set_auth_cookies.)
   delete process.env.BOB_BROWSER_DRIVER_INIT;
 
   const driver = new BrowserDriver({
@@ -931,7 +1047,6 @@ async function main() {
     sessionsRoot,
     recordMode,
     proxy,
-    authCookies,
   });
   try {
     await driver.start();

@@ -5,14 +5,17 @@
 // Contract: a SERVER-SIDE-ONLY driver command (`authed_fetch`) issues an authenticated
 // request from the real-Chrome page context (so it carries Chrome's TLS/HTTP-2 fingerprint
 // and survives a WAF/Cloudflare that 403s safeFetch's bare-Node fingerprint) and returns
-// the response body. Cookie auth is injected at session start from the in-process producer
-// (never an agent). The agent-facing `evaluate` sandbox (no fetch/XHR) is UNCHANGED, and no
-// bob_browser_* MCP tool maps to `authed_fetch`, so an agent cannot reach this transport.
+// the response body. Cookie auth is injected via a second server-side-only command
+// (`set_auth_cookies`) over stdin — never the process environment, never an agent. The
+// agent-facing `evaluate` sandbox (no fetch/XHR) is UNCHANGED, and no bob_browser_* MCP tool
+// maps to either command, so an agent cannot reach this transport.
+//
+// Round-3 hardening covered here: DNS-rebinding pin (--host-resolver-rules), per-cookie scope
+// validation, byte-accurate body cap, in-page AbortSignal self-abort, native-fetch capture.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const http = require("node:http");
 
@@ -22,9 +25,12 @@ const BROWSER_LAUNCHABLE =
   !process.env.BOB_SKIP_BROWSER_TESTS && browserSessions.isBrowserLaunchable();
 
 const DRIVER_SRC = fs.readFileSync(path.join(__dirname, "..", "mcp", "browser-driver.js"), "utf8");
+const MAX_AUTHED_FETCH_BODY_BYTES = 2 * 1024 * 1024;
 
 // Spawn stub (mirrors browser-egress-wiring.test.js): assert what the subprocess WOULD
-// receive in BOB_BROWSER_DRIVER_INIT without launching Chromium.
+// receive WITHOUT launching Chromium. It captures the spawn env + every stdin command line,
+// and auto-acks each command so startSession (which now sends set_auth_cookies over stdin)
+// can complete.
 function makeSpawnStub(captured) {
   const { EventEmitter } = require("node:events");
   return function stub(execPath, args, opts) {
@@ -33,10 +39,35 @@ function makeSpawnStub(captured) {
     child.stdout.setEncoding = () => {};
     child.stderr = new EventEmitter();
     child.stderr.setEncoding = () => {};
-    child.stdin = { writable: true, destroyed: false, write() { return true; }, end() { this.destroyed = true; } };
+    const record = { env: opts && opts.env ? opts.env : {}, args: args || [], commands: [] };
+    child.stdin = {
+      writable: true,
+      destroyed: false,
+      write(chunk) {
+        const line = String(chunk).trim();
+        try {
+          const msg = JSON.parse(line);
+          if (msg && msg.command_id) {
+            record.commands.push({ command: msg.command, args: msg.args });
+            // Auto-ack pending commands so sendCommand resolves.
+            if (!String(msg.command_id).startsWith("close-")) {
+              setImmediate(() => {
+                const count = msg.args && Array.isArray(msg.args.cookies) ? msg.args.cookies.length : 0;
+                child.stdout.emit(
+                  "data",
+                  `${JSON.stringify({ command_id: msg.command_id, result: { ok: true, count } })}\n`,
+                );
+              });
+            }
+          }
+        } catch (e) { /* not a command line */ }
+        return true;
+      },
+      end() { this.destroyed = true; },
+    };
     child.killed = false;
     child.kill = () => { child.killed = true; };
-    captured.push({ env: opts && opts.env ? opts.env : {} });
+    captured.push(record);
     setImmediate(() => {
       const init = JSON.parse(opts.env.BOB_BROWSER_DRIVER_INIT);
       child.stdout.emit("data", `${JSON.stringify({ ready: true, session_id: init.session_id })}\n`);
@@ -45,9 +76,9 @@ function makeSpawnStub(captured) {
   };
 }
 
-// ── init-payload threading (no Chromium) ──
+// ── cookie auth travels over stdin, NEVER the env (no Chromium) ──
 
-test("startSession serializes authCookies into BOB_BROWSER_DRIVER_INIT.auth_cookies", async () => {
+test("startSession does NOT put auth cookies in the child process env", async () => {
   const captured = [];
   const cookies = [{ name: "sid", value: "abc", url: "https://example.com" }];
   const session = await browserSessions.startSession({
@@ -58,13 +89,29 @@ test("startSession serializes authCookies into BOB_BROWSER_DRIVER_INIT.auth_cook
     spawnFn: makeSpawnStub(captured),
     patchrightCheck: () => true,
   });
-  assert.equal(captured.length, 1);
   const init = JSON.parse(captured[0].env.BOB_BROWSER_DRIVER_INIT);
-  assert.deepEqual(init.auth_cookies, cookies);
+  assert.equal(init.auth_cookies, undefined, "cookies must not be serialized into the init env");
   await browserSessions.closeSession(session.session_id).catch(() => {});
 });
 
-test("startSession with no authCookies → init.auth_cookies is null (unauthenticated control arm)", async () => {
+test("startSession sends auth cookies via the set_auth_cookies stdin command", async () => {
+  const captured = [];
+  const cookies = [{ name: "sid", value: "abc", url: "https://example.com" }];
+  const session = await browserSessions.startSession({
+    targetDomain: "example.com",
+    targetUrl: "https://example.com",
+    headless: true,
+    authCookies: cookies,
+    spawnFn: makeSpawnStub(captured),
+    patchrightCheck: () => true,
+  });
+  const setAuth = captured[0].commands.find((c) => c.command === "set_auth_cookies");
+  assert.ok(setAuth, "a set_auth_cookies command must be sent over stdin");
+  assert.deepEqual(setAuth.args.cookies, cookies);
+  await browserSessions.closeSession(session.session_id).catch(() => {});
+});
+
+test("startSession with no authCookies sends no set_auth_cookies command (control arm)", async () => {
   const captured = [];
   const session = await browserSessions.startSession({
     targetDomain: "example.com",
@@ -73,24 +120,63 @@ test("startSession with no authCookies → init.auth_cookies is null (unauthenti
     spawnFn: makeSpawnStub(captured),
     patchrightCheck: () => true,
   });
-  const init = JSON.parse(captured[0].env.BOB_BROWSER_DRIVER_INIT);
-  assert.equal(init.auth_cookies, null);
+  const setAuth = captured[0].commands.find((c) => c.command === "set_auth_cookies");
+  assert.equal(setAuth, undefined, "control arm must not inject any cookies");
   await browserSessions.closeSession(session.session_id).catch(() => {});
 });
 
 // ── source-level contracts (no Chromium) ──
 
-test("driver registers the authed_fetch command and an authedFetch method", () => {
+test("driver registers authed_fetch + set_auth_cookies commands and methods", () => {
   assert.match(DRIVER_SRC, /case "authed_fetch":/);
   assert.match(DRIVER_SRC, /async authedFetch\(args\)/);
+  assert.match(DRIVER_SRC, /case "set_auth_cookies":/);
+  assert.match(DRIVER_SRC, /async setAuthCookies\(args\)/);
 });
 
 test("authed_fetch issues an IN-PAGE fetch (real Chrome stack), not a Node client", () => {
   // The fetch expression must run via page.evaluate so it carries the browser TLS
   // fingerprint; a Node-side context.request would be CF-403'd like safeFetch.
-  assert.match(DRIVER_SRC, /const expr = `\(async \(\) => \{\s*const __r = await fetch\(/);
   assert.match(DRIVER_SRC, /this\.page\.evaluate\(expr\)/);
   assert.match(DRIVER_SRC, /credentials: "include"/);
+});
+
+test("authed_fetch documents page-controlled fetch as an accepted residual (not a broken native-capture)", () => {
+  // Round-3: a "native fetch capture" was tried and reverted — it breaks under the Patchright
+  // stealth driver. The residual is accepted with compensating controls (commit-nav +
+  // differential). Guard against silently reintroducing the capture.
+  assert.match(DRIVER_SRC, /ACCEPTED RESIDUAL — page-controlled fetch/);
+  assert.doesNotMatch(DRIVER_SRC, /__bobNativeFetch/, "the unreliable native-fetch capture must stay removed");
+});
+
+test("authed_fetch self-aborts the in-page fetch via AbortSignal.timeout (no lingering request)", () => {
+  assert.match(DRIVER_SRC, /AbortSignal\.timeout\(/);
+  assert.match(DRIVER_SRC, /const inPageAbortMs = timeout \+ 1000/);
+});
+
+test("authed_fetch caps the body in BYTES, not UTF-16 code units", () => {
+  // Regression for the round-2 finding: __acc.length (UTF-16) → byteLength on Uint8Array.
+  assert.match(DRIVER_SRC, /__chunk\.byteLength/);
+  assert.match(DRIVER_SRC, /__bytes \+ __chunk\.byteLength > __cap/);
+  assert.match(DRIVER_SRC, /__chunk\.subarray\(0, __cap - __bytes\)/);
+  assert.doesNotMatch(DRIVER_SRC, /__acc\.length >= __cap/, "the UTF-16 length cap must be gone");
+});
+
+test("set_auth_cookies validates EACH cookie's target host against target_domain", () => {
+  assert.match(DRIVER_SRC, /assertSafeRequestUrl\(scopeUrl, this\.targetDomain\)/);
+  assert.match(DRIVER_SRC, /set_auth_cookies_scope_blocked/);
+});
+
+test("driver DNS-pins the target host via --host-resolver-rules (rebind defense)", () => {
+  assert.match(DRIVER_SRC, /resolveSafeAddress\(pinHost/);
+  assert.match(DRIVER_SRC, /--host-resolver-rules=/);
+  assert.match(DRIVER_SRC, /MAP \$\{pinHost\} \$\{ipForRule\}/);
+  assert.match(DRIVER_SRC, /this\.pinnedHosts\.set\(pinHost, address\)/);
+});
+
+test("authed_fetch refuses an unpinned host under block_internal_hosts", () => {
+  assert.match(DRIVER_SRC, /!this\.proxy && blockInternalHosts && !this\.pinnedHosts\.has\(/);
+  assert.match(DRIVER_SRC, /was not DNS-pinned at launch/);
 });
 
 test("authed_fetch scope-checks the URL and guards origin drift", () => {
@@ -108,18 +194,12 @@ test("authed_fetch restricts the method to read-intent GET/POST", () => {
   assert.match(DRIVER_SRC, /method !== "GET" && method !== "POST"/);
 });
 
-test("session start injects producer cookies via context.addCookies", () => {
-  assert.match(DRIVER_SRC, /this\.context\.addCookies\(this\.authCookies\)/);
-  assert.match(DRIVER_SRC, /initConfig\.auth_cookies/);
-});
-
 test("authed_fetch does NOT follow redirects (redirect:manual — no off-scope auth leak)", () => {
   assert.match(DRIVER_SRC, /redirect: "manual"/);
 });
 
 test("authed_fetch stream-reads the body with a cap enforced WHILE reading (no full buffering)", () => {
   assert.match(DRIVER_SRC, /__r\.body\.getReader/);
-  assert.match(DRIVER_SRC, /__acc\.length >= __cap/);
 });
 
 test("authed_fetch navigates with waitUntil:commit to minimize authed-page execution", () => {
@@ -132,7 +212,7 @@ test("authed_fetch honors a producer block_internal_hosts policy in BOTH scope c
   assert.ok(checks.length >= 2, "both the fetch URL and the navigated origin must be policy-checked");
 });
 
-test("driver scrubs BOB_BROWSER_DRIVER_INIT from env before launch (no child-process auth inheritance)", () => {
+test("driver scrubs BOB_BROWSER_DRIVER_INIT from env before launch (no child-process inheritance)", () => {
   assert.match(DRIVER_SRC, /delete process\.env\.BOB_BROWSER_DRIVER_INIT/);
 });
 
@@ -144,20 +224,24 @@ test("the agent-facing evaluate sandbox is UNCHANGED: fetch( still blocked in ev
   assert.match(DRIVER_SRC, /evaluate_sandbox_violation/);
 });
 
-test("no bob_browser_* MCP tool exposes authed_fetch (transport is server-side-only)", () => {
+test("no bob_browser_* MCP tool exposes authed_fetch OR set_auth_cookies (server-side-only)", () => {
   const toolsDir = path.join(__dirname, "..", "mcp", "lib", "tools");
   const offenders = fs.readdirSync(toolsDir)
     .filter((f) => f.startsWith("browser-") && f.endsWith(".js"))
-    .filter((f) => fs.readFileSync(path.join(toolsDir, f), "utf8").includes("authed_fetch"));
-  assert.deepEqual(offenders, [], "no browser tool wrapper may reference authed_fetch");
+    .filter((f) => {
+      const src = fs.readFileSync(path.join(toolsDir, f), "utf8");
+      return src.includes("authed_fetch") || src.includes("set_auth_cookies");
+    });
+  assert.deepEqual(offenders, [], "no browser tool wrapper may reference the trusted transport commands");
 });
 
-// ── real-Chromium end-to-end differential (gated on BROWSER_LAUNCHABLE) ──
+// ── real-Chromium end-to-end (gated on BROWSER_LAUNCHABLE) ──
 //
-// A local cookie-gated JSON endpoint stands in for a WAF-fronted API: "/" is public
-// (so the navigate lands), "/api/listing" returns records ONLY when the auth cookie is
-// present (200) else 401. The authed session must read the records (cookie carried by the
-// in-page fetch); the no-cookie control must be denied — the mass-read differential.
+// A local cookie-gated JSON endpoint stands in for a WAF-fronted API: "/" is public (so the
+// navigate lands), "/api/listing" returns records ONLY when the auth cookie is present (200)
+// else 401, "/api/redirect" 302s, and "/api/big" returns an oversized body. The authed
+// session reads the records (cookie carried by the in-page fetch); the no-cookie control is
+// denied — the mass-read differential.
 
 function startCookieGatedServer() {
   return new Promise((resolve) => {
@@ -176,6 +260,16 @@ function startCookieGatedServer() {
           res.writeHead(401, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "unauthorized" }));
         }
+        return;
+      }
+      if (req.url === "/api/redirect") {
+        res.writeHead(302, { location: "/" });
+        res.end();
+        return;
+      }
+      if (req.url === "/api/big") {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("x".repeat(MAX_AUTHED_FETCH_BODY_BYTES + 4096));
         return;
       }
       res.writeHead(404); res.end();
@@ -205,7 +299,7 @@ test("authed_fetch carries injected cookie auth and captures the body (authed vs
   let authedSession = null;
   let controlSession = null;
   try {
-    // attacker arm: cookie injected → reads the records
+    // attacker arm: cookie injected (via set_auth_cookies stdin path) → reads the records
     authedSession = await browserSessions.startSession({
       targetDomain: "localtest.me",
       targetUrl: origin,
@@ -233,6 +327,83 @@ test("authed_fetch carries injected cookie auth and captures the body (authed vs
   } finally {
     if (authedSession) await browserSessions.closeSession(authedSession.session_id).catch(() => {});
     if (controlSession) await browserSessions.closeSession(controlSession.session_id).catch(() => {});
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch does NOT follow a 3xx (redirect:manual → opaqueredirect, status 0)", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+    });
+    const res = await browserSessions.sendCommand(session.session_id, "authed_fetch", {
+      url: `${origin}/api/redirect`, method: "GET",
+    });
+    // A followed redirect would surface the 200 of "/"; redirect:manual surfaces status 0.
+    assert.equal(res.status, 0, `redirect must not be followed: ${JSON.stringify(res)}`);
+    assert.equal(res.type, "opaqueredirect");
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch caps an oversized body at the byte limit and flags truncation", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+    });
+    const res = await browserSessions.sendCommand(session.session_id, "authed_fetch", {
+      url: `${origin}/api/big`, method: "GET",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body_truncated, true, "oversized body must be flagged truncated");
+    assert.ok(
+      Buffer.byteLength(res.body) <= MAX_AUTHED_FETCH_BODY_BYTES,
+      `capped body must be <= ${MAX_AUTHED_FETCH_BODY_BYTES} bytes, got ${Buffer.byteLength(res.body)}`,
+    );
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("set_auth_cookies rejects an out-of-scope cookie (session fails closed)", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  try {
+    await assert.rejects(
+      () => browserSessions.startSession({
+        targetDomain: "localtest.me",
+        targetUrl: origin,
+        headless: true,
+        // cookie scoped to an OFF-target host — must be refused before it reaches the context
+        authCookies: [{ name: "evil", value: "x", url: "https://attacker.example.com/" }],
+      }),
+      (err) => { assert.match(err.message, /scope_blocked/); return true; },
+    );
+  } finally {
     await new Promise((r) => server.close(r));
   }
 });

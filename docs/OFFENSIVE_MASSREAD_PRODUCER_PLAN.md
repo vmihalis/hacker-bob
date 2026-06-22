@@ -62,21 +62,43 @@ Two separate outputs, by design:
 ## The WAF transport (Chrome + a trusted `authed_fetch`)
 
 The in-process `safeFetch` is Cloudflare-blind (bare Node TLS fingerprint → 403). The
-existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats CF. So:
+existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats CF. So
+(implemented in PR1, hardened across review rounds 2–3):
 
-- **Auth injection at session start** (`mcp/browser-driver.js#start`): seed
-  `context.setExtraHTTPHeaders(...)` and/or `context.addCookies(...)` from the existing
-  `buildHeaderProfile` (`auth.js`). The browser has NO auth path today; this adds one,
-  threaded from the producer (never from an agent).
+- **Auth injection over stdin, never the env** — cookies are sent to the driver AFTER ready
+  via a server-side-only `set_auth_cookies` command (`mcp/lib/browser-sessions.js` →
+  `mcp/browser-driver.js#setAuthCookies`), so auth secrets never touch the process
+  environment (no child/renderer inheritance, no `/proc/<pid>/environ` snapshot). EACH
+  cookie's target host is scope-validated against `target_domain` before it reaches the
+  context — an out-of-scope cookie fails the whole session closed. Threaded from the
+  producer, never an agent.
 - **A trusted `authed_fetch` driver command** — server-side-only, NOT agent-reachable.
-  Issues a scope-checked authenticated request from the page context (`page.evaluate` of a
-  server-built fetch, or `page.request`/`context.request` with the injected auth) and
-  returns the body. The agent-facing `evaluate` sandbox (`FORBIDDEN_EVAL_PATTERN` — no
-  `fetch(`/XHR/WS) stays FULLY CLOSED; only the trusted producer path uses the new
-  command. Mirror the `xss_confirm` scaffolding: `assertSafeResolvedRequestUrl` +
-  read-only-path + final-URL drift guard + `auditConfirmRequest` on every request.
+  Issues a scope-checked authenticated request from the **page world** (`page.evaluate` of a
+  server-built `fetch`) — this is required to carry the real Chrome TLS/HTTP-2 fingerprint;
+  a Node-side `context.request` is CF-403'd like `safeFetch`. The agent-facing `evaluate`
+  sandbox (`FORBIDDEN_EVAL_PATTERN` — no `fetch(`/XHR/WS) stays FULLY CLOSED; only the
+  trusted producer path uses the new command. Scaffolding mirrors `xss_confirm`:
+  `assertSafeResolvedRequestUrl` (URL + origin) + `waitUntil:"commit"` (minimal authed-page
+  execution) + final-URL origin-drift guard + `redirect:"manual"` (no off-scope auth leak) +
+  a wall-clock timeout race + an in-page `AbortSignal.timeout` (no lingering renderer
+  request) + a body cap measured in **bytes** (not UTF-16 code units), enforced while
+  streaming.
+- **DNS-rebinding pin** — the target host is resolved ONCE in Node and Chrome is launched
+  with `--host-resolver-rules=MAP <host> <validated-ip>`, so the browser connects to the IP
+  we checked (closing the TOCTOU where the static scope check passes but Chrome re-resolves
+  to an internal/attacker IP). Under `block_internal_hosts`, an unpinned host is refused
+  fail-closed. Skipped under an egress proxy (DNS resolves at the proxy).
 - **Refuse when `block_internal_hosts` is on** (same SSRF stance as `xss_confirm`, which
-  cannot enforce the session SSRF policy through the browser).
+  cannot enforce the session SSRF policy through the browser) — the producer refuses; the
+  driver's scope+pin checks are defense in depth for a direct call.
+- **ACCEPTED RESIDUAL — page-controlled fetch.** The request runs in the page world, so a
+  hostile target could in principle override `window.fetch`/`Response` to forge the result.
+  This is inherent to the transport's purpose (real TLS fingerprint requires the page network
+  stack), and a "native fetch capture" was tried and reverted — it is unreliable under the
+  Patchright stealth driver and broke the transport. Compensating controls: `waitUntil:
+  "commit"` minimizes page-script execution before the fetch, and the authed-vs-control
+  DIFFERENTIAL bounds integrity (page code cannot tell which arm it serves; a target forging
+  a vuln against itself is not a coherent threat). A single capture is evidence, not proof.
 
 ## Severity ceiling
 
@@ -122,7 +144,14 @@ The manual, fail-closed edits:
 - Full raw capture only when `owner_authorized: true`, to a gitignored operator-managed
   file outside the signed rail.
 - Agent-facing browser `evaluate` sandbox unchanged (no new agent network primitive).
-- Auth material flows producer → driver, never agent → driver.
+- Auth material flows producer → driver over **stdin, never the env**; each cookie is
+  scope-validated against `target_domain` before it reaches the browser context.
+- The browser is DNS-pinned to the Node-validated IP (`--host-resolver-rules`); an unpinned
+  host is refused under `block_internal_hosts`.
+- `authed_fetch` does not follow redirects (`redirect:"manual"`), self-aborts on timeout,
+  and caps the body in bytes.
+- Page-controlled fetch is an accepted residual (see transport section) — mitigated by
+  `waitUntil:"commit"` + the differential design, not by an unreliable native-fetch capture.
 - Every request audited via `auditConfirmRequest`; refuse under `block_internal_hosts`.
 - `demonstrated_severity` stamped from the frozen registry, never agent-supplied; the
   per-tool ceiling bounds blast radius to a fabricated HIGH at worst (the #131 same-UID
