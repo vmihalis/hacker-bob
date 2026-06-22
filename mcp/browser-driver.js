@@ -619,14 +619,23 @@ class BrowserDriver {
   async authedFetch(args) {
     const url = String(args && args.url ? args.url : "").trim();
     if (!url) throw new Error("authed_fetch.url is required");
+    // GET, or POST for query-style listing/search endpoints (real mass-read APIs are often
+    // POST). The transport CANNOT verify a POST is non-mutating — read-intent is the
+    // PRODUCER's responsibility (it targets only listing/search surfaces, guarded by
+    // assertReadOnlyPath + the operator), so this is not labelled a read-only guarantee.
     const method = String(args && args.method ? args.method : "GET").toUpperCase();
     if (method !== "GET" && method !== "POST") {
-      throw new Error("authed_fetch.method must be GET or POST (read-intent only)");
+      throw new Error("authed_fetch.method must be GET or POST");
     }
     const headers = args && args.headers && typeof args.headers === "object" && !Array.isArray(args.headers)
       ? args.headers
       : {};
     const body = args && typeof args.body === "string" ? args.body : null;
+    // The producer threads the session block_internal_hosts policy; when on, the scope checks
+    // below reject internal/private resolutions — an AUTHENTICATED request to an internal host
+    // is worse than the unauth navigate default. The producer ALSO refuses to run under this
+    // policy (mirrors bob_http_xss_confirm), so this is defense in depth.
+    const blockInternalHosts = !!(args && args.block_internal_hosts === true);
     let parsed;
     try {
       parsed = new URL(url);
@@ -636,22 +645,22 @@ class BrowserDriver {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("authed_fetch.url must be http(s)");
     }
-    // Scope guard (mirror navigate): the URL must resolve in-scope. block_internal_hosts is
-    // not enforced here — the producer REFUSES to run when that policy is on (it cannot
-    // verify SSRF posture through the browser), mirroring bob_http_xss_confirm.
+    const origin = parsed.origin;
+    // Scope-check BOTH the fetch URL and the origin we navigate to, honoring the policy.
     try {
-      await assertSafeResolvedRequestUrl(url, this.targetDomain, { blockInternalHosts: false });
+      await assertSafeResolvedRequestUrl(url, this.targetDomain, { blockInternalHosts });
+      await assertSafeResolvedRequestUrl(origin, this.targetDomain, { blockInternalHosts });
     } catch (err) {
       const wrapped = new Error(`scope_blocked: ${err && err.message ? err.message : err}`);
       wrapped.code = "scope_blocked";
       throw wrapped;
     }
     const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
-    const origin = parsed.origin;
-    // Establish the browser context ON the target origin first (passes the CF challenge,
-    // applies context cookies), then issue a SAME-ORIGIN in-page fetch so the body is
-    // readable (a cross-origin fetch would be CORS-opaque and expose no body).
-    const navResp = await this.page.goto(origin, { waitUntil: "domcontentloaded", timeout });
+    // waitUntil:"commit" returns as soon as the response begins — it minimizes execution of
+    // the (authenticated) origin page's own JS before the in-page fetch. Same-origin context
+    // is still required (a cross-origin fetch would be CORS-opaque), so a minimal navigation
+    // is unavoidable; commit keeps that side-effect surface as small as possible.
+    const navResp = await this.page.goto(origin, { waitUntil: "commit", timeout });
     let landedOrigin = null;
     try { landedOrigin = new URL(this.page.url()).origin; } catch { landedOrigin = null; }
     if (landedOrigin !== origin) {
@@ -660,18 +669,40 @@ class BrowserDriver {
       throw e;
     }
     await randomDelay(150, 400);
-    const fetchInit = { method, headers, credentials: "include" };
+    // redirect:"manual" — do NOT follow redirects: an authenticated request that followed a
+    // 3xx could leak the auth to an OFF-SCOPE origin (the scope check only covers the first
+    // hop). A redirect surfaces as type "opaqueredirect" / status 0, so the producer's 2xx
+    // oracle fails closed.
+    const fetchInit = { method, headers, credentials: "include", redirect: "manual" };
     if (body != null && method !== "GET") fetchInit.body = body;
     // Built server-side from validated inputs; runs in the page world (real Chrome stack).
+    // The body is STREAM-read with a hard cap enforced WHILE reading, so an oversized/hostile
+    // response cannot buffer unbounded memory in the renderer before the slice.
     const expr = `(async () => {
       const __r = await fetch(${JSON.stringify(url)}, ${JSON.stringify(fetchInit)});
-      const __t = await __r.text();
-      return {
-        status: __r.status,
-        final_url: __r.url,
-        body: __t.slice(0, ${MAX_AUTHED_FETCH_BODY_BYTES}),
-        body_truncated: __t.length > ${MAX_AUTHED_FETCH_BODY_BYTES},
-      };
+      const __cap = ${MAX_AUTHED_FETCH_BODY_BYTES};
+      let __acc = "";
+      let __truncated = false;
+      if (__r.body && typeof __r.body.getReader === "function") {
+        const __reader = __r.body.getReader();
+        const __dec = new TextDecoder();
+        for (;;) {
+          const { done, value } = await __reader.read();
+          if (done) break;
+          __acc += __dec.decode(value, { stream: true });
+          if (__acc.length >= __cap) {
+            __acc = __acc.slice(0, __cap);
+            __truncated = true;
+            try { await __reader.cancel(); } catch (e) {}
+            break;
+          }
+        }
+      } else {
+        const __t = await __r.text();
+        __truncated = __t.length > __cap;
+        __acc = __t.slice(0, __cap);
+      }
+      return { status: __r.status, type: __r.type, final_url: __r.url, body: __acc, body_truncated: __truncated };
     })()`;
     // Same wall-clock race as evaluate() so a hung fetch returns a precise timeout instead
     // of pinning the single-page session until the IPC backstop fires.
@@ -699,6 +730,9 @@ class BrowserDriver {
     }
     return {
       status: result && Number.isInteger(result.status) ? result.status : null,
+      // "opaqueredirect" (status 0) means the endpoint 3xx'd and redirect:"manual" refused to
+      // follow it — the producer treats this as non-confirming (not a 2xx bulk read).
+      type: result && result.type ? String(result.type) : null,
       final_url: result && result.final_url ? String(result.final_url) : null,
       body: result && typeof result.body === "string" ? result.body : "",
       body_truncated: !!(result && result.body_truncated),
@@ -882,6 +916,12 @@ async function main() {
     process.exit(2);
     return;
   }
+
+  // Scrub the init env BEFORE launching Chromium so the browser's child/renderer processes
+  // do NOT inherit auth material (cookies) or proxy credentials via their environment. (The
+  // driver's own /proc/environ retains the spawn-time value — the documented same-UID
+  // boundary, #131 — but cross-process child inheritance is the avoidable delta, closed here.)
+  delete process.env.BOB_BROWSER_DRIVER_INIT;
 
   const driver = new BrowserDriver({
     sessionId,

@@ -1,17 +1,19 @@
 # Offensive mass-read producer + WAF browser transport — design
 
-Status: in progress (2026-06-22). Source of the requirement: the sexjobs.nl client
-pentest (crown-jewel F-2 HIGH) found an unauth/under-authorized bulk PII read that the
-signed offensive rail had **no producer for** — the broken-auth/mass-read class. This
-adds that producer, plus the WAF-capable transport it needs (F-2 was only provable
-through Cloudflare via the real-Chrome channel).
+Status: in progress (2026-06-22). Source of the requirement: a client pentest surfaced an
+unauth/under-authorized bulk-PII read that the signed offensive rail had **no producer
+for** — the broken-auth/mass-read class. This adds that producer, plus the WAF-capable
+transport it needs (the finding was only provable through Cloudflare via the real-Chrome
+channel). (Client/engagement specifics are deliberately omitted — this doc ships in the
+published package.)
 
 ## Bug class
 
 **Broken authorization → mass-read of a bulk sensitive collection.** An
 under-authorized identity (unauth, a leaked/guessable credential, or a low-privilege
-account) reads a bulk collection it should not — e.g. `POST /api/fps/listing` returning
-51 production records (emails / phones / IBANs).
+account) reads a bulk collection it should not — e.g. a listing/search endpoint that
+returns many production records (emails / phones / financial identifiers) to a caller
+that should only see its own.
 
 ## The oracle — `safe_oracle.kind: "differential_response"`, ceiling HIGH
 
@@ -79,7 +81,7 @@ existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats
 ## Severity ceiling
 
 `bob_http_massread_confirm: "high"` in `OFFENSIVE_TOOL_DEMONSTRATED_CEILING` (claims.js).
-Honest HIGH: mass-read of PII is a HIGH; F-2 was graded HIGH. The producer proves the
+Honest HIGH: mass-read of PII is a HIGH (the motivating finding was graded HIGH). The producer proves the
 IMPACT (bulk read); the underlying vuln (e.g. a hardcoded credential) is the finding.
 
 ## Delivery — two PRs

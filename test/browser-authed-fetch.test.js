@@ -113,6 +113,29 @@ test("session start injects producer cookies via context.addCookies", () => {
   assert.match(DRIVER_SRC, /initConfig\.auth_cookies/);
 });
 
+test("authed_fetch does NOT follow redirects (redirect:manual — no off-scope auth leak)", () => {
+  assert.match(DRIVER_SRC, /redirect: "manual"/);
+});
+
+test("authed_fetch stream-reads the body with a cap enforced WHILE reading (no full buffering)", () => {
+  assert.match(DRIVER_SRC, /__r\.body\.getReader/);
+  assert.match(DRIVER_SRC, /__acc\.length >= __cap/);
+});
+
+test("authed_fetch navigates with waitUntil:commit to minimize authed-page execution", () => {
+  assert.match(DRIVER_SRC, /waitUntil: "commit"/);
+});
+
+test("authed_fetch honors a producer block_internal_hosts policy in BOTH scope checks", () => {
+  assert.match(DRIVER_SRC, /block_internal_hosts === true/);
+  const checks = DRIVER_SRC.match(/assertSafeResolvedRequestUrl\([^)]*\{ blockInternalHosts \}\)/g) || [];
+  assert.ok(checks.length >= 2, "both the fetch URL and the navigated origin must be policy-checked");
+});
+
+test("driver scrubs BOB_BROWSER_DRIVER_INIT from env before launch (no child-process auth inheritance)", () => {
+  assert.match(DRIVER_SRC, /delete process\.env\.BOB_BROWSER_DRIVER_INIT/);
+});
+
 test("the agent-facing evaluate sandbox is UNCHANGED: fetch( still blocked in evaluate", () => {
   // The transport must NOT loosen the agent sandbox — only the trusted authed_fetch path
   // (a separate command with no MCP tool wrapper) issues page-context network IO.
