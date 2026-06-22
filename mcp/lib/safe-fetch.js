@@ -381,5 +381,6 @@ module.exports = {
   assertSafeRequestUrl,
   isRedirectStatus,
   normalizeRedirectMethod,
+  resolveSafeAddress,
   safeFetch,
 };

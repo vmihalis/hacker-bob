@@ -35,6 +35,20 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
     ]),
   }),
   Object.freeze({
+    // Coverage-cell wavefront: each finalized cell deposits a coverage row
+    // (logCellCoverage) and each producer sweep deposits cell_proposed events.
+    // The next dispatch layer is read off these deposits — already-covered
+    // cells prune away, newly-discovered transition-cells fold in — so the
+    // stigmergic wavefront's READ side has a manifested consumer.
+    producer_id: "coverage_cell_floor_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_cell_floor cell_proposed events + bob_finalize_node logCellCoverage coverage.jsonl",
+    trace_shape_ref: "mcp/lib/coverage.js#logCellCoverage",
+    registered_consumers: Object.freeze([
+      "cell_floor_coverage_prune_gate",
+    ]),
+  }),
+  Object.freeze({
     producer_id: "surface_discovery_ranked_leads",
     mcp_tool_or_artifact:
       "deep-surface-discovery handoff summary ranked_leads[] OR bob_record_surface_leads invocation",

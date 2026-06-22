@@ -32,6 +32,7 @@ const TAG_GRAMMAR = Object.freeze({
     /\bY-[PDR]\d+[a-z]?\b/g, // Y-P13a, Y-D15b, Y-R22
     /\b[CX]\.\d+[a-z]?\b/g, //  C.7, X.10  (dotted cycle labels)
     /(?<![A-Za-z0-9_])X-P\d+\b/g, // X-P8 (plane-X invariant)
+    /\bNS-\d+[a-z]?\b/g, // NS-1, NS-2 (coverage-nesting Step B — unique shape)
   ]),
   // S/C/I families: collision-prone bare tokens. Matched ONLY as a leading
   // comment token so docs-prose homonyms (I6 the capability node, C2 the C&C
@@ -90,6 +91,66 @@ const REGISTRY = Object.freeze({
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/repo-env.js", symbol: "assertContainerCheckoutDest" }),
       Object.freeze({ file: "mcp/lib/repo-env.js", symbol: "S14" }), // tag anchor (repo-env.js comment)
+    ]),
+  }),
+
+  // ── Coverage-nesting Step B (NS family) ─────────────────────────────────
+  // The bounded, brain-owned nested fan-out muscle. Each tag is anchored as a
+  // comment at its enforcing site; enforced_by points at a live symbol there.
+  "NS-1": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Single declared spawner (Y-P8): exactly ONE registry role (evaluator-fanout) "
+      + "may hold the host Task primitive; spawnCapableAgentNames().length === 1.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "spawnCapableAgentNames" }),
+      Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "NS-1" }), // tag anchor
+    ]),
+  }),
+  "NS-2": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "G2 disjointness by role-level deny: the Task-holder holds NO coverage-cell "
+      + "tool (evaluator-fanout denies bob_propose_transition), verified prefix-stripped.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "test/coverage-cell-invariant-envelope.test.js", symbol: "coverageCellTools" }),
+      Object.freeze({ file: "test/coverage-cell-invariant-envelope.test.js", symbol: "NS-2" }), // tag anchor
+    ]),
+  }),
+  "NS-3": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Host-only nesting: depth>1 is reachable only on host==claude and is clamped "
+      + "by the host nesting ceiling before the plan is emitted (fail-closed elsewhere).",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "effectiveSpawnDepth" }),
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "NS-3" }), // tag anchor
+    ]),
+  }),
+  "NS-4": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Bounded brain-owned fan-out: the depth-1 width is preventively capped to the "
+      + "spawn budget (maxBranchingForBudget); validateSpawnFanout is the finalize "
+      + "detective bound (depth/count/type/budget) over self-reported children.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "validateSpawnFanout" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-4" }), // tag anchor
+    ]),
+  }),
+  "NS-5": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Default-off: DEFAULT_QUEUE_POLICY keeps max_spawn_depth=1 + "
+      + "max_total_spawned_agents=null, so behavior is unchanged until an operator opts in.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "DEFAULT_QUEUE_POLICY" }),
+      Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "NS-5" }), // tag anchor
     ]),
   }),
 

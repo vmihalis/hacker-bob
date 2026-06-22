@@ -202,7 +202,7 @@ test("installer copies a require-able complete MCP runtime", () => {
         "const installedRequire = require('module').createRequire(process.argv[1]);",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 176) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 178) process.exit(2);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_confirm')) process.exit(42);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_cors_confirm')) process.exit(49);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_http_idor_confirm')) process.exit(43);",
@@ -424,6 +424,14 @@ test("installer merges existing MCP/settings config idempotently", () => {
     assert.ok(bashEntry.hooks.some((hook) => hook.command === "echo existing"));
     assert.equal(
       bashEntry.hooks.filter((hook) => /session-write-guard\.sh/.test(hook.command)).length,
+      1,
+    );
+    // Edit/MultiEdit must route through the write guard too — otherwise Edit is
+    // an unguarded write path to MCP-owned/audit-graded session artifacts.
+    const editEntry = settings.hooks.PreToolUse.find((entry) => entry.matcher === "Edit|MultiEdit");
+    assert.ok(editEntry, "Edit|MultiEdit guard matcher must survive the merge");
+    assert.equal(
+      editEntry.hooks.filter((hook) => /session-write-guard\.sh/.test(hook.command)).length,
       1,
     );
     // The write-confirm gate matcher ships in the canonical source settings and merges into an

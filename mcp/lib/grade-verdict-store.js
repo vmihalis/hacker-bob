@@ -137,6 +137,22 @@ function normalizeGradeFinding(result, findingIdSet) {
   return normalized;
 }
 
+// Optional, server-derived coverage-closure annotation (covered / total
+// reachable cells + uncovered remainder). A pure stat: it never participates in
+// the grade decision math, and is carried through read-back so a machine
+// consumer sees the same numbers grade.md renders.
+function normalizeCoverageClosure(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("coverage_closure must be an object");
+  }
+  return {
+    cell_floor_active: value.cell_floor_active === true,
+    covered_cells: assertInteger(value.covered_cells, "coverage_closure.covered_cells", { min: 0 }),
+    total_reachable_cells: assertInteger(value.total_reachable_cells, "coverage_closure.total_reachable_cells", { min: 0 }),
+    uncovered_reachable_cells: assertInteger(value.uncovered_reachable_cells, "coverage_closure.uncovered_reachable_cells", { min: 0 }),
+  };
+}
+
 function normalizeGradeVerdictDocument(document, { expectedDomain = null, findingIdSet = null } = {}) {
   if (document == null || typeof document !== "object" || Array.isArray(document)) {
     throw new Error("grade verdict document must be an object");
@@ -156,6 +172,12 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
       ? null
       : assertNonEmptyString(document.claim_freeze_id, "claim_freeze_id"),
   };
+
+  // Present only on grade verdicts written after a cell floor exists; absent for
+  // legacy/surface-only sessions, so their persisted shape is byte-identical.
+  if (document.coverage_closure != null) {
+    normalized.coverage_closure = normalizeCoverageClosure(document.coverage_closure);
+  }
 
   if (!Array.isArray(document.findings)) {
     throw new Error("findings must be an array");
@@ -293,8 +315,15 @@ function renderGradeVerdictMarkdown(document) {
     `- Verdict: ${document.verdict}`,
     `- Total Score: ${document.total_score}`,
     `- Feedback: ${document.feedback || "N/A"}`,
-    "",
   ];
+  const closure = document.coverage_closure;
+  if (closure && closure.cell_floor_active === true) {
+    lines.push(
+      `- Coverage closure (informational): ${closure.covered_cells}/${closure.total_reachable_cells} `
+      + `reachable cells covered (${closure.uncovered_reachable_cells} uncovered)`,
+    );
+  }
+  lines.push("");
 
   if (document.findings.length === 0) {
     lines.push("No graded findings.");
@@ -444,6 +473,17 @@ function writeGradeVerdict(args) {
     finalReportableSeveritySet,
   });
   verificationLib().requireVerificationCompleteForGrade(domain, { findingIdSet });
+
+  // Pure, non-gating coverage-closure annotation. Computed AFTER the verdict
+  // math (it never enters enforceGradeVerdictConsistency) and attached only when
+  // a cell floor exists, so legacy/surface-only grade verdicts stay byte-
+  // identical. Fail-soft: a read error simply omits the annotation.
+  try {
+    const closure = require("./coverage-closure.js").coverageClosureStat(domain);
+    if (closure && closure.cell_floor_active === true) {
+      document.coverage_closure = closure;
+    }
+  } catch {}
 
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");

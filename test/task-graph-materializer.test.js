@@ -87,8 +87,9 @@ test("LEDGER_PRESSURE thresholds sit below FRONTIER_EVENTS_MAX_RECORDS", () => {
   assert.ok(LEDGER_PRESSURE_REFUSE_THRESHOLD < FRONTIER_EVENTS_MAX_RECORDS);
 });
 
-test("TASK_GRAPH_NODE_KIND_VALUES is closed at the 4 X.2 node kinds", () => {
+test("TASK_GRAPH_NODE_KIND_VALUES is the closed node-kind set", () => {
   assert.deepEqual(TASK_GRAPH_NODE_KIND_VALUES.slice().sort(), [
+    "cell",
     "claim",
     "hypothesis",
     "surface",

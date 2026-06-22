@@ -245,6 +245,125 @@ TESTS = [
      {"tool_input": {"command": f"cat '{SESSION}/findings.jsonl"}},
      2,
      "cannot be safely parsed"),
+
+    # --- Heredoc bodies must not trip the shlex fail-closed guard. ---
+    # A heredoc whose body breaks shlex (the step-6 r'...\'...' regex) but reads
+    # ONLY scratch files must be ALLOWED; the body is inert stdin, not a shell
+    # read of any session file.
+    ("heredoc w/ quote-breaking regex, reads scratch only → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', open('/tmp/c').read())\n"
+        "print(len(hits))\n"
+        "PY"}},
+     0,
+     None),
+    # The heredoc strip must be precise: a real shell read of a blocked file on
+    # a line AFTER a quote-broken heredoc must still be caught.
+    ("real cat of findings.jsonl after a quote-broken heredoc → block",
+     {"tool_input": {"command":
+        f"cat \"{SESSION}/attack_surface.json\"; "
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "x = re.findall(r'a\\'b', 'x')\n"
+        "PY\n"
+        f"cat \"{SESSION}/findings.jsonl\""}},
+     2,
+     "findings.jsonl"),
+
+    # --- Command-aware payload separation: data is not a read. ---
+    # A blocked basename/path that appears only as a DATA string in an
+    # interpreter payload (never opened/read) must NOT trip a block.
+    ("blocked basename as a python string literal (printed) → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "x = re.findall(r'a\\'b', 'x')\n"
+        f"name = '{SESSION}/findings.jsonl'\n"
+        "print(name)\n"
+        "PY"}},
+     0,
+     None),
+    ("blocked path as data string via python3 -c (printed) → allow",
+     {"tool_input": {"command": f"python3 -c \"print('{SESSION}/findings.jsonl')\""}},
+     0,
+     None),
+    # A genuine read CALL inside a heredoc body is still detected.
+    ("genuine open().read() of a blocked file in a heredoc body → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "x = re.findall(r'a\\'b', 'x')\n"
+        f"data = open('{SESSION}/findings.jsonl').read()\n"
+        "PY"}},
+     2,
+     "findings.jsonl"),
+    # A write-mode open is not a read -> the read guard ignores it (allow).
+    ("write-mode open of a blocked file is not a read → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "x = re.findall(r'a\\'b', 'x')\n"
+        f"open('{SESSION}/findings.jsonl','w').write('x')\n"
+        "PY"}},
+     0,
+     None),
+    # A genuine read inside a SHELL heredoc body is re-analyzed recursively.
+    ("bash heredoc body that cat's a blocked file → block (shell recursion)",
+     {"tool_input": {"command": f"bash <<'EOF'\ncat {SESSION}/findings.jsonl\nEOF"}},
+     2,
+     "findings.jsonl"),
+    # Executing a blocked file as a python script reads it → block.
+    ("python3 with a blocked file as its script arg → block",
+     {"tool_input": {"command": f"python3 {SESSION}/findings.jsonl"}},
+     2,
+     "findings.jsonl"),
+
+    # --- Hardening: content-dumping tools beyond the original allowlist. ---
+    ("xxd of a blocked file → block",
+     {"tool_input": {"command": f"xxd {SESSION}/findings.jsonl"}},
+     2,
+     "findings.jsonl"),
+    ("od of a blocked file → block",
+     {"tool_input": {"command": f"od -c {SESSION}/grade.md"}},
+     2,
+     "grade.md"),
+    ("tac of a blocked file → block",
+     {"tool_input": {"command": f"tac {SESSION}/findings.jsonl"}},
+     2,
+     "findings.jsonl"),
+    ("cut of a blocked file → block",
+     {"tool_input": {"command": f"cut -c1-80 {SESSION}/report.md"}},
+     2,
+     "report.md"),
+    # --- Hardening: stdin '<' input redirect reads the file. ---
+    ("base64 < a blocked file → block (stdin redirect)",
+     {"tool_input": {"command": f"base64 < {SESSION}/state.json"}},
+     2,
+     "state.json"),
+    # --- Hardening: command substitution / shell -c / os.system recursion. ---
+    ("$(cat blocked) command substitution → block",
+     {"tool_input": {"command": f"echo \"$(cat {SESSION}/findings.jsonl)\""}},
+     2,
+     "findings.jsonl"),
+    ("sh -c that cat's a blocked file → block (recursed as shell)",
+     {"tool_input": {"command": f"sh -c 'cat {SESSION}/findings.jsonl'"}},
+     2,
+     "findings.jsonl"),
+    ("python os.system cat of a blocked file → block (recursed as shell)",
+     {"tool_input": {"command": f"python3 -c \"import os;os.system('cat {SESSION}/grade.md')\""}},
+     2,
+     "grade.md"),
+    # --- FP fix: RISKY_PATH_RE applies to the basename, not directory names. ---
+    ("read of a clean .txt under a proof-of-concept/ dir → allow",
+     {"tool_input": {"command": f"cat {SESSION}/proof-of-concept/clean.txt"}},
+     0,
+     None),
+    ("xxd of an agent-writable scratch .txt → allow",
+     {"tool_input": {"command": f"xxd {SESSION}/subdomains.txt"}},
+     0,
+     None),
 ]
 
 

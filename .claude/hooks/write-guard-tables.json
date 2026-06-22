@@ -88,7 +88,8 @@
     "schema-contracts.jsonl",
     "doc-delta-results.json",
     "auth-differential-results.json",
-    "evm-role-table-results.json"
+    "evm-role-table-results.json",
+    "spawn-ledger.jsonl"
   ],
   "mcp_owned_filename_patterns": [
     "^wave-[0-9]+-assignments\\.json$",

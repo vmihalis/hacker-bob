@@ -99,6 +99,22 @@ const ROLE_DEFINITIONS = Object.freeze({
       ...evaluatorRoleSpecs().flatMap((role) => role.role_bundles.filter((b) => b !== "evaluator-shared")),
     ]),
   }),
+  // CN (coverage-nesting) Step B — the spawn-capable per-surface evaluator that
+  // ACTUATES the brain-owned child_fanout_plan (default-off; emitted only when
+  // an operator opts into max_spawn_depth>1 on host==claude). It carries the web
+  // evaluator toolset MINUS bob_propose_transition: a Task-holder must stay
+  // disjoint from the coverage-cell tools (single-spawner G2), and the deny is
+  // the only tool-subtraction primitive (bundle membership is per-tool and
+  // VALID_ROLE_BUNDLES is frozen). Transition-blind by construction — discovered
+  // cross-surface pivots ride discovered_pivots[] up to the orchestrator, which
+  // owns + proposes transitions.
+  "evaluator-fanout": Object.freeze({
+    id: "evaluator-fanout",
+    family: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-fanout.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
+    deny_mcp_tools: Object.freeze(["bob_propose_transition"]),
+  }),
   chain: Object.freeze({
     id: "chain",
     prompt_body: path.join(ROLE_PROMPT_DIR, "chain.md"),
@@ -168,10 +184,17 @@ function allRoleDefinitions() {
 
 function mcpToolNamesForRole(roleId) {
   const role = roleDefinition(roleId);
+  // A role may DENY specific tools its bundles would otherwise grant. This is
+  // the only tool-subtraction primitive: bundle membership is per-tool and
+  // VALID_ROLE_BUNDLES is frozen, so a spawn-capable role that must stay
+  // disjoint from the coverage-cell tools (single-spawner G2) lists them here
+  // rather than minting a near-duplicate bundle. The deny is applied to the
+  // unioned set so a denied tool is removed no matter which bundle grants it.
+  const denied = new Set(role.deny_mcp_tools || []);
   return uniqueStrings([
     ...role.mcp_role_bundles.flatMap((roleBundle) => toolNamesForRoleBundle(roleBundle)),
     ...(role.mcp_tools || []),
-  ]);
+  ]).filter((toolName) => !denied.has(toolName));
 }
 
 function assertRoleModel() {

@@ -464,6 +464,65 @@ function appendHypothesisProposal(input, options = {}) {
   }, options);
 }
 
+// Append a cell_proposed observation.recorded event — one coverage cell
+// (a (surface x bug_class x auth_role) obligation, or for OSS a
+// (harness x sanitizer x input_class) obligation) emitted from a
+// deriveChildFanoutPlan child. The cell keys on the REAL parent surface_id
+// (never a synthetic id); the cell_key is carried verbatim in the payload for
+// 1:1 coverage reconciliation. Single-spawner: the orchestrator appends; no
+// worker spawn. Mirrors appendHypothesisProposal (same observation.recorded
+// top-level kind — no new frontier-event-kind budget spent).
+function appendCellProposal(input, options = {}) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("appendCellProposal input must be an object");
+  }
+  const surfaceId = assertSurfaceRef(input.surface_id, "surface_id");
+  const bugClass = assertNonEmptyString(input.bug_class, "bug_class");
+  const cellKey = assertNonEmptyString(input.cell_key, "cell_key");
+  const authProfile = normalizeOptionalText(input.auth_profile, "auth_profile") || "";
+  // A2: a transition-cell rides the SAME cell_proposed payload but is grounded in
+  // an EDGE — both endpoint surfaces. When present, the materializer attaches
+  // both as surface_refs (instead of the single surface_id); absent keeps the
+  // surface-cell path byte-identical.
+  const fromSurface = input.from_surface == null ? "" : assertSurfaceRef(input.from_surface, "from_surface");
+  const toSurface = input.to_surface == null ? "" : assertSurfaceRef(input.to_surface, "to_surface");
+  const techniquePackIds = normalizeStringArray(input.technique_pack_ids, "technique_pack_ids");
+  const capabilityPackIds = normalizeStringArray(input.capability_pack_ids, "capability_pack_ids");
+  const planningKey = normalizeOptionalText(input.planning_key, "planning_key") || "";
+  const proposalId = normalizeOptionalId(input.proposal_id, "proposal_id");
+  // E2 depth re-probe: a residual-flagged covered cell is re-proposed as a
+  // Tier-2 cell. tier=2 (the only non-default) sorts the node after all Tier-1
+  // breadth cells (C1). Absent/1 keeps the surface-cell path byte-identical.
+  const tier = Number.isInteger(input.tier) && input.tier > 1 ? input.tier : null;
+
+  const payload = {
+    kind: "cell_proposed",
+    surface_id: surfaceId,
+    cell_key: cellKey,
+    bug_class: bugClass,
+    auth_profile: authProfile,
+    technique_pack_ids: techniquePackIds,
+    capability_pack_ids: capabilityPackIds,
+  };
+  if (planningKey) payload.planning_key = planningKey;
+  if (proposalId) payload.proposal_id = proposalId;
+  if (fromSurface) payload.from_surface = fromSurface;
+  if (toSurface) payload.to_surface = toSurface;
+  if (tier) payload.tier = tier;
+
+  const source = normalizeOptionalObject(input.source, "source");
+  const actor = normalizeOptionalText(input.actor, "actor");
+
+  return appendFrontierEvent({
+    target_domain: input.target_domain,
+    kind: "observation.recorded",
+    ts: input.ts,
+    payload,
+    source: source || undefined,
+    actor: actor || undefined,
+  }, options);
+}
+
 // Reader helpers. The materializer (X.2) will subsume most of these but
 // during X.1 the proposal-tool tests need a lightweight projection that
 // returns only the TaskGraph-flavored events without re-decoding every
@@ -491,6 +550,15 @@ function readHypothesisProposals(targetDomain) {
     ));
 }
 
+function readCellProposals(targetDomain) {
+  return readFrontierEvents(targetDomain)
+    .filter((event) => (
+      event.kind === "observation.recorded"
+      && event.payload
+      && event.payload.kind === "cell_proposed"
+    ));
+}
+
 module.exports = {
   COMPOSITION_EXPERIMENT_RESULT_KINDS,
   DEFAULT_STALE_DISPATCH_MS,
@@ -502,6 +570,7 @@ module.exports = {
   TASK_GRAPH_NODE_ID_PREFIX,
   TRANSITION_KIND_VALUES,
   TRANSITION_TRUST_ASSUMPTION_MAX_CHARS,
+  appendCellProposal,
   appendHypothesisProposal,
   appendNodeTransition,
   appendTransitionProposal,
@@ -511,6 +580,7 @@ module.exports = {
   findAttachedContract,
   findMostRecentNodeTransition,
   isAllowedNodeTransition,
+  readCellProposals,
   readHypothesisProposals,
   readNodeTransitions,
   readTransitionProposals,

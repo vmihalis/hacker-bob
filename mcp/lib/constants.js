@@ -25,9 +25,10 @@ const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // classification consumed by finding-contracts and the wave-scheduler);
 // SURFACE_KIND_VALUES is the node-kind discriminator persisted in
 // task-graph.json (X.2) and surface-index.json (X-P6: "transition nodes are
-// persisted as kind: \"transition\"" in surface-index). Initially shipped
-// with the 4 X.2 node kinds; growing the set requires a new cycle per X-P8.
-const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim"];
+// persisted as kind: \"transition\"" in surface-index). `cell` is the
+// coverage-cell schedulable unit (element x bug_class x auth_role). Growing
+// the set requires a new cycle per X-P8.
+const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim", "cell"];
 const CHAIN_FAMILY_VALUES = ["evm", "svm", "aptos", "sui", "substrate", "cosmwasm"];
 const SVM_CLUSTER_VALUES = ["mainnet-beta", "devnet", "testnet"];
 // Aptos and Sui both identify networks by string name in tooling and RPC URLs.

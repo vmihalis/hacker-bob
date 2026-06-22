@@ -205,5 +205,19 @@
   "test/belief-elicitation.test.js",
   "test/belief-recalibration.test.js",
   "test/composition-experiment-harness.test.js",
-  "test/lab-target-attest.test.js"
+  "test/lab-target-attest.test.js",
+  "test/nested-spawn.test.js",
+  "test/spawn-ledger.test.js",
+  "test/spawn-ledger-dispatch.test.js",
+  "test/ws-probe-security.test.js",
+  "test/nested-fanout-dedup.test.js",
+  "test/nesting-invariant-envelope.test.js",
+  "test/nesting-e2e-verification.test.js",
+  "test/child-fanout-plan.test.js",
+  "test/cell-contract.test.js",
+  "test/coverage-closure.test.js",
+  "test/mechanism-coverage.test.js",
+  "test/residual-depth.test.js",
+  "test/coverage-cell-invariant-envelope.test.js",
+  "test/coverage-cell-e2e-verification.test.js"
 ]

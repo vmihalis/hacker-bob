@@ -93,6 +93,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_propose_hypothesis
   - mcp__hacker-bob__bob_propose_transition
   - mcp__hacker-bob__bob_materialize_task_graph
+  - mcp__hacker-bob__bob_materialize_cell_floor
   - mcp__hacker-bob__bob_read_task_graph
   - mcp__hacker-bob__bob_read_composition_telemetry
   - mcp__hacker-bob__bob_run_path_composition_experiment
@@ -116,6 +117,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_signup_detect
   - mcp__hacker-bob__bob_auth_store
   - mcp__hacker-bob__bob_auto_signup
+  - mcp__hacker-bob__bob_ws_probe
 argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"
 ---
 Run or resume a Hacker Bob bug bounty evaluate.

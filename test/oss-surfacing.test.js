@@ -1047,8 +1047,11 @@ test("CLI_TOOL_PACKS includes the 7 OSS packs alongside the prior Plane T packs"
 
 // ── Technique-pack content carries native-code bug-class vocabulary ─────────
 
-test("OSS_TECHNIQUE_PACKS includes the 7 packs per Cycle O.6", () => {
-  assert.equal(OSS_TECHNIQUE_PACKS.length, 7, "exactly 7 OSS technique packs");
+test("OSS_TECHNIQUE_PACKS includes the 7 O.6 OSS packs plus the ws_security pack", () => {
+  // The 7 Cycle-O.6 OSS packs, plus ws_security (the bob_ws_probe websocket pack)
+  // co-located in the same structured-pack registry that the pack-id lookup is
+  // built from. The exact count locks against silent pack drift in either family.
+  assert.equal(OSS_TECHNIQUE_PACKS.length, 8, "7 O.6 OSS packs + ws_security");
   const ids = OSS_TECHNIQUE_PACKS.map((pack) => pack.id);
   const expected = [
     "oss_dependency",
@@ -1058,6 +1061,7 @@ test("OSS_TECHNIQUE_PACKS includes the 7 packs per Cycle O.6", () => {
     "oss_ci_cd",
     "oss_secrets_config",
     "oss_docs_behavior",
+    "ws_security",
   ];
   for (const id of expected) {
     assert.ok(ids.includes(id), `OSS_TECHNIQUE_PACKS must include ${id}`);

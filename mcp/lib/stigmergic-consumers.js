@@ -48,6 +48,21 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
       "renderer consumes selected_packs[].score before composing technique section",
   }),
   Object.freeze({
+    // The cell-floor producer READS the decentralized coverage deposits +
+    // proposed transitions to decide the next dispatch layer: covered cells are
+    // pruned, only uncovered (surface + transition) cells are re-emitted. This
+    // is the central deterministic READ of the stigmergic wavefront.
+    consumer_id: "cell_floor_coverage_prune_gate",
+    source_location: Object.freeze({
+      file: "mcp/lib/assignment-brief.js",
+      token_or_regex: "coveredCellKeys",
+    }),
+    producer_id: "coverage_cell_floor_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "cell-floor producer reads coverage.jsonl + proposed transitions to prune already-covered cells, emitting only the uncovered next layer the scheduler dispatches",
+  }),
+  Object.freeze({
     consumer_id: "orchestrator_handoff_receipt_record_surface_leads",
     source_location: Object.freeze({
       file: ".claude/skills/bob-evaluate-runner/SKILL.md",

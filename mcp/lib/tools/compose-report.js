@@ -508,7 +508,39 @@ function renderCvssAnnotations(parts, annotations) {
   }
 }
 
-function renderMarkdown(domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations = []) {
+// Server-derived coverage-closure annotation — the annotate-don't-gate sibling
+// of the CVSS/CWE block above. Read-only projection of the cell-floor coverage
+// state; rendered into the markdown so the content hash + ReportSnapshot bind
+// it, but it never gates the report and is never written back onto a finding.
+// Returns null (renders nothing) when no cell floor exists, so legacy/surface-
+// only reports are unchanged.
+function buildCoverageClosure(domain) {
+  try {
+    const { coverageClosureStat } = require("../coverage-closure.js");
+    const stat = coverageClosureStat(domain);
+    return stat && stat.cell_floor_active === true ? stat : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderCoverageClosure(parts, closure) {
+  if (!closure || closure.cell_floor_active !== true) return;
+  parts.push("## Coverage closure (informational)");
+  parts.push("");
+  parts.push(
+    "Server-derived coverage of the reachable (element x bug_class x auth_role) cell floor. "
+    + "INFORMATIONAL only — it measures dynamic-probe coverage, not finding completeness.",
+  );
+  parts.push("");
+  parts.push(
+    `- **Reachable cells covered:** ${closure.covered_cells}/${closure.total_reachable_cells} `
+    + `(${closure.uncovered_reachable_cells} uncovered)`,
+  );
+  parts.push("");
+}
+
+function renderMarkdown(domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations = [], coverageClosure = null) {
   const parts = [OPERATOR_EDIT_BANNER];
   parts.push(`# Hacker Bob Report — ${domain}`);
   parts.push("");
@@ -546,6 +578,7 @@ function renderMarkdown(domain, sections, severitySummary, reproSteps, amendment
     }
   }
   renderCvssAnnotations(parts, cvssAnnotations);
+  renderCoverageClosure(parts, coverageClosure);
   if (amendments.length > 0) {
     parts.push("## Operator Amendments");
     parts.push("");
@@ -611,7 +644,12 @@ function handler(args) {
     // vector is rendered into the markdown so the content hash and 5-hash
     // ReportSnapshot bind it, but it is never written back onto the finding.
     const cvssAnnotations = buildCvssAnnotations(domain);
-    const markdown = renderMarkdown(domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations);
+    // Read-only coverage-closure projection, rendered server-side like the CVSS
+    // block; null (and rendered nothing) for sessions with no cell floor.
+    const coverageClosure = buildCoverageClosure(domain);
+    const markdown = renderMarkdown(
+      domain, sections, severitySummary, reproSteps, amendments, cvssAnnotations, coverageClosure,
+    );
     const reportPath = reportMarkdownPath(domain);
     fs.writeFileSync(reportPath, markdown, "utf8");
     const contentHash = crypto.createHash("sha256").update(markdown, "utf8").digest("hex");
@@ -624,6 +662,7 @@ function handler(args) {
       sections_rendered: sections.length,
       amendments_rendered: amendments.length,
       cvss_annotations_rendered: cvssAnnotations.length,
+      coverage_closure_rendered: coverageClosure != null,
     });
   });
 }

@@ -44,10 +44,15 @@ const {
   appendNodeTransition,
   findAttachedContract,
   findMostRecentNodeTransition,
+  readCellProposals,
 } = require("../task-graph-events.js");
 const {
   materializeTaskGraph,
+  cellNodeId,
 } = require("../task-graph-materializer.js");
+const {
+  logCellCoverage,
+} = require("../coverage.js");
 const {
   mechanicalVerify,
 } = require("../contract-verifier.js");
@@ -171,8 +176,11 @@ function findNodeInDocument(document, nodeId) {
 // Compute downstream `edge_added_to[]` per Do step 2. Walks the
 // materialized graph for nodes whose surface_refs intersect with the
 // finalized node's surface_refs AND whose state is `contracted`. The
-// graph-scheduler (X.9) consumes the unblocks edges to decide what to
-// dispatch next; X.8 surfaces ONLY the unambiguous candidates.
+// materializer folds these into `unblocks` edges as an audit/telemetry
+// trace of which contracted nodes this finalization unblocked; X.8 surfaces
+// ONLY the unambiguous candidates. Dispatch order itself is driven by the
+// coverage-pruned cell floor and node state (the stigmergic wavefront READ in
+// the cell-floor producer), not by walking these post-hoc edges.
 function computeUnblockedDownstream(document, finalizedNode) {
   if (!finalizedNode) return [];
   const surfaces = Array.isArray(finalizedNode.surface_refs)
@@ -465,6 +473,42 @@ function handler(args) {
     source: { tool: "bob_finalize_node" },
     actor: input.actor,
   });
+
+  // Cell coverage reconcile: a finalized CELL writes measurable coverage. The cell reached
+  // finalized only because its coverage witness verified (mechanicalVerify
+  // passed the cell_coverage evidence-ref witness), so the probe evidence is
+  // present — coverage stays falsifiable. Recover the cell's identity from its
+  // cell_proposed event and pull the evidence summary from the verified
+  // evidence ref. Best-effort: a coverage-write hiccup must not unwind the
+  // finalized transition.
+  if (finalizedNode && finalizedNode.kind === "cell") {
+    try {
+      const payload = readCellProposals(domain)
+        .map((ev) => ev && ev.payload)
+        .find((p) => p && typeof p.cell_key === "string"
+          && cellNodeId({ cellKey: p.cell_key }) === nodeId);
+      if (payload) {
+        const evidenceRefs = Array.isArray(agentOutput && agentOutput.evidence_refs)
+          ? agentOutput.evidence_refs
+          : [];
+        const cov = evidenceRefs.find(
+          (r) => r && (r.kind === "cell_coverage" || r === "cell_coverage"),
+        );
+        const evidenceSummary = (cov && typeof cov === "object" && typeof cov.summary === "string" && cov.summary)
+          || `cell ${payload.bug_class} probed and verified (graph-dispatched)`;
+        logCellCoverage({
+          target_domain: domain,
+          surface_id: payload.surface_id,
+          bug_class: payload.bug_class,
+          auth_profile: payload.auth_profile,
+          status: "tested",
+          evidence_summary: evidenceSummary,
+        });
+      }
+    } catch {
+      // Coverage reconcile is best-effort; the finalized transition stands.
+    }
+  }
 
   try { scheduleMaterialization(domain); } catch {}
 

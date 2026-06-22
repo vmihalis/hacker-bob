@@ -32,6 +32,7 @@ const {
 
 const CANONICAL_CONSUMER_IDS = [
   "assignment_brief_technique_section_renderer",
+  "cell_floor_coverage_prune_gate",
   "orchestrator_handoff_receipt_record_surface_leads",
   "chain_builder_prompt_body_read_before_propose",
   "compose_report_provenance_gate",
@@ -76,7 +77,7 @@ test("STIGMERGIC_CONSUMERS is Object.freeze'd and elements are frozen", () => {
 });
 
 test("STIGMERGIC_CONSUMERS contains exactly the 24 canonical Y-D19/Plane-Delta + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1/CB-B5 entries", () => {
-  assert.equal(STIGMERGIC_CONSUMERS.length, 24);
+  assert.equal(STIGMERGIC_CONSUMERS.length, 25);
   const actualIds = STIGMERGIC_CONSUMERS.map((c) => c.consumer_id).sort();
   const expectedIds = [...CANONICAL_CONSUMER_IDS].sort();
   assert.deepEqual(

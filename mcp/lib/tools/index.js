@@ -148,6 +148,7 @@ const TOOL_MODULES = Object.freeze([
   // producer-event session-lock release; these tools are the orchestrator's
   // force-flush + the read surface for X.5 / X.8 / X.11 callers.
   require("./materialize-task-graph.js"),
+  require("./materialize-cell-floor.js"),
   require("./read-task-graph.js"),
   // Evidence-bound path-composition experiment + composition telemetry.
   // Both orchestrator-only. The experiment confirms a composed cross-surface
@@ -248,6 +249,7 @@ const TOOL_MODULES = Object.freeze([
   // bob_log_protocol_drift so the Y-P3 5-tuple idempotency key remains
   // authoritative.
   require("./scan-transcript-for-friction.js"),
+  require("./ws-probe.js"),
 ]);
 
 module.exports = {

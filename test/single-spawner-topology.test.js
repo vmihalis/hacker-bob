@@ -4,11 +4,14 @@
 //
 // Mechanical assertions on the rendered agent surface + tool registry:
 //
-//   1. Single-spawner topology: every rendered `.claude/agents/*.md`
-//      frontmatter `tools:` line MUST NOT contain a `Task` token.
-//      `Task` is the Claude Code subagent-spawn primitive; granting it
-//      to any subagent would create peer-to-peer dispatch and violate
-//      Y-P8 unconditionally.
+//   1. Registry-derived spawner topology (CN — coverage-nesting): `Task`
+//      is the Claude Code subagent-spawn primitive. An agent frontmatter
+//      `tools:` line may carry `Task` ONLY when that agent's role spec is
+//      declared `spawn_capable` in the renderer registry (the controlled
+//      nested-fan-out grant). Every other agent MUST NOT carry `Task`, and a
+//      spawn_capable agent MUST carry it (the grant must actually render).
+//      With no spawn_capable role declared, the allowlist is empty and this
+//      degenerates to the original "no agent carries Task" invariant.
 //
 //   2. Audit-graded write authority (Y-P13 + Y.8 source-tree guard):
 //      `report-writer.md` and `chain-builder.md` MUST NOT carry the
@@ -37,6 +40,8 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 
+const { spawnCapableAgentNames } = require("../scripts/lib/claude-role-renderer.js");
+
 const REPO_ROOT = path.join(__dirname, "..");
 const AGENTS_DIR = path.join(REPO_ROOT, ".claude", "agents");
 const TOOLS_DIR = path.join(REPO_ROOT, "mcp", "lib", "tools");
@@ -56,23 +61,81 @@ function listAgentFiles() {
     .map((f) => path.join(AGENTS_DIR, f));
 }
 
-test("topology: Task token absent from every rendered agent frontmatter", () => {
+// Pure classifier shared by the real-tree assertion and the synthetic
+// controls. Given an agent name, whether its frontmatter carries Task, and the
+// registry-derived spawn-capable allowlist, return a violation reason or null.
+function classifyTaskGrant(agentName, hasTask, allowedSet) {
+  const isAllowed = allowedSet.has(agentName);
+  if (hasTask && !isAllowed) {
+    return "Task granted to a non-spawn-capable agent (Y-P8: only declared spawners may spawn)";
+  }
+  if (!hasTask && isAllowed) {
+    return "spawn_capable agent is MISSING Task — the nested-spawn grant did not render";
+  }
+  return null;
+}
+
+test("topology: Task appears in agent frontmatter IFF the role is registry-declared spawn_capable (Y-P8, CN)", () => {
+  const allowed = new Set(spawnCapableAgentNames());
   const offenders = [];
   for (const file of listAgentFiles()) {
     const fm = readAgentFrontmatter(file);
     if (!fm) continue;
     const toolsLineMatch = fm.match(/^tools:\s*(.*)$/m);
     if (!toolsLineMatch) continue;
-    const toolsLine = toolsLineMatch[1];
     // Match `Task` as a standalone token (comma- or whitespace-separated).
-    if (/\bTask\b/.test(toolsLine)) {
-      offenders.push({ file: path.relative(REPO_ROOT, file), toolsLine });
+    const hasTask = /\bTask\b/.test(toolsLineMatch[1]);
+    const agentName = path.basename(file, ".md");
+    const reason = classifyTaskGrant(agentName, hasTask, allowed);
+    if (reason) {
+      offenders.push({ file: path.relative(REPO_ROOT, file), reason, toolsLine: toolsLineMatch[1] });
     }
   }
   assert.deepEqual(
     offenders,
     [],
-    `Y-P8 violation: agents carrying Task → ${JSON.stringify(offenders, null, 2)}`,
+    `Y-P8 (registry-derived) violation → ${JSON.stringify(offenders, null, 2)}`,
+  );
+});
+
+test("topology: the gate still bites — synthetic controls (CN)", () => {
+  const allowed = new Set(["evaluator-fanout"]);
+  // Negative control: a non-allowlisted agent carrying Task is a violation.
+  assert.match(
+    classifyTaskGrant("evaluator-agent", true, allowed) || "",
+    /non-spawn-capable/,
+  );
+  // Negative control: an allowlisted agent that did NOT render Task is a violation.
+  assert.match(
+    classifyTaskGrant("evaluator-fanout", false, allowed) || "",
+    /MISSING Task/,
+  );
+  // Positive controls: allowlisted-with-Task and non-allowlisted-without-Task are clean.
+  assert.equal(classifyTaskGrant("evaluator-fanout", true, allowed), null);
+  assert.equal(classifyTaskGrant("evaluator-agent", false, allowed), null);
+});
+
+test("topology: the spawn-capable allowlist is CLOSED to exactly one declared spawner (Y-P8 length-1, CN)", () => {
+  // NS-1 — the single-spawner relaxation grants the host Task primitive to exactly ONE
+  // registry role (evaluator-fanout). A SECOND spawn_capable role would silently
+  // widen the allowlist (spawnCapableAgentNames() grows a Set), eroding "single
+  // spawner" to "many declared spawners". Assert the closed cardinality + identity
+  // so any such drift FAILS CI — the discretionary-child runtime bound
+  // (validateSpawnFanout child_type_allowlist) is registry-derived from this set.
+  assert.deepEqual(
+    spawnCapableAgentNames(),
+    ["evaluator-fanout"],
+    `Y-P8: expected exactly one declared spawner (evaluator-fanout); got ${JSON.stringify(spawnCapableAgentNames())}`,
+  );
+});
+
+test("topology: the closed-allowlist guard bites a second spawner (negative control, CN)", () => {
+  // Prove the length-1 contract is not vacuous: any allowlist that is not exactly
+  // ["evaluator-fanout"] — a second declared spawner, or a renamed one — must fail
+  // the same deepEqual the real-tree assertion uses.
+  assert.throws(
+    () => assert.deepEqual(["evaluator-fanout", "evaluator-rogue"], ["evaluator-fanout"]),
+    "a second declared spawner must violate the closed-allowlist contract",
   );
 });
 

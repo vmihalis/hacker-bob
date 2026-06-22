@@ -77,6 +77,34 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   belief_assisted_priority_enabled: false,
   belief_assisted_priority_seed: "belief-scheduler-priority",
   belief_assisted_priority_rank_limit: 25,
+  // E2 — opt-in residual-anomaly depth trigger. When enabled, the cell-floor
+  // producer re-proposes covered cells on residual-flagged surfaces as Tier-2
+  // depth re-probes (advisory deepening dispatched after all Tier-1 breadth).
+  // Default false: no residual is read and no Tier-2 cell is minted, so the
+  // floor is byte-identical. Diagnostic/non-gating — a Tier-2 re-probe never
+  // blocks closure (the gate counts only the Tier-1 floor).
+  residual_depth_reprobe_enabled: false,
+  // CN (coverage-nesting) — MCP-owned bound on bounded recursive evaluator
+  // fan-out. The brain owns the decomposition decision (which
+  // (bug_class x auth_role) child cells to probe) and the budget; the host
+  // CLI is the muscle (native nested spawn on Claude/Codex, flat extra wave
+  // assignments on Kimi/generic). `max_spawn_depth` counts evaluator spawn
+  // levels below the orchestrator: 1 = today's flat topology (per-surface
+  // evaluators are leaves, NO fan-out — fully backward compatible); 2 lets a
+  // per-surface evaluator spawn one level of child sub-evaluators; etc. The
+  // per-host nesting ceiling (e.g. Claude Code's fixed depth 5) further clamps
+  // this via the adapter capability descriptor. `max_spawn_children` caps the
+  // child cells a single fan-out plan may mint. Default depth 1 keeps nesting
+  // OFF until an operator opts in via bob_set_queue_policy.
+  max_spawn_depth: 1,
+  max_spawn_children: 8,
+  // NS-5 (CN Step B) — the session-wide spawn budget governor. null = unbounded
+  // (preserves today's behavior exactly, with max_spawn_depth:1 above); when set, the MCP plan
+  // emission bounds the worst-case fan-out tree so total actuated spawns stay
+  // within budget. This is the REAL governor that makes a lifted wave/concurrency
+  // clamp safe: the operator sizes it to host-pool drain capacity, not a magic
+  // number. Detective backstop is validateSpawnFanout at finalize + the host pool.
+  max_total_spawned_agents: null,
   // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that the
   // listed partial surfaces are acknowledged and may pass the
   // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate. Each entry is a
@@ -203,12 +231,47 @@ function normalizeWaveTaskBudget(value, fieldName = "default_wave_task_budget") 
   return { max_steps: maxSteps, max_context_tokens: maxContextTokens };
 }
 
+// CN (coverage-nesting) Step B — the generous finite ceiling for the wave-size and
+// dispatch-capacity knobs, lifted from the former hard 128. The operator sets the
+// width; the REAL governor is the host concurrent-subagent pool plus the spawn
+// budget (max_total_spawned_agents), not this clamp. Kept finite (not Infinity) so a
+// NaN/garbage override is still rejected. Shared by graph-scheduler.js (cell-floor
+// dispatch capacity) and scheduler-decisions.js (max_assignments / capacity_limit).
+const CLAMP_CEILING = 4096;
+
+// CN (coverage-nesting) Step B — the safe session spawn budget applied automatically
+// when an operator opts into nesting (max_spawn_depth > 1) without naming one. The
+// lifted CLAMP_CEILING governs only WIDTH knobs; the spawn TREE is bounded by
+// max_total_spawned_agents. Leaving it null with nesting on would make the fan-out
+// ungoverned, so normalizeQueuePolicy fills it here. Matches MAX_COVERAGE_PROFILE's
+// budget. depth<=1 (default-off) keeps it null => byte-identical.
+const DEFAULT_NESTING_SPAWN_BUDGET = 512;
+
+// CN (coverage-nesting) Step B — the named max-coverage profile. An operator opts
+// into the full nested + maxed-cell-floor regime in ONE bob_set_queue_policy call by
+// passing this as the policy. depth 3 + 64-wide fan-out, the cell floor + waves
+// scaled past the old 128 clamp, all bounded by max_total_spawned_agents (the
+// governor) so the worst-case spawn tree fits the host pool. Cross-guards
+// (wave_max >= wave_target) are pre-satisfied. NOT a default — DEFAULT_QUEUE_POLICY
+// stays nesting-off; this is the explicit opt-in.
+const MAX_COVERAGE_PROFILE = Object.freeze({
+  max_spawn_depth: 3,
+  max_spawn_children: 64,
+  max_concurrent_evaluators: 128,
+  max_parallel_tasks: 128,
+  max_total_spawned_agents: 512,
+  standard_wave_target: 64,
+  standard_wave_max: 128,
+  deep_wave_target: 64,
+  deep_wave_max: 128,
+});
+
 function normalizeQueuePolicy(input = {}) {
   const policy = {
     version: 1,
     max_parallel_tasks: normalizePositiveInteger(input.max_parallel_tasks, "max_parallel_tasks", {
       defaultValue: DEFAULT_QUEUE_POLICY.max_parallel_tasks,
-      max: 128,
+      max: CLAMP_CEILING,
     }),
     priority_order: Array.isArray(input.priority_order) && input.priority_order.length > 0
       ? input.priority_order.map((priority, index) => normalizeTaskPriority(priority, `priority_order[${index}]`))
@@ -221,19 +284,19 @@ function normalizeQueuePolicy(input = {}) {
       : assertBoolean(input.close_blocked_on_freeze, "close_blocked_on_freeze"),
     standard_wave_target: normalizePositiveInteger(input.standard_wave_target, "standard_wave_target", {
       defaultValue: DEFAULT_QUEUE_POLICY.standard_wave_target,
-      max: 128,
+      max: CLAMP_CEILING,
     }),
     standard_wave_max: normalizePositiveInteger(input.standard_wave_max, "standard_wave_max", {
       defaultValue: DEFAULT_QUEUE_POLICY.standard_wave_max,
-      max: 128,
+      max: CLAMP_CEILING,
     }),
     deep_wave_target: normalizePositiveInteger(input.deep_wave_target, "deep_wave_target", {
       defaultValue: DEFAULT_QUEUE_POLICY.deep_wave_target,
-      max: 128,
+      max: CLAMP_CEILING,
     }),
     deep_wave_max: normalizePositiveInteger(input.deep_wave_max, "deep_wave_max", {
       defaultValue: DEFAULT_QUEUE_POLICY.deep_wave_max,
-      max: 128,
+      max: CLAMP_CEILING,
     }),
     default_wave_task_lens: input.default_wave_task_lens == null
       ? DEFAULT_QUEUE_POLICY.default_wave_task_lens
@@ -265,7 +328,7 @@ function normalizeQueuePolicy(input = {}) {
         : normalizePositiveInteger(
           input.max_concurrent_evaluators,
           "max_concurrent_evaluators",
-          { max: 128 },
+          { max: CLAMP_CEILING },
         ),
     lead_rationale_required_when_below_threshold:
       input.lead_rationale_required_when_below_threshold == null
@@ -281,6 +344,13 @@ function normalizeQueuePolicy(input = {}) {
           input.belief_assisted_priority_enabled,
           "belief_assisted_priority_enabled",
         ),
+    residual_depth_reprobe_enabled:
+      input.residual_depth_reprobe_enabled == null
+        ? DEFAULT_QUEUE_POLICY.residual_depth_reprobe_enabled
+        : assertBoolean(
+          input.residual_depth_reprobe_enabled,
+          "residual_depth_reprobe_enabled",
+        ),
     belief_assisted_priority_seed:
       input.belief_assisted_priority_seed == null
         ? DEFAULT_QUEUE_POLICY.belief_assisted_priority_seed
@@ -293,10 +363,30 @@ function normalizeQueuePolicy(input = {}) {
           "belief_assisted_priority_rank_limit",
           { max: 100 },
         ),
+    max_spawn_depth:
+      input.max_spawn_depth == null
+        ? DEFAULT_QUEUE_POLICY.max_spawn_depth
+        : normalizePositiveInteger(input.max_spawn_depth, "max_spawn_depth", { max: 8 }),
+    max_spawn_children:
+      input.max_spawn_children == null
+        ? DEFAULT_QUEUE_POLICY.max_spawn_children
+        : normalizePositiveInteger(input.max_spawn_children, "max_spawn_children", { max: 64 }),
+    max_total_spawned_agents:
+      input.max_total_spawned_agents == null
+        ? DEFAULT_QUEUE_POLICY.max_total_spawned_agents
+        : normalizePositiveInteger(input.max_total_spawned_agents, "max_total_spawned_agents", { max: 4096 }),
     partial_surface_advance_acknowledgements:
       normalizePartialSurfaceAcknowledgements(input.partial_surface_advance_acknowledgements),
   };
   policy.priority_order = Array.from(new Set(policy.priority_order));
+  // Nesting opt-in must never be ungoverned: lifting max_spawn_depth past 1 without a
+  // session spawn budget would expose the large CLAMP_CEILING width with no preventive
+  // spawn-tree bound (the dispatch ledger + read-path width bound only engage when
+  // max_total_spawned_agents is set). Default it to a safe budget so the governor is
+  // always live when nesting is on. depth<=1 keeps it null => byte-identical default-off.
+  if (policy.max_spawn_depth > 1 && policy.max_total_spawned_agents == null) {
+    policy.max_total_spawned_agents = DEFAULT_NESTING_SPAWN_BUDGET;
+  }
   if (policy.standard_wave_max < policy.standard_wave_target) {
     throw new Error("standard_wave_max must be >= standard_wave_target");
   }
@@ -350,6 +440,9 @@ function writeQueuePolicy(domain, policy) {
 }
 
 module.exports = {
+  CLAMP_CEILING,
+  DEFAULT_NESTING_SPAWN_BUDGET,
+  MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
   DEFAULT_WAVE_TASK_BUDGET,
   FRICTION_KIND_VALUES,

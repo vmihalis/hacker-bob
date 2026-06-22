@@ -184,6 +184,16 @@ function schedulerDecisionsJsonlPath(domain) {
   return path.join(sessionDir(domain), "scheduler-decisions.jsonl");
 }
 
+// CN (coverage-nesting) Step B — the MCP-owned spawn ledger. An append JSONL the
+// MCP server writes at the mutating dispatch step (one row per emitted nesting
+// envelope), NEVER on the read-brief path. It is the detective audit of how much
+// of the session spawn budget has been handed out; the read-path bounder reads its
+// total to cap the next plan's width. HOOK_MCP_OWNED so the write-guard fences the
+// evaluator-fanout Bash/Write channel (the spawner holds Bash for OSS harness work).
+function spawnLedgerJsonlPath(domain) {
+  return path.join(sessionDir(domain), "spawn-ledger.jsonl");
+}
+
 function claimsJsonlPath(domain) {
   return path.join(sessionDir(domain), "claims.jsonl");
 }
@@ -690,6 +700,7 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "doc-delta-results.json",
   "auth-differential-results.json",
   "evm-role-table-results.json",
+  "spawn-ledger.jsonl",
 ]);
 // NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
 // diff-impact are intentionally NOT repeated here — they are already in
@@ -1069,6 +1080,7 @@ module.exports = {
   reportSnapshotsJsonlPath,
   schedulerDecisionsJsonlPath,
   schemaContractsJsonlPath,
+  spawnLedgerJsonlPath,
   surfaceIndexPath,
   surfaceGraphJsonlPath,
   symbolSurfaceIndexPath,

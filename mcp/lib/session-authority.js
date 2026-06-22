@@ -172,6 +172,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_set_friction_scanners: "initialized_session_mutation",
   bob_materialize_frontier: "initialized_session_mutation",
   bob_materialize_task_graph: "initialized_session_mutation",
+  bob_materialize_cell_floor: "initialized_session_mutation",
   bob_read_task_graph: "initialized_session_read",
   bob_read_queue_policy: "initialized_session_read",
   bob_read_session_nucleus: "initialized_session_read",
@@ -236,6 +237,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_write_proof_bundle: "initialized_session_mutation",
   bob_write_verification_round: "initialized_session_mutation",
   bob_write_wave_handoff: "initialized_session_mutation",
+  bob_ws_probe: "scoped_http_network",
 });
 
 const LEGACY_DEFAULTABLE_FIELDS = Object.freeze([

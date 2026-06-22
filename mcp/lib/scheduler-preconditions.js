@@ -22,6 +22,7 @@ const {
 const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "partial_surfaces_drained",
   "chain_work_terminal",
+  "uncovered_reachable_cells",
 ]);
 
 // Each check receives `{target_domain}` and returns an object with at minimum
@@ -75,6 +76,75 @@ const PRECONDITION_CHECKS = Object.freeze({
       findings_total: findingsTotal,
       chain_notes_count: chainNotesCount,
       terminal_total: terminalTotal,
+    };
+  },
+  // Closure teeth: a frontier cannot freeze while reachable coverage cells
+  // remain uncovered. SELF-ACTIVATING — a session that never materialized a
+  // cell floor has no cell-coverage obligation and is vacuously satisfied, so
+  // legacy/surface-only runs are unaffected; the gate only bites once the
+  // orchestrator commits to cell coverage (cell nodes exist in the graph). The
+  // uncovered count is the floor enumeration MINUS already-covered cells (the
+  // same coverage-pruned planCellsForSurface the producer dispatches), so a cell
+  // counts as covered exactly when bob_finalize_node reconciled a verified probe.
+  uncovered_reachable_cells(context) {
+    const targetDomain = context && context.target_domain;
+    if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+      throw new Error("uncovered_reachable_cells: target_domain is required");
+    }
+    const { materializeTaskGraph } = require("./task-graph-materializer.js");
+    const doc = materializeTaskGraph(targetDomain, { write: false }).document;
+    const hasCellFloor = doc.nodes.some((node) => node.kind === "cell");
+    if (!hasCellFloor) {
+      return { satisfied: true, cell_floor_active: false, uncovered_count: 0 };
+    }
+    const { currentSurfaces } = require("./frontier-projections.js");
+    const { buildCoverageSummaryForSurface, readCoverageRecordsFromJsonl } = require("./coverage.js");
+    const { planCellsForSurface } = require("./assignment-brief.js");
+    const { loadQueuePolicy } = require("./queue-policy.js");
+    const policy = loadQueuePolicy(targetDomain);
+    const surfaces = currentSurfaces(targetDomain).surfaces || [];
+    const coverageRecords = readCoverageRecordsFromJsonl(targetDomain);
+    let uncovered = 0;
+    const uncoveredSurfaceIds = [];
+    for (const surfaceObj of surfaces) {
+      const surfaceId = surfaceObj && surfaceObj.id;
+      if (typeof surfaceId !== "string" || !surfaceId) continue;
+      const coverageSummary = buildCoverageSummaryForSurface(coverageRecords, surfaceId);
+      const plan = planCellsForSurface({
+        domain: targetDomain,
+        surfaceObj,
+        surfaceId,
+        coverageSummary,
+        remainingDepth: 1,
+        maxChildren: policy.max_spawn_children,
+      });
+      const remaining = plan && Array.isArray(plan.children) ? plan.children.length : 0;
+      if (remaining > 0) {
+        uncovered += remaining;
+        uncoveredSurfaceIds.push(surfaceId);
+      }
+    }
+    // Transition-cell floor (A2): cross-surface invariants on edges are closure
+    // obligations too. An unprobed (edge x bug_class) cell must block freeze, or
+    // a cross-surface invariant (L1->L2 replay, deposit->distribute) would
+    // evaporate between two surface evaluators.
+    const { enumerateTransitionCellFloor } = require("./assignment-brief.js");
+    for (const edge of enumerateTransitionCellFloor({
+      domain: targetDomain,
+      coverageRecords,
+      maxChildren: policy.max_spawn_children,
+    })) {
+      const remaining = edge.plan && Array.isArray(edge.plan.children) ? edge.plan.children.length : 0;
+      if (remaining > 0) {
+        uncovered += remaining;
+        uncoveredSurfaceIds.push(edge.edge_token);
+      }
+    }
+    return {
+      satisfied: uncovered === 0,
+      cell_floor_active: true,
+      uncovered_count: uncovered,
+      uncovered_surface_ids: uncoveredSurfaceIds.slice(0, 50),
     };
   },
 });

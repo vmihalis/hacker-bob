@@ -237,7 +237,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     description: "Runs bounded normal surface-discovery \u2014 subdomain enum, live hosts, archived/crawled URLs, nuclei, JS/JWT extraction \u2014 and produces attack_surface.json",
     model: "opus",
     color: "cyan",
-    local_tools: Object.freeze(["Bash", "Read", "Write", "Glob", "Grep"]),
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Edit", "Glob", "Grep"]),
   }),
   "deep-surface-discovery": Object.freeze({
     role_id: "deep-surface-discovery",
@@ -247,7 +247,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     description: "Runs bounded deep surface-discovery and produces compact attack_surface, deep-summary, and surface lead artifacts",
     model: "opus",
     color: "cyan",
-    local_tools: Object.freeze(["Bash", "Read", "Write", "Glob", "Grep"]),
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Edit", "Glob", "Grep"]),
   }),
   "surface-router": Object.freeze({
     role_id: "surface-router",
@@ -314,6 +314,29 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     background: true,
     mcp_server: true,
     local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
+  }),
+  // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator that
+  // actuates the brain-owned child_fanout_plan. spawn_capable:true renders the
+  // host Task primitive into its frontmatter (the only registry-driven spawn
+  // grant; Y-P8 single-spawner-topology allows Task ONLY for spawn_capable
+  // roles). Its MCP toolset is the web evaluator union MINUS bob_propose_transition
+  // (the deny lives in role-model.js), so it stays disjoint from the coverage-cell
+  // tools (G2). Bash is retained for OSS-style harness work; the spawn ledger is
+  // therefore fenced by the session-write-guard hook (an mcp-owned basename),
+  // not by toolset absence.
+  "evaluator-fanout": Object.freeze({
+    role_id: "evaluator-fanout",
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "evaluator-fanout.md"),
+    name: "evaluator-fanout",
+    description: "Spawn-capable per-surface evaluator — actuates the brain-owned child_fanout_plan, recursively fanning out one child sub-evaluator per (bug_class × auth) cell (default-off; depth>1 opt-in on host==claude). Transition-blind: discovered cross-surface pivots ride discovered_pivots[] up to the orchestrator.",
+    model: "opus",
+    color: "yellow",
+    max_turns: 200,
+    background: true,
+    mcp_server: true,
+    spawn_capable: true,
+    local_tools: Object.freeze(["Bash", "Read", "Grep", "Glob"]),
   }),
   chain: Object.freeze({
     role_id: "chain",
@@ -429,9 +452,28 @@ function claudeAllowedToolsForRole(roleId) {
   if (!spec) throw new Error(`Missing Claude role spec for ${roleId}`);
   return uniqueStrings([
     ...(spec.local_tools || []),
+    // CN (coverage-nesting) — a spawn_capable role is granted the host Task
+    // (subagent-spawn) primitive so a per-surface evaluator can recursively
+    // fan out child sub-evaluators (Claude Code native nesting, depth 5).
+    // This is the controlled, registry-driven spawn grant: the Y-P8
+    // single-spawner-topology test allows Task ONLY for spawn_capable roles,
+    // so every other worker stays fail-closed (Task absent from frontmatter).
+    ...(spec.spawn_capable === true ? ["Task"] : []),
     ...claudeMcpToolsForRole(roleId),
     ...(spec.extra_mcp_tools || []),
   ]);
+}
+
+// CN (coverage-nesting) — registry-derived allowlist of AGENT names (.md
+// basenames) permitted to carry the host Task spawn primitive. The Y-P8
+// single-spawner-topology test consumes this so the gate stays a real
+// allowlist ("only declared spawners may spawn") rather than "exactly one
+// spawner". Skills (orchestrator/status/debug) are excluded — they are not
+// .claude/agents/*.md and the orchestrator skill carries Task via local_tools.
+function spawnCapableAgentNames() {
+  return Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent" && spec.spawn_capable === true)
+    .map((spec) => spec.name);
 }
 
 function renderSkillFrontmatter(spec) {
@@ -563,6 +605,7 @@ module.exports = {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
   claudeAllowedToolsForRole,
+  spawnCapableAgentNames,
   claudeMcpToolsForRole,
   claudeRoleOutputPath,
   renderClaudePromptBody,

@@ -520,8 +520,8 @@ test("wave-scheduler still functions for Surface + Claim nodes after X.9 lands (
   });
 });
 
-test("graph-scheduler kinds enumerate Transition + Hypothesis only", () => {
-  assert.deepEqual(GRAPH_SCHEDULED_KINDS.slice(), ["transition", "hypothesis"]);
+test("graph-scheduler kinds enumerate the graph-dispatched node kinds", () => {
+  assert.deepEqual(GRAPH_SCHEDULED_KINDS.slice(), ["transition", "hypothesis", "cell"]);
 });
 
 // ─── End-to-end: bob_schedule_graph_nodes tool ──────────────────────
@@ -749,4 +749,304 @@ test("graph-scheduler ignores nodes in terminal states (finalized / abandoned)",
     assert.equal(result.selected.length, 0,
       "finalized nodes must NEVER appear in graph-scheduler selection");
   });
+});
+
+// ─── E1: belief-VoI advisory scheduler overlay ────────────────────────────
+//
+// The deterministic spine (priority -> ts_first -> node_id) stays byte-
+// identical with the CB-C1 flag off (the default). When an operator opts in,
+// a per-cell belief score RAISES hotter-surface cells WITHIN their priority
+// band — never across a band, never dropping a cell. These tests pin the
+// comparator contract (pure), the real belief→cell wiring (helper), and the
+// spine-green/raise-only behavior at the selection boundary (integration).
+
+const {
+  compareGraphCandidates,
+} = require("../mcp/lib/graph-scheduler.js");
+const {
+  buildCellBeliefRank,
+} = require("../mcp/lib/belief/cell-scheduler-priority.js");
+const {
+  appendCellProposal: appendCellProposalE1,
+} = require("../mcp/lib/task-graph-events.js");
+const {
+  cellNodeId: cellNodeIdE1,
+} = require("../mcp/lib/task-graph-materializer.js");
+const {
+  buildCellCoverageContract: buildCellCoverageContractE1,
+} = require("../mcp/lib/cell-contract.js");
+const {
+  materializeFrontier: materializeFrontierE1,
+} = require("../mcp/lib/frontier-materializer.js");
+const {
+  appendEdges: appendEdgesE1,
+} = require("../mcp/lib/surface-graph.js");
+const {
+  DEFAULT_QUEUE_POLICY: DEFAULT_QUEUE_POLICY_E1,
+} = require("../mcp/lib/queue-policy.js");
+
+const PRIORITY_RANK_E1 = new Map([
+  ["critical", 0],
+  ["high", 1],
+  ["medium", 2],
+  ["low", 3],
+]);
+
+function cellCandidateE1(nodeId, { priority = "medium", ts = "2026-05-31T00:01:00.000Z" } = {}) {
+  return { node_id: nodeId, kind: "cell", state: "contracted", priority, ts_first: ts, ts_last: ts };
+}
+
+// Seed a single dispatch-eligible (contracted) coverage cell on a surface and
+// return its materialized node_id. Mirrors bob_materialize_cell_floor's
+// proposal → materialize → synthetic-contract dance for exactly one cell.
+function seedContractedCellE1(domain, surfaceId, {
+  bugClass = "idor",
+  authProfile = "admin",
+  ts = "2026-05-31T00:01:00.000Z",
+} = {}) {
+  const cellKey = JSON.stringify([surfaceId, "", "", bugClass, authProfile]);
+  appendCellProposalE1({
+    target_domain: domain,
+    surface_id: surfaceId,
+    cell_key: cellKey,
+    bug_class: bugClass,
+    auth_profile: authProfile,
+    technique_pack_ids: [],
+    capability_pack_ids: [],
+    ts,
+  });
+  materializeTaskGraph(domain, { write: true });
+  const nodeId = cellNodeIdE1({ cellKey });
+  appendContract({
+    target_domain: domain,
+    node_id: nodeId,
+    contract: buildCellCoverageContractE1({ surfaceId, bugClass, authProfile, cellKey }),
+    ts,
+  });
+  materializeTaskGraph(domain, { write: true });
+  return nodeId;
+}
+
+function seedDescribedSurfaceE1(domain, surfaceId, title) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "surface.observed",
+    ts: "2026-05-31T00:00:00.000Z",
+    surface_id: surfaceId,
+    payload: { title },
+  });
+  materializeFrontierE1(domain, { write: true });
+}
+
+// The causal graph the wave-planner belief test uses: an attacker principal
+// tests an owner gate that permits an unauth effect. rankInterventions surfaces
+// this as a value-of-information candidate whose tokens match the idor surface.
+function seedBeliefCausalGraphE1(domain) {
+  appendEdgesE1({
+    target_domain: domain,
+    edges: [
+      {
+        source: { type: "principal", id: "principal:attacker" },
+        target: { type: "policy_gate", id: "policy_gate:owner" },
+        edge_type: "tests_gate",
+      },
+      {
+        source: { type: "policy_gate", id: "policy_gate:owner" },
+        target: { type: "effect", id: "effect:unauth_succeeds_where_auth_blocked:victim" },
+        edge_type: "permits_effect",
+      },
+    ],
+  });
+}
+
+test("E1 comparator: an empty/absent belief map is byte-identical to the deterministic 3-key sort", () => {
+  const a = cellCandidateE1("TG-cell-aaa");
+  const b = cellCandidateE1("TG-cell-bbb");
+  // No map, null map, and empty map must all reduce to node_id alpha (ts tied).
+  const baseline = compareGraphCandidates(a, b, PRIORITY_RANK_E1);
+  assert.equal(compareGraphCandidates(a, b, PRIORITY_RANK_E1, null), baseline);
+  assert.equal(compareGraphCandidates(a, b, PRIORITY_RANK_E1, new Map()), baseline);
+  assert.ok(baseline < 0, "TG-cell-aaa sorts before TG-cell-bbb by node_id");
+});
+
+test("E1 comparator: a belief score RAISES a cell WITHIN its priority band (tie-break only)", () => {
+  const a = cellCandidateE1("TG-cell-aaa"); // alpha-first by default
+  const b = cellCandidateE1("TG-cell-bbb");
+  // Give b a positive belief score; it must now sort ahead of a despite a's
+  // earlier node_id — but both are still medium, so this is a within-band raise.
+  const belief = new Map([["TG-cell-bbb", 90]]);
+  assert.ok(compareGraphCandidates(a, b, PRIORITY_RANK_E1, belief) > 0, "b raised ahead of a");
+  // Symmetry: the reverse comparison agrees (no contradictory ordering).
+  assert.ok(compareGraphCandidates(b, a, PRIORITY_RANK_E1, belief) < 0);
+});
+
+test("E1 comparator: belief NEVER crosses a priority band (a critical cell always beats a boosted medium)", () => {
+  const critical = cellCandidateE1("TG-cell-zzz", { priority: "critical" });
+  const medium = cellCandidateE1("TG-cell-aaa", { priority: "medium" });
+  // Even with a maximal belief score on the medium cell, the critical cell wins
+  // because the belief compare sits AFTER the priority compare.
+  const belief = new Map([["TG-cell-aaa", 100]]);
+  assert.ok(
+    compareGraphCandidates(critical, medium, PRIORITY_RANK_E1, belief) < 0,
+    "critical precedes a belief-boosted medium",
+  );
+});
+
+// ─── C1: two-tier breadth-then-depth comparator ───────────────────────────
+
+test("C1 comparator: the tier key is a no-op when every candidate is Tier-1 (byte-identical baseline)", () => {
+  const a = cellCandidateE1("TG-cell-aaa");
+  const b = cellCandidateE1("TG-cell-bbb");
+  // No tier field (default Tier-1) must equal the pre-C1 priority->ts->node_id sort.
+  const baseline = compareGraphCandidates(a, b, PRIORITY_RANK_E1);
+  // An explicit tier:1 on both is identical to the default.
+  assert.equal(compareGraphCandidates({ ...a, tier: 1 }, { ...b, tier: 1 }, PRIORITY_RANK_E1), baseline);
+  assert.ok(baseline < 0, "TG-cell-aaa before TG-cell-bbb by node_id when all keys tie");
+});
+
+test("C1 comparator: breadth precedes depth UNCONDITIONALLY (a Tier-1 cell beats a higher-priority Tier-2 re-probe)", () => {
+  // Tier-1 uncovered floor cell at MEDIUM priority vs a Tier-2 depth re-probe at
+  // CRITICAL priority. Breadth-before-depth: the Tier-1 cell must dispatch first
+  // even though the re-probe outranks it on priority.
+  const tier1Medium = { ...cellCandidateE1("TG-cell-floor", { priority: "medium" }), tier: 1 };
+  const tier2Critical = { ...cellCandidateE1("TG-cell-reprobe", { priority: "critical" }), tier: 2 };
+  assert.ok(
+    compareGraphCandidates(tier1Medium, tier2Critical, PRIORITY_RANK_E1) < 0,
+    "the uncovered Tier-1 floor cell precedes the higher-priority Tier-2 re-probe",
+  );
+  // Symmetric and even when the Tier-2 cell carries a maximal belief boost.
+  const belief = new Map([["TG-cell-reprobe", 100]]);
+  assert.ok(compareGraphCandidates(tier2Critical, tier1Medium, PRIORITY_RANK_E1, belief) > 0);
+});
+
+test("C1 comparator: within a tier+priority band, higher severity_floor dispatches first", () => {
+  const crit = { ...cellCandidateE1("TG-cell-zzz", { priority: "medium" }), severity_floor: "critical" };
+  const low = { ...cellCandidateE1("TG-cell-aaa", { priority: "medium" }), severity_floor: "low" };
+  // Same tier + priority: the higher-severity cell wins, overriding the node_id
+  // alpha tie-break (which would otherwise put TG-cell-aaa first).
+  assert.ok(
+    compareGraphCandidates(crit, low, PRIORITY_RANK_E1) < 0,
+    "critical-severity cell precedes a low-severity cell despite later node_id",
+  );
+  // Uniform severity falls through to the deterministic node_id tie-break.
+  const lowA = { ...cellCandidateE1("TG-cell-aaa", { priority: "medium" }), severity_floor: "low" };
+  const lowB = { ...cellCandidateE1("TG-cell-bbb", { priority: "medium" }), severity_floor: "low" };
+  assert.ok(compareGraphCandidates(lowA, lowB, PRIORITY_RANK_E1) < 0);
+});
+
+test("E1 helper: buildCellBeliefRank scores a cell from its parent surface's belief hint", () => {
+  withTempHome(() => {
+    const domain = "e1-belief-rank.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:idor", "idor victim object unauth succeeds where auth blocked");
+    seedDescribedSurfaceE1(domain, "surface:generic", "generic admin dashboard");
+    seedBeliefCausalGraphE1(domain);
+    const idorCell = seedContractedCellE1(domain, "surface:idor");
+    const genericCell = seedContractedCellE1(domain, "surface:generic", { bugClass: "xss", authProfile: "anon" });
+
+    const doc = materializeTaskGraph(domain, { write: false }).document;
+    const candidates = doc.nodes
+      .filter((n) => n.kind === "cell")
+      .map((n) => ({ node_id: n.node_id, kind: "cell" }));
+
+    // Real path: buildCellBeliefRank reads currentSurfaces + the belief machinery.
+    const rank = buildCellBeliefRank({
+      target_domain: domain,
+      document: doc,
+      candidates,
+      seed: DEFAULT_QUEUE_POLICY_E1.belief_assisted_priority_seed,
+      rank_limit: DEFAULT_QUEUE_POLICY_E1.belief_assisted_priority_rank_limit,
+    });
+    assert.ok(rank.has(idorCell), "the idor cell inherits its surface's belief hint");
+    assert.ok(rank.get(idorCell) > 0, "the inherited score is a positive RAISE");
+    assert.ok(!rank.has(genericCell), "the unmatched generic surface yields no boost");
+  });
+});
+
+test("E1 selection: flag ON with no belief signal is identical to flag OFF (graceful cold start)", () => {
+  withTempHome(() => {
+    const domain = "e1-cold-start.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:one", "surface one");
+    seedDescribedSurfaceE1(domain, "surface:two", "surface two");
+    // No causal edges => no belief hints => empty rank map.
+    seedContractedCellE1(domain, "surface:one");
+    seedContractedCellE1(domain, "surface:two", { bugClass: "xss", authProfile: "anon" });
+
+    const off = selectNextExecutableNodes(domain, {}, 8);
+    const on = selectNextExecutableNodes(
+      domain,
+      { ...DEFAULT_QUEUE_POLICY_E1, belief_assisted_priority_enabled: true },
+      8,
+    );
+    assert.equal(JSON.stringify(on.selected), JSON.stringify(off.selected));
+    assert.equal(JSON.stringify(on.skipped), JSON.stringify(off.skipped));
+  });
+});
+
+test("E1 selection: flag ON RAISES the hotter-surface cell but drops no cell (monotonic)", () => {
+  withTempHome(() => {
+    const domain = "e1-raise-only.example.com";
+    seedSession(domain);
+    seedDescribedSurfaceE1(domain, "surface:idor", "idor victim object unauth succeeds where auth blocked");
+    seedDescribedSurfaceE1(domain, "surface:generic", "generic admin dashboard");
+    seedBeliefCausalGraphE1(domain);
+    const idorCell = seedContractedCellE1(domain, "surface:idor");
+    const genericCell = seedContractedCellE1(domain, "surface:generic", { bugClass: "xss", authProfile: "anon" });
+
+    const off = selectNextExecutableNodes(domain, {}, 8);
+    const offIds = new Set([...off.selected, ...off.skipped].map((n) => n.node_id));
+
+    const on = selectNextExecutableNodes(
+      domain,
+      { ...DEFAULT_QUEUE_POLICY_E1, belief_assisted_priority_enabled: true },
+      8,
+    );
+    const order = [...on.selected, ...on.skipped].map((n) => n.node_id);
+    const onIds = new Set(order);
+
+    // The overlay actually changed the order (guards against a silent no-op
+    // regardless of how the content-hash node_ids happen to sort).
+    assert.notEqual(
+      JSON.stringify(on.selected),
+      JSON.stringify(off.selected),
+      "the belief overlay reordered selection (not a no-op)",
+    );
+    // RAISE: the belief-matched idor cell sorts ahead of the unmatched generic cell.
+    assert.ok(order.indexOf(idorCell) >= 0 && order.indexOf(genericCell) >= 0);
+    assert.ok(
+      order.indexOf(idorCell) < order.indexOf(genericCell),
+      "the hotter (belief-matched) cell is raised ahead of the cold cell",
+    );
+    // MONOTONIC: the overlay reorders only — the candidate SET and count are unchanged.
+    assert.equal(onIds.size, offIds.size);
+    for (const id of offIds) assert.ok(onIds.has(id), `cell ${id} survives the overlay`);
+    assert.equal(on.considered_count, off.considered_count);
+  });
+});
+
+test("D2 per-kind cap split: max_concurrent_evaluators scales cells while transition/hypothesis stay at the graph cap", () => {
+  const document = {
+    materialized_at: "2026-06-21T00:00:00.000Z",
+    hashes: { graph_hash: "d2deadbeef" },
+    nodes: [
+      ...Array.from({ length: 6 }, (_, i) => ({ node_id: `cell-${i}`, kind: "cell", state: "ready", priority: "medium" })),
+      ...Array.from({ length: 3 }, (_, i) => ({ node_id: `tr-${i}`, kind: "transition", state: "ready", priority: "medium" })),
+    ],
+  };
+  // Default (no max_concurrent_evaluators): one combined cap => byte-identical slice.
+  const def = selectNextExecutableNodes("d2-split.example.com", {}, 2, { document });
+  assert.equal(def.capacity_used, 2);
+  assert.equal(def.capacity_limit, 2, "default keeps the single combined cap");
+  assert.equal(def.capacity_used, def.selected.length);
+
+  // Opt-in: cell cap 5 (max_concurrent_evaluators), graph cap 2 (the `cap` arg = max_parallel_tasks).
+  const split = selectNextExecutableNodes("d2-split.example.com", { max_concurrent_evaluators: 5 }, 2, { document });
+  const cells = split.selected.filter((n) => n.kind === "cell").length;
+  const graph = split.selected.filter((n) => n.kind !== "cell").length;
+  assert.equal(cells, 5, "cells scale to max_concurrent_evaluators (5 of 6)");
+  assert.equal(graph, 2, "transition/hypothesis stay at the graph cap (2 of 3) — dispatch count unchanged");
+  assert.equal(split.capacity_limit, 7, "capacity_limit = cellCap + graphCap");
+  assert.equal(split.capacity_used, 7);
+  assert.equal(split.capacity_used, split.selected.length, "capacity_used === selected.length contract holds");
 });

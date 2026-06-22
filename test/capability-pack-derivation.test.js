@@ -407,6 +407,24 @@ test("derivePackForNode throws on unsupported kind", () => {
   );
 });
 
+test("derivePackForNode returns a stable pack for a cell node", () => {
+  const node = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-alpha`,
+    kind: "cell",
+    surface_refs: ["surface:alpha"],
+  };
+  const result = derivePackForNode(node, {}, [], null);
+  assert.ok(Object.isFrozen(result));
+  assert.equal(result.brief_emphasis.node_kind, "cell");
+  assert.deepEqual(result.brief_emphasis.capability_pack_ids, []);
+  assert.ok(
+    result.allowed_tools_for_node.length > 0,
+    "cell carries the evaluator-shared baseline",
+  );
+  // X-P4 determinism: byte-identical across calls.
+  assert.deepEqual(derivePackForNode(node, {}, [], null), result);
+});
+
 test("derivePackForNode returns a frozen result with the documented keys", () => {
   const node = makeSurfaceNode("alpha", "surface:alpha");
   const result = derivePackForNode(node, {
@@ -510,6 +528,59 @@ test("Transition node pack UNIONs both endpoint families' tools", () => {
   assert.ok(allowed.includes("bob_foundry_run"), "transition pack must include the EVM runner");
   assert.ok(allowed.includes("bob_evm_call"), "transition pack must include the EVM read tool");
   assert.ok(allowed.includes("bob_evm_fetch_source"), "transition pack must include the EVM source fetch tool");
+});
+
+test("Transition CELL pack UNIONs both endpoint families' tools (cross-stack cell fix)", () => {
+  // A transition cell (kind 'cell', surface_refs=[from,to]) must get the SAME
+  // cross-stack union a transition NODE gets. Without it a web->EVM handoff cell
+  // gets only the web baseline (no bob_evm_*), so the cell agent's honest EVM work
+  // is rejected by the X.6 tool_constraint_violation check at bob_finalize_node.
+  const cellNode = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-xstack`,
+    kind: "cell",
+    state: "contracted",
+    surface_refs: ["surface:auth", "surface:vault"],
+    contract_hash: null,
+    severity_floor: null,
+    priority: "medium",
+    ts_first: "2026-05-31T00:00:00.000Z",
+    ts_last: "2026-05-31T00:00:00.000Z",
+    source_events: ["FE-fixture-cell"],
+  };
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: {
+      "surface:auth": webSurfaceMetadata("surface:auth"),
+      "surface:vault": smartContractEvmSurfaceMetadata("surface:vault"),
+    },
+  };
+  const allowed = derivePackForNode(cellNode, graphContext, [], null).allowed_tools_for_node;
+  assert.ok(allowed.includes("bob_http_scan"), "cross-stack cell includes the web producer");
+  assert.ok(allowed.includes("bob_evm_call"), "cross-stack cell includes the EVM read tool (the fix)");
+  assert.ok(allowed.includes("bob_evm_fetch_source"), "cross-stack cell includes the EVM source fetch tool");
+});
+
+test("A single-surface cell keeps the evaluator-shared baseline (no cross-stack union)", () => {
+  const cellNode = {
+    node_id: `${TASK_GRAPH_NODE_ID_PREFIX}cell-single`,
+    kind: "cell",
+    state: "contracted",
+    surface_refs: ["surface:web"],
+    contract_hash: null,
+    severity_floor: null,
+    priority: "medium",
+    ts_first: "2026-05-31T00:00:00.000Z",
+    ts_last: "2026-05-31T00:00:00.000Z",
+    source_events: ["FE-fixture-cell"],
+  };
+  const graphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: { "surface:web": webSurfaceMetadata("surface:web") },
+  };
+  const allowed = derivePackForNode(cellNode, graphContext, [], null).allowed_tools_for_node;
+  assert.ok(!allowed.includes("bob_evm_call"), "a single-surface cell does NOT get cross-stack EVM tools");
 });
 
 test("Transition node ALWAYS includes web3_identity_handoff technique pack", () => {

@@ -31,6 +31,7 @@ const REPO_ROOT = path.join(__dirname, "..");
 
 const CANONICAL_PRODUCER_IDS = [
   "technique_pack_scorer",
+  "coverage_cell_floor_dispatch_signals",
   "surface_discovery_ranked_leads",
   "chain_attempts_ledger",
   "verification_round_ledger",
@@ -68,7 +69,7 @@ test("STIGMERGIC_PRODUCERS is Object.freeze'd and elements are frozen", () => {
 });
 
 test("STIGMERGIC_PRODUCERS contains exactly the 22 canonical Y-D19 + Plane-Delta S12/PR4/I10/I12 + Plane-B CB-S1/CB-1/CB-2/CB-3/CB-B1/CB-B4/CB-B6/CB-B2/CB-B3/CB-C2/CB-C1/CB-B5 entries", () => {
-  assert.equal(STIGMERGIC_PRODUCERS.length, 22);
+  assert.equal(STIGMERGIC_PRODUCERS.length, 23);
   const actualIds = STIGMERGIC_PRODUCERS.map((p) => p.producer_id).sort();
   const expectedIds = [...CANONICAL_PRODUCER_IDS].sort();
   assert.deepEqual(

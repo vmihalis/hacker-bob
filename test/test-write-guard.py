@@ -279,6 +279,99 @@ TESTS = [
     ("Write under audit-graded verification-attempts/ → block",
      {"tool_input": {"file_path": f"{SESSION}/verification-attempts/round-1.json", "content": "x"}},
      2),
+
+    # --- Heredoc bodies must not trip the shlex fail-closed guard. ---
+    # The discovery scripts' canonical step-6 JS-analysis heredoc embeds
+    # r'https?://[^\s"\'<>]+...', whose \' unbalances shlex's quote counter and
+    # used to fail-closed-block the framework's OWN shipped script. A heredoc
+    # whose body breaks shlex but writes ONLY scratch files must be ALLOWED —
+    # the body is inert stdin and carries no shell-level write target.
+    ("heredoc w/ quote-breaking regex, writes scratch .txt → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', open('/tmp/c').read())\n"
+        f"open('{SESSION}/subdomains.txt','w').write('ok')\n"
+        "PY"}},
+     0),
+    # The heredoc strip must not open a hole: an inline write to an MCP-owned
+    # file from inside such a heredoc is still caught by the full-command regex.
+    ("heredoc w/ quote-breaking regex, inline-writes MCP-owned grade.json → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', 'x')\n"
+        f"open('{SESSION}/grade.json','w').write('x')\n"
+        "PY"}},
+     2),
+
+    # --- Command-aware payload separation: data is not a write. ---
+    # A write-call STRING echoed/heredoc'd to a data consumer is inert -> ALLOW.
+    ("echo of an open(...,'w') string is data, not a write → allow",
+     {"tool_input": {"command": f"echo \"open('{SESSION}/grade.md','w')\""}},
+     0),
+    ("cat heredoc body containing an open(...,'w') string is data → allow",
+     {"tool_input": {"command": f"cat <<'EOF'\nopen('{SESSION}/grade.json','w').write('x')\nEOF"}},
+     0),
+    # A read-mode open of a session file is not a write -> ALLOW (precision).
+    ("read-mode open of a session file is not a write → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import re\n"
+        "hits = re.findall(r'a\\'b', 'x')\n"
+        f"data = open('{SESSION}/grade.md').read()\n"
+        "PY"}},
+     0),
+    # A genuine rm inside a SHELL heredoc body is re-analyzed recursively → block.
+    ("bash heredoc body that rm's a blocked file → block (shell recursion)",
+     {"tool_input": {"command": f"bash <<'EOF'\nrm {SESSION}/findings.jsonl\nEOF"}},
+     2),
+    # A '>' that appears only as DATA inside -c interpreter source → allow.
+    ("redirect-looking text inside python3 -c is data → allow",
+     {"tool_input": {"command": f"python3 -c \"print('a > {SESSION}/grade.md')\""}},
+     0),
+
+    # --- Hardening: naive shell write primitives beyond rm/mv/cp. ---
+    ("truncate of MCP-owned state.json → block",
+     {"tool_input": {"command": f"truncate -s 0 {SESSION}/state.json"}},
+     2),
+    ("dd of= MCP-owned state.json → block",
+     {"tool_input": {"command": f"dd if=/tmp/src of={SESSION}/state.json"}},
+     2),
+    ("sed -i of MCP-owned state.json → block",
+     {"tool_input": {"command": f"sed -i.bak 's/a/b/' {SESSION}/state.json"}},
+     2),
+    ("install over audit-graded report.md → block",
+     {"tool_input": {"command": f"install /tmp/src {SESSION}/report.md"}},
+     2),
+    ("ln -sf over MCP-owned state.json → block",
+     {"tool_input": {"command": f"ln -sf /tmp/src {SESSION}/state.json"}},
+     2),
+    ("truncate of agent-writable scratch .txt → allow",
+     {"tool_input": {"command": f"truncate -s 0 {SESSION}/subdomains.txt"}},
+     0),
+    # --- Hardening: interpreter write idioms beyond open(...,'w'). ---
+    ("python os.system shell-redirect to grade.md → block (recursed as shell)",
+     {"tool_input": {"command": f"python3 -c \"import os; os.system('echo x > {SESSION}/grade.md')\""}},
+     2),
+    ("python shutil.copy onto audit-graded report.md → block",
+     {"tool_input": {"command": f"python3 -c \"import shutil; shutil.copy('/tmp/s','{SESSION}/report.md')\""}},
+     2),
+    ("python os.replace onto MCP-owned state.json → block",
+     {"tool_input": {"command": f"python3 -c \"import os; os.replace('/tmp/s','{SESSION}/state.json')\""}},
+     2),
+    ("ruby File.write of MCP-owned state.json → block",
+     {"tool_input": {"command": f"ruby -e \"File.write('{SESSION}/state.json','x')\""}},
+     2),
+    # --- Hardening: a shell interpreter's -c body is recursed as shell. ---
+    ("sh -c with a nested redirect to state.json → block",
+     {"tool_input": {"command": f"sh -c 'echo x > {SESSION}/state.json'"}},
+     2),
+    # --- FP fix: a command-substitution redirect target is dynamic, not a
+    # captured fragment, so a timestamped scratch .txt is allowed. ---
+    ("redirect to a $(date)-timestamped scratch .txt → allow",
+     {"tool_input": {"command": f"echo x > \"{SESSION}/probe-$(date +%s).txt\""}},
+     0),
 ]
 
 

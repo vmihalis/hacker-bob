@@ -108,7 +108,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.167",
     "proxy-agent": "^8.0.1",
-    "psl": "^1.15.0"
+    "psl": "^1.15.0",
+    "ws": "^8.18.0"
   },
   "optionalDependencies": {
     "patchright": "^1.60.2"

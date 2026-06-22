@@ -61,6 +61,7 @@
       "mcp__hacker-bob__bob_read_surface_leads",
       "mcp__hacker-bob__bob_log_capability_friction",
       "mcp__hacker-bob__bob_log_protocol_drift",
+      "mcp__hacker-bob__bob_ws_probe",
       "Bash(mkdir *)",
       "Bash(test *)",
       "Bash(cat *)",
@@ -156,6 +157,7 @@
       "mcp__hacker-bob__bob_propose_hypothesis",
       "mcp__hacker-bob__bob_propose_transition",
       "mcp__hacker-bob__bob_materialize_task_graph",
+      "mcp__hacker-bob__bob_materialize_cell_floor",
       "mcp__hacker-bob__bob_read_task_graph",
       "mcp__hacker-bob__bob_read_composition_telemetry",
       "mcp__hacker-bob__bob_run_path_composition_experiment",
@@ -221,6 +223,16 @@
       },
       {
         "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -312,6 +324,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "evaluator-fanout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-start.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStop": [
@@ -367,6 +389,16 @@
       },
       {
         "matcher": "evaluator-cosmwasm-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "evaluator-fanout",
         "hooks": [
           {
             "type": "command",

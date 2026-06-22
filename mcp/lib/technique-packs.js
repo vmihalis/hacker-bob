@@ -121,6 +121,12 @@ const OSS_TECHNIQUE_PACKS = Object.freeze([
     lens_affinity: Object.freeze(["code_surface_scout"]),
     summary: "Docs claim X but code does Y — rate-limit docs vs enforced limit, auth docs vs hard-coded admin email check.",
   }),
+  Object.freeze({
+    id: "ws_security",
+    title: "WebSocket security",
+    lens_affinity: Object.freeze(["taint_trace", "code_surface_scout"]),
+    summary: "Cover: CSWSH (Origin not validated on upgrade — any page can open a connection in the victim's auth context); admin/debug method exposure (JSON-RPC nodes: debug_*, admin_*, txpool_*, miner_*, personal_* enabled beyond standard public set); subscription authorization bypass (eth_subscribe delivers another account's events or unauthenticated data); input validation on WS messages (malformed JSON-RPC, negative block numbers, type confusion); rate-limit gaps (HTTP rate limits often absent on WS connections). Probe: send adversarial Origin at upgrade; enumerate JSON-RPC method list against known-good allowlist; subscribe with wrong auth context and compare responses.",
+  }),
 ]);
 
 // ── Plane X Cycle X.5 — cross-stack identity-handoff technique pack ────────

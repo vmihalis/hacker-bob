@@ -56,6 +56,14 @@ const AGENT_TOOL_SPECS = Object.freeze({
     ],
     extras: ["Bash", "Read", "Write", "Grep", "Glob"],
   },
+  // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator. Rendered
+  // via the role-id path so the tools line tracks mcpToolNamesForRole including
+  // the bob_propose_transition deny and the spawn_capable Task grant.
+  "evaluator-fanout.md": {
+    roleId: "evaluator-fanout",
+    roleBundles: ["evaluator-shared", "evaluator-web"],
+    extras: ["Bash", "Read", "Grep", "Glob"],
+  },
   "brutalist-verifier.md": {
     roleId: "brutalist-verifier",
     roleBundles: ["verifier"],

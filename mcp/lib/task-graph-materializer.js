@@ -126,6 +126,21 @@ function claimNodeId(claimId) {
   return `${TASK_GRAPH_NODE_ID_PREFIX}C-${claimId.trim()}`;
 }
 
+// Mint a TG- node id for a coverage cell. The raw cell_key is a JSON array
+// (e.g. ["surface:billing","","","idor","admin"]) and fails TASK_GRAPH_NODE_ID_PATTERN,
+// so the id is a hash of the cell_key (deterministic — equal cells dedupe to one
+// node). The `cell-` discriminator (distinct from S-/T-/H-/C-) keeps the cell
+// sub-namespace separate so node.transitioned kind-inference never mis-types it.
+function cellNodeId({ cellKey, proposalId, eventId }) {
+  if (typeof proposalId === "string" && proposalId.trim()) {
+    return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${proposalId.trim()}`;
+  }
+  if (typeof cellKey === "string" && cellKey.trim()) {
+    return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(cellKey)}`;
+  }
+  return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(eventId)}`;
+}
+
 function ensureNode(nodesById, nodeId, kind, ts) {
   if (!nodesById.has(nodeId)) {
     nodesById.set(nodeId, {
@@ -238,6 +253,31 @@ function foldEvent(event, { nodesById, edgesByKey }) {
       for (const ref of surfaceRefs) addSurfaceRef(node, ref);
       return;
     }
+    if (payload.kind === "cell_proposed") {
+      const nodeId = cellNodeId({
+        cellKey: payload.cell_key,
+        proposalId: payload.proposal_id,
+        eventId: event.event_id,
+      });
+      const node = ensureNode(nodesById, nodeId, "cell", ts);
+      addSourceEvent(node, event.event_id);
+      // A cell is a leaf coverage obligation grounded in its parent surface(s) —
+      // surface_ref(s), no bridge edges. The cell's (bug_class, auth_profile,
+      // cell_key, technique_pack_ids) stay in the proposal payload and are
+      // recovered at prepare/reconcile time. A transition-cell (A2) is grounded
+      // in its EDGE — both endpoint surfaces; a surface-cell keeps its single ref.
+      if (typeof payload.from_surface === "string" && payload.from_surface
+        && typeof payload.to_surface === "string" && payload.to_surface) {
+        addSurfaceRef(node, payload.from_surface);
+        addSurfaceRef(node, payload.to_surface);
+      } else if (typeof payload.surface_id === "string") {
+        addSurfaceRef(node, payload.surface_id);
+      }
+      // Depth-tier marker: a residual-flagged depth re-probe (E2) carries tier=2
+      // so the scheduler dispatches it after all Tier-1 breadth. Absent → Tier-1.
+      if (Number.isInteger(payload.tier)) node.tier = payload.tier;
+      return;
+    }
     if (payload.kind === "transition_proposed") {
       const nodeId = transitionNodeId({
         proposalId: payload.proposal_id,
@@ -292,6 +332,7 @@ function foldEvent(event, { nodesById, edgesByKey }) {
     if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}T-`)) inferredKind = "transition";
     else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}S-`)) inferredKind = "surface";
     else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}C-`)) inferredKind = "claim";
+    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}cell-`)) inferredKind = "cell";
     const node = ensureNode(nodesById, nodeId, inferredKind, ts);
     addSourceEvent(node, event.event_id);
     // The to_state replaces any prior state because the state machine is
@@ -364,6 +405,11 @@ function finalizeNode(node) {
     ts_last: node.ts_last,
     source_events: node.source_events.slice().sort(),
   };
+  // Depth tier: persist only a non-default depth tier (an E2 Tier-2 re-probe),
+  // so the graph-scheduler projection can sort it after Tier-1 breadth. Omitted
+  // for every Tier-1 node, keeping the canonical nodes[] hash byte-identical for
+  // sessions with no depth re-probe.
+  if (Number.isInteger(node.tier) && node.tier > 1) out.tier = node.tier;
   return out;
 }
 
@@ -639,6 +685,7 @@ module.exports = {
   LEDGER_PRESSURE_WARN_THRESHOLD,
   TASK_GRAPH_EDGE_KIND_VALUES,
   TASK_GRAPH_NODE_KIND_VALUES,
+  cellNodeId,
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,

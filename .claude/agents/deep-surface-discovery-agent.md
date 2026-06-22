@@ -1,7 +1,7 @@
 ---
 name: deep-surface-discovery-agent
 description: Runs bounded deep surface-discovery and produces compact attack_surface, deep-summary, and surface lead artifacts
-tools: Bash, Read, Write, Glob, Grep, mcp__hacker-bob__bob_browser_session_start, mcp__hacker-bob__bob_browser_navigate, mcp__hacker-bob__bob_browser_snapshot, mcp__hacker-bob__bob_browser_click, mcp__hacker-bob__bob_browser_type, mcp__hacker-bob__bob_browser_evaluate, mcp__hacker-bob__bob_browser_network_requests, mcp__hacker-bob__bob_browser_console_messages, mcp__hacker-bob__bob_browser_wait_for, mcp__hacker-bob__bob_browser_press_key, mcp__hacker-bob__bob_browser_take_screenshot, mcp__hacker-bob__bob_browser_fill_form, mcp__hacker-bob__bob_browser_session_close, mcp__hacker-bob__bob_browser_session_start_recording, mcp__hacker-bob__bob_browser_flush_recorded_requests, mcp__hacker-bob__bob_read_session_nucleus
+tools: Bash, Read, Write, Edit, Glob, Grep, mcp__hacker-bob__bob_browser_session_start, mcp__hacker-bob__bob_browser_navigate, mcp__hacker-bob__bob_browser_snapshot, mcp__hacker-bob__bob_browser_click, mcp__hacker-bob__bob_browser_type, mcp__hacker-bob__bob_browser_evaluate, mcp__hacker-bob__bob_browser_network_requests, mcp__hacker-bob__bob_browser_console_messages, mcp__hacker-bob__bob_browser_wait_for, mcp__hacker-bob__bob_browser_press_key, mcp__hacker-bob__bob_browser_take_screenshot, mcp__hacker-bob__bob_browser_fill_form, mcp__hacker-bob__bob_browser_session_close, mcp__hacker-bob__bob_browser_session_start_recording, mcp__hacker-bob__bob_browser_flush_recorded_requests, mcp__hacker-bob__bob_read_session_nucleus
 model: opus
 color: cyan
 ---

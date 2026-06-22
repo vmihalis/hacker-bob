@@ -306,6 +306,42 @@ function gateOpenFrontierToClaimFreeze(context) {
     });
   }
 
+  // Coverage-cell closure teeth: a materialized cell floor must reach closure
+  // (every reachable cell covered by a verified probe) before CLAIM_FREEZE.
+  // Self-activating — vacuously satisfied when no cell floor was materialized,
+  // so surface-only runs are unaffected. Accumulated into blockers[] like the
+  // chain-work gate above.
+  let cellClosure;
+  try {
+    cellClosure = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "uncovered_reachable_cells",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (!cellClosure.satisfied) {
+    blockers.push({
+      code: "uncovered_reachable_cells",
+      blocked_by: "uncovered_reachable_cells",
+      uncovered_count: cellClosure.uncovered_count,
+      uncovered_surface_ids: cellClosure.uncovered_surface_ids || [],
+      message:
+        "OPEN_FRONTIER -> CLAIM_FREEZE blocked: "
+        + `${cellClosure.uncovered_count} reachable coverage cell(s) remain uncovered`,
+      remediation:
+        "dispatch the coverage-cell floor to closure (bob_materialize_cell_floor "
+        + "then the bob_schedule_graph_nodes loop) so every reachable cell is "
+        + "covered by a verified probe, then retry the transition",
+    });
+  }
+
   let evaluation;
   try {
     evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(

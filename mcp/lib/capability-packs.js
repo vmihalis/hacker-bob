@@ -750,6 +750,90 @@ function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence
   return defaultWebRouteMetadata();
 }
 
+// Coarse (surface-class x bug_class) applicability gate for cell enumeration.
+// Maps the clearly type-restricted bug classes to the surface class(es) they
+// can occur on. FAILS OPEN: a bug_class with no rule here is relevant on every
+// surface, so the gate only prunes the structurally-impossible (e.g. reentrancy
+// on a web surface, sqli on a smart contract), never the merely-unmapped. Keep
+// it conservative — over-pruning loses coverage, which is the opposite of the
+// goal; ambiguous classes (idor, ssrf, dos, ...) stay unmapped on purpose.
+const BUG_CLASS_SURFACE_APPLICABILITY = Object.freeze({
+  reentrancy: Object.freeze(["smart_contract"]),
+  sql_injection: Object.freeze(["web"]),
+  sqli: Object.freeze(["web"]),
+  xss: Object.freeze(["web"]),
+  csrf: Object.freeze(["web"]),
+});
+
+function normalizeBugClassKey(bugClass) {
+  return typeof bugClass === "string"
+    ? bugClass.trim().toLowerCase().replace(/[\s-]+/g, "_")
+    : "";
+}
+
+// Broad surface class ("web" | "smart_contract" | "oss") for a surface's
+// metadata, mirroring packIdForSurfaceMetadata's honor-then-classify order.
+// Returns null (-> fail open) on any unknown/throwing classification.
+function surfaceClassForMetadata(surfaceMetadata) {
+  let packId = null;
+  try {
+    if (surfaceMetadata && typeof surfaceMetadata === "object"
+      && typeof surfaceMetadata.capability_pack === "string") {
+      const pack = getCapabilityPack(surfaceMetadata.capability_pack);
+      if (pack) packId = pack.id;
+    }
+    if (!packId) packId = classifySurfaceCapability(surfaceMetadata || {}).capability_pack;
+  } catch {
+    return null;
+  }
+  if (typeof packId !== "string") return null;
+  if (packId.startsWith("smart_contract")) return "smart_contract";
+  if (packId.startsWith("oss")) return "oss";
+  return "web";
+}
+
+// OSS/native coverage modality axes. An OSS surface IS a harness (a code_module
+// fuzz target); its cells cross the build-config axis (sanitizer class) with the
+// fuzzing-strategy axis (input class). The specific crash found is an OUTCOME
+// recorded at reconcile, NOT a pre-enumerated axis. All values are lowercase so
+// they survive coverage-key normalization unchanged.
+const OSS_SANITIZER_CLASS_AXIS = Object.freeze(["asan", "ubsan", "msan"]);
+const OSS_INPUT_CLASS_AXIS = Object.freeze(["raw_corpus", "value_profile", "cmplog"]);
+
+// Transition-cell bug_class axis (A2). A transition-cell is a (transition_edge x
+// bug_class) coverage obligation — a cross-surface invariant a per-surface model
+// cannot see because it lives on the EDGE. The axis is keyed by the transition
+// KIND (the closed TRANSITION_KIND_VALUES enum), so the bug_class is the class of
+// trust hop being crossed, not a per-surface vuln hint. There is NO auth axis:
+// the cross-surface invariant holds regardless of which credential probes one
+// endpoint. The replay/cross-chain/identity classes are exactly the ones
+// BUG_CLASS_WEAPON maps to web3_identity_handoff, so a transition-cell auto-adopts
+// the cross-surface weapon a surface-cell never reaches for. All lowercase so the
+// values survive coverage-key normalization unchanged; 1-2 entries each keeps the
+// floor finite and deterministic.
+const TRANSITION_BUG_CLASS_AXIS = Object.freeze({
+  identity_propagation: Object.freeze(["identity_handoff", "replay"]),
+  value_movement: Object.freeze(["value_flow", "replay"]),
+  trust_handoff: Object.freeze(["trust_boundary", "cross_chain_replay"]),
+  state_dependency: Object.freeze(["state_consistency", "replay"]),
+  oracle_dependency: Object.freeze(["oracle_manipulation", "staleness"]),
+  message_passing: Object.freeze(["cross_chain_replay", "message_forgery"]),
+});
+
+function isOssSurfaceMetadata(surfaceMetadata) {
+  return surfaceClassForMetadata(surfaceMetadata) === "oss";
+}
+
+// Is this bug_class structurally possible on this surface? Fail-open: unmapped
+// bug_classes and unknown surface classes are always relevant.
+function isBugClassRelevantForSurface(surfaceMetadata, bugClass) {
+  const allowed = BUG_CLASS_SURFACE_APPLICABILITY[normalizeBugClassKey(bugClass)];
+  if (!allowed) return true;
+  const surfaceClass = surfaceClassForMetadata(surfaceMetadata);
+  if (surfaceClass === null) return true;
+  return allowed.includes(surfaceClass);
+}
+
 module.exports = {
   CAPABILITY_PACKS,
   DEFAULT_CONTEXT_BUDGET,
@@ -759,6 +843,11 @@ module.exports = {
   capabilityPackForLegacyFinding,
   chainSpecificEvaluatorBundles,
   classifySurfaceCapability,
+  isBugClassRelevantForSurface,
+  isOssSurfaceMetadata,
+  OSS_SANITIZER_CLASS_AXIS,
+  OSS_INPUT_CLASS_AXIS,
+  TRANSITION_BUG_CLASS_AXIS,
   defaultWebRouteMetadata,
   getCapabilityPack,
   getCapabilityPackContextBudget,

@@ -207,6 +207,84 @@ function normalizeChainNotes(value) {
   return notes;
 }
 
+// CN (coverage-nesting) Step B (B5/HE-6) — the transition-blind evaluator-fanout
+// reports cross-surface pivots it discovered here instead of proposing them; the
+// orchestrator (D7) calls bob_propose_transition per entry on receipt. Bounded like
+// chain_notes. kind is a bounded string here — bob_propose_transition validates it
+// against the transition-kind enum when the orchestrator actually proposes the pivot.
+function normalizeDiscoveredPivots(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "discovered_pivots must be an array");
+  }
+  if (value.length > 20) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "discovered_pivots must contain at most 20 entries");
+  }
+  return value.map((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}] must be an object`);
+    }
+    const reqStr = (key, max) => {
+      const v = entry[key];
+      if (typeof v !== "string" || v.length === 0) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].${key} is required`);
+      }
+      if (v.length > max) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].${key} must be at most ${max} characters`);
+      }
+      return v;
+    };
+    const pivot = {
+      from_surface: reqStr("from_surface", 200),
+      to_surface: reqStr("to_surface", 200),
+      kind: reqStr("kind", 100),
+      trust_assumption: reqStr("trust_assumption", 500),
+    };
+    const refs = normalizeStringArray(entry.evidence_refs, "evidence_refs");
+    if (refs.length > 10) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `discovered_pivots[${i}].evidence_refs must contain at most 10 entries`);
+    }
+    if (refs.length > 0) pivot.evidence_refs = refs;
+    return pivot;
+  });
+}
+
+// CN (coverage-nesting) Step B (B6) — the spawn-capable evaluator-fanout self-reports
+// the children it actually spawned (subagent_type + optional cell_key). This is the
+// DETECTIVE finalize channel: the orchestrator cross-checks it via validateSpawnFanout
+// against the brief's child_fanout_plan budget on receipt. Agent-attested (so forgeable
+// — it bounds an honest agent); the host pool is the preventive backstop. Bounded by
+// max_spawn_children (64).
+function normalizeSpawnedChildren(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "spawned_children must be an array");
+  }
+  if (value.length > 64) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "spawned_children must contain at most 64 entries");
+  }
+  return value.map((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}] must be an object`);
+    }
+    const subagentType = entry.subagent_type;
+    if (typeof subagentType !== "string" || subagentType.length === 0) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].subagent_type is required`);
+    }
+    if (subagentType.length > 100) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].subagent_type must be at most 100 characters`);
+    }
+    const child = { subagent_type: subagentType };
+    if (entry.cell_key != null) {
+      if (typeof entry.cell_key !== "string" || entry.cell_key.length > 300) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `spawned_children[${i}].cell_key must be a string of at most 300 characters`);
+      }
+      child.cell_key = entry.cell_key;
+    }
+    return child;
+  });
+}
+
 // Runtime mirror of the bob_write_wave_handoff JSON schema enum and the
 // renderer's BLOCKED_HARNESS_RUN_KINDS constant. Mismatch here would cause
 // SVM/Move/Substrate/CosmWasm evaluators to fail finalization even though the
@@ -511,6 +589,8 @@ function validateWaveHandoffPayload(payload, {
     surface_type: surfaceType,
     summary: normalizeHandoffSummary(payload),
     chain_notes: normalizeChainNotes(payload.chain_notes),
+    discovered_pivots: normalizeDiscoveredPivots(payload.discovered_pivots),
+    spawned_children: normalizeSpawnedChildren(payload.spawned_children),
     blocked_harness_runs: blockedHarnessRuns,
     blocked_prereqs: blockedPrereqs,
     bypass_attempts: bypassAttempts,
@@ -621,6 +701,8 @@ module.exports = {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeDiscoveredPivots,
+  normalizeSpawnedChildren,
   normalizeHandoffSummary,
   normalizeHandoffProvenanceSignature,
   sha256Hex,

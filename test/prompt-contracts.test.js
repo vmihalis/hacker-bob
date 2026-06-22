@@ -55,6 +55,7 @@ const {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
   renderClaudeRole,
+  spawnCapableAgentNames,
 } = require("../scripts/lib/claude-role-renderer.js");
 const {
   CODEX_SKILL_SPECS,
@@ -1115,8 +1116,19 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // OE2+OE3 invariant-from-diff oracle SETUP stanza (known-fix/regression: read both
   // trees, derive the fix's invariant, craft two minimal checkout_patch diffs whose
   // violation triggers a real /src-framed ASAN fault — not a bare abort) adds +2
-  // (content line + blank separator). Cap bumped 399 → 401.
-  assert.ok(lines <= 401, `bob-evaluate-runner skill is ${lines} lines (cap 401)`);
+  // (content line + blank separator). The bob_materialize_cell_floor producer
+  // adds one allowed-tools line; the OPEN_FRONTIER coverage-cell closure stanza
+  // (materialize the cell floor -> loop bob_schedule_graph_nodes -> finalize)
+  // adds its paragraph + separator.
+  // The @precondition: uncovered_reachable_cells directive (the cell-closure
+  // freeze gate) adds one rendered line.
+  // The OPEN_FRONTIER "Path-traced chain composition" stanza (F2 — after closure,
+  // read covered_paths and fan one chain-verifier per finding-backed path,
+  // confirm via bob_verify_composition_path) adds its paragraph + separator (+2).
+  // The CN Step B "Nested fan-out handoff reconciliation" stanza (default-off —
+  // propose discovered_pivots, cross-check spawned_children) adds its paragraph +
+  // separator (+2).
+  assert.ok(lines <= 410, `bob-evaluate-runner skill is ${lines} lines (cap 410)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1351,6 +1363,9 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // I10 adds bob_read_static_analysis_index to evaluator-shared. It is a
   // bounded read-only query over scrubbed static-analysis-index.jsonl rows;
   // budgets bump by +1 (SC 42→43, web 44→45).
+  // bob_ws_probe adds WebSocket scope-gated probing to evaluator-web only,
+  // the final +1 on top of the offensive-tool grants below (web 53→54);
+  // SC budget unchanged.
   // PR3 adds bob_http_confirm to evaluator-web only. It is the trusted
   // read-only NEGATIVE-ONLY differential confirmer: it appends http-audit.jsonl
   // records for its probes (never writes signed offensive-runs rows); web budget
@@ -1391,7 +1406,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 53 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 54 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
@@ -1562,8 +1577,13 @@ test("settings hooks register only the write-confirm HITL gate on MCP tools (nev
   }
 });
 
-test("SubagentStop hooks match every routed capability-pack evaluator", () => {
-  const expected = evaluatorAgentNamesForCapabilityPacks().sort();
+test("SubagentStop hooks match every wave evaluator (capability-pack + spawn-capable)", () => {
+  // The agent-run lifecycle fires for every evaluator that writes a wave handoff
+  // + the BOB_AGENT_RUN_DONE marker: the routed capability-pack evaluators PLUS
+  // the spawn-capable evaluator-fanout (CN Step B). Still EXACT (no wildcard).
+  const expected = Array.from(
+    new Set([...evaluatorAgentNamesForCapabilityPacks(), ...spawnCapableAgentNames()]),
+  ).sort();
   for (const settings of [defaultClaudeSettings(), JSON.parse(readFile(".claude/settings.json"))]) {
     const configured = (settings.hooks.SubagentStop || [])
       .filter((entry) => (entry.hooks || []).some((hook) => /agent-run-stop\.js/.test(hook.command)))
@@ -1838,6 +1858,23 @@ test("rendered evaluator agents carry the handoff field limits block", () => {
       `${relativePath} missing rendered handoff field limits`,
     );
   }
+});
+
+test("evaluator-fanout body carries the brain-owned actuation contract (CN Step B B1/B2/B4)", () => {
+  const body = readFile("prompts/roles/evaluator-fanout.md");
+  // B1 — actuate the brain plan only, never discretionary children, with the depth gate.
+  assert.match(body, /child_fanout_plan/, "reads the brain-owned plan");
+  assert.match(body, /Do NOT add, merge, split, or invent children/, "forbids discretionary children");
+  assert.match(body, /remaining_depth/, "carries the depth gate");
+  assert.match(body, /subagent_type: "evaluator-fanout"/, "spawns the pinned spawn role, self-recursive");
+  // B2 — coverage reconcile so the parent's next fan-out prunes the cell.
+  assert.match(body, /bob_log_coverage/, "reconciles cell coverage");
+  // B1/HE-6 — transition-blind: pivots reported up, not proposed.
+  assert.match(body, /TRANSITION-BLIND/);
+  assert.match(body, /discovered_pivots\[\]/);
+  assert.match(body, /do not hold `?bob_propose_transition/, "does not hold the propose-transition tool");
+  // B4 — per-cell technique weapon (the depth-3 technique-pack variant).
+  assert.match(body, /technique_pack_ids/, "carries the per-cell technique packs");
 });
 
 test("evaluator prompt sources do not hand-code handoff field limits", () => {

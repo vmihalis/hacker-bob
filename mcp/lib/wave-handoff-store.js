@@ -793,6 +793,8 @@ function buildWaveHandoffsDocument(domain, waveNumbers) {
           provenance,
           summary: payload.summary,
           chain_notes: payload.chain_notes,
+          discovered_pivots: payload.discovered_pivots,
+          spawned_children: payload.spawned_children,
           blocked_harness_runs: payload.blocked_harness_runs,
           blocked_prereqs: payload.blocked_prereqs,
           bypass_attempts: payload.bypass_attempts,

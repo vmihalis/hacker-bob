@@ -32,11 +32,13 @@ const {
   NODE_STATE_VALUES,
   TASK_GRAPH_NODE_ID_PREFIX,
   TRANSITION_KIND_VALUES,
+  appendCellProposal,
   appendHypothesisProposal,
   appendNodeTransition,
   appendTransitionProposal,
   assertNodeTransitionAllowed,
   isAllowedNodeTransition,
+  readCellProposals,
   readHypothesisProposals,
   readNodeTransitions,
   readTransitionProposals,
@@ -44,6 +46,9 @@ const {
 const {
   materializeFrontier,
 } = require("../mcp/lib/frontier-materializer.js");
+const {
+  materializeTaskGraph,
+} = require("../mcp/lib/task-graph-materializer.js");
 const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
 
 // X.3 Do step 3: bob_propose_transition validates both endpoints exist in
@@ -72,6 +77,470 @@ function withTempHome(fn) {
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
+
+// ─── cell_proposed -> materialized cell node (B1) ────────────────────────
+
+test("cell_proposed rides observation.recorded (no new top-level frontier kind)", () => {
+  withTempHome(() => {
+    const domain = "cell-kind.test";
+    seedMaterializedSurface(domain, "surface:billing");
+    appendCellProposal({
+      target_domain: domain,
+      surface_id: "surface:billing",
+      cell_key: JSON.stringify(["surface:billing", "", "", "idor", "admin"]),
+      bug_class: "idor",
+      auth_profile: "admin",
+      technique_pack_ids: [],
+      capability_pack_ids: [],
+    });
+    const proposals = readCellProposals(domain);
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].kind, "observation.recorded");
+    assert.equal(proposals[0].payload.kind, "cell_proposed");
+    assert.equal(proposals[0].payload.surface_id, "surface:billing");
+  });
+});
+
+test("cell_proposed materializes a cell node grounded in its REAL parent surface", () => {
+  withTempHome(() => {
+    const domain = "cell-materialize.test";
+    seedMaterializedSurface(domain, "surface:billing");
+    appendCellProposal({
+      target_domain: domain,
+      surface_id: "surface:billing",
+      cell_key: JSON.stringify(["surface:billing", "", "", "idor", "admin"]),
+      bug_class: "idor",
+      auth_profile: "admin",
+      technique_pack_ids: [],
+      capability_pack_ids: [],
+    });
+    const doc = materializeTaskGraph(domain, { write: true }).document;
+    const cell = doc.nodes.find((n) => n.kind === "cell");
+    assert.ok(cell, "a cell node was materialized");
+    assert.ok(cell.node_id.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}cell-`));
+    assert.deepEqual(cell.surface_refs, ["surface:billing"]);
+    assert.equal(cell.state, "proposed");
+    // equal cells dedupe to one node (hash-of-cell_key id).
+    appendCellProposal({
+      target_domain: domain,
+      surface_id: "surface:billing",
+      cell_key: JSON.stringify(["surface:billing", "", "", "idor", "admin"]),
+      bug_class: "idor",
+      auth_profile: "admin",
+      technique_pack_ids: [],
+      capability_pack_ids: [],
+    });
+    const doc2 = materializeTaskGraph(domain, { write: true }).document;
+    assert.equal(doc2.nodes.filter((n) => n.kind === "cell").length, 1);
+  });
+});
+
+test("bob_materialize_cell_floor sweeps the inventory and emits cell_proposed per cell", () => {
+  withTempHome(() => {
+    const domain = "cell-floor.test";
+    // Seed an OSS surface (a harness): OSS cells = sanitizer x input_class, no
+    // auth axis, so the floor emits without auth profiles or bug_class_hints.
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:00:00.000Z",
+      surface_id: "surface:harness-x",
+      payload: { title: "harness-x", surface_type: "oss_native_code" },
+    });
+    materializeFrontier(domain, { write: true });
+    const { handler } = require("../mcp/lib/tools/materialize-cell-floor.js");
+    const result = JSON.parse(handler({ target_domain: domain }));
+    assert.ok(result.cells_emitted > 0, "the floor emitted cells (deterministic, not nesting-gated)");
+    const proposals = readCellProposals(domain);
+    assert.equal(proposals.length, result.cells_emitted);
+    // every floor cell is auto-contracted (proposed -> contracted) with a
+    // synthetic coverage Contract — no operator authors a per-cell Contract.
+    assert.equal(result.cells_contracted, result.cells_emitted);
+    const doc = materializeTaskGraph(domain, { write: true }).document;
+    const cells = doc.nodes.filter((n) => n.kind === "cell");
+    assert.ok(cells.length > 0);
+    assert.ok(cells.every((n) => n.surface_refs.includes("surface:harness-x")));
+    assert.ok(
+      cells.every((n) => n.state === "contracted"),
+      "cells are dispatch-eligible (contracted) with NO operator Contract",
+    );
+    assert.ok(cells.every((n) => typeof n.contract_hash === "string" && n.contract_hash.length > 0));
+    // and the dormant TaskGraph engine SELECTS them for dispatch.
+    const { selectNextExecutableNodes } = require("../mcp/lib/graph-scheduler.js");
+    const { DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    const sel = selectNextExecutableNodes(domain, DEFAULT_QUEUE_POLICY, 16);
+    const selNodes = Array.isArray(sel) ? sel : (sel.selected || sel.nodes || []);
+    assert.ok(selNodes.length > 0, "the graph-scheduler selects contracted cells");
+    assert.ok(selNodes.every((n) => n.kind === "cell"));
+  });
+});
+
+test("C4: a reconciled cell (logCellCoverage) self-prunes on the next floor sweep", () => {
+  withTempHome(() => {
+    const domain = "cell-reconcile.test";
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:00:00.000Z",
+      surface_id: "surface:harness-x",
+      payload: { title: "harness-x", surface_type: "oss_native_code" },
+    });
+    materializeFrontier(domain, { write: true });
+    // Lift the per-surface child cap so the OSS floor (3 sanitizers x 3 input
+    // classes = 9) is not budget-capped — otherwise pruning a covered cell just
+    // frees a slot for a previously-capped one and the count is unchanged.
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+    const first = JSON.parse(floor({ target_domain: domain }));
+    assert.ok(first.cells_emitted > 0);
+
+    // Reconcile ONE cell as covered — exactly what bob_finalize_node does on a
+    // verified cell (graph-cell write: null wave/agent, no assignment gate).
+    const {
+      logCellCoverage,
+      buildCoverageSummaryForSurface,
+      readCoverageRecordsFromJsonl,
+    } = require("../mcp/lib/coverage.js");
+    logCellCoverage({
+      target_domain: domain,
+      surface_id: "surface:harness-x",
+      bug_class: "asan",
+      auth_profile: "value_profile",
+      status: "tested",
+      evidence_summary: "probed",
+    });
+    // The record round-trips (null wave/agent) and groups under tested.
+    const summary = buildCoverageSummaryForSurface(readCoverageRecordsFromJsonl(domain), "surface:harness-x");
+    assert.ok(summary.tested.some((it) => it.bug_class === "asan" && it.auth_profile === "value_profile"));
+
+    // The next floor sweep prunes the reconciled cell — coverage is MEASURABLE.
+    const second = JSON.parse(floor({ target_domain: domain }));
+    assert.ok(
+      second.cells_emitted < first.cells_emitted,
+      "the reconciled cell is pruned, not re-emitted",
+    );
+  });
+});
+
+test("D1: the cell-closure gate is vacuous without a floor, blocks on uncovered cells, clears when covered", () => {
+  withTempHome(() => {
+    const domain = "d1-closure.test";
+    const { evaluateSchedulerPrecondition } = require("../mcp/lib/scheduler-preconditions.js");
+    const { TRANSITION_GATES } = require("../mcp/lib/lifecycle-gates.js");
+    const gateOpenFrontierToClaimFreeze = TRANSITION_GATES["OPEN_FRONTIER->CLAIM_FREEZE"];
+
+    // No cell floor -> vacuously satisfied (surface-only/legacy runs unaffected).
+    const vacuous = evaluateSchedulerPrecondition("uncovered_reachable_cells", { target_domain: domain });
+    assert.equal(vacuous.satisfied, true);
+    assert.equal(vacuous.cell_floor_active, false);
+
+    // Materialize a cell floor with no budget cap (OSS = 9 cells).
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:00:00.000Z",
+      surface_id: "surface:harness-x",
+      payload: { title: "harness-x", surface_type: "oss_native_code" },
+    });
+    materializeFrontier(domain, { write: true });
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+    require("../mcp/lib/tools/materialize-cell-floor.js").handler({ target_domain: domain });
+
+    // Cells exist + uncovered -> the gate BLOCKS freeze (closure teeth).
+    const blocked = evaluateSchedulerPrecondition("uncovered_reachable_cells", { target_domain: domain });
+    assert.equal(blocked.satisfied, false);
+    assert.equal(blocked.cell_floor_active, true);
+    assert.ok(blocked.uncovered_count > 0);
+    const gateBlockers = gateOpenFrontierToClaimFreeze({ target_domain: domain });
+    assert.ok(gateBlockers.some((b) => b.code === "uncovered_reachable_cells"));
+
+    // Cover every cell -> the gate clears.
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    for (const sanitizer of ["asan", "msan", "ubsan"]) {
+      for (const inputClass of ["cmplog", "raw_corpus", "value_profile"]) {
+        logCellCoverage({
+          target_domain: domain,
+          surface_id: "surface:harness-x",
+          bug_class: sanitizer,
+          auth_profile: inputClass,
+          status: "tested",
+          evidence_summary: "probed",
+        });
+      }
+    }
+    const cleared = evaluateSchedulerPrecondition("uncovered_reachable_cells", { target_domain: domain });
+    assert.equal(cleared.satisfied, true);
+    assert.equal(cleared.uncovered_count, 0);
+    assert.ok(!gateOpenFrontierToClaimFreeze({ target_domain: domain }).some((b) => b.code === "uncovered_reachable_cells"));
+  });
+});
+
+// ─── A2: transition-cells (cross-surface invariants on edges) ─────────────
+
+function seedTransitionEdge(domain, fromSurface, toSurface, kind) {
+  seedMaterializedSurface(domain, fromSurface);
+  seedMaterializedSurface(domain, toSurface);
+  appendTransitionProposal({
+    target_domain: domain,
+    ts: "2026-05-31T00:01:00.000Z",
+    from_surface: fromSurface,
+    to_surface: toSurface,
+    kind,
+    trust_assumption: `${fromSurface} value is recovered and trusted on ${toSurface}`,
+    proposal_id: `TR-${kind}`,
+  });
+  // Lift the per-edge child cap so the whole transition axis materializes.
+  const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+  writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+}
+
+test("A2: a transition-cell materializes grounded in its EDGE (two surface_refs)", () => {
+  withTempHome(() => {
+    const domain = "a2-grounding.test";
+    seedTransitionEdge(domain, "surface:l1", "surface:l2", "value_movement");
+    const result = JSON.parse(require("../mcp/lib/tools/materialize-cell-floor.js").handler({ target_domain: domain }));
+    // value_movement axis = [value_flow, replay] -> 2 transition-cells, one edge.
+    assert.equal(result.transition_cells_emitted, 2);
+    assert.equal(result.edges_with_cells, 1);
+
+    const doc = materializeTaskGraph(domain, { write: true }).document;
+    const transitionCells = doc.nodes.filter(
+      (n) => n.kind === "cell" && n.surface_refs.length === 2,
+    );
+    assert.equal(transitionCells.length, 2, "two transition-cells, each grounded in both endpoints");
+    for (const cell of transitionCells) {
+      assert.ok(cell.node_id.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}cell-`));
+      assert.deepEqual(cell.surface_refs, ["surface:l1", "surface:l2"]);
+      assert.equal(cell.state, "contracted", "auto-contracted like any cell (dispatch-eligible)");
+    }
+  });
+});
+
+test("A2: a transition-cell id is disjoint from a surface-cell with the same bug_class", () => {
+  withTempHome(() => {
+    const domain = "a2-disjoint.test";
+    const { cellNodeId } = require("../mcp/lib/task-graph-materializer.js");
+    const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
+    // A surface-cell key for bug_class "replay" on surface:l1 ...
+    const surfaceCellKey = JSON.stringify(["surface:l1", "", "", "replay", ""]);
+    // ... vs a transition-cell key for "replay" on the l1->l2 edge.
+    const edgeToken = transitionEdgeToken("surface:l1", "surface:l2", "value_movement");
+    const transitionCellKey = JSON.stringify([edgeToken, "", "", "replay", ""]);
+    assert.notEqual(
+      cellNodeId({ cellKey: surfaceCellKey }),
+      cellNodeId({ cellKey: transitionCellKey }),
+      "the edge token in the surface slot makes the hashed node id disjoint",
+    );
+  });
+});
+
+test("A2: a reconciled transition-cell self-prunes on the next floor sweep", () => {
+  withTempHome(() => {
+    const domain = "a2-selfprune.test";
+    seedTransitionEdge(domain, "surface:l1", "surface:l2", "value_movement");
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+    const first = JSON.parse(floor({ target_domain: domain }));
+    assert.equal(first.transition_cells_emitted, 2);
+
+    // Reconcile ONE transition-cell on the edge token (what finalize-node does).
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
+    const edgeToken = transitionEdgeToken("surface:l1", "surface:l2", "value_movement");
+    logCellCoverage({
+      target_domain: domain,
+      surface_id: edgeToken,
+      bug_class: "value_flow",
+      auth_profile: "",
+      status: "tested",
+      evidence_summary: "cross-surface replay probed",
+    });
+
+    const second = JSON.parse(floor({ target_domain: domain }));
+    assert.equal(second.transition_cells_emitted, 1, "the reconciled edge-cell is pruned, not re-emitted");
+  });
+});
+
+test("A2: the closure gate counts an uncovered transition-cell and clears when reconciled", () => {
+  withTempHome(() => {
+    const domain = "a2-closure.test";
+    const { evaluateSchedulerPrecondition } = require("../mcp/lib/scheduler-preconditions.js");
+    seedTransitionEdge(domain, "surface:l1", "surface:l2", "value_movement");
+    require("../mcp/lib/tools/materialize-cell-floor.js").handler({ target_domain: domain });
+
+    // An uncovered cross-surface invariant BLOCKS freeze — the A2 thesis.
+    const blocked = evaluateSchedulerPrecondition("uncovered_reachable_cells", { target_domain: domain });
+    assert.equal(blocked.cell_floor_active, true);
+    assert.equal(blocked.satisfied, false);
+    assert.ok(blocked.uncovered_count >= 2);
+
+    // Reconcile every transition-cell on the edge -> the gate clears.
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    const { transitionEdgeToken } = require("../mcp/lib/assignment-brief.js");
+    const edgeToken = transitionEdgeToken("surface:l1", "surface:l2", "value_movement");
+    for (const bugClass of ["value_flow", "replay"]) {
+      logCellCoverage({
+        target_domain: domain,
+        surface_id: edgeToken,
+        bug_class: bugClass,
+        auth_profile: "",
+        status: "tested",
+        evidence_summary: "probed",
+      });
+    }
+    const cleared = evaluateSchedulerPrecondition("uncovered_reachable_cells", { target_domain: domain });
+    assert.equal(cleared.satisfied, true);
+    assert.equal(cleared.uncovered_count, 0);
+  });
+});
+
+// ─── C3: the stigmergic wavefront advances by reading the last layer's writes ──
+
+test("C3: the next floor layer reads the last layer's writes (covered pruned + discovered transition folded in)", () => {
+  withTempHome(() => {
+    const domain = "c3-wavefront.test";
+    // Layer 0 — an OSS harness surface fans 3 sanitizers x 3 input classes = 9 cells.
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:00:00.000Z",
+      surface_id: "surface:harness",
+      payload: { title: "harness", surface_type: "oss_native_code" },
+    });
+    materializeFrontier(domain, { write: true });
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+    const layer0 = JSON.parse(floor({ target_domain: domain }));
+    assert.ok(layer0.cells_emitted >= 9, "the harness surface-cell floor materializes");
+    assert.equal(layer0.transition_cells_emitted, 0, "no transitions discovered yet");
+
+    // Decentralized writes BETWEEN layers: cover every surface-cell, and an
+    // evaluator DISCOVERS a new cross-surface transition.
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    for (const sanitizer of ["asan", "msan", "ubsan"]) {
+      for (const inputClass of ["cmplog", "raw_corpus", "value_profile"]) {
+        logCellCoverage({
+          target_domain: domain,
+          surface_id: "surface:harness",
+          bug_class: sanitizer,
+          auth_profile: inputClass,
+          status: "tested",
+          evidence_summary: "probed",
+        });
+      }
+    }
+    appendTransitionProposal({
+      target_domain: domain,
+      ts: "2026-05-31T00:05:00.000Z",
+      from_surface: "surface:harness",
+      to_surface: "surface:sink",
+      kind: "value_movement",
+      trust_assumption: "harness output is trusted at the sink",
+      proposal_id: "TR-discovered",
+    });
+
+    // Layer 1 — the producer reads BOTH writes: it prunes the now-covered surface
+    // cells AND folds the discovered transition into the next layer's cells.
+    const layer1 = JSON.parse(floor({ target_domain: domain }));
+    assert.ok(layer1.cells_emitted < layer0.cells_emitted, "covered surface-cells are pruned from the next layer");
+    assert.equal(layer1.transition_cells_emitted, 2, "the discovered transition folds into the next layer");
+  });
+});
+
+// ─── G1: monotonic expansion + fixpoint termination ───────────────────────
+
+test("G1: the Tier-1 floor reaches a cells-emitted fixpoint once every cell is covered", () => {
+  withTempHome(() => {
+    const domain = "g1-fixpoint.test";
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:00:00.000Z",
+      surface_id: "surface:harness-x",
+      payload: { title: "harness-x", surface_type: "oss_native_code" },
+    });
+    materializeFrontier(domain, { write: true });
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+
+    // Before coverage: the Tier-1 floor has obligations → NOT at fixpoint.
+    const first = JSON.parse(floor({ target_domain: domain }));
+    assert.ok(first.tier1_cells_emitted >= 9);
+    assert.equal(first.floor_at_fixpoint, false);
+
+    // Cover every Tier-1 cell → the next pass emits none → FIXPOINT.
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    for (const sanitizer of ["asan", "msan", "ubsan"]) {
+      for (const inputClass of ["cmplog", "raw_corpus", "value_profile"]) {
+        logCellCoverage({ target_domain: domain, surface_id: "surface:harness-x", bug_class: sanitizer, auth_profile: inputClass, status: "tested", evidence_summary: "probed" });
+      }
+    }
+    const converged = JSON.parse(floor({ target_domain: domain }));
+    assert.equal(converged.tier1_cells_emitted, 0);
+    assert.equal(converged.floor_at_fixpoint, true, "no new Tier-1 obligation after a full drain = closure");
+  });
+});
+
+test("G1: the fixpoint signal excludes E2 re-probes (terminates with residual depth ON)", () => {
+  withTempHome(() => {
+    const domain = "g1-reprobe-fixpoint.test";
+    // surface:billing has no bug_class_hints -> ZERO Tier-1 cells; only a covered
+    // cell + a residual flagging it -> a never-converging E2 Tier-2 re-probe.
+    appendFrontierEvent({ target_domain: domain, kind: "surface.observed", ts: "2026-05-31T00:00:00.000Z", surface_id: "surface:billing", payload: { title: "billing" } });
+    materializeFrontier(domain, { write: true });
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    logCellCoverage({ target_domain: domain, surface_id: "surface:billing", bug_class: "idor", auth_profile: "admin", status: "tested", evidence_summary: "probed" });
+    const { writeBeliefSignalScratch } = require("../mcp/lib/belief/authority.js");
+    writeBeliefSignalScratch({
+      target_domain: domain, kind: "belief_signal", source: "test#g1", provenance: "residual_anomaly",
+      artifact_ref: "belief_sample:t", role: "diagnostic",
+      payload: { residual_hash: "abcd1234ef567890", residual_band: "high", decomposition: [{ variable_id: "BV", variable_type: "effective_permission", scope: { effect_id: "effect:billing:x" } }] },
+    });
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, residual_depth_reprobe_enabled: true }));
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+
+    const r = JSON.parse(floor({ target_domain: domain }));
+    // A Tier-2 re-probe was emitted (the non-converging component) ...
+    assert.equal(r.reprobe_cells_emitted, 1);
+    assert.ok(r.cells_emitted >= 1, "raw cells_emitted counts the re-probe (would never reach 0)");
+    // ... but the Tier-1 fixpoint signal is already 0, so the loop TERMINATES.
+    assert.equal(r.tier1_cells_emitted, 0);
+    assert.equal(r.floor_at_fixpoint, true, "depth re-probes never block the fixpoint — termination is Tier-1 closure");
+  });
+});
+
+test("G1: frontier expansion is monotone — a covered cell's node is never contracted", () => {
+  withTempHome(() => {
+    const domain = "g1-monotone.test";
+    appendFrontierEvent({ target_domain: domain, kind: "surface.observed", ts: "2026-05-31T00:00:00.000Z", surface_id: "surface:harness-a", payload: { title: "a", surface_type: "oss_native_code" } });
+    materializeFrontier(domain, { write: true });
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY } = require("../mcp/lib/queue-policy.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_children: 64 }));
+    const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
+    floor({ target_domain: domain });
+    const doc0 = materializeTaskGraph(domain, { write: true }).document;
+    const cells0 = new Set(doc0.nodes.filter((n) => n.kind === "cell").map((n) => n.node_id));
+    assert.ok(cells0.size >= 9);
+
+    // Cover one cell AND observe a new surface (expansion). Re-run the floor.
+    const { logCellCoverage } = require("../mcp/lib/coverage.js");
+    logCellCoverage({ target_domain: domain, surface_id: "surface:harness-a", bug_class: "asan", auth_profile: "cmplog", status: "tested", evidence_summary: "probed" });
+    appendFrontierEvent({ target_domain: domain, kind: "surface.observed", ts: "2026-05-31T00:01:00.000Z", surface_id: "surface:harness-b", payload: { title: "b", surface_type: "oss_native_code" } });
+    materializeFrontier(domain, { write: true });
+    floor({ target_domain: domain });
+    const doc1 = materializeTaskGraph(domain, { write: true }).document;
+    const cells1 = new Set(doc1.nodes.filter((n) => n.kind === "cell").map((n) => n.node_id));
+
+    // Monotone: every prior cell node persists (the covered cell was NOT removed),
+    // and the new surface EXPANDED the set. The frontier never contracts.
+    for (const id of cells0) assert.ok(cells1.has(id), `cell ${id} must persist (frontier never contracts)`);
+    assert.ok(cells1.size > cells0.size, "the newly observed surface expanded the reachable set");
+  });
+});
 
 // ─── New top-level kind is registered ────────────────────────────────────
 

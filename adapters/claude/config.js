@@ -120,6 +120,20 @@ function defaultPreToolUseHooks() {
       ],
     },
     {
+      // Edit/MultiEdit carry tool_input.file_path just like Write, so the
+      // write guard's file_path branch classifies them unchanged. Without this
+      // matcher Edit is an UNGUARDED write path to MCP-owned/audit-graded
+      // session artifacts (the Write matcher alone does not cover Edit).
+      matcher: "Edit|MultiEdit",
+      hooks: [
+        {
+          type: "command",
+          command: `bash "${PROJECT_DIR_EXPR}/.claude/hooks/session-write-guard.sh"`,
+          timeout: 5,
+        },
+      ],
+    },
+    {
       // Opt-in "ask before writing" gate: INERT unless BOB_HTTP_WRITE_CONFIRM is truthy, then a
       // bob_http_scan call with a mutating method (POST/PUT/PATCH/DELETE) returns
       // permissionDecision:"ask" so the operator confirms before Bob writes to the target. Read
@@ -136,8 +150,22 @@ function defaultPreToolUseHooks() {
   ];
 }
 
+// Every wave evaluator that writes a wave handoff + the BOB_AGENT_RUN_DONE marker
+// gets the agent-run lifecycle hooks: the routed capability-pack evaluators PLUS
+// the spawn-capable evaluator-fanout (CN Step B), which is dispatched per-surface
+// in waves and finalizes the same way. spawnCapableAgentNames() is lazy-required
+// from the (build-time-only) renderer to avoid a load-time cycle: the renderer
+// already requires this config module at top level.
+function subagentLifecycleAgentNames() {
+  const { spawnCapableAgentNames } = require("../../scripts/lib/claude-role-renderer.js");
+  return uniqueStrings([
+    ...evaluatorAgentNamesForCapabilityPacks(),
+    ...spawnCapableAgentNames(),
+  ]);
+}
+
 function defaultSubagentStopHooks() {
-  return evaluatorAgentNamesForCapabilityPacks().map((evaluatorAgent) => (
+  return subagentLifecycleAgentNames().map((evaluatorAgent) => (
     {
       matcher: evaluatorAgent,
       hooks: [
@@ -156,7 +184,7 @@ function defaultSubagentStartHooks() {
   // subagent starts. Best-effort and never blocks the agent's start; the
   // file-presence fallback (Pact P2) covers misses during the deprecation
   // window.
-  return evaluatorAgentNamesForCapabilityPacks().map((evaluatorAgent) => (
+  return subagentLifecycleAgentNames().map((evaluatorAgent) => (
     {
       matcher: evaluatorAgent,
       hooks: [

@@ -54,8 +54,10 @@ function normalizeCoverageRecord(record, { expectedDomain = null, lineNumber = n
         : assertInteger(record.version, "version", { min: 1, max: 1 }),
       ts: assertNonEmptyString(record.ts, "ts"),
       target_domain: assertNonEmptyString(record.target_domain, "target_domain"),
-      wave: parseWaveId(record.wave),
-      agent: parseAgentId(record.agent),
+      // wave/agent are null for graph-dispatched coverage cells (no wave
+      // assignment); every requeue join self-excludes a null-keyed record.
+      wave: record.wave == null ? null : parseWaveId(record.wave),
+      agent: record.agent == null ? null : parseAgentId(record.agent),
       surface_id: assertNonEmptyString(record.surface_id, "surface_id"),
       endpoint: assertRequiredText(record.endpoint, "endpoint"),
       method: normalizeOptionalText(record.method, "method"),
@@ -324,9 +326,45 @@ function logCoverage(args) {
   });
 }
 
+// Reconcile a finalized coverage cell into coverage.jsonl. Unlike logCoverage
+// this is the orchestrator-authority graph-cell path: a cell is graph-dispatched
+// (not wave-assigned), so it bypasses validateAssignedWaveAgentSurface and
+// records wave/agent null (every requeue join self-excludes a null-keyed
+// record). The coverage key is (surface_id, "", "cell:<surface_id>", bug_class,
+// auth_profile); the floor-pruner keys on (bug_class, auth_profile), so the
+// endpoint sentinel is inert. bob_finalize_node calls this ONLY when a cell node
+// reaches finalized (its coverage witness verified), so coverage stays
+// falsifiable: an unprobed cell fails verification and writes no coverage.
+function logCellCoverage({ target_domain, surface_id, bug_class, auth_profile, status, evidence_summary }) {
+  const domain = assertNonEmptyString(target_domain, "target_domain");
+  const surfaceId = assertNonEmptyString(surface_id, "surface_id");
+  const bugClass = assertNonEmptyString(bug_class, "bug_class");
+  const logPath = coverageJsonlPath(domain);
+  const ts = new Date().toISOString();
+  const record = normalizeCoverageRecord({
+    version: 1,
+    ts,
+    target_domain: domain,
+    wave: null,
+    agent: null,
+    surface_id: surfaceId,
+    endpoint: `cell:${surfaceId}`,
+    bug_class: bugClass,
+    auth_profile: auth_profile || undefined,
+    status: status || "tested",
+    evidence_summary: evidence_summary || `cell ${bugClass} probed (graph-dispatched)`,
+  }, { expectedDomain: domain });
+
+  return withSessionLock(domain, () => {
+    appendJsonlLines(logPath, [record], { maxRecords: COVERAGE_LOG_MAX_RECORDS });
+    return record;
+  });
+}
+
 module.exports = {
   buildCoverageSummaryForSurface,
   computeCoverageRequeueSurfaceIds,
+  logCellCoverage,
   coverageRecordKey,
   coverageSummaryItem,
   isUnfinishedCoverageStatus,

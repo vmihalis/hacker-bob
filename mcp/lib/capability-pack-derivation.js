@@ -36,6 +36,7 @@ const {
   CAPABILITY_PACKS,
   getCapabilityPack,
   classifySurfaceCapability,
+  isBugClassRelevantForSurface,
 } = require("./capability-packs.js");
 const {
   collectContractArtifactRefs,
@@ -119,6 +120,13 @@ const DEFAULT_CAPABILITY_PACK_ID = "web";
 // in. Mirroring the value here lets the derivation function reject a
 // caller that ignored the contract.
 const FRICTION_HISTORY_HARD_CAP = 32;
+
+// CN (coverage-nesting) — defensive caps on the (bug_class x auth_role) child
+// fan-out plan. CHILD_FANOUT_HARD_CAP mirrors the queue-policy max_spawn_children
+// ceiling so a buggy caller cannot blow the spawn budget; CHILD_FANOUT_BUG_CLASS_CAP
+// re-bounds the bug-class axis (already capped at 20 on the surface) defensively.
+const CHILD_FANOUT_HARD_CAP = 64;
+const CHILD_FANOUT_BUG_CLASS_CAP = 32;
 
 // ─── Internal helpers ────────────────────────────────────────────────────
 
@@ -386,6 +394,201 @@ function deriveSurfacePack(node, graph_context) {
   };
 }
 
+// Per-cell weapon adoption: the technique pack(s) that target a given
+// bug_class, keyed on the normalized bug_class axis. Additive over the base
+// surface pack (monotonic-up — a cell's broad evaluator toolset is never
+// narrowed; the weapon is the specialized technique a cell adopts). A bug_class
+// with no mapped weapon adopts none and stands on the base pack. The cross-
+// stack identity/replay classes adopt the web3 identity-handoff technique — the
+// cross-surface weapon a per-surface model never reaches for.
+const BUG_CLASS_WEAPON = Object.freeze({
+  replay: Object.freeze([WEB3_IDENTITY_HANDOFF_PACK_ID]),
+  cross_chain: Object.freeze([WEB3_IDENTITY_HANDOFF_PACK_ID]),
+  cross_chain_replay: Object.freeze([WEB3_IDENTITY_HANDOFF_PACK_ID]),
+  identity_handoff: Object.freeze([WEB3_IDENTITY_HANDOFF_PACK_ID]),
+  cross_stack_identity: Object.freeze([WEB3_IDENTITY_HANDOFF_PACK_ID]),
+});
+
+function weaponForBugClass(bugClass) {
+  if (typeof bugClass !== "string") return [];
+  const key = bugClass.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return BUG_CLASS_WEAPON[key] || [];
+}
+
+// Canonical planning key over the (bug_class, auth_profile) axes for a single
+// surface. JSON-array form (same idiom as coverageRecordKey) so a value
+// containing the separator can never collide.
+// The caller derives the "already-covered" key set from the coverage summary
+// and passes it in for pruning; this keeps the deriver pure (no ledger reads).
+function fanoutPlanningKey(bugClass, authProfile) {
+  return JSON.stringify([bugClass, authProfile || ""]);
+}
+
+// deriveChildFanoutPlan — the brain-owned, host-agnostic decomposition of a
+// surface into bounded (bug_class x auth_role) child cells. Consumed two ways
+// (the host muscle, not the brain, decides which): a fanning-out per-surface
+// evaluator spawns each child as a nested subagent where the host supports
+// nesting (Claude depth-5, Codex agents.max_depth), OR the orchestrator
+// enqueues them as extra flat wave assignments where it does not (Kimi,
+// generic-mcp).
+//
+// PURE per X-P4 (this lives below the divider; the load-time lint guard
+// enforces it). Every input is passed in:
+//   parentSurfaceId  — the REAL materialized surface id (never synthetic);
+//                      children key on it + (bug_class, auth_profile) so the
+//                      coverage / technique-attempt validators still bind.
+//   surfaceMetadata  — the surface's graph metadata, for the capability pack /
+//                      child allowed_tools_for_node (null -> default pack).
+//   options.bug_class_hints — the bug-class axis (surface field, pre-capped 20).
+//   options.auth_profiles   — the auth-role axis: REDACTED profile names from
+//                      bob_list_auth_profiles. Empty -> single unauth baseline.
+//   options.budget   — { remaining_depth, max_children }. remaining_depth <= 0
+//                      means this node is a leaf (no recursive fan-out).
+//   options.covered_cell_keys — planning keys (fanoutPlanningKey form) for
+//                      cells already terminally covered; pruned from the plan.
+function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
+  if (typeof parentSurfaceId !== "string" || parentSurfaceId.length === 0) {
+    throw new Error("deriveChildFanoutPlan: parentSurfaceId must be a non-empty string");
+  }
+  const opts = isPlainObject(options) ? options : {};
+  const budget = isPlainObject(opts.budget) ? opts.budget : {};
+  const remainingDepth = Number.isInteger(budget.remaining_depth) ? budget.remaining_depth : 0;
+  const maxChildrenRaw = Number.isInteger(budget.max_children) ? budget.max_children : 0;
+  const maxChildren = Math.max(0, Math.min(maxChildrenRaw, CHILD_FANOUT_HARD_CAP));
+
+  const bugClasses = dedupeSorted(asStringArray(opts.bug_class_hints)).slice(0, CHILD_FANOUT_BUG_CLASS_CAP);
+  let authAxis = dedupeSorted(asStringArray(opts.auth_profiles));
+  if (authAxis.length === 0) authAxis = [""];
+  const coveredKeys = new Set(asStringArray(opts.covered_cell_keys));
+
+  const packId = packIdForSurfaceMetadata(surfaceMetadata || null);
+  const allowedToolsForChild = dedupeSorted(toolsForCapabilityPack(packId));
+
+  const children = [];
+  let coveredPruned = 0;
+  let budgetPruned = 0;
+  let relevancePruned = 0;
+  const leaf = remainingDepth <= 0 || maxChildren <= 0 || bugClasses.length === 0;
+  if (!leaf) {
+    for (const bugClass of bugClasses) {
+      // Reachability/type gate: drop a bug_class that cannot structurally occur
+      // on this surface's class (e.g. reentrancy on web). Fail-open, so only
+      // the impossible is pruned — the floor stays reachable, not a blind cross-
+      // product.
+      if (!isBugClassRelevantForSurface(surfaceMetadata, bugClass)) {
+        relevancePruned += authAxis.length;
+        continue;
+      }
+      for (const authProfile of authAxis) {
+        const planningKey = fanoutPlanningKey(bugClass, authProfile);
+        if (coveredKeys.has(planningKey)) {
+          coveredPruned += 1;
+          continue;
+        }
+        if (children.length >= maxChildren) {
+          budgetPruned += 1;
+          continue;
+        }
+        const authLabel = authProfile || "anonymous";
+        // Per-cell weapon: the technique pack(s) that target this bug_class,
+        // adopted additively over the base surface pack (the cell's specialized
+        // weapon vs the shared evaluator toolset).
+        const techniquePackIds = weaponForBugClass(bugClass);
+        children.push(Object.freeze({
+          // coverage-shaped key (method/endpoint runtime-filled => "") so a
+          // downstream bob_log_coverage cell on this child reconciles 1:1.
+          cell_key: JSON.stringify([parentSurfaceId, "", "", bugClass, authProfile || ""]),
+          planning_key: planningKey,
+          surface_id: parentSurfaceId,
+          bug_class: bugClass,
+          auth_profile: authProfile || "",
+          capability_pack_ids: Object.freeze([packId]),
+          allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
+          technique_pack_ids: Object.freeze(techniquePackIds.slice()),
+          rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId}`,
+        }));
+      }
+    }
+  }
+
+  return Object.freeze({
+    parent_surface_id: parentSurfaceId,
+    remaining_depth: remainingDepth,
+    max_children: maxChildren,
+    capability_pack: packId,
+    children: Object.freeze(children),
+    covered_pruned_count: coveredPruned,
+    budget_pruned_count: budgetPruned,
+    relevance_pruned_count: relevancePruned,
+    rationale: leaf
+      ? (remainingDepth <= 0
+        ? "depth budget exhausted — leaf evaluator, no recursive fan-out"
+        : "no fan-out — empty bug-class axis or zero child budget")
+      : `fan out ${children.length} (bug_class x auth_role) child cell(s) on ${parentSurfaceId}`,
+  });
+}
+
+// A transition-cell's coverage-shaped cell_key (A2). Same 5-slot shape as a
+// surface cell — so cellNodeId's cell_key hash and bob_log_coverage reconcile
+// work unchanged — but the surface slot carries the EDGE TOKEN and there is no
+// auth slot (a cross-surface invariant is auth-agnostic).
+function transitionCellKey(edgeToken, bugClass) {
+  return JSON.stringify([edgeToken, "", "", bugClass, ""]);
+}
+
+// planTransitionCellsForEdge — the brain-owned decomposition of one transition
+// EDGE into bounded (edge x bug_class) child cells. A sibling of
+// deriveChildFanoutPlan with two deliberate differences: NO relevance gate (the
+// bug_class axis is already derived from the transition KIND, so every entry is
+// structurally relevant to that trust hop) and NO auth axis (the planning key
+// keys on (bug_class, "")). PURE per X-P4: the edge token, axis, and covered set
+// are all passed in (the non-pure caller computes the deterministic edge token).
+function planTransitionCellsForEdge(edgeToken, options) {
+  if (typeof edgeToken !== "string" || edgeToken.length === 0) {
+    throw new Error("planTransitionCellsForEdge: edgeToken must be a non-empty string");
+  }
+  const opts = isPlainObject(options) ? options : {};
+  const maxChildrenRaw = Number.isInteger(opts.max_children) ? opts.max_children : 0;
+  const maxChildren = Math.max(0, Math.min(maxChildrenRaw, CHILD_FANOUT_HARD_CAP));
+  const bugClasses = dedupeSorted(asStringArray(opts.bug_class_axis)).slice(0, CHILD_FANOUT_BUG_CLASS_CAP);
+  const coveredKeys = new Set(asStringArray(opts.covered_cell_keys));
+
+  const children = [];
+  let coveredPruned = 0;
+  let budgetPruned = 0;
+  const leaf = maxChildren <= 0 || bugClasses.length === 0;
+  if (!leaf) {
+    for (const bugClass of bugClasses) {
+      const planningKey = fanoutPlanningKey(bugClass, "");
+      if (coveredKeys.has(planningKey)) {
+        coveredPruned += 1;
+        continue;
+      }
+      if (children.length >= maxChildren) {
+        budgetPruned += 1;
+        continue;
+      }
+      children.push(Object.freeze({
+        cell_key: transitionCellKey(edgeToken, bugClass),
+        planning_key: planningKey,
+        surface_id: edgeToken,
+        bug_class: bugClass,
+        auth_profile: "",
+        capability_pack_ids: Object.freeze([]),
+        technique_pack_ids: Object.freeze(weaponForBugClass(bugClass).slice()),
+        rationale: `Uncovered ${bugClass} cross-surface invariant on ${edgeToken}`,
+      }));
+    }
+  }
+  return Object.freeze({
+    edge_token: edgeToken,
+    max_children: maxChildren,
+    children: Object.freeze(children),
+    covered_pruned_count: coveredPruned,
+    budget_pruned_count: budgetPruned,
+  });
+}
+
 function deriveTransitionPack(node, graph_context) {
   // Transition nodes carry TWO surface_refs (the from_surface and to_surface
   // captured by the transition_proposed event). Look both up in the
@@ -512,6 +715,28 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
       allowed_tools: dedupeSorted(toolNamesForRoleBundle("evaluator-shared")),
       brief_emphasis: { node_kind: "claim" },
     };
+  } else if (kind === "cell") {
+    // A surface cell (element x bug_class x auth_role) carries the evaluator-shared
+    // baseline. A TRANSITION cell is grounded in a cross-surface EDGE — its node
+    // carries surface_refs = [from, to], and its correct work spans BOTH stacks, so
+    // its allow-list must UNION both endpoints' packs exactly as a transition NODE
+    // does (deriveTransitionPack). Without this a web->EVM transition cell gets only
+    // the web baseline (no bob_evm_*), so the cell agent's honest cross-stack work is
+    // rejected by the X.6 tool_constraint_violation check at bob_finalize_node.
+    if (asStringArray(node.surface_refs).length >= 2) {
+      const tp = deriveTransitionPack(node, ctx);
+      perKind = {
+        capability_pack_ids: tp.capability_pack_ids,
+        allowed_tools: tp.allowed_tools,
+        brief_emphasis: { ...tp.brief_emphasis, node_kind: "cell" },
+      };
+    } else {
+      perKind = {
+        capability_pack_ids: [],
+        allowed_tools: dedupeSorted(toolNamesForRoleBundle("evaluator-shared")),
+        brief_emphasis: { node_kind: "cell" },
+      };
+    }
   } else {
     throw new Error(`derivePackForNode: unsupported node kind "${kind}"`);
   }
@@ -679,6 +904,12 @@ module.exports = {
   RECOMMENDED_READS_HARD_CAP,
   RECOMMENDED_READS_PER_SURFACE,
   WEB3_IDENTITY_HANDOFF_PACK_ID,
+  CHILD_FANOUT_HARD_CAP,
+  CHILD_FANOUT_BUG_CLASS_CAP,
   buildOneHopGraphContext,
   derivePackForNode,
+  deriveChildFanoutPlan,
+  planTransitionCellsForEdge,
+  transitionCellKey,
+  fanoutPlanningKey,
 };

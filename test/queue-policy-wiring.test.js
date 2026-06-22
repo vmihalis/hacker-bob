@@ -5,11 +5,29 @@ const os = require("os");
 const path = require("path");
 
 const {
+  CLAMP_CEILING,
+  DEFAULT_NESTING_SPAWN_BUDGET,
+  MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
   loadQueuePolicy,
   normalizeQueuePolicy,
   writeQueuePolicy,
 } = require("../mcp/lib/queue-policy.js");
+
+// Review HIGH: nesting opt-in must never be ungoverned. Lifting max_spawn_depth past 1
+// without a session spawn budget would expose the large CLAMP_CEILING width with no
+// preventive spawn-tree bound, so normalizeQueuePolicy fills the governor.
+test("normalizeQueuePolicy: nesting opt-in without a budget defaults the spawn governor", () => {
+  const nested = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 3 });
+  assert.equal(nested.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "depth>1 + null budget => safe default governor");
+
+  const explicit = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 3, max_total_spawned_agents: 1000 });
+  assert.equal(explicit.max_total_spawned_agents, 1000, "an explicit budget is respected, never overridden");
+
+  const off = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY });
+  assert.equal(off.max_spawn_depth, 1);
+  assert.equal(off.max_total_spawned_agents, null, "default-off (depth=1) stays ungoverned-but-inert — byte-identical");
+});
 const {
   planNextWave,
 } = require("../mcp/lib/wave-planner.js");
@@ -55,6 +73,44 @@ function baseState() {
     lead_surface_ids: [],
   };
 }
+
+test("CN clamp lift: an operator may widen waves/concurrency past the old 128 (up to CLAMP_CEILING)", () => {
+  // "fuck the clamp": 128 was an arbitrary sanity bound, not a physical limit. The
+  // operator sets the width; the host pool + spawn budget are the real governors.
+  assert.equal(CLAMP_CEILING, 4096);
+  const p = normalizeQueuePolicy({
+    deep_wave_max: 500,
+    deep_wave_target: 500,
+    standard_wave_max: 500,
+    standard_wave_target: 500,
+    max_concurrent_evaluators: 500,
+    max_parallel_tasks: 500,
+  });
+  assert.equal(p.deep_wave_max, 500, "deep_wave_max honors 500 (was clamped to 128)");
+  assert.equal(p.max_concurrent_evaluators, 500, "max_concurrent_evaluators honors 500");
+  assert.equal(p.max_parallel_tasks, 500, "max_parallel_tasks honors 500 (feeds cell-floor capacity)");
+  // The ceiling stays finite: a value above CLAMP_CEILING is rejected, as is garbage.
+  assert.throws(() => normalizeQueuePolicy({ deep_wave_max: CLAMP_CEILING + 1, deep_wave_target: 1 }), /<= 4096/, "above CLAMP_CEILING is rejected (finite ceiling)");
+  assert.throws(() => normalizeQueuePolicy({ deep_wave_max: -1 }), "negative is still rejected");
+});
+
+test("CN clamp lift does NOT touch friction_promotion_threshold (unrelated knob keeps its own 128 cap)", () => {
+  assert.throws(() => normalizeQueuePolicy({ friction_promotion_threshold: 500 }), /<= 128/, "friction_promotion_threshold rejects >128, unchanged by the lift");
+});
+
+test("MAX_COVERAGE_PROFILE applies in one call: depth-3 nested + maxed cell floor + governor, cross-guards satisfied", () => {
+  const p = normalizeQueuePolicy(MAX_COVERAGE_PROFILE);
+  assert.equal(p.max_spawn_depth, 3, "3 degrees of nesting");
+  assert.equal(p.max_spawn_children, 64);
+  assert.equal(p.max_concurrent_evaluators, 128, "in-flight cap (cell floor + waves share it)");
+  assert.equal(p.max_total_spawned_agents, 512, "the spawn budget governor is set (not null)");
+  assert.equal(p.deep_wave_max, 128);
+  assert.ok(p.deep_wave_max >= p.deep_wave_target, "cross-guard pre-satisfied");
+  assert.ok(p.standard_wave_max >= p.standard_wave_target);
+  // It is an OPT-IN, not the default: DEFAULT_QUEUE_POLICY stays nesting-off.
+  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 1, "default stays flat/no-nesting");
+  assert.equal(DEFAULT_QUEUE_POLICY.max_total_spawned_agents, null, "default governor is unset");
+});
 
 test("reversed priority_order in queue-policy.json reorders wave-planner buckets", () => {
   withTempHome(() => {

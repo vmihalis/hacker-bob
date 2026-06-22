@@ -84,6 +84,19 @@ module.exports = Object.freeze({
           belief_assisted_priority_enabled: { type: "boolean" },
           belief_assisted_priority_seed: { type: "string" },
           belief_assisted_priority_rank_limit: { type: "integer" },
+          // CN (coverage-nesting) — MCP-owned bounded-recursive-fan-out budget.
+          // max_spawn_depth: evaluator spawn levels below the orchestrator
+          // (1 = flat/no-nesting default); max_spawn_children: child cells a
+          // single fan-out plan may mint. Per-host nesting ceiling clamps depth.
+          max_spawn_depth: { type: "integer" },
+          max_spawn_children: { type: "integer" },
+          // CN Step B — max_concurrent_evaluators: the shared in-flight cap for the
+          // wave path AND the cell floor (default null = unset). max_total_spawned_agents:
+          // the session-wide spawn budget governor (default null = unbounded) bounding the
+          // nested fan-out's worst-case tree — the REAL governor that makes a lifted
+          // wave/concurrency clamp safe.
+          max_concurrent_evaluators: { type: "integer" },
+          max_total_spawned_agents: { type: "integer" },
           // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that
           // listed partial surfaces are acknowledged for the
           // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate.

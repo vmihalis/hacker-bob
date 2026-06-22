@@ -142,6 +142,58 @@ function startWaveLocked(domain, {
       });
     } catch {}
   }
+
+  // CN (coverage-nesting) Step B — the MCP-owned spawn-ledger writer (C5). This is
+  // the mutating dispatch step the read-path width bound was waiting on: for each
+  // spawn-capable root the orchestrator is about to hand out, reserve its worst-case
+  // subtree against the session spawn budget. Greedy-sequential — each root is sized
+  // against the budget already reserved by prior roots (this wave) and prior waves —
+  // so the cumulative worst case provably stays within max_total_spawned_agents, and
+  // bob_read_assignment_brief reads the same total (excluding the root's own row) to
+  // reproduce that root's allocation. Gated on the governor being set, so default-off
+  // (max_total_spawned_agents=null) writes nothing and is byte-identical. Best-effort:
+  // the ledger is append-only, so a failed write degrades to the conservative
+  // recompute on the next read, never a budget overrun.
+  try {
+    const policy = loadQueuePolicy(domain);
+    if (Number.isInteger(policy.max_total_spawned_agents)) {
+      const { buildChildFanoutPlanForSurface } = require("../assignment-brief.js");
+      const { buildCoverageSummaryForSurface } = require("../coverage.js");
+      const { appendSpawnLedgerEntry } = require("../spawn-ledger.js");
+      const { worstCaseTreeSize } = require("../nested-spawn.js");
+      let surfaces = [];
+      try { surfaces = readAttackSurfaceStrict(domain).document.surfaces || []; } catch {}
+      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      for (const assignment of persistedAssignments) {
+        const surfaceObj = surfaces.find((s) => s && s.id === assignment.surface_id);
+        if (!surfaceObj) continue;
+        let plan;
+        try {
+          plan = buildChildFanoutPlanForSurface({
+            domain,
+            surfaceObj,
+            surfaceId: assignment.surface_id,
+            coverageSummary: buildCoverageSummaryForSurface(coverageRecords, assignment.surface_id),
+            wave: waveLabel,
+          });
+        } catch { continue; }
+        if (!plan || !Array.isArray(plan.children) || plan.children.length === 0 || !(plan.remaining_depth > 0)) continue;
+        const worstCase = worstCaseTreeSize(plan.max_children, plan.remaining_depth);
+        if (!(worstCase > 0)) continue;
+        try {
+          appendSpawnLedgerEntry(domain, {
+            ts: new Date().toISOString(),
+            wave: waveLabel,
+            parent_agent: assignment.agent,
+            surface_id: assignment.surface_id,
+            depth: plan.remaining_depth,
+            branching: plan.max_children,
+            worst_case_tree: worstCase,
+          });
+        } catch {}
+      }
+    }
+  } catch {}
   safeAppendPipelineEventDirect(domain, "wave_started", {
     lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,

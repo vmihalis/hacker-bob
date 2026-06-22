@@ -543,6 +543,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_propose_hypothesis",
   "bob_propose_transition",
   "bob_materialize_task_graph",
+  "bob_materialize_cell_floor",
   "bob_read_task_graph",
   "bob_read_composition_telemetry",
   "bob_run_path_composition_experiment",
@@ -587,6 +588,7 @@ const EXPECTED_TOOL_NAMES = [
   // Orchestrator-only pure read returning synthetic capability_friction +
   // protocol_drift records (W2 + rev-4.1 silent_lead_threshold_drop).
   "bob_scan_transcript_for_friction",
+  "bob_ws_probe",
 ];
 
 function withTempHome(fn) {
@@ -9234,6 +9236,8 @@ test("bob_read_wave_handoffs returns validated structured summaries and ignores 
       provenance: "verified",
       summary: "A1 complete with an old dead end.",
       chain_notes: ["Old endpoint may chain into surface-b."],
+      discovered_pivots: [],
+      spawned_children: [],
       blocked_harness_runs: [],
       blocked_prereqs: [],
       bypass_attempts: [],
