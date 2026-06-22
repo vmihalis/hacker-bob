@@ -102,6 +102,7 @@
   "test/claim-clusters-priors-saturation.test.js",
   "test/cross-stack-brief-composition.test.js",
   "test/dashboard.test.js",
+  "test/dashboard-event-tail.test.js",
   "test/evaluator-spawn.test.js",
   "test/evidence-from-frozen-payload.test.js",
   "test/frontier-materialization-debounce.test.js",
