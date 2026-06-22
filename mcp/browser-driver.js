@@ -45,6 +45,7 @@ const {
   assertSafeRequestUrl,
   resolveSafeAddress,
 } = require("./lib/safe-fetch.js");
+const { isBlockedInternalHost } = require("./lib/url-surface.js");
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const HARD_TIMEOUT_MS = 30 * 60 * 1000;
@@ -192,11 +193,13 @@ class BrowserDriver {
     this.proxy = proxy && typeof proxy === "object" && typeof proxy.server === "string"
       ? proxy
       : null;
-    // DNS-rebinding pin: host(lowercased) -> IP literal that Node validated at launch. The
-    // browser is started with --host-resolver-rules so Chrome connects to the SAME IP we
-    // checked, closing the TOCTOU where the static scope check passes for a hostname but the
-    // browser independently re-resolves it to an internal/attacker IP. Empty under an egress
-    // proxy (DNS resolves at the proxy, not locally) or if launch-time resolution failed.
+    // DNS-rebinding pin: host(lowercased) -> { address, internal }. The browser is started with
+    // --host-resolver-rules so Chrome connects to the SAME IP we resolved at launch, closing the
+    // TOCTOU where the static scope check passes for a hostname but the browser independently
+    // re-resolves it to an internal/attacker IP. `internal` records whether that pinned IP is a
+    // private/blocked address so authed_fetch can refuse it under block_internal_hosts (presence
+    // alone must NOT satisfy the no-internal-host promise). Empty under an egress proxy (DNS
+    // resolves at the proxy, not locally) or if launch-time resolution failed.
     this.pinnedHosts = new Map();
     // Session-level cookie auth for the trusted `authed_fetch` transport arrives AFTER ready
     // via the server-side-only `set_auth_cookies` stdin command (never an agent, never the
@@ -228,9 +231,13 @@ class BrowserDriver {
     if (!this.proxy) {
       try {
         const pinHost = new URL(this.targetUrl).hostname.toLowerCase();
+        // Resolve WITHOUT throwing on internal so we can pin loopback in tests / policy-off
+        // sessions, but RECORD whether the pinned IP is internal so the authed_fetch guard can
+        // refuse it under block_internal_hosts (a pin to a private IP must NOT satisfy the
+        // no-internal-host promise just by being present).
         const { address } = await resolveSafeAddress(pinHost, { blockInternalHosts: false });
         if (address) {
-          this.pinnedHosts.set(pinHost, address);
+          this.pinnedHosts.set(pinHost, { address, internal: isBlockedInternalHost(address) });
           // Chrome resolver-rules want IPv6 literals bracketed; MAP carries the port through.
           const ipForRule = address.includes(":") ? `[${address}]` : address;
           resolverRules.push(`MAP ${pinHost} ${ipForRule}`);
@@ -661,13 +668,21 @@ class BrowserDriver {
       if (!cookie || typeof cookie !== "object") {
         throw new Error("set_auth_cookies: each cookie must be an object");
       }
-      // Validate where this cookie can be sent. Playwright accepts either a `url` or a
-      // `domain`+`path` pair; both must resolve to an in-scope host or we refuse the whole
-      // batch (a single out-of-scope cookie taints the session).
+      const hasUrl = typeof cookie.url === "string" && cookie.url;
+      const hasDomain = typeof cookie.domain === "string" && cookie.domain;
+      // Reject the ambiguous both-set form: with both `url` and `domain`, Playwright picks one
+      // and our scope check could validate a different target than what is actually written.
+      // Require exactly one so the validated host == the host the cookie is sent to.
+      if (hasUrl && hasDomain) {
+        throw new Error("set_auth_cookies: a cookie must set EITHER url OR domain, not both");
+      }
+      // Validate the EXACT host the cookie will be sent to: url.host, or the de-dotted domain
+      // (a leading-dot domain also covers subdomains — in scope iff the de-dotted host is). One
+      // out-of-scope cookie taints the session, so we refuse the whole batch.
       let scopeUrl = null;
-      if (typeof cookie.url === "string" && cookie.url) {
+      if (hasUrl) {
         scopeUrl = cookie.url;
-      } else if (typeof cookie.domain === "string" && cookie.domain) {
+      } else if (hasDomain) {
         const host = cookie.domain.replace(/^\./, "");
         scopeUrl = `https://${host}${typeof cookie.path === "string" && cookie.path ? cookie.path : "/"}`;
       } else {
@@ -734,19 +749,37 @@ class BrowserDriver {
       wrapped.code = "scope_blocked";
       throw wrapped;
     }
-    // DNS-rebinding enforcement (round-3). When NOT proxied, Chrome resolves DNS itself, so a
-    // scope-passing hostname could still connect to an internal/attacker IP between our check
-    // and the browser's connection. We only consider a host rebind-safe if it was pinned at
-    // launch (--host-resolver-rules pins Chrome to the Node-validated IP). Under
-    // block_internal_hosts an unpinned host is refused fail-closed — we cannot keep the
-    // no-internal-host promise for a host the browser may re-resolve. (Under a proxy, DNS
-    // resolves at the proxy, so the launch pin does not apply and this check is skipped.)
-    if (!this.proxy && blockInternalHosts && !this.pinnedHosts.has(parsed.hostname.toLowerCase())) {
-      const e = new Error(
-        `scope_blocked: authed_fetch host ${parsed.hostname} was not DNS-pinned at launch; refusing under block_internal_hosts (DNS rebinding cannot be ruled out)`,
-      );
-      e.code = "scope_blocked";
-      throw e;
+    // DNS-rebinding + internal-host enforcement (round-3/4). The launch pin makes Chrome
+    // connect to the IP we resolved (no re-resolution), but only for the pinned host and only
+    // when not proxied. So under block_internal_hosts:
+    if (blockInternalHosts) {
+      if (this.proxy) {
+        // DNS resolves at the proxy — we cannot pin or vet the IP the browser connects to, so
+        // refuse rather than let block_internal_hosts silently degrade to advisory.
+        const e = new Error(
+          "scope_blocked: authed_fetch cannot enforce block_internal_hosts through an egress proxy (DNS resolves at the proxy)",
+        );
+        e.code = "scope_blocked";
+        throw e;
+      }
+      const pin = this.pinnedHosts.get(parsed.hostname.toLowerCase());
+      if (!pin) {
+        // Unpinned host: the browser would re-resolve it, so we cannot rule out a rebind.
+        const e = new Error(
+          `scope_blocked: authed_fetch host ${parsed.hostname} was not DNS-pinned at launch; refusing under block_internal_hosts (DNS rebinding cannot be ruled out)`,
+        );
+        e.code = "scope_blocked";
+        throw e;
+      }
+      if (pin.internal) {
+        // The pinned IP itself is private/blocked — being pinned is not enough; the no-internal
+        // promise must reject it (this is the round-3 hole: a presence-only check passed here).
+        const e = new Error(
+          `scope_blocked: authed_fetch host ${parsed.hostname} pins to an internal address; refusing under block_internal_hosts`,
+        );
+        e.code = "scope_blocked";
+        throw e;
+      }
     }
     const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
     // waitUntil:"commit" returns as soon as the response begins — it minimizes execution of
@@ -769,10 +802,12 @@ class BrowserDriver {
     const fetchInit = { method, headers, credentials: "include", redirect: "manual" };
     if (body != null && method !== "GET") fetchInit.body = body;
     // Built server-side from validated inputs; runs in the page world (real Chrome stack).
-    // Hardening (round-3):
-    //  • self-aborts via AbortSignal.timeout (timeout + grace) so a hung request does not
-    //    linger in the renderer after the wall-clock race rejects — the grace lets the
-    //    deterministic wall-clock timeout win the race while the abort guarantees cleanup;
+    // Hardening:
+    //  • self-aborts via AbortSignal.timeout AT the deadline so the authenticated request is
+    //    actually cancelled in the renderer (not left running after the caller is told it timed
+    //    out). The in-page catch converts that abort into a { __timeout: true } sentinel so the
+    //    timeout is surfaced deterministically (no fragile error-message matching); the
+    //    wall-clock race below remains a backstop for a page.evaluate that hangs entirely.
     //  • streams the body with a hard cap measured in BYTES (Uint8Array.byteLength), not
     //    UTF-16 code units, enforced WHILE reading, so an oversized/hostile response cannot
     //    buffer unbounded memory and "2 MiB" means 2 MiB.
@@ -787,37 +822,41 @@ class BrowserDriver {
     // code cannot tell which arm it is serving, and a target forging a vuln against itself is
     // not a coherent threat. The producer treats a single capture as evidence, not proof.
     const fetchInitJson = JSON.stringify(fetchInit);
-    const inPageAbortMs = timeout + 1000;
     const expr = `(async () => {
-      const __init = ${fetchInitJson};
-      try { __init.signal = AbortSignal.timeout(${inPageAbortMs}); } catch (e) {}
-      const __r = await fetch(${JSON.stringify(url)}, __init);
       const __cap = ${MAX_AUTHED_FETCH_BODY_BYTES};
-      let __bytes = 0;
-      let __truncated = false;
-      const __dec = new TextDecoder();
-      const __parts = [];
-      if (__r.body && typeof __r.body.getReader === "function") {
-        const __reader = __r.body.getReader();
-        for (;;) {
-          const { done, value } = await __reader.read();
-          if (done) break;
-          let __chunk = value;
-          if (__bytes + __chunk.byteLength > __cap) {
-            __chunk = __chunk.subarray(0, __cap - __bytes);
-            __truncated = true;
+      const __init = ${fetchInitJson};
+      try { __init.signal = AbortSignal.timeout(${timeout}); } catch (e) {}
+      try {
+        const __r = await fetch(${JSON.stringify(url)}, __init);
+        let __bytes = 0;
+        let __truncated = false;
+        const __dec = new TextDecoder();
+        const __parts = [];
+        if (__r.body && typeof __r.body.getReader === "function") {
+          const __reader = __r.body.getReader();
+          for (;;) {
+            const { done, value } = await __reader.read();
+            if (done) break;
+            let __chunk = value;
+            if (__bytes + __chunk.byteLength > __cap) {
+              __chunk = __chunk.subarray(0, __cap - __bytes);
+              __truncated = true;
+            }
+            __bytes += __chunk.byteLength;
+            __parts.push(__dec.decode(__chunk, { stream: true }));
+            if (__truncated) { try { await __reader.cancel(); } catch (e) {} break; }
           }
-          __bytes += __chunk.byteLength;
-          __parts.push(__dec.decode(__chunk, { stream: true }));
-          if (__truncated) { try { await __reader.cancel(); } catch (e) {} break; }
+          __parts.push(__dec.decode());
+        } else {
+          const __buf = new Uint8Array(await __r.arrayBuffer());
+          __truncated = __buf.byteLength > __cap;
+          __parts.push(__dec.decode(__buf.subarray(0, __cap)));
         }
-        __parts.push(__dec.decode());
-      } else {
-        const __buf = new Uint8Array(await __r.arrayBuffer());
-        __truncated = __buf.byteLength > __cap;
-        __parts.push(__dec.decode(__buf.subarray(0, __cap)));
+        return { status: __r.status, type: __r.type, final_url: __r.url, body: __parts.join(""), body_truncated: __truncated };
+      } catch (e) {
+        if (e && (e.name === "TimeoutError" || e.name === "AbortError")) return { __timeout: true };
+        throw e;
       }
-      return { status: __r.status, type: __r.type, final_url: __r.url, body: __parts.join(""), body_truncated: __truncated };
     })()`;
     // Same wall-clock race as evaluate() so a hung fetch returns a precise timeout instead
     // of pinning the single-page session until the IPC backstop fires.
@@ -842,6 +881,12 @@ class BrowserDriver {
       throw new Error(`authed_fetch_failed: ${err && err.message ? err.message : err}`);
     } finally {
       clearTimeout(timer);
+    }
+    if (result && result.__timeout) {
+      // The in-page AbortSignal.timeout fired AT the deadline and cancelled the fetch.
+      const e = new Error(`authed_fetch_timeout after ${timeout}ms`);
+      e.code = "authed_fetch_timeout";
+      throw e;
     }
     return {
       status: result && Number.isInteger(result.status) ? result.status : null,

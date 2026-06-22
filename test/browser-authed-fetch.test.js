@@ -149,9 +149,14 @@ test("authed_fetch documents page-controlled fetch as an accepted residual (not 
   assert.doesNotMatch(DRIVER_SRC, /__bobNativeFetch/, "the unreliable native-fetch capture must stay removed");
 });
 
-test("authed_fetch self-aborts the in-page fetch via AbortSignal.timeout (no lingering request)", () => {
-  assert.match(DRIVER_SRC, /AbortSignal\.timeout\(/);
-  assert.match(DRIVER_SRC, /const inPageAbortMs = timeout \+ 1000/);
+test("authed_fetch self-aborts the in-page fetch at the deadline and surfaces a timeout sentinel", () => {
+  // Aborts AT the timeout (not timeout+grace) so the authenticated request is actually
+  // cancelled, and converts the abort to a deterministic { __timeout: true } sentinel.
+  assert.match(DRIVER_SRC, /AbortSignal\.timeout\(\$\{timeout\}\)/);
+  assert.match(DRIVER_SRC, /e\.name === "TimeoutError" \|\| e\.name === "AbortError"/);
+  assert.match(DRIVER_SRC, /return \{ __timeout: true \}/);
+  assert.match(DRIVER_SRC, /if \(result && result\.__timeout\)/);
+  assert.doesNotMatch(DRIVER_SRC, /inPageAbortMs/, "the timeout+grace fudge must be gone");
 });
 
 test("authed_fetch caps the body in BYTES, not UTF-16 code units", () => {
@@ -167,16 +172,25 @@ test("set_auth_cookies validates EACH cookie's target host against target_domain
   assert.match(DRIVER_SRC, /set_auth_cookies_scope_blocked/);
 });
 
-test("driver DNS-pins the target host via --host-resolver-rules (rebind defense)", () => {
+test("set_auth_cookies rejects the ambiguous both-url-and-domain cookie form", () => {
+  assert.match(DRIVER_SRC, /must set EITHER url OR domain, not both/);
+});
+
+test("driver DNS-pins the target host via --host-resolver-rules and records internal-ness", () => {
   assert.match(DRIVER_SRC, /resolveSafeAddress\(pinHost/);
   assert.match(DRIVER_SRC, /--host-resolver-rules=/);
   assert.match(DRIVER_SRC, /MAP \$\{pinHost\} \$\{ipForRule\}/);
-  assert.match(DRIVER_SRC, /this\.pinnedHosts\.set\(pinHost, address\)/);
+  // round-4: the pin records {address, internal} (not a bare address), so a private pinned IP
+  // cannot satisfy block_internal_hosts by presence alone.
+  assert.match(DRIVER_SRC, /this\.pinnedHosts\.set\(pinHost, \{ address, internal: isBlockedInternalHost\(address\) \}\)/);
 });
 
-test("authed_fetch refuses an unpinned host under block_internal_hosts", () => {
-  assert.match(DRIVER_SRC, /!this\.proxy && blockInternalHosts && !this\.pinnedHosts\.has\(/);
-  assert.match(DRIVER_SRC, /was not DNS-pinned at launch/);
+test("authed_fetch enforces block_internal_hosts: refuse proxied, unpinned, OR pinned-internal", () => {
+  assert.match(DRIVER_SRC, /if \(this\.proxy\) \{/); // refuse: cannot enforce through a proxy
+  assert.match(DRIVER_SRC, /cannot enforce block_internal_hosts through an egress proxy/);
+  assert.match(DRIVER_SRC, /was not DNS-pinned at launch/); // refuse: unpinned host
+  assert.match(DRIVER_SRC, /if \(pin\.internal\)/); // refuse: pinned IP is itself internal
+  assert.match(DRIVER_SRC, /pins to an internal address/);
 });
 
 test("authed_fetch scope-checks the URL and guards origin drift", () => {
@@ -404,6 +418,35 @@ test("set_auth_cookies rejects an out-of-scope cookie (session fails closed)", {
       (err) => { assert.match(err.message, /scope_blocked/); return true; },
     );
   } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch under block_internal_hosts refuses a host pinned to an internal IP", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  // End-to-end: an authed_fetch to a loopback-resolving target under block_internal_hosts is
+  // refused (defense in depth — the resolved-scope check and the pin-internal guard both reject
+  // a private IP). The pin.internal branch specifically closes the rebind case (public IP at
+  // check-time, private pinned IP at connect-time); that branch is asserted by the source test.
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+    });
+    await assert.rejects(
+      () => browserSessions.sendCommand(session.session_id, "authed_fetch", {
+        url: `${origin}/api/listing`, method: "GET", block_internal_hosts: true,
+      }),
+      (err) => { assert.match(err.message, /scope_blocked/); return true; },
+    );
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
     await new Promise((r) => server.close(r));
   }
 });

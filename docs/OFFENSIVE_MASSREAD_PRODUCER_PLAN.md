@@ -47,8 +47,8 @@ Two separate outputs, by design:
    booleans + the differential statuses. It is screened by `sensitiveShapesPresent` and
    MUST contain no raw PII. This is the tamper-evident rail that lifts the severity
    ceiling; keeping raw PII here would break the safety screen for every future run
-   (including third-party bug-bounty use where harvesting strangers' data is forbidden —
-   the kinky.nl / `no-PII-harvest` lesson). **Non-negotiable: signed rail stays masked.**
+   (including third-party bug-bounty use where harvesting strangers' data is forbidden — the
+   `no-PII-harvest` lesson). **Non-negotiable: signed rail stays masked.**
 2. **Full evidence capture (`massread-evidence/<run_id>.json`)** — opt-in, operator-owned.
    When the operator confirms the client OWNS the data and authorizes full capture
    (`owner_authorized: true` — explicit, never default; the same tool runs against
