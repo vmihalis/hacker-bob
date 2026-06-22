@@ -127,6 +127,7 @@
   "test/browser-behavior-probe-lens.test.js",
   "test/browser-record-mode.test.js",
   "test/browser-egress-wiring.test.js",
+  "test/browser-authed-fetch.test.js",
   "test/pack-telemetry.test.js",
   "test/oss-surfacing.test.js",
   "test/oss-blocked-harness.test.js",
