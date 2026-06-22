@@ -196,11 +196,22 @@ test("authed_fetch REQUIRES the DNS pin on every call (not opt-in) + internal/pr
 });
 
 test("authed_fetch requests are NOT recorded into the agent-readable request log (no auth leak)", () => {
-  // round-6: a per-op flag suppresses logging of the priming nav + the credentialed fetch so
-  // the producer's cookies/headers never enter this.requests / recordedRequests.
-  assert.match(DRIVER_SRC, /if \(this\.authedFetchOp\) return;/);
+  // round-6/7: a per-op flag suppresses the priming nav + fetch; once cookies are injected the
+  // WHOLE credentialed session is suppressed so cookies can't leak via a later page request.
+  assert.match(DRIVER_SRC, /if \(this\.authedFetchOp \|\| this\.credentialedSession\) return;/);
   assert.match(DRIVER_SRC, /this\.authedFetchOp = \{ host: fetchHost \}/);
   assert.match(DRIVER_SRC, /this\.authedFetchOp = null/);
+});
+
+test("set_auth_cookies marks the session credentialed (session-wide log suppression)", () => {
+  assert.match(DRIVER_SRC, /this\.credentialedSession = true;/);
+});
+
+test("authed_fetch rejects credential headers (auth must flow via set_auth_cookies, not the page world)", () => {
+  // round-7: the headers param lives in the page world (in-page fetch init), so a credential
+  // header could be read by a page-overridden fetch. Reject Authorization/Cookie/Proxy-Auth.
+  assert.match(DRIVER_SRC, /lower === "authorization" \|\| lower === "cookie" \|\| lower === "proxy-authorization"/);
+  assert.match(DRIVER_SRC, /use set_auth_cookies for credentials/);
 });
 
 test("authed_fetch does NOT install a context.route interceptor (transport must survive Kasada/CDN/OAuth)", () => {
@@ -517,6 +528,31 @@ test("authed_fetch under block_internal_hosts refuses a host pinned to an intern
         url: `${origin}/api/listing`, method: "GET", block_internal_hosts: true,
       }),
       (err) => { assert.match(err.message, /scope_blocked/); return true; },
+    );
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch rejects an Authorization header (credentials must use set_auth_cookies)", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+    });
+    await assert.rejects(
+      () => browserSessions.sendCommand(session.session_id, "authed_fetch", {
+        url: `${origin}/api/listing`, method: "GET", headers: { Authorization: "Bearer secret-token" },
+      }),
+      (err) => { assert.match(err.message, /not allowed.*set_auth_cookies/); return true; },
     );
   } finally {
     if (session) await browserSessions.closeSession(session.session_id).catch(() => {});

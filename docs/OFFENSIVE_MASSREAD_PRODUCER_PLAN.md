@@ -153,15 +153,19 @@ The manual, fail-closed edits:
 - Full raw capture only when `owner_authorized: true`, to a gitignored operator-managed
   file outside the signed rail.
 - Agent-facing browser `evaluate` sandbox unchanged (no new agent network primitive).
-- Auth material flows producer → driver over **stdin, never the env**; each cookie is
-  scope-validated against `target_domain` before it reaches the browser context.
+- Auth material flows producer → driver over **stdin, never the env**, and **only as cookies**
+  (browser-attached, invisible to page JS); each cookie is scope-validated against
+  `target_domain` first. `authed_fetch` REJECTS credential headers (`Authorization`/`Cookie`/
+  `Proxy-Authorization`) because the `headers` param lives in the page world.
 - The browser is DNS-pinned to the Node-validated IP (`--host-resolver-rules`); an unpinned
   host is refused on EVERY (always-credentialed) `authed_fetch`, and a pinned-but-internal IP
   is refused under `block_internal_hosts`.
 - `authed_fetch` does not follow redirects (`redirect:"manual"`), self-aborts on timeout,
   and caps the body in bytes.
-- The trusted `authed_fetch` op (priming nav + the credentialed fetch) is NOT recorded into
-  the agent-readable network log / record buffer — its cookies/headers never leak to agents.
+- The trusted `authed_fetch` op is NOT recorded into the agent-readable network log / record
+  buffer, and once cookies are injected the WHOLE credentialed session is suppressed — so
+  cookies can't leak to agents via a later page request. (Credentialed sessions are
+  producer-only; agent recon runs in uncredentialed sessions.)
 - Page-controlled fetch is an accepted residual (see transport section) — mitigated by
   `waitUntil:"commit"` + the differential design, not by an unreliable native-fetch capture.
 - Priming-redirect under `block_internal_hosts` is an accepted residual: a server-driven 3xx

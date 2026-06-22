@@ -211,6 +211,11 @@ class BrowserDriver {
     // idle. (NOT a network interceptor — see the no-context.route invariant in
     // browser-driver-tools.test.js; the host is kept for diagnostics only.)
     this.authedFetchOp = null;
+    // Once set_auth_cookies injects cookies, the context is credentialed for the rest of its
+    // life — EVERY subsequent request carries them. A credentialed session is producer-only
+    // (never agent recon), so we suppress request logging for the whole session, not just the
+    // authed_fetch op, so cookies can't leak into the agent log via a later page request.
+    this.credentialedSession = false;
   }
 
   async start() {
@@ -339,11 +344,12 @@ class BrowserDriver {
 
   attachListeners() {
     this.page.on("request", (request) => {
-      // Do NOT record the trusted authed_fetch op (priming nav + the credentialed fetch): its
-      // headers/cookies carry the producer's auth material and must not leak into the
-      // agent-readable request log or the record-mode buffer (which is flushed to the audit
-      // trail). These are server-side producer requests, not agent-observable recon traffic.
-      if (this.authedFetchOp) return;
+      // Do NOT record the trusted authed_fetch op (priming nav + the credentialed fetch), nor
+      // ANY request once the session is credentialed (cookies injected) — their headers/cookies
+      // carry the producer's auth and must not leak into the agent-readable request log or the
+      // record-mode buffer (flushed to the audit trail). A credentialed session is producer-only,
+      // so suppressing its whole log is correct; agent recon runs in uncredentialed sessions.
+      if (this.authedFetchOp || this.credentialedSession) return;
       const headers = {};
       try {
         const raw = request.headers() || {};
@@ -710,6 +716,9 @@ class BrowserDriver {
     }
     await this.context.addCookies(cookies);
     this.authCookiesApplied = true;
+    // The context is now credentialed — suppress request logging for the rest of the session
+    // so injected cookies can't leak into the agent-readable log via any later page request.
+    this.credentialedSession = true;
     return { ok: true, count: cookies.length };
   }
 
@@ -734,6 +743,19 @@ class BrowserDriver {
     const headers = args && args.headers && typeof args.headers === "object" && !Array.isArray(args.headers)
       ? args.headers
       : {};
+    // Credentials must flow via set_auth_cookies — the browser attaches cookies at the network
+    // layer, invisible to page JS. The `headers` param, by contrast, is serialized into the
+    // in-page fetch init and therefore lives in the page world, where a page-overridden fetch
+    // could read it. Reject credential headers so a producer cannot accidentally expose a
+    // bearer/cookie to a hostile target page.
+    for (const hname of Object.keys(headers)) {
+      const lower = hname.toLowerCase();
+      if (lower === "authorization" || lower === "cookie" || lower === "proxy-authorization") {
+        throw new Error(
+          `authed_fetch: the ${hname} header is not allowed — use set_auth_cookies for credentials (the headers param is visible to the page world)`,
+        );
+      }
+    }
     const body = args && typeof args.body === "string" ? args.body : null;
     // The producer threads the session block_internal_hosts policy; when on, the scope checks
     // below reject internal/private resolutions — an AUTHENTICATED request to an internal host
@@ -856,15 +878,18 @@ class BrowserDriver {
     //    UTF-16 code units, enforced WHILE reading, so an oversized/hostile response cannot
     //    buffer unbounded memory and "2 MiB" means 2 MiB.
     // ACCEPTED RESIDUAL — page-controlled fetch: the request runs in the page world, so a
-    // hostile target page could in principle override window.fetch / Response to forge the
-    // result. This is INHERENT to the transport's purpose: carrying the real Chrome TLS/HTTP-2
-    // fingerprint REQUIRES the page network stack (a Node-side context.request is CF-403'd —
-    // the gap this transport exists to close), and capturing a "native" fetch reference is
-    // unreliable under the Patchright stealth driver (its fetch wrapper rejects a detached
-    // call). Compensating controls: waitUntil:"commit" minimizes page-script execution before
-    // the fetch. On integrity, the differential is NOT tamper-proof — the target can tell the
-    // authed arm (it carries the cookie) from the control arm and could serve forged data — but
-    // a target forging a vuln against ITSELF gains nothing (it would be self-reporting), the
+    // hostile target page could in principle override window.fetch / Response (or register a
+    // service worker) to forge the result. This is INHERENT to the transport's purpose: carrying
+    // the real Chrome TLS/HTTP-2 fingerprint REQUIRES the page network stack (a Node-side
+    // context.request is CF-403'd — the gap this transport exists to close), and capturing a
+    // "native" fetch reference is unreliable under the Patchright stealth driver (its fetch
+    // wrapper rejects a detached call). Note credentials are NOT exposed by this residual:
+    // cookie auth is browser-attached (not in page JS) and authed_fetch REJECTS credential
+    // headers, so a page-overridden fetch sees a request body/result but no bearer/cookie.
+    // Compensating controls: waitUntil:"commit" minimizes page-script execution before the
+    // fetch. On integrity, the differential is NOT tamper-proof — the target can tell the authed
+    // arm (it carries the cookie) from the control arm and could serve forged data — but a
+    // target forging a vuln against ITSELF gains nothing (it would be self-reporting), the
     // per-tool ceiling bounds a forged result, and the producer treats a single capture as
     // evidence, not proof (the operator corroborates for integrity-sensitive use).
     const fetchInitJson = JSON.stringify(fetchInit);
