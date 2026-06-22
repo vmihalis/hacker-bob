@@ -52,6 +52,10 @@ const DEFAULT_EVALUATE_TIMEOUT_MS = 15_000;
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 30_000;
 const MAX_EVAL_RESULT_BYTES = 256 * 1024;
 const MAX_SNAPSHOT_BYTES = 512 * 1024;
+// Body cap for the trusted `authed_fetch` transport. Generous (2 MiB ≈ thousands of
+// records) because the offensive mass-read producer needs the full collection to derive
+// its masked count/field-shape summary; bodies past the cap return body_truncated:true.
+const MAX_AUTHED_FETCH_BODY_BYTES = 2 * 1024 * 1024;
 // Ceiling on any agent-supplied per-operation timeout, mirroring
 // browser-tools-shared.js. A non-positive value can't disable the bound and a
 // pathological value can't pin the single-page session far past its useful life.
@@ -160,7 +164,7 @@ function sanitizeDomainForPath(domain) {
 // ── Driver core ──
 
 class BrowserDriver {
-  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode, proxy }) {
+  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode, proxy, authCookies }) {
     this.sessionId = sessionId;
     this.targetDomain = targetDomain;
     this.targetUrl = targetUrl;
@@ -186,6 +190,12 @@ class BrowserDriver {
     this.proxy = proxy && typeof proxy === "object" && typeof proxy.server === "string"
       ? proxy
       : null;
+    // Session-level cookie auth for the trusted `authed_fetch` transport, supplied by the
+    // in-process offensive producer (NEVER by an agent). Playwright cookie-object shape
+    // ({ name, value, domain, path, ... }); applied to the context so an in-page
+    // credentials:"include" fetch carries them. null/empty = unauthenticated (the control
+    // arm of the mass-read differential).
+    this.authCookies = Array.isArray(authCookies) ? authCookies : null;
   }
 
   async start() {
@@ -245,6 +255,13 @@ class BrowserDriver {
       reducedMotion: "no-preference",
       serviceWorkers: "allow",
     });
+
+    // Inject producer-supplied cookie auth (trusted; never agent-supplied) so the
+    // `authed_fetch` in-page fetch carries it via credentials:"include". Bearer/custom
+    // headers are passed per-request in authed_fetch instead.
+    if (this.authCookies && this.authCookies.length) {
+      await this.context.addCookies(this.authCookies);
+    }
 
     await this.installScopedRequestGuard();
     this.page = await this.context.newPage();
@@ -408,6 +425,10 @@ class BrowserDriver {
         return await this.type(args);
       case "evaluate":
         return await this.evaluate(args);
+      case "authed_fetch":
+        // TRUSTED, server-side-only transport — no bob_browser_* MCP tool maps to it, so
+        // an agent cannot reach it; only the in-process offensive mass-read producer does.
+        return await this.authedFetch(args);
       case "network_requests":
         return await this.networkRequests(args);
       case "console_messages":
@@ -588,6 +609,103 @@ class BrowserDriver {
     return { result: safeJsonClone(result, MAX_EVAL_RESULT_BYTES) };
   }
 
+  // TRUSTED, server-side-only transport (NOT agent-reachable — no MCP tool maps to the
+  // "authed_fetch" command). Issues an authenticated request from the PAGE context so it
+  // carries the real Chrome TLS/HTTP-2 fingerprint and survives a WAF/Cloudflare that
+  // 403s safeFetch's bare-Node fingerprint — the gap that left the offensive rail unable
+  // to confirm the broken-auth/mass-read class. The agent-facing `evaluate` sandbox
+  // (FORBIDDEN_EVAL_PATTERN) is UNCHANGED: this builds the fetch expression SERVER-SIDE
+  // from a scope-checked URL + producer-supplied headers and runs it via the trusted path.
+  async authedFetch(args) {
+    const url = String(args && args.url ? args.url : "").trim();
+    if (!url) throw new Error("authed_fetch.url is required");
+    const method = String(args && args.method ? args.method : "GET").toUpperCase();
+    if (method !== "GET" && method !== "POST") {
+      throw new Error("authed_fetch.method must be GET or POST (read-intent only)");
+    }
+    const headers = args && args.headers && typeof args.headers === "object" && !Array.isArray(args.headers)
+      ? args.headers
+      : {};
+    const body = args && typeof args.body === "string" ? args.body : null;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error("authed_fetch.url is not a valid absolute URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("authed_fetch.url must be http(s)");
+    }
+    // Scope guard (mirror navigate): the URL must resolve in-scope. block_internal_hosts is
+    // not enforced here — the producer REFUSES to run when that policy is on (it cannot
+    // verify SSRF posture through the browser), mirroring bob_http_xss_confirm.
+    try {
+      await assertSafeResolvedRequestUrl(url, this.targetDomain, { blockInternalHosts: false });
+    } catch (err) {
+      const wrapped = new Error(`scope_blocked: ${err && err.message ? err.message : err}`);
+      wrapped.code = "scope_blocked";
+      throw wrapped;
+    }
+    const timeout = resolveOpTimeout(args, DEFAULT_NAVIGATE_TIMEOUT_MS);
+    const origin = parsed.origin;
+    // Establish the browser context ON the target origin first (passes the CF challenge,
+    // applies context cookies), then issue a SAME-ORIGIN in-page fetch so the body is
+    // readable (a cross-origin fetch would be CORS-opaque and expose no body).
+    const navResp = await this.page.goto(origin, { waitUntil: "domcontentloaded", timeout });
+    let landedOrigin = null;
+    try { landedOrigin = new URL(this.page.url()).origin; } catch { landedOrigin = null; }
+    if (landedOrigin !== origin) {
+      const e = new Error(`authed_fetch_origin_drift: landed on ${landedOrigin} not ${origin}`);
+      e.code = "authed_fetch_origin_drift";
+      throw e;
+    }
+    await randomDelay(150, 400);
+    const fetchInit = { method, headers, credentials: "include" };
+    if (body != null && method !== "GET") fetchInit.body = body;
+    // Built server-side from validated inputs; runs in the page world (real Chrome stack).
+    const expr = `(async () => {
+      const __r = await fetch(${JSON.stringify(url)}, ${JSON.stringify(fetchInit)});
+      const __t = await __r.text();
+      return {
+        status: __r.status,
+        final_url: __r.url,
+        body: __t.slice(0, ${MAX_AUTHED_FETCH_BODY_BYTES}),
+        body_truncated: __t.length > ${MAX_AUTHED_FETCH_BODY_BYTES},
+      };
+    })()`;
+    // Same wall-clock race as evaluate() so a hung fetch returns a precise timeout instead
+    // of pinning the single-page session until the IPC backstop fires.
+    const evalPromise = this.page.evaluate(expr);
+    evalPromise.catch(() => {});
+    let timer;
+    let result;
+    try {
+      result = await Promise.race([
+        evalPromise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const e = new Error(`authed_fetch_timeout after ${timeout}ms`);
+            e.code = "authed_fetch_timeout";
+            reject(e);
+          }, timeout);
+          if (timer && typeof timer.unref === "function") timer.unref();
+        }),
+      ]);
+    } catch (err) {
+      if (err && err.code === "authed_fetch_timeout") throw err;
+      throw new Error(`authed_fetch_failed: ${err && err.message ? err.message : err}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    return {
+      status: result && Number.isInteger(result.status) ? result.status : null,
+      final_url: result && result.final_url ? String(result.final_url) : null,
+      body: result && typeof result.body === "string" ? result.body : "",
+      body_truncated: !!(result && result.body_truncated),
+      nav_status: navResp ? navResp.status() : null,
+    };
+  }
+
   async networkRequests(args) {
     const since = Number.isInteger(args && args.since_index) ? Math.max(0, args.since_index) : 0;
     const slice = this.requests.slice(since);
@@ -741,6 +859,10 @@ async function main() {
     && typeof initConfig.proxy.server === "string"
     ? initConfig.proxy
     : null;
+  // Session cookie auth for the trusted authed_fetch transport — supplied by the
+  // in-process offensive producer (never an agent). Pass-through array of Playwright
+  // cookie objects; the driver validates the shape via context.addCookies.
+  const authCookies = Array.isArray(initConfig.auth_cookies) ? initConfig.auth_cookies : null;
 
   if (!targetDomain) {
     writeResponse({ ready: false, error: "init_invalid: target_domain is required" });
@@ -769,6 +891,7 @@ async function main() {
     sessionsRoot,
     recordMode,
     proxy,
+    authCookies,
   });
   try {
     await driver.start();

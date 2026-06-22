@@ -264,6 +264,7 @@ async function startSession({
   sessionsRoot,
   patchrightCheck = isPatchrightAvailable,
   proxy = null,
+  authCookies = null,
   spawnFn = spawn,
 } = {}) {
   if (!patchrightCheck()) {
@@ -302,6 +303,11 @@ async function startSession({
     // (see mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile). null
     // means direct egress (no proxy), which is the default.
     proxy: proxy && typeof proxy === "object" ? proxy : null,
+    // Cookie auth for the trusted authed_fetch transport (offensive mass-read producer
+    // only — never an agent path). Pass-through array of Playwright cookie objects; null
+    // = unauthenticated (the control arm of the differential). The bob_browser_* MCP
+    // tools never set this, so an agent cannot inject auth into a browser session.
+    auth_cookies: Array.isArray(authCookies) ? authCookies : null,
   };
 
   const child = spawnFn(process.execPath, [DRIVER_SCRIPT_PATH], {
