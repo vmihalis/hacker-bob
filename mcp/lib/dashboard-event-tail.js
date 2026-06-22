@@ -292,9 +292,12 @@ function buildFrames(domain, source, records) {
       if (typeof record.target_domain === "string" && record.target_domain && record.target_domain !== domain) continue;
       event = compactFrontierEvent(record);
       ts = typeof record.ts === "string" ? record.ts : null;
-      baseRecordId = typeof record.event_id === "string" && record.event_id
-        ? record.event_id
-        : `FE-${hashCanonicalJson(record).slice(0, 24)}`;
+      // the wire cursor must be a structural token too: a non-token / freeform /
+      // opaque explicit event_id is replaced by a deterministic content hash (which
+      // still round-trips for Last-Event-ID resume), so it never reaches the SSE
+      // `id:` line or event.event_id. A structural explicit id is preserved as-is.
+      baseRecordId = structuralTokenOrNull(record.event_id, STRUCTURAL_ID_MAX)
+        || `FE-${hashCanonicalJson(record).slice(0, 24)}`;
     } else {
       // pipeline rows lack a per-event id and may be malformed → normalize
       // tolerantly (null on a non-conforming row) and synthesize a

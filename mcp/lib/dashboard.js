@@ -766,6 +766,10 @@ function startSseEventStream(req, res, domain, url, sseState) {
       // whole array, so a backlog of 0 sends nothing (and resyncs) rather than everything.
       const resumeCap = Math.min(backlog, SSE_MAX_BACKLOG);
       if (toSend.length > resumeCap) {
+        // advance the high-water mark to the newest elided frame so the poll loop never
+        // re-emits the skipped backlog later (esp. backlog=0 → nothing sent now, but the
+        // cursor must still move past the missed frames). emit() re-sets it for any sent.
+        lastKey = frameKey(toSend[toSend.length - 1]);
         toSend = resumeCap > 0 ? toSend.slice(-resumeCap) : [];
         resync = true;
       }

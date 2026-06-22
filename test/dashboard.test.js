@@ -571,3 +571,43 @@ test("dashboard SSE route does not re-send history when resuming already caught 
     }
   });
 });
+
+test("backlog=0 resume advances the cursor past elided frames (no later re-send)", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-backlog0.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    for (let i = 0; i < 5; i++) {
+      appendFrontierRaw(domain, { event_id: `FE-${i}`, ts: `2026-06-21T10:00:0${i}.000Z`, kind: "surface.observed", target_domain: domain, payload: {} });
+    }
+    const prevPoll = process.env.BOB_SSE_POLL_MS;
+    process.env.BOB_SSE_POLL_MS = "40";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    let timer = null;
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length >= 3, "precondition: several frames to elide");
+      const cursor = ids[0]; // old cursor → ids.slice(1) are "missed" and elided by backlog=0
+      // mid-window, append a guaranteed-newest frame so the poll fires after the elision
+      timer = setTimeout(() => {
+        appendFrontierRaw(domain, { event_id: "FE-NEW", ts: "2099-01-01T00:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+      }, 120);
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events?backlog=0`, {
+        headers: { "last-event-id": cursor }, settleMs: 400,
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(resumedIds.some((id) => id.includes("FE-NEW")), "the new post-resume frame is delivered");
+      for (const elided of ids.slice(1)) {
+        assert.ok(!resumedIds.includes(elided), "an elided backlog=0 frame is not re-sent after a later append");
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+      if (prevPoll === undefined) delete process.env.BOB_SSE_POLL_MS;
+      else process.env.BOB_SSE_POLL_MS = prevPoll;
+    }
+  });
+});

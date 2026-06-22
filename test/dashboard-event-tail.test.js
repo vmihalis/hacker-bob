@@ -266,6 +266,38 @@ test("a secret-shaped explicit frontier event_id is redacted in the frame id, no
   });
 });
 
+test("a freeform/opaque explicit frontier event_id is replaced by a content hash; a structural id is preserved", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      { event_id: "operator note SHOULD_NOT_LEAK", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} },
+      { event_id: "evt-abc-123", ts: "2026-06-21T10:00:01.000Z", kind: "surface.observed", target_domain: domain, payload: {} },
+    ]);
+    const frames = readSessionEventFrames(domain);
+    const freeform = frames.find((f) => f.ts === "2026-06-21T10:00:00.000Z");
+    const structural = frames.find((f) => f.ts === "2026-06-21T10:00:01.000Z");
+    assert.ok(freeform.record_id.startsWith("FE-"), "non-token event_id replaced by a synthesized FE-<hash>");
+    assert.ok(!freeform.id.includes("SHOULD_NOT_LEAK"), "no freeform id on the SSE id line");
+    assert.ok(!JSON.stringify(freeform.event).includes("SHOULD_NOT_LEAK"), "no freeform id in the event payload");
+    assert.equal(structural.record_id, "evt-abc-123", "a structural explicit id is preserved as the cursor");
+  });
+});
+
+test("a Stripe-style bare token (sk_live_) in an allowlisted field is redacted", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      frontierRecord("FE-stripe", "2026-06-21T10:00:00.000Z", "observation.recorded", {
+        // built at runtime so no contiguous secret literal sits in the source
+        // (GitHub push-protection flags a literal sk_live_ string)
+        status: ["sk", "live", "0123456789abcdefABCDEF12"].join("_"),
+      }),
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.ok(!JSON.stringify(ev).includes("sk_live_"), "Stripe-style bare token not on the wire");
+  });
+});
+
 test("framesAfter resumes strictly after a present Last-Event-ID (no dup, no gap, no resync)", () => {
   withTempHome(() => {
     const domain = "tail.example";
