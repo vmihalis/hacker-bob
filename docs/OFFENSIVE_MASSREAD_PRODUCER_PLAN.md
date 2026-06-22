@@ -83,11 +83,17 @@ existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats
   a wall-clock timeout race + an in-page `AbortSignal.timeout` (no lingering renderer
   request) + a body cap measured in **bytes** (not UTF-16 code units), enforced while
   streaming.
-- **DNS-rebinding pin** — the target host is resolved ONCE in Node and Chrome is launched
-  with `--host-resolver-rules=MAP <host> <validated-ip>`, so the browser connects to the IP
-  we checked (closing the TOCTOU where the static scope check passes but Chrome re-resolves
-  to an internal/attacker IP). Under `block_internal_hosts`, an unpinned host is refused
-  fail-closed. Skipped under an egress proxy (DNS resolves at the proxy).
+- **DNS-rebinding pin (required, not opt-in)** — the target host is resolved ONCE in Node and
+  Chrome is launched with `--host-resolver-rules=MAP <host> <validated-ip>`, so the browser
+  connects to the IP we checked (closing the TOCTOU where the static scope check passes but
+  Chrome would re-resolve to an internal/attacker IP). Because `authed_fetch` is ALWAYS
+  credentialed, the pin is REQUIRED on every call (not just under `block_internal_hosts`): an
+  unpinned host is refused fail-closed so a credentialed request can never ride a rebound
+  hostname. The pin also records whether the resolved IP is internal; under
+  `block_internal_hosts` a pinned-but-internal IP is refused too. **Producer contract:** start
+  the browser session with `target_url` on the exact host you will read, so that host is the
+  one pinned. Under an egress proxy the pin is N/A (DNS resolves at the proxy) and
+  `block_internal_hosts` is refused rather than silently downgraded.
 - **Refuse when `block_internal_hosts` is on** (same SSRF stance as `xss_confirm`, which
   cannot enforce the session SSRF policy through the browser) — the producer refuses; the
   driver's scope+pin checks are defense in depth for a direct call.
@@ -95,10 +101,13 @@ existing Patchright + system-Chrome stack (used by `bob_http_xss_confirm`) beats
   hostile target could in principle override `window.fetch`/`Response` to forge the result.
   This is inherent to the transport's purpose (real TLS fingerprint requires the page network
   stack), and a "native fetch capture" was tried and reverted — it is unreliable under the
-  Patchright stealth driver and broke the transport. Compensating controls: `waitUntil:
-  "commit"` minimizes page-script execution before the fetch, and the authed-vs-control
-  DIFFERENTIAL bounds integrity (page code cannot tell which arm it serves; a target forging
-  a vuln against itself is not a coherent threat). A single capture is evidence, not proof.
+  Patchright stealth driver and broke the transport. Compensating control: `waitUntil:
+  "commit"` minimizes page-script execution before the fetch. On integrity, the
+  authed-vs-control differential is NOT tamper-proof — the target CAN tell the authed arm (it
+  carries the cookie) from the control arm and could serve forged data — but a target forging
+  a vuln against ITSELF gains nothing (self-reporting), the per-tool ceiling bounds a forged
+  result, and a single capture is evidence, not proof (the operator corroborates for
+  integrity-sensitive use).
 
 ## Severity ceiling
 
@@ -147,7 +156,8 @@ The manual, fail-closed edits:
 - Auth material flows producer → driver over **stdin, never the env**; each cookie is
   scope-validated against `target_domain` before it reaches the browser context.
 - The browser is DNS-pinned to the Node-validated IP (`--host-resolver-rules`); an unpinned
-  host is refused under `block_internal_hosts`.
+  host is refused on EVERY (always-credentialed) `authed_fetch`, and a pinned-but-internal IP
+  is refused under `block_internal_hosts`.
 - `authed_fetch` does not follow redirects (`redirect:"manual"`), self-aborts on timeout,
   and caps the body in bytes.
 - Page-controlled fetch is an accepted residual (see transport section) — mitigated by

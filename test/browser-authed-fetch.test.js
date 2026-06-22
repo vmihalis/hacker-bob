@@ -185,12 +185,14 @@ test("driver DNS-pins the target host via --host-resolver-rules and records inte
   assert.match(DRIVER_SRC, /this\.pinnedHosts\.set\(pinHost, \{ address, internal: isBlockedInternalHost\(address\) \}\)/);
 });
 
-test("authed_fetch enforces block_internal_hosts: refuse proxied, unpinned, OR pinned-internal", () => {
-  assert.match(DRIVER_SRC, /if \(this\.proxy\) \{/); // refuse: cannot enforce through a proxy
-  assert.match(DRIVER_SRC, /cannot enforce block_internal_hosts through an egress proxy/);
-  assert.match(DRIVER_SRC, /was not DNS-pinned at launch/); // refuse: unpinned host
-  assert.match(DRIVER_SRC, /if \(pin\.internal\)/); // refuse: pinned IP is itself internal
+test("authed_fetch REQUIRES the DNS pin on every call (not opt-in) + internal/proxy guards", () => {
+  // round-5: the pin is enforced unconditionally on the non-proxied path (a credentialed fetch
+  // must never ride a rebound hostname), with the internal-IP check additionally under
+  // block_internal_hosts, and a proxy refusing only under block_internal_hosts.
+  assert.match(DRIVER_SRC, /was not DNS-pinned at launch; a credentialed fetch must target the pinned host/);
+  assert.match(DRIVER_SRC, /if \(blockInternalHosts && pin\.internal\)/); // internal-IP guard gated on policy
   assert.match(DRIVER_SRC, /pins to an internal address/);
+  assert.match(DRIVER_SRC, /cannot enforce block_internal_hosts through an egress proxy/);
 });
 
 test("authed_fetch scope-checks the URL and guards origin drift", () => {
@@ -418,6 +420,34 @@ test("set_auth_cookies rejects an out-of-scope cookie (session fails closed)", {
       (err) => { assert.match(err.message, /scope_blocked/); return true; },
     );
   } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test("authed_fetch refuses an in-scope but UNPINNED host even without block_internal_hosts", { skip: !BROWSER_LAUNCHABLE }, async (t) => {
+  if (await lookupLoopback("localtest.me") !== "127.0.0.1") {
+    t.skip("localtest.me does not resolve to loopback in this environment");
+    return;
+  }
+  // round-5: the session pins only the target_url host (localtest.me). A credentialed
+  // authed_fetch to a DIFFERENT in-scope host (sub.localtest.me) is refused on the default
+  // path (no block_internal_hosts) — the round-4 hole where the default path was rebindable.
+  const server = await startCookieGatedServer();
+  const port = server.address().port;
+  const origin = `http://localtest.me:${port}`;
+  let session = null;
+  try {
+    session = await browserSessions.startSession({
+      targetDomain: "localtest.me", targetUrl: origin, headless: true,
+    });
+    await assert.rejects(
+      () => browserSessions.sendCommand(session.session_id, "authed_fetch", {
+        url: `http://sub.localtest.me:${port}/api/listing`, method: "GET",
+      }),
+      (err) => { assert.match(err.message, /scope_blocked.*not DNS-pinned/); return true; },
+    );
+  } finally {
+    if (session) await browserSessions.closeSession(session.session_id).catch(() => {});
     await new Promise((r) => server.close(r));
   }
 });

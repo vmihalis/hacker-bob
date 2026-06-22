@@ -749,29 +749,37 @@ class BrowserDriver {
       wrapped.code = "scope_blocked";
       throw wrapped;
     }
-    // DNS-rebinding + internal-host enforcement (round-3/4). The launch pin makes Chrome
-    // connect to the IP we resolved (no re-resolution), but only for the pinned host and only
-    // when not proxied. So under block_internal_hosts:
-    if (blockInternalHosts) {
-      if (this.proxy) {
-        // DNS resolves at the proxy — we cannot pin or vet the IP the browser connects to, so
-        // refuse rather than let block_internal_hosts silently degrade to advisory.
+    // DNS-rebinding + internal-host enforcement (round-3/4/5). The launch pin makes Chrome
+    // connect to the IP we resolved (no re-resolution), but only for the pinned host. Because
+    // authed_fetch is ALWAYS credentialed, the pin is REQUIRED on every call (not opt-in under
+    // block_internal_hosts): a credentialed request must never ride an attacker-rebound
+    // hostname to a different IP. The producer therefore starts the session with target_url on
+    // the exact host it will read, so that host is the one pinned at launch.
+    const fetchHost = parsed.hostname.toLowerCase();
+    if (this.proxy) {
+      // Under an egress proxy, DNS resolves at the proxy — we cannot pin or vet the IP the
+      // browser connects to. We can't keep the no-internal-host promise, so refuse it; without
+      // it, proxied egress is the operator's deliberate, trusted config.
+      if (blockInternalHosts) {
         const e = new Error(
           "scope_blocked: authed_fetch cannot enforce block_internal_hosts through an egress proxy (DNS resolves at the proxy)",
         );
         e.code = "scope_blocked";
         throw e;
       }
-      const pin = this.pinnedHosts.get(parsed.hostname.toLowerCase());
+    } else {
+      const pin = this.pinnedHosts.get(fetchHost);
       if (!pin) {
-        // Unpinned host: the browser would re-resolve it, so we cannot rule out a rebind.
+        // Not pinned at launch → the browser would re-resolve it, so a credentialed fetch could
+        // ride a rebind. Refuse ALWAYS (the round-4 hole: this was only enforced under
+        // block_internal_hosts, leaving the default path rebindable).
         const e = new Error(
-          `scope_blocked: authed_fetch host ${parsed.hostname} was not DNS-pinned at launch; refusing under block_internal_hosts (DNS rebinding cannot be ruled out)`,
+          `scope_blocked: authed_fetch host ${parsed.hostname} was not DNS-pinned at launch; a credentialed fetch must target the pinned host (start the session with target_url on this host)`,
         );
         e.code = "scope_blocked";
         throw e;
       }
-      if (pin.internal) {
+      if (blockInternalHosts && pin.internal) {
         // The pinned IP itself is private/blocked — being pinned is not enough; the no-internal
         // promise must reject it (this is the round-3 hole: a presence-only check passed here).
         const e = new Error(
@@ -818,9 +826,11 @@ class BrowserDriver {
     // the gap this transport exists to close), and capturing a "native" fetch reference is
     // unreliable under the Patchright stealth driver (its fetch wrapper rejects a detached
     // call). Compensating controls: waitUntil:"commit" minimizes page-script execution before
-    // the fetch, and the authed-vs-control DIFFERENTIAL bounds the integrity impact — page
-    // code cannot tell which arm it is serving, and a target forging a vuln against itself is
-    // not a coherent threat. The producer treats a single capture as evidence, not proof.
+    // the fetch. On integrity, the differential is NOT tamper-proof — the target can tell the
+    // authed arm (it carries the cookie) from the control arm and could serve forged data — but
+    // a target forging a vuln against ITSELF gains nothing (it would be self-reporting), the
+    // per-tool ceiling bounds a forged result, and the producer treats a single capture as
+    // evidence, not proof (the operator corroborates for integrity-sensitive use).
     const fetchInitJson = JSON.stringify(fetchInit);
     const expr = `(async () => {
       const __cap = ${MAX_AUTHED_FETCH_BODY_BYTES};
