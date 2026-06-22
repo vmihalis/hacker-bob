@@ -166,12 +166,17 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // + the runner detection channel) plus its regenerated agent/skill/settings
     // surfaces. The lean tarball had fallen to ~5 KB of headroom under 3.2 MB; this
     // restores a comfortable margin (lean pack ~3.20 MB) without trimming assets.
-    // Raised to 3.4 MB: accumulated offensive-surface growth since PR7 (the signed
-    // producer tools + their regenerated agent/skill/settings surfaces) had eaten
-    // the headroom back down to ~5 KB, and the primitive→producer evaluator prose
-    // (evaluator + evaluator-spawn roles) crossed it. Lean pack ~3.30 MB; bump
-    // restores margin without trimming assets (the 921 KB docs/hacker-bob-social.png
-    // remains the obvious trim target if a future budget squeeze warrants it).
+    // Raised to 3.4 MB. Two streams of legit growth crossed 3.3 MB together:
+    // (a) accumulated offensive-surface growth since PR7 (the signed producer tools +
+    // regenerated agent/skill/settings surfaces) plus the primitive→producer evaluator
+    // prose (P12, evaluator + evaluator-spawn roles, #150); and (b) the X8 live in-run
+    // observability runtime (mcp/lib/dashboard-event-tail.js + the SSE event-stream
+    // route/client in mcp/lib/dashboard.js, #151). Headroom had fallen to ~0 KB and the
+    // npm-pack tarball size is non-deterministic by ~3 KB across runs (CI measured
+    // 3,300,833 B on a commit a parallel run packed under 3.3 MB — the budget was
+    // flapping), so this restores a stable margin (lean pack ~3.30 MB) without trimming
+    // assets (the 921 KB docs/hacker-bob-social.png remains the obvious trim target if a
+    // future squeeze warrants it). Mirror of the same budget in scripts/release-check.js.
     assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
 
     for (const file of files) {
