@@ -28,10 +28,12 @@
 // disambiguated so two same-content events are never silently deduped.
 
 const fs = require("fs");
+const path = require("path");
 const {
   assertSafeDomain,
   frontierEventsJsonlPath,
   pipelineEventsJsonlPath,
+  sessionsRoot,
 } = require("./paths.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
 const { redactTextSensitiveValues, SENSITIVE_VALUE_RE } = require("./sensitive-material.js");
@@ -141,6 +143,18 @@ function readJsonlTolerant(filePath, maxBytes = MAX_LEDGER_READ_BYTES) {
     throw error;
   }
   if (!link.isFile()) return [];
+  // lstat + O_NOFOLLOW only guard the FINAL component; a symlinked PARENT (e.g. the
+  // session directory itself) would still be followed. Confirm the resolved ledger
+  // directory stays under the resolved sessions root so the unauthenticated tail can
+  // never read outside the Bob session tree via a symlinked session directory.
+  try {
+    const realDir = fs.realpathSync(path.dirname(filePath));
+    const realRoot = fs.realpathSync(sessionsRoot());
+    if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) return [];
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  }
   let fd;
   try {
     // O_NOFOLLOW closes the lstat→open TOCTOU (a symlink swapped in after the lstat
@@ -295,9 +309,13 @@ function buildFrames(domain, source, records) {
       // the wire cursor must be a structural token too: a non-token / freeform /
       // opaque explicit event_id is replaced by a deterministic content hash (which
       // still round-trips for Last-Event-ID resume), so it never reaches the SSE
-      // `id:` line or event.event_id. A structural explicit id is preserved as-is.
-      baseRecordId = structuralTokenOrNull(record.event_id, STRUCTURAL_ID_MAX)
-        || `FE-${hashCanonicalJson(record).slice(0, 24)}`;
+      // `id:` line or event.event_id. A clean structural id is preserved as-is; a
+      // secret-shaped id (scrub → "REDACTED", which would collapse distinct secret
+      // ids onto one cursor) also falls back to the per-record content hash.
+      const gatedId = structuralTokenOrNull(record.event_id, STRUCTURAL_ID_MAX);
+      baseRecordId = (gatedId && gatedId !== "REDACTED")
+        ? gatedId
+        : `FE-${hashCanonicalJson(record).slice(0, 24)}`;
     } else {
       // pipeline rows lack a per-event id and may be malformed → normalize
       // tolerantly (null on a non-conforming row) and synthesize a

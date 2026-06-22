@@ -810,6 +810,10 @@ function startSseEventStream(req, res, domain, url, sseState) {
 
   heartbeat = setInterval(() => writeSseComment(res, "ping"), sseHeartbeatMs());
   if (typeof heartbeat.unref === "function") heartbeat.unref();
+  // if the client disconnected DURING the initial catch-up read, cleanup() already ran
+  // while poll/heartbeat were still null (nothing to clear); tear down the timers we
+  // just created so no orphan poller survives parsing the ledger against a closed res.
+  if (released) cleanup();
 }
 
 // sseState is REQUIRED (no default): a per-call `{ active: 0 }` default would give each

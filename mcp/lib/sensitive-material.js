@@ -65,7 +65,7 @@ const SENSITIVE_VALUE_RE = Object.freeze([
   /\bgh[pousr]_[0-9A-Za-z_]{20,}\b/,
   /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/,
   /\b[sr]k_(?:live|test)_[0-9A-Za-z]{16,}\b/,
-  /\bsk-[0-9A-Za-z]{20,}\b/,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/,
 ]);
 
 function isPlainObject(value) {

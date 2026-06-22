@@ -283,6 +283,21 @@ test("a freeform/opaque explicit frontier event_id is replaced by a content hash
   });
 });
 
+test("secret-shaped explicit event_ids fall back to distinct content hashes (no REDACTED cursor collision)", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    const ts = "2026-06-21T10:00:00.000Z";
+    writeFrontier(domain, [
+      { event_id: "AKIA" + "1234567890ABCDEF", ts, kind: "surface.observed", target_domain: domain, surface_id: "S1", payload: {} },
+      { event_id: "AKIA" + "FEDCBA0987654321", ts, kind: "surface.observed", target_domain: domain, surface_id: "S2", payload: {} },
+    ]);
+    const ids = readSessionEventFrames(domain).map((f) => f.record_id);
+    assert.ok(ids.every((id) => id.startsWith("FE-")), "secret ids fall back to FE-<hash>, not the shared REDACTED cursor");
+    assert.notEqual(ids[0], ids[1], "distinct secret ids get distinct cursors (no collision)");
+    assert.ok(!ids.some((id) => id.includes("AKIA")), "no secret id on the wire");
+  });
+});
+
 test("a Stripe-style bare token (sk_live_) in an allowlisted field is redacted", () => {
   withTempHome(() => {
     const domain = "tail.example";
@@ -295,6 +310,20 @@ test("a Stripe-style bare token (sk_live_) in an allowlisted field is redacted",
     ]);
     const ev = readSessionEventFrames(domain)[0].event;
     assert.ok(!JSON.stringify(ev).includes("sk_live_"), "Stripe-style bare token not on the wire");
+  });
+});
+
+test("a hyphenated OpenAI key (sk-proj-) in an allowlisted field is redacted", () => {
+  withTempHome(() => {
+    const domain = "tail.example";
+    writeFrontier(domain, [
+      frontierRecord("FE-openai", "2026-06-21T10:00:00.000Z", "observation.recorded", {
+        // built at runtime so no contiguous secret literal sits in the source
+        status: ["sk", "proj", "abcdefABCDEF0123456789ab"].join("-"),
+      }),
+    ]);
+    const ev = readSessionEventFrames(domain)[0].event;
+    assert.ok(!JSON.stringify(ev).includes("sk-proj-"), "hyphenated OpenAI key not on the wire");
   });
 });
 
@@ -560,5 +589,28 @@ test("readJsonlTolerant rejects a symlinked ledger (no follow outside the sessio
     fs.symlinkSync(outside, filePath);
     assert.deepEqual(readJsonlTolerant(filePath), [], "symlinked ledger is not followed");
     assert.deepEqual(readSessionEventFrames(domain), [], "folded stream is empty for a symlinked ledger");
+  });
+});
+
+test("a symlinked session DIRECTORY is refused (parent symlink can't escape the sessions root)", () => {
+  withTempHome(() => {
+    const domain = "symlink-dir.example";
+    // a real directory OUTSIDE the sessions tree, holding a ledger with the expected name
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "bob-outside-"));
+    fs.writeFileSync(
+      path.join(outside, "frontier-events.jsonl"),
+      `${JSON.stringify({ event_id: "FE-leak", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: { surface_type: "LEAK" } })}\n`,
+      "utf8",
+    );
+    // make the session directory for `domain` a SYMLINK pointing at that outside dir
+    const sessDir = path.dirname(frontierEventsJsonlPath(domain));
+    fs.mkdirSync(path.dirname(sessDir), { recursive: true });
+    fs.symlinkSync(outside, sessDir);
+    try {
+      assert.deepEqual(readJsonlTolerant(frontierEventsJsonlPath(domain)), [], "parent-symlink guard refuses the read");
+      assert.deepEqual(readSessionEventFrames(domain), [], "a session dir symlinked outside the sessions root is refused");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
