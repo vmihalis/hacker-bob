@@ -45,6 +45,7 @@ function uniqueDomain() { DOMAIN_SEQ += 1; return `massread${DOMAIN_SEQ}.example
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const previousOwner = process.env[OWNER_AUTHORIZED_ENV];
+  const previousReadGuard = process.env.BOB_READ_GUARD;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-massread-producer-"));
   process.env.HOME = home;
   return Promise.resolve()
@@ -53,6 +54,8 @@ function withTempHome(fn) {
       if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
       if (previousOwner === undefined) delete process.env[OWNER_AUTHORIZED_ENV];
       else process.env[OWNER_AUTHORIZED_ENV] = previousOwner;
+      if (previousReadGuard === undefined) delete process.env.BOB_READ_GUARD;
+      else process.env.BOB_READ_GUARD = previousReadGuard;
       resetMaterializationDebounce();
       fs.rmSync(home, { recursive: true, force: true });
     });
@@ -372,6 +375,7 @@ test("full capture is enabled ONLY by the operator env gate; the signed rail sta
   const domain = uniqueDomain();
   setupSession(domain);
   process.env[OWNER_AUTHORIZED_ENV] = domain; // gate is bound to THIS target (#904)
+  process.env.BOB_READ_GUARD = "1"; // read-guard present (Claude/Kimi install) so capture is allowed (#916)
   const { driver } = makeDriver();
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true);
@@ -497,6 +501,7 @@ test("symlinked massread-evidence dir → refused (not followed); the masked row
   const domain = uniqueDomain();
   setupSession(domain);
   process.env[OWNER_AUTHORIZED_ENV] = domain; // gate is bound to THIS target (#904)
+  process.env.BOB_READ_GUARD = "1"; // read-guard present so the capture is ATTEMPTED (then refused by the symlink guard) (#916)
   const evilTarget = fs.mkdtempSync(path.join(os.tmpdir(), "bob-massread-evil-"));
   try {
     const sdir = sessionDir(domain);
@@ -574,18 +579,56 @@ test("widened vocab: an SSN mass-read mints MEDIUM (the former email/phone/iban 
   assert.ok(!signedRailBytes(domain).includes("123-45-6789"), "raw SSN must never reach the signed rail");
 }));
 
-test("widened vocab: a Luhn-valid credit-card mass-read mints MEDIUM", () => withTempHome(async () => {
+test("widened vocab: a credit-card collection (with a per-subject email) mints MEDIUM and records the card shape", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
+  // Two DISTINCT subjects (distinct EMAILS drive the floor); each also carries a card. The card shape +
+  // financial bucket are recorded, but the SUBJECT count comes from email — cards are not subject keys.
   const body = JSON.stringify({ data: [
-    { id: 1, card_number: "4111111111111111", name: "A" },
-    { id: 2, card_number: "4012888888881881", name: "B" },
+    { id: 1, email: "a@a.example", card_number: "4111111111111111" },
+    { id: 2, email: "b@b.example", card_number: "4012888888881881" },
   ] });
   const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true);
   assert.equal(result.masked_oracle.pii_shape_present.credit_card, true);
   assert.ok(result.masked_oracle.sensitive_field_names.includes("financial"));
+}));
+
+test("card is NOT a subject key: a CARD-ONLY list of two cards (no email/SSN) does NOT mint — one person has several", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // The /me/payment-methods false-mint the multiplicity review caught: two DIFFERENT card values, no
+  // per-subject email/SSN. Two cards could be ONE person's two instruments, so distinct_pii_count stays
+  // 0 → below the floor → no mint (under-counting, the safe direction). The card shape is still recorded.
+  const body = JSON.stringify({ data: [
+    { id: 1, card_number: "4111111111111111" },
+    { id: 2, card_number: "4012888888881881" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 0, "cards are not subject identifiers — no distinct subjects");
+  assert.equal(s.pii_shape_present.credit_card, true, "the card shape is still detected + recorded");
+  assert.ok(s.sensitive_field_names.includes("financial"));
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("IBAN is NOT a subject key: an IBAN-only list of two IBANs (no email/SSN) does NOT mint — one person has several", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same multiplicity property as cards — a person holds several bank accounts. Two distinct IBAN values
+  // are not two provable subjects. The IBAN shape is still detected; it just doesn't form a subject key.
+  const body = JSON.stringify({ data: [
+    { id: 1, iban: "GB82WEST12345698765432" },
+    { id: 2, iban: "DE89370400440532013000" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 0, "IBANs are not subject identifiers — no distinct subjects");
+  assert.equal(s.pii_shape_present.iban, true, "the IBAN shape is still detected + recorded");
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
 }));
 
 test("field-name requirement: a PII value in a non-sensitive field (no sensitive field NAME) does NOT mint", () => withTempHome(async () => {
@@ -1035,4 +1078,54 @@ test("raw capture is bound to the target: env naming a DIFFERENT domain does NOT
   assert.equal(result.confirmed, true);
   assert.equal(result.owner_authorized_capture, false, "capture must NOT fire for an unauthorized target");
   assert.ok(!fs.existsSync(path.join(sessionDir(domain), "massread-evidence")), "no evidence dir for a different-target gate");
+}));
+
+// ── round-11: raw capture default-denied on adapters without a read-guard (#916) ──
+test("raw capture is DEFAULT-DENIED without a read-guard: owner gate ON but BOB_READ_GUARD=0 → no capture (#916)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  process.env[OWNER_AUTHORIZED_ENV] = domain; // operator authorized this target...
+  process.env.BOB_READ_GUARD = "0"; // ...but this install has NO read-guard (Codex / generic-mcp) → deny
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true, "the signed (masked) row still mints regardless");
+  assert.equal(result.owner_authorized_capture, false, "no raw capture where the agent could read it back");
+  assert.ok(!fs.existsSync(path.join(sessionDir(domain), "massread-evidence")), "no evidence dir without a read-guard");
+  assert.ok(!signedRailBytes(domain).includes(CANARY_EMAIL), "the signed rail stays masked either way");
+}));
+
+test("read-guard AUTO-DETECT: owner gate ON, BOB_READ_GUARD unset → capture fires because the read-guard hook ships in this install (#916)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  process.env[OWNER_AUTHORIZED_ENV] = domain;
+  delete process.env.BOB_READ_GUARD; // no override → readGuardActive() auto-detects the .claude/.kimi hook in the repo tree
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.owner_authorized_capture, true, "auto-detect finds the installed read-guard hook → capture allowed");
+}));
+
+// ── round-11: a 401 control whose NON-JSON body still ships BULK PII is not a clean denial (#837) ──
+test("a 401 control with a CSV/plaintext body carrying BULK PII is NOT a clean denial → inconclusive (#837)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // 401 + a NON-JSON (CSV) body that deriveMaskedSummary/controlBodyExposesPii cannot parse, but which
+  // still hands the anon client >= MIN distinct subjects' emails. distinctSubjectsInText must catch it.
+  const control = { status: 401, body: "email,name\nalice@a.example,Alice\nbob@b.example,Bob\n", final_url: null, body_truncated: false };
+  assert.equal(deriveMaskedSummary(control.body).parse_ok, false, "the CSV body is not JSON-parseable");
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("a 401 control with a LONE support email in free text IS still a clean denial → mints (#837 threshold)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // One contact email (< MIN distinct subjects) in a denial page must NOT trip the raw-text bulk check —
+  // preserves the round-10 field-bound free-text robustness while #837 catches genuine bulk exports.
+  const control = { status: 401, body: "Access denied. Contact support@vendor.example for help.", final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true, "a lone support email at 401 is a clean denial → the differential mints");
+  assert.equal(result.masked_oracle.demonstrated_severity ?? "medium", "medium");
 }));
