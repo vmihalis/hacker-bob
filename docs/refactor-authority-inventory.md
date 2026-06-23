@@ -6,9 +6,9 @@ The `Target URL` and `Tests` columns are authority contracts for N2-004 enforcem
 
 ## Summary
 
-- Registered tools: 182
-- Tools with `target_domain`: 175
-- Tools requiring `target_domain`: 169
+- Registered tools: 183
+- Tools with `target_domain`: 176
+- Tools requiring `target_domain`: 170
 - Mode-dependent tools: 5
 
 | Authority Class | Default Tool Count | Resolved Mode/Tool Count |
@@ -16,7 +16,7 @@ The `Target URL` and `Tests` columns are authority contracts for N2-004 enforcem
 | `bootstrap_session` | 2 | 2 |
 | `initialized_session_read` | 44 | 48 |
 | `initialized_session_mutation` | 88 | 89 |
-| `scoped_http_network` | 17 | 17 |
+| `scoped_http_network` | 18 | 18 |
 | `smart_contract_contextual` | 19 | 19 |
 | `optional_session_context` | 0 | 0 |
 | `cross_session_read` | 0 | 3 |
@@ -71,6 +71,7 @@ Fail-closed fields: `target`, `target_url`, `checkpoint_mode`, `block_internal_h
 | bob_http_scan | mcp/lib/tools/http-scan.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=true<br>network_access=true<br>browser_access=false<br>scope_required=true<br>sensitive_output=true<br>artifacts=http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
 | bob_http_confirm | mcp/lib/tools/bob-http-confirm.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=true<br>network_access=true<br>browser_access=false<br>scope_required=true<br>sensitive_output=true<br>artifacts=http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
 | bob_http_cors_confirm | mcp/lib/tools/bob-http-cors-confirm.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=true<br>browser_access=false<br>scope_required=true<br>sensitive_output=true<br>artifacts=offensive-runs.jsonl+offensive-runs/+http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
+| bob_http_massread_confirm | mcp/lib/tools/bob-http-massread-confirm.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=true<br>browser_access=true<br>scope_required=true<br>sensitive_output=true<br>artifacts=offensive-runs.jsonl+offensive-runs/+http-audit.jsonl+massread-evidence/ | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
 | bob_http_idor_confirm | mcp/lib/tools/bob-http-idor-confirm.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=true<br>browser_access=false<br>scope_required=true<br>sensitive_output=true<br>artifacts=offensive-runs.jsonl+offensive-runs/+http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
 | bob_http_xss_reflect | mcp/lib/tools/bob-http-xss-reflect.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=true<br>browser_access=false<br>scope_required=true<br>sensitive_output=true<br>artifacts=offensive-runs.jsonl+offensive-runs/+http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |
 | bob_http_xss_confirm | mcp/lib/tools/bob-http-xss-confirm.js | `scoped_http_network` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=true<br>browser_access=true<br>scope_required=true<br>sensitive_output=true<br>artifacts=offensive-runs.jsonl+offensive-runs/+http-audit.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | HTTP/import/browser scope tooling needs initialized-session authority plus URL scope validation. | Require initialized session, target match, target_url validation, and scoped URL validation. | Direct tests for missing session, mismatch, target_url drift, and scoped URL drift. |

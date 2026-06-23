@@ -4,6 +4,7 @@ const TOOL_MODULES = Object.freeze([
   require("./http-scan.js"),
   require("./bob-http-confirm.js"),
   require("./bob-http-cors-confirm.js"),
+  require("./bob-http-massread-confirm.js"),
   require("./bob-http-idor-confirm.js"),
   require("./bob-http-xss-reflect.js"),
   require("./bob-http-xss-confirm.js"),

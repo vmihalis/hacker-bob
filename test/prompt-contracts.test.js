@@ -1400,6 +1400,10 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // the in-process MEDIUM-ceiling reflected-origin signed-row producer). Opaque-context
   // (server-minted origins, masked oracle return, no brief surfacing); web budget bumps
   // by +1 (web 52→53), SC unchanged.
+  // Mass-read prover adds bob_http_massread_confirm to evaluator-web ONLY (same narrow grant;
+  // the browser-transport MEDIUM-ceiling broken-auth/BFLA differential signed-row producer —
+  // authn-vs-anon, not cross-tenant; HIGH is the deferred v2 victim-arm);
+  // web budget bumps by +1 (web 53→54), SC unchanged.
   const EVALUATOR_MCP_TOOL_BUDGET = 43;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {

@@ -77,6 +77,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_http_confirm: "scoped_http_network",
   bob_http_cors_confirm: "scoped_http_network",
   bob_http_idor_confirm: "scoped_http_network",
+  bob_http_massread_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
   bob_http_xss_confirm: "scoped_http_network",
   bob_http_xss_reflect: "scoped_http_network",
