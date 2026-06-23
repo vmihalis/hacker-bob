@@ -769,3 +769,82 @@ test("unparseable NON-empty 2xx control (HTML shell) stays inconclusive — not 
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
 }));
+
+// ── round-5: normalized per-(field,shape) subject count + status-0 control ─────────────────────────
+
+test("case/format variants of ONE subject's value do NOT mint (normalized) (#394)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same person across two rows, email cased differently and phone formatted differently.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "Alice@Example.com", phone: "(555) 123-4567" },
+    { id: 2, email: "alice@example.com", phone: "555-123-4567" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.pii_bearing_count, 2);
+  assert.equal(s.distinct_pii_count, 1); // normalized email/phone collapse → one subject
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("intra-bucket multi-field for ONE subject (email + recovery_email) does NOT mint (#393/#405)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Both `email` and `recovery_email` map to the `email` BUCKET, but they are distinct concrete FIELDS.
+  // One subject echoed across two rows must stay at cardinality 1 per field → no mint.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "owner@self.example", recovery_email: "owner.alt@self.example" },
+    { id: 2, email: "owner@self.example", recovery_email: "owner.alt@self.example" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 1); // per-FIELD, not per-bucket — fields don't sum
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("structured field value: only the extracted PII token counts, not the whole JSON (#394 P1)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same subject's email wrapped with a VARYING non-PII sibling (label) per row. Keying on the whole
+  // serialized object would inflate to 2; extracting `a@x.com` keeps it at 1.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: { value: "owner@self.example", label: "billing" } },
+    { id: 2, email: { value: "owner@self.example", label: "shipping" } },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.pii_bearing_count, 2);
+  assert.equal(s.distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("two shapes in ONE field for one subject are NOT summed to 2 subjects", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // A single sensitive field carrying ONE subject's email AND phone, repeated across rows. Per-(field,
+  // shape) partitioning keeps each shape at cardinality 1 → max 1 → no mint (no shape-summing defeat).
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "owner@self.example tel 555-123-4567" },
+    { id: 2, email: "owner@self.example tel 555-123-4567" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("status-0 opaqueredirect control does NOT crash the audit → fail closed inconclusive (#448)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // authed_fetch surfaces a manual redirect-to-login as status 0; it must be coerced to null before
+  // the http-audit normalizer (which rejects out-of-range statuses) and fall to control_inconclusive,
+  // NOT throw probe_audit_failed and abort the run.
+  const control = { status: 0, body: "", final_url: "https://login.example/sso", body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));

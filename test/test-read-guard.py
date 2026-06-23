@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 HOOK = os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "session-read-guard.sh")
 KIMI_HOOK = os.path.join(os.path.dirname(__file__), "..", "adapters", "kimi", "hooks", "session-read-guard.sh")
@@ -252,12 +253,45 @@ TESTS = [
 ]
 
 
+def run_symlink_alias_case(adapter, hook):
+    """A symlink OUTSIDE the session pointing at the raw-PII capture dir must NOT bypass the block:
+    Read through `/tmp/.../alias -> <session>/massread-evidence` must still exit 2 (bot-review #101).
+    The symlink target need not exist — pathlib.resolve() follows the link to a session-relative path."""
+    tmpd = tempfile.mkdtemp(prefix="bob-readguard-")
+    alias = os.path.join(tmpd, "evidence-alias")
+    try:
+        os.symlink(f"{SESSION}/massread-evidence", alias)
+        payload = {"tool_input": {"file_path": f"{alias}/run-massread-abc123.json"}}
+        result = subprocess.run(
+            ["bash", hook], input=json.dumps(payload), capture_output=True, text=True,
+        )
+        ok = result.returncode == 2
+        desc = "Read raw-PII capture via OUTSIDE-session symlink alias blocks (#101)"
+        status = "\033[32mPASS\033[0m" if ok else "\033[31mFAIL\033[0m"
+        print(f"  {status}: [{adapter}] {desc}")
+        if not ok:
+            print(f"         expected exit 2 (blocked), got {result.returncode}")
+            if result.stderr.strip():
+                print(f"         stderr: {result.stderr.strip()}")
+        return ok
+    finally:
+        try:
+            os.unlink(alias)
+        except OSError:
+            pass
+        os.rmdir(tmpd)
+
+
 def main():
     passed = 0
     failed = 0
 
     for adapter, hook in HOOKS:
         print(f"\n=== {adapter} read guard ===")
+        if run_symlink_alias_case(adapter, hook):
+            passed += 1
+        else:
+            failed += 1
         for desc, payload, expected, expected_text in TESTS:
             result = subprocess.run(
                 ["bash", hook],

@@ -201,7 +201,11 @@ def _evaluate_resolved(resolved, block_session_dirs):
     filename = resolved.name
     if filename in ALLOWED_EXACT:
         return (True, None)
-    if any(part in BLOCKED_DIRS for part in resolved.parts):
+    # Check BLOCKED_DIRS against the SYMLINK-RESOLVED, session-relative parts — not the literal
+    # `resolved.parts`. A symlink alias outside the session (`/tmp/e -> <session>/massread-evidence`)
+    # has a literal path with no blocked component, but its resolved target is inside a blocked dir;
+    # using the raw parts let `Read /tmp/e/<run>.json` bypass the raw-PII block (bot-review #101).
+    if any(part in BLOCKED_DIRS for part in (*resolved.parts, *session_relative_parts)):
         return (True, filename)
     if filename in BLOCKED_EXACT:
         return (True, filename)
