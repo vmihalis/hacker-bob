@@ -110,6 +110,18 @@ function defaultPreToolUseHooks() {
       ],
     },
     {
+      // Grep is a content-read surface too: without this, an agent could Grep the raw-PII
+      // massread-evidence/ capture (or any blocked dir) the Read/Bash guards otherwise protect.
+      matcher: "Grep",
+      hooks: [
+        {
+          type: "command",
+          command: `bash "${PROJECT_DIR_EXPR}/.claude/hooks/session-read-guard.sh"`,
+          timeout: 5,
+        },
+      ],
+    },
+    {
       matcher: "Write",
       hooks: [
         {

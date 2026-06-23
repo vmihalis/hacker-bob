@@ -36,6 +36,11 @@ function buildHeaderProfile(headers, cookies, storage) {
   Object.assign(profile, headers);
   if (Object.keys(cookies).length) {
     profile["Cookie"] = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+    // STRUCTURED cookie jar — Bob-LOCAL metadata (in PROFILE_METADATA_KEYS, never emitted as a header).
+    // A consumer that re-issues cookies individually (the mass-read producer's browser transport) uses
+    // this verbatim so a cookie VALUE containing ';' stays ONE cookie and can never be re-split into a
+    // FORGED extra cookie out of the flattened "Cookie" header. A copy of the original {name: value} map.
+    profile["cookie_jar"] = { ...cookies };
   }
   for (const [k, v] of Object.entries(storage)) {
     if (typeof v === "string" && v.startsWith("eyJ") && !profile["Authorization"]) {
@@ -57,6 +62,7 @@ const PROFILE_METADATA_KEYS = Object.freeze(new Set([
   "credentials", "local_storage", "session_storage",
   "synthetic", "email_origin", "provisioned_via", "email",
   "expires_at", "expiresAt", "expiry", "expires",
+  "cookie_jar",
 ]));
 
 // Build an outbound header map from a base header set plus a resolved auth profile's HEADER

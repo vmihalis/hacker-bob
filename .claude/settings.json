@@ -76,6 +76,7 @@
       "Glob",
       "Grep",
       "mcp__hacker-bob__bob_http_cors_confirm",
+      "mcp__hacker-bob__bob_http_massread_confirm",
       "mcp__hacker-bob__bob_http_idor_confirm",
       "mcp__hacker-bob__bob_http_xss_reflect",
       "mcp__hacker-bob__bob_http_xss_confirm",
@@ -194,6 +195,16 @@
       },
       {
         "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-read-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
         "hooks": [
           {
             "type": "command",

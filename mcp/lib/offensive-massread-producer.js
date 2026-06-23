@@ -1,0 +1,1096 @@
+"use strict";
+
+// bob_http_massread_confirm — broken-authorization / BFLA MASS-READ signed-row PRODUCER
+// (browser transport, LIVE).
+//
+// THE ORACLE (attacker-vs-control differential, safe_oracle.kind "differential_response"):
+// the producer issues TWO credentialed-channel reads of a routed in-scope listing/search
+// endpoint THROUGH THE WAF via the real-Chrome `authed_fetch` transport (PR1 / #155 —
+// in-process safeFetch is Cloudflare-blind):
+//   1. ATTACKER arm — a browser session carrying the under-authorized identity's cookies
+//      (read SERVER-SIDE from a stored auth profile, injected over stdin via set_auth_cookies,
+//      never the env, never an agent). Response A.
+//   2. CONTROL arm — a fresh UNCREDENTIALED session (no cookies). Response C.
+// From each response body it derives a MASKED summary in memory — record_count, the SET of
+// known-sensitive field NAMES present (names only, never values), and PII value-shape booleans
+// (the values are thrown away) — then DISCARDS the raw body. The POSITIVE is a DIFFERENTIAL:
+//   - attacker: 2xx AND record_count >= MASSREAD_MIN_RECORDS AND >= 1 sensitive field shape
+//     (bulk PII, not a single self-record), AND
+//   - control: 401/403, OR a 2xx with 0 records / no sensitive shapes (the baseline is DENIED).
+// i.e. the under-authorized caller reads bulk PII the control cannot — an authorization failure,
+// not a merely-public endpoint. A control that ALSO reads the bulk data is a public endpoint, not
+// a privilege break → fail closed (blocked_by_design).
+//
+// SEVERITY: MEDIUM by construction (v1), stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING inside
+// buildAndSignOffensiveRow (NEVER from here, NEVER agent-supplied). The differential proves a
+// credentialed caller bulk-reads PII an UNAUTHENTICATED client is denied — a real exposure — but NOT
+// that the credential is under-privileged (a fully-authorized user reading authorized data also
+// satisfies it) nor that the surface is a cross-subject collection, so the honest ceiling is MEDIUM.
+// The HIGH (cross-tenant BFLA, a second AUTHENTICATED victim denied while the attacker reads its data)
+// is the v2 victim-arm. The underlying vuln (hardcoded/guessable credential, missing object/function-
+// level authz) is the finding; the evaluator + grader certify the class from endpoint + credential context.
+//
+// DUAL OUTPUT (operator decision):
+//   1. SIGNED proof row (offensive-runs.jsonl) — ALWAYS masked: the hashed+signed capture carries
+//      ONLY record_count + sensitive_field_names + pii_shape_present booleans + the differential
+//      statuses. Screened by sensitiveShapesPresent; a sensitive VALUE shape in the capture fails
+//      the run closed (blocked_operator_pii). Non-negotiable: the signed rail NEVER carries raw PII
+//      (it is the tamper-evident rail re-used by third-party bug-bounty runs where harvesting
+//      strangers' data is forbidden).
+//   2. FULL raw capture (sessionDir/massread-evidence/<run_id>.json) — OPT-IN, OPERATOR-gated by the
+//      env var BOB_MASSREAD_OWNER_AUTHORIZED=<target_domain> — BOUND to the authorized target (a CSV of
+//      domains is allowed; a bare "1" is rejected so one engagement's authorization can't leak onto
+//      another's data, #904). NOT an agent argument — the agent can NEVER enable PII capture, so the
+//      same tool stays safe on third-party targets. Written OUTSIDE the signed rail; the operator
+//      deletes it at the end of the engagement. Keep this folder out of any
+//      sync/backup path.
+//
+// INTEGRITY BOUNDARY (honest, NOT closed here): the row MAC is tamper-evident against an agent
+// confined to the MCP + guarded-Bash surface; it is NOT cryptographically un-forgeable (a same-UID
+// actor can read the 0600 key and hand-MAC a row — the #131 boundary, bounded to a fabricated MEDIUM
+// by the frozen per-tool ceiling). The authed-vs-control differential is ALSO not tamper-proof — a
+// hostile target can tell the credentialed arm from the control and could serve forged data — but a
+// target forging a vuln against ITSELF gains nothing, and a single capture is evidence, not proof
+// (the operator corroborates for integrity-sensitive use). The page-controlled-fetch residual is
+// inherent to the transport (see #155 / the plan), mitigated by waitUntil:"commit" + the differential.
+//
+// V1 SCOPE (deliberate, documented):
+//   - GET listing/search endpoints. The authed_fetch transport supports POST+body, but resolving a
+//     recorded POST body value-blind (without leaking PII into the signed target) is the documented
+//     v2 follow-up — even though the motivating finding was a POST listing.
+//   - COOKIE-expressible under-authorized identity (set_auth_cookies is cookie-only; authed_fetch
+//     REJECTS Authorization/Cookie headers). A profile whose ONLY credential is a bearer token has no
+//     usable cookie → blocked_by_design (bearer support is v2).
+
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
+const {
+  readSessionStateStrict,
+} = require("./session-state-store.js");
+const {
+  blockInternalHostsPolicyFields,
+} = require("./session-state-contracts.js");
+const {
+  resolveAndAssertSessionEgressIdentity,
+} = require("./session-state.js");
+const {
+  assertNonEmptyString,
+} = require("./validation.js");
+const {
+  findRoutedSurface,
+  resolveSurfaceEndpoint,
+  assertReadOnlyPath,
+  auditConfirmRequest,
+  assertNoForbiddenInputs,
+  sensitiveShapesPresent,
+} = require("./offensive-http-common.js");
+const {
+  canonicalizeExploitTarget,
+} = require("./claims.js");
+const {
+  buildAndSignOffensiveRow,
+} = require("./offensive-capture-writer.js");
+const {
+  withSessionLock,
+} = require("./storage.js");
+const {
+  canonicalJson,
+} = require("./verification-contracts.js");
+const {
+  browserSessions,
+  callBrowser,
+  parseProxyUrlForPlaywright,
+} = require("./browser-tools-shared.js");
+const {
+  resolveAuthProfile,
+} = require("./auth.js");
+const {
+  detectPiiShapes,
+  normalizeEmailForComparison,
+} = require("./pii-detector.js");
+const {
+  sessionDir,
+  sessionsRoot,
+  assertSafeDomain,
+} = require("./paths.js");
+
+const TOOL_ID = "bob_http_massread_confirm";
+// v1: GET listing/search. POST-body listing is the documented v2 (the transport supports POST).
+const HTTP_METHOD = "GET";
+// Bulk = strictly more than one record; a single self-record is the authorized baseline, not a
+// mass-read. Conservative floor; the report grades the leak by what actually leaked.
+const MASSREAD_MIN_RECORDS = 2;
+// Soft per-fetch page budget; the driver's COMMAND_TIMEOUT_MS is the hard ceiling.
+const FETCH_TIMEOUT_MS = 20_000;
+const DEFAULT_AUTH_PROFILE = "attacker";
+// WAF / rate-limit statuses on the ATTACKER arm: the credentialed read did not actually run, so
+// we cannot prove the read — fail closed rather than read a block page as "0 records".
+const WAF_STATUSES = Object.freeze(new Set([429, 503]));
+// Operator-only full-capture gate. NOT an agent argument by design.
+const OWNER_AUTHORIZED_ENV = "BOB_MASSREAD_OWNER_AUTHORIZED";
+
+// MEDIUM by construction (v1). Frozen + "use strict" → an in-process actor's `MAP.x = "critical"`
+// THROWS. demonstrated_severity is stamped from the registry in buildAndSignOffensiveRow, NEVER here
+// and NEVER agent-supplied; this frozen map documents the intent + anchors a test. The authn-vs-anon
+// differential is honestly a MEDIUM; the HIGH (cross-tenant BFLA / under-privilege) is the v2 victim-arm.
+const MASSREAD_DEMONSTRATED_CEILING = Object.freeze({ bob_http_massread_confirm: "medium" });
+
+// Known-sensitive field NAMES (object keys) — used to label WHICH sensitive columns the collection
+// exposes. Names only; values are never stored. Lowercased compare; substring so `user_email`,
+// `billing_phone`, `id_card_number` match.
+const SENSITIVE_FIELD_NAME_FRAGMENTS = Object.freeze([
+  "email", "phone", "mobile", "msisdn", "iban", "bic", "swift", "account_number", "accountnumber",
+  "ssn", "sin", "nino", "national_id", "passport", "tax_id", "vat_number", "dob", "date_of_birth",
+  "birthdate", "credit_card", "card_number", "cardnumber", "pan", "cvv", "address", "postcode",
+  "zipcode", "zip_code", "id_number", "license", "license_number", "drivers_license",
+]);
+
+// Canonical sensitive field-name BUCKETS reported (a stable, low-cardinality set so the signed
+// summary never echoes a target-specific column name verbatim — only which class is present).
+const SENSITIVE_FIELD_BUCKETS = Object.freeze([
+  { bucket: "email", fragments: ["email", "e_mail", "mail"] },
+  { bucket: "phone", fragments: ["phone", "mobile", "msisdn"] },
+  { bucket: "financial", fragments: ["iban", "bic", "swift", "account_number", "accountnumber", "credit_card", "card_number", "cardnumber", "pan", "cvv"] },
+  { bucket: "government_id", fragments: ["ssn", "sin", "nino", "national_id", "passport", "tax_id", "vat_number", "id_number", "license", "drivers_license"] },
+  { bucket: "date_of_birth", fragments: ["dob", "date_of_birth", "birthdate"] },
+  { bucket: "postal_address", fragments: ["address", "postcode", "zipcode", "zip_code", "street"] },
+]);
+
+// PII VALUE detection — the repo's battle-tested detectPiiShapes (email / phone / SSN / Luhn-valid
+// credit-card) UNION an IBAN shape it does not cover. Run ONLY over a counted record's own VALUES
+// (deriveMaskedSummary), so the mint gate binds the PII signal to the records it counts; only the
+// shape BOOLEAN is kept, the value is discarded. Wider than the former email/phone/iban vocabulary
+// (which silently dropped SSN / credit-card mass-reads) and no longer a whole-body scan (which let
+// unrelated response metadata — a support/copyright email — forge the signal).
+const PII_TYPE_TO_SHAPE = Object.freeze({
+  email: "email", phone: "phone_intl", ssn: "ssn", credit_card: "credit_card",
+});
+// Cap the per-record value scan so a huge collection cannot blow the regex budget; record_count
+// still counts every object record, but PII presence only needs ONE qualifying record.
+const MASSREAD_PII_SCAN_RECORDS = 1000;
+// Bound the per-record tree walk so a deeply/widely nested record cannot blow the regex/CPU budget:
+// recurse at most this deep, and scan at most this many fields per record (bot-review #512).
+const MASSREAD_MAX_RECORD_DEPTH = 8;
+const MASSREAD_MAX_NODES_PER_RECORD = 512;
+function emptyPiiShapes() {
+  return { email: false, phone_intl: false, iban: false, ssn: false, credit_card: false };
+}
+
+// SUBJECT-IDENTIFIER shapes: the PII shapes that are ~1:1 with a data subject, so distinct normalized
+// values are a sound proxy for distinct SUBJECTS. ONLY email + SSN qualify. Phone, postal address,
+// credit card, AND IBAN are deliberately EXCLUDED from the subject count: a single subject legitimately
+// has SEVERAL of each (multiple cards / bank accounts / numbers / addresses), so two distinct card or
+// IBAN values cannot distinguish "two subjects" from "one subject's two instruments" — a
+// `/me/payment-methods`-style self-service list of one person's two cards would otherwise produce two
+// components, clear the >= MIN-distinct floor, and false-mint (bot-review #183/#313/#419 + the
+// credit_card/IBAN multiplicity review: cards/IBANs share the exact multiplicity property already used
+// to exclude phone/address). They are still LABELED in sensitive_field_names and set their
+// pii_shape_present boolean (the leak's columns + value shapes are recorded), they just don't FORM or
+// merge subject keys. PRECISION-first v1 choice: a leak bearing ONLY card/IBAN/phone/address (no
+// email/SSN) is recorded but does not mint on its own — under-counting, the SAFE direction (a genuine
+// cross-subject financial leak almost always also carries a per-row email/SSN, which does drive the floor).
+const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(["email", "ssn"]));
+
+// A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
+// nested { street, city } address or a list of values is still scanned). Empty for null/undefined.
+function piiValueText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try { return JSON.stringify(value); } catch { return ""; }
+}
+
+// Canonicalize a matched PII VALUE so case/format variants of ONE subject collapse to ONE key —
+// otherwise `Alice@X.com` vs `alice@x.com`, or `(555) 123-4567` vs `555-123-4567`, would count as two
+// distinct subjects (bot-review #394). Email lowercased; phone/ssn/card digits-only; IBAN
+// upper+space-stripped; anything else lower+whitespace-collapsed.
+function normalizePiiValue(shape, value) {
+  const v = String(value);
+  switch (shape) {
+    // Use the repo's Gmail-aware canonicalizer so dot/plus aliases of one mailbox
+    // (`alice.smith+orders@gmail.com` == `alicesmith@gmail.com`) collapse to one subject under union-find
+    // instead of inflating the count (bot-review #203). Falls back to trim+lowercase for non-strings.
+    case "email": return normalizeEmailForComparison(v) || v.trim().toLowerCase();
+    case "phone_intl": case "ssn": case "credit_card": return v.replace(/\D/g, "");
+    case "iban": return v.toUpperCase().replace(/\s+/g, "");
+    default: return v.trim().toLowerCase().replace(/\s+/g, " ");
+  }
+}
+
+// IBAN detection — the repo's detectPiiShapes does NOT cover IBAN, so this producer adds it. Detect by
+// DECODING percent-encoding, scanning case-INSENSITIVELY, and validating the mod-97 CHECKSUM — so a real
+// IBAN is caught regardless of case/encoding (bot-review #650, e.g. `gb82west…` or `%47%42…`) WITHOUT
+// false-positiving on arbitrary hex-ish id/path segments (a bare shape regex would, and since the target
+// screen is fail-CLOSED, a false match would spuriously block a legit run). Returns canonical (decoded,
+// uppercased, space-stripped) IBANs.
+function ibanChecksumValid(iban) {
+  if (iban.length < 5 || iban.length > 34) return false;
+  const rearranged = iban.slice(4) + iban.slice(0, 4);
+  let remainder = 0;
+  for (const ch of rearranged) {
+    if (ch >= "A" && ch <= "Z") remainder = (remainder * 100 + (ch.charCodeAt(0) - 55)) % 97; // A=10..Z=35
+    else if (ch >= "0" && ch <= "9") remainder = (remainder * 10 + (ch.charCodeAt(0) - 48)) % 97;
+    else return false;
+  }
+  return remainder === 1;
+}
+function findIbans(text) {
+  // Decode to a FIXED POINT (bounded): a double-encoded IBAN (`%2520` → `%20` → ` `) needs more than one
+  // pass before the separators are real characters the strip below can remove (bot-review #224).
+  let decoded = String(text);
+  for (let pass = 0; pass < 5; pass += 1) {
+    let next;
+    try { next = decodeURIComponent(decoded); } catch { break; /* malformed % — scan what we have */ }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  // Strip the conventional IBAN separators (spaces / hyphens) so a FORMATTED IBAN — e.g. a path with
+  // `GB82%20WEST%201234%20…` that decodes to `GB82 WEST 1234 …` — becomes contiguous and matches; the
+  // mod-97 checksum still guards against fusing unrelated tokens into a false positive (bot-review #230).
+  // Path/query structure (`/`, `?`, `&`, `=`) is preserved, so distinct segments stay distinct.
+  const compact = decoded.replace(/[\s-]/g, "");
+  const out = [];
+  const re = /\b[A-Za-z]{2}\d{2}[A-Za-z0-9]{10,30}\b/g;
+  let m;
+  while ((m = re.exec(compact)) !== null) {
+    const cand = m[0].toUpperCase();
+    if (ibanChecksumValid(cand)) out.push(cand);
+  }
+  return out;
+}
+
+// PII value MATCHES in one field's value: the repo detectPiiShapes matches (mapped to our shape keys)
+// UNION the IBAN shape it does not cover, each as { shape, norm } where `norm` is the CANONICAL value.
+// Returns the EXTRACTED, NORMALIZED PII token(s) — NOT the whole serialized field value — so a
+// structured field like `{ value: "a@x.com", label: "billing" }` contributes only `a@x.com`, and a
+// varying non-PII sibling (`label`, a timestamp) can never inflate the distinct-subject count
+// (bot-review #394 P1). The values are used ONLY for in-memory de-dup keys, then discarded.
+function piiMatchesInValue(valueText) {
+  const out = [];
+  for (const m of detectPiiShapes(valueText)) {
+    const shape = PII_TYPE_TO_SHAPE[m.type];
+    if (shape && m.value != null) out.push({ shape, norm: normalizePiiValue(shape, m.value) });
+  }
+  for (const ib of findIbans(valueText)) out.push({ shape: "iban", norm: ib }); // already canonical
+  return out;
+}
+
+function blocked(outcome, reason, extra = {}) {
+  return {
+    confirmed: false,
+    target_domain: null,
+    tool_id: TOOL_ID,
+    offensive_outcome: outcome,
+    reason,
+    row_written: false,
+    ...extra,
+  };
+}
+
+// Operator env gate, BOUND TO TARGET (bot-review #904): the env value is the authorized domain — or a
+// comma-separated list of domains — and raw capture happens ONLY when it names THIS target_domain
+// (exact, case-insensitive). A bare legacy "1" is REJECTED: it would authorize raw-PII capture for EVERY
+// target the same MCP server evaluates, leaking one engagement's authorization onto another's data.
+function ownerAuthorized(domain) {
+  const raw = process.env[OWNER_AUTHORIZED_ENV];
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const target = String(domain || "").trim().toLowerCase();
+  if (!target) return false;
+  return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean).includes(target);
+}
+
+// Is raw capture permitted on THIS adapter? The PreToolUse hook that blocks an agent's own file tools
+// from reading massread-evidence/ ships in the Claude (.claude/hooks/) and Kimi (.kimi/hooks/) adapters;
+// Codex + generic-mcp have NO hook layer (bot-review #916). The opt-in raw capture is readable by the
+// evaluator agent unless that guard actually FIRES, so raw capture is DEFAULT-DENIED and requires the
+// operator to EXPLICITLY assert an enforced read-guard via BOB_READ_GUARD (1/true/yes/on). We DELIBERATELY
+// do NOT auto-detect by looking for the hook FILE on disk: the framework package SHIPS that file
+// unconditionally, so its mere presence (a Codex install whose tree still contains it, or a mixed / partial
+// / hand-merged install where the file exists but is never REGISTERED as a PreToolUse matcher) does not
+// prove the guard fires — a materially weaker proxy than an enforced hook (bot-review #916 round-2, Codex
+// P1 + Claude). Operators set BOB_READ_GUARD=1 ONLY on an adapter that enforces the read-guard
+// (Claude/Kimi); never on Codex/generic. Fails CLOSED: unset/empty/any-other-value → no capture (the
+// signed masked row is unaffected). HONEST (like #131): even with the guard, raw capture is not safe
+// against a same-UID agent running arbitrary code — that residual needs the deferred offensive-sandbox.
+function readGuardActive() {
+  const v = process.env.BOB_READ_GUARD;
+  return typeof v === "string" && /^(1|true|yes|on)$/i.test(v.trim());
+}
+
+// A stored auth profile flattens cookies into a single "Cookie" HEADER string
+// (auth.js#buildHeaderProfile); parse it back into the {name, value, url} cookie objects the
+// set_auth_cookies transport requires. `url` binds each cookie to the exact endpoint origin (the
+// driver scope-validates it against target_domain). A bearer-only profile has Authorization but no
+// Cookie → returns [] (not cookie-expressible; bearer support is v2).
+function cookieObjectsFromProfile(profile, urlForCookie) {
+  // PREFER the STRUCTURED jar. auth.js#buildHeaderProfile now persists the original {name: value}
+  // cookie map as `profile.cookie_jar` (a Bob-local metadata key, never emitted as a header). Using
+  // it verbatim means a cookie VALUE that contains a `;` stays ONE cookie and can NEVER be re-split
+  // into a FORGED extra cookie — the exact identity-mutation the flat-header re-parse below cannot
+  // prevent (`sid=abc; role=admin` is indistinguishable from a legit two-cookie header once
+  // flattened). So a forged elevated cookie can never silently widen the tested identity → no false
+  // mint from a privilege the stored profile never had.
+  if (profile && profile.cookie_jar && typeof profile.cookie_jar === "object"
+      && !Array.isArray(profile.cookie_jar)) {
+    const out = [];
+    for (const [rawName, rawValue] of Object.entries(profile.cookie_jar)) {
+      const name = String(rawName).trim();
+      if (!name) continue;
+      out.push({ name, value: String(rawValue), url: urlForCookie });
+    }
+    return out;
+  }
+  // LEGACY fallback: a profile stored before cookie_jar existed only has the flattened "Cookie"
+  // header. Re-parse best-effort (the `eq <= 0` guard drops a name-less part → fail-closed to a
+  // DROPPED cookie, which only weakens the attacker arm). Fresh per-engagement profiles always carry
+  // cookie_jar, so this path is reached only for stale stored profiles.
+  const header = typeof profile.Cookie === "string" ? profile.Cookie
+    : (typeof profile.cookie === "string" ? profile.cookie : "");
+  if (!header.trim()) return [];
+  const out = [];
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name) continue;
+    out.push({ name, value: part.slice(eq + 1).trim(), url: urlForCookie });
+  }
+  return out;
+}
+
+// The LIVE browser driver. massreadConfirm accepts an injectable `driver` so seeded tests need no
+// Chromium; with no driver the dispatcher binds this one. callBrowser(command, sessionId, args)
+// reorders to sendCommand(sessionId, command, args). Each returns the driver's RAW result and
+// REJECTS with an Error (.code) on driver error.
+const liveBrowserDriver = Object.freeze({
+  isAvailable: () => browserSessions.isPatchrightAvailable(),
+  start: (opts) => browserSessions.startSession(opts),
+  authedFetch: (sessionId, fetchArgs) => callBrowser("authed_fetch", sessionId, fetchArgs),
+  close: (sessionId, reason) => browserSessions.closeSession(sessionId, reason),
+});
+
+// Find the records array in a parsed listing response: a top-level array, or the largest array
+// one level deep under a common collection key. Returns the OBJECT elements only — an array of
+// scalars (strings/ids/facets) is NOT a record collection, so it can never inflate record_count or
+// host the PII value the mint gate binds to those records. Returns [] when none qualifies.
+const COLLECTION_KEYS = Object.freeze([
+  "data", "results", "items", "records", "rows", "list", "hits", "docs", "entries", "content", "elements",
+]);
+function isPlainObject(x) {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
+// An array qualifies as a record collection iff a MAJORITY of its elements are plain objects (tolerate
+// a few null/scalar holes). `{ data: ["a","b"] }` (strings) and `{ tags: [1,2,3] }` (ids) do NOT
+// qualify; `{ results: [{...},{...}] }` does. The caller filters to the object elements for counting.
+function recordObjects(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const objs = arr.filter(isPlainObject);
+  if (objs.length >= 1 && objs.length * 2 >= arr.length) return objs;
+  return null;
+}
+function extractRecords(parsed) {
+  const top = recordObjects(parsed);
+  if (top) return top;
+  if (!isPlainObject(parsed)) return [];
+  let best = [];
+  for (const key of COLLECTION_KEYS) {
+    const value = parsed[key];
+    const objs = recordObjects(value);
+    if (objs && objs.length > best.length) best = objs;
+    // one more level: { data: { items: [...] } }
+    if (isPlainObject(value)) {
+      for (const inner of COLLECTION_KEYS) {
+        const innerObjs = recordObjects(value[inner]);
+        if (innerObjs && innerObjs.length > best.length) best = innerObjs;
+      }
+    }
+  }
+  return best;
+}
+
+// Tokenize a field key on camelCase + non-alphanumeric separators → lowercased tokens. So
+// `emailVerified` / `email_verified` / `billing-email` all yield an `email` token, while
+// `themailbox` does NOT (a bare-substring match would falsely fire on it).
+function fieldTokens(rawName) {
+  return String(rawName)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// A fragment matches the field name iff its own tokens appear as a CONTIGUOUS subsequence of the
+// field's tokens (word-boundary, not bare substring). Multi-word fragments (`date_of_birth`) and
+// single tokens (`email`, `dob`) both work. NOTE: this is the WITNESS label only — the MINT gate
+// additionally requires a real PII VALUE shape (pii_shape_present), so a field merely NAMED
+// `email_verified` (a boolean) never lifts a row on its own.
+function fragmentMatchesTokens(fragment, tokens) {
+  const frag = fieldTokens(fragment);
+  if (frag.length === 0) return false;
+  for (let i = 0; i + frag.length <= tokens.length; i += 1) {
+    let ok = true;
+    for (let j = 0; j < frag.length; j += 1) { if (tokens[i + j] !== frag[j]) { ok = false; break; } }
+    if (ok) return true;
+  }
+  return false;
+}
+
+function bucketForFieldName(rawName) {
+  const tokens = fieldTokens(rawName);
+  if (tokens.length === 0) return null;
+  for (const { bucket, fragments } of SENSITIVE_FIELD_BUCKETS) {
+    if (fragments.some((f) => fragmentMatchesTokens(f, tokens))) return bucket;
+  }
+  if (SENSITIVE_FIELD_NAME_FRAGMENTS.some((f) => fragmentMatchesTokens(f, tokens))) return "other_sensitive";
+  return null;
+}
+
+// Derive the MASKED summary from a raw body, then the caller DISCARDS the raw body. On non-JSON or
+// no recognizable collection, record_count is 0 (fail-closed: an ambiguous body cannot prove a
+// mass-read). Returns booleans/counts/field-name BUCKETS only — never any value.
+function deriveMaskedSummary(bodyText) {
+  const summary = {
+    record_count: 0,
+    pii_bearing_count: 0,
+    distinct_pii_count: 0,
+    sensitive_field_names: [],
+    pii_shape_present: emptyPiiShapes(),
+    parse_ok: false,
+  };
+  if (typeof bodyText !== "string" || bodyText.length === 0) return summary;
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return summary; // non-JSON (HTML block page, etc.) → not a countable collection
+  }
+  summary.parse_ok = true;
+  const records = extractRecords(parsed); // plain-object records only (scalars excluded)
+  summary.record_count = records.length;
+  const buckets = new Set();
+  const pii = summary.pii_shape_present;
+  // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
+  // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
+  // distinct_pii_count is the number of distinct SUBJECTS, computed by UNION-FIND over normalized
+  // subject-identifier values (email / SSN — the shapes ~1:1 per subject): two records
+  // that share ANY identifier value are the SAME subject. This is the principled definition and ends the
+  // prior whack-a-mole, because every same-subject inflation reduces to "records sharing an identifier":
+  //   • a field listing two values for one subject (`email: "a@x alt@x"`) unions both → one subject (#419);
+  //   • two rows that share an identifier but one carries an extra one (`{email}` vs `{email,ssn}`, or
+  //     `{email:"a"}` vs `{email:"a alt"}`) union on the shared value → one subject (#432/#473);
+  //   • same-bucket multi-field (`email`+`recovery_email`) and a promoted nested self-collection union
+  //     on the repeated value → one subject (#393/#313); constant boilerplate unions all rows → one;
+  //   • values are NORMALIZED + shape-extracted, so case/format variants and a structured field's
+  //     varying non-PII siblings never split one subject (#394);
+  //   • phone / postal address / credit card / IBAN are EXCLUDED as identifiers (a subject has several
+  //     of each — two card/IBAN values can't tell two subjects from one subject's two instruments) —
+  //     still LABELED in sensitive_field_names + pii_shape_present, they just don't form/merge subjects (#183).
+  // HONEST about the residual (bot-review #500): WITHIN a record, multiple identifiers union to one
+  // subject; ACROSS records, two rows sharing no value are counted as TWO subjects. That is correct for a
+  // normal cross-subject collection (one row per person), but an OVER-count for a per-row SELF-collection
+  // of one subject's multiple identifiers (e.g. /me/linked-emails returning primary + recovery + work
+  // emails as separate rows). The oracle is schema-blind: from the response alone it cannot tell "N
+  // subjects" from "one subject's N instruments" for ANY value-based identifier — which is exactly why
+  // this differential is NECESSARY, not sufficient. That residual is bounded by the MEDIUM ceiling + the
+  // operator under-privilege contract + the human grader (which know the route's collection-vs-self
+  // semantics), NOT by this counter. SSN is truly 1:1; email is the de-facto collection key (removing it
+  // would gut the oracle), so both stay — card/IBAN/phone/address were dropped above because per-instrument
+  // multiplicity is their COMMON case (a payment-methods list), not a rare one. Only >= MIN distinct
+  // components clear the floor; the most common same-subject inflations (shared/repeated values) still
+  // merge to one.
+  const parent = new Map();
+  const findRoot = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); let c = x; while (parent.get(c) !== r) { const n = parent.get(c); parent.set(c, r); c = n; } return r; };
+  const ensure = (x) => { if (!parent.has(x)) parent.set(x, x); };
+  const union = (a, b) => { ensure(a); ensure(b); const ra = findRoot(a); const rb = findRoot(b); if (ra !== rb) parent.set(ra, rb); };
+  let piiBearingRecords = 0;
+  const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
+  for (let i = 0; i < scanLimit; i += 1) {
+    const record = records[i];
+    let recordHasSensitivePii = false;
+    const identifierValues = []; // this record's shape-prefixed normalized subject-identifier values
+    // Walk the record tree (bounded): a PII VALUE counts when its FIELD NAME maps to a sensitive bucket at
+    // ANY nesting depth — { user: { email } }, { customer: { contact: { ssn } } } — so ordinary nested API
+    // record shapes are not missed (bot-review #512). The masked-rail invariant holds: only the bucket
+    // label + shape boolean + a normalized de-dup key are kept, never the raw value. Re-finding the same
+    // normalized value (a sensitive key whose object value is both serialized-scanned here AND recursed
+    // into) is idempotent under the union-find / value sets, so it never inflates the count.
+    let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD;
+    const visit = (node, depth) => {
+      if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
+      if (Array.isArray(node)) {
+        for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        if (nodeBudget <= 0) return;
+        nodeBudget -= 1;
+        const value = node[key];
+        const bucket = bucketForFieldName(key);
+        if (bucket) {
+          const valueText = piiValueText(value);
+          const matches = valueText ? piiMatchesInValue(valueText) : []; // [{ shape, norm }] extracted + normalized
+          if (matches.length > 0) {
+            buckets.add(bucket);
+            recordHasSensitivePii = true;
+            for (const m of matches) {
+              pii[m.shape] = true;
+              if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.push(`${m.shape}:${m.norm}`);
+            }
+          }
+        }
+        // Recurse into nested objects/arrays to reach sensitively-NAMED keys deeper in the record.
+        if (value && typeof value === "object") visit(value, depth + 1);
+      }
+    };
+    visit(record, 0);
+    if (recordHasSensitivePii) piiBearingRecords += 1;
+    // Union all of this record's identifier values — they belong to ONE subject. Two records that share
+    // any value thereby join the same component (= the same subject).
+    if (identifierValues.length > 0) {
+      ensure(identifierValues[0]);
+      for (let k = 1; k < identifierValues.length; k += 1) union(identifierValues[0], identifierValues[k]);
+    }
+  }
+  summary.sensitive_field_names = Array.from(buckets).sort();
+  summary.pii_bearing_count = piiBearingRecords;
+  // distinct_pii_count := number of distinct subject components (union-find roots over identifier values).
+  const roots = new Set();
+  for (const value of parent.keys()) roots.add(findRoot(value));
+  summary.distinct_pii_count = roots.size;
+  return summary;
+}
+
+// Does a CONTROL body expose any field-bound PII? Used only for the control-denial gate. Unlike
+// deriveMaskedSummary's record counting, this ALSO treats a top-level singleton OBJECT as a record, so a
+// non-array control response — `200 {"email":"teaser@x"}` or a 401 error object `{"error":..,"phone":..}`
+// — counts as the anon client having read a subject's PII and is therefore NOT a clean denial (bot-review
+// #821/#836). Field-bound (a sensitively-NAMED field with a real PII value shape), so a support email in a
+// denial page's free-text does not trip it.
+function controlBodyExposesPii(bodyText) {
+  if (typeof bodyText !== "string" || bodyText.length === 0) return false;
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return false; }
+  const records = extractRecords(parsed);
+  const scan = records.length > 0 ? records : (isPlainObject(parsed) ? [parsed] : []);
+  for (const record of scan) {
+    for (const key of Object.keys(record)) {
+      if (!bucketForFieldName(key)) continue;
+      const valueText = piiValueText(record[key]);
+      if (valueText && piiMatchesInValue(valueText).length > 0) return true;
+    }
+  }
+  return false;
+}
+
+// Distinct PII VALUES (ANY shape — email / SSN / phone / credit-card / IBAN) anywhere in a RAW text blob
+// (NOT field-bound, NOT JSON). Used ONLY to reject a control "denial" that nonetheless shipped BULK PII in
+// a body deriveMaskedSummary / controlBodyExposesPii cannot parse — a CSV / plaintext / HTML export at a
+// 401 or empty-looking 2xx (bot-review #837/#581). It counts ALL PII shapes, NOT just subject identifiers:
+// a control dump of bulk PHONE / CARD / IBAN values (no email/SSN) is still raw PII the anon client
+// received, so it must force inconclusive even though those shapes are not subject KEYS (bot-review #581).
+// Threshold is >= MIN (not >= 1) on purpose: a flat scan can't bind a value to a record, so a lone
+// support/contact value in a real denial page (1 < MIN) does NOT trip it (preserves the round-10
+// field-bound free-text robustness); structured single-subject PII is still caught field-bound by
+// controlBodyExposesPii at >= 1. De-dup by normalized (shape,value) so a repeated value doesn't inflate.
+// Conservative: more matches here only push the control toward inconclusive → no mint (the safe direction).
+function distinctPiiValuesInText(text) {
+  if (typeof text !== "string" || text.length === 0) return 0;
+  const vals = new Set();
+  for (const m of piiMatchesInValue(text)) vals.add(`${m.shape}:${m.norm}`);
+  return vals.size;
+}
+
+// Run one credentialed-or-control arm: start a (pinned) session, authed_fetch the endpoint, audit,
+// close. Returns { status, body, final_url, body_truncated } or throws (scope/driver error). The
+// session targetUrl is the exact endpoint host so authed_fetch's required launch DNS-pin covers it.
+async function runArm(drv, {
+  domain, surfaceId, endpointUrl, authCookies, blockInternalHosts, egressProfileName, playwrightProxy, armTag,
+}) {
+  const startedAt = Date.now();
+  let sessionId = null;
+  let result;
+  let error;
+  let scopeBlocked = false;
+  try {
+    const started = await drv.start({
+      targetDomain: domain,
+      targetUrl: endpointUrl,
+      headless: true,
+      proxy: playwrightProxy,
+      authCookies: authCookies || undefined,
+    });
+    sessionId = started && started.session_id ? started.session_id : null;
+    if (!sessionId) {
+      const e = new Error(`browser_session_start_failed (${armTag})`);
+      e.code = "browser_session_start_failed";
+      throw e;
+    }
+    result = await drv.authedFetch(sessionId, {
+      url: endpointUrl,
+      method: HTTP_METHOD,
+      block_internal_hosts: blockInternalHosts,
+      timeout_ms: FETCH_TIMEOUT_MS,
+    });
+  } catch (e) {
+    error = e;
+    if (e && (e.scope_decision === "blocked" || e.code === "scope_blocked")) scopeBlocked = true;
+  } finally {
+    if (sessionId) {
+      try { await drv.close(sessionId, `massread-${armTag}-done`); } catch { /* best-effort */ }
+    }
+  }
+  // Coerce to null any status outside the valid HTTP range [100,599] — notably authed_fetch's
+  // status 0 for a manual-redirect / opaqueredirect (an unauthenticated redirect-to-login control).
+  // The http-audit normalizer rejects out-of-range statuses, so passing 0 through would throw
+  // probe_audit_failed and CRASH the run instead of letting the control fall to control_inconclusive
+  // (fail-closed). (bot-review #448.)
+  const status = result && Number.isInteger(result.status) && result.status >= 100 && result.status <= 599
+    ? result.status : null;
+  const auditOk = auditConfirmRequest({
+    domain,
+    surfaceId,
+    method: HTTP_METHOD,
+    url: endpointUrl,
+    egressProfile: egressProfileName,
+    status,
+    scopeDecision: scopeBlocked ? "blocked" : null,
+    // Never write a raw driver error (it can embed the URL/credential context) into the
+    // agent-readable audit; a fixed redacted token is enough for telemetry.
+    error: error ? `massread ${armTag} arm error (redacted)` : null,
+    startedAt,
+    toolId: TOOL_ID,
+  });
+  if (auditOk === false) {
+    const auditErr = new ToolError(ERROR_CODES.STATE_CONFLICT, `${armTag} arm http-audit write failed`);
+    auditErr.probe_audit_failed = true;
+    if (error) auditErr.cause = error;
+    throw auditErr;
+  }
+  if (error) throw error;
+  // A driver that resolves null/undefined (no throw) must not be dereferenced into a crash; treat
+  // it as a transport error the caller converts to a fail-closed negative.
+  if (!result || typeof result !== "object") {
+    const e = new Error(`authed_fetch returned no result (${armTag})`);
+    e.code = "browser_transport_error";
+    throw e;
+  }
+  if (result.__timeout === true) {
+    const e = new Error(`authed_fetch timeout (${armTag})`);
+    e.code = "authed_fetch_timeout";
+    throw e;
+  }
+  return {
+    status,
+    body: typeof result.body === "string" ? result.body : "",
+    final_url: typeof result.final_url === "string" ? result.final_url : null,
+    body_truncated: result.body_truncated === true,
+    parse_ok: typeof result.body === "string" && result.body.length > 0,
+  };
+}
+
+// Persist the FULL raw capture OUTSIDE the signed rail, ONLY under the operator env gate. The folder
+// is co-located with the session (not the repo); the operator deletes it after the engagement.
+// ADAPTER GUARD (bot-review #916): the agent-read block on massread-evidence/ is enforced by the
+// session-read-guard PreToolUse hook, which ships in the Claude + Kimi adapters but NOT the Codex /
+// generic-mcp adapters (no hook layer). Writing raw PII where the evaluator agent's own file tools can
+// read it would break the operator-only intent of the capture, so raw capture is now DEFAULT-DENIED on
+// any adapter without a read-guard — the call site gates on readGuardActive() AND ownerAuthorized(), so
+// BOTH the operator env gate and a read-guard in this install are required. The PRIMARY guarantee — the
+// signed rail never carries raw PII — holds on every adapter regardless. HONEST (like #131): the
+// read-guard is incidental-read protection, not a barrier against a same-UID agent running arbitrary code.
+function writeFullCapture(domain, runId, payload) {
+  // SAME symlink discipline as the signed offensive-runs rail (offensive-capture-writer.js
+  // resolveCaptureDirSecure): this is the raw-PII artifact, so a symlinked session dir / evidence dir
+  // / leaf must never redirect it. ANCHOR to the real sessions root + safe domain — realpath(sessionDir)
+  // ALONE would silently FOLLOW a symlinked session dir and plant the capture at the link target.
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const realRoot = fs.realpathSync(sessionsRoot());
+  const expectedParent = path.join(realRoot, assertSafeDomain(domain)); // the only trusted session dir
+  const nominalParent = sessionDir(domain);
+  // Create + verify the SESSION dir BEFORE creating massread-evidence/ under it: a recursive mkdir
+  // would otherwise follow a symlinked session dir. Reject any mismatch against the expected parent.
+  fs.mkdirSync(nominalParent, { recursive: true });
+  if (fs.realpathSync(nominalParent) !== expectedParent) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence session dir must stay inside its session root without symlinks: ${nominalParent}`);
+  }
+  const nominalDir = path.join(expectedParent, "massread-evidence");
+  // Refuse a pre-existing symlinked evidence dir BEFORE a recursive mkdir would follow it.
+  try {
+    if (fs.lstatSync(nominalDir).isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir must not be a symlink: ${nominalDir}`);
+    }
+  } catch (e) { if (e && e.code !== "ENOENT") throw e; }
+  fs.mkdirSync(nominalDir, { recursive: true, mode: 0o700 });
+  // Post-mkdir: PIN the evidence dir by an O_NOFOLLOW directory fd, then assert its inode == the
+  // realpath-resolved expected dir. O_DIRECTORY|O_NOFOLLOW FAILS CLOSED (ELOOP) if `massread-evidence`
+  // was swapped to a symlink AFTER the lstat above — the TOCTOU window a plain realpath re-check leaves
+  // open (realpath FOLLOWS the link and silently passes). fstat dev+ino binds the fd to the trusted
+  // inode (a swap to a different real dir mismatches). PORTABLE-NODE RESIDUAL (honest): there is no
+  // openat(2) in core fs, so the leaf is still opened by pathname below; the sub-microsecond window in
+  // which a SAME-UID actor re-swaps the parent between this pin and the leaf open is the conceded #131
+  // boundary (a same-UID actor already reads the 0600 signing key) and additionally requires the
+  // operator gate BOB_MASSREAD_OWNER_AUTHORIZED enabled — so the residual is bounded, not open.
+  const dirFd = fs.openSync(nominalDir, (fs.constants.O_DIRECTORY || 0) | noFollow);
+  try {
+    const dirStat = fs.fstatSync(dirFd);
+    const trustedStat = fs.statSync(fs.realpathSync(path.join(expectedParent, "massread-evidence")));
+    if (!dirStat.isDirectory() || dirStat.dev !== trustedStat.dev || dirStat.ino !== trustedStat.ino) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir failed the inode pin (symlink swap?): ${nominalDir}`);
+    }
+  } finally {
+    fs.closeSync(dirFd);
+  }
+  const file = path.join(nominalDir, `${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence capture must not be a symlink: ${file}`);
+    }
+  } catch (e) { if (e && e.code !== "ENOENT") throw e; }
+  // Exclusive create + O_NOFOLLOW: a fresh per-run path, never following/truncating a planted symlink.
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow, 0o600);
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return file;
+}
+
+// The full oracle. `driver` is injectable so seeded tests need no live browser; with no driver the
+// dispatcher drives the LIVE arm via Patchright + the authed_fetch transport.
+async function massreadConfirm(args = {}, { driver = null } = {}) {
+  // Server-derived request. The caller may supply ONLY target_domain + surface_id + the auth_profile
+  // NAME selector — never a raw URL, endpoint, cookie/token/credential, header, body, record, or
+  // severity. owner_authorized is NOT accepted from the caller (operator env gate only).
+  assertNoForbiddenInputs(args, TOOL_ID, [
+    "endpoint", "cookie", "cookies", "token", "credential", "credentials",
+    "record", "records", "owner_authorized", "auth_cookies", "set_auth_cookies",
+  ]);
+
+  const drv = driver || liveBrowserDriver;
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
+  const authProfileName = typeof args.auth_profile === "string" && args.auth_profile.trim()
+    ? args.auth_profile.trim()
+    : DEFAULT_AUTH_PROFILE;
+
+  const { state } = readSessionStateStrict(domain);
+  const internalHostPolicy = blockInternalHostsPolicyFields(state);
+  const blockInternalHosts = internalHostPolicy.block_internal_hosts === true;
+
+  const fail = (outcome, reason) => blocked(outcome, reason, {
+    target_domain: domain,
+    surface_id: surfaceId,
+    auth_profile: authProfileName,
+    ...internalHostPolicy,
+  });
+
+  // The browser transport navigates with the producer's block_internal_hosts policy but, like
+  // bob_http_xss_confirm, the producer refuses to confirm through a channel that cannot fully
+  // enforce the session SSRF policy. Fail closed when block_internal_hosts is on.
+  if (blockInternalHosts) {
+    return fail("blocked_by_design", "block_internal_hosts_unsupported_for_browser");
+  }
+
+  // Resolve + route the surface, derive the listing endpoint SERVER-SIDE (never an agent URL).
+  const { surface } = findRoutedSurface(domain, surfaceId);
+  const endpointUrlObj = resolveSurfaceEndpoint({ domain, surface, state, toolName: TOOL_ID });
+  const endpointUrl = endpointUrlObj.toString();
+  // v1 fetches the RESOLVED endpoint as-is (resolveSurfaceEndpoint strips the query). The fetched URL
+  // and the signed canonicalTarget are therefore the SAME origin+path — the signed row faithfully
+  // identifies what was read, with no query-variant divergence. Query-routed search surfaces (e.g.
+  // a required `?q=*`) are deferred to v2 (resurrecting a recorded query made the fetched URL diverge
+  // from the signed target and was ambiguous across same-path candidates — bot-review #553/#498).
+  const fetchUrlObj = new URL(endpointUrl);
+  // Read-only + scope guard on the fetch URL; catches a verb-named segment.
+  assertReadOnlyPath(fetchUrlObj.toString(), TOOL_ID);
+  // Value-blind durable target (origin+path, query stripped); a PII/secret shape in a fixed path
+  // segment would persist into the signed row target.
+  const canonicalTarget = canonicalizeExploitTarget(endpointUrl);
+  // sensitiveShapesPresent covers detectPiiShapes (email/phone/ssn/card) but NOT the IBAN shape this
+  // producer adds, so screen IBAN explicitly — an IBAN in a fixed path segment (e.g.
+  // /accounts/GB82WEST.../transactions) would otherwise persist into the signed/audited target (#643).
+  if (sensitiveShapesPresent(canonicalTarget) || findIbans(canonicalTarget).length > 0) {
+    return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
+  }
+
+  // Egress identity (mirrors the reflect / xss producers); convert proxy_url into Patchright form.
+  const requestedEgressProfile = typeof state.egress_profile === "string" && state.egress_profile.trim()
+    ? state.egress_profile
+    : "default";
+  const { profile: egressProfile, identity } = resolveAndAssertSessionEgressIdentity(domain, requestedEgressProfile, {
+    source: TOOL_ID,
+  });
+  let playwrightProxy = null;
+  if (egressProfile && egressProfile.proxy_url) {
+    try {
+      playwrightProxy = parseProxyUrlForPlaywright(egressProfile.proxy_url);
+    } catch {
+      return fail("blocked_by_infra", "egress_unsupported_for_browser");
+    }
+  }
+  const egressProfileName = identity.egress_profile || requestedEgressProfile;
+
+  // The ATTACKER (under-authorized) identity's COOKIES, read SERVER-SIDE from the stored profile —
+  // never agent-supplied. Bearer-only profiles have no usable cookie for the transport (v2).
+  const profile = resolveAuthProfile(authProfileName, endpointUrl, domain);
+  if (!profile) {
+    return fail("blocked_by_design", "attacker_auth_profile_not_found");
+  }
+  const endpointOrigin = endpointUrlObj.origin;
+  const authCookies = cookieObjectsFromProfile(profile, endpointOrigin);
+  if (authCookies.length === 0) {
+    return fail("blocked_by_design", "attacker_credential_not_cookie_expressible");
+  }
+
+  if (!drv.isAvailable()) {
+    return fail("blocked_by_infra", "browser_unavailable");
+  }
+
+  // Distinct cache-buster per arm: a shared cache keyed on URL (ignoring the cookie) could otherwise
+  // serve the attacker's cached bulk body to the control arm (or vice versa) and forge the differential.
+  // A unique `_cb` per arm forces a distinct cache key, and the arm order is recorded in the bundle.
+  const armUrl = () => {
+    const u = new URL(fetchUrlObj.toString());
+    u.searchParams.set("_cb", crypto.randomBytes(8).toString("hex"));
+    return u.toString();
+  };
+  const attackerUrl = armUrl();
+  const controlUrl = armUrl();
+  const armOrder = ["attacker", "control"];
+
+  const armBase = {
+    domain, surfaceId, blockInternalHosts, egressProfileName, playwrightProxy,
+  };
+
+  let attacker;
+  let control;
+  try {
+    attacker = await runArm(drv, { ...armBase, endpointUrl: attackerUrl, authCookies, armTag: "attacker" });
+    control = await runArm(drv, { ...armBase, endpointUrl: controlUrl, authCookies: null, armTag: "control" });
+  } catch (e) {
+    if (e && e.probe_audit_failed) throw e; // audit-write failure must surface, not be swallowed
+    if (e && (e.scope_decision === "blocked" || e.code === "scope_blocked")) {
+      return fail("blocked_by_defense", "scope_blocked");
+    }
+    if (e && e.code === "authed_fetch_timeout") {
+      return fail("blocked_by_infra", "authed_fetch_timeout");
+    }
+    if (e && (e.code === "browser_session_start_failed")) {
+      return fail("blocked_by_infra", "browser_session_start_failed");
+    }
+    return fail("blocked_by_infra", "browser_transport_error");
+  }
+
+  // WAF / rate-limit on EITHER arm: the read never actually ran (a block page is not "0 records"), so
+  // the differential cannot be scored. Fail closed — a throttled CONTROL must NOT count as "denied".
+  if (attacker.status != null && WAF_STATUSES.has(attacker.status)) {
+    return fail("blocked_by_defense", "waf_or_rate_limit");
+  }
+  if (control.status != null && WAF_STATUSES.has(control.status)) {
+    return fail("blocked_by_defense", "control_waf_or_rate_limit");
+  }
+  // A truncated body mis-scores: a truncated CONTROL parses to fewer/0 records → false "denied" → a
+  // false MEDIUM; a truncated ATTACKER → false negative. Either truncated → unreliable, fail closed.
+  if (attacker.body_truncated || control.body_truncated) {
+    return fail("blocked_by_infra", "response_truncated_unreliable");
+  }
+
+  // Derive masked summaries, then DISCARD raw bodies (full capture, if any, happens after the mint).
+  const attackerSummary = deriveMaskedSummary(attacker.body);
+  const controlSummary = deriveMaskedSummary(control.body);
+
+  const attackerOk2xx = attacker.status != null && attacker.status >= 200 && attacker.status < 300;
+  // A 2xx attacker body that does not parse to a countable collection cannot prove a mass-read.
+  if (attackerOk2xx && !attackerSummary.parse_ok) {
+    return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
+  }
+  // MINT GATE: >= MIN DISTINCT subjects' PII. deriveMaskedSummary counts a PII VALUE only when it sits
+  // in a sensitively-NAMED field of a counted record, and distinct_pii_count is the number of distinct
+  // SUBJECT KEYS — one key per record, built from its normalized subject-identifier values (email / SSN
+  // — card/IBAN/phone/address are recorded but are NOT subject keys, since one person has several) — so a
+  // benign list + a stray metadata email, a field merely NAMED like PII
+  // (`email_verified: true`), constant boilerplate, a single self-record, one subject's many PII fields
+  // (incl. same-bucket email+recovery_email or a field listing two of its own values), case/format
+  // variants, and a promoted self-collection ALL yield ONE key and fall below the floor. NECESSARY,
+  // not sufficient: this proves the credentialed arm read >= MIN distinct identifier-bearing subjects an
+  // unauthenticated arm cannot — the evaluator + grader (which see endpoint semantics + the credential's
+  // provenance) certify the BFLA / under-privilege class; see the design notes at the head of the file.
+  // Require BOTH >= MIN records that carry sensitive PII AND >= MIN distinct subject keys.
+  const attackerBulk = attackerOk2xx
+    && attackerSummary.pii_bearing_count >= MASSREAD_MIN_RECORDS
+    && attackerSummary.distinct_pii_count >= MASSREAD_MIN_RECORDS;
+  if (!attackerBulk) {
+    return fail("blocked_by_defense", "attacker_did_not_read_bulk_pii");
+  }
+
+  // ── score the control arm ──
+  // Compute the control's PII signal FIRST: any pii-bearing record (INCLUDING phone/address, which are not
+  // subject identifiers but are still real PII), a top-level singleton object via controlBodyExposesPii, OR
+  // a non-JSON body (CSV / plaintext / HTML) that ships >= MIN distinct PII values of ANY shape that
+  // deriveMaskedSummary cannot parse (bot-review #784/#819/#821/#837/#581; a lone support value stays below
+  // the floor).
+  const controlReadAnyPii = controlSummary.pii_bearing_count > 0
+    || controlBodyExposesPii(control.body)
+    || distinctPiiValuesInText(control.body) >= MASSREAD_MIN_RECORDS;
+  // (a) The control RECEIVED the bulk COLLECTION if its body parses to >= MIN records — REGARDLESS of HTTP
+  //     status (a 401/403 that STILL returns the bulk body did NOT deny the client the records; bot-review
+  //     #669/#677). It is therefore NOT a clean denial and never mints. Split the reason honestly so we do
+  //     not conflate "read records" with "read the sensitive data" (bot-review #914):
+  if (controlSummary.parse_ok && controlSummary.record_count >= MASSREAD_MIN_RECORDS) {
+    if (controlReadAnyPii) {
+      // anon read the bulk PII too → a PUBLIC / control-visible PII endpoint, not an authz break.
+      return fail("blocked_by_design", "control_also_reads_bulk_pii");
+    }
+    // anon read >= MIN REDACTED records (no PII shape); the attacker's PII read of a collection the anon
+    // sees only REDACTED is a field-level differential (BFLA on PII columns) — a real candidate, but v1
+    // cannot tell it from a deliberately-public redacted listing without route semantics, so it DECLINES
+    // rather than mint (the redacted-vs-PII mint is the v2 oracle). No longer mislabeled "public" (#914).
+    return fail("blocked_by_infra", "control_inconclusive_redacted_bulk");
+  }
+  // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
+  //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
+  //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
+  //     — a WAF / bot-challenge vs a real authz denial — so it is NEVER scored "denied" (parseability is
+  //     not an auth-denial oracle, bot-review #675); likewise an unparseable NON-empty 2xx (HTML app shell
+  //     / WAF interstitial) stays ambiguous. All fall through to control_inconclusive.
+  const control2xx = control.status != null && control.status >= 200 && control.status < 300;
+  const controlBodyEmpty = typeof control.body !== "string" || control.body.trim().length === 0;
+  const controlOk2xx = control2xx && controlSummary.parse_ok;
+  const controlDenied = !controlReadAnyPii && (
+    control.status === 401
+    || (control2xx && controlBodyEmpty)
+    || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS)
+  );
+  if (!controlDenied) {
+    // Ambiguous control (403, 5xx, 404, unparseable, timeout, OR a control that itself read subject PII):
+    // cannot conclude the control was DENIED, so the differential is unproven. Fail closed rather than
+    // mint a MEDIUM off an inconclusive baseline.
+    return fail("blocked_by_infra", "control_inconclusive");
+  }
+
+  // ── build the canonical proof (MASKED, value-blind, PII-screened) ──
+  const maskedSummary = {
+    record_count: attackerSummary.record_count,
+    pii_bearing_count: attackerSummary.pii_bearing_count,
+    distinct_pii_count: attackerSummary.distinct_pii_count,
+    sensitive_field_names: attackerSummary.sensitive_field_names,
+    pii_shape_present: attackerSummary.pii_shape_present,
+  };
+  const stdoutContent = canonicalJson(maskedSummary);
+  const stderrContent = canonicalJson({
+    attacker_status: attacker.status,
+    control_status: control.status,
+    attacker_record_count: attackerSummary.record_count,
+    attacker_pii_bearing_count: attackerSummary.pii_bearing_count,
+    attacker_distinct_pii_count: attackerSummary.distinct_pii_count,
+    control_record_count: controlSummary.record_count,
+    arm_order: armOrder,
+    credentialed_bulk_pii_read: true,
+    unauthenticated_control_denied: true,
+    pii_value_shapes_present: true,
+  });
+  // Fail-closed PII screen: the masked summary is field-NAME buckets + counts + booleans, so a value
+  // shape here means something leaked; refuse to sign it.
+  if (sensitiveShapesPresent(stdoutContent) || sensitiveShapesPresent(stderrContent)
+    || findIbans(stdoutContent).length > 0 || findIbans(stderrContent).length > 0) {
+    return fail("blocked_operator_pii", "capture_contains_sensitive_value");
+  }
+
+  // HONEST about what the authed-vs-UNAUTHENTICATED differential actually proves: "credential X
+  // bulk-reads PII an unauthenticated client is denied". It does NOT prove X is UNDER-privileged — a
+  // FULLY-AUTHORIZED user reading authorized data would also satisfy this. The operator contract (tool
+  // description + evaluator prose) is that `auth_profile` carries the LEAKED / UNDER-PRIVILEGED /
+  // guessable credential; using a fully-authorized credential is operator misuse → false positive. True
+  // cross-tenant BFLA (a second AUTHENTICATED victim identity denied while the attacker reads ITS data)
+  // is the v2 oracle. So the signed booleans assert ONLY what is established — never a bare
+  // `bfla_proven` / `under_privileged`.
+  const relationBooleans = {
+    credentialed_bulk_pii_read: true,
+    unauthenticated_control_denied: true,
+    pii_value_shapes_present: true,
+  };
+
+  // demonstrated_severity DERIVED from the per-tool registry inside buildAndSignOffensiveRow (never
+  // passed). Capture FIRST, recompute hashes from on-disk bytes, sign LAST — under the session lock.
+  const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
+    runIdPrefix: "massread",
+    toolId: TOOL_ID,
+    method: HTTP_METHOD,
+    canonicalTarget,
+    surfaceId,
+    identityTag: `massread-${authProfileName}`,
+    stdoutContent,
+    stderrContent,
+    relationBooleans,
+  }));
+
+  // OPT-IN full capture — OPERATOR env gate only, OUTSIDE the signed rail. The raw bodies live in
+  // memory only until here; for the default (masked-only) path they are never persisted.
+  let ownerCaptureWritten = false;
+  if (ownerAuthorized(domain) && readGuardActive()) {
+    try {
+      writeFullCapture(domain, row.run_id, {
+        tool_id: TOOL_ID,
+        run_id: row.run_id,
+        target: row.target,
+        attacker_status: attacker.status,
+        control_status: control.status,
+        attacker_body: attacker.body,
+        control_body: control.body,
+        note: "operator-authorized full capture (BOB_MASSREAD_OWNER_AUTHORIZED). NOT in the signed rail. Delete after the engagement; keep out of any sync/backup path.",
+      });
+      ownerCaptureWritten = true;
+    } catch {
+      ownerCaptureWritten = false; // the signed (masked) row stands regardless of the opt-in capture
+    }
+  }
+
+  // Masked oracle return — counts + field-name buckets + booleans + hashes, NEVER raw bytes.
+  return {
+    confirmed: true,
+    target_domain: domain,
+    surface_id: surfaceId,
+    offensive_outcome: "exploited_safely",
+    row_written: true,
+    run_id: row.run_id,
+    tool_id: row.tool_id,
+    target: row.target,
+    command_hash: row.command_hash,
+    stdout_hash: row.stdout_hash,
+    stderr_hash: row.stderr_hash,
+    exit_code: row.exit_code,
+    demonstrated_severity: row.demonstrated_severity,
+    owner_authorized_capture: ownerCaptureWritten,
+    masked_oracle: {
+      relation: relationBooleans,
+      record_count: maskedSummary.record_count,
+      pii_bearing_count: maskedSummary.pii_bearing_count,
+      distinct_pii_count: maskedSummary.distinct_pii_count,
+      sensitive_field_names: maskedSummary.sensitive_field_names,
+      pii_shape_present: maskedSummary.pii_shape_present,
+      fragment_hash: row.stdout_hash,
+    },
+    ...internalHostPolicy,
+  };
+}
+
+module.exports = {
+  massreadConfirm,
+  deriveMaskedSummary,
+  extractRecords,
+  bucketForFieldName,
+  cookieObjectsFromProfile,
+  MASSREAD_MIN_RECORDS,
+  OWNER_AUTHORIZED_ENV,
+  TOOL_ID,
+  MASSREAD_DEMONSTRATED_CEILING,
+};

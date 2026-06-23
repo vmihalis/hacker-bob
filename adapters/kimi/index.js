@@ -55,7 +55,7 @@ const KIMI_HOOK_BLOCK_END = "# <<< hacker-bob managed hooks <<<";
 // Claude emits Bash/Write/Read). Erring wide is fail-safer — a name Kimi never emits
 // is harmless, a missed name is a silent fail-open.
 const KIMI_WRITE_MATCHER = "Shell|Bash|Write|WriteFile|Edit|MultiEdit";
-const KIMI_READ_MATCHER = "Shell|Bash|Read|ReadFile|Cat";
+const KIMI_READ_MATCHER = "Shell|Bash|Read|ReadFile|Cat|Grep|Search";
 
 function kimiHome() {
   // KIMI_SHARE_DIR is Kimi CLI's documented override for the ~/.kimi data dir

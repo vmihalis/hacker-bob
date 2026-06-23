@@ -794,6 +794,12 @@ const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
     bob_http_xss_confirm: "high",
     bob_oob_poll: "medium",
     bob_http_cors_confirm: "medium",
+    // v1 MEDIUM: the oracle proves a credentialed caller bulk-reads PII an UNAUTHENTICATED client is
+    // denied — a real exposure, but NOT machine-proof of under-privilege/BFLA (a fully-authorized user
+    // reading authorized data also satisfies it) nor that the surface is a cross-subject collection. The
+    // authn-vs-anon differential is honestly a MEDIUM; the HIGH (cross-tenant BFLA) needs the v2 second-
+    // authenticated-victim arm. Keeping it MEDIUM avoids signing a HIGH the evidence can't substantiate.
+    bob_http_massread_confirm: "medium",
   }),
 );
 
