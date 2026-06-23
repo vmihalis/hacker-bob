@@ -292,7 +292,7 @@ test("negative: control ALSO reads the bulk collection → public endpoint, not 
   setupSession(domain);
   const { driver } = makeDriver({ control: { status: 200, body: bulkBody(3), final_url: null, body_truncated: false } });
   const result = await run(domain, { driver });
-  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
+  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_pii");
 }));
 
 test("negative: attacker count below the bulk floor → not a mass-read", () => withTempHome(async () => {
@@ -740,17 +740,19 @@ test("control 401 that STILL returns the bulk PII body is NOT denied → public,
   const control = { status: 401, body: bulkBody(3), final_url: null, body_truncated: false };
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
-  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
+  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_pii");
 }));
 
-test("control 2xx that read the bulk collection (no PII shape) is NOT scored denied → public, no mint (#677)", () => withTempHome(async () => {
+test("control 2xx that read >= MIN REDACTED records (no PII shape) → inconclusive, not minted, not 'public' (#677/#914)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
-  // Control 2xx returns >= MIN records but trips no PII shape — it still READ the collection → public.
+  // Control 2xx returns >= MIN records but trips no PII shape (redacted listing). It still READ the
+  // collection, so it never mints (#677); but it is no longer mislabeled "public" — anon saw only redacted
+  // rows while the attacker got PII, which is a field-level differential v1 conservatively declines (#914).
   const control = { status: 200, body: JSON.stringify({ data: [{ id: 1 }, { id: 2 }, { id: 3 }] }), final_url: null, body_truncated: false };
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
-  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive_redacted_bulk");
 }));
 
 // ── round-4: per-bucket subject count + empty-2xx control denial ───────────────────────────────────
@@ -1094,15 +1096,17 @@ test("raw capture is DEFAULT-DENIED without a read-guard: owner gate ON but BOB_
   assert.ok(!signedRailBytes(domain).includes(CANARY_EMAIL), "the signed rail stays masked either way");
 }));
 
-test("read-guard AUTO-DETECT: owner gate ON, BOB_READ_GUARD unset → capture fires because the read-guard hook ships in this install (#916)", () => withTempHome(async () => {
+test("read-guard is EXPLICIT-only: owner gate ON but BOB_READ_GUARD unset → no capture (no file auto-detect) (#916 round-2)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   process.env[OWNER_AUTHORIZED_ENV] = domain;
-  delete process.env.BOB_READ_GUARD; // no override → readGuardActive() auto-detects the .claude/.kimi hook in the repo tree
+  delete process.env.BOB_READ_GUARD; // unset → default-DENY. The framework ships the hook file, so file
+  // existence is NOT a sound proxy for an enforced guard; the operator must explicitly assert it.
   const { driver } = makeDriver();
   const result = await run(domain, { driver });
-  assert.equal(result.confirmed, true);
-  assert.equal(result.owner_authorized_capture, true, "auto-detect finds the installed read-guard hook → capture allowed");
+  assert.equal(result.confirmed, true, "the signed (masked) row still mints");
+  assert.equal(result.owner_authorized_capture, false, "no capture without an explicit read-guard assertion");
+  assert.ok(!fs.existsSync(path.join(sessionDir(domain), "massread-evidence")), "no evidence dir when BOB_READ_GUARD is unset");
 }));
 
 // ── round-11: a 401 control whose NON-JSON body still ships BULK PII is not a clean denial (#837) ──
@@ -1110,7 +1114,7 @@ test("a 401 control with a CSV/plaintext body carrying BULK PII is NOT a clean d
   const domain = uniqueDomain();
   setupSession(domain);
   // 401 + a NON-JSON (CSV) body that deriveMaskedSummary/controlBodyExposesPii cannot parse, but which
-  // still hands the anon client >= MIN distinct subjects' emails. distinctSubjectsInText must catch it.
+  // still hands the anon client >= MIN distinct PII values. distinctPiiValuesInText must catch it.
   const control = { status: 401, body: "email,name\nalice@a.example,Alice\nbob@b.example,Bob\n", final_url: null, body_truncated: false };
   assert.equal(deriveMaskedSummary(control.body).parse_ok, false, "the CSV body is not JSON-parseable");
   const { driver } = makeDriver({ control });
@@ -1128,4 +1132,49 @@ test("a 401 control with a LONE support email in free text IS still a clean deni
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true, "a lone support email at 401 is a clean denial → the differential mints");
   assert.equal(result.masked_oracle.demonstrated_severity ?? "medium", "medium");
+}));
+
+// ── round-12: nested-record PII, non-identifier bulk control PII ──
+test("nested-record PII is detected: { user: { email } } per row mints MEDIUM (#512)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Real API shape — PII under a non-sensitive top-level key (`user`). The bounded record walk must reach
+  // the nested `email`/`ssn` fields; a top-level-only scan would miss them entirely (false negative).
+  const body = JSON.stringify({ data: [
+    { id: 1, user: { email: "a@a.example", profile: { ssn: "123-45-6789" } } },
+    { id: 2, user: { email: "b@b.example", profile: { ssn: "987-65-4321" } } },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 2, "two nested subjects are counted");
+  assert.equal(s.pii_shape_present.email, true);
+  assert.equal(s.pii_shape_present.ssn, true);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.ok(!signedRailBytes(domain).includes("a@a.example"), "nested raw PII never reaches the signed rail");
+}));
+
+test("one record's nested email list is ONE subject, not many (#512 + #419 across nesting)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // A single subject whose nested object carries primary + recovery emails. Within-record union must hold
+  // across nesting → ONE subject → below the floor → no mint (no nested-multiplicity inflation).
+  const body = JSON.stringify({ data: [
+    { id: 1, contact: { email: "owner@self.example", recovery_email: "owner.alt@self.example" } },
+  ] });
+  assert.equal(deriveMaskedSummary(body).distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a 401 control whose non-JSON body ships BULK non-identifier PII (phones) is NOT a clean denial → inconclusive (#581)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // CSV of phone numbers only (no email/SSN). Phones are not subject KEYS, but they ARE raw PII the anon
+  // client received — distinctPiiValuesInText counts ALL shapes, so this forces inconclusive, not a mint.
+  const control = { status: 401, body: "phone\n+1-202-555-0143\n+1-202-555-0178\n+1-202-555-0199\n", final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
 }));

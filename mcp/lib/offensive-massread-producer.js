@@ -174,6 +174,10 @@ const PII_TYPE_TO_SHAPE = Object.freeze({
 // Cap the per-record value scan so a huge collection cannot blow the regex budget; record_count
 // still counts every object record, but PII presence only needs ONE qualifying record.
 const MASSREAD_PII_SCAN_RECORDS = 1000;
+// Bound the per-record tree walk so a deeply/widely nested record cannot blow the regex/CPU budget:
+// recurse at most this deep, and scan at most this many fields per record (bot-review #512).
+const MASSREAD_MAX_RECORD_DEPTH = 8;
+const MASSREAD_MAX_NODES_PER_RECORD = 512;
 function emptyPiiShapes() {
   return { email: false, phone_intl: false, iban: false, ssn: false, credit_card: false };
 }
@@ -301,30 +305,22 @@ function ownerAuthorized(domain) {
   return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean).includes(target);
 }
 
-// Is a session READ-GUARD installed in THIS install's tree? The PreToolUse hook that blocks an agent's
-// own file tools from reading massread-evidence/ ships ONLY in the Claude (.claude/hooks/) and Kimi
-// (.kimi/hooks/) adapters; the Codex + generic-mcp adapters have NO hook layer (bot-review #916). Without
-// it, the opt-in raw capture — though still operator-armed (ownerAuthorized) for owner-authorized data —
-// is readable by the evaluator agent, breaking the operator-only intent. So raw capture is DEFAULT-DENIED
-// on any adapter that ships no read-guard. Resolution order:
-//   1. explicit operator override BOB_READ_GUARD (1/true/yes/on → allow; any other non-empty value → deny)
-//      — lets an operator who arranged read-protection out of band opt in, or force-deny;
-//   2. else auto-detect the read-guard hook FILE in this install (present on Claude/Kimi, absent on
-//      Codex/generic). The producer ships at <root>/mcp/lib, so <root> is two levels up.
-// Fails CLOSED: an absent hook or a stat error yields false → no capture (the signed masked row is
-// unaffected). HONEST (like the #131 boundary): the read-guard is incidental-read protection, NOT a
-// barrier against a same-UID agent running arbitrary code (which can read any file the process can); that
-// residual needs the deferred offensive-sandbox.
+// Is raw capture permitted on THIS adapter? The PreToolUse hook that blocks an agent's own file tools
+// from reading massread-evidence/ ships in the Claude (.claude/hooks/) and Kimi (.kimi/hooks/) adapters;
+// Codex + generic-mcp have NO hook layer (bot-review #916). The opt-in raw capture is readable by the
+// evaluator agent unless that guard actually FIRES, so raw capture is DEFAULT-DENIED and requires the
+// operator to EXPLICITLY assert an enforced read-guard via BOB_READ_GUARD (1/true/yes/on). We DELIBERATELY
+// do NOT auto-detect by looking for the hook FILE on disk: the framework package SHIPS that file
+// unconditionally, so its mere presence (a Codex install whose tree still contains it, or a mixed / partial
+// / hand-merged install where the file exists but is never REGISTERED as a PreToolUse matcher) does not
+// prove the guard fires — a materially weaker proxy than an enforced hook (bot-review #916 round-2, Codex
+// P1 + Claude). Operators set BOB_READ_GUARD=1 ONLY on an adapter that enforces the read-guard
+// (Claude/Kimi); never on Codex/generic. Fails CLOSED: unset/empty/any-other-value → no capture (the
+// signed masked row is unaffected). HONEST (like #131): even with the guard, raw capture is not safe
+// against a same-UID agent running arbitrary code — that residual needs the deferred offensive-sandbox.
 function readGuardActive() {
-  const override = process.env.BOB_READ_GUARD;
-  if (typeof override === "string" && override.trim()) {
-    return /^(1|true|yes|on)$/i.test(override.trim());
-  }
-  const projectRoot = path.resolve(__dirname, "..", "..");
-  for (const rel of [".claude/hooks/session-read-guard.sh", ".kimi/hooks/session-read-guard.sh"]) {
-    try { if (fs.statSync(path.join(projectRoot, rel)).isFile()) return true; } catch { /* absent → keep checking */ }
-  }
-  return false;
+  const v = process.env.BOB_READ_GUARD;
+  return typeof v === "string" && /^(1|true|yes|on)$/i.test(v.trim());
 }
 
 // A stored auth profile flattens cookies into a single "Cookie" HEADER string
@@ -497,8 +493,19 @@ function deriveMaskedSummary(bodyText) {
   //   • phone / postal address / credit card / IBAN are EXCLUDED as identifiers (a subject has several
   //     of each — two card/IBAN values can't tell two subjects from one subject's two instruments) —
   //     still LABELED in sensitive_field_names + pii_shape_present, they just don't form/merge subjects (#183).
-  // Failures are toward UNDER-counting (a join row sharing two subjects' ids merges them) — the safe
-  // direction. Only >= MIN genuinely-distinct subjects clear the floor.
+  // HONEST about the residual (bot-review #500): WITHIN a record, multiple identifiers union to one
+  // subject; ACROSS records, two rows sharing no value are counted as TWO subjects. That is correct for a
+  // normal cross-subject collection (one row per person), but an OVER-count for a per-row SELF-collection
+  // of one subject's multiple identifiers (e.g. /me/linked-emails returning primary + recovery + work
+  // emails as separate rows). The oracle is schema-blind: from the response alone it cannot tell "N
+  // subjects" from "one subject's N instruments" for ANY value-based identifier — which is exactly why
+  // this differential is NECESSARY, not sufficient. That residual is bounded by the MEDIUM ceiling + the
+  // operator under-privilege contract + the human grader (which know the route's collection-vs-self
+  // semantics), NOT by this counter. SSN is truly 1:1; email is the de-facto collection key (removing it
+  // would gut the oracle), so both stay — card/IBAN/phone/address were dropped above because per-instrument
+  // multiplicity is their COMMON case (a payment-methods list), not a rare one. Only >= MIN distinct
+  // components clear the floor; the most common same-subject inflations (shared/repeated values) still
+  // merge to one.
   const parent = new Map();
   const findRoot = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); let c = x; while (parent.get(c) !== r) { const n = parent.get(c); parent.set(c, r); c = n; } return r; };
   const ensure = (x) => { if (!parent.has(x)) parent.set(x, x); };
@@ -509,20 +516,41 @@ function deriveMaskedSummary(bodyText) {
     const record = records[i];
     let recordHasSensitivePii = false;
     const identifierValues = []; // this record's shape-prefixed normalized subject-identifier values
-    for (const key of Object.keys(record)) {
-      const bucket = bucketForFieldName(key);
-      if (!bucket) continue;
-      const valueText = piiValueText(record[key]);
-      if (!valueText) continue;
-      const matches = piiMatchesInValue(valueText); // [{ shape, norm }] — extracted + normalized
-      if (matches.length === 0) continue;
-      buckets.add(bucket);
-      recordHasSensitivePii = true;
-      for (const m of matches) {
-        pii[m.shape] = true;
-        if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.push(`${m.shape}:${m.norm}`);
+    // Walk the record tree (bounded): a PII VALUE counts when its FIELD NAME maps to a sensitive bucket at
+    // ANY nesting depth — { user: { email } }, { customer: { contact: { ssn } } } — so ordinary nested API
+    // record shapes are not missed (bot-review #512). The masked-rail invariant holds: only the bucket
+    // label + shape boolean + a normalized de-dup key are kept, never the raw value. Re-finding the same
+    // normalized value (a sensitive key whose object value is both serialized-scanned here AND recursed
+    // into) is idempotent under the union-find / value sets, so it never inflates the count.
+    let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD;
+    const visit = (node, depth) => {
+      if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
+      if (Array.isArray(node)) {
+        for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
+        return;
       }
-    }
+      for (const key of Object.keys(node)) {
+        if (nodeBudget <= 0) return;
+        nodeBudget -= 1;
+        const value = node[key];
+        const bucket = bucketForFieldName(key);
+        if (bucket) {
+          const valueText = piiValueText(value);
+          const matches = valueText ? piiMatchesInValue(valueText) : []; // [{ shape, norm }] extracted + normalized
+          if (matches.length > 0) {
+            buckets.add(bucket);
+            recordHasSensitivePii = true;
+            for (const m of matches) {
+              pii[m.shape] = true;
+              if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.push(`${m.shape}:${m.norm}`);
+            }
+          }
+        }
+        // Recurse into nested objects/arrays to reach sensitively-NAMED keys deeper in the record.
+        if (value && typeof value === "object") visit(value, depth + 1);
+      }
+    };
+    visit(record, 0);
     if (recordHasSensitivePii) piiBearingRecords += 1;
     // Union all of this record's identifier values — they belong to ONE subject. Two records that share
     // any value thereby join the same component (= the same subject).
@@ -562,24 +590,22 @@ function controlBodyExposesPii(bodyText) {
   return false;
 }
 
-// Distinct SUBJECT-IDENTIFIER values anywhere in a RAW text blob (NOT field-bound, NOT JSON). Used ONLY
-// to reject a control "denial" that nonetheless shipped BULK PII in a body deriveMaskedSummary /
-// controlBodyExposesPii cannot parse — a CSV / plaintext / HTML export returned at a 401 or empty-looking
-// 2xx (bot-review #837). It mirrors the attacker BULK floor: only >= MIN distinct identifier VALUES count
-// as "the anon client read bulk PII". A flat scan can't bind a value to a record, so this DELIBERATELY
-// uses a >= MIN (not >= 1) threshold — a lone support/contact email in a real denial page is ONE value
-// (< MIN) and does NOT trip it, preserving the round-10 field-bound free-text robustness, while a genuine
-// bulk export of many subjects does. (Structured single-subject PII is still caught field-bound by
-// controlBodyExposesPii at >= 1; this raw path targets unstructured BULK only.) De-dup by normalized
-// value so the same address repeated doesn't inflate. Conservative: over-counting here only pushes the
-// control toward inconclusive → no mint (the safe direction).
-function distinctSubjectsInText(text) {
+// Distinct PII VALUES (ANY shape — email / SSN / phone / credit-card / IBAN) anywhere in a RAW text blob
+// (NOT field-bound, NOT JSON). Used ONLY to reject a control "denial" that nonetheless shipped BULK PII in
+// a body deriveMaskedSummary / controlBodyExposesPii cannot parse — a CSV / plaintext / HTML export at a
+// 401 or empty-looking 2xx (bot-review #837/#581). It counts ALL PII shapes, NOT just subject identifiers:
+// a control dump of bulk PHONE / CARD / IBAN values (no email/SSN) is still raw PII the anon client
+// received, so it must force inconclusive even though those shapes are not subject KEYS (bot-review #581).
+// Threshold is >= MIN (not >= 1) on purpose: a flat scan can't bind a value to a record, so a lone
+// support/contact value in a real denial page (1 < MIN) does NOT trip it (preserves the round-10
+// field-bound free-text robustness); structured single-subject PII is still caught field-bound by
+// controlBodyExposesPii at >= 1. De-dup by normalized (shape,value) so a repeated value doesn't inflate.
+// Conservative: more matches here only push the control toward inconclusive → no mint (the safe direction).
+function distinctPiiValuesInText(text) {
   if (typeof text !== "string" || text.length === 0) return 0;
-  const ids = new Set();
-  for (const m of piiMatchesInValue(text)) {
-    if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) ids.add(`${m.shape}:${m.norm}`);
-  }
-  return ids.size;
+  const vals = new Set();
+  for (const m of piiMatchesInValue(text)) vals.add(`${m.shape}:${m.norm}`);
+  return vals.size;
 }
 
 // Run one credentialed-or-control arm: start a (pinned) session, authed_fetch the endpoint, audit,
@@ -907,27 +933,29 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   }
 
   // ── score the control arm ──
-  // (a) The control READ the bulk collection if its body parses to >= MIN records — REGARDLESS of HTTP
-  //     status. A 401/403 (or any status) that STILL returns the bulk JSON body was NOT actually denied
-  //     (the client can read that body) → a PUBLIC / control-visible collection, not an authz break.
-  //     (bot-review #669/#677 — a body that read the records is never "denied", whatever the status.)
-  const controlReadBulk = controlSummary.parse_ok
-    && controlSummary.record_count >= MASSREAD_MIN_RECORDS;
-  if (controlReadBulk) {
-    return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
-  }
-  // (a2) The control surfaced ANY PII (>= 1 pii-bearing record — INCLUDING phone/address, which are not
-  //      subject identifiers but are still real PII; AND a top-level singleton object via
-  //      controlBodyExposesPii), even below the bulk floor. That is NOT a clean denial — the
-  //      unauthenticated client read a real subject's PII, so the "anon is denied PII" premise fails (a
-  //      public teaser / partial-public endpoint, not a clean authz differential). Fall through to
-  //      inconclusive rather than mint (bot-review #784/#819/#821). A non-JSON control body (CSV /
-  //      plaintext / HTML) that carries BULK PII at ANY status (incl. an explicit 401) is ALSO not a
-  //      clean denial — deriveMaskedSummary/controlBodyExposesPii can't parse it, so distinctSubjectsInText
-  //      catches a >= MIN-subject raw export (bot-review #837), while a lone support email stays below the floor.
+  // Compute the control's PII signal FIRST: any pii-bearing record (INCLUDING phone/address, which are not
+  // subject identifiers but are still real PII), a top-level singleton object via controlBodyExposesPii, OR
+  // a non-JSON body (CSV / plaintext / HTML) that ships >= MIN distinct PII values of ANY shape that
+  // deriveMaskedSummary cannot parse (bot-review #784/#819/#821/#837/#581; a lone support value stays below
+  // the floor).
   const controlReadAnyPii = controlSummary.pii_bearing_count > 0
     || controlBodyExposesPii(control.body)
-    || distinctSubjectsInText(control.body) >= MASSREAD_MIN_RECORDS;
+    || distinctPiiValuesInText(control.body) >= MASSREAD_MIN_RECORDS;
+  // (a) The control RECEIVED the bulk COLLECTION if its body parses to >= MIN records — REGARDLESS of HTTP
+  //     status (a 401/403 that STILL returns the bulk body did NOT deny the client the records; bot-review
+  //     #669/#677). It is therefore NOT a clean denial and never mints. Split the reason honestly so we do
+  //     not conflate "read records" with "read the sensitive data" (bot-review #914):
+  if (controlSummary.parse_ok && controlSummary.record_count >= MASSREAD_MIN_RECORDS) {
+    if (controlReadAnyPii) {
+      // anon read the bulk PII too → a PUBLIC / control-visible PII endpoint, not an authz break.
+      return fail("blocked_by_design", "control_also_reads_bulk_pii");
+    }
+    // anon read >= MIN REDACTED records (no PII shape); the attacker's PII read of a collection the anon
+    // sees only REDACTED is a field-level differential (BFLA on PII columns) — a real candidate, but v1
+    // cannot tell it from a deliberately-public redacted listing without route semantics, so it DECLINES
+    // rather than mint (the redacted-vs-PII mint is the v2 oracle). No longer mislabeled "public" (#914).
+    return fail("blocked_by_infra", "control_inconclusive_redacted_bulk");
+  }
   // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
   //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
   //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
