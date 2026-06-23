@@ -848,3 +848,50 @@ test("status-0 opaqueredirect control does NOT crash the audit → fail closed i
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
 }));
+
+// ── round-6: subject-key model (phone/address excluded), multi-token-one-record, IBAN target ──────
+
+test("phone-only collection does NOT mint — phone is labeled but not a subject identifier (#183)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Two distinct phones, no email/SSN/card/IBAN. Phones are recorded (sensitive_field_names) but a
+  // subject can have several, so they don't form subject keys → distinct_pii_count 0 → no mint.
+  const body = JSON.stringify({ data: [
+    { id: 1, phone: "555-111-2222" },
+    { id: 2, phone: "555-333-4444" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.pii_bearing_count, 2);          // phones ARE detected + labeled
+  assert.deepEqual(s.sensitive_field_names, ["phone"]);
+  assert.equal(s.distinct_pii_count, 0);          // but they are NOT subject identifiers
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("one record listing two of its OWN emails in one field is ONE subject key (#419)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // A self/history view: each row lists the SAME subject's two emails in one field. One record = one
+  // subject key (its sorted identifier set), so two identical rows are ONE distinct key, not two.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "owner@self.example alt@self.example" },
+    { id: 2, email: "owner@self.example alt@self.example" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 1); // one subject key {owner, alt}, not two tokens
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("an IBAN in the routed target path is screened → no raw PII in the signed rail (#643)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Re-route the surface to an endpoint whose PATH embeds an IBAN. canonicalizeExploitTarget keeps the
+  // path, so without the IBAN screen the raw IBAN would persist into the signed row target.
+  seedRoutedSurface(domain, { endpoints: [`https://${domain}/accounts/GB82WEST12345698765432/transactions`] });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
+}));

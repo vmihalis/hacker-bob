@@ -171,6 +171,15 @@ function emptyPiiShapes() {
   return { email: false, phone_intl: false, iban: false, ssn: false, credit_card: false };
 }
 
+// SUBJECT-IDENTIFIER shapes: the PII shapes that are (near-)UNIQUE per data subject within a single
+// field, so distinct normalized values are a sound proxy for distinct SUBJECTS. Phone and postal
+// address are deliberately EXCLUDED from the subject count (a single subject legitimately has several
+// numbers/addresses, and phone country-code/format aliases over-count — bot-review #183/#313/#419);
+// they are still LABELED in sensitive_field_names so the leak's columns are recorded, they just don't
+// drive the >= MIN-distinct-subjects floor. This is a deliberate PRECISION-first v1 choice: a leak
+// bearing ONLY phone/address (no email/SSN/card/IBAN) is recorded but does not mint a HIGH on its own.
+const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(["email", "ssn", "credit_card", "iban"]));
+
 // A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
 // nested { street, city } address or a list of values is still scanned). Empty for null/undefined.
 function piiValueText(value) {
@@ -383,23 +392,27 @@ function deriveMaskedSummary(bodyText) {
   const pii = summary.pii_shape_present;
   // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
   // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
-  // distinct_pii_count is the MAX, over every (concrete FIELD KEY, PII SHAPE) pair, of the number of
-  // DISTINCT NORMALIZED values seen for that pair across records — a robust lower bound on the number
-  // of distinct SUBJECTS. Three things make this sound where prior rounds were not:
-  //   • per FIELD KEY, not per bucket — one subject's `email` + `recovery_email` (both the `email`
-  //     bucket) are SEPARATE keys, each with one value, so they don't inflate (bot-review #393/#405);
-  //   • per SHAPE within the field — a single `contact` field holding one subject's email AND phone is
-  //     two shapes of ONE subject, counted separately, never summed to 2;
-  //   • NORMALIZED, shape-extracted values — case/format variants collapse (#394) and a structured
-  //     field contributes only its extracted PII token, never the whole varying JSON (#394 P1).
-  // So a self-record, constant boilerplate, a stray metadata value, and one subject carrying several
-  // PII fields ALL stay at cardinality 1; only >= MIN genuinely-distinct subjects clear the floor.
-  const fieldShapeValues = new Map(); // fieldKey -> (shape -> Set<normalizedValue>)
+  // distinct_pii_count is the count of distinct SUBJECT KEYS across records. A record's subject key is
+  // the sorted set of its NORMALIZED SUBJECT-IDENTIFIER values (email / SSN / card / IBAN — the shapes
+  // that are ~unique per subject); a record with no such identifier has no key and is not counted. This
+  // is a robust lower bound on distinct subjects and converges the prior whack-a-mole rounds, because:
+  //   • ONE record contributes at most ONE key, however many PII tokens it carries — so a field listing
+  //     two values for one subject (`email: "a@x alt@x"`) is one key, not two (bot-review #419);
+  //   • the key is built from CONCRETE field values across the whole record, so same-bucket multi-field
+  //     (`email` + `recovery_email`) and a promoted nested self-collection collapse to one key (#393/#313);
+  //   • values are NORMALIZED + shape-extracted, so case/format variants and a structured field's
+  //     varying non-PII siblings never split one subject into two (#394);
+  //   • phone / postal address are EXCLUDED from the key (a subject has several), killing phone-format
+  //     and address-multiplicity over-counts (#183) — they remain LABELED in sensitive_field_names.
+  // So a self-record, constant boilerplate, and one subject's many PII fields ALL yield ONE key; only
+  // >= MIN genuinely-distinct subjects clear the floor.
+  const subjectKeys = new Set();
   let piiBearingRecords = 0;
   const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
   for (let i = 0; i < scanLimit; i += 1) {
     const record = records[i];
     let recordHasSensitivePii = false;
+    const identifierValues = new Set(); // this record's normalized subject-identifier values
     for (const key of Object.keys(record)) {
       const bucket = bucketForFieldName(key);
       if (!bucket) continue;
@@ -409,28 +422,19 @@ function deriveMaskedSummary(bodyText) {
       if (matches.length === 0) continue;
       buckets.add(bucket);
       recordHasSensitivePii = true;
-      const fieldKey = key.toLowerCase();
-      let shapeMap = fieldShapeValues.get(fieldKey);
-      if (!shapeMap) { shapeMap = new Map(); fieldShapeValues.set(fieldKey, shapeMap); }
       for (const m of matches) {
         pii[m.shape] = true;
-        let valueSet = shapeMap.get(m.shape);
-        if (!valueSet) { valueSet = new Set(); shapeMap.set(m.shape, valueSet); }
-        valueSet.add(m.norm);
+        if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.add(`${m.shape}:${m.norm}`);
       }
     }
     if (recordHasSensitivePii) piiBearingRecords += 1;
+    // ONE subject key per record (its sorted identifier set) — never per-token, never per-field.
+    if (identifierValues.size > 0) subjectKeys.add(Array.from(identifierValues).sort().join("|"));
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
   summary.pii_bearing_count = piiBearingRecords;
-  // distinct_pii_count := MAX distinct normalized values for any single (field key, shape) pair.
-  let maxCardinality = 0;
-  for (const shapeMap of fieldShapeValues.values()) {
-    for (const valueSet of shapeMap.values()) {
-      if (valueSet.size > maxCardinality) maxCardinality = valueSet.size;
-    }
-  }
-  summary.distinct_pii_count = maxCardinality;
+  // distinct_pii_count := number of distinct SUBJECT KEYS (records with a distinct identifier set).
+  summary.distinct_pii_count = subjectKeys.size;
   return summary;
 }
 
@@ -640,7 +644,10 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // Value-blind durable target (origin+path, query stripped); a PII/secret shape in a fixed path
   // segment would persist into the signed row target.
   const canonicalTarget = canonicalizeExploitTarget(endpointUrl);
-  if (sensitiveShapesPresent(canonicalTarget)) {
+  // sensitiveShapesPresent covers detectPiiShapes (email/phone/ssn/card) but NOT the IBAN shape this
+  // producer adds, so screen IBAN explicitly — an IBAN in a fixed path segment (e.g.
+  // /accounts/GB82WEST.../transactions) would otherwise persist into the signed/audited target (#643).
+  if (sensitiveShapesPresent(canonicalTarget) || IBAN_VALUE_RE.test(canonicalTarget)) {
     return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
   }
 
@@ -736,13 +743,16 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
   }
   // MINT GATE: >= MIN DISTINCT subjects' PII. deriveMaskedSummary counts a PII VALUE only when it sits
-  // in a sensitively-NAMED field of a counted record, and distinct_pii_count is the MAX, over every
-  // (concrete field key, PII shape) pair, of the DISTINCT NORMALIZED values for that pair across records
-  // — so a benign list + a stray metadata email, a field merely NAMED like PII (`email_verified: true`),
-  // a constant boilerplate field (the same support email on every row), a single self-record, one
-  // subject carrying several PII fields (incl. two same-bucket fields like email+recovery_email), and
-  // case/format variants of one value ALL fall below the floor. Require BOTH >= MIN records that carry
-  // sensitive PII AND >= MIN distinct subjects (max per-(field,shape) cardinality).
+  // in a sensitively-NAMED field of a counted record, and distinct_pii_count is the number of distinct
+  // SUBJECT KEYS — one key per record, built from its normalized subject-identifier values (email / SSN
+  // / card / IBAN) — so a benign list + a stray metadata email, a field merely NAMED like PII
+  // (`email_verified: true`), constant boilerplate, a single self-record, one subject's many PII fields
+  // (incl. same-bucket email+recovery_email or a field listing two of its own values), case/format
+  // variants, and a promoted self-collection ALL yield ONE key and fall below the floor. NECESSARY,
+  // not sufficient: this proves the credentialed arm read >= MIN distinct identifier-bearing subjects an
+  // unauthenticated arm cannot — the evaluator + grader (which see endpoint semantics + the credential's
+  // provenance) certify the BFLA / under-privilege class; see the design notes at the head of the file.
+  // Require BOTH >= MIN records that carry sensitive PII AND >= MIN distinct subject keys.
   const attackerBulk = attackerOk2xx
     && attackerSummary.pii_bearing_count >= MASSREAD_MIN_RECORDS
     && attackerSummary.distinct_pii_count >= MASSREAD_MIN_RECORDS;
@@ -801,7 +811,8 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   });
   // Fail-closed PII screen: the masked summary is field-NAME buckets + counts + booleans, so a value
   // shape here means something leaked; refuse to sign it.
-  if (sensitiveShapesPresent(stdoutContent) || sensitiveShapesPresent(stderrContent)) {
+  if (sensitiveShapesPresent(stdoutContent) || sensitiveShapesPresent(stderrContent)
+    || IBAN_VALUE_RE.test(stdoutContent) || IBAN_VALUE_RE.test(stderrContent)) {
     return fail("blocked_operator_pii", "capture_contains_sensitive_value");
   }
 

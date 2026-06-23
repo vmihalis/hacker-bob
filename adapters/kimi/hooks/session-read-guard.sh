@@ -199,14 +199,17 @@ def _evaluate_resolved(resolved, block_session_dirs):
         return (True, resolved.name or "session directory")
 
     filename = resolved.name
-    if filename in ALLOWED_EXACT:
-        return (True, None)
-    # Check BLOCKED_DIRS against the SYMLINK-RESOLVED, session-relative parts — not the literal
-    # `resolved.parts`. A symlink alias outside the session (`/tmp/e -> <session>/massread-evidence`)
-    # has a literal path with no blocked component, but its resolved target is inside a blocked dir;
-    # using the raw parts let `Read /tmp/e/<run>.json` bypass the raw-PII block (bot-review #101).
+    # A blocked sensitive dir DOMINATES the basename allowlist: a raw-PII file inside massread-evidence/
+    # (or any blocked dir) whose basename happens to match ALLOWED_EXACT must STILL be blocked, so this
+    # check runs BEFORE ALLOWED_EXACT (bot-review #202). It checks BLOCKED_DIRS against the union of the
+    # literal `resolved.parts` AND the SYMLINK-RESOLVED, session-relative parts: a symlink alias outside
+    # the session (`/tmp/e -> <session>/massread-evidence`) has a literal path with no blocked component,
+    # but its resolved target is inside a blocked dir, so the raw parts alone let `Read /tmp/e/<run>.json`
+    # bypass the raw-PII block (bot-review #101).
     if any(part in BLOCKED_DIRS for part in (*resolved.parts, *session_relative_parts)):
         return (True, filename)
+    if filename in ALLOWED_EXACT:
+        return (True, None)
     if filename in BLOCKED_EXACT:
         return (True, filename)
     if any(pattern.match(filename) for pattern in BLOCKED_PATTERNS):
