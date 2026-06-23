@@ -160,7 +160,6 @@ const SENSITIVE_FIELD_BUCKETS = Object.freeze([
 // shape BOOLEAN is kept, the value is discarded. Wider than the former email/phone/iban vocabulary
 // (which silently dropped SSN / credit-card mass-reads) and no longer a whole-body scan (which let
 // unrelated response metadata — a support/copyright email — forge the signal).
-const IBAN_VALUE_RE = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/;
 const PII_TYPE_TO_SHAPE = Object.freeze({
   email: "email", phone: "phone_intl", ssn: "ssn", credit_card: "credit_card",
 });
@@ -178,7 +177,11 @@ function emptyPiiShapes() {
 // they are still LABELED in sensitive_field_names so the leak's columns are recorded, they just don't
 // drive the >= MIN-distinct-subjects floor. This is a deliberate PRECISION-first v1 choice: a leak
 // bearing ONLY phone/address (no email/SSN/card/IBAN) is recorded but does not mint a HIGH on its own.
-const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(["email", "ssn", "credit_card", "iban"]));
+// Priority order for choosing a record's ONE dominant identifier (most-unique first). Keying each
+// record by its single highest-priority identifier — not the full set — means two records that SHARE
+// that identifier are ONE subject even if one row carries an extra identifier (bot-review #432).
+const SUBJECT_IDENTIFIER_PRIORITY = Object.freeze(["email", "ssn", "credit_card", "iban"]);
+const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(SUBJECT_IDENTIFIER_PRIORITY));
 
 // A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
 // nested { street, city } address or a list of values is still scanned). Empty for null/undefined.
@@ -203,6 +206,36 @@ function normalizePiiValue(shape, value) {
   }
 }
 
+// IBAN detection — the repo's detectPiiShapes does NOT cover IBAN, so this producer adds it. Detect by
+// DECODING percent-encoding, scanning case-INSENSITIVELY, and validating the mod-97 CHECKSUM — so a real
+// IBAN is caught regardless of case/encoding (bot-review #650, e.g. `gb82west…` or `%47%42…`) WITHOUT
+// false-positiving on arbitrary hex-ish id/path segments (a bare shape regex would, and since the target
+// screen is fail-CLOSED, a false match would spuriously block a legit run). Returns canonical (decoded,
+// uppercased, space-stripped) IBANs.
+function ibanChecksumValid(iban) {
+  if (iban.length < 5 || iban.length > 34) return false;
+  const rearranged = iban.slice(4) + iban.slice(0, 4);
+  let remainder = 0;
+  for (const ch of rearranged) {
+    if (ch >= "A" && ch <= "Z") remainder = (remainder * 100 + (ch.charCodeAt(0) - 55)) % 97; // A=10..Z=35
+    else if (ch >= "0" && ch <= "9") remainder = (remainder * 10 + (ch.charCodeAt(0) - 48)) % 97;
+    else return false;
+  }
+  return remainder === 1;
+}
+function findIbans(text) {
+  let decoded = String(text);
+  try { decoded = decodeURIComponent(decoded); } catch { /* malformed % — scan the raw text */ }
+  const out = [];
+  const re = /\b[A-Za-z]{2}\d{2}[A-Za-z0-9]{10,30}\b/g;
+  let m;
+  while ((m = re.exec(decoded)) !== null) {
+    const cand = m[0].toUpperCase();
+    if (ibanChecksumValid(cand)) out.push(cand);
+  }
+  return out;
+}
+
 // PII value MATCHES in one field's value: the repo detectPiiShapes matches (mapped to our shape keys)
 // UNION the IBAN shape it does not cover, each as { shape, norm } where `norm` is the CANONICAL value.
 // Returns the EXTRACTED, NORMALIZED PII token(s) — NOT the whole serialized field value — so a
@@ -215,8 +248,7 @@ function piiMatchesInValue(valueText) {
     const shape = PII_TYPE_TO_SHAPE[m.type];
     if (shape && m.value != null) out.push({ shape, norm: normalizePiiValue(shape, m.value) });
   }
-  const iban = valueText.match(IBAN_VALUE_RE);
-  if (iban) out.push({ shape: "iban", norm: normalizePiiValue("iban", iban[0]) });
+  for (const ib of findIbans(valueText)) out.push({ shape: "iban", norm: ib }); // already canonical
   return out;
 }
 
@@ -393,13 +425,15 @@ function deriveMaskedSummary(bodyText) {
   // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
   // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
   // distinct_pii_count is the count of distinct SUBJECT KEYS across records. A record's subject key is
-  // the sorted set of its NORMALIZED SUBJECT-IDENTIFIER values (email / SSN / card / IBAN — the shapes
-  // that are ~unique per subject); a record with no such identifier has no key and is not counted. This
-  // is a robust lower bound on distinct subjects and converges the prior whack-a-mole rounds, because:
+  // its single HIGHEST-PRIORITY normalized SUBJECT-IDENTIFIER value(s) (email > SSN > card > IBAN — the
+  // shapes ~unique per subject); a record with no such identifier has no key and is not counted. This is
+  // a robust lower bound on distinct subjects and converges the prior whack-a-mole rounds, because:
   //   • ONE record contributes at most ONE key, however many PII tokens it carries — so a field listing
   //     two values for one subject (`email: "a@x alt@x"`) is one key, not two (bot-review #419);
-  //   • the key is built from CONCRETE field values across the whole record, so same-bucket multi-field
-  //     (`email` + `recovery_email`) and a promoted nested self-collection collapse to one key (#393/#313);
+  //   • keying on the DOMINANT identifier (not the full set) means two rows that share it are ONE subject
+  //     even if one row carries an extra identifier the other lacks (`{email}` vs `{email,ssn}`, #432);
+  //   • same-bucket multi-field (`email` + `recovery_email`) and a promoted nested self-collection
+  //     collapse to one key (#393/#313);
   //   • values are NORMALIZED + shape-extracted, so case/format variants and a structured field's
   //     varying non-PII siblings never split one subject into two (#394);
   //   • phone / postal address are EXCLUDED from the key (a subject has several), killing phone-format
@@ -412,7 +446,7 @@ function deriveMaskedSummary(bodyText) {
   for (let i = 0; i < scanLimit; i += 1) {
     const record = records[i];
     let recordHasSensitivePii = false;
-    const identifierValues = new Set(); // this record's normalized subject-identifier values
+    const idByShape = new Map(); // this record's normalized identifier values, grouped by shape
     for (const key of Object.keys(record)) {
       const bucket = bucketForFieldName(key);
       if (!bucket) continue;
@@ -424,12 +458,20 @@ function deriveMaskedSummary(bodyText) {
       recordHasSensitivePii = true;
       for (const m of matches) {
         pii[m.shape] = true;
-        if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.add(`${m.shape}:${m.norm}`);
+        if (!SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) continue;
+        let set = idByShape.get(m.shape);
+        if (!set) { set = new Set(); idByShape.set(m.shape, set); }
+        set.add(m.norm);
       }
     }
     if (recordHasSensitivePii) piiBearingRecords += 1;
-    // ONE subject key per record (its sorted identifier set) — never per-token, never per-field.
-    if (identifierValues.size > 0) subjectKeys.add(Array.from(identifierValues).sort().join("|"));
+    // ONE subject key per record: its HIGHEST-PRIORITY identifier shape's value(s). A single dominant
+    // identifier (not the full set) means two rows sharing it are ONE subject even if one carries an
+    // extra identifier (#432); a record with no subject identifier contributes no key.
+    for (const shape of SUBJECT_IDENTIFIER_PRIORITY) {
+      const set = idByShape.get(shape);
+      if (set && set.size > 0) { subjectKeys.add(`${shape}:${Array.from(set).sort().join(",")}`); break; }
+    }
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
   summary.pii_bearing_count = piiBearingRecords;
@@ -647,7 +689,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // sensitiveShapesPresent covers detectPiiShapes (email/phone/ssn/card) but NOT the IBAN shape this
   // producer adds, so screen IBAN explicitly — an IBAN in a fixed path segment (e.g.
   // /accounts/GB82WEST.../transactions) would otherwise persist into the signed/audited target (#643).
-  if (sensitiveShapesPresent(canonicalTarget) || IBAN_VALUE_RE.test(canonicalTarget)) {
+  if (sensitiveShapesPresent(canonicalTarget) || findIbans(canonicalTarget).length > 0) {
     return fail("blocked_operator_pii", "proof_target_contains_sensitive_value");
   }
 
@@ -770,21 +812,29 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (controlReadBulk) {
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
   }
-  // (b) A CLEAN unauthenticated denial is an explicit 401, OR a 2xx that did NOT return the bulk
-  //     collection — either a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No Content /
-  //     empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS — a WAF /
-  //     bot-challenge vs a real authz denial — so it is NEVER scored "denied" (parseability is not an
-  //     auth-denial oracle, bot-review #675); likewise an unparseable NON-empty 2xx (HTML app shell / WAF
-  //     interstitial) stays ambiguous. Both fall through to control_inconclusive.
+  // (a2) The control surfaced SOME subject PII (>= 1 distinct subject key), but below the bulk floor.
+  //      That is NOT a clean denial — the unauthenticated client read a real subject's PII, so the
+  //      "anon is denied PII" premise fails (a public teaser / partial-public endpoint, not a clean
+  //      authz differential). Fall through to inconclusive rather than mint (bot-review #784).
+  const controlReadAnySubjectPii = controlSummary.distinct_pii_count > 0;
+  // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
+  //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
+  //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
+  //     — a WAF / bot-challenge vs a real authz denial — so it is NEVER scored "denied" (parseability is
+  //     not an auth-denial oracle, bot-review #675); likewise an unparseable NON-empty 2xx (HTML app shell
+  //     / WAF interstitial) stays ambiguous. All fall through to control_inconclusive.
   const control2xx = control.status != null && control.status >= 200 && control.status < 300;
   const controlBodyEmpty = typeof control.body !== "string" || control.body.trim().length === 0;
   const controlOk2xx = control2xx && controlSummary.parse_ok;
-  const controlDenied = control.status === 401
+  const controlDenied = !controlReadAnySubjectPii && (
+    control.status === 401
     || (control2xx && controlBodyEmpty)
-    || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS);
+    || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS)
+  );
   if (!controlDenied) {
-    // Ambiguous control (403, 5xx, 404, unparseable, timeout): cannot conclude the control was DENIED,
-    // so the differential is unproven. Fail closed rather than mint a HIGH off an inconclusive baseline.
+    // Ambiguous control (403, 5xx, 404, unparseable, timeout, OR a control that itself read subject PII):
+    // cannot conclude the control was DENIED, so the differential is unproven. Fail closed rather than
+    // mint a HIGH off an inconclusive baseline.
     return fail("blocked_by_infra", "control_inconclusive");
   }
 
@@ -812,7 +862,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // Fail-closed PII screen: the masked summary is field-NAME buckets + counts + booleans, so a value
   // shape here means something leaked; refuse to sign it.
   if (sensitiveShapesPresent(stdoutContent) || sensitiveShapesPresent(stderrContent)
-    || IBAN_VALUE_RE.test(stdoutContent) || IBAN_VALUE_RE.test(stderrContent)) {
+    || findIbans(stdoutContent).length > 0 || findIbans(stderrContent).length > 0) {
     return fail("blocked_operator_pii", "capture_contains_sensitive_value");
   }
 

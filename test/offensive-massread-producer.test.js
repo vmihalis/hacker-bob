@@ -895,3 +895,54 @@ test("an IBAN in the routed target path is screened → no raw PII in the signed
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
 }));
+
+// ── round-7: priority-shape subject key, control-with-PII, IBAN case/encoding + checksum ───────────
+
+test("records sharing one identifier are ONE subject even if one has an extra identifier (#432)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same subject in two rows: both share the email; one row also carries an SSN. Keying on the dominant
+  // identifier (email) merges them → one subject key, not two.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "owner@self.example" },
+    { id: 2, email: "owner@self.example", ssn: "123-45-6789" },
+  ] });
+  assert.equal(deriveMaskedSummary(body).distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a control that itself reads ONE subject's PII is NOT a clean denial → inconclusive (#784)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Attacker reads bulk (default 3 distinct subjects); the unauthenticated control returns a 2xx with
+  // ONE PII-bearing record. The control surfaced a real subject's PII, so "anon is denied PII" fails —
+  // a public teaser / partial-public endpoint, not a clean authz differential → fail closed.
+  const control = { status: 200, body: JSON.stringify({ data: [{ id: 1, email: "teaser@public.example" }] }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("a LOWERCASE IBAN in the target path is still screened (case-folded) (#650)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same valid IBAN as above, lowercased. The bare uppercase regex would have missed it.
+  seedRoutedSurface(domain, { endpoints: [`https://${domain}/accounts/gb82west12345698765432/transactions`] });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
+}));
+
+test("a hex-ish path segment that FAILS the IBAN checksum is NOT a false positive → mints (#650 precision)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same IBAN SHAPE but check digits 00 (never valid) — a stand-in for any hex-ish id/path segment. The
+  // checksum rejects it, so the screen does NOT fail-closed and spuriously block a legit listing run.
+  seedRoutedSurface(domain, { endpoints: [`https://${domain}/items/gb00west12345698765432/list`] });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true, `non-IBAN hex path must not be screened: ${JSON.stringify(result)}`);
+  assert.equal(result.row_written, true);
+}));
