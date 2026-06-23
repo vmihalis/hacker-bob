@@ -15,6 +15,8 @@ const path = require("node:path");
 const {
   massreadConfirm,
   deriveMaskedSummary,
+  extractRecords,
+  cookieObjectsFromProfile,
   MASSREAD_MIN_RECORDS,
   OWNER_AUTHORIZED_ENV,
   TOOL_ID,
@@ -109,7 +111,7 @@ function makeDriver(opts = {}) {
     isAvailable: () => available,
     start: async (o) => {
       const isAttacker = Array.isArray(o.authCookies) && o.authCookies.length > 0;
-      calls.starts.push({ isAttacker, targetUrl: o.targetUrl, cookieCount: o.authCookies ? o.authCookies.length : 0 });
+      calls.starts.push({ isAttacker, targetUrl: o.targetUrl, cookieCount: o.authCookies ? o.authCookies.length : 0, authCookies: o.authCookies || null });
       if (startReturnsNoSession) return {};
       return { session_id: isAttacker ? "ms-attacker" : "ms-control" };
     },
@@ -512,8 +514,118 @@ test("symlinked massread-evidence dir → refused (not followed); the masked row
 test("malformed cookie (a value with a literal ;) is handled fail-soft — the producer still runs", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain, { attackerCookies: { sid: "abc;def", other: "ok" } });
-  const { driver } = makeDriver();
+  const { driver, calls } = makeDriver();
   const result = await run(domain, { driver });
-  // The lossy "; " split truncates sid's value at the ';' but never crashes or forges — the run proceeds.
+  // The structured cookie_jar issues sid's value VERBATIM ("abc;def") — no truncation, no crash, and
+  // (critically) no forged extra cookie out of the embedded ';'. The run proceeds and mints.
   assert.equal(result.confirmed, true);
+  const attackerStart = calls.starts.find((s) => s.isAttacker);
+  const sid = attackerStart.authCookies.find((c) => c.name === "sid");
+  assert.equal(sid.value, "abc;def");
+}));
+
+// ── round-2 soundness (bot-review): bind the three mint signals to the SAME counted records ──────
+
+test("FALSE-HIGH closed: a metadata email + benign records does NOT mint (PII is not in a counted record)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // records = [{id:1},{id:2}] — no sensitive field, no PII value; the email lives in response METADATA.
+  const attacker = { status: 200, body: JSON.stringify({ data: [{ id: 1 }, { id: 2 }], support_email: "help@vendor.example" }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ attacker });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "attacker_did_not_read_bulk_pii");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("a top-level array of SCALARS is not a record collection → record_count 0, no mint", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  assert.equal(deriveMaskedSummary(JSON.stringify({ data: ["a", "b", "c"] })).record_count, 0);
+  assert.equal(extractRecords({ tags: ["x", "y"] }).length, 0);
+  const attacker = { status: 200, body: JSON.stringify({ data: ["a", "b", "c"] }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ attacker });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("extractRecords picks the OBJECT array, not a larger SCALAR array", () => {
+  const parsed = { results: [{ id: 1, email: "a@b.example" }, { id: 2, email: "c@d.example" }], tags: ["x", "y", "z", "w", "v"] };
+  assert.equal(extractRecords(parsed).length, 2);
+  assert.equal(deriveMaskedSummary(JSON.stringify(parsed)).record_count, 2);
+});
+
+test("widened vocab: an SSN mass-read mints HIGH (the former email/phone/iban vocab missed it)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const body = JSON.stringify({ data: [
+    { id: 1, ssn: "123-45-6789", full_name: "A" },
+    { id: 2, ssn: "987-65-4321", full_name: "B" },
+  ] });
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.row_written, true);
+  assert.ok(result.masked_oracle.sensitive_field_names.includes("government_id"));
+  assert.equal(result.masked_oracle.pii_shape_present.ssn, true);
+  assert.ok(!signedRailBytes(domain).includes("123-45-6789"), "raw SSN must never reach the signed rail");
+}));
+
+test("widened vocab: a Luhn-valid credit-card mass-read mints HIGH", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const body = JSON.stringify({ data: [
+    { id: 1, card_number: "4111111111111111", name: "A" },
+    { id: 2, card_number: "4012888888881881", name: "B" },
+  ] });
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.masked_oracle.pii_shape_present.credit_card, true);
+  assert.ok(result.masked_oracle.sensitive_field_names.includes("financial"));
+}));
+
+test("field-name requirement: a PII value in a non-sensitive field (no sensitive field NAME) does NOT mint", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const body = JSON.stringify({ data: [
+    { id: 1, comment: "reach me at a@b.example" },
+    { id: 2, comment: "or c@d.example" },
+  ] });
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "attacker_did_not_read_bulk_pii");
+}));
+
+test("cookie forge prevented: a value with '; k=v' stays ONE cookie (structured jar, no identity mutation)", () => {
+  const jar = cookieObjectsFromProfile({ cookie_jar: { sid: "abc; role=admin" }, Cookie: "sid=abc; role=admin" }, "https://x.example/");
+  assert.equal(jar.length, 1);
+  assert.equal(jar[0].name, "sid");
+  assert.equal(jar[0].value, "abc; role=admin"); // verbatim — NOT re-split into a forged role=admin cookie
+  // legacy fallback (no jar): a stale profile's flat header still parses best-effort.
+  const legacy = cookieObjectsFromProfile({ Cookie: "a=1; b=2" }, "https://x.example/");
+  assert.equal(legacy.length, 2);
+});
+
+test("control 403 WAF block page (non-JSON) → control_inconclusive, not a clean denial", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const control = { status: 403, body: "<html><body>Access Denied (Ray ID: 8a...)</body></html>", final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "control_inconclusive");
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("control 403 with a JSON auth error → a clean denial → mints", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const control = { status: 403, body: JSON.stringify({ error: "forbidden" }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.row_written, true);
 }));

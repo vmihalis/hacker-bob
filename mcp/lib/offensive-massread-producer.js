@@ -106,6 +106,9 @@ const {
   resolveAuthProfile,
 } = require("./auth.js");
 const {
+  detectPiiShapes,
+} = require("./pii-detector.js");
+const {
   sessionDir,
 } = require("./paths.js");
 
@@ -150,12 +153,22 @@ const SENSITIVE_FIELD_BUCKETS = Object.freeze([
   { bucket: "postal_address", fragments: ["address", "postcode", "zipcode", "zip_code", "street"] },
 ]);
 
-// PII VALUE shapes — run over stringified values to set booleans; the values are DISCARDED.
-const PII_VALUE_SHAPES = Object.freeze({
-  email: /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
-  phone_intl: /(?:^|[^\d])\+\d[\d\s().-]{7,}\d/,
-  iban: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/,
+// PII VALUE detection — the repo's battle-tested detectPiiShapes (email / phone / SSN / Luhn-valid
+// credit-card) UNION an IBAN shape it does not cover. Run ONLY over a counted record's own VALUES
+// (deriveMaskedSummary), so the mint gate binds the PII signal to the records it counts; only the
+// shape BOOLEAN is kept, the value is discarded. Wider than the former email/phone/iban vocabulary
+// (which silently dropped SSN / credit-card mass-reads) and no longer a whole-body scan (which let
+// unrelated response metadata — a support/copyright email — forge the signal).
+const IBAN_VALUE_RE = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/;
+const PII_TYPE_TO_SHAPE = Object.freeze({
+  email: "email", phone: "phone_intl", ssn: "ssn", credit_card: "credit_card",
 });
+// Cap the per-record value scan so a huge collection cannot blow the regex budget; record_count
+// still counts every object record, but PII presence only needs ONE qualifying record.
+const MASSREAD_PII_SCAN_RECORDS = 1000;
+function emptyPiiShapes() {
+  return { email: false, phone_intl: false, iban: false, ssn: false, credit_card: false };
+}
 
 function blocked(outcome, reason, extra = {}) {
   return {
@@ -179,15 +192,31 @@ function ownerAuthorized() {
 // driver scope-validates it against target_domain). A bearer-only profile has Authorization but no
 // Cookie → returns [] (not cookie-expressible; bearer support is v2).
 function cookieObjectsFromProfile(profile, urlForCookie) {
+  // PREFER the STRUCTURED jar. auth.js#buildHeaderProfile now persists the original {name: value}
+  // cookie map as `profile.cookie_jar` (a Bob-local metadata key, never emitted as a header). Using
+  // it verbatim means a cookie VALUE that contains a `;` stays ONE cookie and can NEVER be re-split
+  // into a FORGED extra cookie — the exact identity-mutation the flat-header re-parse below cannot
+  // prevent (`sid=abc; role=admin` is indistinguishable from a legit two-cookie header once
+  // flattened). So a forged elevated cookie can never silently widen the tested identity → no false
+  // mint from a privilege the stored profile never had.
+  if (profile && profile.cookie_jar && typeof profile.cookie_jar === "object"
+      && !Array.isArray(profile.cookie_jar)) {
+    const out = [];
+    for (const [rawName, rawValue] of Object.entries(profile.cookie_jar)) {
+      const name = String(rawName).trim();
+      if (!name) continue;
+      out.push({ name, value: String(rawValue), url: urlForCookie });
+    }
+    return out;
+  }
+  // LEGACY fallback: a profile stored before cookie_jar existed only has the flattened "Cookie"
+  // header. Re-parse best-effort (the `eq <= 0` guard drops a name-less part → fail-closed to a
+  // DROPPED cookie, which only weakens the attacker arm). Fresh per-engagement profiles always carry
+  // cookie_jar, so this path is reached only for stale stored profiles.
   const header = typeof profile.Cookie === "string" ? profile.Cookie
     : (typeof profile.cookie === "string" ? profile.cookie : "");
   if (!header.trim()) return [];
   const out = [];
-  // BOUND: a "; " split is the standard Cookie-header delimiter; a cookie VALUE must not contain a
-  // raw `;` (RFC 6265 — it is percent/base64-encoded if present), so the split is lossless for
-  // well-formed cookies. A pathological value with a literal `;` would split into extra parts; the
-  // `eq <= 0` guard drops any part without a leading name, so the worst case is a dropped cookie
-  // (fail-closed: a missing cookie weakens the attacker arm → no false mint), never a forged one.
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -209,23 +238,39 @@ const liveBrowserDriver = Object.freeze({
   close: (sessionId, reason) => browserSessions.closeSession(sessionId, reason),
 });
 
-// Find the records array in a parsed listing response: a top-level array, or the largest array of
-// objects one level deep under a common collection key. Returns [] when none is found.
+// Find the records array in a parsed listing response: a top-level array, or the largest array
+// one level deep under a common collection key. Returns the OBJECT elements only — an array of
+// scalars (strings/ids/facets) is NOT a record collection, so it can never inflate record_count or
+// host the PII value the mint gate binds to those records. Returns [] when none qualifies.
 const COLLECTION_KEYS = Object.freeze([
   "data", "results", "items", "records", "rows", "list", "hits", "docs", "entries", "content", "elements",
 ]);
+function isPlainObject(x) {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
+// An array qualifies as a record collection iff a MAJORITY of its elements are plain objects (tolerate
+// a few null/scalar holes). `{ data: ["a","b"] }` (strings) and `{ tags: [1,2,3] }` (ids) do NOT
+// qualify; `{ results: [{...},{...}] }` does. The caller filters to the object elements for counting.
+function recordObjects(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const objs = arr.filter(isPlainObject);
+  if (objs.length >= 1 && objs.length * 2 >= arr.length) return objs;
+  return null;
+}
 function extractRecords(parsed) {
-  if (Array.isArray(parsed)) return parsed;
-  if (!parsed || typeof parsed !== "object") return [];
+  const top = recordObjects(parsed);
+  if (top) return top;
+  if (!isPlainObject(parsed)) return [];
   let best = [];
   for (const key of COLLECTION_KEYS) {
     const value = parsed[key];
-    if (Array.isArray(value) && value.length > best.length) best = value;
+    const objs = recordObjects(value);
+    if (objs && objs.length > best.length) best = objs;
     // one more level: { data: { items: [...] } }
-    if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (isPlainObject(value)) {
       for (const inner of COLLECTION_KEYS) {
-        const innerVal = value[inner];
-        if (Array.isArray(innerVal) && innerVal.length > best.length) best = innerVal;
+        const innerObjs = recordObjects(value[inner]);
+        if (innerObjs && innerObjs.length > best.length) best = innerObjs;
       }
     }
   }
@@ -278,7 +323,7 @@ function deriveMaskedSummary(bodyText) {
   const summary = {
     record_count: 0,
     sensitive_field_names: [],
-    pii_shape_present: { email: false, phone_intl: false, iban: false },
+    pii_shape_present: emptyPiiShapes(),
     parse_ok: false,
   };
   if (typeof bodyText !== "string" || bodyText.length === 0) return summary;
@@ -289,23 +334,31 @@ function deriveMaskedSummary(bodyText) {
     return summary; // non-JSON (HTML block page, etc.) → not a countable collection
   }
   summary.parse_ok = true;
-  const records = extractRecords(parsed);
+  const records = extractRecords(parsed); // plain-object records only (scalars excluded)
   summary.record_count = records.length;
   const buckets = new Set();
-  for (const record of records) {
-    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+  const pii = summary.pii_shape_present;
+  const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
     for (const key of Object.keys(record)) {
       const bucket = bucketForFieldName(key);
       if (bucket) buckets.add(bucket);
     }
+    // PII VALUE shapes are detected ONLY inside the record's own VALUES (never keys, never response
+    // metadata) so a counted record must ITSELF carry a real PII value. This binds the three mint
+    // signals — record_count, sensitive_field_names, pii_shape_present — to the SAME counted records,
+    // closing the decoupling where a benign string array + a stray metadata email could mint HIGH.
+    if (i < scanLimit) {
+      const valuesText = JSON.stringify(Object.values(record));
+      for (const m of detectPiiShapes(valuesText)) {
+        const shape = PII_TYPE_TO_SHAPE[m.type];
+        if (shape) pii[shape] = true;
+      }
+      if (!pii.iban && IBAN_VALUE_RE.test(valuesText)) pii.iban = true;
+    }
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
-  // Value shapes: scan a bounded prefix of the body so a huge collection cannot blow the regex
-  // budget. The values are read ONLY to set booleans, then discarded with the body.
-  const scanWindow = bodyText.length > 262144 ? bodyText.slice(0, 262144) : bodyText;
-  for (const [shape, re] of Object.entries(PII_VALUE_SHAPES)) {
-    summary.pii_shape_present[shape] = re.test(scanWindow);
-  }
   return summary;
 }
 
@@ -393,6 +446,13 @@ async function runArm(drv, {
 
 // Persist the FULL raw capture OUTSIDE the signed rail, ONLY under the operator env gate. The folder
 // is co-located with the session (not the repo); the operator deletes it after the engagement.
+// ADAPTER LIMITATION (honest): the agent-read block on massread-evidence/ is enforced by the
+// session-read-guard PreToolUse hook, which ships in the Claude + Kimi adapters but NOT the Codex
+// adapter (Codex has no hook layer — a pre-existing gap for every session artifact, not just this
+// one). So under a Codex install the raw capture's only control is the operator env gate itself
+// (BOB_MASSREAD_OWNER_AUTHORIZED, which the agent cannot set and which operators enable ONLY for
+// client-owned data they are already authorized to hold) plus prompt deletion. The PRIMARY guarantee
+// — the signed rail never carries raw PII — holds on every adapter regardless.
 function writeFullCapture(domain, runId, payload) {
   // SAME symlink discipline as the signed offensive-runs rail (offensive-capture-writer.js): this is
   // the raw-PII artifact, so a symlinked session dir / evidence dir / leaf must never redirect it.
@@ -586,12 +646,16 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (attackerOk2xx && !attackerSummary.parse_ok) {
     return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
   }
-  // MINT GATE: require a real PII VALUE shape, not merely a field NAMED like PII — so a column such as
-  // `email_verified: true` (a boolean) can never lift a row. The field-name buckets are the WITNESS only.
+  // MINT GATE: a real PII VALUE shape INSIDE the counted records (deriveMaskedSummary binds the scan
+  // to record VALUES) AND >= 1 sensitive field-name bucket on those records AND >= MIN records — all
+  // three signals now come from the SAME counted object-records. So a benign string array plus a stray
+  // metadata email can no longer lift a row, and a field merely NAMED like PII (`email_verified: true`)
+  // with no PII value still cannot mint.
   const attackerHasPiiValue = Object.values(attackerSummary.pii_shape_present).some(Boolean);
   const attackerBulk = attackerOk2xx
     && attackerSummary.record_count >= MASSREAD_MIN_RECORDS
-    && attackerHasPiiValue;
+    && attackerHasPiiValue
+    && attackerSummary.sensitive_field_names.length >= 1;
   if (!attackerBulk) {
     return fail("blocked_by_defense", "attacker_did_not_read_bulk_pii");
   }
@@ -603,7 +667,13 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   const controlReadsBulk = controlOk2xx
     && controlSummary.record_count >= MASSREAD_MIN_RECORDS
     && controlHasPiiValue;
-  const controlDenied = (control.status === 401 || control.status === 403)
+  // An explicit AUTH denial is 401 always, but 403 ONLY when its body parses as a structured (JSON)
+  // error. A WAF / bot-challenge 403 is typically an HTML block page (parse_ok=false); counting that
+  // as "unauthenticated denied" would forge the differential on a PUBLIC endpoint the WAF merely
+  // challenged for the cookie-less arm. An HTML/unparseable 403 falls through to control_inconclusive.
+  const controlAuthDenied = control.status === 401
+    || (control.status === 403 && controlSummary.parse_ok);
+  const controlDenied = controlAuthDenied
     || (controlOk2xx && (controlSummary.record_count === 0 || !controlHasPiiValue));
   if (controlReadsBulk) {
     // Control ALSO reads the bulk collection → a PUBLIC endpoint, not an authorization break.
@@ -707,6 +777,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
       relation: relationBooleans,
       record_count: maskedSummary.record_count,
       sensitive_field_names: maskedSummary.sensitive_field_names,
+      pii_shape_present: maskedSummary.pii_shape_present,
       fragment_hash: row.stdout_hash,
     },
     ...internalHostPolicy,
@@ -718,6 +789,7 @@ module.exports = {
   deriveMaskedSummary,
   extractRecords,
   bucketForFieldName,
+  cookieObjectsFromProfile,
   MASSREAD_MIN_RECORDS,
   OWNER_AUTHORIZED_ENV,
   TOOL_ID,
