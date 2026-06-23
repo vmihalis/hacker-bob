@@ -79,7 +79,6 @@ const {
 const {
   findRoutedSurface,
   resolveSurfaceEndpoint,
-  candidateSurfaceEndpoints,
   assertReadOnlyPath,
   auditConfirmRequest,
   assertNoForbiddenInputs,
@@ -110,6 +109,8 @@ const {
 } = require("./pii-detector.js");
 const {
   sessionDir,
+  sessionsRoot,
+  assertSafeDomain,
 } = require("./paths.js");
 
 const TOOL_ID = "bob_http_massread_confirm";
@@ -168,6 +169,27 @@ const PII_TYPE_TO_SHAPE = Object.freeze({
 const MASSREAD_PII_SCAN_RECORDS = 1000;
 function emptyPiiShapes() {
   return { email: false, phone_intl: false, iban: false, ssn: false, credit_card: false };
+}
+
+// A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
+// nested { street, city } address or a list of values is still scanned). Empty for null/undefined.
+function piiValueText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try { return JSON.stringify(value); } catch { return ""; }
+}
+
+// PII value SHAPES present in one field's value: the repo detectPiiShapes types mapped to our keys,
+// UNION the IBAN shape it does not cover. Returns the deduped shape-key list.
+function piiShapesInValue(valueText) {
+  const out = new Set();
+  for (const m of detectPiiShapes(valueText)) {
+    const shape = PII_TYPE_TO_SHAPE[m.type];
+    if (shape) out.add(shape);
+  }
+  if (IBAN_VALUE_RE.test(valueText)) out.add("iban");
+  return Array.from(out);
 }
 
 function blocked(outcome, reason, extra = {}) {
@@ -322,6 +344,8 @@ function bucketForFieldName(rawName) {
 function deriveMaskedSummary(bodyText) {
   const summary = {
     record_count: 0,
+    pii_bearing_count: 0,
+    distinct_pii_count: 0,
     sensitive_field_names: [],
     pii_shape_present: emptyPiiShapes(),
     parse_ok: false,
@@ -338,27 +362,35 @@ function deriveMaskedSummary(bodyText) {
   summary.record_count = records.length;
   const buckets = new Set();
   const pii = summary.pii_shape_present;
+  // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
+  // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
+  // Bind value↔field per record, then count DISTINCT (bucket,value) pairs across records: a single
+  // subject's value repeated, or a constant support/store boilerplate field, is ONE distinct value
+  // and so cannot reach the >=2 floor — only >=2 DISTINCT subjects' sensitive values do.
+  // (bot-review #354/#658/#657/#305 decoupling + #268 nested self-record.)
+  const distinctValues = new Set();
+  let piiBearingRecords = 0;
   const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
-  for (let i = 0; i < records.length; i += 1) {
+  for (let i = 0; i < scanLimit; i += 1) {
     const record = records[i];
+    let recordHasSensitivePii = false;
     for (const key of Object.keys(record)) {
       const bucket = bucketForFieldName(key);
-      if (bucket) buckets.add(bucket);
+      if (!bucket) continue;
+      const valueText = piiValueText(record[key]);
+      if (!valueText) continue;
+      const shapes = piiShapesInValue(valueText);
+      if (shapes.length === 0) continue;
+      buckets.add(bucket);
+      for (const shape of shapes) pii[shape] = true;
+      recordHasSensitivePii = true;
+      distinctValues.add(`${bucket} ${valueText}`);
     }
-    // PII VALUE shapes are detected ONLY inside the record's own VALUES (never keys, never response
-    // metadata) so a counted record must ITSELF carry a real PII value. This binds the three mint
-    // signals — record_count, sensitive_field_names, pii_shape_present — to the SAME counted records,
-    // closing the decoupling where a benign string array + a stray metadata email could mint HIGH.
-    if (i < scanLimit) {
-      const valuesText = JSON.stringify(Object.values(record));
-      for (const m of detectPiiShapes(valuesText)) {
-        const shape = PII_TYPE_TO_SHAPE[m.type];
-        if (shape) pii[shape] = true;
-      }
-      if (!pii.iban && IBAN_VALUE_RE.test(valuesText)) pii.iban = true;
-    }
+    if (recordHasSensitivePii) piiBearingRecords += 1;
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
+  summary.pii_bearing_count = piiBearingRecords;
+  summary.distinct_pii_count = distinctValues.size;
   return summary;
 }
 
@@ -454,11 +486,21 @@ async function runArm(drv, {
 // client-owned data they are already authorized to hold) plus prompt deletion. The PRIMARY guarantee
 // — the signed rail never carries raw PII — holds on every adapter regardless.
 function writeFullCapture(domain, runId, payload) {
-  // SAME symlink discipline as the signed offensive-runs rail (offensive-capture-writer.js): this is
-  // the raw-PII artifact, so a symlinked session dir / evidence dir / leaf must never redirect it.
+  // SAME symlink discipline as the signed offensive-runs rail (offensive-capture-writer.js
+  // resolveCaptureDirSecure): this is the raw-PII artifact, so a symlinked session dir / evidence dir
+  // / leaf must never redirect it. ANCHOR to the real sessions root + safe domain — realpath(sessionDir)
+  // ALONE would silently FOLLOW a symlinked session dir and plant the capture at the link target.
   const noFollow = fs.constants.O_NOFOLLOW || 0;
-  const sessionRoot = fs.realpathSync(sessionDir(domain)); // session dir exists (state.json was written)
-  const nominalDir = path.join(sessionRoot, "massread-evidence");
+  const realRoot = fs.realpathSync(sessionsRoot());
+  const expectedParent = path.join(realRoot, assertSafeDomain(domain)); // the only trusted session dir
+  const nominalParent = sessionDir(domain);
+  // Create + verify the SESSION dir BEFORE creating massread-evidence/ under it: a recursive mkdir
+  // would otherwise follow a symlinked session dir. Reject any mismatch against the expected parent.
+  fs.mkdirSync(nominalParent, { recursive: true });
+  if (fs.realpathSync(nominalParent) !== expectedParent) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence session dir must stay inside its session root without symlinks: ${nominalParent}`);
+  }
+  const nominalDir = path.join(expectedParent, "massread-evidence");
   // Refuse a pre-existing symlinked evidence dir BEFORE a recursive mkdir would follow it.
   try {
     if (fs.lstatSync(nominalDir).isSymbolicLink()) {
@@ -466,8 +508,8 @@ function writeFullCapture(domain, runId, payload) {
     }
   } catch (e) { if (e && e.code !== "ENOENT") throw e; }
   fs.mkdirSync(nominalDir, { recursive: true, mode: 0o700 });
-  // Post-mkdir: the resolved dir must stay inside the session root with no symlinked component.
-  if (fs.realpathSync(nominalDir) !== nominalDir) {
+  // Post-mkdir: the resolved dir must equal the expected dir under the trusted parent.
+  if (fs.realpathSync(nominalDir) !== path.join(expectedParent, "massread-evidence")) {
     throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir must stay inside the session root without symlinks: ${nominalDir}`);
   }
   const file = path.join(nominalDir, `${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
@@ -484,20 +526,6 @@ function writeFullCapture(domain, runId, payload) {
     fs.closeSync(fd);
   }
   return file;
-}
-
-// Preserve the recorded query of the routed listing/search endpoint — resolveSurfaceEndpoint strips
-// it, but for query-routed search surfaces the params (e.g. ?q=*) are load-bearing. Returns the
-// recorded `?...` search of the recorded endpoint matching the resolved origin+path, or "" if none.
-// The signed canonicalTarget stays query-stripped (a PII value in a param must never be signed).
-function recordedSearchForEndpoint(surface, endpointUrlObj) {
-  const wantOriginPath = `${endpointUrlObj.origin}${endpointUrlObj.pathname}`;
-  for (const { value } of candidateSurfaceEndpoints(surface)) {
-    let u;
-    try { u = new URL(String(value), endpointUrlObj.origin); } catch { continue; }
-    if (`${u.origin}${u.pathname}` === wantOriginPath && u.search) return u.search;
-  }
-  return "";
 }
 
 // The full oracle. `driver` is injectable so seeded tests need no live browser; with no driver the
@@ -540,13 +568,13 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   const { surface } = findRoutedSurface(domain, surfaceId);
   const endpointUrlObj = resolveSurfaceEndpoint({ domain, surface, state, toolName: TOOL_ID });
   const endpointUrl = endpointUrlObj.toString();
-  // Preserve the recorded query — resolveSurfaceEndpoint strips it, but for query-routed search/listing
-  // surfaces the params (e.g. ?q=*) are load-bearing; without them the fetch hits a bare path → false
-  // negative. The signed canonicalTarget stays query-stripped (a PII value in a param is never signed).
+  // v1 fetches the RESOLVED endpoint as-is (resolveSurfaceEndpoint strips the query). The fetched URL
+  // and the signed canonicalTarget are therefore the SAME origin+path — the signed row faithfully
+  // identifies what was read, with no query-variant divergence. Query-routed search surfaces (e.g.
+  // a required `?q=*`) are deferred to v2 (resurrecting a recorded query made the fetched URL diverge
+  // from the signed target and was ambiguous across same-path candidates — bot-review #553/#498).
   const fetchUrlObj = new URL(endpointUrl);
-  const recordedSearch = recordedSearchForEndpoint(surface, endpointUrlObj);
-  if (recordedSearch) fetchUrlObj.search = recordedSearch;
-  // Read-only + scope guard on the FULL fetch URL (path + recorded query); catches a verb-named segment.
+  // Read-only + scope guard on the fetch URL; catches a verb-named segment.
   assertReadOnlyPath(fetchUrlObj.toString(), TOOL_ID);
   // Value-blind durable target (origin+path, query stripped); a PII/secret shape in a fixed path
   // segment would persist into the signed row target.
@@ -646,48 +674,47 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (attackerOk2xx && !attackerSummary.parse_ok) {
     return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
   }
-  // MINT GATE: a real PII VALUE shape INSIDE the counted records (deriveMaskedSummary binds the scan
-  // to record VALUES) AND >= 1 sensitive field-name bucket on those records AND >= MIN records — all
-  // three signals now come from the SAME counted object-records. So a benign string array plus a stray
-  // metadata email can no longer lift a row, and a field merely NAMED like PII (`email_verified: true`)
-  // with no PII value still cannot mint.
-  const attackerHasPiiValue = Object.values(attackerSummary.pii_shape_present).some(Boolean);
+  // MINT GATE: >= MIN DISTINCT subjects' PII. deriveMaskedSummary counts a PII VALUE only when it sits
+  // in a sensitively-NAMED field of a counted record, and counts DISTINCT (bucket,value) pairs — so a
+  // benign list + a stray metadata email, a field merely NAMED like PII (`email_verified: true`), a
+  // constant boilerplate field (the same support email on every row), and a single self-record (its
+  // values repeated through a nested array) ALL fall below the floor. Require BOTH >= MIN records that
+  // carry sensitive PII AND >= MIN DISTINCT sensitive values (i.e. >= MIN distinct subjects).
   const attackerBulk = attackerOk2xx
-    && attackerSummary.record_count >= MASSREAD_MIN_RECORDS
-    && attackerHasPiiValue
-    && attackerSummary.sensitive_field_names.length >= 1;
+    && attackerSummary.pii_bearing_count >= MASSREAD_MIN_RECORDS
+    && attackerSummary.distinct_pii_count >= MASSREAD_MIN_RECORDS;
   if (!attackerBulk) {
     return fail("blocked_by_defense", "attacker_did_not_read_bulk_pii");
   }
 
-  // Control resolves to exactly ONE of three CLEAN outcomes; ANY other status (5xx, 404, an
-  // unparseable 2xx, a timeout) is INCONCLUSIVE → fail closed (never scored "denied", never "also reads").
-  const controlOk2xx = control.status != null && control.status >= 200 && control.status < 300 && controlSummary.parse_ok;
-  const controlHasPiiValue = Object.values(controlSummary.pii_shape_present).some(Boolean);
-  const controlReadsBulk = controlOk2xx
-    && controlSummary.record_count >= MASSREAD_MIN_RECORDS
-    && controlHasPiiValue;
-  // An explicit AUTH denial is 401 always, but 403 ONLY when its body parses as a structured (JSON)
-  // error. A WAF / bot-challenge 403 is typically an HTML block page (parse_ok=false); counting that
-  // as "unauthenticated denied" would forge the differential on a PUBLIC endpoint the WAF merely
-  // challenged for the cookie-less arm. An HTML/unparseable 403 falls through to control_inconclusive.
-  const controlAuthDenied = control.status === 401
-    || (control.status === 403 && controlSummary.parse_ok);
-  const controlDenied = controlAuthDenied
-    || (controlOk2xx && (controlSummary.record_count === 0 || !controlHasPiiValue));
-  if (controlReadsBulk) {
-    // Control ALSO reads the bulk collection → a PUBLIC endpoint, not an authorization break.
+  // ── score the control arm ──
+  // (a) The control READ the bulk collection if its body parses to >= MIN records — REGARDLESS of HTTP
+  //     status. A 401/403 (or any status) that STILL returns the bulk JSON body was NOT actually denied
+  //     (the client can read that body) → a PUBLIC / control-visible collection, not an authz break.
+  //     (bot-review #669/#677 — a body that read the records is never "denied", whatever the status.)
+  const controlReadBulk = controlSummary.parse_ok
+    && controlSummary.record_count >= MASSREAD_MIN_RECORDS;
+  if (controlReadBulk) {
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
   }
+  // (b) A CLEAN unauthenticated denial is an explicit 401, OR a 2xx that returned FEWER than MIN records
+  //     (the unauth client did NOT get the bulk collection). A 403 is AMBIGUOUS — a WAF / bot-challenge
+  //     vs a real authz denial, JSON or HTML alike — so it is NEVER scored "denied" (parseability is not
+  //     an auth-denial oracle, bot-review #675); it falls through to control_inconclusive.
+  const controlOk2xx = control.status != null && control.status >= 200 && control.status < 300 && controlSummary.parse_ok;
+  const controlDenied = control.status === 401
+    || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS);
   if (!controlDenied) {
-    // Ambiguous control (5xx / 404 / unparseable 2xx): cannot conclude the control was DENIED, so we
-    // cannot establish the differential. Fail closed rather than mint a HIGH off an inconclusive baseline.
+    // Ambiguous control (403, 5xx, 404, unparseable, timeout): cannot conclude the control was DENIED,
+    // so the differential is unproven. Fail closed rather than mint a HIGH off an inconclusive baseline.
     return fail("blocked_by_infra", "control_inconclusive");
   }
 
   // ── build the canonical proof (MASKED, value-blind, PII-screened) ──
   const maskedSummary = {
     record_count: attackerSummary.record_count,
+    pii_bearing_count: attackerSummary.pii_bearing_count,
+    distinct_pii_count: attackerSummary.distinct_pii_count,
     sensitive_field_names: attackerSummary.sensitive_field_names,
     pii_shape_present: attackerSummary.pii_shape_present,
   };
@@ -696,6 +723,8 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     attacker_status: attacker.status,
     control_status: control.status,
     attacker_record_count: attackerSummary.record_count,
+    attacker_pii_bearing_count: attackerSummary.pii_bearing_count,
+    attacker_distinct_pii_count: attackerSummary.distinct_pii_count,
     control_record_count: controlSummary.record_count,
     arm_order: armOrder,
     credentialed_bulk_pii_read: true,
@@ -776,6 +805,8 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     masked_oracle: {
       relation: relationBooleans,
       record_count: maskedSummary.record_count,
+      pii_bearing_count: maskedSummary.pii_bearing_count,
+      distinct_pii_count: maskedSummary.distinct_pii_count,
       sensitive_field_names: maskedSummary.sensitive_field_names,
       pii_shape_present: maskedSummary.pii_shape_present,
       fragment_hash: row.stdout_hash,

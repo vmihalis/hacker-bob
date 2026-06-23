@@ -458,10 +458,12 @@ test("MINT GATE requires a real PII VALUE: a field merely NAMED like PII (emailV
   const domain = uniqueDomain();
   setupSession(domain);
   const nameOnly = JSON.stringify({ data: [{ id: 1, emailVerified: true }, { id: 2, emailVerified: false }, { id: 3, emailVerified: true }] });
-  // record_count >= 2 and the "email" NAME bucket is present (word-boundary token), but NO email-shaped VALUE.
+  // record_count is 3, but the "email"-NAMED field (emailVerified) carries a boolean, not an email VALUE,
+  // so the bucket is NOT confirmed (value↔field binding) and there is no distinct PII → no mint.
   const s = deriveMaskedSummary(nameOnly);
-  assert.deepEqual(s.sensitive_field_names, ["email"]);
+  assert.deepEqual(s.sensitive_field_names, []);
   assert.equal(s.pii_shape_present.email, false);
+  assert.equal(s.distinct_pii_count, 0);
   const { driver } = makeDriver({ attacker: { status: 200, body: nameOnly, final_url: null, body_truncated: false } });
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
@@ -620,12 +622,90 @@ test("control 403 WAF block page (non-JSON) → control_inconclusive, not a clea
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
 }));
 
-test("control 403 with a JSON auth error → a clean denial → mints", () => withTempHome(async () => {
+test("control 403 is AMBIGUOUS even with a JSON body → inconclusive, never a clean denial (#675)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
+  // A JSON 403 can be a real authz error OR a WAF/bot-challenge that JSON-encodes its block. Parseability
+  // is not an auth-denial oracle, so a 403 is NEVER scored "denied" — only an explicit 401 (or 2xx-empty) is.
   const control = { status: 403, body: JSON.stringify({ error: "forbidden" }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("control 401 is the clean explicit unauthenticated denial → mints", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const control = { status: 401, body: JSON.stringify({ error: "unauthorized" }), final_url: null, body_truncated: false };
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true);
   assert.equal(result.row_written, true);
+}));
+
+// ── round-3: distinct-subject binding + status-agnostic control-reads-bulk ────────────────────────
+
+test("constant boilerplate field across records does NOT mint (one distinct value < floor) (#658)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Every record carries the SAME constant support email + store address — no per-subject PII.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "help@vendor.example", address: "1 Store St" },
+    { id: 2, email: "help@vendor.example", address: "1 Store St" },
+    { id: 3, email: "help@vendor.example", address: "1 Store St" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.distinct_pii_count, 1); // one distinct email value across all rows
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a single PII-bearing record (caller's own row) among benign rows does NOT mint (#657)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "me@self.example" }, // the caller's own row
+    { id: 2, status: "ok" },             // benign, no PII
+    { id: 3, status: "pending" },        // benign, no PII
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.pii_bearing_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a self-record with a nested collection of its OWN repeated PII does NOT mint (#268)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // One user's response: extractRecords may promote the nested `items`, but every order repeats the
+  // SAME owner email → one distinct value → below the floor.
+  const body = JSON.stringify({ results: { items: [
+    { order: 1, email: "owner@self.example" },
+    { order: 2, email: "owner@self.example" },
+  ] } });
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("control 401 that STILL returns the bulk PII body is NOT denied → public, no mint (#669)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Status 401 but the body still contains the bulk collection → the client CAN read it → not denied.
+  const control = { status: 401, body: bulkBody(3), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
+}));
+
+test("control 2xx that read the bulk collection (no PII shape) is NOT scored denied → public, no mint (#677)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Control 2xx returns >= MIN records but trips no PII shape — it still READ the collection → public.
+  const control = { status: 200, body: JSON.stringify({ data: [{ id: 1 }, { id: 2 }, { id: 3 }] }), final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
 }));
