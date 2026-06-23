@@ -371,7 +371,7 @@ test("full capture is OFF by default: signed rail masked, NO massread-evidence f
 test("full capture is enabled ONLY by the operator env gate; the signed rail stays masked either way", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
-  process.env[OWNER_AUTHORIZED_ENV] = "1";
+  process.env[OWNER_AUTHORIZED_ENV] = domain; // gate is bound to THIS target (#904)
   const { driver } = makeDriver();
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true);
@@ -496,7 +496,7 @@ test("HONEST relationBooleans: the signed witness asserts only what's proven, ne
 test("symlinked massread-evidence dir → refused (not followed); the masked row still mints", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
-  process.env[OWNER_AUTHORIZED_ENV] = "1";
+  process.env[OWNER_AUTHORIZED_ENV] = domain; // gate is bound to THIS target (#904)
   const evilTarget = fs.mkdtempSync(path.join(os.tmpdir(), "bob-massread-evil-"));
   try {
     const sdir = sessionDir(domain);
@@ -986,4 +986,53 @@ test("a space-formatted, URL-encoded IBAN in the target path is still screened (
   const { driver } = makeDriver();
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
+}));
+
+// ── round-10: Gmail-alias normalize, double-encoded IBAN, singleton control PII, target-bound capture ──
+
+test("Gmail dot/plus aliases of one mailbox are ONE subject (#203)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same Gmail mailbox, two alias spellings → canonicalize equal → union-find merges → one subject.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "alice.smith+orders@gmail.com" },
+    { id: 2, email: "alicesmith@gmail.com" },
+  ] });
+  assert.equal(deriveMaskedSummary(body).distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a DOUBLE-encoded IBAN in the target path is still screened (decode to fixed point) (#224)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // %2520 → %20 → space; one decodeURIComponent pass leaves %20, so the screen must decode to a fixed point.
+  seedRoutedSurface(domain, { endpoints: [`https://${domain}/accounts/GB82%2520WEST%25201234%25205698%25207654%252032/x`] });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
+}));
+
+test("a singleton-object control carrying PII is NOT a clean denial → inconclusive (#821)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // The control returns a non-array JSON object with PII (a teaser / error object). deriveMaskedSummary
+  // extracts no records from it, but controlBodyExposesPii catches the field-bound PII → not denied.
+  const control = { status: 200, body: JSON.stringify({ email: "teaser@public.example" }), final_url: null, body_truncated: false };
+  assert.equal(deriveMaskedSummary(control.body).pii_bearing_count, 0); // not extracted as a record...
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive"); // ...but still blocks the mint
+}));
+
+test("raw capture is bound to the target: env naming a DIFFERENT domain does NOT capture (#904)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  process.env[OWNER_AUTHORIZED_ENV] = "some-other-engagement.example"; // authorized for a DIFFERENT target
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.owner_authorized_capture, false, "capture must NOT fire for an unauthorized target");
+  assert.ok(!fs.existsSync(path.join(sessionDir(domain), "massread-evidence")), "no evidence dir for a different-target gate");
 }));

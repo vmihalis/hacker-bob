@@ -38,9 +38,11 @@
 //      (it is the tamper-evident rail re-used by third-party bug-bounty runs where harvesting
 //      strangers' data is forbidden).
 //   2. FULL raw capture (sessionDir/massread-evidence/<run_id>.json) — OPT-IN, OPERATOR-gated by the
-//      env var BOB_MASSREAD_OWNER_AUTHORIZED=1 (NOT an agent argument — the agent can NEVER enable
-//      PII capture, so the same tool stays safe on third-party targets). Written OUTSIDE the signed
-//      rail; the operator deletes it at the end of the engagement. Keep this folder out of any
+//      env var BOB_MASSREAD_OWNER_AUTHORIZED=<target_domain> — BOUND to the authorized target (a CSV of
+//      domains is allowed; a bare "1" is rejected so one engagement's authorization can't leak onto
+//      another's data, #904). NOT an agent argument — the agent can NEVER enable PII capture, so the
+//      same tool stays safe on third-party targets. Written OUTSIDE the signed rail; the operator
+//      deletes it at the end of the engagement. Keep this folder out of any
 //      sync/backup path.
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): the row MAC is tamper-evident against an agent
@@ -110,6 +112,7 @@ const {
 } = require("./auth.js");
 const {
   detectPiiShapes,
+  normalizeEmailForComparison,
 } = require("./pii-detector.js");
 const {
   sessionDir,
@@ -200,7 +203,10 @@ function piiValueText(value) {
 function normalizePiiValue(shape, value) {
   const v = String(value);
   switch (shape) {
-    case "email": return v.trim().toLowerCase();
+    // Use the repo's Gmail-aware canonicalizer so dot/plus aliases of one mailbox
+    // (`alice.smith+orders@gmail.com` == `alicesmith@gmail.com`) collapse to one subject under union-find
+    // instead of inflating the count (bot-review #203). Falls back to trim+lowercase for non-strings.
+    case "email": return normalizeEmailForComparison(v) || v.trim().toLowerCase();
     case "phone_intl": case "ssn": case "credit_card": return v.replace(/\D/g, "");
     case "iban": return v.toUpperCase().replace(/\s+/g, "");
     default: return v.trim().toLowerCase().replace(/\s+/g, " ");
@@ -225,8 +231,15 @@ function ibanChecksumValid(iban) {
   return remainder === 1;
 }
 function findIbans(text) {
+  // Decode to a FIXED POINT (bounded): a double-encoded IBAN (`%2520` → `%20` → ` `) needs more than one
+  // pass before the separators are real characters the strip below can remove (bot-review #224).
   let decoded = String(text);
-  try { decoded = decodeURIComponent(decoded); } catch { /* malformed % — scan the raw text */ }
+  for (let pass = 0; pass < 5; pass += 1) {
+    let next;
+    try { next = decodeURIComponent(decoded); } catch { break; /* malformed % — scan what we have */ }
+    if (next === decoded) break;
+    decoded = next;
+  }
   // Strip the conventional IBAN separators (spaces / hyphens) so a FORMATTED IBAN — e.g. a path with
   // `GB82%20WEST%201234%20…` that decodes to `GB82 WEST 1234 …` — becomes contiguous and matches; the
   // mod-97 checksum still guards against fusing unrelated tokens into a false positive (bot-review #230).
@@ -270,8 +283,16 @@ function blocked(outcome, reason, extra = {}) {
   };
 }
 
-function ownerAuthorized() {
-  return process.env[OWNER_AUTHORIZED_ENV] === "1";
+// Operator env gate, BOUND TO TARGET (bot-review #904): the env value is the authorized domain — or a
+// comma-separated list of domains — and raw capture happens ONLY when it names THIS target_domain
+// (exact, case-insensitive). A bare legacy "1" is REJECTED: it would authorize raw-PII capture for EVERY
+// target the same MCP server evaluates, leaking one engagement's authorization onto another's data.
+function ownerAuthorized(domain) {
+  const raw = process.env[OWNER_AUTHORIZED_ENV];
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const target = String(domain || "").trim().toLowerCase();
+  if (!target) return false;
+  return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean).includes(target);
 }
 
 // A stored auth profile flattens cookies into a single "Cookie" HEADER string
@@ -484,6 +505,28 @@ function deriveMaskedSummary(bodyText) {
   for (const value of parent.keys()) roots.add(findRoot(value));
   summary.distinct_pii_count = roots.size;
   return summary;
+}
+
+// Does a CONTROL body expose any field-bound PII? Used only for the control-denial gate. Unlike
+// deriveMaskedSummary's record counting, this ALSO treats a top-level singleton OBJECT as a record, so a
+// non-array control response — `200 {"email":"teaser@x"}` or a 401 error object `{"error":..,"phone":..}`
+// — counts as the anon client having read a subject's PII and is therefore NOT a clean denial (bot-review
+// #821/#836). Field-bound (a sensitively-NAMED field with a real PII value shape), so a support email in a
+// denial page's free-text does not trip it.
+function controlBodyExposesPii(bodyText) {
+  if (typeof bodyText !== "string" || bodyText.length === 0) return false;
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return false; }
+  const records = extractRecords(parsed);
+  const scan = records.length > 0 ? records : (isPlainObject(parsed) ? [parsed] : []);
+  for (const record of scan) {
+    for (const key of Object.keys(record)) {
+      if (!bucketForFieldName(key)) continue;
+      const valueText = piiValueText(record[key]);
+      if (valueText && piiMatchesInValue(valueText).length > 0) return true;
+    }
+  }
+  return false;
 }
 
 // Run one credentialed-or-control arm: start a (pinned) session, authed_fetch the endpoint, audit,
@@ -818,12 +861,13 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (controlReadBulk) {
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
   }
-  // (a2) The control surfaced ANY PII record (>= 1 pii-bearing record — INCLUDING phone/address, which
-  //      are not subject identifiers but are still real PII), even below the bulk floor. That is NOT a
-  //      clean denial — the unauthenticated client read a real subject's PII, so the "anon is denied PII"
-  //      premise fails (a public teaser / partial-public endpoint, not a clean authz differential). Fall
-  //      through to inconclusive rather than mint (bot-review #784/#819).
-  const controlReadAnyPii = controlSummary.pii_bearing_count > 0;
+  // (a2) The control surfaced ANY PII (>= 1 pii-bearing record — INCLUDING phone/address, which are not
+  //      subject identifiers but are still real PII; AND a top-level singleton object via
+  //      controlBodyExposesPii), even below the bulk floor. That is NOT a clean denial — the
+  //      unauthenticated client read a real subject's PII, so the "anon is denied PII" premise fails (a
+  //      public teaser / partial-public endpoint, not a clean authz differential). Fall through to
+  //      inconclusive rather than mint (bot-review #784/#819/#821).
+  const controlReadAnyPii = controlSummary.pii_bearing_count > 0 || controlBodyExposesPii(control.body);
   // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
   //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
   //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
@@ -904,7 +948,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // OPT-IN full capture — OPERATOR env gate only, OUTSIDE the signed rail. The raw bodies live in
   // memory only until here; for the default (masked-only) path they are never persisted.
   let ownerCaptureWritten = false;
-  if (ownerAuthorized()) {
+  if (ownerAuthorized(domain)) {
     try {
       writeFullCapture(domain, row.run_id, {
         tool_id: TOOL_ID,
