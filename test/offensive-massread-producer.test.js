@@ -709,3 +709,63 @@ test("control 2xx that read the bulk collection (no PII shape) is NOT scored den
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
 }));
+
+// ── round-4: per-bucket subject count + empty-2xx control denial ───────────────────────────────────
+
+test("one subject carrying SEVERAL PII fields (email+ssn) across rows does NOT mint (#387)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Two order rows for ONE subject, each repeating the SAME email AND ssn. The OLD cross-bucket count
+  // reached 2 from (email,v)+(ssn,v) and would have minted; the per-bucket floor sees ONE distinct
+  // value in each bucket → max cardinality 1 → below the floor.
+  const body = JSON.stringify({ data: [
+    { order: 1, email: "one@self.example", ssn: "123-45-6789" },
+    { order: 2, email: "one@self.example", ssn: "123-45-6789" },
+  ] });
+  const s = deriveMaskedSummary(body);
+  assert.equal(s.pii_bearing_count, 2);   // both rows carry sensitive PII
+  assert.equal(s.distinct_pii_count, 1);  // but only ONE distinct subject (max single-bucket cardinality)
+  assert.equal(s.pii_shape_present.email, true);
+  assert.equal(s.pii_shape_present.ssn, true); // both buckets populated — this is a true multi-bucket case
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("two DISTINCT subjects in one bucket (2 emails) mints — the per-bucket floor still passes real leaks", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Two subjects, distinct emails → email bucket cardinality 2 → at the floor → mints.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "alice@canary.example.test" },
+    { id: 2, email: "bob@canary.example.test" },
+  ] });
+  assert.equal(deriveMaskedSummary(body).distinct_pii_count, 2);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+}));
+
+test("empty 2xx control (204 / empty 200) read NO bulk → denied → mints (#706)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  for (const status of [200, 204]) {
+    const control = { status, body: "", final_url: null, body_truncated: false };
+    const { driver } = makeDriver({ control });
+    const result = await run(domain, { driver });
+    assert.equal(result.confirmed, true, `empty ${status} control must be a clean denial: ${JSON.stringify(result)}`);
+    assert.equal(result.row_written, true);
+  }
+}));
+
+test("unparseable NON-empty 2xx control (HTML shell) stays inconclusive — not a denial (#706 boundary)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // A 2xx with a non-empty, non-JSON body (app shell / WAF interstitial) is ambiguous — NOT a clean
+  // denial — so it must fail closed, never mint off an inconclusive baseline.
+  const control = { status: 200, body: "<!doctype html><html><body>app</body></html>", final_url: null, body_truncated: false };
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));

@@ -364,11 +364,16 @@ function deriveMaskedSummary(bodyText) {
   const pii = summary.pii_shape_present;
   // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
   // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
-  // Bind value↔field per record, then count DISTINCT (bucket,value) pairs across records: a single
-  // subject's value repeated, or a constant support/store boilerplate field, is ONE distinct value
-  // and so cannot reach the >=2 floor — only >=2 DISTINCT subjects' sensitive values do.
-  // (bot-review #354/#658/#657/#305 decoupling + #268 nested self-record.)
-  const distinctValues = new Set();
+  // Bind value↔field per record, then track DISTINCT values PER bucket. distinct_pii_count is the
+  // LARGEST single-bucket cardinality — >= N distinct values in ONE identity field (>= N distinct
+  // emails, or >= N distinct phones) — a robust lower bound on N distinct SUBJECTS. Counting distinct
+  // (bucket,value) pairs ACROSS buckets was wrong (bot-review #387): one subject carrying email+phone
+  // repeated across rows reached 2 from (email,v)+(phone,v) despite being a SINGLE subject. With the
+  // per-bucket floor, a single self-record (its one email/phone repeated), a constant boilerplate
+  // field, a stray metadata value, AND one subject carrying several PII fields all stay at cardinality
+  // 1 → below the floor; only >= MIN distinct subjects clear it.
+  // (bot-review #354/#658/#657/#305 decoupling + #268 nested self-record + #387 same-subject multi-field.)
+  const bucketValues = new Map();
   let piiBearingRecords = 0;
   const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
   for (let i = 0; i < scanLimit; i += 1) {
@@ -384,13 +389,20 @@ function deriveMaskedSummary(bodyText) {
       buckets.add(bucket);
       for (const shape of shapes) pii[shape] = true;
       recordHasSensitivePii = true;
-      distinctValues.add(`${bucket} ${valueText}`);
+      let valueSet = bucketValues.get(bucket);
+      if (!valueSet) { valueSet = new Set(); bucketValues.set(bucket, valueSet); }
+      valueSet.add(valueText);
     }
     if (recordHasSensitivePii) piiBearingRecords += 1;
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
   summary.pii_bearing_count = piiBearingRecords;
-  summary.distinct_pii_count = distinctValues.size;
+  // distinct_pii_count := the MAX distinct-value count across buckets (>= MIN distinct subjects).
+  let maxBucketCardinality = 0;
+  for (const valueSet of bucketValues.values()) {
+    if (valueSet.size > maxBucketCardinality) maxBucketCardinality = valueSet.size;
+  }
+  summary.distinct_pii_count = maxBucketCardinality;
   return summary;
 }
 
@@ -508,9 +520,24 @@ function writeFullCapture(domain, runId, payload) {
     }
   } catch (e) { if (e && e.code !== "ENOENT") throw e; }
   fs.mkdirSync(nominalDir, { recursive: true, mode: 0o700 });
-  // Post-mkdir: the resolved dir must equal the expected dir under the trusted parent.
-  if (fs.realpathSync(nominalDir) !== path.join(expectedParent, "massread-evidence")) {
-    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir must stay inside the session root without symlinks: ${nominalDir}`);
+  // Post-mkdir: PIN the evidence dir by an O_NOFOLLOW directory fd, then assert its inode == the
+  // realpath-resolved expected dir. O_DIRECTORY|O_NOFOLLOW FAILS CLOSED (ELOOP) if `massread-evidence`
+  // was swapped to a symlink AFTER the lstat above — the TOCTOU window a plain realpath re-check leaves
+  // open (realpath FOLLOWS the link and silently passes). fstat dev+ino binds the fd to the trusted
+  // inode (a swap to a different real dir mismatches). PORTABLE-NODE RESIDUAL (honest): there is no
+  // openat(2) in core fs, so the leaf is still opened by pathname below; the sub-microsecond window in
+  // which a SAME-UID actor re-swaps the parent between this pin and the leaf open is the conceded #131
+  // boundary (a same-UID actor already reads the 0600 signing key) and additionally requires the
+  // operator gate BOB_MASSREAD_OWNER_AUTHORIZED enabled — so the residual is bounded, not open.
+  const dirFd = fs.openSync(nominalDir, (fs.constants.O_DIRECTORY || 0) | noFollow);
+  try {
+    const dirStat = fs.fstatSync(dirFd);
+    const trustedStat = fs.statSync(fs.realpathSync(path.join(expectedParent, "massread-evidence")));
+    if (!dirStat.isDirectory() || dirStat.dev !== trustedStat.dev || dirStat.ino !== trustedStat.ino) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir failed the inode pin (symlink swap?): ${nominalDir}`);
+    }
+  } finally {
+    fs.closeSync(dirFd);
   }
   const file = path.join(nominalDir, `${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
   try {
@@ -675,11 +702,12 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
   }
   // MINT GATE: >= MIN DISTINCT subjects' PII. deriveMaskedSummary counts a PII VALUE only when it sits
-  // in a sensitively-NAMED field of a counted record, and counts DISTINCT (bucket,value) pairs — so a
-  // benign list + a stray metadata email, a field merely NAMED like PII (`email_verified: true`), a
-  // constant boilerplate field (the same support email on every row), and a single self-record (its
-  // values repeated through a nested array) ALL fall below the floor. Require BOTH >= MIN records that
-  // carry sensitive PII AND >= MIN DISTINCT sensitive values (i.e. >= MIN distinct subjects).
+  // in a sensitively-NAMED field of a counted record, and distinct_pii_count is the MAX distinct values
+  // in any SINGLE identity bucket (>= MIN distinct emails, or phones, ...) — so a benign list + a stray
+  // metadata email, a field merely NAMED like PII (`email_verified: true`), a constant boilerplate field
+  // (the same support email on every row), a single self-record (its values repeated through a nested
+  // array), AND one subject carrying several PII fields ALL fall below the floor. Require BOTH >= MIN
+  // records that carry sensitive PII AND >= MIN distinct subjects (max single-bucket cardinality).
   const attackerBulk = attackerOk2xx
     && attackerSummary.pii_bearing_count >= MASSREAD_MIN_RECORDS
     && attackerSummary.distinct_pii_count >= MASSREAD_MIN_RECORDS;
@@ -697,12 +725,17 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (controlReadBulk) {
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
   }
-  // (b) A CLEAN unauthenticated denial is an explicit 401, OR a 2xx that returned FEWER than MIN records
-  //     (the unauth client did NOT get the bulk collection). A 403 is AMBIGUOUS — a WAF / bot-challenge
-  //     vs a real authz denial, JSON or HTML alike — so it is NEVER scored "denied" (parseability is not
-  //     an auth-denial oracle, bot-review #675); it falls through to control_inconclusive.
-  const controlOk2xx = control.status != null && control.status >= 200 && control.status < 300 && controlSummary.parse_ok;
+  // (b) A CLEAN unauthenticated denial is an explicit 401, OR a 2xx that did NOT return the bulk
+  //     collection — either a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No Content /
+  //     empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS — a WAF /
+  //     bot-challenge vs a real authz denial — so it is NEVER scored "denied" (parseability is not an
+  //     auth-denial oracle, bot-review #675); likewise an unparseable NON-empty 2xx (HTML app shell / WAF
+  //     interstitial) stays ambiguous. Both fall through to control_inconclusive.
+  const control2xx = control.status != null && control.status >= 200 && control.status < 300;
+  const controlBodyEmpty = typeof control.body !== "string" || control.body.trim().length === 0;
+  const controlOk2xx = control2xx && controlSummary.parse_ok;
   const controlDenied = control.status === 401
+    || (control2xx && controlBodyEmpty)
     || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS);
   if (!controlDenied) {
     // Ambiguous control (403, 5xx, 404, unparseable, timeout): cannot conclude the control was DENIED,
