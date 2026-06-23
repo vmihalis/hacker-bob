@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.177",
-    "@brutalist/mcp": "^1",
+    "@brutalist/mcp": "1.18.2",
     "@openai/codex": "0.139.0"
   },
   "overrides": {
