@@ -1,6 +1,6 @@
 name: Brutalist Review
 
-# Claude + Codex review on trusted maintainer PRs, posted as inline comments.
+# Claude + Codex + agy review on trusted maintainer PRs, posted as inline comments.
 # CODEX_AUTH is the full ~/.codex/auth.json stored as a GitHub Actions secret.
 # Refresh it with `codex login` + `gh secret set CODEX_AUTH` if auth fails.
 # The image_generation tool is disabled (codex#21952 gpt-image-2 bug).
@@ -35,7 +35,7 @@ jobs:
       - name: Install CLI critics
         working-directory: .github/brutalist-tools
         env:
-          EXPECTED_TOOLS_LOCK_SHA256: cd77cfa851688a9124b1771447512e19c371c64ea85c7a103bda6326c7274865
+          EXPECTED_TOOLS_LOCK_SHA256: 3f51525eacc6d4e8f96838ebc6eb32f92dfe8057f62ffe2c3133c5400b324294
         run: |
           actual="$(sha256sum package-lock.json | cut -d ' ' -f1)"
           if [ "$actual" != "$EXPECTED_TOOLS_LOCK_SHA256" ]; then
@@ -46,9 +46,18 @@ jobs:
           node node_modules/@anthropic-ai/claude-code/install.cjs
           export PATH="$PWD/node_modules/.bin:$PATH"
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
-          command -v brutalist-mcp claude codex
+          # agy (Antigravity) critic — installed via the upstream script (not npm).
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          # Check each critic independently — `command -v a b c` returns 0 if ANY
+          # resolves, so it would pass even with agy missing.
+          for bin in brutalist-mcp claude codex agy; do
+            command -v "$bin" >/dev/null || { echo "::error::missing critic binary: $bin"; exit 1; }
+          done
           claude --version
           codex --version
+          agy --version
           # codex: disable the broken built-in image_generation tool (gpt-image-2)
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
@@ -63,10 +72,15 @@ jobs:
         env:
           BRUTALIST_TIMEOUT: "600000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
+          # Disable agy's in-run self-update (it self-updates from a us-central1
+          # endpoint mid-run). NOTE: this does NOT pin the installed version —
+          # install.sh above fetches the latest; this only stops drift WITHIN a run.
+          AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: ${{ github.token }}
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           codex-auth: ${{ secrets.CODEX_AUTH }}
+          agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium
       - name: Report advisory reviewer failure
         if: steps.brutalist-review.outcome == 'failure'
