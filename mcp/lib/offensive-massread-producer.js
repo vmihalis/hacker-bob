@@ -21,10 +21,14 @@
 // not a merely-public endpoint. A control that ALSO reads the bulk data is a public endpoint, not
 // a privilege break → fail closed (blocked_by_design).
 //
-// SEVERITY: HARD HIGH by construction, stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING inside
-// buildAndSignOffensiveRow (NEVER from here, NEVER agent-supplied). The producer proves the
-// IMPACT (bulk read of sensitive records by an under-authorized caller); the underlying vuln
-// (e.g. a hardcoded/guessable credential, missing object/function-level authz) is the finding.
+// SEVERITY: MEDIUM by construction (v1), stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING inside
+// buildAndSignOffensiveRow (NEVER from here, NEVER agent-supplied). The differential proves a
+// credentialed caller bulk-reads PII an UNAUTHENTICATED client is denied — a real exposure — but NOT
+// that the credential is under-privileged (a fully-authorized user reading authorized data also
+// satisfies it) nor that the surface is a cross-subject collection, so the honest ceiling is MEDIUM.
+// The HIGH (cross-tenant BFLA, a second AUTHENTICATED victim denied while the attacker reads its data)
+// is the v2 victim-arm. The underlying vuln (hardcoded/guessable credential, missing object/function-
+// level authz) is the finding; the evaluator + grader certify the class from endpoint + credential context.
 //
 // DUAL OUTPUT (operator decision):
 //   1. SIGNED proof row (offensive-runs.jsonl) — ALWAYS masked: the hashed+signed capture carries
@@ -41,7 +45,7 @@
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): the row MAC is tamper-evident against an agent
 // confined to the MCP + guarded-Bash surface; it is NOT cryptographically un-forgeable (a same-UID
-// actor can read the 0600 key and hand-MAC a row — the #131 boundary, bounded to a fabricated HIGH
+// actor can read the 0600 key and hand-MAC a row — the #131 boundary, bounded to a fabricated MEDIUM
 // by the frozen per-tool ceiling). The authed-vs-control differential is ALSO not tamper-proof — a
 // hostile target can tell the credentialed arm from the control and could serve forged data — but a
 // target forging a vuln against ITSELF gains nothing, and a single capture is evidence, not proof
@@ -128,10 +132,11 @@ const WAF_STATUSES = Object.freeze(new Set([429, 503]));
 // Operator-only full-capture gate. NOT an agent argument by design.
 const OWNER_AUTHORIZED_ENV = "BOB_MASSREAD_OWNER_AUTHORIZED";
 
-// HARD HIGH by construction. Frozen + "use strict" → an in-process actor's `MAP.x = "critical"`
-// THROWS. demonstrated_severity is stamped from the registry in buildAndSignOffensiveRow, NEVER
-// here and NEVER agent-supplied; this frozen map documents the intent + anchors a test.
-const MASSREAD_DEMONSTRATED_CEILING = Object.freeze({ bob_http_massread_confirm: "high" });
+// MEDIUM by construction (v1). Frozen + "use strict" → an in-process actor's `MAP.x = "critical"`
+// THROWS. demonstrated_severity is stamped from the registry in buildAndSignOffensiveRow, NEVER here
+// and NEVER agent-supplied; this frozen map documents the intent + anchors a test. The authn-vs-anon
+// differential is honestly a MEDIUM; the HIGH (cross-tenant BFLA / under-privilege) is the v2 victim-arm.
+const MASSREAD_DEMONSTRATED_CEILING = Object.freeze({ bob_http_massread_confirm: "medium" });
 
 // Known-sensitive field NAMES (object keys) — used to label WHICH sensitive columns the collection
 // exposes. Names only; values are never stored. Lowercased compare; substring so `user_email`,
@@ -176,7 +181,7 @@ function emptyPiiShapes() {
 // numbers/addresses, and phone country-code/format aliases over-count — bot-review #183/#313/#419);
 // they are still LABELED in sensitive_field_names so the leak's columns are recorded, they just don't
 // drive the >= MIN-distinct-subjects floor. This is a deliberate PRECISION-first v1 choice: a leak
-// bearing ONLY phone/address (no email/SSN/card/IBAN) is recorded but does not mint a HIGH on its own.
+// bearing ONLY phone/address (no email/SSN/card/IBAN) is recorded but does not mint on its own.
 const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(["email", "ssn", "credit_card", "iban"]));
 
 // A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
@@ -771,7 +776,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_by_defense", "control_waf_or_rate_limit");
   }
   // A truncated body mis-scores: a truncated CONTROL parses to fewer/0 records → false "denied" → a
-  // false HIGH; a truncated ATTACKER → false negative. Either truncated → unreliable, fail closed.
+  // false MEDIUM; a truncated ATTACKER → false negative. Either truncated → unreliable, fail closed.
   if (attacker.body_truncated || control.body_truncated) {
     return fail("blocked_by_infra", "response_truncated_unreliable");
   }
@@ -836,7 +841,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (!controlDenied) {
     // Ambiguous control (403, 5xx, 404, unparseable, timeout, OR a control that itself read subject PII):
     // cannot conclude the control was DENIED, so the differential is unproven. Fail closed rather than
-    // mint a HIGH off an inconclusive baseline.
+    // mint a MEDIUM off an inconclusive baseline.
     return fail("blocked_by_infra", "control_inconclusive");
   }
 

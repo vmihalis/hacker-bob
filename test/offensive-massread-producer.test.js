@@ -2,9 +2,9 @@
 
 // bob_http_massread_confirm — broken-auth / BFLA mass-read producer.
 // Seeded `driver` (no Chromium) + a stored attacker auth profile drive the attacker-vs-control
-// differential. Asserts: signs HIGH only on the real differential; the signed rail is masked
+// differential. Asserts: signs MEDIUM only on the real differential; the signed rail is masked
 // (NO raw PII) and MAC-valid; the negatives fail closed; the operator env gate alone enables the
-// full raw capture; a minted row backs an exploited_safely HIGH claim.
+// full raw capture; a minted row backs an exploited_safely MEDIUM claim.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -147,8 +147,8 @@ function signedRailBytes(domain) {
 
 // ───────────────────────── wiring / invariants ──────────────────────────
 
-test("MASSREAD ceiling is a frozen hard HIGH", () => {
-  assert.equal(MASSREAD_DEMONSTRATED_CEILING.bob_http_massread_confirm, "high");
+test("MASSREAD ceiling is a frozen MEDIUM (v1; HIGH is the v2 victim-arm)", () => {
+  assert.equal(MASSREAD_DEMONSTRATED_CEILING.bob_http_massread_confirm, "medium");
   assert.equal(Object.isFrozen(MASSREAD_DEMONSTRATED_CEILING), true);
 });
 
@@ -184,9 +184,9 @@ test("deriveMaskedSummary: top-level array and nested collection keys both resol
   assert.equal(deriveMaskedSummary(JSON.stringify({ results: { items: [{ id: 1 }] } })).record_count, 1);
 });
 
-// ───────────────────────── positive (signs HIGH) ──────────────────────────
+// ───────────────────────── positive (signs MEDIUM) ──────────────────────────
 
-test("positive: attacker bulk-reads PII a denied control cannot → signed HIGH masked row", () => withTempHome(async () => {
+test("positive: attacker bulk-reads PII a denied control cannot → signed MEDIUM masked row", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   const { driver, calls } = makeDriver();
@@ -195,7 +195,7 @@ test("positive: attacker bulk-reads PII a denied control cannot → signed HIGH 
   assert.equal(result.confirmed, true, JSON.stringify(result));
   assert.equal(result.row_written, true);
   assert.equal(result.offensive_outcome, "exploited_safely");
-  assert.equal(result.demonstrated_severity, "high");
+  assert.equal(result.demonstrated_severity, "medium");
   assert.equal(result.tool_id, TOOL_ID);
   assert.equal(result.masked_oracle.record_count, 3);
   assert.deepEqual(result.masked_oracle.sensitive_field_names, ["email"]);
@@ -208,7 +208,7 @@ test("positive: attacker bulk-reads PII a denied control cannot → signed HIGH 
   const rows = readOffensiveRunRecords(domain);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].tool_id, TOOL_ID);
-  assert.equal(rows[0].demonstrated_severity, "high");
+  assert.equal(rows[0].demonstrated_severity, "medium");
   assert.equal(verifyOffensiveRunRowMac(rows[0], ensureHandoffSigningKey(domain)), true, "row MAC must verify");
 
   // The signed rail carries NO raw PII value (only the field-name bucket + booleans).
@@ -217,7 +217,7 @@ test("positive: attacker bulk-reads PII a denied control cannot → signed HIGH 
   assert.ok(rail.includes("email"), "the field-name bucket is recorded (masked)");
 }));
 
-test("round-trip: the minted row backs an exploited_safely HIGH claim and re-hashes stable", () => withTempHome(async () => {
+test("round-trip: the minted row backs an exploited_safely MEDIUM claim and re-hashes stable", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   const { driver } = makeDriver();
@@ -228,7 +228,7 @@ test("round-trip: the minted row backs an exploited_safely HIGH claim and re-has
     target_domain: domain,
     title: "Broken-auth mass-read of a bulk PII collection",
     summary: "An under-authorized identity bulk-read a sensitive collection a denied control cannot.",
-    severity: "high",
+    severity: "medium",
     exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
     surface_ids: [SURFACE_ID],
     evidence_refs: [{
@@ -244,7 +244,7 @@ test("round-trip: the minted row backs an exploited_safely HIGH claim and re-has
     }],
   });
   assert.equal(claim.exploit_outcome.outcome, "exploited_safely");
-  assert.equal(claim.severity, "high");
+  assert.equal(claim.severity, "medium");
 
   const row = readOffensiveRunRecords(domain)[0];
   for (let i = 0; i < 3; i += 1) {
@@ -253,7 +253,7 @@ test("round-trip: the minted row backs an exploited_safely HIGH claim and re-has
   }
 }));
 
-test("a claim severity ABOVE the high ceiling is rejected", () => withTempHome(async () => {
+test("a claim severity ABOVE the medium ceiling is rejected", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   const { driver } = makeDriver();
@@ -262,8 +262,8 @@ test("a claim severity ABOVE the high ceiling is rejected", () => withTempHome(a
   assert.throws(() => appendCandidateClaim({
     target_domain: domain,
     title: "over-severity",
-    summary: "attempts critical from a high mass-read row",
-    severity: "critical",
+    summary: "attempts high from a medium mass-read row",
+    severity: "high",
     exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
     surface_ids: [SURFACE_ID],
     evidence_refs: [{
@@ -398,7 +398,7 @@ test("the agent cannot enable full capture: owner_authorized is a forbidden inpu
   ));
 }));
 
-// ───────────────────────── soundness hardening (false-HIGH prevention) ──────────────────────────
+// ───────────────────────── soundness hardening (false-mint prevention) ──────────────────────────
 
 test("truncation: a truncated CONTROL body → fail closed (a truncated control mis-scores as denied)", () => withTempHome(async () => {
   const domain = uniqueDomain();
@@ -528,7 +528,7 @@ test("malformed cookie (a value with a literal ;) is handled fail-soft — the p
 
 // ── round-2 soundness (bot-review): bind the three mint signals to the SAME counted records ──────
 
-test("FALSE-HIGH closed: a metadata email + benign records does NOT mint (PII is not in a counted record)", () => withTempHome(async () => {
+test("FALSE-MINT closed: a metadata email + benign records does NOT mint (PII is not in a counted record)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   // records = [{id:1},{id:2}] — no sensitive field, no PII value; the email lives in response METADATA.
@@ -558,7 +558,7 @@ test("extractRecords picks the OBJECT array, not a larger SCALAR array", () => {
   assert.equal(deriveMaskedSummary(JSON.stringify(parsed)).record_count, 2);
 });
 
-test("widened vocab: an SSN mass-read mints HIGH (the former email/phone/iban vocab missed it)", () => withTempHome(async () => {
+test("widened vocab: an SSN mass-read mints MEDIUM (the former email/phone/iban vocab missed it)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   const body = JSON.stringify({ data: [
@@ -574,7 +574,7 @@ test("widened vocab: an SSN mass-read mints HIGH (the former email/phone/iban vo
   assert.ok(!signedRailBytes(domain).includes("123-45-6789"), "raw SSN must never reach the signed rail");
 }));
 
-test("widened vocab: a Luhn-valid credit-card mass-read mints HIGH", () => withTempHome(async () => {
+test("widened vocab: a Luhn-valid credit-card mass-read mints MEDIUM", () => withTempHome(async () => {
   const domain = uniqueDomain();
   setupSession(domain);
   const body = JSON.stringify({ data: [
