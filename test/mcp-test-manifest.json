@@ -112,6 +112,7 @@
   "test/offensive-oob-collector.test.js",
   "test/offensive-nuclei-producer.test.js",
   "test/offensive-cors-producer.test.js",
+  "test/offensive-massread-producer.test.js",
   "test/surface-router.test.js",
   "test/circuit-breaker-auth.test.js",
   "test/auth-provenance-stamp.test.js",
