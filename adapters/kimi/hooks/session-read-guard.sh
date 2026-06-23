@@ -312,6 +312,15 @@ if "file_path" in tool_input:
         block(blocked)
     raise SystemExit(0)
 
+# Grep tool: its search root is `path` (a file or directory). A content search over a blocked dir
+# (e.g. massread-evidence/ raw-PII captures) exfiltrates the same data a Read would, so guard it too.
+grep_path = tool_input.get("path")
+if isinstance(grep_path, str) and grep_path:
+    blocked = check_file(grep_path, block_session_dirs=True)
+    if blocked:
+        block(blocked)
+    raise SystemExit(0)
+
 command = tool_input.get("command", "")
 if command:
     check_bash_command(command)

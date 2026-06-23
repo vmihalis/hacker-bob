@@ -946,3 +946,44 @@ test("a hex-ish path segment that FAILS the IBAN checksum is NOT a false positiv
   assert.equal(result.confirmed, true, `non-IBAN hex path must not be screened: ${JSON.stringify(result)}`);
   assert.equal(result.row_written, true);
 }));
+
+// ── round-8: union-find subjects, control-any-PII, formatted-IBAN ──────────────────────────────────
+
+test("overlapping same-shape identifiers for one subject are unioned to ONE subject (#473)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Same subject twice: row 2 lists an extra alias email. The rows SHARE owner@self → union-find merges
+  // them into one subject component, even though row 2's value-set is a superset of row 1's.
+  const body = JSON.stringify({ data: [
+    { id: 1, email: "owner@self.example" },
+    { id: 2, email: "owner@self.example alt@self.example" },
+  ] });
+  assert.equal(deriveMaskedSummary(body).distinct_pii_count, 1);
+  const { driver } = makeDriver({ attacker: { status: 200, body, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("a control returning ONE phone/address PII record is NOT a clean denial → inconclusive (#819)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // Phone is NOT a subject identifier (distinct_pii_count stays 0), but it IS real PII the anon client
+  // read — so the control is not cleanly denied. Uses pii_bearing_count, not distinct_pii_count.
+  const control = { status: 200, body: JSON.stringify({ data: [{ id: 1, phone: "555-123-4567" }] }), final_url: null, body_truncated: false };
+  const cs = deriveMaskedSummary(control.body);
+  assert.equal(cs.pii_bearing_count, 1);
+  assert.equal(cs.distinct_pii_count, 0);
+  const { driver } = makeDriver({ control });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("a space-formatted, URL-encoded IBAN in the target path is still screened (#230)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  // %20-separated IBAN decodes to "GB82 WEST 1234 5698 7654 32"; separator-stripping makes it contiguous.
+  seedRoutedSurface(domain, { endpoints: [`https://${domain}/accounts/GB82%20WEST%201234%205698%207654%2032/transactions`] });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_operator_pii", "proof_target_contains_sensitive_value");
+}));

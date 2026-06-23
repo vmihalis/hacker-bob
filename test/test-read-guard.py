@@ -250,6 +250,20 @@ TESTS = [
      {"tool_input": {"command": f"cat '{SESSION}/findings.jsonl"}},
      2,
      "cannot be safely parsed"),
+
+    # --- Grep tool (search root = `path`) must be guarded like Read (bot-review #101) ---
+    ("Grep into the massread-evidence raw-PII dir blocks",
+     {"tool_input": {"path": f"{SESSION}/massread-evidence"}},
+     2,
+     "bob_read_session_summary"),
+    ("Grep a file inside a blocked dir blocks",
+     {"tool_input": {"path": f"{SESSION}/massread-evidence/run-massread-abc123.json"}},
+     2,
+     "bob_read_session_summary"),
+    ("Grep into a non-session path is allowed",
+     {"tool_input": {"path": "/tmp"}},
+     0,
+     None),
 ]
 
 

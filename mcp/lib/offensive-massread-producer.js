@@ -177,11 +177,7 @@ function emptyPiiShapes() {
 // they are still LABELED in sensitive_field_names so the leak's columns are recorded, they just don't
 // drive the >= MIN-distinct-subjects floor. This is a deliberate PRECISION-first v1 choice: a leak
 // bearing ONLY phone/address (no email/SSN/card/IBAN) is recorded but does not mint a HIGH on its own.
-// Priority order for choosing a record's ONE dominant identifier (most-unique first). Keying each
-// record by its single highest-priority identifier — not the full set — means two records that SHARE
-// that identifier are ONE subject even if one row carries an extra identifier (bot-review #432).
-const SUBJECT_IDENTIFIER_PRIORITY = Object.freeze(["email", "ssn", "credit_card", "iban"]);
-const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(SUBJECT_IDENTIFIER_PRIORITY));
+const SUBJECT_IDENTIFIER_SHAPES = Object.freeze(new Set(["email", "ssn", "credit_card", "iban"]));
 
 // A sensitive field's VALUE as text for shape-matching: a scalar verbatim, else compact JSON (so a
 // nested { street, city } address or a list of values is still scanned). Empty for null/undefined.
@@ -226,10 +222,15 @@ function ibanChecksumValid(iban) {
 function findIbans(text) {
   let decoded = String(text);
   try { decoded = decodeURIComponent(decoded); } catch { /* malformed % — scan the raw text */ }
+  // Strip the conventional IBAN separators (spaces / hyphens) so a FORMATTED IBAN — e.g. a path with
+  // `GB82%20WEST%201234%20…` that decodes to `GB82 WEST 1234 …` — becomes contiguous and matches; the
+  // mod-97 checksum still guards against fusing unrelated tokens into a false positive (bot-review #230).
+  // Path/query structure (`/`, `?`, `&`, `=`) is preserved, so distinct segments stay distinct.
+  const compact = decoded.replace(/[\s-]/g, "");
   const out = [];
   const re = /\b[A-Za-z]{2}\d{2}[A-Za-z0-9]{10,30}\b/g;
   let m;
-  while ((m = re.exec(decoded)) !== null) {
+  while ((m = re.exec(compact)) !== null) {
     const cand = m[0].toUpperCase();
     if (ibanChecksumValid(cand)) out.push(cand);
   }
@@ -424,29 +425,31 @@ function deriveMaskedSummary(bodyText) {
   const pii = summary.pii_shape_present;
   // A PII VALUE counts ONLY when it sits in a field whose NAME maps to a sensitive bucket — an email
   // VALUE in an `email`-named field, never a free-text `note` and never a boolean `email_verified`.
-  // distinct_pii_count is the count of distinct SUBJECT KEYS across records. A record's subject key is
-  // its single HIGHEST-PRIORITY normalized SUBJECT-IDENTIFIER value(s) (email > SSN > card > IBAN — the
-  // shapes ~unique per subject); a record with no such identifier has no key and is not counted. This is
-  // a robust lower bound on distinct subjects and converges the prior whack-a-mole rounds, because:
-  //   • ONE record contributes at most ONE key, however many PII tokens it carries — so a field listing
-  //     two values for one subject (`email: "a@x alt@x"`) is one key, not two (bot-review #419);
-  //   • keying on the DOMINANT identifier (not the full set) means two rows that share it are ONE subject
-  //     even if one row carries an extra identifier the other lacks (`{email}` vs `{email,ssn}`, #432);
-  //   • same-bucket multi-field (`email` + `recovery_email`) and a promoted nested self-collection
-  //     collapse to one key (#393/#313);
+  // distinct_pii_count is the number of distinct SUBJECTS, computed by UNION-FIND over normalized
+  // subject-identifier values (email / SSN / card / IBAN — the shapes ~unique per subject): two records
+  // that share ANY identifier value are the SAME subject. This is the principled definition and ends the
+  // prior whack-a-mole, because every same-subject inflation reduces to "records sharing an identifier":
+  //   • a field listing two values for one subject (`email: "a@x alt@x"`) unions both → one subject (#419);
+  //   • two rows that share an identifier but one carries an extra one (`{email}` vs `{email,ssn}`, or
+  //     `{email:"a"}` vs `{email:"a alt"}`) union on the shared value → one subject (#432/#473);
+  //   • same-bucket multi-field (`email`+`recovery_email`) and a promoted nested self-collection union
+  //     on the repeated value → one subject (#393/#313); constant boilerplate unions all rows → one;
   //   • values are NORMALIZED + shape-extracted, so case/format variants and a structured field's
-  //     varying non-PII siblings never split one subject into two (#394);
-  //   • phone / postal address are EXCLUDED from the key (a subject has several), killing phone-format
-  //     and address-multiplicity over-counts (#183) — they remain LABELED in sensitive_field_names.
-  // So a self-record, constant boilerplate, and one subject's many PII fields ALL yield ONE key; only
-  // >= MIN genuinely-distinct subjects clear the floor.
-  const subjectKeys = new Set();
+  //     varying non-PII siblings never split one subject (#394);
+  //   • phone / postal address are EXCLUDED as identifiers (a subject has several) — still LABELED in
+  //     sensitive_field_names but they don't form/merge subjects (#183).
+  // Failures are toward UNDER-counting (a join row sharing two subjects' ids merges them) — the safe
+  // direction. Only >= MIN genuinely-distinct subjects clear the floor.
+  const parent = new Map();
+  const findRoot = (x) => { let r = x; while (parent.get(r) !== r) r = parent.get(r); let c = x; while (parent.get(c) !== r) { const n = parent.get(c); parent.set(c, r); c = n; } return r; };
+  const ensure = (x) => { if (!parent.has(x)) parent.set(x, x); };
+  const union = (a, b) => { ensure(a); ensure(b); const ra = findRoot(a); const rb = findRoot(b); if (ra !== rb) parent.set(ra, rb); };
   let piiBearingRecords = 0;
   const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
   for (let i = 0; i < scanLimit; i += 1) {
     const record = records[i];
     let recordHasSensitivePii = false;
-    const idByShape = new Map(); // this record's normalized identifier values, grouped by shape
+    const identifierValues = []; // this record's shape-prefixed normalized subject-identifier values
     for (const key of Object.keys(record)) {
       const bucket = bucketForFieldName(key);
       if (!bucket) continue;
@@ -458,25 +461,23 @@ function deriveMaskedSummary(bodyText) {
       recordHasSensitivePii = true;
       for (const m of matches) {
         pii[m.shape] = true;
-        if (!SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) continue;
-        let set = idByShape.get(m.shape);
-        if (!set) { set = new Set(); idByShape.set(m.shape, set); }
-        set.add(m.norm);
+        if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) identifierValues.push(`${m.shape}:${m.norm}`);
       }
     }
     if (recordHasSensitivePii) piiBearingRecords += 1;
-    // ONE subject key per record: its HIGHEST-PRIORITY identifier shape's value(s). A single dominant
-    // identifier (not the full set) means two rows sharing it are ONE subject even if one carries an
-    // extra identifier (#432); a record with no subject identifier contributes no key.
-    for (const shape of SUBJECT_IDENTIFIER_PRIORITY) {
-      const set = idByShape.get(shape);
-      if (set && set.size > 0) { subjectKeys.add(`${shape}:${Array.from(set).sort().join(",")}`); break; }
+    // Union all of this record's identifier values — they belong to ONE subject. Two records that share
+    // any value thereby join the same component (= the same subject).
+    if (identifierValues.length > 0) {
+      ensure(identifierValues[0]);
+      for (let k = 1; k < identifierValues.length; k += 1) union(identifierValues[0], identifierValues[k]);
     }
   }
   summary.sensitive_field_names = Array.from(buckets).sort();
   summary.pii_bearing_count = piiBearingRecords;
-  // distinct_pii_count := number of distinct SUBJECT KEYS (records with a distinct identifier set).
-  summary.distinct_pii_count = subjectKeys.size;
+  // distinct_pii_count := number of distinct subject components (union-find roots over identifier values).
+  const roots = new Set();
+  for (const value of parent.keys()) roots.add(findRoot(value));
+  summary.distinct_pii_count = roots.size;
   return summary;
 }
 
@@ -812,11 +813,12 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   if (controlReadBulk) {
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
   }
-  // (a2) The control surfaced SOME subject PII (>= 1 distinct subject key), but below the bulk floor.
-  //      That is NOT a clean denial — the unauthenticated client read a real subject's PII, so the
-  //      "anon is denied PII" premise fails (a public teaser / partial-public endpoint, not a clean
-  //      authz differential). Fall through to inconclusive rather than mint (bot-review #784).
-  const controlReadAnySubjectPii = controlSummary.distinct_pii_count > 0;
+  // (a2) The control surfaced ANY PII record (>= 1 pii-bearing record — INCLUDING phone/address, which
+  //      are not subject identifiers but are still real PII), even below the bulk floor. That is NOT a
+  //      clean denial — the unauthenticated client read a real subject's PII, so the "anon is denied PII"
+  //      premise fails (a public teaser / partial-public endpoint, not a clean authz differential). Fall
+  //      through to inconclusive rather than mint (bot-review #784/#819).
+  const controlReadAnyPii = controlSummary.pii_bearing_count > 0;
   // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
   //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
   //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
@@ -826,7 +828,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   const control2xx = control.status != null && control.status >= 200 && control.status < 300;
   const controlBodyEmpty = typeof control.body !== "string" || control.body.trim().length === 0;
   const controlOk2xx = control2xx && controlSummary.parse_ok;
-  const controlDenied = !controlReadAnySubjectPii && (
+  const controlDenied = !controlReadAnyPii && (
     control.status === 401
     || (control2xx && controlBodyEmpty)
     || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS)
