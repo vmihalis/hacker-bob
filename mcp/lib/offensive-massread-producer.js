@@ -79,6 +79,7 @@ const {
 const {
   findRoutedSurface,
   resolveSurfaceEndpoint,
+  candidateSurfaceEndpoints,
   assertReadOnlyPath,
   auditConfirmRequest,
   assertNoForbiddenInputs,
@@ -156,10 +157,6 @@ const PII_VALUE_SHAPES = Object.freeze({
   iban: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/,
 });
 
-function rejectInvalidArguments(message, details = null) {
-  throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, message, details);
-}
-
 function blocked(outcome, reason, extra = {}) {
   return {
     confirmed: false,
@@ -186,6 +183,11 @@ function cookieObjectsFromProfile(profile, urlForCookie) {
     : (typeof profile.cookie === "string" ? profile.cookie : "");
   if (!header.trim()) return [];
   const out = [];
+  // BOUND: a "; " split is the standard Cookie-header delimiter; a cookie VALUE must not contain a
+  // raw `;` (RFC 6265 — it is percent/base64-encoded if present), so the split is lossless for
+  // well-formed cookies. A pathological value with a literal `;` would split into extra parts; the
+  // `eq <= 0` guard drops any part without a leading name, so the worst case is a dropped cookie
+  // (fail-closed: a missing cookie weakens the attacker arm → no false mint), never a forged one.
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq <= 0) continue;
@@ -230,11 +232,42 @@ function extractRecords(parsed) {
   return best;
 }
 
-function bucketForFieldName(lowerName) {
-  for (const { bucket, fragments } of SENSITIVE_FIELD_BUCKETS) {
-    if (fragments.some((f) => lowerName.includes(f))) return bucket;
+// Tokenize a field key on camelCase + non-alphanumeric separators → lowercased tokens. So
+// `emailVerified` / `email_verified` / `billing-email` all yield an `email` token, while
+// `themailbox` does NOT (a bare-substring match would falsely fire on it).
+function fieldTokens(rawName) {
+  return String(rawName)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// A fragment matches the field name iff its own tokens appear as a CONTIGUOUS subsequence of the
+// field's tokens (word-boundary, not bare substring). Multi-word fragments (`date_of_birth`) and
+// single tokens (`email`, `dob`) both work. NOTE: this is the WITNESS label only — the MINT gate
+// additionally requires a real PII VALUE shape (pii_shape_present), so a field merely NAMED
+// `email_verified` (a boolean) never lifts a row on its own.
+function fragmentMatchesTokens(fragment, tokens) {
+  const frag = fieldTokens(fragment);
+  if (frag.length === 0) return false;
+  for (let i = 0; i + frag.length <= tokens.length; i += 1) {
+    let ok = true;
+    for (let j = 0; j < frag.length; j += 1) { if (tokens[i + j] !== frag[j]) { ok = false; break; } }
+    if (ok) return true;
   }
-  if (SENSITIVE_FIELD_NAME_FRAGMENTS.some((f) => lowerName.includes(f))) return "other_sensitive";
+  return false;
+}
+
+function bucketForFieldName(rawName) {
+  const tokens = fieldTokens(rawName);
+  if (tokens.length === 0) return null;
+  for (const { bucket, fragments } of SENSITIVE_FIELD_BUCKETS) {
+    if (fragments.some((f) => fragmentMatchesTokens(f, tokens))) return bucket;
+  }
+  if (SENSITIVE_FIELD_NAME_FRAGMENTS.some((f) => fragmentMatchesTokens(f, tokens))) return "other_sensitive";
   return null;
 }
 
@@ -262,7 +295,7 @@ function deriveMaskedSummary(bodyText) {
   for (const record of records) {
     if (!record || typeof record !== "object" || Array.isArray(record)) continue;
     for (const key of Object.keys(record)) {
-      const bucket = bucketForFieldName(String(key).toLowerCase());
+      const bucket = bucketForFieldName(key);
       if (bucket) buckets.add(bucket);
     }
   }
@@ -337,7 +370,14 @@ async function runArm(drv, {
     throw auditErr;
   }
   if (error) throw error;
-  if (result && result.__timeout === true) {
+  // A driver that resolves null/undefined (no throw) must not be dereferenced into a crash; treat
+  // it as a transport error the caller converts to a fail-closed negative.
+  if (!result || typeof result !== "object") {
+    const e = new Error(`authed_fetch returned no result (${armTag})`);
+    e.code = "browser_transport_error";
+    throw e;
+  }
+  if (result.__timeout === true) {
     const e = new Error(`authed_fetch timeout (${armTag})`);
     e.code = "authed_fetch_timeout";
     throw e;
@@ -347,17 +387,57 @@ async function runArm(drv, {
     body: typeof result.body === "string" ? result.body : "",
     final_url: typeof result.final_url === "string" ? result.final_url : null,
     body_truncated: result.body_truncated === true,
+    parse_ok: typeof result.body === "string" && result.body.length > 0,
   };
 }
 
 // Persist the FULL raw capture OUTSIDE the signed rail, ONLY under the operator env gate. The folder
 // is co-located with the session (not the repo); the operator deletes it after the engagement.
 function writeFullCapture(domain, runId, payload) {
-  const dir = path.join(sessionDir(domain), "massread-evidence");
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = path.join(dir, `${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
-  fs.writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  // SAME symlink discipline as the signed offensive-runs rail (offensive-capture-writer.js): this is
+  // the raw-PII artifact, so a symlinked session dir / evidence dir / leaf must never redirect it.
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const sessionRoot = fs.realpathSync(sessionDir(domain)); // session dir exists (state.json was written)
+  const nominalDir = path.join(sessionRoot, "massread-evidence");
+  // Refuse a pre-existing symlinked evidence dir BEFORE a recursive mkdir would follow it.
+  try {
+    if (fs.lstatSync(nominalDir).isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir must not be a symlink: ${nominalDir}`);
+    }
+  } catch (e) { if (e && e.code !== "ENOENT") throw e; }
+  fs.mkdirSync(nominalDir, { recursive: true, mode: 0o700 });
+  // Post-mkdir: the resolved dir must stay inside the session root with no symlinked component.
+  if (fs.realpathSync(nominalDir) !== nominalDir) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence dir must stay inside the session root without symlinks: ${nominalDir}`);
+  }
+  const file = path.join(nominalDir, `${String(runId).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `massread-evidence capture must not be a symlink: ${file}`);
+    }
+  } catch (e) { if (e && e.code !== "ENOENT") throw e; }
+  // Exclusive create + O_NOFOLLOW: a fresh per-run path, never following/truncating a planted symlink.
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow, 0o600);
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
+  } finally {
+    fs.closeSync(fd);
+  }
   return file;
+}
+
+// Preserve the recorded query of the routed listing/search endpoint — resolveSurfaceEndpoint strips
+// it, but for query-routed search surfaces the params (e.g. ?q=*) are load-bearing. Returns the
+// recorded `?...` search of the recorded endpoint matching the resolved origin+path, or "" if none.
+// The signed canonicalTarget stays query-stripped (a PII value in a param must never be signed).
+function recordedSearchForEndpoint(surface, endpointUrlObj) {
+  const wantOriginPath = `${endpointUrlObj.origin}${endpointUrlObj.pathname}`;
+  for (const { value } of candidateSurfaceEndpoints(surface)) {
+    let u;
+    try { u = new URL(String(value), endpointUrlObj.origin); } catch { continue; }
+    if (`${u.origin}${u.pathname}` === wantOriginPath && u.search) return u.search;
+  }
+  return "";
 }
 
 // The full oracle. `driver` is injectable so seeded tests need no live browser; with no driver the
@@ -400,8 +480,14 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   const { surface } = findRoutedSurface(domain, surfaceId);
   const endpointUrlObj = resolveSurfaceEndpoint({ domain, surface, state, toolName: TOOL_ID });
   const endpointUrl = endpointUrlObj.toString();
-  // Read-only + scope guard (catches a verb-named path segment).
-  assertReadOnlyPath(endpointUrl, TOOL_ID);
+  // Preserve the recorded query — resolveSurfaceEndpoint strips it, but for query-routed search/listing
+  // surfaces the params (e.g. ?q=*) are load-bearing; without them the fetch hits a bare path → false
+  // negative. The signed canonicalTarget stays query-stripped (a PII value in a param is never signed).
+  const fetchUrlObj = new URL(endpointUrl);
+  const recordedSearch = recordedSearchForEndpoint(surface, endpointUrlObj);
+  if (recordedSearch) fetchUrlObj.search = recordedSearch;
+  // Read-only + scope guard on the FULL fetch URL (path + recorded query); catches a verb-named segment.
+  assertReadOnlyPath(fetchUrlObj.toString(), TOOL_ID);
   // Value-blind durable target (origin+path, query stripped); a PII/secret shape in a fixed path
   // segment would persist into the signed row target.
   const canonicalTarget = canonicalizeExploitTarget(endpointUrl);
@@ -442,15 +528,27 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_by_infra", "browser_unavailable");
   }
 
+  // Distinct cache-buster per arm: a shared cache keyed on URL (ignoring the cookie) could otherwise
+  // serve the attacker's cached bulk body to the control arm (or vice versa) and forge the differential.
+  // A unique `_cb` per arm forces a distinct cache key, and the arm order is recorded in the bundle.
+  const armUrl = () => {
+    const u = new URL(fetchUrlObj.toString());
+    u.searchParams.set("_cb", crypto.randomBytes(8).toString("hex"));
+    return u.toString();
+  };
+  const attackerUrl = armUrl();
+  const controlUrl = armUrl();
+  const armOrder = ["attacker", "control"];
+
   const armBase = {
-    domain, surfaceId, endpointUrl, blockInternalHosts, egressProfileName, playwrightProxy,
+    domain, surfaceId, blockInternalHosts, egressProfileName, playwrightProxy,
   };
 
   let attacker;
   let control;
   try {
-    attacker = await runArm(drv, { ...armBase, authCookies, armTag: "attacker" });
-    control = await runArm(drv, { ...armBase, authCookies: null, armTag: "control" });
+    attacker = await runArm(drv, { ...armBase, endpointUrl: attackerUrl, authCookies, armTag: "attacker" });
+    control = await runArm(drv, { ...armBase, endpointUrl: controlUrl, authCookies: null, armTag: "control" });
   } catch (e) {
     if (e && e.probe_audit_failed) throw e; // audit-write failure must surface, not be swallowed
     if (e && (e.scope_decision === "blocked" || e.code === "scope_blocked")) {
@@ -465,30 +563,56 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_by_infra", "browser_transport_error");
   }
 
-  // WAF / rate-limit on the ATTACKER arm: the credentialed read never actually ran, so we cannot
-  // prove the mass-read. Fail closed (a block page is not "0 records").
+  // WAF / rate-limit on EITHER arm: the read never actually ran (a block page is not "0 records"), so
+  // the differential cannot be scored. Fail closed — a throttled CONTROL must NOT count as "denied".
   if (attacker.status != null && WAF_STATUSES.has(attacker.status)) {
     return fail("blocked_by_defense", "waf_or_rate_limit");
+  }
+  if (control.status != null && WAF_STATUSES.has(control.status)) {
+    return fail("blocked_by_defense", "control_waf_or_rate_limit");
+  }
+  // A truncated body mis-scores: a truncated CONTROL parses to fewer/0 records → false "denied" → a
+  // false HIGH; a truncated ATTACKER → false negative. Either truncated → unreliable, fail closed.
+  if (attacker.body_truncated || control.body_truncated) {
+    return fail("blocked_by_infra", "response_truncated_unreliable");
   }
 
   // Derive masked summaries, then DISCARD raw bodies (full capture, if any, happens after the mint).
   const attackerSummary = deriveMaskedSummary(attacker.body);
   const controlSummary = deriveMaskedSummary(control.body);
 
-  const attackerBulk = attacker.status != null && attacker.status >= 200 && attacker.status < 300
+  const attackerOk2xx = attacker.status != null && attacker.status >= 200 && attacker.status < 300;
+  // A 2xx attacker body that does not parse to a countable collection cannot prove a mass-read.
+  if (attackerOk2xx && !attackerSummary.parse_ok) {
+    return fail("blocked_by_defense", "attacker_body_not_a_countable_collection");
+  }
+  // MINT GATE: require a real PII VALUE shape, not merely a field NAMED like PII — so a column such as
+  // `email_verified: true` (a boolean) can never lift a row. The field-name buckets are the WITNESS only.
+  const attackerHasPiiValue = Object.values(attackerSummary.pii_shape_present).some(Boolean);
+  const attackerBulk = attackerOk2xx
     && attackerSummary.record_count >= MASSREAD_MIN_RECORDS
-    && attackerSummary.sensitive_field_names.length >= 1;
-  // Control is DENIED: an explicit 401/403, OR a 2xx that returns no records / no sensitive shapes.
-  const controlDenied = (control.status === 401 || control.status === 403)
-    || (control.status != null && control.status >= 200 && control.status < 300
-      && (controlSummary.record_count === 0 || controlSummary.sensitive_field_names.length === 0));
-
+    && attackerHasPiiValue;
   if (!attackerBulk) {
     return fail("blocked_by_defense", "attacker_did_not_read_bulk_pii");
   }
-  if (!controlDenied) {
+
+  // Control resolves to exactly ONE of three CLEAN outcomes; ANY other status (5xx, 404, an
+  // unparseable 2xx, a timeout) is INCONCLUSIVE → fail closed (never scored "denied", never "also reads").
+  const controlOk2xx = control.status != null && control.status >= 200 && control.status < 300 && controlSummary.parse_ok;
+  const controlHasPiiValue = Object.values(controlSummary.pii_shape_present).some(Boolean);
+  const controlReadsBulk = controlOk2xx
+    && controlSummary.record_count >= MASSREAD_MIN_RECORDS
+    && controlHasPiiValue;
+  const controlDenied = (control.status === 401 || control.status === 403)
+    || (controlOk2xx && (controlSummary.record_count === 0 || !controlHasPiiValue));
+  if (controlReadsBulk) {
     // Control ALSO reads the bulk collection → a PUBLIC endpoint, not an authorization break.
     return fail("blocked_by_design", "control_also_reads_bulk_not_a_privilege_break");
+  }
+  if (!controlDenied) {
+    // Ambiguous control (5xx / 404 / unparseable 2xx): cannot conclude the control was DENIED, so we
+    // cannot establish the differential. Fail closed rather than mint a HIGH off an inconclusive baseline.
+    return fail("blocked_by_infra", "control_inconclusive");
   }
 
   // ── build the canonical proof (MASKED, value-blind, PII-screened) ──
@@ -503,9 +627,10 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     control_status: control.status,
     attacker_record_count: attackerSummary.record_count,
     control_record_count: controlSummary.record_count,
-    attacker_reads_bulk_pii: true,
-    control_denied: true,
-    count_exceeds_min: true,
+    arm_order: armOrder,
+    credentialed_bulk_pii_read: true,
+    unauthenticated_control_denied: true,
+    pii_value_shapes_present: true,
   });
   // Fail-closed PII screen: the masked summary is field-NAME buckets + counts + booleans, so a value
   // shape here means something leaked; refuse to sign it.
@@ -513,11 +638,18 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     return fail("blocked_operator_pii", "capture_contains_sensitive_value");
   }
 
+  // HONEST about what the authed-vs-UNAUTHENTICATED differential actually proves: "credential X
+  // bulk-reads PII an unauthenticated client is denied". It does NOT prove X is UNDER-privileged — a
+  // FULLY-AUTHORIZED user reading authorized data would also satisfy this. The operator contract (tool
+  // description + evaluator prose) is that `auth_profile` carries the LEAKED / UNDER-PRIVILEGED /
+  // guessable credential; using a fully-authorized credential is operator misuse → false positive. True
+  // cross-tenant BFLA (a second AUTHENTICATED victim identity denied while the attacker reads ITS data)
+  // is the v2 oracle. So the signed booleans assert ONLY what is established — never a bare
+  // `bfla_proven` / `under_privileged`.
   const relationBooleans = {
-    attacker_reads_bulk_pii: true,
-    control_denied: true,
-    count_exceeds_min: true,
-    differential_response: true,
+    credentialed_bulk_pii_read: true,
+    unauthenticated_control_denied: true,
+    pii_value_shapes_present: true,
   };
 
   // demonstrated_severity DERIVED from the per-tool registry inside buildAndSignOffensiveRow (never

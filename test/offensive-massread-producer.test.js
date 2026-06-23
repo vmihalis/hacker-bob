@@ -395,3 +395,125 @@ test("the agent cannot enable full capture: owner_authorized is a forbidden inpu
     { driver },
   ));
 }));
+
+// ───────────────────────── soundness hardening (false-HIGH prevention) ──────────────────────────
+
+test("truncation: a truncated CONTROL body → fail closed (a truncated control mis-scores as denied)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ control: { status: 200, body: bulkBody(3), final_url: null, body_truncated: true } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "response_truncated_unreliable");
+}));
+
+test("truncation: a truncated ATTACKER body → fail closed", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ attacker: { status: 200, body: bulkBody(3), final_url: null, body_truncated: true } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "response_truncated_unreliable");
+}));
+
+test("cache-buster: each arm's fetch URL carries a DISTINCT _cb (no cross-arm cache serving)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver, calls } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(calls.fetches.length, 2);
+  const cbOf = (u) => new URL(u).searchParams.get("_cb");
+  const a = cbOf(calls.fetches[0].fetchArgs.url);
+  const c = cbOf(calls.fetches[1].fetchArgs.url);
+  assert.ok(a && c, "both arms carry a _cb cache-buster");
+  assert.notEqual(a, c, "the two arms' _cb must differ so a shared cache can't cross-serve");
+}));
+
+test("control WAF/503 → fail closed (a throttled control is not a clean 'denied')", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ control: { status: 503, body: "", final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "control_waf_or_rate_limit");
+}));
+
+test("ambiguous control (5xx) → control_inconclusive, not 'denied' and not 'also reads'", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ control: { status: 500, body: "oops", final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("ambiguous control (404) → control_inconclusive", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ control: { status: 404, body: "not found", final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+test("MINT GATE requires a real PII VALUE: a field merely NAMED like PII (emailVerified:true) does NOT mint", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const nameOnly = JSON.stringify({ data: [{ id: 1, emailVerified: true }, { id: 2, emailVerified: false }, { id: 3, emailVerified: true }] });
+  // record_count >= 2 and the "email" NAME bucket is present (word-boundary token), but NO email-shaped VALUE.
+  const s = deriveMaskedSummary(nameOnly);
+  assert.deepEqual(s.sensitive_field_names, ["email"]);
+  assert.equal(s.pii_shape_present.email, false);
+  const { driver } = makeDriver({ attacker: { status: 200, body: nameOnly, final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_did_not_read_bulk_pii");
+}));
+
+test("attacker 2xx body that does not parse to a collection → fail closed", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver({ attacker: { status: 200, body: "<html>not json</html>", final_url: null, body_truncated: false } });
+  const result = await run(domain, { driver });
+  assertNoRow(domain, result, "blocked_by_defense", "attacker_body_not_a_countable_collection");
+}));
+
+test("HONEST relationBooleans: the signed witness asserts only what's proven, never a bare bfla_proven", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.confirmed, true);
+  const rel = result.masked_oracle.relation;
+  assert.deepEqual(
+    Object.keys(rel).sort(),
+    ["credentialed_bulk_pii_read", "pii_value_shapes_present", "unauthenticated_control_denied"],
+  );
+  for (const forbidden of ["bfla_proven", "under_privileged", "cross_tenant", "attacker_reads_bulk_pii"]) {
+    assert.ok(!(forbidden in rel), `must NOT assert ${forbidden} (the authed-vs-unauth oracle can't establish it)`);
+  }
+}));
+
+test("symlinked massread-evidence dir → refused (not followed); the masked row still mints", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  process.env[OWNER_AUTHORIZED_ENV] = "1";
+  const evilTarget = fs.mkdtempSync(path.join(os.tmpdir(), "bob-massread-evil-"));
+  try {
+    const sdir = sessionDir(domain);
+    fs.mkdirSync(sdir, { recursive: true });
+    fs.symlinkSync(evilTarget, path.join(sdir, "massread-evidence"));
+    const { driver } = makeDriver();
+    const result = await run(domain, { driver });
+    assert.equal(result.confirmed, true, "the signed (masked) row still mints");
+    assert.equal(result.owner_authorized_capture, false, "a symlinked evidence dir must be refused");
+    assert.equal(fs.readdirSync(evilTarget).length, 0, "nothing may be written through the symlink");
+    assert.ok(!signedRailBytes(domain).includes(CANARY_EMAIL), "the signed rail stays masked");
+  } finally {
+    fs.rmSync(evilTarget, { recursive: true, force: true });
+  }
+}));
+
+test("malformed cookie (a value with a literal ;) is handled fail-soft — the producer still runs", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain, { attackerCookies: { sid: "abc;def", other: "ok" } });
+  const { driver } = makeDriver();
+  const result = await run(domain, { driver });
+  // The lossy "; " split truncates sid's value at the ';' but never crashes or forges — the run proceeds.
+  assert.equal(result.confirmed, true);
+}));

@@ -96,6 +96,9 @@ BLOCKED_DIRS = {
     # control checkouts (`repo-checkouts/`) must stay opaque to agents.
     "repo-runs",
     "offensive-runs",
+    # bob_http_massread_confirm's OPT-IN full raw capture (operator-gated). It holds raw PII bodies
+    # OUTSIDE the signed (masked) rail, so the agent must NEVER Read it — only the operator does.
+    "massread-evidence",
     "repo-work",
     "repo-checkouts",
 }
