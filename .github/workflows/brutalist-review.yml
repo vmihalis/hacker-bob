@@ -50,9 +50,14 @@ jobs:
           curl -fsSL https://antigravity.google/cli/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
-          command -v brutalist-mcp claude codex agy
+          # Check each critic independently — `command -v a b c` returns 0 if ANY
+          # resolves, so it would pass even with agy missing.
+          for bin in brutalist-mcp claude codex agy; do
+            command -v "$bin" >/dev/null || { echo "::error::missing critic binary: $bin"; exit 1; }
+          done
           claude --version
           codex --version
+          agy --version
           # codex: disable the broken built-in image_generation tool (gpt-image-2)
           mkdir -p "$HOME/.codex"
           printf '[features]\nimage_generation = false\n' > "$HOME/.codex/config.toml"
@@ -67,7 +72,9 @@ jobs:
         env:
           BRUTALIST_TIMEOUT: "600000"
           BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
-          # Freeze agy's binary version for the run (stops self-update drift).
+          # Disable agy's in-run self-update (it self-updates from a us-central1
+          # endpoint mid-run). NOTE: this does NOT pin the installed version —
+          # install.sh above fetches the latest; this only stops drift WITHIN a run.
           AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
           github-token: ${{ github.token }}
