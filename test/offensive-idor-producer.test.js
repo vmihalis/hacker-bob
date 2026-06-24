@@ -2742,4 +2742,113 @@ test("PR-D r9 (Codex P2): foreign PII present only in RAW readback bytes (parsed
   const result = await run(domain, { provision });
   assert.equal(result.confirmed, false, JSON.stringify(result));
   assert.equal(result.reason, "shared_object_store");
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "raw-readback PII must sign NO offensive row (CR)");
+}));
+
+// ── PR-D review round 10: owner-id fields, truncated/encoded/secret readback, embedded-id template ──
+
+test("PR-D r10 (Codex P1): owner-ASSIGNMENT fields in create_body are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-owner-fields.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "user_id", create_body: { user_id: "victim-1" } },
+      { label: "owner_id", create_body: { owner_id: "victim-2" } },
+      { label: "created_by camelCase", create_body: { createdBy: "victim-3" } },
+      { label: "nested team_id", create_body: { meta: { team_id: "victim-team" } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_owner_field", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r10 (Codex P2): a truncated owner readback fails closed (no canary trust, no mint)", () => withTempHome(async () => {
+  const domain = "idor-trunc-readback.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), owner_readback_b_truncated: true };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "owner_readback_truncated");
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "truncated readback must sign no row");
+}));
+
+test("PR-D r10 (Codex P2): encoded PII / secret shapes in the RAW readback are caught by #24", () => withTempHome(async () => {
+  const domain = "idor-raw-encoded-secret.example.test";
+  setupSession(domain);
+  const cases = [
+    { label: "percent-encoded foreign email", raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"dup":"victim%40corp.test","dup":"clean"}` },
+    { label: "AWS secret shape", raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"dup":"AKIAIOSFODNN7EXAMPLE","dup":"clean"}` },
+  ];
+  for (const c of cases) {
+    const provision = { ...soundProvision(), owner_readback_b_raw: c.raw };
+    const result = await run(domain, { provision });
+    assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+    assert.equal(result.reason, "shared_object_store", c.label);
+  }
+}));
+
+test("PR-D r10 (Codex P1): an embedded-id template (/api/account-{id}) fails closed, no off-route POST", () => withTempHome(async () => {
+  let n = 0;
+  for (const path_template of ["/api/account-{id}", "/api/v1/accounts.{id}"]) {
+    const domain = `idor-embedded-id-${n++}.example.test`;
+    const endpoint = `https://${domain}${path_template.replace("{id}", OBJ_B)}`;
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+    seedRoutedSurface(domain, SURFACE_ID, endpoint);
+    seedSyntheticProfiles(domain, {});
+    ensureHandoffSigningKey(domain);
+    const saved = process.env[IDOR_PROVISION_ENV];
+    process.env[IDOR_PROVISION_ENV] = domain;
+    try {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), path_template, canary_field: "note" }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${path_template}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_collection_not_id_terminated", path_template);
+      assert.equal(mock.postCount(), 0, `${path_template}: ZERO create POSTs (no off-route collection)`);
+    } finally {
+      if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+    }
+  }
+}));
+
+test("PR-D r10 (Codex P1): a non-slash HTTP scheme value in create_body is refused", () => withTempHome(async () => {
+  const domain = "idor-nonslash-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http:169.254.169.254/latest", "http:/169.254.169.254/x", "https:internal.svc/x"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { avatar_url: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r10 (Codex P1): a GraphQL operation using ignored tokens (comma / # comment) is refused", () => withTempHome(async () => {
+  const domain = "idor-graphql-ignored.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["mutation,{ deleteUser(id:1) }", "mutation #wipe\n { deleteUser }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", JSON.stringify(op));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
 }));

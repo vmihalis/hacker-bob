@@ -136,16 +136,29 @@ function normalizeFieldName(name) {
 // agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
 // separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
 const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid"]);
-// A URL-shaped create_body VALUE (scheme:// or protocol-relative //): a target that treats a body field
-// as a fetch/import/webhook URL (avatar_url, callback_url, …) would turn the canary create into an
-// off-target callback / internal-network SSRF, so URL-valued fields are refused before any write (Codex
-// P1). A synthetic canary-holder skeleton never needs a URL value. Anchored so "note: hi" is not a URL.
-const URL_VALUE_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
+// Owner-ASSIGNMENT fields (normalized): a create API honoring these would let an agent steer the
+// produced object's ownership to a caller-chosen real user/account/team, breaking the synthetic-owned
+// boundary (the object must belong to the creating synthetic identity, inferred from its auth). Refused
+// in create_body at any depth (Codex P1). Distinct from tenant scope keys (NORMALIZED_SCOPE_KEYS).
+const OWNER_ID_KEYS = new Set([
+  "userid", "ownerid", "accountid", "customerid", "memberid", "projectid", "teamid", "groupid",
+  "createdby", "owner", "assignee", "authorid", "principalid", "subjectid", "uid",
+]);
+// A URL-shaped create_body VALUE: a target that treats a body field as a fetch/import/webhook URL
+// (avatar_url, callback_url, …) would turn the canary create into an off-target callback / internal-network
+// SSRF, so URL-valued fields are refused before any write (Codex P1). Matches a `scheme://`, a known
+// fetch scheme even WITHOUT slashes or with a single/back slash (http:host, http:/host, http:\host — which
+// WHATWG/Node normalize to absolute URLs), and a protocol-relative `//`/`\\`. A synthetic canary-holder
+// skeleton never needs a URL value. Anchored on a host char after the scheme so "file: report" / "note: hi"
+// / "ratio 3:1" are NOT treated as URLs.
+const URL_VALUE_RE = /^\s*(?:(?:https?|ftp|file|gopher|wss?|dict|ldaps?):[\\/]*[a-z0-9]|[a-z][a-z0-9+.-]*:\/\/|[\\/]{2})/i;
 // A GraphQL mutation/subscription OPERATION inside a create_body string value: on a GraphQL-compatible
 // derived collection, {query:"mutation { ... }"} would execute an arbitrary mutation rather than create a
-// synthetic object. Anchored on the operation keyword followed (after an optional name) by `{` or `(`, so
-// a benign value like "mutation rate: 0.5" is not matched (Codex P1). A synthetic skeleton never needs one.
-const GRAPHQL_OP_RE = /\b(?:mutation|subscription)\b(?:\s+[A-Za-z_]\w*)?\s*[({]/i;
+// synthetic object (Codex P1). GraphQL treats whitespace, commas, and `#` comments as IGNORED tokens, so
+// the keyword may be separated from the selection set / variable defs by any of them (mutation,{…} or
+// mutation #c\n {…}); the detector allows those before an optional operation name and the `{`/`(`. A
+// benign value like "mutation rate: 0.5" is not matched (no `{`/`(` reachable through ignored tokens+name).
+const GRAPHQL_OP_RE = /\b(?:mutation|subscription)\b(?:\s|,|#[^\n]*\n?)*(?:[A-Za-z_]\w*(?:\s|,|#[^\n]*\n?)*)?[({]/i;
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
 // the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
@@ -156,6 +169,8 @@ const GRAPHQL_OP_RE = /\b(?:mutation|subscription)\b(?:\s+[A-Za-z_]\w*)?\s*[({]/
 //  - an owning-scope key (owner_scope/tenant_id/org_id/workspace_id and their aliases), normalized, at
 //    ANY depth: a {tenant_id:"victim-org"} body would make the live write drift into a caller-chosen
 //    tenant/workspace before the oracle blocks (Codex P1);
+//  - an owner-ASSIGNMENT key (user_id/owner_id/account_id/created_by/…), normalized, at ANY depth: a
+//    create API honoring it would assign the synthetic object to a caller-chosen real principal (Codex P1);
 //  - a URL-shaped string VALUE at ANY depth, in objects OR arrays (avatar_url/callback_url/["http://…"]):
 //    a target that fetches body URLs would turn the canary create into an SSRF / off-target callback;
 //  - a GraphQL mutation/subscription OPERATION string at ANY depth: on a GraphQL-compatible derived
@@ -184,7 +199,11 @@ function screenCreateBody(value, idField, depth = 0) {
     if (CREATE_BODY_OVERRIDE_KEYS.has(k.toLowerCase())) return "create_body_action_override";
     const norm = normalizeFieldName(k);
     if (NORMALIZED_SCOPE_KEYS.has(norm)) return "create_body_scope_field";
+    // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
+    // check it BEFORE the broader owner-assignment set so e.g. id_field:"account_id" reports
+    // client_supplied_id, while a non-id owner field (user_id with the default id_field) reports owner_field.
     if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
+    if (OWNER_ID_KEYS.has(norm)) return "create_body_owner_field";
     const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
@@ -901,6 +920,11 @@ async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, c
   // discards/normalizes (a shadowed duplicate key before the final value) would slip a parsed-only scan
   // (Codex P2). Captured here so idorConfirm can scan the raw body, not just the parsed object.
   base.owner_readback_b_raw = (rb && Buffer.isBuffer(rb.bodyBytes)) ? rb.bodyBytes.toString("utf8") : null;
+  // A TRUNCATED readback is trusted for neither canary discovery nor the #24 PII/secret screen: foreign
+  // PII/secret past the response cap would go unscreened while a parseable prefix still reflects the
+  // canary. Capture the flag so idorConfirm fails closed, mirroring the proof-body non-truncation gate
+  // (Codex P2).
+  base.owner_readback_b_truncated = rb ? rb.bodyTruncated : null;
   return base;
 }
 
@@ -1071,10 +1095,21 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
-    // The create endpoint = the COLLECTION: strip the FINAL path segment (which normalizePathTemplate
-    // guarantees holds {id}). Robust to inert-suffix templates (`/api/accounts/{id}.json` → `/api/accounts`,
-    // Codex P2) — never POST a malformed `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound
-    // template), never an agent free-text write target.
+    // The "drop trailing /{id}" derivation is only valid when {id} is its OWN final segment. normalizePathTemplate
+    // forbids anything AFTER {id} (except an inert extension) but NOT a prefix BEFORE it in the same segment,
+    // so /api/account-{id} or /api/v1/accounts.{id} would pass there yet strip to /api or /api/v1 — a broader /
+    // off-route POST target. Require the final segment to be exactly {id} (optionally {id}.ext) before deriving
+    // the collection, else fail closed (Codex P1).
+    const finalSegment = pathTemplate.slice(pathTemplate.lastIndexOf("/") + 1);
+    if (!/^\{id\}(?:\.[a-z0-9]+)?$/i.test(finalSegment)) {
+      return blocked("blocked_by_design", "create_collection_not_id_terminated", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // The create endpoint = the COLLECTION: strip the FINAL path segment (now proven to be exactly {id}[.ext]).
+    // Robust to inert-suffix templates (`/api/accounts/{id}.json` → `/api/accounts`) — never POST a malformed
+    // `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound template), never an agent free-text write.
     const createPath = pathTemplate.replace(/\/[^/]*$/, "");
     // A read template like /{id} strips to an EMPTY collection → POST / (the site root, often routed to
     // login/contact/search), not a collection-specific create endpoint and with no segment for the
@@ -1196,6 +1231,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     }
   }
 
+  // FAIL CLOSED on a TRUNCATED owner readback (Codex P2): a readback larger than the response cap is
+  // trusted for neither canary discovery nor the #24 PII/secret screen — foreign PII/secret past the cap
+  // would go unscreened while a parseable prefix still reflects the canary. The live arm stamps
+  // owner_readback_b_truncated (boolean); seeded provisions omit it (undefined → trusted by construction).
+  if (provision.owner_readback_b_truncated === true) {
+    return blocked("blocked_by_design", "owner_readback_truncated", {
+      target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+      ...identity, ...internalHostPolicy,
+    });
+  }
+
   // CANARY-REFLECTED + FIELD_PATH discovery (mint condition #20, D11b): discover
   // FIELD_PATH from the owner readback; if the canary is not reflected, abort.
   const readbackBody = owner_readback_b != null
@@ -1219,16 +1265,22 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       ...identity, ...internalHostPolicy,
     });
   }
-  // Also scan the RAW readback bytes: foreign PII present only in bytes JSON.parse discards/normalizes
-  // (e.g. a shadowed duplicate key before the final value) would otherwise slip the parsed-only scan,
-  // letting a contaminated / shared object store through after the tool already received non-synthetic
-  // data in the readback (Codex P2). The live arm captures owner_readback_b_raw; seeded provisions omit it.
+  // Also scan the RAW readback bytes for foreign PII AND secret shapes, with layered decoding — mirroring
+  // the proof-body / write-byte gates (Codex P2). Foreign data present only in bytes JSON.parse
+  // discards/normalizes (a shadowed duplicate key) or in an encoded form (a `victim%40corp.test` / an
+  // `sk-...` token) would otherwise slip the parsed-only PII scan, letting a contaminated / shared object
+  // store through after the tool already received non-synthetic data. The live arm captures
+  // owner_readback_b_raw; seeded provisions omit it.
   const rawReadback = typeof provision.owner_readback_b_raw === "string" ? provision.owner_readback_b_raw : null;
-  if (rawReadback && piiScan(rawReadback, allowedEmails).length > 0) {
-    return blocked("blocked_by_design", "shared_object_store", {
-      target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
-      ...identity, ...internalHostPolicy,
-    });
+  if (rawReadback) {
+    for (const probe of [rawReadback, decodeAllEncodingLayers(rawReadback)]) {
+      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) {
+        return blocked("blocked_by_design", "shared_object_store", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+    }
   }
 
   // Build the canonical P2 target from the surface-bound origin (AC-2).
