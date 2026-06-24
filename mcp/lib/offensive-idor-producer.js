@@ -755,26 +755,25 @@ async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, c
   const canary_a = mintCanary();
   const canary_b = mintCanary();
   const canary_c = mintCanary();
+  const base = { object_a: null, object_b: null, object_c: null, canary_a, canary_b, canary_c, owner_readback_b: null };
+  // FAIL FAST: a bad create contract / wrong id_field on the FIRST object must not trigger the later
+  // B/C writes (Codex P2). Validate the captured id after each create before issuing the next POST.
   const a = await createObject({ createUrl, headers: idA.headers, canaryField, canary: canary_a, idField, createBody, probeBase });
+  if (a.id == null) return base;
+  base.object_a = String(a.id);
   const b = await createObject({ createUrl, headers: idB.headers, canaryField, canary: canary_b, idField, createBody, probeBase });
+  if (b.id == null) return base;
+  base.object_b = String(b.id);
   const c = await createObject({ createUrl, headers: idC.headers, canaryField, canary: canary_c, idField, createBody, probeBase });
-  let owner_readback_b = null;
-  if (a.id != null && b.id != null && c.id != null) {
-    const readbackUrl = buildTargetUrl(pathTemplate, String(b.id), origin).toString();
-    assertSafeRequestUrl(readbackUrl, probeBase.domain, SCOPE_VALIDATION_OPTS);
-    assertReadOnlyPath(readbackUrl, TOOL_ID);
-    const rb = await runProbe({ ...probeBase, url: readbackUrl, method: "GET", headers: idB.headers });
-    owner_readback_b = parseJsonBody(rb);
-  }
-  return {
-    object_a: a.id == null ? null : String(a.id),
-    object_b: b.id == null ? null : String(b.id),
-    object_c: c.id == null ? null : String(c.id),
-    canary_a,
-    canary_b,
-    canary_c,
-    owner_readback_b,
-  };
+  if (c.id == null) return base;
+  base.object_c = String(c.id);
+  // All three created → read B's object back AS B (canary-leaf discovery + #24 create-time PII screen).
+  const readbackUrl = buildTargetUrl(pathTemplate, String(b.id), origin).toString();
+  assertSafeRequestUrl(readbackUrl, probeBase.domain, SCOPE_VALIDATION_OPTS);
+  assertReadOnlyPath(readbackUrl, TOOL_ID);
+  const rb = await runProbe({ ...probeBase, url: readbackUrl, method: "GET", headers: idB.headers });
+  base.owner_readback_b = parseJsonBody(rb);
+  return base;
 }
 
 // The full oracle. `fetch_fn` is injectable so seeded tests need no live target.
@@ -881,17 +880,26 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     const idField = typeof args.id_field === "string" && args.id_field.trim() ? args.id_field.trim() : "id";
     const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
       ? args.create_body : {};
-    // The create body is WRITTEN to the target — screen it for operator PII / secrets (the hard rule:
-    // never submit operator identifiers to a target). Synthetic skeletons only.
-    const createBodyText = JSON.stringify(createBody);
-    if (piiScan(createBodyText, allowedEmails).length > 0 || secretShapesIn(createBodyText).length > 0) {
-      return blocked("blocked_operator_pii", "create_body_contains_sensitive_value", {
-        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
-        ...identity, ...internalHostPolicy,
-      });
-    }
-    const createPath = pathTemplate.replace(/\/\{id\}$/, "");
+    // The create endpoint = the COLLECTION: strip the FINAL path segment (which normalizePathTemplate
+    // guarantees holds {id}). Robust to inert-suffix templates (`/api/accounts/{id}.json` → `/api/accounts`,
+    // Codex P2) — never POST a malformed `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound
+    // template), never an agent free-text write target.
+    const createPath = pathTemplate.replace(/\/[^/]*$/, "");
     const createUrl = new URL(createPath || "/", baselineUrl.origin).toString();
+    // EVERY byte WRITTEN to the target — the create URL, the serialized body, AND the canary FIELD NAME —
+    // is screened for operator PII / secrets BEFORE any write, with LAYERED DECODING (percent / unicode,
+    // to a fixed point), mirroring the proof-body gates so an encoded `victim%40example.test` or token can't
+    // slip through. The hard rule: never submit operator identifiers to a target. (The canary VALUE is a
+    // server-minted 256-bit hex nonce — safe — and is not agent-supplied, so it is not part of this scan.)
+    const writeBytes = `${createUrl}\n${JSON.stringify(createBody)}\n${canaryField}`;
+    for (const probe of [writeBytes, decodeAllEncodingLayers(writeBytes)]) {
+      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) {
+        return blocked("blocked_operator_pii", "create_inputs_contain_sensitive_value", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+    }
     assertSafeRequestUrl(createUrl, domain, SCOPE_VALIDATION_OPTS); // the ONE allowed write; NOT read-only-guarded
     const provisionProbeBase = {
       fetchFn: fetch_fn, method: "GET", domain, surfaceId, egressProfile: egressProfileName,
