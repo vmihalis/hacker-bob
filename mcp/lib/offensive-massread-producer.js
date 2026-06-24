@@ -1194,9 +1194,14 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
             victimElevation = "victim_arm_response_truncated";
           } else {
             const victimOk2xx = victim.status != null && victim.status >= 200 && victim.status < 300;
-            // The victim arm must read its OWN known identity from this scope — proves the scope is the
-            // victim's /me, not some other single user or a multi-subject view.
-            const victimReadsOwnIdentity = victimOk2xx && subjectIdentifierSet(victim.body).has(victimKey);
+            const victimSubjects = victimOk2xx ? subjectIdentifierSet(victim.body) : new Set();
+            // The victim arm must read its OWN known identity from this scope.
+            const victimReadsOwnIdentity = victimSubjects.has(victimKey);
+            // …AND the scope must be SINGLE-SUBJECT (the victim's own /me), not a multi-subject team/org/
+            // listing endpoint that merely INCLUDES the victim among others (bot-review #L). On a shared
+            // multi-subject scope the victim does not OWN the other subjects' data, so "victim_read_own_
+            // private_scope" would be untruthful; require exactly one distinct subject so the leg is honest.
+            const victimScopeSingleSubject = victimSubjects.size === 1;
             const anonVictimSummary = deriveMaskedSummary(anonVictim.body);
             const anonVictimDenied = controlIsCleanDenial(
               anonVictimSummary, anonVictim, controlReadsAnyPii(anonVictimSummary, anonVictim.body),
@@ -1206,7 +1211,8 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
               || subjectIdentifiersInRawText(anonVictim.body).has(victimKey);
             // The anchored overlap: the attacker's bulk read contains the victim's KNOWN identity.
             const attackerReadsVictim = subjectIdentifierSet(attacker.body).has(victimKey);
-            const proven = victimReadsOwnIdentity && anonVictimDenied && !anonSeesVictimIdentity && attackerReadsVictim;
+            const proven = victimReadsOwnIdentity && victimScopeSingleSubject
+              && anonVictimDenied && !anonSeesVictimIdentity && attackerReadsVictim;
             victimDiag.victim_status = victim.status;
             victimDiag.anon_victim_status = anonVictim.status;
             victimDiag.victim_overlap_count = proven ? 1 : 0;
@@ -1217,6 +1223,8 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
               victimElevation = "victim_identity_visible_to_anon";   // #F: identity leaked to anon → not private
             } else if (!victimReadsOwnIdentity) {
               victimElevation = "victim_did_not_read_own_identity";  // the scope is not the victim's own /me
+            } else if (!victimScopeSingleSubject) {
+              victimElevation = "victim_scope_multi_subject";        // #L: a shared multi-subject scope, not /me
             } else if (!attackerReadsVictim) {
               victimElevation = "attacker_did_not_read_victim_subject";
             } else {

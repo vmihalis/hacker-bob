@@ -1562,6 +1562,22 @@ test("v2 → MEDIUM (#J): the SAME session token under a DIFFERENT cookie name i
   assert.equal(calls.starts.length, 2, "a reused session token under a different name must not run the victim arms");
 }));
 
+test("v2 → MEDIUM (#L): a multi-subject victim scope (org/team listing incl. the victim) is not the victim's own /me", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  // The victim_surface_id returns the victim's email AMONG OTHER subjects (a private org-members page the
+  // victim can access). The known email appears, anon is denied, and the attacker reads it — but the scope
+  // is multi-subject, so the victim does not OWN it: must decline rather than sign victim_read_own_private_scope.
+  const victim = { status: 200, body: JSON.stringify({ data: [
+    { id: 1, email: CANARY_EMAIL }, { id: 2, email: "teammate1@canary.example.test" }, { id: 3, email: "teammate2@canary.example.test" },
+  ] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
 test("v2 HIGH still mints when the two sessions share only a SHORT benign cookie (no over-decline)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   // Distinct long session tokens, but both jars carry the same short benign cookie (locale=en) — that must
