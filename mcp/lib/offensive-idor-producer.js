@@ -974,6 +974,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
+    // canary_field must not alias id_field: createObject writes the minted canary into canary_field AFTER
+    // this screen, so canary_field === id_field would place the (server-minted) canary into the OBJECT-ID
+    // slot of the create body — on a create/upsert API that honors client ids that POSTs an object with a
+    // client-supplied id, violating the server-minted-id invariant before the post-write
+    // canary_reflected_in_object_id guard can fire (Codex P2). idField defaults to "id", so this also
+    // rejects canary_field:"id". Refuse before any write.
+    if (canaryField === idField) {
+      return blocked("blocked_by_design", "canary_field_aliases_id_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     // Recursively screen create_body content (nested reserved/proto keys, method/action-dispatch keys,
     // a top-level client-supplied id) BEFORE any write — the body is spread unchanged into the POST so a
     // hostile skeleton must not subvert the target or the server-minted-id invariant (Codex P2).

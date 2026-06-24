@@ -36,7 +36,8 @@ module.exports = Object.freeze({
       },
       create_body: {
         type: "object",
-        description: "Optional SYNTHETIC create-body skeleton for any required non-canary fields (no PII — screened before any write); the producer always overrides canary_field with its own minted canary.",
+        additionalProperties: true,
+        description: "Optional SYNTHETIC create-body skeleton for any required non-canary fields (no PII — screened before any write); the producer always overrides canary_field with its own minted canary. Arbitrary synthetic keys are allowed (the handler recursively screens for PII/secrets, prototype-pollution / method-override / client-id keys, and an oversized body before any write).",
       },
     },
     required: [

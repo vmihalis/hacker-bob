@@ -224,14 +224,16 @@ function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
   const decodedPath = decodePathSegments(parsed.pathname);
   for (const rawSegment of decodedPath.split("/")) {
     if (!rawSegment) continue;
-    // Break camelCase / PascalCase so /transferFunds and /refundOrder surface their action verb the
-    // same way /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and
-    // slip the guard). Insert a sentinel at lower/digit→upper and ACRONYM→Word boundaries, then split
-    // on it together with the literal `. _ -` separators (Codex / CodeRabbit P2).
+    // Break camelCase / PascalCase by rewriting each boundary to a hyphen (lower|digit->Upper and
+    // ACRONYM->Word), so /transferFunds and /refundOrder surface their action verb the same way
+    // /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and slip the guard).
     const withBreaks = rawSegment
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
-    for (const token of withBreaks.toLowerCase().split(/[._\- ]/).filter(Boolean)) {
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2");
+    // Split on `. _ -` AND matrix/param punctuation `; , : =` so a matrix-suffix collection like
+    // /api/transfer;v=1 (decoded here, so a `%3b` variant is caught too) that routers strip and dispatch
+    // as /api/transfer cannot tokenize whole and slip the action-shape guard (Codex P1).
+    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=]/).filter(Boolean)) {
       const singular = token.endsWith("s") ? token.slice(0, -1) : token;
       if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
         rejectInvalidArguments(

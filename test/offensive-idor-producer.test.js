@@ -32,6 +32,9 @@ const {
   idorProvisionAuthorizedFor,
   IDOR_PROVISION_ENV,
 } = require("../mcp/lib/offensive-idor-producer.js");
+const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
+const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
+const idorDescriptor = require("../mcp/lib/tools/bob-http-idor-confirm.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
@@ -2493,6 +2496,72 @@ test("PR-D r4: create-contract subversion via canary_field / create_body is refu
       assert.equal(result.reason, c.reason, c.label);
       assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
     }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 5: canary/id alias, matrix suffix, create_body schema (Codex / CodeRabbit) ──
+
+test("PR-D r5 (Codex/CR): canary_field aliasing id_field is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-canary-id-alias.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // default id_field is "id", so canary_field:"id" puts the minted canary in the object-id slot.
+      { label: "canary_field id (default id_field)", args: { canary_field: "id" } },
+      { label: "canary_field === custom id_field", args: { canary_field: "account_id", id_field: "account_id" } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "canary_field_aliases_id_field", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs (canary never written into the id slot)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r5 (Codex P1): assertCreateCollectionShapeSafe blocks camelCase / matrix-suffix / commerce, allows resource nouns", () => {
+  const blocked = ["/api/transferFunds", "/api/refundOrder", "/api/transfer;v=1", "/api/transfer%3bv=1", "/api/orders", "/api/transfer", "/api/withdraw"];
+  const allowed = ["/api/accounts", "/api/notes", "/api/users", "/api/documents", "/api/profiles"];
+  for (const p of blocked) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /action-shaped segment/, `expected BLOCK: ${p}`);
+  }
+  for (const p of allowed) {
+    assert.doesNotThrow(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), `expected ALLOW: ${p}`);
+  }
+});
+
+test("PR-D r5 (Codex): create_body schema accepts arbitrary synthetic fields (additionalProperties)", () => {
+  // The descriptor's create_body must NOT be a closed object, or the documented synthetic skeleton is
+  // unusable on APIs that require non-canary create fields (the handler screens content at runtime).
+  assert.equal(idorDescriptor.inputSchema.properties.create_body.additionalProperties, true);
+  const args = {
+    target_domain: "d", surface_id: "s", oracle_kind: "differential_response",
+    path_template: "/api/x/{id}", method: "GET",
+    identity_a_profile: "a", identity_b_profile: "b", identity_c_profile: "c",
+    canary_field: "note", create_body: { name: "synthetic", title: "t", count: 3 },
+  };
+  assert.doesNotThrow(() => validateAgainstSchema(args, idorDescriptor.inputSchema, []));
+});
+
+test("PR-D r5: an armed run with a synthetic non-canary create_body field still mints a signed MEDIUM", () => withTempHome(async () => {
+  const domain = "idor-synthetic-body.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { name: "synthetic", title: "t" } }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.demonstrated_severity, "medium");
+    assert.equal(mock.postCount(), 3, "synthetic body field flows through; canary still overrides note");
   } finally {
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }
