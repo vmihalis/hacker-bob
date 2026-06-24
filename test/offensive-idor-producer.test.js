@@ -2385,6 +2385,7 @@ test("PR-D r3 (Codex P2): prototype-pollution field names (__proto__/constructor
     const cases = [
       { label: "canary_field __proto__", args: { canary_field: "__proto__" } },
       { label: "id_field constructor", args: { canary_field: "note", id_field: "constructor" } },
+      { label: "canary_field prototype", args: { canary_field: "prototype" } },
       // JSON.parse defines `__proto__` as an OWN key, so a create_body parsed from JSON carries it here.
       { label: "create_body __proto__ key", args: { canary_field: "note", create_body: JSON.parse('{"__proto__":{"polluted":true}}') } },
     ];
@@ -2394,6 +2395,102 @@ test("PR-D r3 (Codex P2): prototype-pollution field names (__proto__/constructor
       assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
       assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
       assert.equal(result.reason, "reserved_field_name", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 4: deeper create-contract subversion (Codex / CodeRabbit P2) ───────────────
+
+test("PR-D r4: a camelCase action collection (/api/transferFunds) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-camel.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/transferFunds/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/transferFunds/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+    );
+    assert.equal(mock.postCount(), 0, "camelCase action endpoint → ZERO POSTs");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: a commerce collection (/api/orders) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-orders.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orders/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/orders/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+    );
+    assert.equal(mock.postCount(), 0, "/api/orders create → ZERO POSTs");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: a root-level derived create endpoint (/{id} → POST /) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-root.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), path_template: "/{id}", canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "create_collection_is_root");
+    assert.equal(mock.postCount(), 0, "POST to site root is never sent");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: create-contract subversion via canary_field / create_body is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-contract.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // canary_field that masquerades as the tenant/owner scope the oracle reads as private proof.
+      { label: "canary_field owner_scope", args: { canary_field: "owner_scope" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field tenant_id", args: { canary_field: "tenant_id" }, reason: "canary_field_overlaps_scope_key" },
+      // client-supplied server-minted id (upsert-on-create would use an attacker-chosen object id).
+      { label: "client-supplied id", args: { canary_field: "note", create_body: { id: "known-object-42" } }, reason: "create_body_client_supplied_id" },
+      { label: "client-supplied id (custom id_field)", args: { canary_field: "note", id_field: "account_id", create_body: { account_id: "victim-7" } }, reason: "create_body_client_supplied_id" },
+      // nested prototype-pollution shape (top-level check alone would miss it).
+      { label: "nested __proto__", args: { canary_field: "note", create_body: JSON.parse('{"nested":{"__proto__":{"polluted":true}}}') }, reason: "reserved_field_name" },
+      // body-level method / action dispatch.
+      { label: "_method override", args: { canary_field: "note", create_body: { _method: "DELETE" } }, reason: "create_body_action_override" },
+      { label: "action dispatch", args: { canary_field: "note", create_body: { action: "run" } }, reason: "create_body_action_override" },
+      // oversized canary_field NAME (the cap must include the field name, not just createBody).
+      { label: "oversized canary_field name", args: { canary_field: `note_${"x".repeat(9000)}` }, reason: "create_body_too_large" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, c.reason, c.label);
       assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
     }
   } finally {

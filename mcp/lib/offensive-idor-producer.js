@@ -121,6 +121,34 @@ const MAX_CREATE_BODY_BYTES = 8192;
 // __proto__/constructor/prototype as a JSON create-body key are prototype-pollution payload shapes on
 // many handlers; refused as canary_field / id_field / any create_body key before any write (Codex P2).
 const RESERVED_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+// Body-level method / action dispatch keys: a target honoring `{"_method":"DELETE"}` or `{"action":"run"}`
+// could execute a mutation even though the path action-guard passed, so they are refused in create_body
+// at any depth before any write (Codex P2).
+const CREATE_BODY_OVERRIDE_KEYS = new Set(["_method", "method", "action", "_action", "op", "operation", "cmd", "command", "do"]);
+// Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
+// unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
+// the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on a
+// reserved prototype key (nested prototype-pollution shape), a method/action-dispatch key, or — at the
+// top level — the server-minted id field (the object id must NEVER be agent-supplied: an upsert-on-create
+// API would otherwise use an attacker-chosen id and point the write/probes at an existing resource).
+// Returns a blocked() reason string, or null when the body is clean. depth-bounded to fail closed.
+function screenCreateBody(value, idField, depth = 0) {
+  if (depth > 8) return "create_body_too_deep";
+  if (Array.isArray(value)) {
+    for (const el of value) { const r = screenCreateBody(el, idField, depth + 1); if (r) return r; }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  for (const key of Object.keys(value)) {
+    const k = String(key);
+    if (RESERVED_PROTO_KEYS.has(k)) return "reserved_field_name";
+    if (CREATE_BODY_OVERRIDE_KEYS.has(k.toLowerCase())) return "create_body_action_override";
+    if (depth === 0 && k === idField) return "create_body_client_supplied_id";
+    const r = screenCreateBody(value[key], idField, depth + 1);
+    if (r) return r;
+  }
+  return null;
+}
 const ORACLE_KIND_VALUES = Object.freeze(["differential_response"]);
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -927,20 +955,40 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     const idField = typeof args.id_field === "string" && args.id_field.trim() ? args.id_field.trim() : "id";
     const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
       ? args.create_body : {};
-    // __proto__/constructor/prototype as the canary slot, the id field, or any create_body key are
-    // prototype-pollution payload shapes once serialized into the JSON create body; refuse them before
-    // any write so the canary write itself cannot become an unsafe mutation (Codex P2). create_body keys
-    // arrive via JSON.parse, which defines `__proto__` as an OWN key, so Object.keys sees it here.
+    // canary_field / id_field NAMES must not be reserved prototype keys (they become JSON body keys).
     const isReservedKey = (k) => RESERVED_PROTO_KEYS.has(String(k));
-    if (isReservedKey(canaryField) || isReservedKey(idField) || Object.keys(createBody).some(isReservedKey)) {
+    if (isReservedKey(canaryField) || isReservedKey(idField)) {
       return blocked("blocked_by_design", "reserved_field_name", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
       });
     }
-    // Cap the serialized create_body BEFORE any write — safeFetch caps responses, not request bodies, so
-    // an oversized non-PII create_body would otherwise be POSTed whole to the target (Codex P2).
-    if (Buffer.byteLength(JSON.stringify(createBody), "utf8") > MAX_CREATE_BODY_BYTES) {
+    // canary_field must not overlap an owning-scope discriminator (owner_scope/tenant_id/org_id/
+    // workspace_id): the producer writes a DISTINCT minted canary into that field per identity, and the
+    // oracle reads those same keys as the private tenant discriminator (#13/#14). On an API that reflects
+    // create fields, that would forge "provably distinct tenants" from attacker-chosen values and strip
+    // the confidence downgrade — signing an inflated cross-tenant proof. Refuse the overlap (Codex P2).
+    if (OWNING_SCOPE_KEYS.includes(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_scope_key", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Recursively screen create_body content (nested reserved/proto keys, method/action-dispatch keys,
+    // a top-level client-supplied id) BEFORE any write — the body is spread unchanged into the POST so a
+    // hostile skeleton must not subvert the target or the server-minted-id invariant (Codex P2).
+    const createBodyReason = screenCreateBody(createBody, idField);
+    if (createBodyReason) {
+      return blocked("blocked_by_design", createBodyReason, {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Cap the FINAL serialized create body BEFORE any write — the POST body is createBody PLUS the
+    // canary_field key + its 64-hex value, so the cap must include the (caller-supplied) canary_field
+    // NAME, not just createBody. safeFetch caps responses, never request bodies (Codex P2).
+    const finalBodyBytes = Buffer.byteLength(JSON.stringify({ ...createBody, [canaryField]: "c".repeat(64) }), "utf8");
+    if (finalBodyBytes > MAX_CREATE_BODY_BYTES) {
       return blocked("blocked_by_design", "create_body_too_large", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
@@ -951,7 +999,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // Codex P2) — never POST a malformed `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound
     // template), never an agent free-text write target.
     const createPath = pathTemplate.replace(/\/[^/]*$/, "");
-    const createUrl = new URL(createPath || "/", baselineUrl.origin).toString();
+    // A read template like /{id} strips to an EMPTY collection → POST / (the site root, often routed to
+    // login/contact/search), not a collection-specific create endpoint and with no segment for the
+    // action-shape guard to inspect. Refuse a root-level derived create endpoint (Codex P2).
+    if (!createPath) {
+      return blocked("blocked_by_design", "create_collection_is_root", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    const createUrl = new URL(createPath, baselineUrl.origin).toString();
     // The read template passed assertReadOnlyPath, but that guard intentionally allows action-NOUNS like
     // `transfer`/`refund` for a GET-by-id; the DERIVED collection POST /api/transfer would EXECUTE the
     // action (real mutation). Hold the create collection to the stricter fail-closed action-verb guard

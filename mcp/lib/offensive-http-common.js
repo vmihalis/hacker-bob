@@ -59,9 +59,10 @@ const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch
 // action-verb set than the read path. Over-blocking is the correct bias here — the only cost is that
 // LIVE auto-provisioning is unavailable on an action-shaped endpoint (the operator can seed-provision).
 const WRITE_ACTION_VERBS = new Set([
-  // financial / value-movement
+  // financial / value-movement / commerce
   "transfer", "refund", "withdraw", "withdrawal", "deposit", "pay", "payment", "payout",
   "charge", "send", "wire", "remit", "disburse", "disbursement", "checkout", "purchase", "buy", "sell",
+  "order",
   // generic execution
   "execute", "exec", "invoke", "trigger", "run", "apply", "submit", "import", "export", "sync", "migrate",
   // lifecycle / state change
@@ -223,7 +224,14 @@ function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
   const decodedPath = decodePathSegments(parsed.pathname);
   for (const rawSegment of decodedPath.split("/")) {
     if (!rawSegment) continue;
-    for (const token of rawSegment.toLowerCase().split(/[._-]/).filter(Boolean)) {
+    // Break camelCase / PascalCase so /transferFunds and /refundOrder surface their action verb the
+    // same way /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and
+    // slip the guard). Insert a sentinel at lower/digit→upper and ACRONYM→Word boundaries, then split
+    // on it together with the literal `. _ -` separators (Codex / CodeRabbit P2).
+    const withBreaks = rawSegment
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+    for (const token of withBreaks.toLowerCase().split(/[._\- ]/).filter(Boolean)) {
       const singular = token.endsWith("s") ? token.slice(0, -1) : token;
       if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
         rejectInvalidArguments(
