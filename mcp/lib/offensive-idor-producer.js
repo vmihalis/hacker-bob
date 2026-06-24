@@ -675,6 +675,108 @@ function buildTargetUrl(pathTemplate, objectId, origin) {
   return new URL(resolved, origin);
 }
 
+// ── PR-D live self-provisioning (the operator-armed write arm) ───────────────────
+// The OPERATOR CHECKPOINT for live object creation (a WRITE to the target): INERT unless the
+// operator explicitly arms it for THIS target via the env, target-BOUND (=== domain, never a bare
+// "1"), mirroring the mass-read owner-authorization gate. Default-off keeps the tool dormant.
+const IDOR_PROVISION_ENV = "BOB_IDOR_PROVISION_AUTHORIZED";
+function idorProvisionAuthorizedFor(domain) {
+  const v = process.env[IDOR_PROVISION_ENV];
+  return typeof v === "string" && v.trim().length > 0 && v.trim() === String(domain);
+}
+
+// A 256-bit canary as 64 lowercase hex chars (mint condition #19).
+function mintCanary() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// CREATE one synthetic object as `identity` via POST to the derived collection endpoint, the canary
+// written into `canaryField` of a server-templated synthetic body (the producer mints the canary;
+// the body skeleton is PII-screened upstream). Returns the server-minted id (from `idField`) + the
+// parsed response. The create is the ONE intentional WRITE: scope-validated + audited (circuit
+// breaker) but NEVER read-only-guarded. Mirrors runProbe's audit-or-abort discipline.
+async function createObject({ createUrl, headers, canaryField, canary, idField, createBody, probeBase }) {
+  const body = JSON.stringify({
+    ...(createBody && typeof createBody === "object" ? createBody : {}),
+    [canaryField]: canary, // server-minted canary ALWAYS wins over any skeleton value
+  });
+  const startedAt = Date.now();
+  const reqHeaders = { ...(headers || {}), "Content-Type": "application/json" };
+  let response;
+  let error;
+  try {
+    if (typeof probeBase.fetchFn === "function") {
+      response = await probeBase.fetchFn({ url: createUrl, method: "POST", headers: reqHeaders, body });
+    } else {
+      response = await safeFetch(createUrl, {
+        method: "POST",
+        headers: reqHeaders,
+        body,
+        followRedirects: false,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        targetDomain: probeBase.domain,
+        blockInternalHosts: probeBase.blockInternalHosts,
+        agent: probeBase.agent,
+      });
+    }
+  } catch (e) {
+    error = e;
+  }
+  const auditOk = auditConfirmRequest({
+    domain: probeBase.domain,
+    surfaceId: probeBase.surfaceId,
+    method: "POST",
+    url: createUrl,
+    egressProfile: probeBase.egressProfile,
+    status: response ? response.status : null,
+    scopeDecision: error && error.scope_decision === "blocked" ? "blocked" : null,
+    error: error ? (error.message || String(error)) : null,
+    startedAt,
+    toolId: TOOL_ID,
+  });
+  if (auditOk === false) {
+    const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create http-audit write failed");
+    e.probe_audit_failed = true;
+    throw e;
+  }
+  if (error) throw error;
+  const parsed = parseJsonBody(response);
+  const id = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed[idField] : undefined;
+  return { id, response, parsed };
+}
+
+// Live self-provision O_A/O_B/O_C IN ORDER + owner-readback of B. Minting 3 distinct 256-bit
+// canaries and creating one object per identity in A→B→C order lets a creation-order-dependent
+// broken read-grant land the A→B cross-tenant break. Captures the server-minted ids and reads B's
+// object back AS B (for the oracle's canary-leaf discovery + #24 create-time PII screen). Returns
+// the `provision` shape idorConfirm's oracle consumes; throws on transport / audit failure.
+// Exported + injectable `fetchFn` so unit tests drive it without a live target.
+async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, createBody, pathTemplate, origin, probeBase }) {
+  const canary_a = mintCanary();
+  const canary_b = mintCanary();
+  const canary_c = mintCanary();
+  const a = await createObject({ createUrl, headers: idA.headers, canaryField, canary: canary_a, idField, createBody, probeBase });
+  const b = await createObject({ createUrl, headers: idB.headers, canaryField, canary: canary_b, idField, createBody, probeBase });
+  const c = await createObject({ createUrl, headers: idC.headers, canaryField, canary: canary_c, idField, createBody, probeBase });
+  let owner_readback_b = null;
+  if (a.id != null && b.id != null && c.id != null) {
+    const readbackUrl = buildTargetUrl(pathTemplate, String(b.id), origin).toString();
+    assertSafeRequestUrl(readbackUrl, probeBase.domain, SCOPE_VALIDATION_OPTS);
+    assertReadOnlyPath(readbackUrl, TOOL_ID);
+    const rb = await runProbe({ ...probeBase, url: readbackUrl, method: "GET", headers: idB.headers });
+    owner_readback_b = parseJsonBody(rb);
+  }
+  return {
+    object_a: a.id == null ? null : String(a.id),
+    object_b: b.id == null ? null : String(b.id),
+    object_c: c.id == null ? null : String(c.id),
+    canary_a,
+    canary_b,
+    canary_c,
+    owner_readback_b,
+  };
+}
+
 // The full oracle. `fetch_fn` is injectable so seeded tests need no live target.
 // `provision` supplies the producer-created object ids + canaries + the
 // owner-readbacks (PR-D drives these live; PR-C tests seed them). All identity
@@ -761,15 +863,57 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // containing ONLY the 256-bit canary + synthetic fields (AC-5). The object id
   // is captured from the producer's OWN create/readback, NEVER an agent arg.
   if (!provision || typeof provision !== "object") {
-    // INERT at HEAD: live self-provisioning lands in PR-D. With no provision and
-    // no fetch_fn there is no object to create, so the producer mints nothing.
-    return blocked("blocked_by_design", "object_not_self_provisioned", {
-      target_domain: domain,
-      surface_id: surfaceId,
-      oracle_kind: oracleKind,
-      ...identity,
-      ...internalHostPolicy,
-    });
+    // PR-D LIVE self-provisioning. STRUCTURAL DORMANCY: live object-creation is INERT unless the
+    // operator has ARMED this target (idorProvisionAuthorizedFor — target-bound env). Unarmed →
+    // blocked_by_design, the HEAD default. (The internal create/readback use the same injectable
+    // fetch_fn as the probes, so an armed unit test drives the full path with a mock and a real run
+    // — fetch_fn null — uses safeFetch; the live WRITE therefore only happens armed AND fetch_fn-null.)
+    if (!idorProvisionAuthorizedFor(domain)) {
+      return blocked("blocked_by_design", "object_not_self_provisioned", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Create-contract (metadata only; AC-3 still forbids the canary VALUE + object ids). The create
+    // endpoint is DERIVED from the AC-2-bound path_template (strip the trailing /{id} → the
+    // collection), so the write target is structurally on-route — no new off-route write surface.
+    const canaryField = assertNonEmptyString(args.canary_field, "canary_field");
+    const idField = typeof args.id_field === "string" && args.id_field.trim() ? args.id_field.trim() : "id";
+    const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
+      ? args.create_body : {};
+    // The create body is WRITTEN to the target — screen it for operator PII / secrets (the hard rule:
+    // never submit operator identifiers to a target). Synthetic skeletons only.
+    const createBodyText = JSON.stringify(createBody);
+    if (piiScan(createBodyText, allowedEmails).length > 0 || secretShapesIn(createBodyText).length > 0) {
+      return blocked("blocked_operator_pii", "create_body_contains_sensitive_value", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    const createPath = pathTemplate.replace(/\/\{id\}$/, "");
+    const createUrl = new URL(createPath || "/", baselineUrl.origin).toString();
+    assertSafeRequestUrl(createUrl, domain, SCOPE_VALIDATION_OPTS); // the ONE allowed write; NOT read-only-guarded
+    const provisionProbeBase = {
+      fetchFn: fetch_fn, method: "GET", domain, surfaceId, egressProfile: egressProfileName,
+      blockInternalHosts, agent: egressAgent, startedAt,
+    };
+    try {
+      provision = await liveProvision({
+        idA, idB, idC, createUrl, canaryField, idField, createBody,
+        pathTemplate, origin: baselineUrl.origin, probeBase: provisionProbeBase,
+      });
+    } catch (e) {
+      if (e && e.probe_audit_failed) {
+        return blocked("blocked_by_infra", "provision_audit_failed", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      return blocked("blocked_by_infra", "provision_transport_error", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        failure_reason: e.message || String(e), ...identity, ...internalHostPolicy,
+      });
+    }
   }
   const { object_a, object_b, object_c, canary_a, canary_b, canary_c, owner_readback_b } = provision;
   // Self-provisioned ids must come from the producer's own create response.
@@ -1361,6 +1505,12 @@ module.exports = {
   tenantDiscriminator,
   piiScan,
   profileHasProvenance,
+  // PR-D live-arm internals (injectable fetchFn so unit tests drive create/readback without a live target).
+  liveProvision,
+  createObject,
+  idorProvisionAuthorizedFor,
+  mintCanary,
+  IDOR_PROVISION_ENV,
   // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleEndpointSingleHost
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the
   // mint-condition gates (those live in idorConfirm), so re-exporting it would give an

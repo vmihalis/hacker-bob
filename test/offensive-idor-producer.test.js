@@ -27,6 +27,9 @@ const {
   tenantDiscriminator,
   piiScan,
   profileHasProvenance,
+  liveProvision,
+  idorProvisionAuthorizedFor,
+  IDOR_PROVISION_ENV,
 } = require("../mcp/lib/offensive-idor-producer.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
@@ -2116,4 +2119,135 @@ test("round-trip: a claim citing the row under a DIFFERENT surface is rejected (
   } catch (error) { caught = error; }
   assert.ok(caught, "surface mismatch must be rejected");
   assert.equal(caught.details.code, "exploit_proof_row_surface_mismatch");
+}));
+
+// ── PR-D live self-provisioning (the operator-armed write arm) ───────────────────
+// A STATEFUL mock: the producer MINTS its own 256-bit canaries, so the mock must echo each
+// create's canary back through that object's reads. POST /api/accounts (the derived create
+// endpoint) assigns OBJ_A/B/C in creation order + records {canary, owner}; GET /api/accounts/{id}
+// applies the broken "A may read O_B" access (selective, not universal) reflecting the object's
+// minted canary at leaf `note`. This drives the FULL live arm (create→readback→P0-P8→mint).
+function liveArmFetchFn() {
+  const created = []; // creation order: [{ id, canary, owner }]
+  const ids = [OBJ_A, OBJ_B, OBJ_C];
+  let posts = 0;
+  const fn = async ({ url, method, headers, body }) => {
+    const u = new URL(url);
+    const auth = headers && headers.Authorization ? String(headers.Authorization) : "";
+    const who = auth.includes("eyJatoken") ? "A" : auth.includes("eyJbtoken") ? "B" : auth.includes("eyJctoken") ? "C" : null;
+    if (String(method || "GET").toUpperCase() === "POST" && u.pathname === "/api/accounts") {
+      posts += 1;
+      const parsed = JSON.parse(body || "{}");
+      const canary = Object.values(parsed).find((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v));
+      const id = ids[created.length] || `obj-extra-${created.length}`;
+      created.push({ id, canary, owner: who });
+      return jsonResponse(201, { id, owner: who, note: canary }); // server-minted id captured by id_field
+    }
+    const obj = created.find((o) => u.pathname.endsWith(`/${o.id}`));
+    if (!obj) return challenge(404);
+    if (!who) return challenge(401);                                   // anon → deny (P4/P8)
+    const allowed = obj.owner === who || (obj.owner === "B" && who === "A"); // broken: A reads O_B (the IDOR)
+    if (!allowed) return challenge(403);                               // C→O_B, B→O_A (true deny)
+    // canary at the SAME leaf `note` in readback + P1 + P2; per-viewer variance keeps P0 stable while P1≠P2.
+    return jsonResponse(200, { id: obj.id, kind: "account", owner_scope: `tenant-${obj.owner}`, viewer_id: `viewer-${who}`, note: obj.canary });
+  };
+  fn.postCount = () => posts;
+  return fn;
+}
+
+test("PR-D idorProvisionAuthorizedFor: target-BOUND (=== domain), rejects bare flag / mismatch / unset", () => {
+  const saved = process.env[IDOR_PROVISION_ENV];
+  try {
+    process.env[IDOR_PROVISION_ENV] = "idor-live.example.test";
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), true);
+    assert.equal(idorProvisionAuthorizedFor("other.example.test"), false, "must not arm a DIFFERENT target");
+    process.env[IDOR_PROVISION_ENV] = "1";
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), false, "a bare 1 must not arm");
+    delete process.env[IDOR_PROVISION_ENV];
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), false, "unset → inert");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+});
+
+test("PR-D: UNARMED live arm (no provision, env not set) stays INERT → blocked_by_design", () => withTempHome(async () => {
+  const domain = "idor-unarmed.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  delete process.env[IDOR_PROVISION_ENV];
+  try {
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: liveArmFetchFn() });
+    assert.equal(result.confirmed, false);
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "object_not_self_provisioned");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "unarmed → no row, no live write");
+  } finally {
+    if (saved !== undefined) process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D: armed create_body carrying a non-synthetic PII value is refused BEFORE any write → blocked_operator_pii", () => withTempHome(async () => {
+  const domain = "idor-createbody-pii.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), canary_field: "note", create_body: { contact: "leaked-victim@example.test" } },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_operator_pii");
+    assert.equal(result.reason, "create_body_contains_sensitive_value");
+    assert.equal(mock.postCount(), 0, "no create POST may fire when the body is PII-screened out");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D liveProvision: creates O_A/O_B/O_C IN ORDER, captures server ids + distinct canaries, reads B back", () => withTempHome(async () => {
+  const domain = "idor-liveprovision.example.test";
+  setupSession(domain);
+  const mock = liveArmFetchFn();
+  const idHeaders = (tag) => ({ headers: { Authorization: `Bearer eyJ${tag}token` } });
+  const provision = await liveProvision({
+    idA: idHeaders("a"), idB: idHeaders("b"), idC: idHeaders("c"),
+    createUrl: `https://${domain}/api/accounts`,
+    canaryField: "note", idField: "id", createBody: {},
+    pathTemplate: PATH_TEMPLATE, origin: `https://${domain}`,
+    probeBase: { fetchFn: mock, method: "GET", domain, surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() },
+  });
+  assert.equal(provision.object_a, OBJ_A);
+  assert.equal(provision.object_b, OBJ_B);
+  assert.equal(provision.object_c, OBJ_C);
+  for (const c of [provision.canary_a, provision.canary_b, provision.canary_c]) assert.match(c, /^[0-9a-f]{64}$/);
+  assert.equal(new Set([provision.canary_a, provision.canary_b, provision.canary_c]).size, 3, "canaries pairwise-distinct");
+  assert.equal(mock.postCount(), 3, "exactly three creates");
+  // owner readback of B carries B's minted canary at leaf `note` (path is an array).
+  assert.deepEqual(discoverCanaryFieldPath(provision.owner_readback_b, provision.canary_b), ["note"]);
+}));
+
+test("PR-D live arm (armed, no provision): full create→readback→P0-P8→signed MEDIUM mint", () => withTempHome(async () => {
+  const domain = "idor-livearm.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.row_written, true);
+    assert.equal(result.offensive_outcome, "exploited_safely");
+    assert.equal(result.demonstrated_severity, "medium", "synthetic objects → HARD medium");
+    assert.equal(mock.postCount(), 3, "the live arm created exactly three objects (A/B/C)");
+    const rows = readOffensiveRunRecords(domain);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].demonstrated_severity, "medium");
+    assert.ok(rows[0].row_mac && rows[0].row_mac.digest, "minted row is MAC-signed");
+    // masked rail: the signed row carries no synthetic IDENTITY mailbox (no profile PII leaked).
+    assert.ok(!fs.readFileSync(offensiveRunsJsonlPath(domain), "utf8").includes("eval_a@example.test"), "no identity PII in the signed row");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
 }));
