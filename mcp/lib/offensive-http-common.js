@@ -219,21 +219,40 @@ function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
 // /transfers all surface the `transfer` action; a token (or its singular) in WRITE_ACTION_VERBS is
 // refused before any write. Resource-noun collections (/api/accounts, /api/notes, /api/orders/{id} →
 // note: `order` IS blocked as an action) pass; the bias is deliberately toward refusing the write.
+// Decode every VALID percent-triplet to a fixed point, leaving a malformed one (e.g. %zz) in place. Unlike
+// decodePathSegments (decodeURIComponent abandons the WHOLE segment the moment any triplet is malformed),
+// this recovers the valid `%3b`->`;` in /api/transfer%3bv=%zz so a router that decodes valid triplets
+// independently cannot hide an action delimiter behind a later malformed escape (Codex P1).
+function decodeValidPercentTriplets(segment) {
+  let cur = String(segment);
+  for (let i = 0; i < 8; i += 1) {
+    const next = cur.replace(/%[0-9a-f]{2}/gi, (m) => {
+      try { const d = decodeURIComponent(m); return d === m ? m : d; } catch { return m; }
+    });
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
+}
+
 function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
   const parsed = new URL(url);
   const decodedPath = decodePathSegments(parsed.pathname);
   for (const rawSegment of decodedPath.split("/")) {
     if (!rawSegment) continue;
+    // Recover any VALID percent-triplet a malformed escape elsewhere in the segment would otherwise mask,
+    // so /api/transfer%3bv=%zz still surfaces the `;` delimiter (Codex P1).
+    const segment = decodeValidPercentTriplets(rawSegment);
     // Break camelCase / PascalCase by rewriting each boundary to a hyphen (lower|digit->Upper and
     // ACRONYM->Word), so /transferFunds and /refundOrder surface their action verb the same way
     // /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and slip the guard).
-    const withBreaks = rawSegment
+    const withBreaks = segment
       .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
       .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2");
-    // Split on `. _ -` AND matrix/param punctuation `; , : =` so a matrix-suffix collection like
-    // /api/transfer;v=1 (decoded here, so a `%3b` variant is caught too) that routers strip and dispatch
+    // Split on `. _ -` AND matrix/param punctuation `; , : =` AND a recovered `/` so a matrix-suffix
+    // collection like /api/transfer;v=1 (or its `%3b`/`%2f` encoded forms) that routers strip and dispatch
     // as /api/transfer cannot tokenize whole and slip the action-shape guard (Codex P1).
-    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=]/).filter(Boolean)) {
+    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=/]/).filter(Boolean)) {
       const singular = token.endsWith("s") ? token.slice(0, -1) : token;
       if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
         rejectInvalidArguments(

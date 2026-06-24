@@ -141,6 +141,11 @@ const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "enti
 // off-target callback / internal-network SSRF, so URL-valued fields are refused before any write (Codex
 // P1). A synthetic canary-holder skeleton never needs a URL value. Anchored so "note: hi" is not a URL.
 const URL_VALUE_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
+// A GraphQL mutation/subscription OPERATION inside a create_body string value: on a GraphQL-compatible
+// derived collection, {query:"mutation { ... }"} would execute an arbitrary mutation rather than create a
+// synthetic object. Anchored on the operation keyword followed (after an optional name) by `{` or `(`, so
+// a benign value like "mutation rate: 0.5" is not matched (Codex P1). A synthetic skeleton never needs one.
+const GRAPHQL_OP_RE = /\b(?:mutation|subscription)\b(?:\s+[A-Za-z_]\w*)?\s*[({]/i;
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
 // the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
@@ -151,11 +156,22 @@ const URL_VALUE_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
 //  - an owning-scope key (owner_scope/tenant_id/org_id/workspace_id and their aliases), normalized, at
 //    ANY depth: a {tenant_id:"victim-org"} body would make the live write drift into a caller-chosen
 //    tenant/workspace before the oracle blocks (Codex P1);
-//  - a URL-shaped string VALUE at ANY depth (avatar_url/callback_url/…): a target that fetches body URLs
-//    would turn the canary create into an SSRF / off-target callback (Codex P1).
+//  - a URL-shaped string VALUE at ANY depth, in objects OR arrays (avatar_url/callback_url/["http://…"]):
+//    a target that fetches body URLs would turn the canary create into an SSRF / off-target callback;
+//  - a GraphQL mutation/subscription OPERATION string at ANY depth: on a GraphQL-compatible derived
+//    collection it would execute an arbitrary mutation rather than create a synthetic object (Codex P1).
 // Returns a blocked() reason string, or null when the body is clean. depth-bounded to fail closed.
 function screenCreateBody(value, idField, depth = 0) {
   if (depth > 8) return "create_body_too_deep";
+  // STRING values are screened at the top so the same checks cover BOTH object-property values AND array
+  // elements (a URL/GraphQL string hidden in {callbacks:["http://…"]} must not slip the property-only loop,
+  // Codex P1). A URL-shaped value would be fetched by some targets (SSRF/callback); a GraphQL mutation
+  // operation would execute on a GraphQL-compatible derived collection.
+  if (typeof value === "string") {
+    if (URL_VALUE_RE.test(value)) return "create_body_url_value";
+    if (GRAPHQL_OP_RE.test(value)) return "create_body_graphql_operation";
+    return null;
+  }
   if (Array.isArray(value)) {
     for (const el of value) { const r = screenCreateBody(el, idField, depth + 1); if (r) return r; }
     return null;
@@ -169,11 +185,7 @@ function screenCreateBody(value, idField, depth = 0) {
     const norm = normalizeFieldName(k);
     if (NORMALIZED_SCOPE_KEYS.has(norm)) return "create_body_scope_field";
     if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
-    const child = value[key];
-    // A URL-shaped string value would be sent unchanged; on a target that fetches body URLs it becomes an
-    // SSRF / off-target callback through the canary create. Refuse at any depth (Codex P1).
-    if (typeof child === "string" && URL_VALUE_RE.test(child)) return "create_body_url_value";
-    const r = screenCreateBody(child, idField, depth + 1);
+    const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
   return null;
@@ -885,6 +897,10 @@ async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, c
   assertReadOnlyPath(readbackUrl, TOOL_ID);
   const rb = await runProbe({ ...probeBase, url: readbackUrl, method: "GET", headers: idB.headers });
   base.owner_readback_b = parseJsonBody(rb);
+  // Preserve the RAW readback bytes for the #24 foreign-PII gate: PII present only in bytes JSON.parse
+  // discards/normalizes (a shadowed duplicate key before the final value) would slip a parsed-only scan
+  // (Codex P2). Captured here so idorConfirm can scan the raw body, not just the parsed object.
+  base.owner_readback_b_raw = (rb && Buffer.isBuffer(rb.bodyBytes)) ? rb.bodyBytes.toString("utf8") : null;
   return base;
 }
 
@@ -1198,6 +1214,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // carry the canary AND no foreign PII shape — else a shared object store.
   const readbackPii = piiScan(parsedReadback, allowedEmails);
   if (readbackPii.length > 0) {
+    return blocked("blocked_by_design", "shared_object_store", {
+      target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+      ...identity, ...internalHostPolicy,
+    });
+  }
+  // Also scan the RAW readback bytes: foreign PII present only in bytes JSON.parse discards/normalizes
+  // (e.g. a shadowed duplicate key before the final value) would otherwise slip the parsed-only scan,
+  // letting a contaminated / shared object store through after the tool already received non-synthetic
+  // data in the readback (Codex P2). The live arm captures owner_readback_b_raw; seeded provisions omit it.
+  const rawReadback = typeof provision.owner_readback_b_raw === "string" ? provision.owner_readback_b_raw : null;
+  if (rawReadback && piiScan(rawReadback, allowedEmails).length > 0) {
     return blocked("blocked_by_design", "shared_object_store", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
       ...identity, ...internalHostPolicy,

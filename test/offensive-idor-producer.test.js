@@ -2675,3 +2675,71 @@ test("PR-D r8 (Codex P1): createObject pre-flights the audit — an unauditable 
   );
   assert.equal(posted, false, "the mutating POST must NOT fire when the audit cannot be recorded");
 }));
+
+// ── PR-D review round 9: array URLs, GraphQL ops, malformed-escape paths, raw-readback PII (Codex) ──
+
+test("PR-D r9 (Codex P1): a URL inside a create_body ARRAY is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-arr-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "url in top-level array", create_body: { callbacks: ["http://169.254.169.254/latest/meta-data/"] } },
+      { label: "url in nested array", create_body: { config: { hooks: ["https://attacker.example/h"] } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_url_value", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r9 (Codex P1): a GraphQL mutation operation in create_body is refused; a benign 'mutation' word is not", () => withTempHome(async () => {
+  const domain = "idor-graphql.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ['mutation { deleteUser(id: 1) }', 'mutation Evil($x:ID!){ x }', 'subscription { onData }']) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", op);
+      assert.equal(mock.postCount(), 0, `${op}: ZERO create POSTs`);
+    }
+    // A benign value that merely contains the word "mutation" (no operation shape) must NOT be blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { notes: "mutation rate: 0.5 per cycle" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r9 (Codex P1): assertCreateCollectionShapeSafe recovers valid escapes behind a malformed one", () => {
+  // A valid %3b (;) / %2f (/) masked by a later malformed %zz must still surface the action verb.
+  for (const p of ["/api/transfer%3bv=%zz", "/api/transfer%2faction%zz", "/api/refund%3bzz=%gg"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /action-shaped segment/, `expected BLOCK: ${p}`);
+  }
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts%zz", "t"), "a malformed escape on a benign noun still passes");
+});
+
+test("PR-D r9 (Codex P2): foreign PII present only in RAW readback bytes (parsed-clean) is caught by #24", () => withTempHome(async () => {
+  const domain = "idor-rawpii.example.test";
+  setupSession(domain);
+  // Parsed readback is clean (canary at the discovered leaf, no PII), but the RAW bytes carry a foreign
+  // email in a shadowed duplicate key that JSON.parse drops — the parsed-only scan would miss it.
+  const provision = {
+    ...soundProvision(),
+    owner_readback_b_raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"contact":"victim-foreign@evil.test","contact":"clean"}`,
+  };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "shared_object_store");
+}));
