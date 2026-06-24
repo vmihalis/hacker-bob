@@ -2927,3 +2927,69 @@ test("PR-D r11 (Codex P1): assertCreateCollectionShapeSafe splits a decoded back
   }
   assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts%5cx", "t"), "a backslash on a benign noun still passes");
 });
+
+// ── PR-D review round 12: closure consistency — encoded values, plurals, override/canary norm, dotted keys ──
+
+test("PR-D r12 (Codex P1): an ENCODED URL value in create_body is refused", () => withTempHome(async () => {
+  const domain = "idor-encoded-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http%3a%2f%2f169.254.169.254/latest", "http%3A%2F%2Fattacker.example/h"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r12 (Codex P1): a BARE scope canary_field (tenant/org/workspace) is refused", () => withTempHome(async () => {
+  const domain = "idor-canary-bare-scope.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["tenant", "org", "workspace", "tenantIds"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.reason, "canary_field_overlaps_scope_key", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r12 (Codex P1): plural / override / dotted create_body keys are refused", () => withTempHome(async () => {
+  const domain = "idor-r12-keys.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // plural relationship fields (#150)
+      { label: "tenant_ids", create_body: { tenant_ids: ["victim"] }, reason: "create_body_scope_field" },
+      { label: "user_ids", create_body: { user_ids: ["victim"] }, reason: "create_body_owner_field" },
+      { label: "teamIds", create_body: { teamIds: ["victim"] }, reason: "create_body_owner_field" },
+      // method-override aliases, normalized (#218)
+      { label: "method_override", create_body: { method_override: "DELETE" }, reason: "create_body_action_override" },
+      { label: "methodOverride", create_body: { methodOverride: "DELETE" }, reason: "create_body_action_override" },
+      // dotted / bracketed prototype-pollution keys (#217)
+      { label: "dotted constructor.prototype", create_body: JSON.parse('{"constructor.prototype.polluted":true}'), reason: "reserved_field_name" },
+      { label: "bracketed __proto__", create_body: JSON.parse('{"__proto__[polluted]":true}'), reason: "reserved_field_name" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));

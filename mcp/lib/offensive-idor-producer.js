@@ -124,7 +124,12 @@ const RESERVED_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 // Body-level method / action dispatch keys: a target honoring `{"_method":"DELETE"}` or `{"action":"run"}`
 // could execute a mutation even though the path action-guard passed, so they are refused in create_body
 // at any depth before any write (Codex P2).
-const CREATE_BODY_OVERRIDE_KEYS = new Set(["_method", "method", "action", "_action", "op", "operation", "cmd", "command", "do"]);
+// Method/action dispatch keys, stored NORMALIZED (so _method / method-override / methodOverride / X-HTTP-
+// Method-Override-style body keys all match via normalizeFieldName, not an exact lowercase spelling, Codex P1).
+const CREATE_BODY_OVERRIDE_KEYS = new Set([
+  "method", "action", "op", "operation", "cmd", "command", "do",
+  "methodoverride", "httpmethod", "httpmethodoverride", "xhttpmethodoverride",
+]);
 // Canonicalize a field NAME so camelCase / snake_case / kebab-case / spacing aliases collapse to one form
 // (tenantId / tenant_id / tenant-id -> "tenantid", _id -> "id"). Lets the create-contract guards reject a
 // scope-key or id alias on APIs that normalize JSON field names, not just the exact snake_case spelling
@@ -146,8 +151,13 @@ const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", 
 const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "creator", "created", "createdby", "assignee"]);
 function baseNoun(normName) {
   let s = String(normName);
-  for (let i = 0; i < 2; i += 1) {
-    if (s.length > 2 && (s.endsWith("id") || s.endsWith("by"))) s = s.slice(0, -2);
+  // Strip trailing plural id/by ("ids"/"bys"), singular id/by, and a plural "s", iteratively — so
+  // tenant_ids -> tenantids -> tenant, user_ids -> user, created_by_id -> created, teams -> team all
+  // collapse to the base noun (Codex P1). Bounded; length guards avoid emptying a short token.
+  for (let i = 0; i < 4; i += 1) {
+    if (s.length > 3 && (s.endsWith("ids") || s.endsWith("bys"))) s = s.slice(0, -3);
+    else if (s.length > 2 && (s.endsWith("id") || s.endsWith("by"))) s = s.slice(0, -2);
+    else if (s.length > 3 && s.endsWith("s")) s = s.slice(0, -1);
     else break;
   }
   return s;
@@ -202,8 +212,13 @@ function screenCreateBody(value, idField, depth = 0) {
   // Codex P1). A URL-shaped value would be fetched by some targets (SSRF/callback); a GraphQL mutation
   // operation would execute on a GraphQL-compatible derived collection.
   if (typeof value === "string") {
-    if (valueLooksLikeUrl(value)) return "create_body_url_value";
-    if (valueLooksLikeGraphqlMutation(value)) return "create_body_graphql_operation";
+    // Screen the raw value AND its fully-decoded form: a target that percent-/unicode-decodes a JSON
+    // string before using it as a callback/import URL or GraphQL document would otherwise be reached by
+    // an encoded `http%3a%2f%2f…` / `mutation%20{` the raw check misses (Codex P1).
+    for (const probe of [value, decodeAllEncodingLayers(value)]) {
+      if (valueLooksLikeUrl(probe)) return "create_body_url_value";
+      if (valueLooksLikeGraphqlMutation(probe)) return "create_body_graphql_operation";
+    }
     return null;
   }
   if (Array.isArray(value)) {
@@ -214,9 +229,13 @@ function screenCreateBody(value, idField, depth = 0) {
   const normIdField = normalizeFieldName(idField);
   for (const key of Object.keys(value)) {
     const k = String(key);
-    if (RESERVED_PROTO_KEYS.has(k)) return "reserved_field_name";
-    if (CREATE_BODY_OVERRIDE_KEYS.has(k.toLowerCase())) return "create_body_action_override";
+    // Reserved prototype keys: check the raw key AND each dotted/bracketed segment, because a JSON
+    // endpoint with a Mongo/lodash-style deep setter expands `constructor.prototype.x` / `__proto__[x]`
+    // into a prototype write (Codex P2). Raw (case-sensitive) match — `__proto__`/`constructor`/`prototype`
+    // are the JS-meaningful spellings (normalizeFieldName would strip the underscores).
+    for (const seg of k.split(/[.[\]]/)) { if (RESERVED_PROTO_KEYS.has(seg)) return "reserved_field_name"; }
     const norm = normalizeFieldName(k);
+    if (CREATE_BODY_OVERRIDE_KEYS.has(norm)) return "create_body_action_override";
     const base = baseNoun(norm);
     if (SCOPE_BASE_NOUNS.has(norm) || SCOPE_BASE_NOUNS.has(base)) return "create_body_scope_field";
     // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
@@ -453,10 +472,6 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 // carry different account_ids even within the SAME tenant, which would FALSELY satisfy
 // the cross-tenant discriminator (#14). These keys are unambiguously tenant/owner-level.
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
-// The same owning-scope keys collapsed to their normalized form, so a canary_field or create_body key
-// that aliases a scope discriminator (tenantId -> tenant_id, org-id -> org_id) is caught even when the
-// target normalizes JSON field names (Codex P1). Drives normalizeFieldName-based create-contract guards.
-const NORMALIZED_SCOPE_KEYS = new Set(OWNING_SCOPE_KEYS.map((k) => k.toLowerCase().replace(/[^a-z0-9]/g, "")));
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
 // Common single-object envelope wrappers: many REST APIs nest the resource under one of these keys
@@ -982,7 +997,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // Resolve + route the surface; AC-2 cardinality (GAP A, mint condition #22).
   const { surface } = findRoutedSurface(domain, surfaceId);
   const stateOrigin = originFromState(domain, state, TOOL_ID);
-  assertSingleEndpointSingleHost(surface, stateOrigin);
+  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleEndpointSingleHost
+  // already rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared
+  // host can never reach here), but we capture the single origin and bind the live create + probes to it
+  // explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't point
+  // a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
+  const { origin: surfaceOrigin } = assertSingleEndpointSingleHost(surface, stateOrigin);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
   // "path_template path shape does not match any recorded endpoint" unless the
@@ -993,6 +1013,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // it ties the signed proof to the routed surface. The probe targets below are
   // built from this bound origin, so row.target is routed by construction.
   const baselineUrl = resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName: TOOL_ID });
+  // Bind the baseline (and thus the derived create URL + every probe, which all use baselineUrl.origin) to
+  // the surface's single validated origin. Fail closed (structural, like the off-route guards below) on any
+  // mismatch so a WRITE is never sent to the session apex instead of the assigned subdomain host (Codex P1).
+  if (baselineUrl.origin !== surfaceOrigin) {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm: resolved baseline origin does not match the surface's single declared host; refusing to bind a live create/probe to a different origin",
+      { baseline_origin: baselineUrl.origin, surface_origin: surfaceOrigin },
+    );
+  }
   // Reject a mutation-shaped recorded endpoint BEFORE any probe — normalizePathTemplate
   // already forces {id} to be the FINAL segment, but a verb-NAMED collection before
   // the id (/api/reset/{id}, /delete/{id}) still resolves here, so apply the same
@@ -1070,13 +1099,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
-    // canary_field must not overlap an owning-scope discriminator (owner_scope/tenant_id/org_id/
-    // workspace_id) OR any normalization alias of one (tenantId, org-id, …): the producer writes a
-    // DISTINCT minted canary into that field per identity, and the oracle reads those same keys as the
-    // private tenant discriminator (#13/#14). On an API that reflects/normalizes create fields, that
+    // canary_field must not overlap an owning-scope discriminator — owner_scope/tenant_id/org_id/
+    // workspace_id, ANY normalization alias (tenantId, org-id), OR the BARE base noun (tenant, org,
+    // workspace): the producer writes a DISTINCT minted canary into that field per identity, and the
+    // oracle reads those keys as the private tenant discriminator (#13/#14). On an API that normalizes a
+    // bare `tenant` create field to `tenant_id` in the stored/readback object, an unblocked bare alias
     // would forge "provably distinct tenants" from attacker-chosen values and strip the confidence
-    // downgrade — signing an inflated cross-tenant proof. Refuse the (normalized) overlap (Codex P1/P2).
-    if (NORMALIZED_SCOPE_KEYS.has(normalizeFieldName(canaryField))) {
+    // downgrade — signing an inflated cross-tenant proof. Refuse via base-noun match (Codex P1).
+    const normCanaryScope = normalizeFieldName(canaryField);
+    if (SCOPE_BASE_NOUNS.has(normCanaryScope) || SCOPE_BASE_NOUNS.has(baseNoun(normCanaryScope))) {
       return blocked("blocked_by_design", "canary_field_overlaps_scope_key", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
