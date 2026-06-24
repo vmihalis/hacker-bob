@@ -54,6 +54,7 @@ const {
   normalizeBypassAttempts,
   normalizeChainNotes,
   normalizeHandoffSummary,
+  normalizeSpawnedChildren,
   sha256Hex,
   signHandoffProvenance,
   validateHandoffToken,
@@ -171,6 +172,78 @@ function removeWaveAssignmentsDocument(assignmentsPath) {
   }
 }
 
+// The single brain-pinned spawn role a nesting child is dispatched as. A
+// reported child of any other type is rejected by the allowlist leg below.
+const SPAWN_CHILD_SUBAGENT_TYPE = "evaluator-fanout";
+
+// The live detective backstop on actuated fan-out. The brain owns the per-surface
+// fan-out budget (buildChildFanoutPlanForSurface); a worker self-reports the children
+// it spawned in its handoff. Here, at the MCP-owned handoff-write site, cross-check
+// the reported children against the budget the brain handed this surface so the
+// "a leaf worker must not fan out" rule is mechanical, not prose.
+//
+// The budget is RE-DERIVED from the same brain function the dispatch used, so it
+// matches what the agent was handed. The discriminator is remaining_depth, which is
+// host/policy-derived (effectiveSpawnDepth minus one) and therefore stable between
+// dispatch and handoff write — unlike max_children/children[], which the cell-floor
+// dedup can only SHRINK as coverage advances. So:
+//   - No plan, or remaining_depth <= 0  => a leaf worker (the default-off path, every
+//     normal evaluator, and the new flat fan-outs: recon angles, per-finding
+//     verifiers). Budget depth 0 / max_children 0 — ANY reported child is rejected.
+//   - remaining_depth > 0               => the surface was handed a real fan-out plan
+//     (the opt-in nested evaluator-fanout). Children up to the plan's count, of the
+//     pinned spawn type, pass. The count leg uses the live plan's max_children; a
+//     legitimate parent's reported count never exceeds the dispatch-time width
+//     because the live recompute only shrinks, so an honest parent stays within
+//     budget. The allowlist leg pins the child type.
+//
+// Best-effort recompute: if the plan cannot be derived (missing surface, transient
+// read error), fall back to a depth-0 leaf budget so an unbudgeted child is still
+// caught and a budgeted parent is never falsely rejected by a recompute failure —
+// instead its width leg is skipped while the leaf leg stays on.
+function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
+  let plan = null;
+  try {
+    const { buildChildFanoutPlanForSurface } = require("../assignment-brief.js");
+    const { buildCoverageSummaryForSurface, readCoverageRecordsFromJsonl } = require("../coverage.js");
+    const surfaces = readAttackSurfaceStrict(domain).document.surfaces || [];
+    const surfaceObj = surfaces.find((s) => s && s.id === surfaceId);
+    if (surfaceObj) {
+      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      plan = buildChildFanoutPlanForSurface({
+        domain,
+        surfaceObj,
+        surfaceId,
+        coverageSummary: buildCoverageSummaryForSurface(coverageRecords, surfaceId),
+        wave,
+      });
+    }
+  } catch {
+    plan = null;
+  }
+  if (plan && Number.isInteger(plan.remaining_depth) && plan.remaining_depth > 0) {
+    return {
+      remaining_depth: plan.remaining_depth,
+      max_children: Number.isInteger(plan.max_children) ? plan.max_children : 0,
+      child_type_allowlist: [SPAWN_CHILD_SUBAGENT_TYPE],
+    };
+  }
+  return { remaining_depth: 0, max_children: 0 };
+}
+
+function assertSpawnFanoutWithinBudget(domain, wave, agent, surfaceId, spawnedChildren) {
+  if (!Array.isArray(spawnedChildren) || spawnedChildren.length === 0) return;
+  const { validateSpawnFanout } = require("../nested-spawn.js");
+  const budget = spawnFanoutBudgetForSurface(domain, surfaceId, wave);
+  const result = validateSpawnFanout(spawnedChildren, budget);
+  if (!result.ok) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${wave}/${agent} on ${surfaceId} reported a fan-out outside its spawn budget: ${result.violations.join("; ")}`,
+    );
+  }
+}
+
 function writeWaveHandoff(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -179,6 +252,7 @@ function writeWaveHandoff(args) {
   const surfaceStatus = parseSurfaceStatus(args.surface_status);
   const summary = normalizeHandoffSummary(args, { requireStructuredSummary: true });
   const chainNotes = normalizeChainNotes(args.chain_notes);
+  const spawnedChildren = normalizeSpawnedChildren(args.spawned_children);
   const blockedHarnessRuns = normalizeBlockedHarnessRuns(args.blocked_harness_runs);
   const blockedPrereqs = normalizeBlockedPrereqs(args.blocked_prereqs);
 
@@ -207,6 +281,7 @@ function writeWaveHandoff(args) {
     ));
     const findingIdSet = new Set(findingsForRun.map((finding) => finding.id));
     const bypassAttempts = normalizeBypassAttempts(args.bypass_attempts, { findingIds: findingIdSet });
+    assertSpawnFanoutWithinBudget(domain, wave, agent, surfaceId, spawnedChildren);
     assertBlockedHarnessConsistency(surfaceStatus, blockedHarnessRuns);
     assertBlockedPrereqConsistency(surfaceStatus, blockedPrereqs);
     assertSmartContractCompletionEvidence({
@@ -232,6 +307,7 @@ function writeWaveHandoff(args) {
       provenance,
       summary,
       chain_notes: chainNotes,
+      spawned_children: spawnedChildren,
       blocked_harness_runs: blockedHarnessRuns,
       blocked_prereqs: blockedPrereqs,
       bypass_attempts: bypassAttempts,

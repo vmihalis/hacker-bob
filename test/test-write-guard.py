@@ -372,6 +372,106 @@ TESTS = [
     ("redirect to a $(date)-timestamped scratch .txt → allow",
      {"tool_input": {"command": f"echo x > \"{SESSION}/probe-$(date +%s).txt\""}},
      0),
+
+    # --- pathlib variable-join writes: `(session / "name").write_text(...)`. ---
+    # The leaking idiom: a literal-path WRITE_OP_RE matched a `write_text` but NOT
+    # the variable-join form the discovery prompt actually uses. The join EXPR is
+    # runtime-dynamic; the joined string LITERAL is session-RELATIVE and is resolved
+    # against SESSIONS_ROOT, so MCP-owned basenames BLOCK and agent-writable ALLOW.
+    ("variable-join (session / surface-leads.json).write_text → block (the leaking form)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"surface-leads.json\").write_text('{}')\n"
+        "PY"}},
+     2),
+    ("variable-join (session / surface-leads.json).write_bytes → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"surface-leads.json\").write_bytes(b'x')\n"
+        "PY"}},
+     2),
+    ("assigned-then-write p = session / state.json; p.write_text → block",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "p = session / \"state.json\"\n"
+        "p.write_text('{}')\n"
+        "PY"}},
+     2),
+    # NEAR-MISS: agent-writable basename via the same join form must still ALLOW
+    # (proves the fix is not over-broad — check_file's is_agent_allowed runs first).
+    ("variable-join (session / deep-summary.json).write_text → allow (agent-writable)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"deep-summary.json\").write_text('{}')\n"
+        "PY"}},
+     0),
+    ("variable-join (session / subdomains.txt).write_text → allow (matches ^.*\\.txt$)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"subdomains.txt\").write_text('x')\n"
+        "PY"}},
+     0),
+    # NEAR-MISS: read-side join must ALLOW — the verb anchor excludes read_text.
+    ("variable-join read-side (session / surface-leads.json).read_text → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "data = (session / \"surface-leads.json\").read_text()\n"
+        "PY"}},
+     0),
+    # NEAR-MISS: the shipped cname read-then-write idiom (agent-writable .txt
+    # basename, read on the same join expr) must ALLOW.
+    ("variable-join cname_records.txt read-then-write idiom → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "session = pathlib.Path('/x')\n"
+        "(session / \"cname_records.txt\").write_text(\"\\n\".join(sorted(set((session / \"cname_records.txt\").read_text().splitlines()))) + \"\\n\")\n"
+        "PY"}},
+     0),
+    # --- NON-SESSION join base must ALLOW (the false-positive fix). ---
+    # The THREAT is writing an MCP-owned basename to the SESSION dir. A join whose
+    # BASE is a LITERAL / non-session path resolves to its REAL location (outside any
+    # session root), so an MCP-owned-LOOKING basename there is NOT a session write.
+    # (a) literal base Path('/tmp') joined with an MCP-owned basename → allow.
+    ("variable-join (Path('/tmp') / findings.jsonl).write_text → allow (non-session base)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "tmp = pathlib.Path('/tmp')\n"
+        "(tmp / \"findings.jsonl\").write_text('x')\n"
+        "PY"}},
+     0),
+    # (b) assigned-then-write with a non-session base var → allow.
+    ("assigned-then-write p = tmp / findings.jsonl (non-session base) → allow",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "tmp = pathlib.Path('/tmp')\n"
+        "p = tmp / \"findings.jsonl\"\n"
+        "p.write_text('x')\n"
+        "PY"}},
+     0),
+    # (c) relative literal base Path('reports') joined with audit-graded report.md → allow.
+    ("variable-join (Path('reports') / report.md).write_text → allow (relative non-session base)",
+     {"tool_input": {"command":
+        "python3 - <<'PY'\n"
+        "import pathlib\n"
+        "out = pathlib.Path('reports')\n"
+        "(out / \"report.md\").write_text('x')\n"
+        "PY"}},
+     0),
 ]
 
 

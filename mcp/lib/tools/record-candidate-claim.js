@@ -43,7 +43,7 @@ const {
 const { appendFrontierEvent } = require("../frontier-events.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const { hashCanonicalJson } = require("../verification-contracts.js");
-const { isKnownCwe } = require("../cwe-catalog.js");
+const { isKnownCwe, canonicalizeCwe } = require("../cwe-catalog.js");
 const { CVSS_INPUT_KEYS, CVSS_INPUT_ENUMS, deriveCvss31 } = require("../cvss31.js");
 
 // Registry-driven schema for the optional structured CVSS v3.1 base inputs. The
@@ -220,6 +220,33 @@ function validateClaimForPersistence(finding, secretBypass = new Map()) {
   }
 }
 
+// True when the finding cites an EXECUTED differential as proof: a shape-valid
+// offensive exploit_run evidence ref (its offensive-runs.jsonl row is
+// cross-checked downstream), or a structured smart-contract re-run handle the
+// verifier can replay. A free-text PoC or a reachability assertion is NOT an
+// executed differential. This is the non-negotiable floor for a finding whose
+// mechanism label is outside the curated catalog: the vocabulary opened, the
+// confirm contract did not.
+function citesExecutedDifferential(args) {
+  if (args && args.sc_evidence != null && typeof args.sc_evidence === "object") {
+    return true;
+  }
+  if (args && Array.isArray(args.evidence_refs)) {
+    return args.evidence_refs.some(
+      (ref) => ref && typeof ref === "object" && ref.kind === "exploit_run",
+    );
+  }
+  return false;
+}
+
+// Membership in the curated CWE catalog is an ANNOTATION, not a drop-gate. A
+// medium+ finding must still NAME some mechanism (a label is required), but a
+// CWE-shaped label outside the catalog now records at the demonstrated severity
+// AS LONG AS the finding is backed by an executed differential. Without an
+// executed differential, a novel-mechanism medium+ finding cannot reach
+// reportable severity. Catalog membership is mirrored onto the finding as a
+// cwe_in_catalog flag (annotate, never gate); the existing class-specific
+// executed gates downstream are unchanged for catalog findings.
 function assertReportableCweOnWrite(args, surfaceType) {
   const severity = args && args.severity;
   if (severity !== "critical" && severity !== "high" && severity !== "medium") return;
@@ -227,13 +254,22 @@ function assertReportableCweOnWrite(args, surfaceType) {
   if (cweEmpty) {
     const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
     throw new Error(
-      `cwe is required for ${severity} findings and must be a catalog id from mcp/lib/cwe-catalog.js (examples: ${examples})`,
+      `cwe is required for ${severity} findings: name the mechanism with a CWE id (a curated catalog id from mcp/lib/cwe-catalog.js is preferred; a CWE-shaped novel id is accepted when backed by an executed differential) (examples: ${examples})`,
     );
   }
-  if (!isKnownCwe(args.cwe)) {
+  if (canonicalizeCwe(args.cwe) == null) {
     const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
     throw new Error(
-      `cwe ${JSON.stringify(args.cwe)} is not in the curated CWE catalog (mcp/lib/cwe-catalog.js); use a catalog id (examples: ${examples})`,
+      `cwe ${JSON.stringify(args.cwe)} must be a CWE identifier like "CWE-79" (examples: ${examples})`,
+    );
+  }
+  // A novel (non-catalog) but CWE-shaped mechanism records at its demonstrated
+  // severity only when an executed differential backs it. This preserves the
+  // executed-proof floor while letting the vocabulary open past the curated set.
+  if (!isKnownCwe(args.cwe) && !citesExecutedDifferential(args)) {
+    const examples = EXAMPLE_CWES_BY_CLASS[surfaceType] || EXAMPLE_CWES_BY_CLASS.web;
+    throw new Error(
+      `cwe ${JSON.stringify(args.cwe)} is outside the curated CWE catalog (mcp/lib/cwe-catalog.js); a novel-mechanism ${severity} finding must cite an executed differential (an evidence_refs[] item with kind="exploit_run" backed by an offensive-runs.jsonl row, or an sc_evidence re-run handle) to record at this severity. Record it at low/info, or use a catalog id (examples: ${examples})`,
     );
   }
 }
@@ -660,12 +696,35 @@ function recordCandidateClaimHandler(args) {
 
     const counter = scan.maxNumber + 1;
     assertReportableCweOnWrite(args, surfaceType);
-    const finding = buildFindingPayloadRecord(args, context, `F-${counter}`, { requireCwe: true });
+    // Catalog membership is an annotation, not a drop-gate. A catalog CWE keeps
+    // the strict normalization path (the loader canonicalizes + catalog-checks
+    // it). A novel-but-CWE-shaped mechanism (already proven executed-backed by
+    // assertReportableCweOnWrite) is normalized with the tolerant CWE path so it
+    // is not rejected, then its canonical free-form label is restored onto the
+    // embedded finding alongside the cwe_in_catalog flag. CVSS sufficiency is
+    // asserted separately below, so it stays enforced for both paths.
+    const canonicalCwe = canonicalizeCwe(args.cwe);
+    const cweInCatalog = isKnownCwe(args.cwe);
+    const finding = buildFindingPayloadRecord(args, context, `F-${counter}`, {
+      requireCwe: cweInCatalog,
+    });
+    if (!cweInCatalog && canonicalCwe != null) {
+      // The tolerant loader degraded the novel CWE to null; restore the
+      // canonical free-form label so the finding still names its mechanism.
+      finding.cwe = canonicalCwe;
+    }
     assertReportableCvssInputsOnWrite(finding);
     validateClaimForPersistence(finding, secretBypass);
 
     const findingContentHash = hashCanonicalJson(finding);
     const claimInput = buildClaimPayloadFromFinding(finding, findingContentHash, args || {}, secretBypass);
+    // Annotate catalog membership on the embedded finding (annotate, never gate).
+    // A novel-mechanism label records at its demonstrated severity because an
+    // executed differential backed it; the flag preserves that it is outside the
+    // curated catalog without dropping the finding.
+    if (canonicalCwe != null && claimInput.payload && claimInput.payload.finding) {
+      claimInput.payload.finding.cwe_in_catalog = cweInCatalog;
+    }
     // Y.0 hotfix 1 (O2): expand the per-field bypass into the exact deep paths
     // the claims-layer validator will see, via the same helper that builds the
     // persisted secret_evidence_bypass rows so write-time and read-time honor

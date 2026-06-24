@@ -15,7 +15,7 @@ const path = require("path");
 const { REGISTRY } = require("../mcp/lib/invariant-registry.js");
 const { spawnCapableAgentNames, CLAUDE_ROLE_SPECS } = require("../scripts/lib/claude-role-renderer.js");
 const { mcpToolNamesForRole } = require("../mcp/lib/role-model.js");
-const { DEFAULT_QUEUE_POLICY, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
+const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
 const { maxBranchingForBudget, validateSpawnFanout } = require("../mcp/lib/nested-spawn.js");
 const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
 
@@ -94,7 +94,16 @@ test("E1 NS-4: bounded fan-out — preventive width cap + detective validateSpaw
   assert.equal(v.ok, false);
 });
 
-test("E1 NS-5: default-off — nesting + governor are off in DEFAULT_QUEUE_POLICY", () => {
-  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 1);
+test("E1 NS-5: the cross-role fan-out default nests (depth 3) but keeps the governor null (unbounded fixpoint)", () => {
+  // The default now drives cross-role fan-out: depth 3 lets a per-surface
+  // evaluator-fanout nest one level of child cells. The lifetime governor stays
+  // null — the crux invariant: width is RAISED without a COVERAGE CAP. The
+  // shipped default is exempt from the auto-fill, so normalization keeps it null.
+  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 3);
   assert.equal(DEFAULT_QUEUE_POLICY.max_total_spawned_agents, null);
+  assert.equal(normalizeQueuePolicy(DEFAULT_QUEUE_POLICY).max_total_spawned_agents, null);
+  // The off-path floor is one override away: LEAN_PROFILE restores depth 1.
+  const lean = normalizeQueuePolicy(LEAN_PROFILE);
+  assert.equal(lean.max_spawn_depth, 1, "depth-1 (no nesting) is reachable via an explicit lean override");
+  assert.equal(lean.max_total_spawned_agents, null, "the lean override stays governor-null too");
 });

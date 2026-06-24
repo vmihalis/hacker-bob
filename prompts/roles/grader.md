@@ -7,7 +7,7 @@ The orchestrator provides the domain in the spawn prompt.
 
 Score each finding on 5 axes:
 - **Impact** (0-30): What damage can the attacker actually cause?
-- **Proof quality** (0-25): Is the PoC complete, reproducible, and backed by bounded evidence packs with representative samples?
+- **Proof quality** (0-25): Is the PoC complete, reproducible, and backed by bounded evidence packs with representative samples? Where present, cross-check the finding's invariant rows via `bob_read_invariant_runs({ target_domain })`: a reproducing `run_hash` row bound to the finding (e.g. a symbolic/halmos counterexample) is stronger proof; a clean bounded invariant pass tempers an over-stated PoC. Invariant rows inform this axis only — they NEVER gate or block a verdict or surface completion, and missing rows are not a penalty.
 - **Severity accuracy** (0-15): Does the claimed severity match the real impact? `bob_read_candidate_claims` returns a server-derived CVSS v3.1 band per finding (`finding.cvss.severity_band`, or an insufficient marker) as an informational sanity check. If your severity_accuracy assessment is badly out of line with that band, reconsider — but the band is NOT a score source, does NOT map to points, and your judgment of demonstrated impact governs this integer.
 - **Chain potential** (0-15): Does this finding enable or amplify other attacks? Award meaningful chain points only for confirmed chain attempts. Denied attempts should reduce speculative chain credit; blocked or inconclusive attempts are not proof.
 - **Report quality** (0-15): Are evidence pack snippets and samples clear enough for a triager to verify quickly?

@@ -1022,7 +1022,7 @@ function readSurfaceInfoForBrief(domain, routeMetadata) {
 // floor producer (the deterministic coverage obligation, always enumerated).
 // The depth/count budget is the caller's choice — the floor is NOT gated by the
 // (parked) nesting budget.
-function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSummary, remainingDepth, maxChildren }) {
+function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSummary, remainingDepth, maxChildren, belief }) {
   if (!(remainingDepth > 0)) return null;
 
   const { deriveChildFanoutPlan, fanoutPlanningKey } = require("./capability-pack-derivation.js");
@@ -1094,11 +1094,33 @@ function deriveCellFloorForSurface({ domain, surfaceObj, surfaceId, coverageSumm
     ...blockedKeys,
   ]));
 
+  // Open-registry feed (the live-feed actuation). When an operator opts into
+  // belief-assisted priority, read the merged mechanism registry (corpus tier-2
+  // + per-session tier-3 candidates) at THIS I/O boundary and thread it into the
+  // pure deriver via the belief option, so the cell-floor fans out over the whole
+  // open mechanism space and ranks dispatch by the trust gradient. The fs read
+  // lives HERE (the impure producer), never inside the pure deriveChildFanoutPlan.
+  // Absent/disabled belief => no belief key => byte-identical to the deterministic
+  // baseline (the floor's INV-6 default-off contract holds).
+  let beliefOption;
+  if (belief && typeof belief === "object" && !Array.isArray(belief) && belief.enabled === true) {
+    let mechanismTemplates = [];
+    try {
+      const { getMechanismTemplatesForDomain } = require("./invariant-template-corpus.js");
+      const merged = getMechanismTemplatesForDomain(domain);
+      mechanismTemplates = Array.isArray(merged) ? merged : [];
+    } catch {
+      mechanismTemplates = [];
+    }
+    beliefOption = { ...belief, mechanism_templates: mechanismTemplates };
+  }
+
   return deriveChildFanoutPlan(surfaceId, surfaceObj, {
     bug_class_hints: bugClassAxis,
     auth_profiles: authProfiles,
     budget: { remaining_depth: remainingDepth, max_children: maxChildren },
     covered_cell_keys: coveredCellKeys,
+    ...(beliefOption ? { belief: beliefOption } : {}),
   });
 }
 
@@ -1361,6 +1383,9 @@ function readAssignmentBrief(args) {
   // coverage_summary stays in both profiles: SC evaluators call bob_log_coverage
   // for chain-flavored bug-class taxonomies, and resumed waves want to know
   // what was already tested regardless of profile.
+  // The evaluator's bob_log_coverage row (keyed surface_id x bug_class x
+  // auth_profile x status) is the cell-floor reconciliation input the
+  // OPEN_FRONTIER engine prunes covered cells against, not mere housekeeping.
   const coverageSummary = buildCoverageSummaryForSurface(
     readCoverageRecordsFromJsonl(domain),
     assignment.surface_id,

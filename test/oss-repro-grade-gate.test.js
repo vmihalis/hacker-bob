@@ -20,6 +20,7 @@ const { verifyReproReproduction } = require("../mcp/lib/repro-replay-verifier.js
 const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
 const { repoCommandRunsJsonlPath } = require("../mcp/lib/paths.js");
 const { appendJsonlLine } = require("../mcp/lib/storage.js");
+const { persistingRunner } = require("./helpers/repro-run-pair.js");
 
 const ASAN_CRASH = `==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511
     #0 0x4f1c2a in parse /src/parser.c:42:10
@@ -86,9 +87,11 @@ function mintVerified(domain, findingId, { vuln, control, command = ARGV }) {
     const text = checkout ? control : vuln;
     return { run_id: checkout ? "RC" : "RV", exit_code: text.includes("ERROR") ? 1 : 0, stdout_text: "", stderr_text: text };
   };
+  // Persist each run so the minted verified_pass survives the read-time re-adjudication in
+  // readReproVerifiedSummary (a bare verdict line citing nonexistent runs is excluded).
   return verifyReproReproduction(
     { target_domain: domain, finding_id: findingId, command, control_ref: CONTROL_REF },
-    { repoDockerRunFn: runner },
+    { repoDockerRunFn: persistingRunner(domain, runner) },
   );
 }
 

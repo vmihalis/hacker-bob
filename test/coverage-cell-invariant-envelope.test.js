@@ -312,19 +312,22 @@ test("G2 (iii): propose-transition refuses unknown (non-real) surface endpoints"
 
 // ── (iv) belief-advisory-only ───────────────────────────────────────────────
 
-test("G2 (iv): the belief + residual-depth queue-policy flags default OFF", () => {
-  // The advisory overlays must never be on by default; the closure gate, grade,
-  // and dispatch spine run belief-free and residual-free unless an operator opts
-  // in. A future flag flipped default-on silently turns an advisory into a gate.
+test("G2 (iv): the belief + residual-depth queue-policy flags default ON and advisory-only (never gating)", () => {
+  // The advisory overlays are default-ON and advisory-when-on: they only ever
+  // REORDER within a priority band and never gate the closure gate, grade, or
+  // dispatch spine, which run belief-free and residual-free at the source. The
+  // advisory engages only once executed outcomes feed signals (empty map ==
+  // no map == byte-identical ordering), so default-ON does not turn an advisory
+  // into a gate — the belief-FREE-at-source and within-band-only tests below lock that.
   assert.equal(
     DEFAULT_QUEUE_POLICY.belief_assisted_priority_enabled,
-    false,
-    "belief_assisted_priority_enabled MUST default to false (advisory-only)",
+    true,
+    "belief_assisted_priority_enabled defaults TRUE and is advisory-when-on — never gating",
   );
   assert.equal(
     DEFAULT_QUEUE_POLICY.residual_depth_reprobe_enabled,
-    false,
-    "residual_depth_reprobe_enabled MUST default to false (advisory-only)",
+    true,
+    "residual_depth_reprobe_enabled defaults TRUE and is advisory-when-on — never gating",
   );
 });
 
@@ -384,6 +387,177 @@ test("G2 (iv): the closure gate, closure stat, and grade are belief-FREE at the 
       !beliefImport.test(src),
       `${rel} must stay belief-free — closure/grade is coverage-only, never belief-gated`,
     );
+  }
+});
+
+// EXTEND the INV-12 authority wall to the CLAIM-MINTING spine. A belief
+// advisory may ORDER dispatch, but it must NEVER mint a candidate claim, freeze a
+// claim, or otherwise feed the claim record. The claim spine
+// (record-candidate-claim tool + claims.js + claim-freeze.js) is therefore
+// belief-free-at-source exactly like the closure/grade gate above: a future edit
+// wiring a belief/residual import into claim minting would let belief author
+// findings — caught here.
+test("INV-12 extension: the claim-minting spine is belief-FREE at the source", () => {
+  const beliefImport = /require\(\s*['"][^'"]*\/belief\/[^'"]*['"]\s*\)|require\(\s*['"][^'"]*residual[^'"]*['"]\s*\)/;
+  const claimSpine = [
+    "mcp/lib/tools/record-candidate-claim.js",
+    "mcp/lib/claims.js",
+    "mcp/lib/claim-freeze.js",
+  ];
+  for (const rel of claimSpine) {
+    const src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    assert.ok(
+      !beliefImport.test(src),
+      `${rel} must stay belief-free — belief never mints/freezes a claim`,
+    );
+  }
+});
+
+test("INV-12 extension positive control: the claim-spine belief-free leg BITES a belief import", () => {
+  // Prove the wall is non-vacuous: the SAME regex applied to a module that DOES
+  // import belief must fire. scheduler-priority.js imports ./intervention-calculus
+  // (a belief module), so the leg must classify it as belief-bearing — confirming
+  // the wall would flag a claim module that grew such an import.
+  const beliefImport = /require\(\s*['"][^'"]*\/belief\/[^'"]*['"]\s*\)|require\(\s*['"][^'"]*residual[^'"]*['"]\s*\)/;
+  // graph-scheduler.js lazily requires ./belief/cell-scheduler-priority.js — a
+  // require string carrying the /belief/ path segment the wall regex anchors on.
+  const beliefBearing = fs.readFileSync(
+    path.join(REPO_ROOT, "mcp/lib/graph-scheduler.js"),
+    "utf8",
+  );
+  assert.ok(
+    beliefImport.test(beliefBearing),
+    "the belief-import regex must match a module that imports a /belief/ submodule (else the INV-12 authority wall is vacuous)",
+  );
+});
+
+test("INV-12 narrow exemptions: the two belief<->executed boundary modules consume executed-control belief, never DISPATCH belief", () => {
+  // INV-12 forbids belief at the claim/closure/grade source. TWO modules sit at the
+  // belief<->executed boundary and are NARROW, documented exemptions — they are NOT
+  // claim/closure/grade gates and they do NOT close the belief->dispatch->belief loop:
+  //
+  //   (1) composition-live-verifier.js — the LOOP-BREAKER. It imports the executed
+  //       probes (live-object-auth-probe + differential-tester) to RE-EXECUTE a guard
+  //       leaf, and emits a verified_intervention ONLY from that executed outcome. It
+  //       must NOT import the dispatch-belief machinery (scheduler-priority /
+  //       intervention-calculus / factor-graph), or a verified result could feed back
+  //       into the same belief that picked the dispatch.
+  //   (2) belief-window.js — the one-way audit->belief CONSUMER. It reads
+  //       verified_intervention to sharpen a request_equivalence latent, but must NOT
+  //       import the dispatch-belief machinery either: the window consumes
+  //       executed-control belief, it never dispatches from belief.
+  const DISPATCH_BELIEF_IMPORT = /require\(\s*['"][^'"]*(scheduler-priority|intervention-calculus|factor-graph)[^'"]*['"]\s*\)/;
+
+  const verifier = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/composition-live-verifier.js"), "utf8");
+  // Non-vacuity: the loop-breaker REALLY imports the executed probes it is exempt for.
+  assert.match(verifier, /require\(\s*['"][^'"]*\/belief\/live-object-auth-probe[^'"]*['"]\s*\)/, "verifier imports the live-object-auth probe (executed)");
+  assert.match(verifier, /require\(\s*['"][^'"]*\/belief\/differential-tester[^'"]*['"]\s*\)/, "verifier imports the differential tester (executed)");
+  assert.ok(
+    !DISPATCH_BELIEF_IMPORT.test(verifier),
+    "composition-live-verifier must NOT import scheduler-priority/intervention-calculus/factor-graph — it executes, it does not dispatch belief",
+  );
+
+  const window = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/belief/belief-window.js"), "utf8");
+  // Non-vacuity: the window REALLY consumes the verified_intervention provenance.
+  assert.match(window, /verified_intervention/, "belief-window consumes verified_intervention (the audit->belief edge it is exempt for)");
+  assert.ok(
+    !DISPATCH_BELIEF_IMPORT.test(window),
+    "belief-window must NOT import scheduler-priority/intervention-calculus/factor-graph — it consumes executed-control belief, never dispatches belief",
+  );
+});
+
+// WAVE cross-band. On the WAVE side (applyBeliefSchedulerPriority, which
+// decorates surface objects for the wave planner), an opted-in belief hint CAN raise
+// a LOW surface ACROSS a priority band — the wave's open_requeue/lead_surface_ids
+// re-queue buckets are what make a cross-band raise safe (a surface lifted out of its
+// band is still re-queued, never dropped). This is the deliberate CONTRAST with the
+// GRAPH comparator (INV-11), which stays intra-band. Belief ON here is LOCAL to the
+// test; no production default is touched.
+test("wave cross-band: belief ON can raise a LOW surface across a band, and the surface SET is preserved (reorder/decorate, never drop/add)", () => {
+  const { applyBeliefSchedulerPriority } = require("../mcp/lib/belief/scheduler-priority.js");
+  const { appendEdges } = require("../mcp/lib/surface-graph.js");
+  const { sessionDir } = require("../mcp/lib/paths.js");
+
+  const previousHome = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(require("os").tmpdir(), "bob-crossband-"));
+  process.env.HOME = home;
+  try {
+    const domain = "crossband.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // Seed a NON-UNIFORM belief: a populated object-authorization edge gives the
+    // matching surface a high expected-information-gain candidate, so its hint score
+    // lands well above the LOW band (score 93 -> CRITICAL per priorityFromScore).
+    appendEdges({
+      target_domain: domain,
+      edges: [
+        {
+          source: { type: "principal", id: "principal:attacker" },
+          target: { type: "policy_gate", id: "policy_gate:owner" },
+          edge_type: "tests_gate",
+        },
+        {
+          source: { type: "policy_gate", id: "policy_gate:owner" },
+          target: { type: "effect", id: "effect:unauth_succeeds_where_auth_blocked:victim" },
+          edge_type: "permits_effect",
+        },
+      ],
+    });
+
+    const hotSurface = {
+      id: "surface:idor-victim",
+      title: "victim object access",
+      priority: "LOW",
+      hosts: [domain],
+      bug_class_hints: ["unauth_succeeds_where_auth_blocked"],
+      high_value_flows: ["attacker reads owner victim object"],
+    };
+    // A second surface that earns NO belief hint — proves the SET is preserved and
+    // un-hinted surfaces are passed through byte-identical.
+    const coldSurface = { id: "surface:cold", title: "static assets", priority: "LOW", hosts: [domain] };
+    const input = [hotSurface, coldSurface];
+
+    const result = applyBeliefSchedulerPriority({
+      target_domain: domain,
+      surfaces: input,
+      enabled: true, // LOCAL opt-in; no production default changed.
+      seed: "belief-scheduler-priority",
+    });
+
+    // NON-VACUITY GUARD: the hint must actually apply, else the cross-band claim is empty.
+    assert.equal(result.metadata.applied, true, "belief hint must apply (non-vacuous) for the cross-band assertion");
+    assert.ok(result.metadata.hint_count >= 1, "at least one surface earned a belief hint");
+
+    const byId = new Map(result.surfaces.map((s) => [s.id, s]));
+    const decoratedHot = byId.get("surface:idor-victim");
+    assert.ok(decoratedHot, "the hot surface survives");
+    // CROSS-BAND: belief raised the hot surface OUT of LOW (the wave side allows it).
+    assert.notEqual(
+      decoratedHot.priority,
+      "LOW",
+      "belief raised the LOW surface across its band on the WAVE side (cross-band is allowed here, unlike the graph comparator)",
+    );
+    assert.equal(decoratedHot.original_priority, "LOW", "the pre-belief band is preserved for audit (original_priority)");
+    assert.equal(decoratedHot.ranking.belief.dispatch_authority, false, "the raise is advisory: dispatch_authority stays false");
+
+    // SET PRESERVED: same id set, same cardinality — reorder/decorate, never drop/add.
+    assert.deepEqual(
+      result.surfaces.map((s) => s.id).sort(),
+      input.map((s) => s.id).sort(),
+      "the returned surface SET == the input SET (no surface dropped or added)",
+    );
+    assert.equal(result.surfaces.length, input.length, "cardinality preserved");
+    // The un-hinted cold surface is passed through unchanged (byte-identical).
+    assert.deepEqual(byId.get("surface:cold"), coldSurface, "an un-hinted surface is passed through byte-identical");
+
+    // STRUCTURAL PRECONDITION: the wave-planner exposes the open_requeue +
+    // lead_surface_ids re-queue buckets that make a cross-band raise safe (a raised
+    // surface is re-queued, never lost). Assert those bucket names exist in source.
+    const wavePlanner = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/wave-planner.js"), "utf8");
+    assert.match(wavePlanner, /name:\s*["']open_requeue["']/, "wave-planner exposes the open_requeue bucket (cross-band re-queue safety)");
+    assert.match(wavePlanner, /name:\s*["']lead_surface_ids["']/, "wave-planner exposes the lead_surface_ids bucket (cross-band re-queue safety)");
+  } finally {
+    process.env.HOME = previousHome;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

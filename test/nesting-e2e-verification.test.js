@@ -14,7 +14,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { DEFAULT_QUEUE_POLICY, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
+const { DEFAULT_QUEUE_POLICY, LEAN_PROFILE, normalizeQueuePolicy, writeQueuePolicy } = require("../mcp/lib/queue-policy.js");
 const { worstCaseTreeSize } = require("../mcp/lib/nested-spawn.js");
 const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
 
@@ -68,9 +68,16 @@ test("E2: the breaker — an exhausted spawn budget degrades the plan to flat (n
   });
 });
 
-test("E2: default-off is unchanged — no nested plan when nesting is off", () => {
+test("E2: a lean override (nesting off) emits no nested plan; the on-default (nesting on) emits one", () => {
   withClaudeHome(() => {
-    const plan = planFor("e2-off.example.com", {});
-    assert.equal(plan, null, "default (max_spawn_depth 1, budget null) => no nested plan");
+    // Off-path via a lean override: depth 1 => no nested plan (flat dispatch).
+    const leanPlan = planFor("e2-off.example.com", LEAN_PROFILE);
+    assert.equal(leanPlan, null, "lean override (max_spawn_depth 1, budget null) => no nested plan");
+
+    // On-default: the cross-role fan-out default (depth 3) emits a nested plan on a
+    // self-managing host — nesting is ON by default now.
+    const onDefaultPlan = planFor("e2-on-default.example.com", {});
+    assert.ok(onDefaultPlan, "the shipped on-default (depth 3) emits a nested plan on claude");
+    assert.equal(onDefaultPlan.remaining_depth, 2, "depth 3 => remaining_depth 2 (within the claude ceiling)");
   });
 });

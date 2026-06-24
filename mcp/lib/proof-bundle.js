@@ -48,7 +48,12 @@ const {
   classifyFoundryOutcome,
   computeInvariantRunHash,
   invariantFoundryResultHash,
+  readInvariantVerifiedSummary,
+  RESULT_VERIFIED_PASS,
 } = require("./invariant-runner.js");
+const {
+  readReproVerifiedSummary,
+} = require("./repro-replay-verifier.js");
 
 const PROOF_BUNDLES_VERSION = 1;
 const PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
@@ -326,6 +331,39 @@ function stableRepoRunProjection(domain, row, fieldName, findingId) {
   return projection;
 }
 
+// REFUTING-ARM (universal): a replay_script proof bundle no longer mints a
+// "proven by reproduction script" artifact on the strength of a single executed
+// repo-command-run. That lone row has NO control to flip against — an exit-0
+// banner or any over-broad command satisfies it. It must be backed by a
+// VERIFIED_PASS in the MCP-write-only, agent-Write-blocked repro-verified.jsonl
+// (minted ONLY by verifyReproReproduction's two-tree differential: crashes the
+// vuln tree with a /src frame, quiet on the upstream-fix tree). The binding is
+// LEDGER-BY-ID: keyed by finding_id AND the replay row's command, so a bundle
+// cannot pair a real finding's verdict with an unrelated replay command. A lone
+// replay row, a verdict for a different command, or an inconclusive/refuted
+// outcome is REJECTED — the single-run pass is inconclusive at this gate, exactly
+// as the invariant branch above rejects a lone passing invariant run.
+function readReproVerifiedForReplay(domain, findingId, replayCommandHash, fieldName) {
+  let verifiedByFinding = {};
+  try {
+    verifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    verifiedByFinding = {};
+  }
+  const verified = verifiedByFinding[findingId];
+  if (!verified) {
+    throw new Error(`${fieldName} requires a VERIFIED_PASS differential reproduction in repro-verified.jsonl for finding_id ${findingId}; run bob_verify_repro_reproduction first (a lone replay run has no refuting control to flip against and is no longer accepted)`);
+  }
+  // The verified_pass command_hash is hashCanonicalJson(verifier-run argv); for an
+  // argv array of scalar strings this equals sha256(JSON.stringify(argv)), the same
+  // digest the replay row's replay_command_hash carries. They MUST match so the
+  // verified differential is bound to THIS replay command, not a different one.
+  if (verified.command_hash !== replayCommandHash) {
+    throw new Error(`${fieldName} replay_command does not match the VERIFIED_PASS differential reproduction command for finding_id ${findingId}; the verified_pass must flip on the same command this proof bundle replays`);
+  }
+  return verified;
+}
+
 function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
@@ -333,6 +371,9 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
   const row = readRepoCommandRunRow(repoCommandRunRows, artifact.run_id, `artifacts[${index}].run_id`, findingId);
   const replayCommand = normalizeReplayCommand(artifact.replay_command, row, `artifacts[${index}].replay_command`);
   const runProjection = stableRepoRunProjection(domain, row, `artifacts[${index}].repo_run`, findingId);
+  const reproVerified = readReproVerifiedForReplay(
+    domain, findingId, runProjection.replay_command_hash, `artifacts[${index}]`,
+  );
   const runHash = hashCanonicalJson(runProjection);
   if (artifact.run_hash != null && assertHex64(artifact.run_hash, `artifacts[${index}].run_hash`) !== runHash) {
     throw new Error(`artifacts[${index}].run_hash does not match the repo docker run handle`);
@@ -352,7 +393,17 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
     replay_command_hash: runProjection.replay_command_hash,
     stdout_hash: runProjection.stdout_hash,
     stderr_hash: runProjection.stderr_hash,
+    // LEDGER-BY-ID binding to the MCP-write-only repro-verified differential that
+    // FLIPPED on this exact command (crashes vuln tree, quiet on the fix tree).
+    verdict: RESULT_VERIFIED_PASS,
+    repro_verified_command_hash: reproVerified.command_hash,
   };
+  if (typeof reproVerified.control_ref === "string" && reproVerified.control_ref) {
+    normalized.repro_control_ref = reproVerified.control_ref;
+  }
+  if (typeof reproVerified.crash_class === "string" && reproVerified.crash_class) {
+    normalized.crash_class = reproVerified.crash_class;
+  }
   if (runProjection.work_mount_mode_legacy_assumed) {
     normalized.work_mount_mode_legacy_assumed = true;
   }
@@ -380,7 +431,14 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
   return normalized;
 }
 
-function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
+// Re-validate a single invariant-runs.jsonl row exactly as before: it must be an
+// executed (non-dry-run) row, bound to the finding, with foundry_result_hash,
+// run_hash and outcome all internally consistent. The expectedViolation argument
+// is the run's REQUIRED invariant direction: the positive arm must be test_failed
+// (the safe assertion failed → a counterexample / violation), the control arm must
+// be test_passed (the invariant holds). This is the EXACT INVERSION of the old
+// single-row gate, which accepted a bare test_passed as verified.
+function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId, expectedOutcome) {
   const normalizedRunHash = assertHex64(runHash, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_hash === normalizedRunHash);
   if (matchingRows.length === 0) {
@@ -416,25 +474,62 @@ function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId) {
   if (classifiedOutcome !== row.outcome) {
     throw new Error(`${fieldName} outcome does not match invariant run Foundry result`);
   }
-  if (row.outcome !== "test_passed") {
-    throw new Error(`${fieldName} must reference a reproducing invariant run with outcome test_passed`);
+  if (expectedOutcome && row.outcome !== expectedOutcome) {
+    throw new Error(`${fieldName} must reference an invariant run with outcome ${expectedOutcome}`);
   }
   return row;
 }
 
-function normalizeInvariantArtifact(artifact, { invariantRunRows, index, findingId }) {
+// REFUTING-ARM (universal): an invariant proof bundle no longer accepts a lone
+// test_passed row. It must carry BOTH a positive_run_hash (the run on the real
+// target — the invariant must FAIL there) and a control_run_hash (the SAME test on
+// a control tree — the invariant must HOLD there), AND the MCP-owned
+// invariant-verified.jsonl must hold a VERIFIED_PASS record for this finding whose
+// positive/control run hashes match (read via readInvariantVerifiedSummary, the
+// MCP-write-only ledger, never a row field). A bundle that references a lone
+// passing row, a non-flipping pair, or only an inconclusive/refuted verdict is
+// REJECTED — the single-run pass is inconclusive at the gate.
+function normalizeInvariantArtifact(artifact, { domain, invariantRunRows, index, findingId }) {
   if (!isPlainObject(artifact)) {
     throw new Error(`artifacts[${index}] must be an object`);
   }
-  const row = readInvariantRunRow(invariantRunRows, artifact.run_hash, `artifacts[${index}].run_hash`, findingId);
+  if (artifact.run_hash != null && artifact.positive_run_hash == null) {
+    throw new Error(`artifacts[${index}] must carry positive_run_hash + control_run_hash; a lone run_hash invariant proof is no longer accepted (it has no refuting control to flip against)`);
+  }
+  const positiveRow = readInvariantRunRow(
+    invariantRunRows, artifact.positive_run_hash, `artifacts[${index}].positive_run_hash`, findingId, "test_failed",
+  );
+  const controlRow = readInvariantRunRow(
+    invariantRunRows, artifact.control_run_hash, `artifacts[${index}].control_run_hash`, findingId, "test_passed",
+  );
+  // The control MUST be the SAME generated test on a DIFFERENT tree.
+  for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
+    if ((positiveRow[key] || null) !== (controlRow[key] || null)) {
+      throw new Error(`artifacts[${index}] control_run_hash ${key} must match positive_run_hash (control must be the same test on a different tree)`);
+    }
+  }
+  if (hashCanonicalJson(positiveRow.slot_values || null) !== hashCanonicalJson(controlRow.slot_values || null)) {
+    throw new Error(`artifacts[${index}] control_run_hash slot_values must match positive_run_hash`);
+  }
+  // LEDGER-BY-ID: require the MCP-write-only differential verdict, matched on
+  // finding_id AND both run hashes (closing the "pair a real finding's verdict row
+  // with an unrelated bundle" refactor hazard).
+  const verifiedSummary = readInvariantVerifiedSummary(domain);
+  const verdict = verifiedSummary.verified_by_finding[findingId];
+  if (!verdict || verdict.positive_run_hash !== positiveRow.run_hash || verdict.control_run_hash !== controlRow.run_hash) {
+    throw new Error(`artifacts[${index}] requires a VERIFIED_PASS invariant differential in invariant-verified.jsonl matching finding_id ${findingId} and both run hashes; run bob_verify_invariant_differential first (a lone pass, a non-flipping pair, or an inconclusive/refuted verdict is rejected)`);
+  }
   const normalized = {
     artifact_kind: "invariant",
-    finding_id: row.finding_id,
-    run_hash: assertHex64(row.run_hash, `artifacts[${index}].run_hash`),
-    outcome: assertNonEmptyString(row.outcome || "unknown", `artifacts[${index}].outcome`),
+    finding_id: positiveRow.finding_id,
+    verdict: RESULT_VERIFIED_PASS,
+    positive_run_hash: assertHex64(positiveRow.run_hash, `artifacts[${index}].positive_run_hash`),
+    control_run_hash: assertHex64(controlRow.run_hash, `artifacts[${index}].control_run_hash`),
+    positive_outcome: assertNonEmptyString(positiveRow.outcome || "unknown", `artifacts[${index}].positive_outcome`),
+    control_outcome: assertNonEmptyString(controlRow.outcome || "unknown", `artifacts[${index}].control_outcome`),
   };
   for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
-    if (row[key] != null) normalized[key] = assertNonEmptyString(row[key], `artifacts[${index}].${key}`);
+    if (positiveRow[key] != null) normalized[key] = assertNonEmptyString(positiveRow[key], `artifacts[${index}].${key}`);
   }
   const snippet = normalizeOptionalBoundedText(artifact.snippet, `artifacts[${index}].snippet`, MAX_SNIPPET_CHARS);
   if (snippet) normalized.snippet = snippet;
@@ -501,6 +596,7 @@ function normalizeArtifacts(pack, bundleKind, {
     }
     if (bundleKind === "invariant") {
       return normalizeInvariantArtifact(artifact, {
+        domain,
         invariantRunRows: invariantRunRows || readInvariantRunRows(domain),
         index,
         findingId,
@@ -739,12 +835,15 @@ function renderProofBundlesMarkdown(document) {
       if (artifact.artifact_kind === "replay_script") {
         lines.push(`  - Replay Run: ${artifact.run_id}`);
         lines.push(`  - Run Hash: ${artifact.run_hash}`);
+        if (artifact.verdict) lines.push(`  - Verdict: ${artifact.verdict}`);
+        if (artifact.crash_class) lines.push(`  - Crash Class: ${escapeMarkdownText(artifact.crash_class)}`);
         lines.push(`  - Image Tag: ${escapeMarkdownText(artifact.image_tag)}`);
         lines.push(`  - Network: ${artifact.network_mode}`);
         lines.push(`  - Mounts: /src ${artifact.src_mount_mode}; /work ${artifact.work_mount_mode}`);
       } else if (artifact.artifact_kind === "invariant") {
-        lines.push(`  - Invariant Run Hash: ${artifact.run_hash}`);
-        lines.push(`  - Outcome: ${artifact.outcome}`);
+        lines.push(`  - Verdict: ${artifact.verdict}`);
+        lines.push(`  - Positive Run Hash: ${artifact.positive_run_hash} (${artifact.positive_outcome})`);
+        lines.push(`  - Control Run Hash: ${artifact.control_run_hash} (${artifact.control_outcome})`);
         if (artifact.template_id) lines.push(`  - Template: ${artifact.template_id}`);
       } else if (artifact.artifact_kind === "differential") {
         lines.push(`  - Differential: ${artifact.differential.control_kind} / ${artifact.differential.verdict}`);

@@ -28,9 +28,10 @@ The cost is real: a preventive control (frontmatter allow-list) is replaced with
 2. For each `production_paths[].tool_call_pattern[]` step, invoke the named tool with `args_match`-compatible inputs.
 3. Capture observable outputs as `evidence_refs[]` (typed `artifact_ref` per X-D12) so the mechanical verifier can resolve witness predicates.
 4. Use `bob_resolve_body` to fetch any body the brief summary points at; do not fabricate, guess, or copy from training data.
-5. If a step requires a tool that is not in `allowed_tools_for_node[]`, do NOT invoke it. Instead, return without finalizing successfully and surface a structured note in your `agent_output.findings[]` describing the missing capability — the operator can re-attach a refined Contract with a satisfiable witness set (X-D11 satisfiability check; X-R12 mitigation).
-6. Your `agent_output` MUST include at least one of: `tool_invocations[]`, `evidence_refs[]`, `cli_pack_invocations[]`, `findings[]`. The empty-object output is refused at finalize.
-7. The orchestrator runs `bob_finalize_node(target_domain, node_id, prep_token, agent_output)`. The mechanical verifier runs FIRST (X-P3); LLM adjudication only on mechanical pass.
+5. When a `production_paths[].tool_call_pattern[]` step targets a WebSocket endpoint (a `ws://`/`wss://` listener, a JSON-RPC-over-WS gateway, or a subscription channel) and `bob_ws_probe` is in `allowed_tools_for_node[]`, drive it for that step (modes `json_rpc_enumerate`, `cswsh_probe` for cross-site WebSocket hijacking, `subscription_probe`, `raw`); it is scope-gated to `target_domain` and its subdomains and audited to `http-audit.jsonl`. If `bob_ws_probe` is not in your allow-list, treat WS as an unsatisfiable step per the rule below.
+6. If a step requires a tool that is not in `allowed_tools_for_node[]`, do NOT invoke it. Instead, return without finalizing successfully and surface a structured note in your `agent_output.findings[]` describing the missing capability — the operator can re-attach a refined Contract with a satisfiable witness set (X-D11 satisfiability check; X-R12 mitigation).
+7. Your `agent_output` MUST include at least one of: `tool_invocations[]`, `evidence_refs[]`, `cli_pack_invocations[]`, `findings[]`. The empty-object output is refused at finalize.
+8. The orchestrator runs `bob_finalize_node(target_domain, node_id, prep_token, agent_output)`. The mechanical verifier runs FIRST (X-P3); LLM adjudication only on mechanical pass.
 
 ## Family tag
 

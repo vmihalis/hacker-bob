@@ -248,7 +248,7 @@ test("recommendedCommandsFor c emits real ASAN+UBSAN libFuzzer recipe when nativ
     seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
   });
   const fuzzCommands = commands.filter((command) => command.role === "fuzz");
-  assert.equal(fuzzCommands.length, 2);
+  assert.equal(fuzzCommands.length, 3);
   const fuzz = fuzzCommands.find((command) => command.id === "fuzz_asan_ubsan");
   assert.equal(fuzz.seed_path, "fuzz/corpus");
   // The build (harness discovery + multi-TU library link + instrumentation) is in the
@@ -299,8 +299,27 @@ test("recommendedCommandsFor c can emit only the native fuzz recipe for promoted
   assert.equal(commands.some((command) => command.id === "build_and_test"), false);
   assert.deepEqual(
     commands.map((command) => command.id),
-    ["fuzz_asan_ubsan", "fuzz_cmplog"],
+    ["fuzz_asan_ubsan", "fuzz_cmplog", "fuzz_tsan"],
   );
+});
+
+test("recommendedCommandsFor c emits a ThreadSanitizer arm alongside the libFuzzer and afl arms", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
+  });
+  const tsan = commands.find((command) => command.id === "fuzz_tsan");
+  assert.ok(tsan, "expected a fuzz_tsan command when native fuzz shape is present");
+  assert.equal(tsan.role, "fuzz");
+  assert.equal(tsan.seed_path, "fuzz/corpus");
+  // The thread-instrumented build (a separate binary, since thread and address
+  // instrumentation are mutually exclusive) lives in the builder; the recipe just
+  // stages /src, invokes ENGINE=tsan, and runs h_tsan.
+  assert.match(tsan.command[2], /ENGINE=tsan \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.match(tsan.command[2], /\/work\/out\/h_tsan -use_value_profile=1/);
+  // Build flags belong to the builder script, NOT the recipe token.
+  assert.doesNotMatch(tsan.command[2], /-fsanitize=thread/);
+  assert.ok(tsan.command[2].length <= 2048, "tsan recipe token must stay within docker-run limit");
 });
 
 test("recommendedCommandsFor c ignores unsafe seed corpus paths before shell emission", () => {
@@ -543,6 +562,17 @@ test("the multi-TU builder script holds the instrumentation split + layered buil
   assert.match(sh, /AFL_USE_ASAN=1/);
   assert.match(sh, /AFL_LLVM_CMPLOG=1/);
   assert.match(sh, /libAFLDriver\.a/);
+  // TSan arm: a SEPARATE binary (h_tsan) built with thread instrumentation, since
+  // thread and address sanitizers are mutually exclusive. Its banner is recognized by
+  // sanitizer-report.js and routes into the same differential repro gate.
+  assert.match(sh, /ENGINE" = tsan/, "builder must have a tsan engine branch");
+  assert.ok(sh.includes("-fsanitize=thread,undefined,fuzzer-no-link"), "tsan library must be built with thread coverage");
+  assert.ok(sh.includes("-fsanitize=thread,undefined,fuzzer "), "tsan harness must link the libFuzzer driver under thread instrumentation");
+  assert.match(sh, /\$OUT\/h_tsan/);
+  // MSan stays parser-only: it needs a fully instrumented toolchain, so there is NO
+  // msan engine branch (no -fsanitize=memory) in the builder.
+  assert.doesNotMatch(sh, /-fsanitize=memory/);
+  assert.doesNotMatch(sh, /ENGINE" = msan/);
   // compile-all fallback must skip TUs that define their own main().
   assert.ok(sh.includes("int[[:space:]]+main"), "compile-all must guard against TUs with their own main()");
 });
@@ -940,11 +970,12 @@ test("prepareRepoEnv reads native_fuzz_shape from repo-inventory.json and emits 
     const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
     assert.equal(repoEnv.detection.native_fuzz_shape, true);
     const fuzzCommands = repoEnv.recommended_commands.filter((command) => command.role === "fuzz");
-    assert.deepEqual(fuzzCommands.map((command) => command.id), ["fuzz_asan_ubsan", "fuzz_cmplog"]);
-    // Both arms invoke the image-baked multi-TU builder (build details live there).
+    assert.deepEqual(fuzzCommands.map((command) => command.id), ["fuzz_asan_ubsan", "fuzz_cmplog", "fuzz_tsan"]);
+    // All arms invoke the image-baked multi-TU builder (build details live there).
     assert.match(fuzzCommands[0].command[2], /ENGINE=libfuzzer \/usr\/local\/bin\/bob-multitu-build\.sh/);
     assert.match(fuzzCommands[0].command[2], /-use_value_profile=1/);
     assert.match(fuzzCommands[1].command[2], /ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
+    assert.match(fuzzCommands[2].command[2], /ENGINE=tsan \/usr\/local\/bin\/bob-multitu-build\.sh/);
   });
 });
 

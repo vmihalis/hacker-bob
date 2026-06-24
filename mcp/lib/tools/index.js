@@ -37,6 +37,7 @@ const TOOL_MODULES = Object.freeze([
   require("./chain-frontier.js"),
   require("./chain-ancestry.js"),
   require("./write-verification-round.js"),
+  require("./stage-verification-round-partial.js"),
   require("./read-verification-round.js"),
   require("./read-verification-context.js"),
   require("./diff-verification-attempts.js"),
@@ -95,6 +96,7 @@ const TOOL_MODULES = Object.freeze([
   require("./evaluate-capabilities.js"),
   require("./ingest-audit-report.js"),
   require("./query-audit-reports.js"),
+  require("./register-mechanism-template.js"),
   require("./suggest-invariants.js"),
   require("./run-invariant-for-finding.js"),
   require("./read-invariant-runs.js"),
@@ -176,6 +178,20 @@ const TOOL_MODULES = Object.freeze([
   // sound flip (repo-rooted probe faults on vuln, quiet on fix). Same
   // audit-graded repro-verified.jsonl ledger + hash-binding as the repro gate.
   require("./verify-oracle-differential.js"),
+  // The FV (Foundry/halmos invariant) sibling of verify-repro-reproduction.
+  // Adjudicates a two-arm differential over already-executed invariant runs (the
+  // SAME test on the real target vs. a control tree) and mints a verified_pass only
+  // on a genuine flip. Closes the single-run-pass rubber-stamp; writes the
+  // audit-graded invariant-verified.jsonl the proof-bundle invariant gate grades on.
+  require("./verify-invariant-differential.js"),
+  // The web-standalone sibling of verify-repro-reproduction / verify-invariant-
+  // differential. For standalone non-oracle findings (auth-bypass/IDOR/SSRF/business-
+  // logic/info-disclosure/races) it BINDS two already-executed, MAC-signed offensive-
+  // runs rows for one finding_id and mints a verified_pass only on a genuine flip
+  // (positive exploited, control blocked, same surface). Closes the forgeable report
+  // verdict for the residual classes; writes the audit-graded finding-differential-
+  // verified.jsonl the grade-time standalone-finding gate grades on.
+  require("./verify-finding-differential.js"),
   // Plane X Cycle X.4 — Contract schema + attach with pre-dispatch
   // satisfiability check. Backed by mcp/lib/contracts.js (the X-D4 7-witness
   // schema + the X-D11 satisfiability gate). The attach tool emits
@@ -250,6 +266,12 @@ const TOOL_MODULES = Object.freeze([
   // authoritative.
   require("./scan-transcript-for-friction.js"),
   require("./ws-probe.js"),
+  // Recon multi-modal sweep — the read-only SETUP recon-angle planner. Thin
+  // wrapper over the pure deriveReconAnglePlan emitter (recon-angle-plan.js,
+  // SEPARATE from deriveChildFanoutPlan so the cell-floor fixpoint stays
+  // unpolluted). Resolves the host pool + lifetime governor server-side and
+  // emits a fanout-or-sequential recon plan over four coverage-disjoint angles.
+  require("./plan-recon-angles.js"),
 ]);
 
 module.exports = {

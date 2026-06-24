@@ -71,6 +71,9 @@ const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
+  appendJsonlLine,
+} = require("../mcp/lib/storage.js");
+const {
   claimFreezePath,
   evidencePackPaths,
   gradeArtifactPaths,
@@ -83,6 +86,9 @@ const {
   taskQueuePath,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
+const {
+  seedGenuineReproPair,
+} = require("./helpers/repro-run-pair.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -444,6 +450,23 @@ async function driveOssRealizationFlow({
   });
   assert.ok(fs.existsSync(evidencePackPaths(domain).json),
     "evidence-packs.json must be written");
+
+  // A reportable medium native code_module finding carries an executed arm: its
+  // differential-reproduction verified_pass (the O-P4 native binding), the same
+  // executed flip a real native finding records. Seed one per finding so the
+  // standalone finding-differential gate sees the native executed binding and
+  // grades through it.
+  for (const findingId of findingIds) {
+    // Seed a GENUINE flipping repro pair (repo-command-runs rows + matching capture files)
+    // + the verified_pass verdict line citing it, so readReproVerifiedSummary's read-time
+    // re-adjudication ADMITS the native executed binding at grade time.
+    seedGenuineReproPair(domain, {
+      findingId,
+      argv: ["sh", "-lc", `./harness ${findingId}.bin`],
+      vulnRunId: `repro-vuln-${findingId}`,
+      controlRunId: `repro-control-${findingId}`,
+    });
+  }
 
   // Step 13 — bob_advance_session(GRADE).
   const gradeAdvance = callTool(advanceSessionTool, {

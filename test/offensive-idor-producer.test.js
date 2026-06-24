@@ -32,6 +32,7 @@ const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/lib/paths.js");
 const {
   appendCandidateClaim,
@@ -583,31 +584,53 @@ test("AC-5: canary not reflected in the owner readback → canary_not_reflected"
 
 // ───────────────────────── AC-6 negative matrix ──────────────────────────
 
+// Each case: [label, overrides, expectedReason, signsControlRow]. The honest negative
+// CONTROL leg of the finding differential is a same-surface server-DENIAL of the safe
+// variant (canary_absent_p2_no_cross_tenant_read — the authenticated cross read the
+// server answered with a redacted resource). object_not_access_controlled is NOT that:
+// an anon-200 read means the object is anonymously reachable (no defense fired, no
+// privilege boundary), so it stays UNSIGNED — a signed blocked_by_defense row would
+// assert a flip that never happened. All cases below stay unsigned.
 const NEGATIVE_CASES = [
-  ["public P4-200 (anon can read O_B)", { anonStatus: 200 }, "object_not_access_controlled", null],
+  ["public P4-200 (anon can read O_B)", { anonStatus: 200 }, "object_not_access_controlled", false],
   ["P5 200-without-canary (id collision) → p5_ambiguous", {
     p5: () => jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-C", details: { secret: { token: "different" } }, server_ts: "x" }),
-  }, "p5_ambiguous", null],
-  ["P5 404 (not-found ambiguous)", { p5: () => challenge(404) }, "p5_not_found_ambiguous", null],
+  }, "p5_ambiguous", false],
+  ["P5 404 (not-found ambiguous)", { p5: () => challenge(404) }, "p5_not_found_ambiguous", false],
   ["P5 200 WITH O_B's canary (authenticated-shared)", {
     p5: () => jsonResponse(200, { id: OBJ_B, owner_scope: "tenant-B", details: { secret: { token: CANARY_B } }, server_ts: "x" }),
-  }, "p5_authenticated_shared", null],
+  }, "p5_authenticated_shared", false],
   ["asymmetric P6-200 (B can read O_A — not partitioned)", {
     p6: () => jsonResponse(200, { id: OBJ_A, owner_scope: "tenant-A", details: { secret: { token: CANARY_A } }, server_ts: "x" }),
-  }, "p6_not_partitioned", null],
-  ["cache-HIT on P2 (edge cross-fill)", { p2Headers: { "X-Cache": "HIT" } }, "cache_shared_response", null],
+  }, "p6_not_partitioned", false],
+  ["cache-HIT on P2 (edge cross-fill)", { p2Headers: { "X-Cache": "HIT" } }, "cache_shared_response", false],
 ];
 
 for (let ni = 0; ni < NEGATIVE_CASES.length; ni += 1) {
-  const [label, overrides, expectedReason] = NEGATIVE_CASES[ni];
-  test(`AC-6 negative: ${label} mints NOTHING`, () => withTempHome(async () => {
+  const [label, overrides, expectedReason, signsControlRow] = NEGATIVE_CASES[ni];
+  test(`AC-6 negative: ${label} ${signsControlRow ? "signs a blocked_by_defense control row" : "mints NOTHING"}`, () => withTempHome(async () => {
     const domain = `idor-neg-${ni}.example.test`;
     setupSession(domain);
     const result = await run(domain, { fetch_fn: soundFetchFn(domain, overrides) });
     assert.equal(result.confirmed, false, `${label}: expected blocked, got ${JSON.stringify(result)}`);
     assert.equal(result.reason, expectedReason, `${label}: wrong reason`);
-    assert.equal(result.row_written, false);
-    assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false, `${label}: ledger must not exist`);
+    if (signsControlRow) {
+      // A real executed server-denied observation on the SAME surface: a signed
+      // blocked_by_defense control row (the negative leg the differential flips against).
+      assert.equal(result.row_written, true, `${label}: server-denied safe variant must sign a control row`);
+      assert.equal(result.offensive_outcome, "blocked_by_defense");
+      const rows = readOffensiveRunRecords(domain);
+      assert.equal(rows.length, 1, `${label}: exactly one signed control row`);
+      const row = rows[0];
+      assert.equal(row.offensive_outcome, "blocked_by_defense");
+      assert.equal(row.surface_id, SURFACE_ID, `${label}: control row binds the finding surface`);
+      assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), `${label}: control row verifies its MAC`);
+      assert.equal(row.exit_code, 0, `${label}: a server-denied response is a completed execution`);
+      assert.equal(result.run_id, row.run_id);
+    } else {
+      assert.equal(result.row_written, false);
+      assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false, `${label}: ledger must not exist`);
+    }
   }));
 }
 
@@ -628,7 +651,19 @@ test("AC-6 negative: P2 does NOT carry the canary (no cross-tenant read) → blo
   const result = await run(domain, { fetch_fn });
   assert.equal(result.confirmed, false);
   assert.equal(result.reason, "canary_absent_p2_no_cross_tenant_read");
-  assert.equal(result.row_written, false);
+  // The cross-tenant read (P2) actually fired and the server did NOT return B's object:
+  // the defense IS present on the safe variant. That is the honest negative CONTROL leg,
+  // so it now signs a MAC-bound blocked_by_defense row on the SAME surface.
+  assert.equal(result.row_written, true);
+  assert.equal(result.offensive_outcome, "blocked_by_defense");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.offensive_outcome, "blocked_by_defense");
+  assert.equal(row.surface_id, SURFACE_ID);
+  assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), "control row verifies its MAC");
+  assert.equal(row.exit_code, 0, "a server-denied response is a completed execution");
+  assert.equal(result.run_id, row.run_id);
 }));
 
 test("AC-6 negative: volatile P0 (B's own reads differ) → volatile_object", () => withTempHome(async () => {

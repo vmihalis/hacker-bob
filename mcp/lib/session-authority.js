@@ -116,6 +116,10 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // scoped_http_network (mirrors bob_run_auth_differential).
   bob_elicit_belief: "initialized_session_mutation",
   bob_plan_belief_experiment: "initialized_session_mutation",
+  // Recon multi-modal sweep — SETUP recon-angle planner. A read-only planning
+  // read over an initialized session (host pool + governor + deep_mode); NOT a
+  // belief signal, so it has no belief/authority.js entry.
+  bob_plan_recon_angles: "initialized_session_read",
   bob_query_belief_signals: "initialized_session_read",
   bob_query_belief_window: "initialized_session_read",
   bob_query_intervention_calculus: "initialized_session_read",
@@ -196,12 +200,18 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_read_wave_handoffs: "initialized_session_read",
   bob_record_candidate_claim: "initialized_session_mutation",
   bob_record_surface_leads: "initialized_session_mutation",
+  // Writes the mechanism-candidates.jsonl session ledger (a knowledge ingest like
+  // bob_ingest_audit_report); it mutates session state and is not a belief signal,
+  // so it carries no belief/authority.js entry.
+  bob_register_mechanism_template: "initialized_session_mutation",
   bob_prepare_node: "initialized_session_mutation",
   bob_finalize_node: "initialized_session_mutation",
   bob_repo_check: "initialized_session_mutation",
   bob_repo_docker_run: "initialized_session_mutation",
   bob_verify_repro_reproduction: "initialized_session_mutation",
   bob_verify_oracle_differential: "initialized_session_mutation",
+  bob_verify_invariant_differential: "initialized_session_mutation",
+  bob_verify_finding_differential: "initialized_session_mutation",
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   bob_resolve_body: "initialized_session_read",
@@ -213,6 +223,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_select_technique_packs: "initialized_session_read",
   bob_set_operator_note: "initialized_session_mutation",
   bob_signup_detect: "scoped_http_network",
+  bob_stage_verification_round_partial: "initialized_session_mutation",
   bob_start_next_wave: "initialized_session_mutation",
   bob_start_wave: "initialized_session_mutation",
   bob_static_scan: "initialized_session_mutation",

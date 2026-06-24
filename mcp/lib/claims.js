@@ -596,6 +596,10 @@ function normalizeCandidateClaim(input, { targetDomain = null, now = new Date(),
 // circuit; the rule only fires when all three conditions align.
 const O_P4_NATIVE_LANGUAGES = Object.freeze(new Set(["c", "cpp", "rust-unsafe", "asm"]));
 const O_P4_TRIGGERING_SEVERITIES = Object.freeze(new Set(["high", "critical"]));
+// The standalone finding-differential gate fires at the same medium+ reportable tier
+// the grade verdict's reportable-severity set uses (grade-verdict-store.js
+// requireFinalReportableSeveritySet), so the executed-binding requirement is uniform.
+const MEDIUM_OR_HIGHER_SEVERITIES = Object.freeze(new Set(["medium", "high", "critical"]));
 
 function claimSurfaceLanguageMap(domain, surfaceIds) {
   // Returns surfaceId -> { kind, language } for surfaces that appear as
@@ -1047,6 +1051,262 @@ function reproVerifiedGapForNativeReportableFindings(domain, { reportableFinding
   return { missing };
 }
 
+// exploitRunSkipReverifies — READ-TIME re-verification of the exploited_safely skip
+// (mirrors reverifyFindingDifferentialRecord's read-time idiom + assertExploitedClaimHasProof's
+// MAC + surface-bind). The structural skip (live exploit_outcome + a present exploit_run ref)
+// is re-armable by a post-freeze runtime-indirection rewrite of claims.jsonl, so the skip is
+// honored ONLY when:
+//   (1) the FROZEN claim (from the hash-bound, audit-graded claim-freeze.json) for this finding
+//       asserts exploit_outcome.outcome === "exploited_safely". A live rewrite cannot satisfy
+//       this (the frozen doc is bound by freeze_hash and the file is agent-Write-blocked); and
+//   (2) at least one of the FROZEN claim's exploit_run refs re-resolves to a MAC-valid,
+//       non-dry-run/non-timed-out offensive-runs row whose MAC-covered surface_id equals the
+//       FROZEN claim's single surface (the same strict single-surface bind as the record-time
+//       proof gate).
+// Only then is the leg an executed binding. Any throw / no MAC-valid backing row / surface
+// mismatch / absent-or-non-exploited freeze => skip:false. Runs read-only.
+//
+// Returns { skip, asserted }: `asserted` is true when the LIVE claim carries an exploit_run
+// ref (so the old structural skip WOULD have fired) but re-verification failed — the caller
+// surfaces exploit_run_skip_reverification_failed in that case rather than silently falling
+// through. A live claim with no exploit_run ref returns asserted:false (it never qualified for
+// the structural skip).
+function exploitRunSkipReverifies(domain, findingId, liveClaim) {
+  const liveRefs = Array.isArray(liveClaim.evidence_refs) ? liveClaim.evidence_refs : [];
+  const asserted = liveRefs.some((ref) => ref && ref.kind === "exploit_run");
+  try {
+    // (1) Class FROM THE FROZEN SNAPSHOT, not live claims.jsonl.
+    const { readCurrentClaimFreeze } = require("./claim-freeze.js");
+    const freeze = readCurrentClaimFreeze(domain);
+    if (!freeze || !Array.isArray(freeze.claims)) return { skip: false, asserted };
+    // Resolve the FROZEN claim for this finding — same resolution as the claimByFinding loop
+    // (payload.finding.id OR a kind:"finding" evidence_ref).
+    let frozenClaim = null;
+    for (const claim of freeze.claims) {
+      if (!claim || typeof claim !== "object") continue;
+      const payloadFinding = claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+        ? claim.payload.finding
+        : null;
+      const payloadFindingId = payloadFinding && typeof payloadFinding === "object" ? payloadFinding.id : null;
+      let matches = typeof payloadFindingId === "string" && payloadFindingId === findingId;
+      if (!matches) {
+        const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+        matches = refs.some((ref) => ref && ref.kind === "finding" && ref.finding_id === findingId);
+      }
+      if (matches) { frozenClaim = claim; break; }
+    }
+    if (!frozenClaim) return { skip: false, asserted };
+    if (!frozenClaim.exploit_outcome || frozenClaim.exploit_outcome.outcome !== "exploited_safely") {
+      return { skip: false, asserted };
+    }
+    // The frozen claim must carry exactly one surface (the strict single-surface bind the
+    // record-time proof gate enforces); otherwise the surface bind below is not well-defined.
+    const frozenSurfaceIds = Array.isArray(frozenClaim.surface_ids) ? frozenClaim.surface_ids : [];
+    if (frozenSurfaceIds.length !== 1) return { skip: false, asserted };
+    const frozenSurfaceId = String(frozenSurfaceIds[0]).trim();
+    if (frozenSurfaceId === "") return { skip: false, asserted };
+
+    // (2) Re-resolve + re-MAC the FROZEN exploit_run refs against the offensive-runs ledger.
+    const frozenExploitRunRefs = (Array.isArray(frozenClaim.evidence_refs) ? frozenClaim.evidence_refs : [])
+      .filter((ref) => ref && ref.kind === "exploit_run");
+    if (frozenExploitRunRefs.length === 0) return { skip: false, asserted };
+    const runRows = readOffensiveRunRecords(domain);
+    const signingKey = runRows.length > 0 ? readHandoffSigningKey(domain) : null;
+    for (const ref of frozenExploitRunRefs) {
+      const row = runRows.find((candidate) => (
+        offensiveRunRowSatisfiesEvidence(candidate, ref, domain, signingKey)
+      ));
+      if (!row) continue;
+      // The MAC-covered surface_id must equal the frozen claim's single surface (mirror the
+      // record-time strict equality so a row produced for surface B cannot back surface A).
+      const rowSurfaceId = typeof row.surface_id === "string" ? row.surface_id.trim() : "";
+      if (rowSurfaceId !== "" && rowSurfaceId === frozenSurfaceId) {
+        return { skip: true, asserted };
+      }
+    }
+    return { skip: false, asserted };
+  } catch {
+    // Unreadable freeze / rotated offensive-runs / absent key => the executed binding is not
+    // re-derivable. Fail closed (do not skip).
+    return { skip: false, asserted };
+  }
+}
+
+// Standalone-finding differential proof contract — the report-verdict gate that makes
+// a STANDALONE non-oracle finding (auth-bypass-not-via-IDOR, manual IDOR, SSRF,
+// business-logic, info-disclosure, races) non-fabricatable at report time. It is the
+// symmetric sibling of reproVerifiedGapForNativeReportableFindings: a finding that is
+// FINAL-reportable at medium+ AND is NOT already covered by an existing executed
+// producer must be backed by a verified_pass in finding-differential-verified.jsonl
+// bound to the finding_id. normalizeVerificationResult only type-validates a round
+// result; the executed binding is required HERE, at grade time, class-aware, so a
+// merely-claimed standalone finding cannot be graded SUBMIT (MINT != CONFIRM).
+//
+// Findings already covered by an existing executed producer are SKIPPED so they verify
+// IDENTICALLY (the EXISTING-PRODUCER REGRESSION invariant):
+//   * native-code surfaces AT HIGH/CRITICAL -> owned by the O-P4 repro gate (above). A
+//     MEDIUM native finding has no O-P4 obligation (O_P4_TRIGGERING_SEVERITIES is
+//     high/critical only), so it must satisfy the standalone differential here — it is
+//     NOT short-circuited by the native skip.
+//   * smart_contract surfaces WITH an FV invariant-verified verified_pass -> owned by
+//     bob_verify_invariant_differential
+//   * a freeze claim that carries an exploit_run-backed exploited_safely outcome whose
+//     cited offensive-runs row RE-MAC-VERIFIES on the frozen claim's surface -> its
+//     offensive-runs row is already a live re-verified executed binding
+// A residual standalone finding with no constructible executed flip caps to advisory
+// (excluded from the reportable set) — the RANK != BOUND outcome, applied per finding,
+// never a class bound.
+//
+// args: { reportableFindingIds: Set<finding_id>, finalSeverities: Map<finding_id, severity> }
+// returns: { missing: [{ finding_id, reason }] } — empty when every residual standalone
+// medium+ reportable finding is backed by a bound verified_pass.
+function findingDifferentialGapForStandaloneReportableFindings(domain, { reportableFindingIds, finalSeverities } = {}) {
+  const reportable = reportableFindingIds instanceof Set ? reportableFindingIds : new Set();
+  const severities = finalSeverities instanceof Map ? finalSeverities : new Map();
+  if (reportable.size === 0) return { missing: [] };
+
+  // Resolve each reportable finding's claim so we can read its surfaces + outcome.
+  const claimByFinding = new Map();
+  let claims = [];
+  try {
+    claims = readCandidateClaims(domain);
+  } catch {
+    claims = [];
+  }
+  for (const claim of claims) {
+    const finding = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload.finding
+      : null;
+    const findingId = finding && typeof finding === "object" ? finding.id : null;
+    if (typeof findingId === "string" && !claimByFinding.has(findingId)) {
+      claimByFinding.set(findingId, claim);
+    }
+    // The dual-write tool path may carry the finding id on an evidence_ref rather than
+    // payload.finding (recordFindingViaTool/seedFinalVerificationFromFrozen shape), so
+    // also index by a top-level finding evidence_ref id when the payload is absent.
+    if (!findingId) {
+      const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+      for (const ref of refs) {
+        if (ref && ref.kind === "finding" && typeof ref.finding_id === "string" && !claimByFinding.has(ref.finding_id)) {
+          claimByFinding.set(ref.finding_id, claim);
+        }
+      }
+    }
+  }
+
+  const { readFindingDifferentialVerifiedSummary } = require("./finding-differential-verifier.js");
+  let verifiedByFinding = {};
+  try {
+    verifiedByFinding = readFindingDifferentialVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    verifiedByFinding = {};
+  }
+
+  const { readInvariantVerifiedSummary } = require("./invariant-runner.js");
+  let invariantVerifiedByFinding = {};
+  try {
+    invariantVerifiedByFinding = readInvariantVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    invariantVerifiedByFinding = {};
+  }
+
+  // A native finding whose differential reproduction already executed + flipped carries an
+  // executed arm (the O-P4 repro verified_pass) regardless of its final severity, so it is
+  // NOT routed to the standalone arm even at medium — it is already armed.
+  const { readReproVerifiedSummary } = require("./repro-replay-verifier.js");
+  let reproVerifiedByFinding = {};
+  try {
+    reproVerifiedByFinding = readReproVerifiedSummary(domain).verified_by_finding || {};
+  } catch {
+    reproVerifiedByFinding = {};
+  }
+
+  const missing = [];
+  for (const findingId of reportable) {
+    const severity = severities.get(findingId);
+    if (!MEDIUM_OR_HIGHER_SEVERITIES.has(severity)) continue;
+    const claim = claimByFinding.get(findingId);
+    if (!claim) continue; // unresolvable claim; other gates own coverage.
+
+    // SKIP: native-code surfaces are owned by the O-P4 repro gate (verify identically)
+    // at the O-P4 severities (high/critical), OR when the finding ALREADY carries an
+    // executed repro verified_pass (any severity — its differential reproduction is the
+    // executed arm). A MEDIUM native finding that LACKS a repro arm carries no O-P4
+    // obligation and no executed binding, so it must NOT short-circuit here — it falls
+    // through to the residual standalone arm and must carry a finding-differential
+    // verified_pass (or be lowered below medium / dropped).
+    const nativeSurfaces = nativeCodeSurfacesForClaim(domain, claim.surface_ids);
+    if (nativeSurfaces.length > 0
+      && (O_P4_TRIGGERING_SEVERITIES.has(severity) || reproVerifiedByFinding[findingId])) {
+      continue;
+    }
+
+    const surfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+    const surfaceInfo = claimSurfaceLanguageMap(domain, surfaceIds);
+    const isSmartContract = surfaceIds.some((id) => {
+      const info = surfaceInfo.get(id);
+      return info && info.kind === "smart_contract";
+    });
+    // SKIP: a smart_contract finding WITH an FV invariant-verified verified_pass is owned
+    // by bob_verify_invariant_differential (verify identically). An SC finding WITHOUT one
+    // falls through to the standalone arm (it must construct an on-chain executed flip OR
+    // cap to advisory — the APPENDED-node outcome, consistent with the evaluating.md SC
+    // surface_status rule).
+    if (isSmartContract && invariantVerifiedByFinding[findingId]) continue;
+
+    // SKIP: an exploit_run-backed exploited_safely claim is already an executed binding
+    // — but RE-VERIFY it at read time off the FROZEN claim class + a re-MAC'd backing
+    // row, not the live claims.jsonl + a merely-structural ref (which a post-freeze
+    // runtime-indirection rewrite could re-arm with no re-proof). The skip is honored
+    // ONLY when the frozen claim asserts exploited_safely AND a cited exploit_run row
+    // still MAC-verifies on the frozen claim's single surface.
+    if (claim.exploit_outcome && claim.exploit_outcome.outcome === "exploited_safely") {
+      const reverify = exploitRunSkipReverifies(domain, findingId, claim);
+      if (reverify.skip) continue;
+      if (reverify.asserted) {
+        // The LIVE claim asserts exploited_safely (so the structural skip would have
+        // fired) but the frozen-class + re-MAC re-verification no longer holds. Surface
+        // a legible failure instead of silently falling through.
+        missing.push({ finding_id: findingId, reason: "exploit_run_skip_reverification_failed" });
+        continue;
+      }
+      // else: the live claim asserts exploited_safely but has no exploit_run ref at all;
+      // fall through to the residual standalone arm exactly as before.
+    }
+
+    // RESIDUAL standalone class: require a verified_pass bound to this finding_id.
+    const verified = verifiedByFinding[findingId];
+    if (!verified) {
+      missing.push({ finding_id: findingId, reason: "no_finding_differential_verified_pass" });
+      continue;
+    }
+    // (B1.1) SURFACE BIND — the verdict's bound surface (re-derived from the MAC-covered
+    // positive row by readFindingDifferentialVerifiedSummary, NOT the verdict record's
+    // self-hashed field) must equal the claim's single finding surface. A verified_pass
+    // minted on surface B cannot back a finding on surface A. Symmetric to the repro
+    // command_hash bind (:1045) and the exploit-proof surface bind (:1311). The strict
+    // single-surface requirement (claimSurfaceId==="" when length!==1) fail-closes a
+    // surface-set-padded claim, mirroring exploit-proof rule (1).
+    const claimSurfaceId = surfaceIds.length === 1 ? String(surfaceIds[0]).trim() : "";
+    const verifiedSurfaceId = typeof verified.surface_id === "string" ? verified.surface_id.trim() : "";
+    if (claimSurfaceId === "" || verifiedSurfaceId === "" || verifiedSurfaceId !== claimSurfaceId) {
+      missing.push({ finding_id: findingId, reason: "finding_differential_surface_mismatch" });
+      continue;
+    }
+    // (B1.2) DEMONSTRATED-SEVERITY CEILING — the executed flip's demonstrated severity
+    // (from the re-resolved MAC-covered positive row) must be >= the finding's final
+    // reportable severity, so a low/benign flip cannot back a higher-severity finding.
+    // exploitSeverityRank fail-closes unknown severities to rank 0; SEVERITY_VALUES is
+    // descending so a higher rank is more severe — identical to the exploit-proof ceiling
+    // (:1340). `severity` is finalSeverities.get(findingId), already in hand.
+    if (exploitSeverityRank(verified.demonstrated_severity) < exploitSeverityRank(severity)) {
+      missing.push({ finding_id: findingId, reason: "finding_differential_severity_below_finding" });
+      continue;
+    }
+  }
+  return { missing };
+}
+
 function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
   const evidenceRefs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
   const exploitRunRefs = evidenceRefs.filter((ref) => ref && ref.kind === "exploit_run");
@@ -1293,6 +1553,7 @@ module.exports = {
   canonicalizeExploitTarget,
   assertNotStaticOnlyNativeHighSeverity,
   reproVerifiedGapForNativeReportableFindings,
+  findingDifferentialGapForStandaloneReportableFindings,
   nativeCodeSurfacesForClaim,
   claimReproCommandArgv,
   claimSurfaceLanguageMap,

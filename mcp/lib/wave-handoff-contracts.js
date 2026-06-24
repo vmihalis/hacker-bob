@@ -671,6 +671,58 @@ function groupBypassAttempts(entries) {
   });
 }
 
+// Advisory surfacing for cross-surface
+// pivots the transition-blind evaluator-fanout rode up as
+// handoff.discovered_pivots[] but the orchestrator never consumed. The
+// orchestrator is supposed to call bob_propose_transition per entry (recording
+// a lead via bob_record_surface_leads when the to_surface is unmaterialized),
+// but that consumption is prompt-discipline, not a hard gate — a skipped loop
+// SILENTLY DROPS a pivot to an unmaterialized surface. This computes which
+// merged pivots have NO corresponding consumption so the merge/status result
+// can REPORT them. It is purely advisory: it gates nothing.
+//
+// A pivot is CONSUMED when either
+//   (a) a proposed transition edge exists for the same from->to pair
+//       (proposedEdges holds `${from} ${to}` keys), OR
+//   (b) the to_surface string is referenced by a recorded surface lead
+//       (leadReferenceStrings holds lead title/source_surface_id/
+//       contract_address/promoted_surface_id values) — the path the
+//       orchestrator takes when the to_surface is unmaterialized.
+// Off the nesting path (the default) discovered_pivots is empty, so this is a
+// no-op returning []. The pivots are bounded by normalizeDiscoveredPivots
+// (<=20 per handoff) so the membership scan stays trivially cheap.
+function pivotEdgeKey(fromSurface, toSurface) {
+  return `${fromSurface} ${toSurface}`;
+}
+
+function computeUnconsumedPivots(pivots, { proposedEdges, leadReferenceStrings } = {}) {
+  if (!Array.isArray(pivots) || pivots.length === 0) return [];
+  const edges = proposedEdges instanceof Set ? proposedEdges : new Set();
+  const leadRefs = leadReferenceStrings instanceof Set ? leadReferenceStrings : new Set();
+  const unconsumed = [];
+  for (const pivot of pivots) {
+    if (!pivot || typeof pivot !== "object" || Array.isArray(pivot)) continue;
+    const fromSurface = typeof pivot.from_surface === "string" ? pivot.from_surface : "";
+    const toSurface = typeof pivot.to_surface === "string" ? pivot.to_surface : "";
+    if (!fromSurface || !toSurface) continue;
+    const hasTransition = edges.has(pivotEdgeKey(fromSurface, toSurface));
+    const hasLead = leadRefs.has(toSurface);
+    if (hasTransition || hasLead) continue;
+    const entry = {
+      from_surface: fromSurface,
+      to_surface: toSurface,
+    };
+    if (typeof pivot.kind === "string" && pivot.kind) entry.kind = pivot.kind;
+    if (typeof pivot.trust_assumption === "string" && pivot.trust_assumption) {
+      entry.trust_assumption = pivot.trust_assumption;
+    }
+    if (pivot.agent) entry.agent = pivot.agent;
+    if (pivot.surface_id) entry.surface_id = pivot.surface_id;
+    unconsumed.push(entry);
+  }
+  return unconsumed;
+}
+
 module.exports = {
   BLOCKED_HARNESS_KIND_VALUES,
   BLOCKED_PREREQ_IDENTIFIER_HINT_LONG_HEX_PATTERN,
@@ -691,7 +743,9 @@ module.exports = {
   attachHandoffOrigin,
   computeHandoffAssignmentHash,
   computeHandoffProvenanceDigest,
+  computeUnconsumedPivots,
   generateHandoffToken,
+  pivotEdgeKey,
   groupBlockedHarnessRuns,
   groupBlockedPrereqs,
   groupBypassAttempts,

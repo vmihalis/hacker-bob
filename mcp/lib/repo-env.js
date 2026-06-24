@@ -434,6 +434,52 @@ function boundedAflCmplogRecipe(seedEntry) {
   return { seedEntry: effectiveSeedEntry, recipe };
 }
 
+// ThreadSanitizer arm: the SAME discovered LLVMFuzzerTestOneInput harness built with
+// -fsanitize=thread (a separate binary because thread and address instrumentation are
+// mutually exclusive). A data race surfaces as a "WARNING: ThreadSanitizer:" banner,
+// which sanitizer-report.js recognizes and the differential repro gate adjudicates
+// byte-for-byte like an ASAN crash — no new parser, no adjudication change. The recipe
+// is byte-identical across the vuln and upstream-fix trees so the gate's re-run stays
+// deterministic. The builder no-ops nothing here (TSan ships with clang-18), so this
+// arm always builds where the libFuzzer arm builds.
+function cTsanFuzzRecipe(seedCorpusEntry) {
+  const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
+  const seedShellPath = seedRel ? `./${seedRel}` : null;
+  const seedSetup = seedRel
+    ? [
+        `SEED=${shellQuote(seedShellPath)}`,
+        "SEED_REAL=$(realpath -m -- \"$SEED\")",
+        "case \"$SEED_REAL\" in /work/repo/*) ;; *) echo seed-escapes-repo >&2; exit 2 ;; esac",
+        "if [ -d \"$SEED_REAL\" ]; then cp -a -- \"$SEED_REAL\"/. /work/out/corpus/ 2>/dev/null || true; elif [ -f \"$SEED_REAL\" ]; then cp -- \"$SEED_REAL\" /work/out/corpus/seed; fi",
+      ]
+    : [":"];
+  return [
+    "set -eu",
+    "rm -rf /work/repo /work/out",
+    "mkdir -p /work/repo /work/out/corpus",
+    "cp -a --no-preserve=ownership /src/. /work/repo/",
+    "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
+    "cd /work/repo",
+    `ENGINE=tsan ${BOB_MULTITU_BUILD_PATH}`,
+    ...seedSetup,
+    "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
+    `/work/out/h_tsan -use_value_profile=1 -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
+  ].join(" && ");
+}
+
+function boundedTsanFuzzRecipe(seedEntry) {
+  let effectiveSeedEntry = seedEntry;
+  let recipe = cTsanFuzzRecipe(effectiveSeedEntry);
+  if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    effectiveSeedEntry = null;
+    recipe = cTsanFuzzRecipe(null);
+  }
+  if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
+    throw new Error(`tsan fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
+  }
+  return { seedEntry: effectiveSeedEntry, recipe };
+}
+
 function recommendedCommandsFor(
   language,
   { nfsXdrShape = false, seedCorpus = [], nativeFuzzShape = false, nativeFuzzOnly = false } = {},
@@ -587,6 +633,23 @@ function recommendedCommandsFor(
       };
       if (aflSeedRel) aflCommand.seed_path = aflSeedRel;
       commands.push(aflCommand);
+
+      // ThreadSanitizer arm: a separate binary (thread instrumentation cannot coexist
+      // with address), so data races surface as a "WARNING: ThreadSanitizer:" banner
+      // that sanitizer-report.js recognizes and the differential repro gate adjudicates
+      // identically to an ASAN crash. MSan is intentionally NOT an arm — it needs a
+      // fully MSan-instrumented toolchain (instrumented libc++/deps), so it stays
+      // parser-only: an externally MSan-built report still parses + adjudicates.
+      const { seedEntry: tsanSeedEntry, recipe: tsanRecipe } = boundedTsanFuzzRecipe(seedEntry);
+      const tsanSeedRel = tsanSeedEntry && tsanSeedEntry.rel_path;
+      const tsanCommand = {
+        id: "fuzz_tsan",
+        description: "Build the same native libFuzzer harness with ThreadSanitizer (a separate binary; thread and address instrumentation are mutually exclusive) and run the seeded corpus; a data race emits a ThreadSanitizer banner that routes into the differential repro gate. MSan is parser-only (needs an instrumented toolchain) and is not built here.",
+        command: ["sh", "-lc", tsanRecipe],
+        role: "fuzz",
+      };
+      if (tsanSeedRel) tsanCommand.seed_path = tsanSeedRel;
+      commands.push(tsanCommand);
     } else if (seedEntry) {
       const seedRel = seedEntry.rel_path;
       const quotedSeedRel = shellQuote(seedRel);

@@ -18,6 +18,22 @@ module.exports = Object.freeze({
       rank_limit: { type: "integer", minimum: 1, maximum: 100 },
       chain_depth: { type: "integer", minimum: 1, maximum: 4 },
       decomposition_limit: { type: "integer", minimum: 1, maximum: 100 },
+      // Executed-outcome citations that make a residual hint scheduler-admissible.
+      // Each entry traces the residual to a real executed outcome (a verified
+      // intervention, a realized dead-end, or a realized-vs-predicted coverage delta);
+      // absent these the residual stays diagnostic-only and never moves dispatch order.
+      executed_provenance: {
+        type: "array",
+        maxItems: 25,
+        items: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["verified_intervention", "dead_end", "coverage_delta"] },
+            artifact_ref: { type: "string", minLength: 1 },
+          },
+          required: ["kind", "artifact_ref"],
+        },
+      },
     },
     required: ["target_domain"],
   },

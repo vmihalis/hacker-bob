@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const {
   assertSafeDomain,
   invariantRunsJsonlPath,
+  invariantVerifiedJsonlPath,
   sessionsRoot,
 } = require("./paths.js");
 const {
@@ -17,10 +18,25 @@ const {
 } = require("./invariant-template-corpus.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
+  appendJsonlLine,
   withSessionLock,
 } = require("./storage.js");
 const { ERROR_CODES } = require("./envelope.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
+// REFUTING-ARM (universal): an FV finding is CONFIRMED only by an executed
+// two-sided differential whose negative arm FLIPS — never by a single passing
+// run. We reuse the OSS repro gate's verdict vocabulary AND its branch order so a
+// verified FV verdict is graded identically to a verified reproduction
+// (LEDGER consistency). adjudicateInvariantDifferential below is the violation-
+// semantics retarget of repro-replay-verifier.js::adjudicateDifferential.
+const {
+  RESULT_VERIFIED_PASS,
+  RESULT_REFUTED,
+  RESULT_INCONCLUSIVE,
+} = require("./repro-replay-verifier.js");
+
+const INVARIANT_VERIFIED_VERSION = 1;
+const INVARIANT_VERIFIED_MAX_RECORDS = 2000;
 
 const TEST_FUNCTION_PREFIX = "testBobInvariant_";
 const TEST_CONTRACT_PREFIX = "BobInvariantTest_";
@@ -543,6 +559,13 @@ function writeInvariantSourceFile(outputDir, fileName, source) {
   return writeFileThroughExclusiveSiblingTemp(realOutputDir, fileName, source, "Foundry invariant test");
 }
 
+// MINT ≠ CONFIRM. classifyFoundryOutcome maps ONE run to its honest per-run
+// PRIMITIVE (test_passed/test_failed/fork_blocked/...). A primitive is an
+// OBSERVATION, never a confirmation: a bare test_passed from a single run does
+// NOT mint a verified finding. CONFIRM is the adjudicated FLIP over a
+// {positive_run_hash, control_run_hash} pair, computed by
+// adjudicateInvariantDifferential / verifyInvariantDifferential below and
+// written only to the MCP-owned invariant-verified.jsonl ledger.
 function classifyFoundryOutcome(rawResult) {
   if (!isPlainObject(rawResult)) return "unknown";
   const reason = typeof rawResult.reason === "string"
@@ -587,6 +610,8 @@ function computeInvariantRunHash({
   outcome,
   foundry_result,
   dry_run,
+  tree_ref,
+  checkout_kind,
 }) {
   return hashCanonicalJson({
     finding_id: parseFindingId(finding_id, "finding_id"),
@@ -599,6 +624,13 @@ function computeInvariantRunHash({
     outcome: outcome || null,
     foundry_result_hash: invariantFoundryResultHash(foundry_result),
     dry_run: dry_run === true,
+    // tree_ref/checkout_kind identify WHICH tree the SAME generated test ran
+    // against. They are bound into run_hash (so a control row cannot be re-pointed
+    // at a different tree without changing its hash) but DELIBERATELY excluded
+    // from execution_context_hash — the verifier requires the positive and control
+    // to share execution_context_hash (same test) and differ only here (the tree).
+    tree_ref: tree_ref || null,
+    checkout_kind: checkout_kind || null,
   });
 }
 
@@ -618,6 +650,8 @@ async function runInvariantForFinding({
   timeout_ms,
   run_id,
   dry_run,
+  tree_ref,
+  checkout_kind,
 }) {
   const domain = assertSafeDomain(target_domain);
   if (!isPlainObject(finding)) {
@@ -667,6 +701,12 @@ async function runInvariantForFinding({
     match_test: match_test || null,
   };
   const executionContextHash = hashCanonicalJson(executionContext);
+  // tree_ref/checkout_kind name WHICH tree this run executed against (the real
+  // target by default; a control tree for the refuting arm). They are bound into
+  // run_hash but NOT execution_context_hash, so a positive/control pair shares the
+  // same test identity and differs only in the tree.
+  const treeRef = typeof tree_ref === "string" && tree_ref.trim() ? tree_ref.trim() : null;
+  const checkoutKind = typeof checkout_kind === "string" && checkout_kind.trim() ? checkout_kind.trim() : null;
   let writtenPath = null;
   let foundryRawResult = null;
   let outcome = "dry_run";
@@ -705,6 +745,8 @@ async function runInvariantForFinding({
       outcome,
       foundry_result: foundryRawResult,
       dry_run: false,
+      tree_ref: treeRef,
+      checkout_kind: checkoutKind,
     });
   } else {
     runHash = computeInvariantRunHash({
@@ -718,6 +760,8 @@ async function runInvariantForFinding({
       outcome,
       foundry_result: null,
       dry_run: true,
+      tree_ref: treeRef,
+      checkout_kind: checkoutKind,
     });
   }
   const record = {
@@ -733,6 +777,8 @@ async function runInvariantForFinding({
     contract_name,
     function_name,
     execution_context_hash: executionContextHash,
+    tree_ref: treeRef,
+    checkout_kind: checkoutKind,
     chain_id: chain_id || null,
     fork_block: fork_block == null ? null : fork_block,
     fork_url_count: Array.isArray(fork_urls) ? fork_urls.length : 0,
@@ -808,6 +854,357 @@ function readInvariantRunCorpus({ target_domain }) {
   };
 }
 
+// classifyFoundryViolation maps a per-run PRIMITIVE to the INVARIANT direction.
+// The corpus templates (invariant-template-corpus.js) are authored as the
+// invariant HOLDING (they vm.expectRevert / assert the SAFE behavior and PASS
+// when the contract is safe). So "the invariant is VIOLATED" is OBSERVED as the
+// safe-assertion test FAILING. fork_blocked/forge_missing/unknown/no_template
+// carry no signal about the invariant -> "degraded".
+function classifyFoundryViolation(rawResult) {
+  const outcome = classifyFoundryOutcome(rawResult);
+  if (outcome === "test_failed") return "violated";
+  if (outcome === "test_passed") return "held";
+  return "degraded";
+}
+
+// classifyHalmosViolation — the halmos analogue. A halmos run is a primitive:
+// summary.failed>0 (a counterexample / [FAIL]) = "violated"; ok with total>0
+// (no counterexample) = "held"; not-in-path/empty/unparseable/timed_out/
+// zero-test = "degraded". `ok` is a SINGLE-RUN PRIMITIVE, NOT a verified verdict
+// (it only mints "held"); a verified verdict requires the differential flip.
+function classifyHalmosViolation(halmosRun) {
+  if (!isPlainObject(halmosRun)) return "degraded";
+  if (halmosRun.timed_out === true) return "degraded";
+  if (typeof halmosRun.reason === "string"
+    && (halmosRun.reason === "halmos_not_in_path"
+      || halmosRun.reason === "halmos_spawn_failed"
+      || halmosRun.reason === "empty_stdout"
+      || halmosRun.reason === "unparseable_output")) {
+    return "degraded";
+  }
+  if (typeof halmosRun.parse_warning === "string" && halmosRun.parse_warning) return "degraded";
+  const summary = isPlainObject(halmosRun.summary) ? halmosRun.summary : null;
+  if (!summary || !Number.isFinite(Number(summary.total)) || Number(summary.total) <= 0) {
+    return "degraded";
+  }
+  if (Number(summary.failed) > 0) return "violated";
+  return "held";
+}
+
+// adjudicateInvariantDifferential — a thin wrapper REUSING the exact branch order
+// of repro-replay-verifier.js::adjudicateDifferential, retargeted to violation
+// semantics. positiveRun is the run on the REAL target (the invariant must FAIL /
+// a counterexample must exist there); controlRun is the SAME generated test on a
+// control tree where the invariant SHOULD hold (it must NOT fail). Each is given
+// as { violation: "violated"|"held"|"degraded" }. The flip is: violated-here AND
+// holds-there. A non-flipping pair (control also violated) is a harness/template
+// artifact and is REFUSED — the forgery defense.
+function adjudicateInvariantDifferential({ positiveRun, controlRun }) {
+  const positiveViolation = positiveRun && typeof positiveRun.violation === "string"
+    ? positiveRun.violation : "degraded";
+  const controlViolation = controlRun && typeof controlRun.violation === "string"
+    ? controlRun.violation : "degraded";
+
+  let result;
+  let reason;
+  if (positiveViolation === "degraded" || controlViolation === "degraded") {
+    result = RESULT_INCONCLUSIVE;
+    reason = `degraded re-execution (positive:${positiveViolation}, control:${controlViolation})`;
+  } else if (positiveViolation !== "violated") {
+    // The claimed violation does not reproduce on the real target.
+    result = RESULT_REFUTED;
+    reason = "claimed invariant violation did not reproduce on the real target";
+  } else if (controlViolation === "violated") {
+    // No flip: the invariant ALSO fails on the control tree where it should hold.
+    // A tautology-false / mis-authored assertion fails on the known-safe baseline
+    // too; the failure is a harness/template artifact, not an attributable bug.
+    result = RESULT_REFUTED;
+    reason = "no differential flip: the invariant also fails on the control tree where it should hold — harness/template artifact, not an attributable bug";
+  } else {
+    // Real, attributable flip: the invariant FAILS on the target and HOLDS on the
+    // control tree.
+    result = RESULT_VERIFIED_PASS;
+    reason = "differential invariant violation: fails on the real target, holds on the control tree";
+  }
+  return { result, reason, positive_violation: positiveViolation, control_violation: controlViolation };
+}
+
+// Re-validate a single invariant-runs.jsonl row exactly as proof-bundle.js's
+// readInvariantRunRow does (the row binds the outcome to the Foundry result and
+// the run identity), then return the row. A forged row is rejected here just as
+// it is at the proof-bundle gate.
+function readInvariantRunRowForVerification(rows, runHash, fieldName, expectedFindingId) {
+  if (typeof runHash !== "string" || !/^[0-9a-f]{64}$/i.test(runHash)) {
+    throw new Error(`${fieldName} must be a 64-hex invariant run_hash`);
+  }
+  const normalizedRunHash = runHash.toLowerCase();
+  const matching = rows.filter((entry) => isPlainObject(entry) && entry.run_hash === normalizedRunHash);
+  if (matching.length === 0) {
+    throw new Error(`${fieldName} does not match an invariant-runs.jsonl row`);
+  }
+  if (matching.length > 1) {
+    const hashes = new Set(matching.map((row) => hashCanonicalJson(row)));
+    if (hashes.size > 1) {
+      throw new Error(`${fieldName} has ambiguous duplicate entries in invariant-runs.jsonl`);
+    }
+  }
+  const row = matching[0];
+  if (row.dry_run !== false) {
+    throw new Error(`${fieldName} must reference an executed invariant run, not a dry-run plan`);
+  }
+  if (row.finding_id == null || parseFindingId(row.finding_id, `${fieldName}.finding_id`) !== expectedFindingId) {
+    throw new Error(`${fieldName} finding_id does not match ${expectedFindingId}`);
+  }
+  const expectedFoundryResultHash = invariantFoundryResultHash(row.foundry_result);
+  if (row.foundry_result_hash != null && row.foundry_result_hash !== expectedFoundryResultHash) {
+    throw new Error(`${fieldName} foundry_result_hash does not match invariant run result payload`);
+  }
+  if (computeInvariantRunHash(row) !== normalizedRunHash) {
+    throw new Error(`${fieldName} does not bind the invariant run outcome and Foundry result`);
+  }
+  if (classifyFoundryOutcome(row.foundry_result) !== row.outcome) {
+    throw new Error(`${fieldName} outcome does not match invariant run Foundry result`);
+  }
+  return row;
+}
+
+// verifyInvariantDifferential — load BOTH the positive (real-target) and control
+// rows from the MCP-owned invariant-runs.jsonl, assert they are the SAME test
+// (template_id, contract_name, function_name, slot_values, execution_context)
+// differing ONLY in tree/checkout identity, recompute each row's hashes, then
+// adjudicate the flip and mint a record to the NEW write-only, agent-Write-blocked
+// invariant-verified.jsonl ledger keyed by finding_id (LEDGER-BY-ID). A bare
+// single-run pass (no control_run_hash) is INCONCLUSIVE by construction: the gate
+// has nothing to flip against, so NO verified_pass is ever written.
+function verifyInvariantDifferential({ target_domain, finding_id, positive_run_hash, control_run_hash }) {
+  const domain = assertSafeDomain(target_domain);
+  const findingId = parseFindingId(finding_id, "finding_id");
+  if (typeof positive_run_hash !== "string" || !positive_run_hash.trim()) {
+    throw new Error("positive_run_hash is required (the run on the real target where the invariant must fail)");
+  }
+  const corpusPath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(domain), { createDir: false });
+  const rows = readJsonlRuns(corpusPath);
+  const positiveRow = readInvariantRunRowForVerification(rows, positive_run_hash, "positive_run_hash", findingId);
+
+  // REFUTING-ARM (universal): a confirm needs a refuting control. No control arm
+  // => INCONCLUSIVE by construction; the ledger receives no verified_pass.
+  if (control_run_hash == null || (typeof control_run_hash === "string" && !control_run_hash.trim())) {
+    return mintInvariantVerifiedRecord({
+      targetDomain: domain,
+      findingId,
+      positiveRunHash: positiveRow.run_hash,
+      controlRunHash: null,
+      result: RESULT_INCONCLUSIVE,
+      reason: "no refuting control arm supplied; a single-run pass cannot confirm a violation",
+      positiveViolation: classifyFoundryViolation(positiveRow.foundry_result),
+      controlViolation: null,
+      templateId: positiveRow.template_id || null,
+    });
+  }
+
+  const controlRow = readInvariantRunRowForVerification(rows, control_run_hash, "control_run_hash", findingId);
+
+  // The control MUST be the SAME test on a DIFFERENT tree. It binds finding_id,
+  // template_id, contract_name, function_name, slot_values and the
+  // execution_context_hash; it differs ONLY in the tree/checkout identity. A
+  // control that differs on any of these provably implicates the harness, so it
+  // is rejected (it is not the same discriminator).
+  for (const field of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
+    if ((positiveRow[field] || null) !== (controlRow[field] || null)) {
+      throw new Error(`control_run_hash ${field} must match the positive run (control must be the SAME test on a different tree)`);
+    }
+  }
+  if (hashCanonicalJson(positiveRow.slot_values || null) !== hashCanonicalJson(controlRow.slot_values || null)) {
+    throw new Error("control_run_hash slot_values must match the positive run (control must be the SAME test on a different tree)");
+  }
+  const positiveTree = positiveRow.tree_ref || null;
+  const controlTree = controlRow.tree_ref || null;
+  if (positiveRow.run_hash === controlRow.run_hash) {
+    throw new Error("control_run_hash must differ from positive_run_hash (a control hash-identical to the positive cannot discriminate)");
+  }
+  if (positiveTree === controlTree && positiveRow.checkout_kind === controlRow.checkout_kind) {
+    throw new Error("control_run_hash must reference a DIFFERENT tree/checkout than the positive run (set tree_ref/checkout_kind so the control is distinguishable)");
+  }
+
+  const { result, reason, positive_violation, control_violation } = adjudicateInvariantDifferential({
+    positiveRun: { violation: classifyFoundryViolation(positiveRow.foundry_result) },
+    controlRun: { violation: classifyFoundryViolation(controlRow.foundry_result) },
+  });
+
+  return mintInvariantVerifiedRecord({
+    targetDomain: domain,
+    findingId,
+    positiveRunHash: positiveRow.run_hash,
+    controlRunHash: controlRow.run_hash,
+    result,
+    reason,
+    positiveViolation: positive_violation,
+    controlViolation: control_violation,
+    templateId: positiveRow.template_id || null,
+  });
+}
+
+// Mint the adjudicated verdict to the MCP-write-only, agent-Write-blocked
+// invariant-verified.jsonl, keyed by finding_id and hash-bound to BOTH run
+// hashes. Mirrors repro-replay-verifier.js::mintDifferentialRecord.
+function mintInvariantVerifiedRecord({
+  targetDomain, findingId, positiveRunHash, controlRunHash, result, reason,
+  positiveViolation, controlViolation, templateId,
+}) {
+  const body = {
+    version: INVARIANT_VERIFIED_VERSION,
+    target_domain: targetDomain,
+    ts: new Date().toISOString(),
+    finding_id: findingId,
+    result,
+    reason,
+    template_id: templateId,
+    positive_run_hash: positiveRunHash,
+    control_run_hash: controlRunHash || null,
+    positive_violation: positiveViolation,
+    control_violation: controlViolation || null,
+  };
+  const record = { ...body, results_hash: hashCanonicalJson(body) };
+  withSessionLock(targetDomain, () => {
+    appendJsonlLine(invariantVerifiedJsonlPath(targetDomain), record, {
+      maxRecords: INVARIANT_VERIFIED_MAX_RECORDS,
+    });
+  });
+  return {
+    target_domain: targetDomain,
+    finding_id: findingId,
+    result,
+    reason,
+    positive_run_hash: positiveRunHash,
+    control_run_hash: controlRunHash || null,
+    results_hash: record.results_hash,
+  };
+}
+
+// reverifyInvariantVerifiedRecord — READ-TIME INTEGRITY. Do NOT trust the verdict
+// row's stored positive_run_hash/control_run_hash/template_id (results_hash is an
+// UNKEYED self-hash, so a runtime-indirection write can append a bare forged
+// verified_pass line whose run hashes point at nothing). RE-RESOLVE both run
+// hashes against the content-hashed invariant-runs.jsonl rows and RE-ADJUDICATE
+// the flip exactly as verifyInvariantDifferential does. A forged verdict whose
+// run hashes don't resolve to a consistent flipping pair fails here (any throw →
+// ok:false).
+//
+// FAIL-CLOSED on a rotated/truncated ledger: a verdict whose invariant-runs rows
+// were legitimately minted then later removed reads as unverified. The source
+// run rows ARE the asset — if they are gone, the verdict is no longer provable.
+//
+// Runs under NO lock (read-only, like the summary reader). Returns
+// { ok, positive_run_hash, control_run_hash } — the run hashes are taken from the
+// RE-RESOLVED rows (the signed-source values), never the verdict record's stored
+// fields.
+function reverifyInvariantVerifiedRecord(domain, record) {
+  const targetDomain = assertSafeDomain(domain);
+  if (record == null || typeof record !== "object") {
+    return { ok: false, positive_run_hash: null, control_run_hash: null };
+  }
+  try {
+    const findingId = parseFindingId(record.finding_id, "finding_id");
+    const corpusPath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(targetDomain), { createDir: false });
+    const rows = readJsonlRuns(corpusPath);
+    const positiveRow = readInvariantRunRowForVerification(rows, record.positive_run_hash, "positive_run_hash", findingId);
+
+    // A confirm needs a refuting control. No control arm → not a flip → not ok
+    // (a single-run pass never confirms; mirrors verifyInvariantDifferential).
+    if (record.control_run_hash == null
+      || (typeof record.control_run_hash === "string" && !record.control_run_hash.trim())) {
+      return { ok: false, positive_run_hash: null, control_run_hash: null };
+    }
+    const controlRow = readInvariantRunRowForVerification(rows, record.control_run_hash, "control_run_hash", findingId);
+
+    // The control MUST be the SAME test on a DIFFERENT tree — identical binding to
+    // verifyInvariantDifferential. A control that differs on the test identity
+    // provably implicates the harness, so it is rejected.
+    for (const field of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {
+      if ((positiveRow[field] || null) !== (controlRow[field] || null)) {
+        throw new Error(`control_run_hash ${field} must match the positive run`);
+      }
+    }
+    if (hashCanonicalJson(positiveRow.slot_values || null) !== hashCanonicalJson(controlRow.slot_values || null)) {
+      throw new Error("control_run_hash slot_values must match the positive run");
+    }
+    if (positiveRow.run_hash === controlRow.run_hash) {
+      throw new Error("control_run_hash must differ from positive_run_hash");
+    }
+    if ((positiveRow.tree_ref || null) === (controlRow.tree_ref || null)
+      && positiveRow.checkout_kind === controlRow.checkout_kind) {
+      throw new Error("control_run_hash must reference a DIFFERENT tree/checkout than the positive run");
+    }
+
+    const { result } = adjudicateInvariantDifferential({
+      positiveRun: { violation: classifyFoundryViolation(positiveRow.foundry_result) },
+      controlRun: { violation: classifyFoundryViolation(controlRow.foundry_result) },
+    });
+    return {
+      ok: result === RESULT_VERIFIED_PASS,
+      positive_run_hash: positiveRow.run_hash,
+      control_run_hash: controlRow.run_hash,
+    };
+  } catch {
+    // Missing / content-inconsistent / non-flipping / single-run / rotated row →
+    // the flip is not re-derivable from the run rows. Fail closed.
+    return { ok: false, positive_run_hash: null, control_run_hash: null };
+  }
+}
+
+// readInvariantVerifiedSummary — the AUTHORITATIVE FV-confirm signal, mirroring
+// readReproVerifiedSummary / readFindingDifferentialVerifiedSummary. Reads the
+// MCP-write-only invariant-verified.jsonl, then RE-ADJUDICATES each verified_pass
+// from the invariant-runs rows it cites rather than trusting the verdict's
+// self-hashed fields.
+//
+// invariant-runs integrity is content-hash (computeInvariantRunHash binds
+// outcome<->foundry_result) + agent-Write-block; a verified_pass is
+// RE-ADJUDICATED here from the run rows it cites, not trusted from the verdict's
+// self-hashed fields. This raises the forgery bar to a CONSISTENT flipping run
+// pair, not a bare verdict line. NOTE: unlike the finding-differential ledger
+// (whose source offensive-runs rows carry a keyed MAC), this is NOT MAC-level —
+// signing invariant-runs rows + verifying the MAC at the proof-bundle gate is the
+// deeper follow-up. The proof-bundle gate requires a VERIFIED_PASS whose
+// positive/control run hashes match the bundle's invariant artifact (LEDGER-BY-ID).
+function readInvariantVerifiedSummary(domain) {
+  const targetDomain = assertSafeDomain(domain);
+  let records = [];
+  try {
+    const raw = fs.readFileSync(invariantVerifiedJsonlPath(targetDomain), "utf8");
+    records = raw
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    records = [];
+  }
+  const verified = records.filter((r) => r.result === RESULT_VERIFIED_PASS);
+  const verifiedByFinding = {};
+  for (const r of verified) {
+    const rederived = reverifyInvariantVerifiedRecord(targetDomain, r);
+    if (!rederived.ok) continue;
+    verifiedByFinding[r.finding_id] = {
+      // RE-RESOLVED run hashes from the run rows the verdict cites, NOT the
+      // verdict record's stored fields.
+      positive_run_hash: rederived.positive_run_hash,
+      control_run_hash: rederived.control_run_hash,
+      template_id: r.template_id,
+    };
+  }
+  return {
+    total_runs: records.length,
+    verified_pass_count: verified.length,
+    refuted_count: records.filter((r) => r.result === RESULT_REFUTED).length,
+    inconclusive_count: records.filter((r) => r.result === RESULT_INCONCLUSIVE).length,
+    // finding_id -> the RE-DERIVED bound run hashes, for the proof-bundle gate to
+    // require a verified_pass whose positive/control run hashes match the bundle's
+    // invariant artifact.
+    verified_by_finding: verifiedByFinding,
+  };
+}
+
 module.exports = {
   runInvariantForFinding,
   readInvariantRuns,
@@ -816,6 +1213,15 @@ module.exports = {
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  classifyFoundryViolation,
+  classifyHalmosViolation,
+  adjudicateInvariantDifferential,
+  verifyInvariantDifferential,
+  reverifyInvariantVerifiedRecord,
+  readInvariantVerifiedSummary,
   computeInvariantRunHash,
   invariantFoundryResultHash,
+  RESULT_VERIFIED_PASS,
+  RESULT_REFUTED,
+  RESULT_INCONCLUSIVE,
 };

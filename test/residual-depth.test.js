@@ -120,7 +120,9 @@ test("E2: bob_materialize_cell_floor mints a Tier-2 re-probe only when the flag 
     seedResidualAnomaly(domain, { band: "high" });
     const floor = require("../mcp/lib/tools/materialize-cell-floor.js").handler;
 
-    // Flag OFF (default): no residual read, no Tier-2 cell.
+    // Flag explicitly OFF: no residual read, no Tier-2 cell. The advisory is
+    // default-ON; an explicit operator `false` disables the depth re-probe per session.
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, residual_depth_reprobe_enabled: false }));
     const off = JSON.parse(floor({ target_domain: domain }));
     assert.equal(off.reprobe_cells_emitted, 0);
 

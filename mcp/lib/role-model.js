@@ -53,7 +53,7 @@ const ROLE_DEFINITIONS = Object.freeze({
     id: "deep-surface-discovery",
     prompt_body: path.join(ROLE_PROMPT_DIR, "deep-surface-discovery.md"),
     mcp_role_bundles: Object.freeze(["deep-surface-discovery"]),
-    mcp_tools: Object.freeze(["bob_read_session_nucleus"]),
+    mcp_tools: Object.freeze(["bob_read_session_nucleus", "bob_record_surface_leads"]),
   }),
   "surface-router": Object.freeze({
     id: "surface-router",
@@ -137,7 +137,10 @@ const ROLE_DEFINITIONS = Object.freeze({
     family: "verifier",
     prompt_body: path.join(ROLE_PROMPT_DIR, "final-verifier.md"),
     mcp_role_bundles: Object.freeze(["verifier"]),
-    mcp_tools: Object.freeze(["bob_write_proof_bundle"]),
+    // Per-role grant (the bob_write_proof_bundle precedent): the X.6 verifier
+    // bundle stays tight, while final-verifier alone reads invariant runs to
+    // pick reproducing run_hash rows for the proof bundle.
+    mcp_tools: Object.freeze(["bob_write_proof_bundle", "bob_read_invariant_runs"]),
   }),
   evidence: Object.freeze({
     id: "evidence",
@@ -148,6 +151,10 @@ const ROLE_DEFINITIONS = Object.freeze({
     id: "grader",
     prompt_body: path.join(ROLE_PROMPT_DIR, "grader.md"),
     mcp_role_bundles: Object.freeze(["grader"]),
+    // Per-role grant: the grader reads invariant runs to cross-check
+    // proof_quality where they exist. Rows inform scoring; they never gate the
+    // verdict, so this stays a per-role read grant, not a bundle expansion.
+    mcp_tools: Object.freeze(["bob_read_invariant_runs"]),
   }),
   reporter: Object.freeze({
     id: "reporter",

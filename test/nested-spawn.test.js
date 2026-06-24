@@ -15,15 +15,22 @@ const {
 const {
   normalizeQueuePolicy,
   DEFAULT_QUEUE_POLICY,
+  LEAN_PROFILE,
 } = require("../mcp/lib/queue-policy.js");
 
 // ─── queue-policy spawn budget (A1) ──────────────────────────────────────
 
-test("default queue policy keeps nesting OFF (max_spawn_depth=1)", () => {
-  const p = normalizeQueuePolicy({});
-  assert.equal(p.max_spawn_depth, 1);
-  assert.equal(p.max_spawn_children, 8);
-  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 1);
+test("the cross-role fan-out default turns nesting ON (depth 3, 64 children); a lean override restores depth 1", () => {
+  // The default drives cross-role fan-out: depth 3 + 64-wide cells.
+  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 3);
+  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_children, 64);
+  const p = normalizeQueuePolicy(DEFAULT_QUEUE_POLICY);
+  assert.equal(p.max_spawn_depth, 3);
+  assert.equal(p.max_spawn_children, 64);
+  // The off-path floor is reachable: an explicit lean override restores depth 1.
+  const lean = normalizeQueuePolicy(LEAN_PROFILE);
+  assert.equal(lean.max_spawn_depth, 1);
+  assert.equal(lean.max_spawn_children, 8);
 });
 
 test("queue policy accepts opt-in depth/children and clamps to ceiling", () => {

@@ -175,6 +175,79 @@ function validateVerificationRoundRef(domain, id) {
   return { exists: false, reportable: false, round: null };
 }
 
+// True iff a verification_round result (matched by finding_id OR result_id) is
+// reportable in the FINAL round specifically. Used by bob_verified provenance so a
+// brutalist/balanced reportable cannot satisfy the verified label while the
+// executed-flip gate (which keys off the final round) never inspects it. Reads
+// only the final-round artifact; absent/corrupt/no-match => false (fail closed).
+function isFinalRoundReportable(domain, id) {
+  // Strip an optional round prefix the same way validateVerificationRoundRef does
+  // ("final:F-1" -> "F-1"; a bare "F-1" stays "F-1"), then match the FINAL round.
+  const parts = id.split(":");
+  const resultId = parts.length === 2 ? parts[1] : id;
+  let paths;
+  try {
+    paths = verificationRoundPaths(domain, "final");
+  } catch {
+    return false;
+  }
+  if (!fs.existsSync(paths.json)) return false;
+  try {
+    const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+    const results = Array.isArray(doc && doc.results) ? doc.results : [];
+    for (const result of results) {
+      if (
+        result
+        && (result.finding_id === resultId || result.result_id === resultId)
+        && result.reportable === true
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+// bob_verified provenance requires the cited FINAL-round result be reportable AND at a
+// (reclamped) MEDIUM+ severity — the SAME normalized medium+ set the executed-flip gate
+// (assertComposedVerifiedSectionsAreExecuted) filters to. Without the severity floor a
+// LOW/info decoy finding (reportable:true, severity:low) + critical-impact prose could
+// wear bob_verified while the executed gate's reportable-medium+ set is empty (it returns
+// early), so NO executed flip is ever required. Gating the stamp here keeps compose and
+// grade agreeing on the bob_verified-eligible medium+ set, and the severity is read
+// through readFinalVerificationByFinding (reclamped against the frozen baseline), so a
+// hand-bumped low->critical re-reads as its baseline before this floor.
+function isFinalRoundReportableMediumPlus(domain, id) {
+  if (!isFinalRoundReportable(domain, id)) return false;
+  const parts = id.split(":");
+  const resultId = parts.length === 2 ? parts[1] : id;
+  const finalByFinding = readFinalVerificationByFinding(domain);
+  // readFinalVerificationByFinding keys by finding_id (reclamped severity). Match by
+  // finding_id directly; fall back to the raw final-round doc only to resolve a
+  // result_id-keyed ref to its finding_id, then look its reclamped severity up.
+  let entry = finalByFinding.get(resultId);
+  if (!entry) {
+    try {
+      const paths = verificationRoundPaths(domain, "final");
+      if (fs.existsSync(paths.json)) {
+        const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+        const results = Array.isArray(doc && doc.results) ? doc.results : [];
+        for (const result of results) {
+          if (result && result.result_id === resultId && typeof result.finding_id === "string") {
+            entry = finalByFinding.get(result.finding_id);
+            break;
+          }
+        }
+      }
+    } catch {
+      return false;
+    }
+  }
+  return !!(entry && entry.reportable === true && entry.severity && MEDIUM_OR_HIGHER_SEVERITIES.has(entry.severity));
+}
+
 function validateChainAttemptRef(domain, id) {
   const file = chainAttemptsJsonlPath(domain);
   if (!fs.existsSync(file)) return false;
@@ -233,6 +306,84 @@ function assertNoDegradedReportableFindings(domain) {
     {
       remediation:
         "Re-verify the source of the named finding(s) and clear the unsigned signature_verification_status marker, or exclude the finding(s) from the final reportable set, before composing report.md.",
+    },
+  );
+}
+
+const MEDIUM_OR_HIGHER_SEVERITIES = Object.freeze(new Set(["medium", "high", "critical"]));
+
+// EXECUTED-FLIP gate at the report door. validateProvenance already requires a
+// bob_verified section to cite a verification_round result with reportable===true, but
+// that boolean is FORGEABLE (normalizeVerificationResult only type-validates it), so a
+// forged/agent-authored final round could launder a bob_verified medium+ vulnerability
+// section into the audit-graded report.md with NO executed differential. report.md is
+// the human-facing asset triagers act on, so the report door must enforce the SAME
+// non-forgeability spine as the grade door: a final-reportable MEDIUM+ finding must be
+// covered by an EXISTING executed producer exactly as writeGradeVerdict decides.
+//
+// Reuse the grade-gate functions (single source of truth, post-A1 re-derived from
+// MAC source): findingDifferentialGapForStandaloneReportableFindings covers the residual
+// standalone classes AND skips native(O-P4)/SC-invariant/exploit_run-backed findings
+// IDENTICALLY; reproVerifiedGapForNativeReportableFindings covers the native class the
+// standalone gate defers. If either reports a gap, refuse to render — report.md and
+// grade.json then agree by construction. Non-vulnerability sections
+// (operator_osint/external_research) and below-medium/advisory findings are untouched
+// (RANK != BOUND at the report layer too): the gate only inspects the reportable
+// medium+ set, so advisory/low/info sections render as before.
+function assertComposedVerifiedSectionsAreExecuted(domain, sections) {
+  // A bob_verified medium+ section is only laundered when the SESSION actually carries a
+  // bob_verified section; the gate is otherwise inert. (validateProvenance has already
+  // run, so a present bob_verified section cites a reportable round.) Independent of which
+  // section cites which finding, the executed-flip obligation is the SAME set the grade
+  // gate checks: the final-reportable MEDIUM+ findings.
+  const finalByFinding = readFinalVerificationByFinding(domain);
+  if (finalByFinding.size === 0) {
+    // Defense in depth (belt-and-suspenders to the validateProvenance final-round
+    // requirement): a bob_verified section must NEVER render without a final
+    // verification round to ground it. Fail CLOSED rather than returning inert, so
+    // a future provenance regression cannot reopen the no-final-round laundering
+    // path. With no final round the gate is otherwise vacuous; a present
+    // bob_verified section here is illegitimate.
+    const hasVerifiedSection = Array.isArray(sections)
+      && sections.some((s) => s && s.provenance === "bob_verified");
+    if (hasVerifiedSection) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "a bob_verified section cannot render without a final verification round (no executed-flip grounding)",
+        {},
+        { remediation: "complete final verification and the executed differential before composing a bob_verified section" },
+      );
+    }
+    return;
+  }
+  const reportableFindingIds = new Set();
+  const finalSeverities = new Map();
+  for (const [findingId, entry] of finalByFinding) {
+    if (!entry || entry.reportable !== true) continue;
+    if (!entry.severity || !MEDIUM_OR_HIGHER_SEVERITIES.has(entry.severity)) continue;
+    reportableFindingIds.add(findingId);
+    finalSeverities.set(findingId, entry.severity);
+  }
+  if (reportableFindingIds.size === 0) return;
+
+  const {
+    findingDifferentialGapForStandaloneReportableFindings,
+    reproVerifiedGapForNativeReportableFindings,
+  } = require("../claims.js");
+  const args = { reportableFindingIds, finalSeverities };
+  const gaps = [
+    ...findingDifferentialGapForStandaloneReportableFindings(domain, args).missing,
+    ...reproVerifiedGapForNativeReportableFindings(domain, args).missing,
+  ];
+  if (gaps.length === 0) return;
+  const detail = gaps.map((m) => `${m.finding_id} (${m.reason})`).join(", ");
+  throw new ToolError(
+    ERROR_CODES.STATE_CONFLICT,
+    `Refusing to render report.md: final reportable medium+ finding(s) lack an executed-flip binding (the same gate the grade verdict enforces): ${detail}.`,
+    { code: "compose_report_missing_executed_flip", missing: gaps },
+    {
+      remediation:
+        "Run bob_verify_finding_differential (binding the executed positive run and its blocked control for the finding's surface) / bob_verify_repro_reproduction for native findings, or lower the finding below medium / drop it from the reportable set, before composing report.md.",
     },
   );
 }
@@ -313,7 +464,19 @@ function validateProvenance(domain, section) {
           },
         );
       }
-      if (result.reportable === true) {
+      // bob_verified provenance requires the cited result be reportable in the
+      // FINAL round specifically AND at a (reclamped) MEDIUM+ severity — the SAME
+      // normalized medium+ set the executed-flip gate
+      // (assertComposedVerifiedSectionsAreExecuted) filters to.
+      // validateVerificationRoundRef returns the FIRST matching round over
+      // [brutalist, balanced, final], so a brutalist/balanced reportable would
+      // otherwise satisfy provenance while the executed-flip gate keys off the final
+      // round and never inspects it. Requiring final-round reportability at medium+
+      // keeps provenance and the gate on the SAME round + the SAME severity floor, so
+      // a low/info decoy cannot wear bob_verified while the executed gate vacuously
+      // passes its empty reportable-medium+ set, and a session with no final round
+      // cannot carry a bob_verified section at all.
+      if (isFinalRoundReportableMediumPlus(domain, classified.id)) {
         anyReportable = true;
       }
     } else if (!result) {
@@ -408,17 +571,31 @@ function readFinalVerificationByFinding(domain) {
     return byFinding;
   }
   const results = Array.isArray(doc && doc.results) ? doc.results : [];
+  // READ-TIME RE-CLAMP: re-apply the frozen-baseline severity clamp to the on-disk
+  // results before projecting them, so a runtime-indirection rewrite of
+  // verification-final.json that bumps a finding above its demonstrated baseline
+  // re-reads as the baseline here (the value feeds the medium+ filter AND the CVSS
+  // annotation). reclampSeveritiesAgainstFreeze only LOWERS an above-baseline
+  // unproven severity; a MAC-armed proven rise keeps its higher value. Fail-closed
+  // identically to the write-time clamp (a corrupt freeze throws STATE_CONFLICT).
+  const { reclampSeveritiesAgainstFreeze } = require("../verification-round-store.js");
+  const reclamped = reclampSeveritiesAgainstFreeze(domain, results);
   for (const result of results) {
     if (!result || typeof result !== "object") continue;
     const id = typeof result.finding_id === "string" ? result.finding_id : null;
     if (!id) continue;
+    // Validate against the severity enum before storing: this value is
+    // interpolated verbatim into the report Markdown, so a corrupted or
+    // hand-edited verification-round file must not be able to inject arbitrary
+    // text. An unrecognized severity degrades to null (rendered as omitted).
+    const rawSeverity = SEVERITY_VALUES.includes(result.severity) ? result.severity : null;
+    const decision = reclamped.get(id);
+    const clampedSeverity = decision && SEVERITY_VALUES.includes(decision.severity)
+      ? decision.severity
+      : rawSeverity;
     byFinding.set(id, {
       reportable: result.reportable === true,
-      // Validate against the severity enum before storing: this value is
-      // interpolated verbatim into the report Markdown, so a corrupted or
-      // hand-edited verification-round file must not be able to inject arbitrary
-      // text. An unrecognized severity degrades to null (rendered as omitted).
-      severity: SEVERITY_VALUES.includes(result.severity) ? result.severity : null,
+      severity: clampedSeverity,
     });
   }
   return byFinding;
@@ -636,6 +813,11 @@ function handler(args) {
     // Fail closed before any audit-graded write: a trust-degraded (unsigned)
     // final-reportable finding must never be laundered into report.md.
     assertNoDegradedReportableFindings(domain);
+    // Fail closed before any audit-graded write: a final-reportable medium+ finding
+    // must carry the SAME executed-flip binding the grade gate requires, so a forged
+    // reportable verification round cannot launder a bob_verified medium+ vuln into
+    // report.md without an EXECUTED differential whose negative control flips.
+    assertComposedVerifiedSectionsAreExecuted(domain, sections);
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
     const amendments = readAmendments(domain);

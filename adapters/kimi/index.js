@@ -17,8 +17,8 @@ const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 const { BOB_SKILLS, LEGACY_BOB_SKILLS } = config;
 
 // Functional PreToolUse guards copied under <target>/.kimi/hooks/ and registered
-// in ~/.kimi/config.toml. scope-guard.sh is a deliberate no-op and is treated as
-// STALE (never registered), mirroring the Claude adapter.
+// in ~/.kimi/config.toml. scope-guard.sh (a former no-op) was removed; it is
+// treated as STALE (swept, never registered), mirroring the Claude adapter.
 const HOOK_FILES = Object.freeze([
   "session-read-guard.sh",
   "session-write-guard.sh",
@@ -40,8 +40,8 @@ const HOOK_DATA_FILES = Object.freeze([
   "write-guard-tables.json",
 ]);
 
-// scope-guard.sh ships under adapters/kimi/hooks/ but is a no-op; sweep it from
-// any prior hand-install so it cannot mislead. Mirrors STALE_HOOK_FILES on Claude.
+// scope-guard.sh was a no-op source vestige (now removed); sweep it from any
+// prior hand-install so it cannot mislead. Mirrors STALE_HOOK_FILES on Claude.
 const STALE_HOOK_FILES = Object.freeze([
   "scope-guard.sh",
 ]);

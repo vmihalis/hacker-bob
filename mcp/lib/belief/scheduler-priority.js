@@ -10,9 +10,40 @@ const {
 const {
   queryBeliefSignals,
 } = require("./authority.js");
+const {
+  readBeliefModelInfo,
+} = require("./model.js");
+const {
+  applyRecalibration,
+} = require("./recalibration.js");
 
 const BELIEF_SCHEDULER_MODEL_VERSION = "belief-scheduler-priority.v1";
 const DEFAULT_RANK_LIMIT = 25;
+
+// Circularity guard (scheduler side): a residual is built by sampling the
+// belief window's OWN marginals, so on its own it is self-generated belief. The only
+// outcomes allowed to move dispatch order are EXECUTED ones, so a residual hint is
+// admitted here ONLY when its provenance chain traces to an executed outcome — a
+// verified_intervention signal, a realized dead-end, or a realized-vs-predicted
+// coverage delta — cited via {kind, artifact_ref} in the residual_anomaly payload.
+// A residual with no executed citation returns NO hint (residualBoost stays 0).
+const ADMISSIBLE_RESIDUAL_PROVENANCE_KINDS = Object.freeze([
+  "verified_intervention",
+  "dead_end",
+  "coverage_delta",
+]);
+
+function executedProvenanceChain(payload) {
+  const hint = payload && payload.priority_hint;
+  const fromHint = hint && Array.isArray(hint.executed_provenance) ? hint.executed_provenance : null;
+  const raw = fromHint || (Array.isArray(payload && payload.executed_provenance) ? payload.executed_provenance : []);
+  return raw.filter((entry) => (
+    entry && typeof entry === "object"
+    && ADMISSIBLE_RESIDUAL_PROVENANCE_KINDS.includes(entry.kind)
+    && typeof entry.artifact_ref === "string"
+    && entry.artifact_ref.trim().length > 0
+  ));
+}
 
 function textTokens(value) {
   return String(value == null ? "" : value)
@@ -70,24 +101,67 @@ function latestResidualHint(targetDomain) {
     for (let i = signals.length - 1; i >= 0; i -= 1) {
       const payload = signals[i] && signals[i].payload;
       const hint = payload && payload.priority_hint;
-      if (hint && hint.non_gating === true) {
-        return {
-          residual_hash: payload.residual_hash || null,
-          residual_score: typeof hint.score === "number" ? hint.score : null,
-          residual_band: typeof hint.band === "string" ? hint.band : null,
-        };
-      }
+      if (!hint || hint.non_gating !== true) continue;
+      // Admit a residual hint ONLY when its provenance chain traces to an
+      // executed outcome. A self-sampled-only residual (no executed citation) is
+      // skipped so belief can never reorder dispatch from belief.
+      const executedProvenance = executedProvenanceChain(payload);
+      if (executedProvenance.length === 0) continue;
+      return {
+        residual_hash: payload.residual_hash || null,
+        residual_score: typeof hint.score === "number" ? hint.score : null,
+        residual_band: typeof hint.band === "string" ? hint.band : null,
+        executed_provenance: executedProvenance,
+      };
     }
   } catch {}
   return null;
 }
 
-function scoreForCandidate(candidate, residualHint) {
+// Model loop (advisory + deterministic): the trained belief model is an
+// isotonic RECALIBRATION map fit against EXECUTED labels (grade verdicts /
+// verification-round outcomes — see model.js trainBeliefModel.label_source), never
+// belief. We load it read-only and apply it to ORDER only: the recalibrated value is
+// a monotonic re-map of the candidate's information-gain proxy that breaks ties and
+// nudges score, but it gates nothing (no verdict/closure/claim) and, being a function
+// of the pinned model_hash, is replayable (same model_hash + same signals => identical
+// order). When the model is absent or the map is identity (needs_more_data), the value
+// is the raw proxy and order is byte-identical to the no-model path.
+function loadRecalibrationModel(targetDomain) {
+  try {
+    const info = readBeliefModelInfo({ target_domain: targetDomain });
+    if (!info || !info.exists || !info.model) return null;
+    const model = info.model;
+    const map = model.recalibration_map;
+    if (!map || typeof map !== "object") return null;
+    return {
+      model_hash: typeof model.model_hash === "string" ? model.model_hash : null,
+      model_id: typeof model.model_id === "string" ? model.model_id : null,
+      label_source: typeof model.label_source === "string" ? model.label_source : null,
+      recalibration_map: map,
+      needs_more_data: Boolean(map.needs_more_data),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function scoreForCandidate(candidate, residualHint, model) {
   const informationGain = Number(candidate && candidate.expected_information_gain_bits) || 0;
   const residualBoost = residualHint && typeof residualHint.residual_score === "number"
     ? Math.min(15, Math.round(residualHint.residual_score * 5))
     : 0;
-  return Math.max(0, Math.min(100, Math.round(45 + informationGain * 30 + residualBoost)));
+  const base = Math.round(45 + informationGain * 30 + residualBoost);
+  // Advisory recalibration: re-map the EIG proxy ([0,1]) through the
+  // executed-label-trained isotonic map and fold the (monotonic) delta back as a
+  // bounded order nudge. Identity map / absent model => modelBoost 0 (no-op).
+  let modelBoost = 0;
+  if (model && model.recalibration_map) {
+    const proxy = Math.max(0, Math.min(1, informationGain));
+    const recalibrated = applyRecalibration(model.recalibration_map, proxy);
+    modelBoost = Math.round((recalibrated - proxy) * 10);
+  }
+  return Math.max(0, Math.min(100, base + modelBoost));
 }
 
 function existingRanking(surface) {
@@ -194,13 +268,14 @@ function buildBeliefSchedulerHints({
     };
   }
   const residualHint = latestResidualHint(targetDomain);
+  const model = loadRecalibrationModel(targetDomain);
   const hints = [];
   for (const surface of surfaceList) {
     const candidate = (calculus.ranking || []).find((entry) => candidateMatchesSurface(entry, surface));
     if (!candidate) continue;
     hints.push({
       surface_id: surface.id,
-      score: scoreForCandidate(candidate, residualHint),
+      score: scoreForCandidate(candidate, residualHint, model),
       candidate,
       calculus_hash: calculus.calculus_hash,
       window_hash: calculus.window_hash,
@@ -220,6 +295,21 @@ function buildBeliefSchedulerHints({
     calculus_hash: calculus.calculus_hash,
     window_hash: calculus.window_hash,
     residual_hash: residualHint ? residualHint.residual_hash : null,
+    // Replayability pin: the exact model + fed-signal set that produced this
+    // order. A run replays identically iff these match; a different model_hash is
+    // RECORDED here (not silently consumed) so an audit can see the order moved.
+    belief_replay: {
+      model_hash: model ? model.model_hash : null,
+      model_id: model ? model.model_id : null,
+      model_label_source: model ? model.label_source : null,
+      model_needs_more_data: model ? model.needs_more_data : null,
+      fed_signals: {
+        calculus_hash: calculus.calculus_hash,
+        window_hash: calculus.window_hash,
+        residual_hash: residualHint ? residualHint.residual_hash : null,
+        residual_admitted: Boolean(residualHint),
+      },
+    },
     reason: hints.length > 0 ? "belief_hints_applied" : "no_surface_match",
     hints,
   };

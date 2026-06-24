@@ -439,6 +439,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_chain_frontier",
   "bob_chain_ancestry",
   "bob_write_verification_round",
+  "bob_stage_verification_round_partial",
   "bob_read_verification_round",
   "bob_read_verification_context",
   "bob_diff_verification_attempts",
@@ -497,6 +498,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_evaluate_capabilities",
   "bob_ingest_audit_report",
   "bob_query_audit_reports",
+  "bob_register_mechanism_template",
   "bob_suggest_invariants",
   "bob_run_invariant_for_finding",
   "bob_read_invariant_runs",
@@ -550,6 +552,8 @@ const EXPECTED_TOOL_NAMES = [
   "bob_verify_composition_path",
   "bob_verify_repro_reproduction",
   "bob_verify_oracle_differential",
+  "bob_verify_invariant_differential",
+  "bob_verify_finding_differential",
   "bob_attach_contract",
   "bob_resolve_body",
   "bob_prepare_node",
@@ -589,6 +593,8 @@ const EXPECTED_TOOL_NAMES = [
   // protocol_drift records (W2 + rev-4.1 silent_lead_threshold_drop).
   "bob_scan_transcript_for_friction",
   "bob_ws_probe",
+  // Recon multi-modal sweep — read-only SETUP recon-angle planner.
+  "bob_plan_recon_angles",
 ];
 
 function withTempHome(fn) {
@@ -1682,6 +1688,43 @@ function evidencePack(findingId = "F-1", overrides = {}) {
     report_snippet: "An attacker can retrieve another account's private metadata by changing the account ID.",
     ...overrides,
   };
+}
+
+// A standalone web (IDOR) finding is an executable-flip class; seed its
+// finding-differential verified_pass arm so the grade-time standalone-finding gate is
+// satisfied (it stays reportable, NO amputation). Post-A1 the gate RE-RESOLVES the verdict
+// against the MAC-covered offensive-runs rows + re-adjudicates the flip, so a bare ledger
+// line no longer suffices: seed a real MAC-signed exploited_safely positive +
+// blocked_by_defense control (distinct command_hash, same surface), then the verdict line
+// that binds them. The positive demonstrates high (the finding's severity) so B1's
+// demonstrated-severity ceiling is also satisfied.
+function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surface-a") {
+  const { findingDifferentialVerifiedJsonlPath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/export`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId, source: "offensive_runs",
+    positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
 }
 
 function v2VerificationResult(findingId = "F-1", overrides = {}) {
@@ -3432,6 +3475,9 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
         report_snippet: rawEvidenceText,
       }],
     }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // clears the standalone-finding gate (this test asserts pipeline analytics, not the gate).
+    seedFindingDifferentialArm(domain, "F-1");
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
     JSON.parse(writeGradeVerdict({
       target_domain: domain,
@@ -4030,6 +4076,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
       reasoning: "Confirmed by replay.",
     }]);
     writeEvidencePacks({ target_domain: skipLowScoreDomain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(skipLowScoreDomain, "F-1");
     writeGradeVerdict({
       target_domain: skipLowScoreDomain,
       verdict: "SKIP",
@@ -4060,6 +4107,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
       reasoning: "Confirmed.",
     }]);
     writeEvidencePacks({ target_domain: holdDomain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(holdDomain, "F-1");
     writeGradeVerdict({
       target_domain: holdDomain,
       verdict: "HOLD",
@@ -4632,6 +4680,9 @@ test("bob_read_session_summary derives compact status without raw proof evidence
         report_snippet: "Private metadata exposure.",
       })],
     }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // clears the standalone-finding gate (this test asserts session-summary shape).
+    seedFindingDifferentialArm(domain, "F-1");
     JSON.parse(writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",
@@ -5656,6 +5707,8 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       terminally_blocked_promoted: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
@@ -9144,6 +9197,8 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       blocked_prereqs_grouped: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
@@ -9194,6 +9249,8 @@ test("bob_merge_wave_handoffs requeues missing and invalid assigned handoffs whi
       blocked_prereqs_grouped: [],
       bypass_attempts: [],
       bypass_attempts_grouped: [],
+      // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
+      unconsumed_pivots: [],
       suspicion_flags: [],
       provenance: {
         verified_agents: [],
@@ -14221,6 +14278,10 @@ test("bob_write_grade_verdict enforces score totals, thresholds, and final repor
     }];
     seedVerificationPipeline(domain, verified);
     JSON.parse(writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] }));
+    // Standalone web (IDOR) executable-flip class — seed its arm row so the SUBMIT grade
+    // is satisfied; the test under test asserts score-total / threshold behavior, not the
+    // standalone-finding gate.
+    seedFindingDifferentialArm(domain, "F-1");
 
     const gradeFinding = {
       finding_id: "F-1",
@@ -14271,6 +14332,9 @@ test("bob_write_grade_verdict requires evidence packs for final reportables befo
       reportable: true,
       reasoning: "Confirmed.",
     }]);
+    // Seed the standalone-finding arm row so the (earlier) finding-differential gate is
+    // satisfied and the EVIDENCE gate under test is the one that blocks the grade.
+    seedFindingDifferentialArm(domain, "F-1");
 
     assert.throws(() => writeGradeVerdict({
       target_domain: domain,

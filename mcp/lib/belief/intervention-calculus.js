@@ -135,7 +135,9 @@ function buildCandidate({ template, variable, intervention }) {
 
 function rankInterventions({ window, target_domain, template_id = "object_authorization", seed = DEFAULT_SEED, rank_limit, runnable_controls } = {}) {
   const beliefWindow = window || buildBeliefWindow({ target_domain, template_id });
-  const template = getMechanismTemplate(template_id);
+  // Domain-aware resolve so a registered tier-3 candidate is visible alongside the
+  // frozen corpus base; this call already sits at the buildBeliefWindow I/O boundary.
+  const template = getMechanismTemplate(template_id, target_domain);
   if (!template) throw new Error(`unknown mechanism template: ${template_id}`);
   const rankLimit = normalizePositiveInteger(rank_limit, DEFAULT_RANK_LIMIT, MAX_RANK_LIMIT);
   const variables = effectivePermissionVariables(beliefWindow);

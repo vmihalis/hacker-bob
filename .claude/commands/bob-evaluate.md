@@ -68,6 +68,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_evaluate_capabilities
   - mcp__hacker-bob__bob_ingest_audit_report
   - mcp__hacker-bob__bob_query_audit_reports
+  - mcp__hacker-bob__bob_register_mechanism_template
   - mcp__hacker-bob__bob_suggest_invariants
   - mcp__hacker-bob__bob_run_invariant_for_finding
   - mcp__hacker-bob__bob_read_invariant_runs
@@ -112,6 +113,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_emit_runtime_drift
   - mcp__hacker-bob__bob_propose_friction_promotion
   - mcp__hacker-bob__bob_scan_transcript_for_friction
+  - mcp__hacker-bob__bob_plan_recon_angles
   - mcp__hacker-bob__bob_http_scan
   - mcp__hacker-bob__bob_temp_email
   - mcp__hacker-bob__bob_signup_detect

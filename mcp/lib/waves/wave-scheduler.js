@@ -143,17 +143,23 @@ function startWaveLocked(domain, {
     } catch {}
   }
 
-  // CN (coverage-nesting) Step B — the MCP-owned spawn-ledger writer (C5). This is
-  // the mutating dispatch step the read-path width bound was waiting on: for each
-  // spawn-capable root the orchestrator is about to hand out, reserve its worst-case
-  // subtree against the session spawn budget. Greedy-sequential — each root is sized
-  // against the budget already reserved by prior roots (this wave) and prior waves —
-  // so the cumulative worst case provably stays within max_total_spawned_agents, and
-  // bob_read_assignment_brief reads the same total (excluding the root's own row) to
-  // reproduce that root's allocation. Gated on the governor being set, so default-off
-  // (max_total_spawned_agents=null) writes nothing and is byte-identical. Best-effort:
-  // the ledger is append-only, so a failed write degrades to the conservative
-  // recompute on the next read, never a budget overrun.
+  // The MCP-owned spawn-ledger writer. This is the mutating dispatch step the
+  // read-path width bound was waiting on: for each wave-evaluator root the
+  // orchestrator is about to hand out, reserve its LIFETIME spawn cost against the
+  // session budget. That cost is the root agent itself (always 1) PLUS its
+  // worst-case nested subtree (the descendant count, which is 0 when the root does
+  // not fan out). Counting the root — not only its nested descendants — is what
+  // makes max_total_spawned_agents bind ACROSS waves: a flat per-surface evaluator
+  // costs one lifetime slot even with nesting off, so K waves of roots cannot
+  // silently exceed the operator's lifetime ceiling. Greedy-sequential — each root
+  // is sized against the budget already reserved by prior roots (this wave) and
+  // prior waves — so the cumulative reservation provably stays within
+  // max_total_spawned_agents, and bob_read_assignment_brief reads the same total
+  // (excluding the root's own row) to reproduce that root's allocation. Gated on the
+  // governor being set, so default-off (max_total_spawned_agents=null) writes
+  // nothing and is byte-identical. Best-effort: the ledger is append-only, so a
+  // failed write degrades to the conservative recompute on the next read, never a
+  // budget overrun.
   try {
     const policy = loadQueuePolicy(domain);
     if (Number.isInteger(policy.max_total_spawned_agents)) {
@@ -165,30 +171,45 @@ function startWaveLocked(domain, {
       try { surfaces = readAttackSurfaceStrict(domain).document.surfaces || []; } catch {}
       const coverageRecords = readCoverageRecordsFromJsonl(domain);
       for (const assignment of persistedAssignments) {
+        // The root agent always costs one lifetime slot. A nested fan-out plan
+        // adds its worst-case descendant subtree on top; a flat root (nesting off,
+        // or no plan) adds 0 descendants but still reserves itself.
+        let descendants = 0;
+        let planDepth = 0;
+        let planBranching = 0;
         const surfaceObj = surfaces.find((s) => s && s.id === assignment.surface_id);
-        if (!surfaceObj) continue;
-        let plan;
-        try {
-          plan = buildChildFanoutPlanForSurface({
-            domain,
-            surfaceObj,
-            surfaceId: assignment.surface_id,
-            coverageSummary: buildCoverageSummaryForSurface(coverageRecords, assignment.surface_id),
-            wave: waveLabel,
-          });
-        } catch { continue; }
-        if (!plan || !Array.isArray(plan.children) || plan.children.length === 0 || !(plan.remaining_depth > 0)) continue;
-        const worstCase = worstCaseTreeSize(plan.max_children, plan.remaining_depth);
-        if (!(worstCase > 0)) continue;
+        if (surfaceObj) {
+          let plan;
+          try {
+            plan = buildChildFanoutPlanForSurface({
+              domain,
+              surfaceObj,
+              surfaceId: assignment.surface_id,
+              coverageSummary: buildCoverageSummaryForSurface(coverageRecords, assignment.surface_id),
+              wave: waveLabel,
+            });
+          } catch { plan = null; }
+          if (plan && Array.isArray(plan.children) && plan.children.length > 0 && plan.remaining_depth > 0) {
+            const worstCase = worstCaseTreeSize(plan.max_children, plan.remaining_depth);
+            if (worstCase > 0) {
+              descendants = worstCase;
+              planDepth = plan.remaining_depth;
+              planBranching = plan.max_children;
+            }
+          }
+        }
+        const rootCount = 1;
         try {
           appendSpawnLedgerEntry(domain, {
             ts: new Date().toISOString(),
             wave: waveLabel,
             parent_agent: assignment.agent,
             surface_id: assignment.surface_id,
-            depth: plan.remaining_depth,
-            branching: plan.max_children,
-            worst_case_tree: worstCase,
+            depth: planDepth,
+            branching: planBranching,
+            root_count: rootCount,
+            descendant_tree: descendants,
+            worst_case_tree: rootCount + descendants,
           });
         } catch {}
       }
@@ -324,12 +345,26 @@ function startNextWave(args) {
         }
       }
 
+      // Feed the binding-breadth governor the spawn-tree size already reserved
+      // (prior waves' nested roots). The wave planner subtracts this from
+      // max_total_spawned_agents to clamp this wave's target/max to the remaining
+      // session budget. Read only when the governor is set; null governor reads
+      // nothing and leaves planning byte-identical (default-off).
+      let reservedSpawnTotal = 0;
+      if (Number.isInteger(queuePolicy.max_total_spawned_agents)) {
+        try {
+          reservedSpawnTotal = require("../spawn-ledger.js").spawnLedgerTotal(domain);
+        } catch {
+          reservedSpawnTotal = 0;
+        }
+      }
       const plan = planNextWave({
         state: planningState,
         surfaces: readRankedSurfacesForPlanning(domain),
         coverageRecords: readCoverageRecordsFromJsonl(domain),
         taskQueueTasks: readQueueTasksForPlanning(domain),
         queuePolicy,
+        reservedSpawnTotal,
       });
 
       if (dryRun || plan.decision !== "start_wave") {

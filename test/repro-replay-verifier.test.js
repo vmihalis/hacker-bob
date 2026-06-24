@@ -14,6 +14,7 @@ const {
   RESULT_INCONCLUSIVE,
 } = require("../mcp/lib/repro-replay-verifier.js");
 const { reproVerifiedJsonlPath, isAuditGradedPath } = require("../mcp/lib/paths.js");
+const { persistingRunner } = require("./helpers/repro-run-pair.js");
 
 const DOMAIN = "repo-muparser-test";
 
@@ -24,6 +25,22 @@ SUMMARY: AddressSanitizer: heap-buffer-overflow /src/muparser/src/muParserBase.c
 const CLEAN = "All tests passed\n12/12 ok";
 // A banner with NO /src frame (only a lib frame) — crashed, but unattributable.
 const BANNER_NO_SRC = "==2==ERROR: AddressSanitizer: SEGV on unknown address\n    #0 0x10 in (<unknown>)";
+
+// A UBSan runtime-error in its DEFAULT (non-halt, no-stack) mode: the banner line
+// itself carries the /src-attributable location. A non-ASAN signal that the extended
+// parser must recognize so the differential can mint on a flip.
+const UBSAN_CRASH = "/src/muparser/src/muParserBase.cpp:1242:10: runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type int";
+// A UBSan runtime-error rooted in a non-/src (relative/stdin) path — recognized as a
+// crash signal but with NO repo-attributable frame, so the differential cannot mint it.
+const UBSAN_NO_SRC = "expr.c:1:1: runtime error: load of misaligned address for type int";
+// A TSan data-race WARNING banner with no-0x frames and a /src root-cause frame.
+const TSAN_CRASH = [
+  "==================",
+  "WARNING: ThreadSanitizer: data race (pid=12)",
+  "  Write of size 4 at 0x7b0400000040 by thread T1:",
+  "    #0 increment /src/race.c:14:7 (race+0x4a1b2c)",
+  "    #1 LLVMFuzzerTestOneInput /src/harness.cc:9 (race+0x5b2)",
+].join("\n");
 
 async function withTempHome(fn) {
   const prev = process.env.HOME;
@@ -45,10 +62,13 @@ function makeRunner({ vuln, control }) {
 
 const CMD = ["sh", "-lc", "g++ -fsanitize=address -Iinclude poc.cpp src/*.cpp -o poc && ./poc crash.txt"];
 
-async function run(opts) {
+async function run(opts, findingId = "F-3") {
+  // Persist each run as a genuine repo-command-runs row + capture files so
+  // readReproVerifiedSummary's read-time re-adjudication can re-resolve a minted
+  // verified_pass (a bare verdict line citing nonexistent runs is no longer trusted).
   return verifyReproReproduction(
-    { target_domain: DOMAIN, finding_id: "F-3", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
-    { repoDockerRunFn: makeRunner(opts) },
+    { target_domain: DOMAIN, finding_id: findingId, command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+    { repoDockerRunFn: persistingRunner(DOMAIN, makeRunner(opts)) },
   );
 }
 
@@ -116,6 +136,77 @@ test("INCONCLUSIVE: a degraded re-execution is not scored as a miss", async () =
     const r = await run({ vuln: { error: "docker_unavailable" }, control: { text: CLEAN } });
     assert.equal(r.result, RESULT_INCONCLUSIVE);
     assert.equal(readReproVerifiedSummary(DOMAIN).inconclusive_count, 1);
+  });
+});
+
+// The differential adjudication is SIGNAL-AGNOSTIC: once sanitizer-report.js recognizes
+// a banner as a crash with a /src frame, the flip (fires on vuln, quiet on fix) mints a
+// verified_pass regardless of WHICH sanitizer produced it. These prove the extended
+// oracle recognition end-to-end for the non-ASAN signals (UBSan / TSan) — same gate, no
+// adjudicateDifferential change.
+
+test("NEW SIGNAL: a UBSan runtime-error flips (vuln crashes, fix quiet) -> verified_pass", async () => {
+  await withTempHome(async () => {
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-UB", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: persistingRunner(DOMAIN, makeRunner({ vuln: { text: UBSAN_CRASH }, control: { text: CLEAN } })) },
+    );
+    assert.equal(r.result, RESULT_VERIFIED_PASS);
+    assert.equal(r.crash_class, "runtime-error");
+    const sum = readReproVerifiedSummary(DOMAIN);
+    assert.equal(sum.verified_pass_count, 1);
+    assert.ok(sum.verified_by_finding["F-UB"]);
+  });
+});
+
+test("NEW SIGNAL: a TSan data race flips (vuln races, fix quiet) -> verified_pass", async () => {
+  await withTempHome(async () => {
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-TS", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: persistingRunner(DOMAIN, makeRunner({ vuln: { text: TSAN_CRASH }, control: { text: CLEAN } })) },
+    );
+    assert.equal(r.result, RESULT_VERIFIED_PASS);
+    assert.equal(r.crash_class, "data race");
+    assert.equal(readReproVerifiedSummary(DOMAIN).verified_pass_count, 1);
+  });
+});
+
+test("NON-FORGEABLE: the SAME UBSan banner on BOTH trees -> no flip -> refuted", async () => {
+  await withTempHome(async () => {
+    // A printf'd / always-fires UBSan banner is identical on both trees -> no flip.
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-UB2", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: makeRunner({ vuln: { text: UBSAN_CRASH }, control: { text: UBSAN_CRASH } }) },
+    );
+    assert.equal(r.result, RESULT_REFUTED);
+    assert.match(r.reason, /also crashes the upstream-fix tree/);
+    assert.equal(readReproVerifiedSummary(DOMAIN).verified_pass_count, 0);
+  });
+});
+
+test("NON-FORGEABLE: the SAME TSan banner on BOTH trees -> no flip -> refuted", async () => {
+  await withTempHome(async () => {
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-TS2", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: makeRunner({ vuln: { text: TSAN_CRASH }, control: { text: TSAN_CRASH } }) },
+    );
+    assert.equal(r.result, RESULT_REFUTED);
+    assert.match(r.reason, /also crashes the upstream-fix tree/);
+    assert.equal(readReproVerifiedSummary(DOMAIN).verified_pass_count, 0);
+  });
+});
+
+test("NON-FORGEABLE: a UBSan signal with NO /src frame is unattributable -> refuted", async () => {
+  await withTempHome(async () => {
+    // A "runtime error:" rooted in a relative/system path has no repo-attributable
+    // frame, so it cannot mint even with a clean control.
+    const r = await verifyReproReproduction(
+      { target_domain: DOMAIN, finding_id: "F-UB3", command: CMD, control_ref: "322716256d60e316c9a3b905a387be36d4e47368" },
+      { repoDockerRunFn: makeRunner({ vuln: { text: UBSAN_NO_SRC }, control: { text: CLEAN } }) },
+    );
+    assert.equal(r.result, RESULT_REFUTED);
+    assert.match(r.reason, /no \/src-resolved root-cause frame/);
+    assert.equal(readReproVerifiedSummary(DOMAIN).verified_pass_count, 0);
   });
 });
 

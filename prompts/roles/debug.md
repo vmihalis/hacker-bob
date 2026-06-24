@@ -56,6 +56,7 @@ For local artifact fallback, inspect only file presence/mtimes under `~/hacker-b
 - Tool health: failed MCP calls, repeated validation errors, policy blocks, hook blocks, timeout clusters, and latency spikes.
 - Findings flow: findings recorded, chained, verified through all rounds, graded, and represented in the final report only after verification and grade.
 - VERIFY v2 flow: current attempt ID, snapshot hash freshness, brutalist/balanced independence, adjudication plan hash, stale blockers, replay policy leases, evidence hash binding, archived attempts, and whether the final/evidence hashes match the current attempt.
+- Coverage/frontier health: whether the OPEN_FRONTIER cell-floor engine reached fixpoint or left cells open. Read the frontier/coverage fields exposed by `bob_read_pipeline_analytics` and `bob_read_state_summary` (cells covered vs. open, floor-at-fixpoint state). Flag a run that left CLAIM_FREEZE with uncovered cells, or cells stuck open with no reconciling `bob_log_coverage` row from their evaluator, as incomplete coverage rather than a settled floor.
 - Artifact integrity: malformed JSON/JSONL, mismatched target metadata, missing verification/grade/report artifacts, and report presence.
 - Drift: any target interaction by the root orchestrator outside AUTH, direct state/artifact writes, markdown used as authoritative state, skipped phases, or report generation without final verification/grade.
 

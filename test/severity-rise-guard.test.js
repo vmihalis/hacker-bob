@@ -22,8 +22,16 @@ const {
   ensureHandoffSigningKey,
 } = require("../mcp/lib/handoff-signing-key.js");
 const {
+  computeInvariantRunHash,
+  invariantFoundryResultHash,
+  readInvariantVerifiedSummary,
+  verifyInvariantDifferential,
+} = require("../mcp/lib/invariant-runner.js");
+const {
   claimFreezePath,
   claimsJsonlPath,
+  invariantRunsJsonlPath,
+  invariantVerifiedJsonlPath,
   offensiveRunsJsonlPath,
   sessionNucleusPath,
   statePath,
@@ -45,6 +53,7 @@ const {
   readSessionStateStrict,
 } = require("../mcp/lib/session-state-store.js");
 const {
+  appendJsonlLine,
   writeFileAtomic,
 } = require("../mcp/lib/storage.js");
 const {
@@ -52,6 +61,7 @@ const {
   prepareVerificationEntry,
 } = require("../mcp/lib/verification.js");
 const {
+  clampResultSeveritiesInPlace,
   writeVerificationRound,
 } = require("../mcp/lib/verification-round-store.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
@@ -81,6 +91,50 @@ function withTempHome(fn) {
 
 function hex(char) {
   return char.repeat(64);
+}
+
+// Seed a GENUINE invariant-verified verified_pass for `findingId` by writing a
+// consistent flipping pair of invariant-runs rows (positive fails on the target,
+// control passes on a different tree) and minting the verdict through
+// verifyInvariantDifferential. readInvariantVerifiedSummary re-adjudicates the
+// verdict from these rows, so a hand-forged verdict whose run hashes point at
+// nothing would NOT survive — this fixture is honest by construction.
+function seedVerifiedInvariantPass(domain, findingId = "F-1") {
+  const base = {
+    target_domain: domain,
+    finding_id: findingId,
+    finding_hash: null,
+    template_id: "tmpl-fixture",
+    slot_values: { a: "1" },
+    contract_name: "BobInvariantTest_fixture",
+    function_name: "testBobInvariant_fixture",
+    execution_context_hash: "ctx-hash-shared",
+    dry_run: false,
+  };
+  const mkRow = (outcome, treeRef, checkoutKind) => {
+    const foundryResult = outcome === "test_failed"
+      ? { tests: [{ success: false }] }
+      : { tests: [{ success: true }] };
+    const row = {
+      ...base,
+      tree_ref: treeRef,
+      checkout_kind: checkoutKind,
+      outcome,
+      foundry_result_hash: invariantFoundryResultHash(foundryResult),
+      foundry_result: foundryResult,
+    };
+    row.run_hash = computeInvariantRunHash(row);
+    appendJsonlLine(invariantRunsJsonlPath(domain), row);
+    return row;
+  };
+  const positive = mkRow("test_failed", "target", "tree");
+  const control = mkRow("test_passed", "fixed", "upstream_fix");
+  verifyInvariantDifferential({
+    target_domain: domain,
+    finding_id: findingId,
+    positive_run_hash: positive.run_hash,
+    control_run_hash: control.run_hash,
+  });
 }
 
 function initWebSession(domain) {
@@ -686,15 +740,131 @@ test("every severity enum value maps to a non-zero VERIFY_SEVERITY_RANK", () => 
   assert.ok(verifySeverityRank("informational") > 0, "informational must have a non-zero rank");
 });
 
-test("non-web repo sessions are not clamped", () => withTempHome((home) => {
+test("repo/SC sessions clamp unproven severity rises to the frozen baseline", () => withTempHome((home) => {
   const domain = initRepoOnlySession(home, "severity-rise-repo.example");
   appendFrozenFindingClaim(domain, { severity: "medium" });
   freezeClaims(domain);
 
+  // A verify-time raise above the evaluator-frozen medium baseline is unproven
+  // (repo/SC scope has no tiered exploit allow-path) and clamps to the baseline.
   assert.equal(
     writeV1Round(domain, verificationResult("F-1", { severity: "high" })),
-    "high",
+    "medium",
   );
+}));
+
+test("repo/SC sessions clamp a rise straight to critical to the frozen baseline", () => withTempHome((home) => {
+  const domain = initRepoOnlySession(home, "severity-rise-repo-critical.example");
+  appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "low" });
+  freezeClaims(domain);
+
+  assert.equal(
+    writeV1Round(domain, verificationResult("F-1", { severity: "critical" })),
+    "low",
+  );
+}));
+
+test("repo/SC equality, lowering, and null severity pass through unclamped", () => withTempHome((home) => {
+  const equalityDomain = initRepoOnlySession(home, "severity-rise-repo-equality.example");
+  appendFrozenFindingClaim(equalityDomain, { severity: "high" });
+  freezeClaims(equalityDomain);
+  assert.equal(writeV1Round(equalityDomain, verificationResult("F-1", { severity: "high" })), "high");
+
+  const loweringDomain = initRepoOnlySession(home, "severity-rise-repo-lowering.example");
+  appendFrozenFindingClaim(loweringDomain, { severity: "high" });
+  freezeClaims(loweringDomain);
+  assert.equal(writeV1Round(loweringDomain, verificationResult("F-1", { severity: "low" })), "low");
+
+  const nullDomain = initRepoOnlySession(home, "severity-rise-repo-null.example");
+  appendFrozenFindingClaim(nullDomain, { severity: "low" });
+  freezeClaims(nullDomain);
+  assert.equal(writeV1Round(nullDomain, verificationResult("F-1", {
+    disposition: "denied",
+    severity: null,
+    reportable: false,
+  })), null);
+}));
+
+test("repo/SC sessions ignore offensive rows — a stray signed row cannot unlock a rise", () => withTempHome((home) => {
+  const domain = initRepoOnlySession(home, "severity-rise-repo-no-allowpath.example");
+  const ref = exploitRef(domain);
+  // Seed a fully-signed offensive row (demonstrated medium, within the tool's
+  // ceiling) plus an exploited_safely claim citing it — the exact shape that
+  // unlocks a web rise to medium.
+  seedSignedOffensiveRow(domain, ref, { demonstrated_severity: "medium" });
+  appendFrozenFindingClaim(domain, {
+    severity: "low",
+    evidenceRefs: [findingRef("F-1"), ref],
+    exploitOutcome: {
+      outcome: "exploited_safely",
+      safe_oracle: { kind: "reflected_canary" },
+    },
+  });
+  freezeClaims(domain);
+  const context = enterVerifyV2(domain);
+
+  // On the repo branch the allow-path is never walked, so the rise clamps to the
+  // frozen baseline even though a web session with this exact row would survive.
+  writeV2Round(domain, context, "brutalist", [
+    v2VerificationResult("F-1", {
+      severity: "medium",
+      confidence_reasons: ["exploit_replay_confirmed"],
+    }),
+  ]);
+  assert.equal(persistedSeverity(domain), "low");
+}));
+
+test("repo/SC clamps are recorded in the round document and tool response", () => withTempHome((home) => {
+  const domain = initRepoOnlySession(home, "severity-rise-repo-response.example");
+  appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "low" });
+  freezeClaims(domain);
+
+  const response = JSON.parse(writeVerificationRound({
+    target_domain: domain,
+    round: "brutalist",
+    notes: null,
+    results: [verificationResult("F-1", { severity: "critical" })],
+  }));
+
+  assert.deepEqual(response.severity_clamps, [{ finding_id: "F-1", from: "critical", to: "low" }]);
+  const document = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+  assert.deepEqual(document.severity_clamps, [{ finding_id: "F-1", from: "critical", to: "low" }]);
+}));
+
+test("repo/SC verified_pass FV record is NOT an allow-path key — rise still clamps", () => withTempHome((home) => {
+  const domain = initRepoOnlySession(home, "severity-rise-repo-fv.example");
+  appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "medium" });
+  freezeClaims(domain);
+
+  // Seed a GENUINE VERIFIED_PASS invariant-verified.jsonl record (a real flipping
+  // pair, re-adjudicated at read time). The boolean FV signal must NOT unlock a
+  // verify-time tier rise above baseline.
+  seedVerifiedInvariantPass(domain, "F-1");
+
+  const summary = readInvariantVerifiedSummary(domain);
+  assert.ok(summary.verified_by_finding["F-1"], "fixture seeded a verified_pass FV record");
+
+  assert.equal(
+    writeV1Round(domain, verificationResult("F-1", { severity: "critical" })),
+    "medium",
+  );
+}));
+
+test("pre-state sessions (no state file) fail open at the generalized guard", () => withTempHome(() => {
+  // The generalized guard preserves the prior fail-open-on-no-state behavior: a
+  // session with no state file yet (neither scope resolvable) passes through.
+  // Seed a freeze + round artifact without a state.json, then invoke the guard
+  // directly — the public write path always has state, so this exercises the
+  // defensive early-return that protects against a pre-state / unscoped nucleus.
+  const domain = "severity-rise-pre-state.example";
+  appendFrozenFindingClaim(domain, { findingId: "F-1", severity: "low" });
+  freezeClaims(domain);
+  assert.ok(!fs.existsSync(statePath(domain)), "no state file for the pre-state path");
+
+  const results = [verificationResult("F-1", { severity: "critical" })];
+  const clamps = clampResultSeveritiesInPlace(domain, results);
+  assert.deepEqual(clamps, [], "no clamps when there is no scoped state");
+  assert.equal(results[0].severity, "critical", "severity passes through unclamped");
 }));
 
 test("web equality, lowering, info/informational, null severity, and no-freeze paths pass through", () => withTempHome(() => {

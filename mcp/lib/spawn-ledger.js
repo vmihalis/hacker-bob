@@ -19,8 +19,16 @@ const path = require("path");
 const { spawnLedgerJsonlPath } = require("./paths.js");
 
 // Append one envelope row. The caller supplies ts (deterministic, testable) and
-// the worst-case tree size it reserved for this root. Returns the written row.
+// the worst-case tree size it reserved for this root. `worst_case_tree` is the
+// LIFETIME reservation summed by spawnLedgerTotal: the root agent itself
+// (root_count, always 1 for a dispatched root/cell) PLUS its worst-case nested
+// descendant subtree (descendant_tree, 0 when the root does not fan out). The
+// root_count / descendant_tree split is recorded for audit; the governor binds on
+// worst_case_tree so a flat root still consumes one lifetime slot. Returns the
+// written row.
 function appendSpawnLedgerEntry(domain, entry) {
+  const rootCount = Number.isInteger(entry.root_count) ? entry.root_count : null;
+  const descendantTree = Number.isInteger(entry.descendant_tree) ? entry.descendant_tree : null;
   const row = {
     ts: entry.ts,
     wave: entry.wave,
@@ -30,6 +38,9 @@ function appendSpawnLedgerEntry(domain, entry) {
     branching: entry.branching,
     worst_case_tree: entry.worst_case_tree,
   };
+  if (rootCount != null) row.root_count = rootCount;
+  if (descendantTree != null) row.descendant_tree = descendantTree;
+  if (entry.kind) row.kind = entry.kind;
   const file = spawnLedgerJsonlPath(domain);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");

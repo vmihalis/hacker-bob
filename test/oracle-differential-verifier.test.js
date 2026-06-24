@@ -14,6 +14,7 @@ const {
   RESULT_INCONCLUSIVE,
 } = require("../mcp/lib/repro-replay-verifier.js");
 const { reproVerifiedJsonlPath, isAuditGradedPath } = require("../mcp/lib/paths.js");
+const { persistingRunner } = require("./helpers/repro-run-pair.js");
 
 const DOMAIN = "repo-muparser-oracle-test";
 
@@ -66,6 +67,10 @@ function makeRunner({ vuln, control }) {
 const CMD = ["sh", "-lc", "g++ -fsanitize=address -Iinclude poc.cpp src/*.cpp -o poc && ./poc crash.txt"];
 
 async function run(opts, overrides = {}) {
+  // Persist each run as a genuine repo-command-runs row + capture files so a minted
+  // oracle verified_pass survives readReproVerifiedSummary's read-time re-adjudication
+  // (oracle records skip the vuln-row command_hash re-bind — the vuln run is checkout-
+  // wrapped — but the flip + capture-hash integrity still bind the verdict).
   return verifyOracleDifferential(
     {
       target_domain: DOMAIN,
@@ -76,7 +81,7 @@ async function run(opts, overrides = {}) {
       fix_patch: FIX_PATCH,
       ...overrides,
     },
-    { repoDockerRunFn: makeRunner(opts) },
+    { repoDockerRunFn: persistingRunner(DOMAIN, makeRunner(opts)) },
   );
 }
 

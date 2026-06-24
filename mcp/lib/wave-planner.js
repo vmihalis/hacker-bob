@@ -244,6 +244,7 @@ function planNextWave({
   openRequeueSurfaceIds = null,
   taskQueueTasks = null,
   queuePolicy = null,
+  reservedSpawnTotal = 0,
   ...options
 } = {}) {
   const normalizedState = state || {};
@@ -274,8 +275,30 @@ function planNextWave({
   const cap = Number.isInteger(policy.max_concurrent_evaluators)
     ? policy.max_concurrent_evaluators
     : null;
-  const target = cap == null ? rawTarget : Math.min(rawTarget, cap);
-  const max = cap == null ? rawMax : Math.min(rawMax, cap);
+  let target = cap == null ? rawTarget : Math.min(rawTarget, cap);
+  let max = cap == null ? rawMax : Math.min(rawMax, cap);
+  // Session spawn governor as the binding BREADTH ceiling. The governor already
+  // bounds the nested-child DEPTH axis (assignment-brief width bound + the
+  // spawn-ledger reservation), but the wave evaluator count itself was clamped
+  // only by *_wave_target/max and max_concurrent_evaluators — so a lifted width
+  // with a sized governor could still place more roots in one wave than the
+  // session budget allows. When the governor is set, the remaining budget
+  // (max_total_spawned_agents minus the spawn-tree size already reserved by prior
+  // waves/roots, supplied by the impure caller as reservedSpawnTotal) clamps this
+  // wave's target AND max. RANK != BOUND: surfaces that do not fit this wave are
+  // NOT dropped — they ride the next wave once this one settles (waves dispatch
+  // sequentially, the same justification as the concurrency clamp above). A null
+  // governor leaves target/max untouched => byte-identical default-off.
+  let spawnBudgetRemaining = null;
+  if (Number.isInteger(policy.max_total_spawned_agents)) {
+    const reserved = Number.isInteger(reservedSpawnTotal) && reservedSpawnTotal > 0
+      ? reservedSpawnTotal
+      : 0;
+    const remainingBudget = Math.max(0, policy.max_total_spawned_agents - reserved);
+    spawnBudgetRemaining = remainingBudget;
+    target = Math.min(target, remainingBudget);
+    max = Math.min(max, remainingBudget);
+  }
   const nextWave = (Number.isInteger(normalizedState.evaluation_wave) ? normalizedState.evaluation_wave : 0) + 1;
 
   const basePlan = {
@@ -412,6 +435,39 @@ function planNextWave({
     budget: { ...policy.default_wave_task_budget },
   }));
 
+  const candidateSurfaceIds = candidateSurfaces.map((surface) => surface.id);
+
+  // Lifetime spawn-budget exhaustion is a COVERAGE GAP, not a silent drop. When the
+  // operator's lifetime ceiling (max_total_spawned_agents) is fully consumed but
+  // open surfaces still want evaluators, the planner STOPS and names the uncovered
+  // surfaces — it never emits an over-budget wave and never silently drops the
+  // surfaces (RANK != BOUND: the ceiling is an external operator cost limit, and
+  // when hit it surfaces the gap rather than truncating coverage). This mirrors the
+  // no_assignable_candidates coverage-gap shape so the orchestrator handles both
+  // through one path. A null governor never reaches here (spawnBudgetRemaining stays
+  // null), so default-off is byte-identical.
+  if (spawnBudgetRemaining === 0 && assignments.length === 0 && candidateSurfaceIds.length > 0) {
+    return {
+      ...basePlan,
+      decision: "spawn_budget_exhausted",
+      reason: `spawn budget exhausted: max_total_spawned_agents (${policy.max_total_spawned_agents}) is fully reserved; ${candidateSurfaceIds.length} open surface(s) remain uncovered`,
+      buckets: buckets.map((bucket) => ({
+        name: bucket.name,
+        surface_ids: bucket.surface_ids,
+      })),
+      belief_assisted_priority: beliefPriority.metadata,
+      candidate_surface_ids: candidateSurfaceIds,
+      coverage_gap: {
+        kind: "spawn_budget_exhausted",
+        max_total_spawned_agents: policy.max_total_spawned_agents,
+        reserved_spawn_total: policy.max_total_spawned_agents - spawnBudgetRemaining,
+        remaining_budget: spawnBudgetRemaining,
+        uncovered_surface_ids: candidateSurfaceIds,
+      },
+      assignments: [],
+    };
+  }
+
   return {
     ...basePlan,
     decision: assignments.length > 0 ? "start_wave" : "no_assignable_candidates",
@@ -423,7 +479,7 @@ function planNextWave({
       surface_ids: bucket.surface_ids,
     })),
     belief_assisted_priority: beliefPriority.metadata,
-    candidate_surface_ids: candidateSurfaces.map((surface) => surface.id),
+    candidate_surface_ids: candidateSurfaceIds,
     assignments,
   };
 }

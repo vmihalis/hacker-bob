@@ -25,6 +25,7 @@ const {
   verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationRoundPaths,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   readSessionArtifactSummary,
@@ -101,6 +102,42 @@ test("session state contract normalizes and reads the shared state shape", () =>
   });
 });
 
+// A standalone web (IDOR) finding is an executable-flip class; seed its
+// finding-differential verified_pass arm so the grade-time standalone gate is satisfied
+// (NO amputation). Post-A1 the gate re-resolves the verdict against MAC-covered
+// offensive-runs rows, so seed a real signed exploited_safely positive +
+// blocked_by_defense control (high severity) + the verdict line binding them.
+function seedFindingDifferentialArm(domain, findingId = "F-1") {
+  const { appendJsonlLine } = require("../mcp/lib/storage.js");
+  const surfaceId = "surface:billing-profile";
+  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId,
+    source: "offensive_runs", positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
+}
+
 function findingInput(domain, overrides = {}) {
   return {
     target_domain: domain,
@@ -114,6 +151,9 @@ function findingInput(domain, overrides = {}) {
     impact: "Cross-tenant billing metadata disclosure.",
     validated: true,
     auth_profile: "attacker",
+    // Bind the finding to the surface its executed-flip arm is signed on, so the
+    // grade-time finding-differential surface bind (B1) is satisfied.
+    surface_id: "surface:billing-profile",
     // Cross-tenant billing IDOR: network-reachable, low-privilege attacker
     // tenant, confidentiality impact.
     cvss_inputs: {
@@ -424,6 +464,9 @@ test("grade verdict store requires final verification and valid evidence before 
 
     const missingEvidenceDomain = "grade-missing-evidence.example.com";
     seedFinalVerification(missingEvidenceDomain);
+    // Seed the standalone-finding arm so the (earlier) finding-differential gate is
+    // satisfied and the EVIDENCE gate under test is the one that blocks the grade.
+    seedFindingDifferentialArm(missingEvidenceDomain, "F-1");
     assert.throws(
       () => writeGradeVerdict({
         target_domain: missingEvidenceDomain,
@@ -437,6 +480,7 @@ test("grade verdict store requires final verification and valid evidence before 
     const domain = "grade-store.example.com";
     seedFinalVerification(domain);
     writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+    seedFindingDifferentialArm(domain, "F-1");
     const written = JSON.parse(writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",

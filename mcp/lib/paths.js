@@ -148,6 +148,26 @@ function reproVerifiedJsonlPath(domain) {
   return path.join(sessionDir(domain), "repro-verified.jsonl");
 }
 
+// FV-confirm ledger. Written ONLY by bob_verify_invariant_differential
+// (invariant-runner.js::verifyInvariantDifferential) and audit-graded below, so an
+// FV verified_pass cannot be hand-forged via the Write tool. The proof-bundle gate
+// requires a VERIFIED_PASS record here whose positive/control run hashes match the
+// bundle's invariant artifact — a bare single-run pass can no longer mint verified.
+function invariantVerifiedJsonlPath(domain) {
+  return path.join(sessionDir(domain), "invariant-verified.jsonl");
+}
+
+// Web-standalone finding-differential ledger. Written ONLY by
+// bob_verify_finding_differential (finding-differential-verifier.js) and
+// audit-graded below, so a verified_pass cannot be hand-forged via the Write
+// tool. The grade-time gate for standalone non-oracle reportable findings
+// (auth-bypass, IDOR, SSRF, business-logic, info-disclosure, races) requires a
+// VERIFIED_PASS record here bound by finding_id whose positive/control run hashes
+// flip on the SAME surface — a bare single declared row no longer mints verified.
+function findingDifferentialVerifiedJsonlPath(domain) {
+  return path.join(sessionDir(domain), "finding-differential-verified.jsonl");
+}
+
 function sessionNucleusPath(domain) {
   return path.join(sessionDir(domain), "session-nucleus.json");
 }
@@ -337,6 +357,14 @@ function auditReportsJsonlPath(domain) {
   return path.join(sessionDir(domain), "audit-reports.jsonl");
 }
 
+// The per-session registry of advisory candidate mechanism templates. MCP-owned
+// (written only by bob_register_mechanism_template) but explicitly NOT
+// audit-graded: a candidate is tier-3 advisory data that ranks/seeds attention
+// and re-verifies on every reuse, never a verdict. Agent-readable, MCP-write-only.
+function mechanismCandidatesJsonlPath(domain) {
+  return path.join(sessionDir(domain), "mechanism-candidates.jsonl");
+}
+
 function invariantRunsJsonlPath(domain) {
   return path.join(sessionDir(domain), "invariant-runs.jsonl");
 }
@@ -410,6 +438,16 @@ function verificationAttemptsDir(domain) {
 
 function verificationReplayLeaseDir(domain) {
   return path.join(sessionDir(domain), "verification-replay-leases");
+}
+
+// Staging area for finding-keyed verification-round partials. Each per-finding
+// worker writes ONE file here (filename = sha256(round:finding_id)); the server
+// unions all partials into the single round document at commit time. This dir is
+// scratch, not audit-graded — the committed round document remains the only
+// MCP-owned audit-graded round artifact (verificationRoundPaths).
+function verificationRoundPartialDir(domain, round) {
+  const normalizedRound = assertEnumValue(round, VERIFICATION_ROUND_VALUES, "round");
+  return path.join(sessionDir(domain), "verification-round-partials", normalizedRound);
 }
 
 function reportMarkdownPath(domain) {
@@ -576,6 +614,16 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // MCP-write-only so a reproduction verdict cannot be hand-forged; the O-P4
   // claim gate grades on it.
   "repro-verified.jsonl",
+  // FV-confirm: the invariant differential verified_pass ledger. MCP-write-only
+  // so an FV verified_pass cannot be hand-forged; the proof-bundle invariant gate
+  // grades on it (a bare single-run pass no longer mints verified).
+  "invariant-verified.jsonl",
+  // Web-standalone finding-differential verified_pass ledger. MCP-write-only so a
+  // standalone-class verdict cannot be hand-forged; the grade-time gate for
+  // residual reportable findings (auth-bypass/IDOR/SSRF/business-logic/info-
+  // disclosure/races) grades on it. A verdict mints verified ONLY when a flipping
+  // negative control bound to the finding_id resolves an executed positive.
+  "finding-differential-verified.jsonl",
   // Deliberate asymmetry: repo-command-runs.jsonl is MCP-owned but not
   // audit-graded; offensive-runs.jsonl is both because exploit-proof claims
   // are structurally rejected unless backed by a real row in this ledger.
@@ -695,6 +743,10 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "claim-clusters.jsonl",
   "chain-tree.jsonl",
   "audit-reports.jsonl",
+  // Advisory tier-3 candidate-mechanism registry. MCP-write-only (an agent Write
+  // is blocked) but NOT audit-graded — it carries leads that re-verify on reuse,
+  // never a hash-bound verdict the grader reads.
+  "mechanism-candidates.jsonl",
   "invariant-runs.jsonl",
   "schema-contracts.jsonl",
   "doc-delta-results.json",
@@ -730,6 +782,13 @@ const HOOK_MCP_OWNED_DIRS = Object.freeze([
   "repo-runs",
   "repo-work",
   "repo-checkouts",
+  // Finding-keyed verification-round partial staging. MCP-owned (write-fenced
+  // from agents) NOT because the partials are audit-graded — they are not; the
+  // committed round document is the only audit-graded artifact — but because a
+  // partial is unioned verbatim into that round at commit, so a forgeable
+  // worker-Write here would poison the audit-graded union. The server stages
+  // each partial via stageVerificationRoundPartial (validated + attempt-bound).
+  "verification-round-partials",
 ]);
 
 // Compact scratch / discovery / report-INPUT artifacts the agent may Write.
@@ -964,6 +1023,9 @@ const SESSION_ROOT_RESOLVER_EXTRA_ARGS = Object.freeze({
   harnessPath: ["H-1"],
   seedCorpusEntryDir: ["SC-1"],
   waveAssignmentsPath: [1],
+  // Per-round partial staging dir takes a round enum; probe one round so the
+  // inventory classifies the path by its MCP-owned parent dir membership.
+  verificationRoundPartialDir: ["brutalist"],
 });
 
 // Returns every session-root path a resolver in this module produces, as
@@ -1060,6 +1122,7 @@ module.exports = {
   techniquePackReadsJsonlPath,
   handoffSigningKeyPath,
   auditReportsJsonlPath,
+  mechanismCandidatesJsonlPath,
   authDifferentialResultsPath,
   evmRoleTableResultsPath,
   agentRunsJsonlPath,
@@ -1074,6 +1137,8 @@ module.exports = {
   docDeltaResultsPath,
   frontierEventsJsonlPath,
   invariantRunsJsonlPath,
+  invariantVerifiedJsonlPath,
+  findingDifferentialVerifiedJsonlPath,
   isAuditGradedPath,
   legacySessionsRoot,
   reportAmendmentsJsonlPath,
@@ -1105,6 +1170,7 @@ module.exports = {
   verificationAttemptsDir,
   verificationManifestPath,
   verificationReplayLeaseDir,
+  verificationRoundPartialDir,
   verificationRoundPaths,
   verificationSnapshotPath,
   waveAssignmentsPath,

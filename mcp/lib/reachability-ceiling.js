@@ -26,6 +26,7 @@ const {
 } = require("./finding-contracts.js");
 const {
   normalizeVerificationRoundDocument,
+  reclampSeveritiesAgainstFreeze,
 } = require("./verification-round-store.js");
 
 const REACHABILITY_DISPOSITION_VALUES = Object.freeze([
@@ -554,10 +555,27 @@ function resolveFindingReachability({ domain, findingId } = {}) {
 function readFinalVerificationResults(domain) {
   const paths = verificationRoundPaths(domain, "final");
   const document = loadJsonDocumentStrict(paths.json, "final verification round JSON");
-  return normalizeVerificationRoundDocument(document, {
+  const results = normalizeVerificationRoundDocument(document, {
     expectedDomain: domain,
     expectedRound: "final",
   }).results;
+  // READ-TIME RE-CLAMP (single chokepoint): re-apply the frozen-baseline severity
+  // clamp so finalSeverityByFinding, finalReportableFindingSeverities, and
+  // requireFinalReportableSeveritySet all inherit it — compose and grade agree by
+  // construction. A runtime-indirection rewrite of verification-final.json that
+  // inflates a finding above its demonstrated baseline re-reads as the baseline; a
+  // MAC-armed proven rise keeps its higher value. reclampSeveritiesAgainstFreeze
+  // mutates result.severity DOWN only (never raises) and fails closed identically
+  // to the write-time clamp (a corrupt freeze throws STATE_CONFLICT).
+  const decisions = reclampSeveritiesAgainstFreeze(domain, results);
+  for (const result of results) {
+    if (!result || typeof result.finding_id !== "string") continue;
+    const decision = decisions.get(result.finding_id);
+    if (decision && SEVERITY_VALUES.includes(decision.severity)) {
+      result.severity = decision.severity;
+    }
+  }
+  return results;
 }
 
 function finalSeverityByFinding(domain) {

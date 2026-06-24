@@ -27,21 +27,34 @@ const DEFAULT_WAVE_TASK_BUDGET = Object.freeze({
 
 const DEFAULT_QUEUE_POLICY = Object.freeze({
   version: 1,
-  max_parallel_tasks: 4,
+  // WIDTH/PARALLELISM knobs below are CAPS, not targets: the actual wave is
+  // min(candidate surfaces, cap), so on a small target the run stays small. The
+  // cross-role fan-out default RAISES these caps so width reaches the real
+  // surface/cell count without an artificial throttle; the in-flight host-pool
+  // cap (max_concurrent_evaluators) is the sized peak-load safety knob, and the
+  // lifetime governor (max_total_spawned_agents) stays null = unbounded fixpoint
+  // so coverage is never bounded. An operator restores the old conservative
+  // profile in one bob_set_queue_policy call via LEAN_PROFILE below.
+  max_parallel_tasks: 128,
   priority_order: ["critical", "high", "medium", "low"],
   stale_after_ms: 24 * 60 * 60 * 1000,
   close_blocked_on_freeze: false,
-  standard_wave_target: 4,
-  standard_wave_max: 6,
-  deep_wave_target: 6,
-  deep_wave_max: 8,
-  // First-class bounded-concurrency cap on the number of evaluators in flight
-  // at once, independent of per-wave target/max. When set, planNextWave clamps
-  // BOTH the effective target and the effective max to this value before
-  // selecting assignments, so the cap is enforced regardless of bucket overflow
-  // rules. null leaves wave fan-out governed solely by the *_wave_target/max
-  // fields (backward compatible — behavior is unchanged when unset).
-  max_concurrent_evaluators: null,
+  standard_wave_target: 64,
+  standard_wave_max: 128,
+  deep_wave_target: 64,
+  deep_wave_max: 128,
+  // IN-FLIGHT axis. The bounded-concurrency cap on the number of evaluators
+  // running AT ONCE, independent of per-wave target/max. This is the real safety
+  // knob for lifting width: it bounds peak concurrent load on the host pool, not
+  // the lifetime total. When set, planNextWave clamps BOTH the effective target
+  // and the effective max to this value before selecting assignments, so the cap
+  // is enforced regardless of bucket overflow rules; the per-wave clamp plus
+  // sequential wave settle bind concurrency across waves. It does NOT bound the
+  // cumulative number of agents a session may ever spawn — that LIFETIME axis is
+  // max_total_spawned_agents below. Sized to 128: the in-flight pool is shared by
+  // wave nesting and the cell floor, and effectiveConcurrencyCap re-clamps it per
+  // host (claude/codex self-manage; finite-pool hosts cap to their ceiling).
+  max_concurrent_evaluators: 128,
   default_wave_task_lens: "surface_scout",
   default_wave_task_budget: { ...DEFAULT_WAVE_TASK_BUDGET },
   // Y.3 (D16) — operator-extensible friction scanners. Default empty;
@@ -70,40 +83,66 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   // leads. Default FALSE preserves Y.2-shipped surface-leads recording
   // behavior; operator opt-in via bob_set_queue_policy.
   lead_rationale_required_when_below_threshold: false,
-  // CB-C1 — opt-in belief-assisted scheduler scoring. When enabled, the wave
-  // planner reads advisory belief rankings and residual priority hints, then
-  // feeds their score through the existing priority/ranking path. Default false
-  // preserves the current scheduler and makes the mode disableable per session.
-  belief_assisted_priority_enabled: false,
+  // CB-C1 — belief-assisted scheduler scoring is default-ON and advisory-when-on.
+  // The wave planner reads advisory belief rankings and residual priority hints,
+  // then feeds their score through the existing priority/ranking path. The mode
+  // only ever REORDERS candidates within a single priority band — it never crosses
+  // a band, never drops or adds a node, and never gates closure, verdict, or claim.
+  // When no belief signals are fed, the belief map is empty and the ordering is
+  // byte-identical to the no-belief path, so the advisory engages only once executed
+  // outcomes feed signals. An explicit `false` from an operator disables it per
+  // session (the assertBoolean fallback only applies to null inputs).
+  belief_assisted_priority_enabled: true,
   belief_assisted_priority_seed: "belief-scheduler-priority",
   belief_assisted_priority_rank_limit: 25,
-  // E2 — opt-in residual-anomaly depth trigger. When enabled, the cell-floor
-  // producer re-proposes covered cells on residual-flagged surfaces as Tier-2
-  // depth re-probes (advisory deepening dispatched after all Tier-1 breadth).
-  // Default false: no residual is read and no Tier-2 cell is minted, so the
-  // floor is byte-identical. Diagnostic/non-gating — a Tier-2 re-probe never
-  // blocks closure (the gate counts only the Tier-1 floor).
-  residual_depth_reprobe_enabled: false,
+  // E2 — residual-anomaly depth trigger is default-ON. The cell-floor producer
+  // re-proposes covered cells on residual-flagged surfaces as Tier-2 depth
+  // re-probes (advisory deepening dispatched after all Tier-1 breadth). Default-ON:
+  // residual flags advisory Tier-2 re-probes dispatched after all Tier-1 breadth;
+  // a Tier-2 re-probe never blocks closure (the gate counts only the Tier-1 floor).
+  residual_depth_reprobe_enabled: true,
   // CN (coverage-nesting) — MCP-owned bound on bounded recursive evaluator
   // fan-out. The brain owns the decomposition decision (which
   // (bug_class x auth_role) child cells to probe) and the budget; the host
   // CLI is the muscle (native nested spawn on Claude/Codex, flat extra wave
   // assignments on Kimi/generic). `max_spawn_depth` counts evaluator spawn
-  // levels below the orchestrator: 1 = today's flat topology (per-surface
-  // evaluators are leaves, NO fan-out — fully backward compatible); 2 lets a
-  // per-surface evaluator spawn one level of child sub-evaluators; etc. The
-  // per-host nesting ceiling (e.g. Claude Code's fixed depth 5) further clamps
-  // this via the adapter capability descriptor. `max_spawn_children` caps the
-  // child cells a single fan-out plan may mint. Default depth 1 keeps nesting
-  // OFF until an operator opts in via bob_set_queue_policy.
-  max_spawn_depth: 1,
-  max_spawn_children: 8,
-  // NS-5 (CN Step B) — the session-wide spawn budget governor. null = unbounded
-  // (preserves today's behavior exactly, with max_spawn_depth:1 above); when set, the MCP plan
-  // emission bounds the worst-case fan-out tree so total actuated spawns stay
-  // within budget. This is the REAL governor that makes a lifted wave/concurrency
-  // clamp safe: the operator sizes it to host-pool drain capacity, not a magic
-  // number. Detective backstop is validateSpawnFanout at finalize + the host pool.
+  // levels below the orchestrator: 1 = flat topology (per-surface evaluators
+  // are leaves, NO fan-out); 2 lets a per-surface evaluator spawn one level of
+  // child sub-evaluators; etc. The cross-role fan-out default sets depth 3 so a
+  // per-surface evaluator-fanout can nest one level of (bug_class x auth_role)
+  // child cells. The per-host nesting ceiling (e.g. Claude Code's fixed depth 5)
+  // further clamps this via the adapter capability descriptor, and a non-nesting
+  // host degrades depth to 1, so the default fans deep ONLY on a self-managing
+  // host. `max_spawn_children` caps the child cells a single fan-out plan may
+  // mint (64 = the normalizeQueuePolicy max, so an operator can't be throttled
+  // below the real cell count). LEAN_PROFILE below restores depth 1 / children 8.
+  max_spawn_depth: 3,
+  max_spawn_children: 64,
+  // LIFETIME axis. The session-wide COST ceiling on the cumulative number of
+  // agents a session may EVER spawn — wave-evaluator roots, their nested
+  // descendants, AND closure cells all draw down this one budget through the
+  // spawn-ledger, so it binds ACROSS waves, nesting levels, and drain cycles (not
+  // per-wave). This is the operator's total-cost limit, distinct from the
+  // in-flight peak cap (max_concurrent_evaluators above). When the budget is fully
+  // reserved but open surfaces or cells remain, the scheduler STOPS and reports a
+  // coverage gap naming the uncovered work (decision spawn_budget_exhausted /
+  // selection coverage_gap) — RANK != BOUND: it never silently drops a surface and
+  // never over-spawns past the ceiling. null = unbounded = fixpoint; when set, the
+  // MCP plan emission also bounds each root's worst-case fan-out tree so nested
+  // spawns stay within budget. Detective backstop is validateSpawnFanout at
+  // finalize + the host concurrent-subagent pool.
+  // CROSS-ROLE FAN-OUT default keeps this null on purpose: the default RAISES
+  // WIDTH (depth, wave caps, in-flight cap above) WITHOUT a COVERAGE CAP. A finite
+  // lifetime default would BOUND coverage on a big target — a bounded-away surface
+  // is a severed chain link — so the default drains the cell floor to fixpoint and
+  // the in-flight cap is the only sized default safety knob (it bounds PEAK load,
+  // never TOTAL coverage). An operator who wants a lifetime cost ceiling sets this
+  // explicitly; the scheduler then STOPS+reports the coverage gap on exhaustion.
+  // normalizeQueuePolicy does NOT auto-fill a coverage-bounding governor for this
+  // shipped default (the auto-fill compares against CONSERVATIVE_WIDTH_BASELINE and
+  // exempts the byte-equal default); raising a knob ABOVE the default re-arms it.
+  // NS-5 — RANK != BOUND: the shipped default keeps this null (unbounded fixpoint,
+  // no coverage cap); the off-path floor is one lean override away.
   max_total_spawned_agents: null,
   // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that the
   // listed partial surfaces are acknowledged and may pass the
@@ -247,13 +286,35 @@ const CLAMP_CEILING = 4096;
 // budget. depth<=1 (default-off) keeps it null => byte-identical.
 const DEFAULT_NESTING_SPAWN_BUDGET = 512;
 
-// CN (coverage-nesting) Step B — the named max-coverage profile. An operator opts
-// into the full nested + maxed-cell-floor regime in ONE bob_set_queue_policy call by
-// passing this as the policy. depth 3 + 64-wide fan-out, the cell floor + waves
-// scaled past the old 128 clamp, all bounded by max_total_spawned_agents (the
-// governor) so the worst-case spawn tree fits the host pool. Cross-guards
-// (wave_max >= wave_target) are pre-satisfied. NOT a default — DEFAULT_QUEUE_POLICY
-// stays nesting-off; this is the explicit opt-in.
+// The FROZEN conservative width/depth baseline — the old shipped-lean values the
+// auto-fill governor compares against. DEFAULT_QUEUE_POLICY now ships the
+// cross-role fan-out profile (depth 3, wave caps 64/128, in-flight cap 128) with
+// a null lifetime governor, so the auto-fill can no longer reference the live
+// default to decide "is this raised?" (the default IS raised). This frozen
+// snapshot is the fixed reference: a normalized policy whose width/depth knobs
+// EXCEED this baseline arms the safety governor; a policy AT OR BELOW it (the
+// lean override) keeps the governor null. The shipped default exceeds this
+// baseline but is exempted separately (see normalizeQueuePolicy) so its null
+// governor — the unbounded fixpoint, the no-coverage-cap invariant — survives.
+const CONSERVATIVE_WIDTH_BASELINE = Object.freeze({
+  max_spawn_depth: 1,
+  standard_wave_target: 4,
+  standard_wave_max: 6,
+  deep_wave_target: 6,
+  deep_wave_max: 8,
+  max_concurrent_evaluators: 8,
+});
+
+// CN (coverage-nesting) — the named cost-CEILINGED coverage profile. An operator
+// opts into the full nested + maxed-cell-floor regime WITH a finite lifetime cost
+// ceiling in ONE bob_set_queue_policy call by passing this as the policy. depth 3 +
+// 64-wide fan-out, the cell floor + waves scaled past the old 128 clamp, all
+// bounded by max_total_spawned_agents:512 (the governor) so the worst-case spawn
+// tree fits a budget. Cross-guards (wave_max >= wave_target) are pre-satisfied.
+// It differs from the shipped DEFAULT_QUEUE_POLICY ONLY by setting the lifetime
+// governor to 512: the default is byte-identical on width/depth/concurrency but
+// keeps the governor null (unbounded fixpoint, no coverage cap). Choose this
+// profile when a total-cost ceiling is wanted; the default fans out without one.
 const MAX_COVERAGE_PROFILE = Object.freeze({
   max_spawn_depth: 3,
   max_spawn_children: 64,
@@ -265,6 +326,44 @@ const MAX_COVERAGE_PROFILE = Object.freeze({
   deep_wave_target: 64,
   deep_wave_max: 128,
 });
+
+// The named LEAN profile — the inverse of MAX_COVERAGE_PROFILE. An operator opts
+// OUT of cross-role fan-out in ONE bob_set_queue_policy call, restoring the old
+// conservative single-recon / flat-evaluator profile: depth 1 (no nesting), the
+// 4/6 standard and 6/8 deep wave caps, in-flight cap unset, and a null lifetime
+// governor. normalizeQueuePolicy(LEAN_PROFILE) is byte-identical on width/depth to
+// the old shipped conservative run and keeps the governor null (the lean width is
+// at/below CONSERVATIVE_WIDTH_BASELINE, so the auto-fill does not arm). The flip
+// changed the DEFAULT, not the FLOOR — lean mode is one override away.
+const LEAN_PROFILE = Object.freeze({
+  max_spawn_depth: 1,
+  max_spawn_children: 8,
+  max_concurrent_evaluators: null,
+  max_parallel_tasks: 4,
+  max_total_spawned_agents: null,
+  standard_wave_target: 4,
+  standard_wave_max: 6,
+  deep_wave_target: 6,
+  deep_wave_max: 8,
+});
+
+// True when a normalized policy's width/depth knobs are byte-equal to the shipped
+// DEFAULT_QUEUE_POLICY — i.e. the operator passed NO width/depth override and is
+// running the cross-role fan-out default as shipped. This is the auto-fill exempt
+// case: the shipped default's raised width is deliberate and stays governor-null
+// (the unbounded fixpoint). Any single knob differing from the default falls
+// through to the baseline comparison, so an operator who raises a knob ABOVE the
+// default still arms the safety governor.
+function widthDepthMatchesShippedDefault(policy) {
+  return (
+    policy.max_spawn_depth === DEFAULT_QUEUE_POLICY.max_spawn_depth &&
+    policy.standard_wave_target === DEFAULT_QUEUE_POLICY.standard_wave_target &&
+    policy.standard_wave_max === DEFAULT_QUEUE_POLICY.standard_wave_max &&
+    policy.deep_wave_target === DEFAULT_QUEUE_POLICY.deep_wave_target &&
+    policy.deep_wave_max === DEFAULT_QUEUE_POLICY.deep_wave_max &&
+    policy.max_concurrent_evaluators === DEFAULT_QUEUE_POLICY.max_concurrent_evaluators
+  );
+}
 
 function normalizeQueuePolicy(input = {}) {
   const policy = {
@@ -322,9 +421,17 @@ function normalizeQueuePolicy(input = {}) {
           "subdomain_enum_circuit_breaker_threshold",
           { max: 65536 },
         ),
+    // The in-flight cap can be EXPLICITLY cleared to null. Now that the shipped
+    // default is a sized 128, an operator (e.g. LEAN_PROFILE) restoring the old
+    // conservative "no in-flight cap, waves governed solely by the wave caps" must
+    // be able to request null and get null back, distinct from omitting the key
+    // (which inherits the sized default). An explicitly-present null key resolves
+    // to null; an absent key inherits the default; any other value is normalized.
     max_concurrent_evaluators:
       input.max_concurrent_evaluators == null
-        ? DEFAULT_QUEUE_POLICY.max_concurrent_evaluators
+        ? (Object.prototype.hasOwnProperty.call(input, "max_concurrent_evaluators")
+          ? null
+          : DEFAULT_QUEUE_POLICY.max_concurrent_evaluators)
         : normalizePositiveInteger(
           input.max_concurrent_evaluators,
           "max_concurrent_evaluators",
@@ -379,13 +486,40 @@ function normalizeQueuePolicy(input = {}) {
       normalizePartialSurfaceAcknowledgements(input.partial_surface_advance_acknowledgements),
   };
   policy.priority_order = Array.from(new Set(policy.priority_order));
-  // Nesting opt-in must never be ungoverned: lifting max_spawn_depth past 1 without a
-  // session spawn budget would expose the large CLAMP_CEILING width with no preventive
-  // spawn-tree bound (the dispatch ledger + read-path width bound only engage when
-  // max_total_spawned_agents is set). Default it to a safe budget so the governor is
-  // always live when nesting is on. depth<=1 keeps it null => byte-identical default-off.
-  if (policy.max_spawn_depth > 1 && policy.max_total_spawned_agents == null) {
-    policy.max_total_spawned_agents = DEFAULT_NESTING_SPAWN_BUDGET;
+  // The auto-fill safety governor — RANK != BOUND. Lifting WIDTH (wave size,
+  // concurrency) or DEPTH (nesting) without a sized lifetime governor would expose
+  // the large CLAMP_CEILING width with no binding total ceiling, so an unset
+  // governor is filled with a safe budget WHENEVER the normalized width/depth knobs
+  // EXCEED the frozen CONSERVATIVE_WIDTH_BASELINE. Two carve-outs keep the contract:
+  //
+  //   (a) The SHIPPED cross-role fan-out DEFAULT is exempt. Its width/depth knobs
+  //       exceed the baseline, but when they are byte-equal to DEFAULT_QUEUE_POLICY
+  //       (i.e. the operator passed NO width/depth override) the governor stays null
+  //       — the unbounded fixpoint, the no-coverage-cap invariant. The default
+  //       RAISES width WITHOUT a coverage cap, by design; the in-flight cap is its
+  //       only sized default safety knob. Compared against the frozen baseline (NOT
+  //       the live, now-raised default) so the comparison can't self-reference away.
+  //
+  //   (b) An EXPLICIT max_total_spawned_agents is never overridden (the field's
+  //       input!=null branch above already honored it; this only fills a null one).
+  //
+  // Net: the shipped default keeps governor null (fixpoint); an operator who raises
+  // a knob ABOVE the default gets the safety auto-fill; the lean override (width at
+  // or below the baseline) stays governor-null and byte-identical to the old
+  // shipped conservative run.
+  if (policy.max_total_spawned_agents == null && !widthDepthMatchesShippedDefault(policy)) {
+    const widthDepthRaised = (
+      policy.max_spawn_depth > CONSERVATIVE_WIDTH_BASELINE.max_spawn_depth ||
+      policy.standard_wave_max > CONSERVATIVE_WIDTH_BASELINE.standard_wave_max ||
+      policy.standard_wave_target > CONSERVATIVE_WIDTH_BASELINE.standard_wave_target ||
+      policy.deep_wave_max > CONSERVATIVE_WIDTH_BASELINE.deep_wave_max ||
+      policy.deep_wave_target > CONSERVATIVE_WIDTH_BASELINE.deep_wave_target ||
+      (Number.isInteger(policy.max_concurrent_evaluators) &&
+        policy.max_concurrent_evaluators > CONSERVATIVE_WIDTH_BASELINE.max_concurrent_evaluators)
+    );
+    if (widthDepthRaised) {
+      policy.max_total_spawned_agents = DEFAULT_NESTING_SPAWN_BUDGET;
+    }
   }
   if (policy.standard_wave_max < policy.standard_wave_target) {
     throw new Error("standard_wave_max must be >= standard_wave_target");
@@ -441,7 +575,9 @@ function writeQueuePolicy(domain, policy) {
 
 module.exports = {
   CLAMP_CEILING,
+  CONSERVATIVE_WIDTH_BASELINE,
   DEFAULT_NESTING_SPAWN_BUDGET,
+  LEAN_PROFILE,
   MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
   DEFAULT_WAVE_TASK_BUDGET,

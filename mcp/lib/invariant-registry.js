@@ -146,8 +146,10 @@ const REGISTRY = Object.freeze({
     kind: "invariant",
     class: "nested_fanout",
     title:
-      "Default-off: DEFAULT_QUEUE_POLICY keeps max_spawn_depth=1 + "
-      + "max_total_spawned_agents=null, so behavior is unchanged until an operator opts in.",
+      "RANK != BOUND: DEFAULT_QUEUE_POLICY raises width/depth but keeps "
+      + "max_total_spawned_agents=null (unbounded fixpoint, no coverage cap). The "
+      + "shipped default is exempt from the governor auto-fill; raising a knob above "
+      + "it re-arms the safety governor; a lean override restores the conservative floor.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "DEFAULT_QUEUE_POLICY" }),
       Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "NS-5" }), // tag anchor

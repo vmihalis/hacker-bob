@@ -39,6 +39,22 @@ const RESERVED_ROW_KEYS = new Set([
   "demonstrated_severity", "surface_id", "row_mac",
 ]);
 
+// The frozen set of offensive_outcome values a producer may sign. A signed row is
+// an EXECUTED OBSERVATION: the positive demonstrated the issue (exploited_safely)
+// or the server affirmatively DENIED a safe/authorized variant that actually ran
+// (blocked_by_defense / blocked_by_infra — the negative control leg of a finding
+// differential). A blocked observation is still a completed execution (exit_code 0;
+// "blocked" is the server's response, not a process failure), so resolveExecutedRow's
+// non-error/non-timed-out/non-dry-run preconditions hold for it identically.
+//
+// DELIBERATELY ABSENT: blocked_by_design / blocked_operator_pii are PRE-request
+// refusals — the producer never fired a request, so there is no executed observation
+// to sign. They stay unsigned (row_written:false). exploited_unsafely is likewise
+// never a signable outcome here. Anything outside this set is fail-closed rejected.
+const OFFENSIVE_ROW_OUTCOMES = Object.freeze(new Set([
+  "exploited_safely", "blocked_by_defense", "blocked_by_infra",
+]));
+
 // run_id is a single clean [A-Za-z0-9-] segment so sha256OffensiveCaptureSecure
 // (claim-freeze.js) accepts it as a direct child leaf of offensive-runs/.
 function newRunId(prefix) {
@@ -198,7 +214,20 @@ function buildAndSignOffensiveRow(domain, {
   stderrContent,
   relationBooleans = {},
   demonstratedSeverityOverride,
+  offensiveOutcome = "exploited_safely",
 }) {
+  // The offensive_outcome is a CONTROLLED, registry-bounded field. The positive
+  // demonstrates the issue (exploited_safely); a negative control leg signs the
+  // server's affirmative denial of a safe variant that actually ran (blocked_by_*).
+  // Fail-closed reject of anything outside the frozen set keeps pre-request refusals
+  // (blocked_by_design / blocked_operator_pii) — which have no executed observation —
+  // permanently unsigned, and an arbitrary string can never become a signed outcome.
+  if (!OFFENSIVE_ROW_OUTCOMES.has(offensiveOutcome)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `offensiveOutcome must be one of [${[...OFFENSIVE_ROW_OUTCOMES].join(", ")}]: ${offensiveOutcome}`,
+    );
+  }
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a
   // generic caller must not be able to smuggle a traversal segment into the
   // capture/ledger write. The IDOR producer hardcoded "idor-"; re-impose that
@@ -291,13 +320,18 @@ function buildAndSignOffensiveRow(domain, {
   // STEP 3 — build the 14-field row + optional MAC-covered relation booleans
   // (honest self-documentation, NOT a soundness control). demonstrated_severity
   // is HARDCODED from the producer ceiling, never agent-supplied/content-derived.
+  // offensive_outcome is the registry-bounded executed observation (positive or the
+  // negative control leg), validated above. exit_code stays 0: a blocked observation
+  // is a COMPLETED execution (the server denied the safe variant), not a process
+  // failure, so it is as non-forgeable as the positive (same capture-first/sign-last
+  // discipline, same MAC coverage).
   const row = {
     version: 1,
     target_domain: domain,
     run_id: runId,
     tool_id: toolId,
     target: canonicalTarget,
-    offensive_outcome: "exploited_safely",
+    offensive_outcome: offensiveOutcome,
     dry_run: false,
     timed_out: false,
     command_hash: commandHash,

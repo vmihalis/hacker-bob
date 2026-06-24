@@ -126,6 +126,14 @@ function codexLaunchTemplates() {
       "Wait with `wait_agent`. If routing fails or returns zero surfaces, report the error and stop. After reading the result, call `close_agent` for the host agent.",
       "```",
     ].join("\n"),
+    "{{SPAWN_RECON_ANGLE_AGENT}}": [
+      "```text",
+      `For each plan angle, use Codex spawn_agent for ${workerLabel("surface-discovery")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include `Bob role: surface-discovery-agent`, `DOMAIN=[domain]`, `SESSION=~/hacker-bob-sessions/[domain]`, `ANGLE=[angle.id]`, and the full `surface-discovery` contract from Codex Worker Role Contracts below.",
+      "Wait with `wait_agent` for all angle workers to drain, then spawn the `ANGLE=assembly` worker. After reading the results, call `close_agent` for the host agent.",
+      "```",
+    ].join("\n"),
     "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
       `For each assignment, use Codex spawn_agent for the evaluator family chosen by the MCP capability router (\`assignment.evaluator_agent\` from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,

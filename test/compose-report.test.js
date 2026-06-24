@@ -23,12 +23,51 @@ const composeReportTool = require("../mcp/lib/tools/compose-report.js");
 const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const { appendJsonlLine } = require("../mcp/lib/storage.js");
+const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
 const {
   claimsJsonlPath,
+  findingDifferentialVerifiedJsonlPath,
+  offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
+
+// The web surface the CVSS-render tests bind their reportable medium+ finding to, so a
+// matching executed-flip arm satisfies the C1 report gate while the CVSS block renders.
+const CVSS_WEB_SURFACE = "surface:orders";
+
+// Seed a genuine, re-derivable finding-differential verified_pass arm (a real MAC-signed
+// exploited_safely positive + blocked_by_defense control on CVSS_WEB_SURFACE + the verdict
+// line that binds them) so bob_compose_report's executed-flip report-door gate is satisfied for a
+// final-reportable medium+ web finding. positiveSeverity must be >= the finding severity.
+function seedComposeExecutedArm(domain, findingId, { positiveSeverity = "high" } = {}) {
+  const mkRow = (over) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: over.run_id, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/orders/1`),
+      offensive_outcome: over.offensive_outcome, dry_run: false, timed_out: false,
+      command_hash: over.command_hash, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: positiveSeverity, surface_id: CVSS_WEB_SURFACE,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow({ run_id: "fd-positive-1", offensive_outcome: "exploited_safely", command_hash: "1".repeat(64) });
+  const control = mkRow({ run_id: "fd-control-1", offensive_outcome: "blocked_by_defense", command_hash: "2".repeat(64) });
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: CVSS_WEB_SURFACE, source: "offensive_runs",
+    positive_run_id: "fd-positive-1", positive_row_hash: offensiveRowHash(positive),
+    control_run_id: "fd-control-1", control_row_hash: offensiveRowHash(control),
+  });
+}
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -256,6 +295,9 @@ function recordWebClaim(domain, overrides = {}) {
     description: overrides.description || "An attacker can read other users' orders.",
     proof_of_concept: overrides.proof_of_concept || "curl https://audit.example.com/api/orders/2",
     validated: true,
+    // Bind to a known surface so the executed-flip report-door gate can match a seeded arm; tests
+    // that intentionally leave a finding surfaceless pass surface_id: null.
+    ...(overrides.surface_id !== undefined ? { surface_id: overrides.surface_id } : { surface_id: CVSS_WEB_SURFACE }),
     ...(overrides.cvss_inputs !== undefined ? { cvss_inputs: overrides.cvss_inputs } : {}),
   }));
 }
@@ -280,6 +322,9 @@ test("bob_compose_report renders a server-derived CVSS v3.1 + CWE block whose ve
       repro_steps: ["step 1"],
       evidence_refs: ["frontier_event:e1"],
     }]);
+    // The executed-flip report-door gate requires a binding for a final-reportable medium+
+    // finding; seed a genuine high-severity arm so the CVSS render path is reached.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "high" });
 
     const result = callTool(composeReportTool, {
       target_domain: domain,
@@ -400,6 +445,9 @@ test("bob_compose_report renders the insufficient-verified-facts marker for a le
       repro_steps: ["step 1"],
       evidence_refs: ["frontier_event:e1"],
     }]);
+    // The executed-flip report-door gate requires a binding for the reportable medium
+    // finding; a medium-severity arm satisfies the ceiling while inputs are absent.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "medium" });
 
     const result = callTool(composeReportTool, {
       target_domain: domain,
@@ -431,12 +479,16 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
       title: "Denied finding",
       cwe: "CWE-200",
       endpoint: "https://audit.example.com/api/other",
+      surface_id: "surface:other",
       cvss_inputs: { attack_vector: "network", privileges_required: "none", confidentiality: "high" },
     });
     seedFinalRound(domain, [
       { finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true, reasoning: "ok", repro_steps: ["s"], evidence_refs: ["frontier_event:e1"] },
       { finding_id: "F-2", disposition: "denied", severity: "low", reportable: false, reasoning: "no", repro_steps: ["s"], evidence_refs: ["frontier_event:e1"] },
     ]);
+    // Only F-1 is reportable medium+; seed its executed-flip arm so the report-door gate passes.
+    // F-2 is not reportable, so it never reaches the gate.
+    seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "high" });
 
     const args = {
       target_domain: domain,

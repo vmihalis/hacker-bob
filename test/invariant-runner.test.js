@@ -15,12 +15,22 @@ const {
   deriveTestNamesFromTemplate,
   renameTestFunction,
   classifyFoundryOutcome,
+  classifyFoundryViolation,
+  classifyHalmosViolation,
+  adjudicateInvariantDifferential,
+  verifyInvariantDifferential,
+  readInvariantVerifiedSummary,
   computeInvariantRunHash,
   invariantFoundryResultHash,
 } = require("../mcp/lib/invariant-runner.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
+  appendJsonlLine,
 } = require("../mcp/lib/storage.js");
+const {
+  invariantRunsJsonlPath,
+  invariantVerifiedJsonlPath,
+} = require("../mcp/lib/paths.js");
 
 function uniqueDomain(prefix = "bob-invariant-runner-test") {
   const suffix = crypto.randomBytes(4).toString("hex");
@@ -286,6 +296,10 @@ test("deriveTestNamesFromTemplate includes slot values in the generated test ide
   assert.notEqual(first.function_name, second.function_name);
 });
 
+// MINT ≠ CONFIRM: classifyFoundryOutcome maps a single run to its per-run
+// PRIMITIVE (test_passed/test_failed/...). test_passed is an OBSERVATION here, NOT
+// a verified verdict — confirmation is the differential FLIP adjudicated by
+// verifyInvariantDifferential. Do not re-couple this primitive to verification.
 test("classifyFoundryOutcome maps tests array, kind tags, and success flag", () => {
   assert.equal(classifyFoundryOutcome({ tests: [{ success: true }] }), "test_passed");
   assert.equal(classifyFoundryOutcome({ tests: [{ success: false }] }), "test_failed");
@@ -324,6 +338,9 @@ test("dry_run returns a report without writing the test file or persisting", asy
   }
 });
 
+// The persisted test_passed here is the per-run PRIMITIVE (MINT), not a verified
+// verdict (CONFIRM). A verified FV finding requires the differential flip via
+// verifyInvariantDifferential; this test only asserts the run is recorded.
 test("runInvariantForFinding writes the test file, dispatches foundry_run, and persists the result", async () => {
   const domain = uniqueDomain();
   const harness = makeHarness();
@@ -1450,4 +1467,271 @@ test("input validation rejects unsafe target_domain and missing finding/harness_
     }),
     /foundry_run/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The refuting-control requirement. classifyFoundryOutcome stays the honest
+// per-run PRIMITIVE; CONFIRM is the adjudicated FLIP over a {positive, control}
+// pair written only to the MCP-owned invariant-verified.jsonl ledger.
+// ---------------------------------------------------------------------------
+
+// Build a fully-bound invariant-runs.jsonl row: outcome derived from the
+// foundry_result, run_hash from computeInvariantRunHash — exactly as
+// runInvariantForFinding persists it, so the verifier's re-validation passes.
+function makeInvariantRunRow(domain, {
+  findingId = "F-1",
+  outcome,
+  treeRef,
+  checkoutKind = "tree",
+  templateId = "INV-REENTRANCY-CALLBACK-001",
+  contractName = "BobInvariantTest_fixture",
+  functionName = "testBobInvariant_fixture",
+  executionContextHash = "ctx-hash-shared",
+  slotValues = { a: "1" },
+} = {}) {
+  const foundryResult = outcome === "test_failed"
+    ? { tests: [{ success: false }] }
+    : { tests: [{ success: true }] };
+  const row = {
+    target_domain: domain,
+    finding_id: findingId,
+    finding_hash: null,
+    template_id: templateId,
+    slot_values: slotValues,
+    contract_name: contractName,
+    function_name: functionName,
+    execution_context_hash: executionContextHash,
+    tree_ref: treeRef || null,
+    checkout_kind: checkoutKind || null,
+    outcome,
+    foundry_result_hash: invariantFoundryResultHash(foundryResult),
+    foundry_result: foundryResult,
+    dry_run: false,
+  };
+  row.run_hash = computeInvariantRunHash(row);
+  appendJsonlLine(invariantRunsJsonlPath(domain), row);
+  return row;
+}
+
+function verifiedRecords(domain) {
+  const filePath = invariantVerifiedJsonlPath(domain);
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, "utf8")
+    .split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+}
+
+test("classifyFoundryViolation maps the per-run primitive to invariant direction", () => {
+  assert.equal(classifyFoundryViolation({ tests: [{ success: false }] }), "violated");
+  assert.equal(classifyFoundryViolation({ tests: [{ success: true }] }), "held");
+  assert.equal(classifyFoundryViolation({ kind: "foundry_fork" }), "degraded");
+  assert.equal(classifyFoundryViolation({ kind: "forge_not_in_path" }), "degraded");
+  assert.equal(classifyFoundryViolation({}), "degraded");
+});
+
+test("adjudicateInvariantDifferential reuses the repro flip rule on violation semantics", () => {
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "violated" }, controlRun: { violation: "held" },
+  }).result, "verified_pass");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "held" }, controlRun: { violation: "held" },
+  }).result, "refuted");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "violated" }, controlRun: { violation: "violated" },
+  }).result, "refuted");
+  assert.equal(adjudicateInvariantDifferential({
+    positiveRun: { violation: "degraded" }, controlRun: { violation: "held" },
+  }).result, "inconclusive");
+});
+
+test("verifyInvariantDifferential refuses a single-run pass with no control arm", () => {
+  const domain = uniqueDomain();
+  try {
+    // The exact rubber-stamp the readiness probe flagged: a bare positive run,
+    // no control. It must NOT mint a verified_pass.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    const records = verifiedRecords(domain);
+    assert.equal(records.filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential verifies a real two-sided differential", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "verified_pass");
+    const summary = readInvariantVerifiedSummary(domain);
+    assert.equal(summary.verified_pass_count, 1);
+    assert.deepEqual(summary.verified_by_finding["F-1"], {
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+      template_id: positive.template_id,
+    });
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential refuses a forgery that fails both arms", () => {
+  const domain = uniqueDomain();
+  try {
+    // A tautology-false / mis-authored assertion fails on the known-safe baseline
+    // too: no flip → refused as a harness/template artifact.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "refuted");
+    assert.match(result.reason, /no differential flip/);
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential refuses a non-reproducing claim", () => {
+  const domain = uniqueDomain();
+  try {
+    // Positive HELD on the real target: the violation did not reproduce.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target" });
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: control.run_hash,
+    });
+    assert.equal(result.result, "refuted");
+    assert.match(result.reason, /did not reproduce/);
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential returns inconclusive on a degraded arm", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // A fork_blocked control arm cannot establish the baseline.
+    const forkBlockedResult = { kind: "foundry_fork" };
+    const controlRow = {
+      target_domain: domain,
+      finding_id: "F-1",
+      finding_hash: null,
+      template_id: positive.template_id,
+      slot_values: positive.slot_values,
+      contract_name: positive.contract_name,
+      function_name: positive.function_name,
+      execution_context_hash: positive.execution_context_hash,
+      tree_ref: "fixed",
+      checkout_kind: "upstream_fix",
+      outcome: classifyFoundryOutcome(forkBlockedResult),
+      foundry_result_hash: invariantFoundryResultHash(forkBlockedResult),
+      foundry_result: forkBlockedResult,
+      dry_run: false,
+    };
+    controlRow.run_hash = computeInvariantRunHash(controlRow);
+    appendJsonlLine(invariantRunsJsonlPath(domain), controlRow);
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+      control_run_hash: controlRow.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential rejects a control bound to a different template/contract/slots", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // Control shares finding_id but is a DIFFERENT test (different execution context):
+    // not the same discriminator on a different tree.
+    const control = makeInvariantRunRow(domain, {
+      outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix",
+      executionContextHash: "ctx-hash-DIFFERENT",
+    });
+    assert.throws(
+      () => verifyInvariantDifferential({
+        target_domain: domain,
+        finding_id: "F-1",
+        positive_run_hash: positive.run_hash,
+        control_run_hash: control.run_hash,
+      }),
+      /SAME test on a different tree/,
+    );
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("verifyInvariantDifferential rejects a control on the SAME tree (non-discriminating)", () => {
+  const domain = uniqueDomain();
+  try {
+    const positive = makeInvariantRunRow(domain, { outcome: "test_failed", treeRef: "target" });
+    // Same tree_ref + checkout_kind → cannot discriminate target from control.
+    const control = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target", checkoutKind: "tree" });
+    assert.throws(
+      () => verifyInvariantDifferential({
+        target_domain: domain,
+        finding_id: "F-1",
+        positive_run_hash: positive.run_hash,
+        control_run_hash: control.run_hash,
+      }),
+      /DIFFERENT tree\/checkout/,
+    );
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("classifyHalmosViolation: ok is a single-run primitive, not a verified verdict", () => {
+  // A halmos run with no counterexample is merely "held" — alone it cannot
+  // confirm. Routed through the differential with no control arm, it is
+  // inconclusive (closes the halmos mint-ok leg).
+  assert.equal(classifyHalmosViolation({ summary: { total: 3, passed: 3, failed: 0 } }), "held");
+  assert.equal(classifyHalmosViolation({ summary: { total: 2, passed: 1, failed: 1 } }), "violated");
+  assert.equal(classifyHalmosViolation({ reason: "halmos_not_in_path" }), "degraded");
+  assert.equal(classifyHalmosViolation({ summary: { total: 0, passed: 0, failed: 0 } }), "degraded");
+  assert.equal(classifyHalmosViolation({ timed_out: true, summary: { total: 1, passed: 1, failed: 0 } }), "degraded");
+
+  const domain = uniqueDomain();
+  try {
+    // A halmos "held" persisted as a foundry-shaped primitive (test_passed), with
+    // NO control arm, yields inconclusive — never verified.
+    const positive = makeInvariantRunRow(domain, { outcome: "test_passed", treeRef: "target" });
+    const result = verifyInvariantDifferential({
+      target_domain: domain,
+      finding_id: "F-1",
+      positive_run_hash: positive.run_hash,
+    });
+    assert.equal(result.result, "inconclusive");
+    assert.equal(verifiedRecords(domain).filter((r) => r.result === "verified_pass").length, 0);
+  } finally {
+    cleanupDomain(domain);
+  }
 });

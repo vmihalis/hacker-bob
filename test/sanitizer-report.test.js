@@ -60,6 +60,94 @@ test("UBSan runtime error is recognized", () => {
   assert.equal(r.crash_class, "runtime-error");
 });
 
+test("UBSan with no stack frames attributes via the runtime-error line's /src location", () => {
+  // UBSan's DEFAULT (non-halt) mode prints "<file>:<line>:<col>: runtime error: ..."
+  // and NO backtrace. The banner line itself is the attributable source location, so
+  // src_frame is derived from it — otherwise a real UBSan finding would be REFUTED by
+  // the differential for lacking a /src root-cause frame.
+  const r = parseSanitizerReport(
+    "/src/muparser/src/muParserBase.cpp:1242:10: runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type int",
+    "",
+  );
+  assert.equal(r.crashed, true);
+  assert.equal(r.sanitizer, "ubsan");
+  assert.equal(r.crash_class, "runtime-error");
+  assert.ok(r.src_frame, "UBSan runtime-error line yields a /src src_frame");
+  assert.equal(r.src_frame.source_path, "/src/muparser/src/muParserBase.cpp");
+  assert.equal(r.src_frame.line, 1242);
+});
+
+test("UBSan rooted in a non-/src path stays unattributable (no false-quiet mint)", () => {
+  // A "runtime error:" whose location is <stdin>/relative/system has no repo-attributable
+  // /src frame; src_frame stays null so adjudicateDifferential REFUTES it as unattributable.
+  const r = parseSanitizerReport("stdin:1:1: runtime error: load of misaligned address", "");
+  assert.equal(r.crashed, true);
+  assert.equal(r.sanitizer, "ubsan");
+  assert.equal(r.src_frame, null);
+});
+
+test("UBSan with a stack prefers the stack frame over the banner-line fallback", () => {
+  const r = parseSanitizerReport(
+    "/src/foo.c:42:10: runtime error: signed integer overflow\n    #0 0x4a1b2c in compute /src/foo.c:42:10\n    #1 0x4d3e90 in LLVMFuzzerTestOneInput /src/harness.cc:27:3",
+    "",
+  );
+  assert.equal(r.src_frame.func, "compute");
+  assert.equal(r.src_frame.source_path, "/src/foo.c");
+});
+
+test("TSan data-race WARNING banner with no-0x frames: crashed + /src root-cause frame", () => {
+  // TSan emits a "WARNING: ThreadSanitizer:" banner (not "==N==ERROR:") and frames of
+  // the shape "#N <func> <file>:<line> (<module>+<offset>)" — no "0x<addr> in" prefix.
+  const txt = [
+    "==================",
+    "WARNING: ThreadSanitizer: data race (pid=12)",
+    "  Write of size 4 at 0x7b0400000040 by thread T1:",
+    "    #0 increment /src/race.c:14:7 (race+0x4a1b2c)",
+    "    #1 LLVMFuzzerTestOneInput /src/harness.cc:9 (race+0x5b2)",
+  ].join("\n");
+  const r = parseSanitizerReport(txt, "");
+  assert.equal(r.crashed, true);
+  assert.equal(r.sanitizer, "tsan");
+  assert.equal(r.crash_class, "data race");
+  assert.ok(r.src_frame);
+  assert.equal(r.src_frame.func, "increment");
+  assert.equal(r.src_frame.source_path, "/src/race.c");
+  assert.equal(r.src_frame.line, 14);
+});
+
+test("MSan use-of-uninitialized-value WARNING banner: crashed + /src root-cause frame", () => {
+  const txt = [
+    "==1==WARNING: MemorySanitizer: use-of-uninitialized-value",
+    "    #0 0x4a1b2c in parse /src/m.c:10:5",
+    "    #1 0x4d3e90 in LLVMFuzzerTestOneInput /src/h.cc:3",
+  ].join("\n");
+  const r = parseSanitizerReport(txt, "");
+  assert.equal(r.crashed, true);
+  assert.equal(r.sanitizer, "msan");
+  assert.equal(r.crash_class, "use-of-uninitialized-value");
+  assert.equal(r.src_frame.source_path, "/src/m.c");
+});
+
+test("LSan leak banner: crashed + first /src-attributable allocation frame", () => {
+  const txt = [
+    "==1==ERROR: LeakSanitizer: detected memory leaks",
+    "",
+    "Direct leak of 8 byte(s) in 1 object(s) allocated from:",
+    "    #0 0x4a1b2c in malloc",
+    "    #1 0x4d3e90 in alloc_thing /src/leak.c:7:10",
+  ].join("\n");
+  const r = parseSanitizerReport(txt, "");
+  assert.equal(r.crashed, true);
+  assert.equal(r.sanitizer, "lsan");
+  assert.equal(r.src_frame.source_path, "/src/leak.c");
+});
+
+test("MEMORY_SAFETY_SIGNAL_RE recognizes TSan/MSan WARNING banners", () => {
+  assert.equal(MEMORY_SAFETY_SIGNAL_RE.test("WARNING: ThreadSanitizer: data race"), true);
+  assert.equal(MEMORY_SAFETY_SIGNAL_RE.test("==1==WARNING: MemorySanitizer: use-of-uninitialized-value"), true);
+  assert.equal(MEMORY_SAFETY_SIGNAL_RE.test("==1==ERROR: LeakSanitizer: detected memory leaks"), true);
+});
+
 test("a bare DEDUP_TOKEN signal (no banner) is a signal but NOT a parsed crash", () => {
   // detectCrash (the broad fuzz-stats canon) fires, but parseSanitizerReport needs a
   // structured banner to call it crashed — so a stray token can't masquerade as one.

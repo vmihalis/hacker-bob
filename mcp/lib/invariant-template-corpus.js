@@ -1,8 +1,15 @@
 "use strict";
 
 const {
-  assertValidCwe,
+  canonicalizeCwe,
+  isKnownCwe,
 } = require("./cwe-catalog.js");
+
+// The tier a hardcoded corpus template carries: tier-2, confirmed, validated,
+// trusted for reuse. The trust-gradient's tier-2 exemplar is object-auth. A
+// registered candidate from the live registry is tier-3 advisory and stays
+// distinguishable; promotion (mechanism-promotion-gate.js) is the only path to 2.
+const CORPUS_TEMPLATE_TIER = 2;
 
 const TEMPLATES = Object.freeze([
   Object.freeze({
@@ -193,12 +200,18 @@ function normalizeMechanismTemplate(record) {
   }
   const id = typeof record.id === "string" && record.id.trim() ? record.id.trim() : null;
   if (!id) warnings.push("id is required");
-  let mechanismId = null;
-  try {
-    mechanismId = assertValidCwe(record.mechanism_id);
-  } catch (error) {
-    warnings.push(error.message || String(error));
+  // CWE membership is an ANNOTATION, not a drop-gate. The SHAPE floor stays: a
+  // mechanism_id must canonicalize to a CWE-N identifier (so the template names
+  // SOME mechanism class), but a canonicalized id that is not in the curated
+  // catalog now LOADS — annotated cwe_in_catalog:false — instead of nullifying
+  // the template. A free-form / novel mechanism class is admitted as tier-3
+  // advisory rather than vanishing; the executed-proof floor still gates
+  // confirmation downstream. Only a non-CWE-shaped id fails the shape check.
+  const mechanismId = canonicalizeCwe(record.mechanism_id);
+  if (!mechanismId) {
+    warnings.push(`mechanism_id must canonicalize to a CWE identifier like "CWE-79"; got ${JSON.stringify(record.mechanism_id)}`);
   }
+  const cweInCatalog = mechanismId ? isKnownCwe(mechanismId) : false;
   const requiredEntities = stringArray(record.required_entities, "required_entities", warnings);
   const interventions = stringArray(record.interventions, "interventions", warnings);
   const positiveControls = stringArray(record.positive_controls, "positive_controls", warnings);
@@ -211,19 +224,44 @@ function normalizeMechanismTemplate(record) {
   if (warnings.length > 0) {
     return { template: null, warnings };
   }
+  // Preserve the trust-gradient markers. A record that declares its own
+  // tier/candidate/claim_authority/source_tier (a registered tier-3 candidate)
+  // keeps them; a record that does not (a hardcoded corpus template) defaults to
+  // tier-2 / candidate:false (confirmed, trusted reuse). The merge that layers
+  // the live registry over the corpus relies on these markers to keep a tier-3
+  // candidate structurally distinguishable from a confirmed corpus template.
+  const declaredTier = Number.isInteger(record.tier) ? record.tier : CORPUS_TEMPLATE_TIER;
+  const isCandidate = record.candidate === true || declaredTier === 3;
+  const claimAuthority = record.claim_authority === true && !isCandidate;
+  const projected = {
+    id,
+    mechanism_id: mechanismId,
+    name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
+    description: typeof record.description === "string" ? record.description.trim() : "",
+    required_entities: requiredEntities,
+    interventions,
+    positive_controls: positiveControls,
+    negative_controls: negativeControls,
+    confounders,
+    evidence_predicate: evidencePredicate,
+    // Annotation, not a gate: catalog membership rides along for routing.
+    cwe_in_catalog: cweInCatalog,
+    // Trust-gradient markers (distinguishability). A tier-3 candidate is advisory;
+    // a tier-2 corpus template is confirmed.
+    tier: isCandidate ? declaredTier : CORPUS_TEMPLATE_TIER,
+    candidate: isCandidate,
+    claim_authority: claimAuthority,
+  };
+  if (typeof record.source_tier === "string" && record.source_tier) {
+    projected.source_tier = record.source_tier;
+  }
+  // The merely-believed marker (executed_proof:false) is preserved when present so
+  // a reader cannot lose it by inspecting only the shape keys.
+  if (isPlainObject(record.advisory_evidence)) {
+    projected.advisory_evidence = Object.freeze({ ...record.advisory_evidence });
+  }
   return {
-    template: Object.freeze({
-      id,
-      mechanism_id: mechanismId,
-      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
-      description: typeof record.description === "string" ? record.description.trim() : "",
-      required_entities: requiredEntities,
-      interventions,
-      positive_controls: positiveControls,
-      negative_controls: negativeControls,
-      confounders,
-      evidence_predicate: evidencePredicate,
-    }),
+    template: Object.freeze(projected),
     warnings: [],
   };
 }
@@ -261,9 +299,56 @@ const MECHANISM_TEMPLATES_BY_ID = (() => {
   return map;
 })();
 
-function getMechanismTemplate(id) {
+// Read the per-session live registry of tier-3 advisory candidates and run each
+// through the loader (so a registered candidate is validated identically to a
+// corpus template and carries its preserved tier markers). The frozen corpus is
+// the static tier-2 base; the registry is the additive open-vocab tier-3 layer.
+// A candidate id collision with a corpus id NEVER overwrites the confirmed corpus
+// template — the corpus base wins, so opening the vocab cannot silently demote a
+// confirmed template to advisory. The store I/O is lazy-required to avoid the
+// store<->corpus require cycle and to keep this module's frozen base load-time-pure.
+function loadRegisteredCandidates(targetDomain) {
+  if (typeof targetDomain !== "string" || !targetDomain) return [];
+  let raw = [];
+  try {
+    // eslint-disable-next-line global-require
+    const { readMechanismCandidates } = require("./mechanism-candidate-store.js");
+    raw = readMechanismCandidates(targetDomain) || [];
+  } catch {
+    return [];
+  }
+  if (raw.length === 0) return [];
+  const loaded = loadMechanismTemplates(raw);
+  return loaded.templates.filter((template) => !MECHANISM_TEMPLATES_BY_ID.has(template.id));
+}
+
+// The frozen corpus templates merged with the live per-session registry, keyed by
+// id. Corpus templates (tier-2 confirmed) win on id collision; registered
+// candidates (tier-3 advisory) layer over the top. When targetDomain is omitted
+// this returns the frozen corpus base alone (back-compat).
+function getMechanismTemplatesForDomain(targetDomain) {
+  const byId = new Map(MECHANISM_TEMPLATES_BY_ID);
+  for (const candidate of loadRegisteredCandidates(targetDomain)) {
+    if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
+  }
+  return Array.from(byId.values());
+}
+
+// Resolve a template by id. With no targetDomain this reads the frozen corpus
+// alone (back-compat: existing callers are unchanged). With a targetDomain it
+// merges the live registry so a registered tier-3 candidate is visible WITH its
+// tier marker — a consumer that grants trust reads tier and treats tier-3 as
+// advisory-only, so a candidate is never read as confirmed.
+function getMechanismTemplate(id, targetDomain) {
   if (typeof id !== "string") return null;
-  return MECHANISM_TEMPLATES_BY_ID.get(id) || null;
+  const fromCorpus = MECHANISM_TEMPLATES_BY_ID.get(id) || null;
+  if (fromCorpus) return fromCorpus;
+  if (typeof targetDomain === "string" && targetDomain) {
+    for (const candidate of loadRegisteredCandidates(targetDomain)) {
+      if (candidate.id === id) return candidate;
+    }
+  }
+  return null;
 }
 
 function getTemplatesForClass(vulnerabilityClass) {
@@ -361,8 +446,10 @@ module.exports = {
   OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE,
   TEMPLATES,
   SUPPORTED_CLASSES,
+  CORPUS_TEMPLATE_TIER,
   getTemplatesForClass,
   getMechanismTemplate,
+  getMechanismTemplatesForDomain,
   loadMechanismTemplates,
   normalizeMechanismTemplate,
   suggestInvariantsForFinding,

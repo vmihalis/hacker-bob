@@ -5,6 +5,7 @@ const {
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
   GRADE_VERDICT_VALUES,
+  SEVERITY_VALUES,
 } = require("./constants.js");
 const {
   assertEnumValue,
@@ -42,6 +43,7 @@ const {
 } = require("./verification-finding-id-adapter.js");
 const {
   normalizeVerificationRoundDocument,
+  reclampSeveritiesAgainstFreeze,
 } = require("./verification-round-store.js");
 const {
   finalSeverityByFinding,
@@ -255,6 +257,21 @@ function requireFinalReportableSeveritySet(domain, findingIdSet) {
       `Final verification must exist and be valid before grading: ${error.message || String(error)}`,
     );
   }
+  // READ-TIME RE-CLAMP: re-apply the frozen-baseline severity clamp before
+  // projecting the reportable medium+ set, so a runtime-indirection rewrite of
+  // verification-final.json that inflates a finding above its demonstrated baseline
+  // re-reads as the baseline here too — keeping this grade-side projection in lockstep
+  // with finalSeverityByFinding / finalReportableFindingSeverities and the compose
+  // medium+ set. Only LOWERS an above-baseline unproven severity; a MAC-armed proven
+  // rise keeps its higher value. Fail-closed identically (a corrupt freeze throws).
+  const decisions = reclampSeveritiesAgainstFreeze(domain, normalized.results);
+  for (const result of normalized.results) {
+    if (!result || typeof result.finding_id !== "string") continue;
+    const decision = decisions.get(result.finding_id);
+    if (decision && SEVERITY_VALUES.includes(decision.severity)) {
+      result.severity = decision.severity;
+    }
+  }
   return new Set(
     normalized.results
       .filter((result) => result.reportable && isMediumOrHigher(result.severity))
@@ -439,6 +456,34 @@ function writeGradeVerdict(args) {
       {
         remediation:
           "Run bob_verify_repro_reproduction with command = the finding's repro_command_argv and control_ref = the upstream-fix commit; it mints a verified_pass only on a genuine sanitizer flip. Or lower the finding's severity below high / exclude it from the reportable set.",
+      },
+    );
+  }
+  // Standalone-finding differential proof gate. The symmetric sibling of the O-P4 gate
+  // above, for the residual standalone non-oracle classes (auth-bypass-not-via-IDOR,
+  // manual IDOR, SSRF, business-logic, info-disclosure, races). A final-reportable
+  // medium+ finding NOT covered by an existing executed producer (native repro, FV
+  // invariant-verified, or an exploit_run-backed exploited_safely claim) must be backed
+  // by a verified_pass in finding-differential-verified.jsonl bound to the finding_id —
+  // and that ledger is MCP-write-only (agent-Write-blocked). normalizeVerificationResult
+  // only type-validates the round result; the executed flip is required HERE so a
+  // merely-claimed standalone finding cannot be graded SUBMIT (MINT != CONFIRM). Fail
+  // closed: an unbacked standalone medium+ finding caps to advisory (the RANK != BOUND
+  // outcome — excluded from the reportable set, applied per finding, never a class bound).
+  const { findingDifferentialGapForStandaloneReportableFindings } = require("./claims.js");
+  const findingDifferentialGap = findingDifferentialGapForStandaloneReportableFindings(domain, {
+    reportableFindingIds: finalReportableSeveritySet,
+    finalSeverities,
+  });
+  if (findingDifferentialGap.missing.length > 0) {
+    const detail = findingDifferentialGap.missing.map((m) => `${m.finding_id} (${m.reason})`).join(", ");
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Finding-differential verified_pass is required for final reportable medium+ standalone finding(s) before grading: ${detail}.`,
+      { code: "missing_finding_differential_verified_pass", missing: findingDifferentialGap.missing },
+      {
+        remediation:
+          "Run bob_verify_finding_differential binding the executed positive run and its blocked control for THIS finding's surface (finding_differential_surface_mismatch = the verified flip is bound to a different surface; finding_differential_severity_below_finding = the executed flip's demonstrated severity is below the finding's severity), or lower its severity below medium / exclude it from the reportable set.",
       },
     );
   }

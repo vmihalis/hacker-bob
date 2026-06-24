@@ -415,6 +415,149 @@ function weaponForBugClass(bugClass) {
   return BUG_CLASS_WEAPON[key] || [];
 }
 
+// ─── Mechanism-template ranking + axis (the open-registry dispatch driver) ──
+//
+// A mechanism template (corpus tier-2 or registered tier-3 advisory candidate)
+// is matched against a cell so its dispatch order reflects the trust gradient.
+// EVERYTHING here is PURE: the registry is read by the (impure) caller and
+// passed in via `opts.belief.mechanism_templates`. Nothing below reads I/O.
+//
+// The score is TIER x MATCH x CHAINING:
+//   TIER     — the trust gradient. An oracle-backed mechanism (a template that
+//              carries an executed oracle handle) outranks a validated corpus
+//              template (tier 2) which outranks a synthesis candidate (tier 3).
+//   MATCH    — does this template STRUCTURALLY apply to this cell? Its
+//              mechanism_id / name / required_entities must line up with the
+//              cell's bug_class. A non-matching template scores 0 (no lift).
+//   CHAINING — front-load a mechanism whose effect feeds a transition edge:
+//              an evidence_predicate.required_edges entry is a chaining token,
+//              so a mechanism that produces a cross-surface effect ranks higher.
+//
+// The score only RAISES (it is added to the planning-key score), so a cell with
+// no matching template keeps its deterministic slot. RANK != BOUND: the score
+// reorders dispatch; it never drops, filters, or caps a cell.
+
+const MECHANISM_TIER_WEIGHT = Object.freeze({
+  1: 3, // oracle-backed (executed oracle handle present)
+  2: 2, // validated corpus template
+  3: 1, // synthesis candidate (advisory)
+});
+
+// Normalize a token for structural matching (lowercase, separators collapsed).
+function normalizeMatchToken(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+// A stable dedup key for a mechanism template so near-identical templates
+// (CWE-639 ≡ cwe-639, a re-registered corpus lift, ...) collapse to ONE
+// agent-state. Mirrors the producers' candidateDedupKey contract: a DISTINCT
+// mechanism always yields a DISTINCT key (first occurrence wins; nothing
+// distinct is ever dropped). Prefers the canonical mechanism_id, falling back
+// to the template id so an id-only candidate still keys stably.
+function mechanismDedupKey(template) {
+  if (!isPlainObject(template)) return null;
+  const mech = normalizeMatchToken(template.mechanism_id);
+  const id = normalizeMatchToken(template.id);
+  if (mech && id) return `${mech}::${id}`;
+  return mech || id || null;
+}
+
+// Resolve a template's effective tier. An oracle handle (an executed
+// mechanism-agnostic oracle bound to the template) promotes it to tier 1 for
+// ranking; otherwise the registry-preserved tier (2 corpus / 3 candidate)
+// applies. Defaults to tier 3 (advisory) for an untagged record so an unknown
+// template never out-ranks a confirmed one.
+function mechanismTierWeight(template) {
+  if (!isPlainObject(template)) return 0;
+  const oracleBacked = template.oracle_backed === true
+    || (isPlainObject(template.advisory_evidence) && template.advisory_evidence.oracle_backed === true);
+  const tier = oracleBacked
+    ? 1
+    : (Number.isInteger(template.tier) ? template.tier : 3);
+  return MECHANISM_TIER_WEIGHT[tier] || MECHANISM_TIER_WEIGHT[3];
+}
+
+// MATCH: does this template structurally apply to this bug_class? A template
+// applies when its mechanism_id, id, or any name/required_entity token shares a
+// normalized token with the bug_class. Fail-OPEN is deliberately NOT used here
+// — an unrelated template must NOT lift an unrelated cell (that would be a noisy
+// false route, the ranking quality risk) — but a zero match is never a DROP: the
+// cell still stands on its deterministic slot. Returns 1 on match, 0 otherwise.
+function mechanismMatchesBugClass(template, bugClass) {
+  if (!isPlainObject(template)) return 0;
+  const target = normalizeMatchToken(bugClass);
+  if (!target) return 0;
+  const tokens = new Set();
+  for (const field of [template.mechanism_id, template.id, template.name]) {
+    const t = normalizeMatchToken(field);
+    if (t) tokens.add(t);
+  }
+  if (Array.isArray(template.required_entities)) {
+    for (const entity of template.required_entities) {
+      const t = normalizeMatchToken(entity);
+      if (t) tokens.add(t);
+    }
+  }
+  for (const token of tokens) {
+    if (token === target || token.includes(target) || target.includes(token)) return 1;
+  }
+  return 0;
+}
+
+// CHAINING potential: a mechanism whose effect feeds a transition edge is
+// front-loaded (its effect is a chain link). The evidence_predicate's
+// required_edges are the chaining tokens; a cross-surface/transition effect
+// earns a higher chaining factor than a purely local one. Returns >= 1.
+function mechanismChainingFactor(template) {
+  if (!isPlainObject(template)) return 1;
+  const predicate = template.evidence_predicate;
+  if (!isPlainObject(predicate)) return 1;
+  const edges = Array.isArray(predicate.required_edges) ? predicate.required_edges : [];
+  if (edges.length === 0) return 1;
+  // 1 + a bounded contribution per chaining edge so a multi-hop mechanism ranks
+  // above a single-hop one, without a single template dominating the order.
+  return 1 + Math.min(edges.length, 3);
+}
+
+// The composite per-cell mechanism lift over a registry: SUM over every
+// template that MATCHES this bug_class of (tier_weight x chaining). The sum (not
+// max) so a cell touched by several applicable mechanisms ranks above one
+// touched by a single mechanism — more mechanism surface area = dispatch first.
+// PURE: `templates` is the caller-merged registry passed via opts.belief.
+function mechanismCellLift(templates, bugClass) {
+  if (!Array.isArray(templates) || templates.length === 0) return 0;
+  let lift = 0;
+  for (const template of templates) {
+    if (mechanismMatchesBugClass(template, bugClass) !== 1) continue;
+    lift += mechanismTierWeight(template) * mechanismChainingFactor(template);
+  }
+  return lift;
+}
+
+// Deduped registry view: collapse near-identical templates to one entry by
+// mechanismDedupKey (first occurrence wins). Every DISTINCT mechanism survives
+// (rank-not-bound); only redundant duplicates are folded so the axis does not
+// spawn two agent-states for the same mechanism. A template with no resolvable
+// key is kept (it cannot be proven a duplicate, so it is never dropped).
+function dedupeMechanismTemplates(templates) {
+  if (!Array.isArray(templates)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const template of templates) {
+    if (!isPlainObject(template)) continue;
+    const key = mechanismDedupKey(template);
+    if (key === null) {
+      out.push(template);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(template);
+  }
+  return out;
+}
+
 // Canonical planning key over the (bug_class, auth_profile) axes for a single
 // surface. JSON-array form (same idiom as coverageRecordKey) so a value
 // containing the separator can never collide.
@@ -422,6 +565,116 @@ function weaponForBugClass(bugClass) {
 // and passes it in for pruning; this keeps the deriver pure (no ledger reads).
 function fanoutPlanningKey(bugClass, authProfile) {
   return JSON.stringify([bugClass, authProfile || ""]);
+}
+
+// Belief-ordering overlay for the fan-out children. Default-off and
+// permute-never-filter: given the eligible (bug_class x auth_role) cells in
+// deterministic baseline order, return a STABLE permutation ranked by their
+// belief score (higher first), or the input UNCHANGED when belief is disabled
+// or supplies no usable signal. The SET is invariant — only the order changes —
+// so the downstream max_children cut emits a top-k of the same set and the
+// residual spills through the always-on floor.
+//
+// PURE per X-P4: every belief input is passed in via `belief`. The honest
+// signal is per-surface (the existing buildCellBeliefRank scores a cell from its
+// PARENT surface), so within one surface's children it is uniform — a stable
+// no-op permutation. A caller that already holds a per-cell score map (e.g. a
+// cross-surface ranking, or a test) may inject `belief.score_by_planning_key`
+// to discriminate among siblings; the same stable-sort machinery applies. Both
+// paths reuse buildCellBeliefRank's contract (RAISE-only, score>0 ranks).
+function orderEligibleByBelief(eligible, parentSurfaceId, belief) {
+  if (!isPlainObject(belief) || belief.enabled !== true) return eligible;
+  if (eligible.length <= 1) return eligible;
+
+  // The open mechanism registry (corpus tier-2 + registered tier-3 candidates),
+  // deduped so near-identical templates collapse to one ranking contribution.
+  // Read by the impure caller (getMechanismTemplatesForDomain) and passed in —
+  // this function stays pure. Empty/absent => no mechanism lift (the score path
+  // below degrades to the planning-key-only behavior, byte-identical).
+  const mechanismTemplates = dedupeMechanismTemplates(
+    Array.isArray(belief.mechanism_templates) ? belief.mechanism_templates : [],
+  );
+
+  // Resolve a planning_key -> score map. Prefer a directly-injected per-cell map
+  // (caller already ran the ranker); otherwise reuse buildCellBeliefRank with
+  // CALLER-PROVIDED surfaces (no I/O — purity holds) over per-child cell
+  // candidates keyed on the planning_key.
+  let scoreByPlanningKey = null;
+  if (belief.score_by_planning_key instanceof Map) {
+    scoreByPlanningKey = belief.score_by_planning_key;
+  } else if (Array.isArray(belief.surfaces)) {
+    try {
+      const { buildCellBeliefRank } = require("./belief/cell-scheduler-priority.js");
+      const candidates = eligible.map((cell) => ({
+        kind: "cell",
+        node_id: cell.planning_key,
+        surface_refs: [cell.surface_id || parentSurfaceId],
+      }));
+      const rank = buildCellBeliefRank({
+        target_domain: belief.target_domain,
+        document: { nodes: candidates },
+        candidates,
+        surfaces: belief.surfaces,
+        seed: belief.seed,
+        rank_limit: belief.rank_limit,
+      });
+      scoreByPlanningKey = rank instanceof Map ? rank : null;
+    } catch {
+      scoreByPlanningKey = null;
+    }
+  }
+  // The overlay reorders when EITHER signal is live: the surface-belief
+  // planning-key map OR the mechanism-template registry. With neither, there is
+  // nothing to rank by, so the deterministic baseline order stands (byte-
+  // identical to flag-off).
+  const haveSurfaceScore = scoreByPlanningKey instanceof Map && scoreByPlanningKey.size > 0;
+  const haveMechanismLift = mechanismTemplates.length > 0;
+  if (!haveSurfaceScore && !haveMechanismLift) {
+    return eligible;
+  }
+
+  // For a mechanism-axis cell (one carrying a mechanism_template_id), the lift is
+  // its OWN template's tier x chaining, so a tier-1/tier-2 mechanism cell front-
+  // loads above a tier-3 candidate cell for the same bug_class. A base cell (no
+  // mechanism id) gets the AGGREGATE lift over every applicable template. This is
+  // what makes dispatch belief-ORDERED over the trust gradient: oracle > tier-2 >
+  // tier-3, times match, times chaining.
+  const templatesById = new Map();
+  if (haveMechanismLift) {
+    for (const template of mechanismTemplates) {
+      if (isPlainObject(template) && typeof template.id === "string") {
+        templatesById.set(template.id, template);
+      }
+    }
+  }
+  const liftForCell = (cell) => {
+    if (!haveMechanismLift) return 0;
+    if (typeof cell.mechanism_template_id === "string") {
+      const template = templatesById.get(cell.mechanism_template_id);
+      if (!template) return 0;
+      return mechanismTierWeight(template) * mechanismChainingFactor(template);
+    }
+    return mechanismCellLift(mechanismTemplates, cell.bug_class);
+  };
+
+  // Stable permutation: rank by score DESC, ties broken by the baseline index so
+  // equal-score cells keep their deterministic relative order. A cell with no
+  // entry scores 0 (RAISE-only: never pushed below a deterministic peer it tied
+  // with, only kept where unranked cells already sit relative to each other).
+  // The per-cell score sums the surface-belief score (if any) with the mechanism
+  // lift. Both are RAISE-only and additive — a cell touched by a hotter surface
+  // AND a high-tier chaining mechanism ranks above one touched by neither.
+  const indexed = eligible.map((cell, index) => ({
+    cell,
+    index,
+    score: (haveSurfaceScore ? (scoreByPlanningKey.get(cell.planning_key) || 0) : 0)
+      + liftForCell(cell),
+  }));
+  indexed.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.index - b.index;
+  });
+  return indexed.map((entry) => entry.cell);
 }
 
 // deriveChildFanoutPlan — the brain-owned, host-agnostic decomposition of a
@@ -464,7 +717,25 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
   const packId = packIdForSurfaceMetadata(surfaceMetadata || null);
   const allowedToolsForChild = dedupeSorted(toolsForCapabilityPack(packId));
 
-  const children = [];
+  // The open mechanism registry (corpus tier-2 + registered tier-3 candidates),
+  // deduped so near-identical templates collapse to one axis entry. Read by the
+  // impure caller (getMechanismTemplatesForDomain) and passed via opts.belief —
+  // this function stays pure. Only consulted when belief is enabled with a
+  // registry; otherwise the axis is empty and the plan is byte-identical to the
+  // deterministic baseline.
+  const mechanismRegistry = (isPlainObject(opts.belief)
+    && opts.belief.enabled === true
+    && Array.isArray(opts.belief.mechanism_templates))
+    ? dedupeMechanismTemplates(opts.belief.mechanism_templates)
+    : [];
+
+  // Collect EVERY eligible (bug_class x auth_role) cell first — relevance- and
+  // covered-pruned in the deterministic bug_class-outer/auth-inner baseline
+  // order — BEFORE applying the max_children cut. Decoupling enumeration from
+  // truncation is what lets the optional belief overlay PERMUTE the eligible set
+  // and still keep the emitted SET a subset of the same baseline set: the cut is
+  // a stable top-k of a permutation, never a filter on a different set.
+  const eligible = [];
   let coveredPruned = 0;
   let budgetPruned = 0;
   let relevancePruned = 0;
@@ -481,35 +752,85 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
       }
       for (const authProfile of authAxis) {
         const planningKey = fanoutPlanningKey(bugClass, authProfile);
-        if (coveredKeys.has(planningKey)) {
-          coveredPruned += 1;
-          continue;
-        }
-        if (children.length >= maxChildren) {
-          budgetPruned += 1;
-          continue;
-        }
         const authLabel = authProfile || "anonymous";
         // Per-cell weapon: the technique pack(s) that target this bug_class,
         // adopted additively over the base surface pack (the cell's specialized
         // weapon vs the shared evaluator toolset).
         const techniquePackIds = weaponForBugClass(bugClass);
-        children.push(Object.freeze({
-          // coverage-shaped key (method/endpoint runtime-filled => "") so a
-          // downstream bob_log_coverage cell on this child reconciles 1:1.
-          cell_key: JSON.stringify([parentSurfaceId, "", "", bugClass, authProfile || ""]),
-          planning_key: planningKey,
-          surface_id: parentSurfaceId,
-          bug_class: bugClass,
-          auth_profile: authProfile || "",
-          capability_pack_ids: Object.freeze([packId]),
-          allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
-          technique_pack_ids: Object.freeze(techniquePackIds.slice()),
-          rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId}`,
-        }));
+        // The base (bug_class x auth) cell. Covered => pruned, but its mechanism
+        // cells below are DISTINCT coverage obligations and are enumerated
+        // independently (covering the broad cell never retires the open mechanism
+        // axis).
+        if (coveredKeys.has(planningKey)) {
+          coveredPruned += 1;
+        } else {
+          eligible.push(Object.freeze({
+            // coverage-shaped key (method/endpoint runtime-filled => "") so a
+            // downstream bob_log_coverage cell on this child reconciles 1:1.
+            cell_key: JSON.stringify([parentSurfaceId, "", "", bugClass, authProfile || ""]),
+            planning_key: planningKey,
+            surface_id: parentSurfaceId,
+            bug_class: bugClass,
+            auth_profile: authProfile || "",
+            capability_pack_ids: Object.freeze([packId]),
+            allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
+            technique_pack_ids: Object.freeze(techniquePackIds.slice()),
+            rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId}`,
+          }));
+        }
+
+        // Open-registry axis: each (this cell x applicable registered mechanism)
+        // is ALSO a cell candidate, so the cell-floor's fixpoint covers the WHOLE
+        // mechanism space — corpus templates AND tier-3 candidates — by spawning
+        // MORE agent-states (each a bounded window slice; the UNION is exhaustive),
+        // never a top-K cut. The mechanism rides in the bug_class slot as a
+        // composite token (bug_class@@mechanism_id) so the 5-slot cell_key shape
+        // stays valid and reconciles DISJOINT from the base cell and from every
+        // other mechanism. A mechanism that does not structurally apply is skipped
+        // (no false fan-out); a distinct applicable mechanism is NEVER dropped.
+        for (const template of mechanismRegistry) {
+          if (mechanismMatchesBugClass(template, bugClass) !== 1) continue;
+          const mechanismToken = mechanismDedupKey(template);
+          if (mechanismToken === null) continue;
+          const compositeBugClass = `${bugClass}@@${mechanismToken}`;
+          const mechanismPlanningKey = fanoutPlanningKey(compositeBugClass, authProfile);
+          if (coveredKeys.has(mechanismPlanningKey)) {
+            coveredPruned += 1;
+            continue;
+          }
+          eligible.push(Object.freeze({
+            cell_key: JSON.stringify([parentSurfaceId, "", "", compositeBugClass, authProfile || ""]),
+            planning_key: mechanismPlanningKey,
+            surface_id: parentSurfaceId,
+            bug_class: bugClass,
+            auth_profile: authProfile || "",
+            mechanism_template_id: typeof template.id === "string" ? template.id : null,
+            mechanism_tier: Number.isInteger(template.tier) ? template.tier : 3,
+            capability_pack_ids: Object.freeze([packId]),
+            allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
+            technique_pack_ids: Object.freeze(techniquePackIds.slice()),
+            rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId} via mechanism ${template.id || mechanismToken}`,
+          }));
+        }
       }
     }
   }
+
+  // Belief-ORDER overlay (default-off). When an operator opts into
+  // belief-assisted priority, dispatch the higher-belief cells first by
+  // PERMUTING `eligible` — same SET, reordered. This ONLY changes which cells
+  // survive the max_children cut; the lower-ranked residual is counted in
+  // budget_pruned_count exactly as a deterministic cut would, and the
+  // always-on cell floor re-emits those uncovered cells to a later wave (the
+  // existing generic/Kimi spill path), so the floor still reaches fixpoint.
+  // Flag off => no permutation => byte-identical to the deterministic baseline.
+  // The overlay can never gate a cell: it reorders, never drops or skips.
+  const orderedEligible = orderEligibleByBelief(eligible, parentSurfaceId, opts.belief);
+
+  // Apply the (post-permutation) budget cut. The first maxChildren survive as
+  // emitted children; the rest become budget_pruned (the spill the floor re-emits).
+  const children = orderedEligible.slice(0, maxChildren);
+  budgetPruned = orderedEligible.length - children.length;
 
   return Object.freeze({
     parent_surface_id: parentSurfaceId,
@@ -912,4 +1233,10 @@ module.exports = {
   planTransitionCellsForEdge,
   transitionCellKey,
   fanoutPlanningKey,
+  mechanismDedupKey,
+  mechanismTierWeight,
+  mechanismMatchesBugClass,
+  mechanismChainingFactor,
+  mechanismCellLift,
+  dedupeMechanismTemplates,
 };

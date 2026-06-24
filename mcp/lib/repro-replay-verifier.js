@@ -1,6 +1,8 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 // OSS native-code reproduction verifier — the execution-graded, differential gate
 // that makes a memory-safety finding non-fabricatable. Mirrors composition-live-
@@ -25,6 +27,8 @@ const fs = require("fs");
 
 const {
   reproVerifiedJsonlPath,
+  repoCommandRunsJsonlPath,
+  repoRunsDir,
   assertSafeDomain,
 } = require("./paths.js");
 const {
@@ -300,9 +304,168 @@ async function verifyOracleDifferential(input, deps = {}) {
   });
 }
 
+// Read the content-hashed repo-command-runs.jsonl rows once (the same parse evidence.js
+// readRepoCommandRunRows uses): a missing file or a malformed line throws so the caller
+// fails closed rather than silently admitting a verdict whose source ledger is gone.
+function readRepoCommandRunRows(domain) {
+  const filePath = repoCommandRunsJsonlPath(domain);
+  const raw = fs.readFileSync(filePath, "utf8");
+  const rows = [];
+  let lineNumber = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    lineNumber += 1;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parsed = JSON.parse(trimmed);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`repo-command-runs.jsonl row ${lineNumber} is not an object`);
+    }
+    rows.push(parsed);
+  }
+  return rows;
+}
+
+// Re-resolve a single repo-command-runs row by run_id (mirror evidence.js
+// readRepoCommandRunRow): missing → throw; ambiguous content-divergent duplicates →
+// throw. A dry-run / timed-out row is not a real execution.
+function resolveRepoRunRow(rows, runId) {
+  if (typeof runId !== "string" || !runId) throw new Error("run_id must be a non-empty string");
+  const matching = rows.filter((row) => row && row.run_id === runId);
+  if (matching.length === 0) throw new Error(`run_id ${runId} does not resolve to a repo-command-runs row`);
+  if (matching.length > 1) {
+    const hashes = new Set(matching.map((row) => hashCanonicalJson(row)));
+    if (hashes.size > 1) throw new Error(`run_id ${runId} has ambiguous duplicate repo-command-runs rows`);
+  }
+  const row = matching[0];
+  if (row.dry_run !== false) throw new Error(`run_id ${runId} must reference a live non-dry-run repo docker run`);
+  if (row.timed_out === true) throw new Error(`run_id ${runId} must reference a completed repo docker run, not a timed-out run`);
+  return row;
+}
+
+function sha256File(filePath) {
+  const data = fs.readFileSync(filePath);
+  return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+// Build the run-shaped object adjudicateDifferential consumes from a re-resolved row +
+// its on-disk captures. CONTENT-HASH integrity: recompute sha256 of each capture file
+// and require it to equal the row's stdout_hash/stderr_hash (the same bind repo-env.js
+// minted), so the bytes we re-classify are exactly the bytes the run produced. A missing
+// capture file or a hash mismatch throws → the caller fails closed.
+function runFromRow(domain, row) {
+  const runId = row.run_id;
+  const stdoutPath = path.join(repoRunsDir(domain), `${runId}.stdout`);
+  const stderrPath = path.join(repoRunsDir(domain), `${runId}.stderr`);
+  const stdoutText = fs.readFileSync(stdoutPath, "utf8");
+  const stderrText = fs.readFileSync(stderrPath, "utf8");
+  if (typeof row.stdout_hash !== "string" || sha256File(stdoutPath) !== row.stdout_hash) {
+    throw new Error(`run_id ${runId} stdout capture does not match the row stdout_hash`);
+  }
+  if (typeof row.stderr_hash !== "string" || sha256File(stderrPath) !== row.stderr_hash) {
+    throw new Error(`run_id ${runId} stderr capture does not match the row stderr_hash`);
+  }
+  return {
+    exit_code: typeof row.exit_code === "number" ? row.exit_code : null,
+    timed_out: row.timed_out === true,
+    error: undefined,
+    stdout_text: stdoutText,
+    stderr_text: stderrText,
+  };
+}
+
+// reverifyReproRecord — READ-TIME INTEGRITY. Do NOT trust the verdict row's stored
+// command_hash / control_ref / crash_class (results_hash is an UNKEYED self-hash, so a
+// runtime-indirection write can append a bare forged verified_pass line whose
+// vuln_run_id/control_run_id point at nothing). RE-RESOLVE both run ids against the
+// content-hashed repo-command-runs.jsonl rows, RE-CHECK each cited capture file's bytes
+// against the row's stdout_hash/stderr_hash, and RE-ADJUDICATE the flip exactly as the
+// mint path (adjudicateDifferential) does. A forged verdict whose runs don't resolve to a
+// consistent flipping pair fails here (any throw → ok:false).
+//
+// command_hash RE-BIND: for a repro-mode record the vuln run has NO checkout, so its
+// repo-command-runs row command_hash = sha256(JSON.stringify(argv)) is byte-equal to the
+// mint's hashCanonicalJson(command); the control run is checkout-wrapped
+// (buildDifferentialCheckoutCommand) so its command_hash legitimately differs and is NOT
+// the bind target. We assert record.command_hash equals the VULN row's command_hash, so a
+// forged command_hash that does not match the actual run is rejected. For an oracle record
+// (mode === "oracle_differential") the vuln run IS a patched/checkout-wrapped run, so its
+// row command_hash is wrapped and the equality assert does not apply; the flip + capture
+// integrity still bind it, and command_hash is carried from the record (no oracle consumer
+// uses it as a bind — the O-P4 :1045 bind only ever runs against repro-mode records).
+//
+// FAIL-CLOSED on a rotated/truncated ledger: a verdict whose repo-command-runs rows were
+// legitimately minted then later removed reads as unverified. The source run rows + capture
+// bytes ARE the asset — if they are gone, the verdict is no longer re-derivable.
+//
+// Runs under NO lock (read-only, like the summary reader). Returns
+// { ok, command_hash, control_ref, crash_class } — command_hash + crash_class are
+// RE-DERIVED from the re-resolved source row/bytes; control_ref is provenance metadata
+// carried from the record (not part of the differential and not used by the O-P4 bind).
+function reverifyReproRecord(domain, record) {
+  const targetDomain = assertSafeDomain(domain);
+  if (record == null || typeof record !== "object") {
+    return { ok: false, command_hash: null, control_ref: null, crash_class: null };
+  }
+  try {
+    if (record.result !== RESULT_VERIFIED_PASS) throw new Error("record is not a verified_pass");
+    if (typeof record.finding_id !== "string" || !record.finding_id) throw new Error("finding_id is required");
+    const vulnRunId = record.vuln_run_id;
+    const controlRunId = record.control_run_id;
+    if (typeof vulnRunId !== "string" || !vulnRunId) throw new Error("vuln_run_id is required");
+    if (typeof controlRunId !== "string" || !controlRunId) throw new Error("control_run_id is required");
+    // A single run never flips against itself (mirrors the invariant + finding siblings'
+    // single-run rejection).
+    if (vulnRunId === controlRunId) throw new Error("vuln_run_id must differ from control_run_id");
+
+    const rows = readRepoCommandRunRows(targetDomain);
+    const vulnRow = resolveRepoRunRow(rows, vulnRunId);
+    const controlRow = resolveRepoRunRow(rows, controlRunId);
+
+    // RE-BIND command_hash off the VULN (no-checkout) row for repro-mode records. An
+    // oracle-mode record's vuln run is checkout-wrapped, so the equality does not apply.
+    const isOracle = record.mode === "oracle_differential";
+    if (!isOracle && record.command_hash !== vulnRow.command_hash) {
+      throw new Error("command_hash does not match the vuln run's command_hash");
+    }
+
+    const vulnRun = runFromRow(targetDomain, vulnRow);
+    const controlRun = runFromRow(targetDomain, controlRow);
+    const { result, vulnVerdict } = adjudicateDifferential({
+      vulnRun, controlRun, controlLabel: "upstream-fix",
+    });
+    if (result !== RESULT_VERIFIED_PASS) {
+      return { ok: false, command_hash: null, control_ref: null, crash_class: null };
+    }
+    return {
+      ok: true,
+      // RE-DERIVED from the re-resolved source: command_hash from the vuln row (repro mode)
+      // or carried from the record (oracle mode); crash_class re-classified from the bytes.
+      command_hash: isOracle ? record.command_hash : vulnRow.command_hash,
+      control_ref: record.control_ref,
+      crash_class: vulnVerdict.crash_class,
+    };
+  } catch {
+    // Missing / content-inconsistent / non-flipping / single-run / rotated row or capture →
+    // the flip is not re-derivable from the source rows + bytes. Fail closed.
+    return { ok: false, command_hash: null, control_ref: null, crash_class: null };
+  }
+}
+
 // Summarize the reproduction-gate ledger — the AUTHORITATIVE O-P4 signal. Reads the
-// MCP-write-only, audit-graded repro-verified.jsonl from disk only; a verified_pass
-// cannot be hand-forged (the path is agent-Write-blocked) — only this verifier mints it.
+// MCP-write-only, audit-graded repro-verified.jsonl, then RE-ADJUDICATES each verified_pass
+// from the repo-command-runs rows + capture files it cites rather than trusting the
+// verdict's self-hashed fields.
+//
+// repro-runs integrity is content-hash (the repo-command-runs row command_hash binds the
+// argv, and stdout_hash/stderr_hash bind the captured bytes) + agent-Write-block; each
+// verified_pass is RE-ADJUDICATED here from the rows + capture files it cites, raising the
+// forgery bar to a CONSISTENT forged run pair (two rows whose captures actually FLIP under
+// parseSanitizerReport — crash on vuln, quiet on control), not a bare verdict line. NOTE
+// this is content-hash parity with the invariant ledger, NOT MAC-level (the offensive-runs
+// ledger's keyed MAC); the deeper close for all content-hash ledgers is the offensive-
+// sandbox PR (uid/container separation so the agent UID cannot fabricate trusted source
+// rows), the same residual the offensive stack documents (claims.js THREAT-MODEL BOUNDARY,
+// finding-differential-verifier.js reverify note).
 function readReproVerifiedSummary(domain) {
   const targetDomain = assertSafeDomain(domain);
   let records = [];
@@ -317,16 +480,25 @@ function readReproVerifiedSummary(domain) {
     records = [];
   }
   const verified = records.filter((r) => r.result === RESULT_VERIFIED_PASS);
+  const verifiedByFinding = {};
+  for (const r of verified) {
+    const rederived = reverifyReproRecord(targetDomain, r);
+    if (!rederived.ok) continue;
+    // finding_id -> the RE-DERIVED command_hash + crash_class (from the re-resolved source
+    // rows/bytes) for the O-P4 gate to require a verified_pass whose command_hash matches
+    // the claim's repro_command_argv. The entry shape is byte-identical to the prior reader.
+    verifiedByFinding[r.finding_id] = {
+      command_hash: rederived.command_hash,
+      control_ref: rederived.control_ref,
+      crash_class: rederived.crash_class,
+    };
+  }
   return {
     total_runs: records.length,
     verified_pass_count: verified.length,
     refuted_count: records.filter((r) => r.result === RESULT_REFUTED).length,
     inconclusive_count: records.filter((r) => r.result === RESULT_INCONCLUSIVE).length,
-    // finding_id -> the verified_pass record's command_hash, for the O-P4 gate to
-    // require a verified_pass whose command_hash matches the claim's repro_command_argv.
-    verified_by_finding: Object.fromEntries(
-      verified.map((r) => [r.finding_id, { command_hash: r.command_hash, control_ref: r.control_ref, crash_class: r.crash_class }]),
-    ),
+    verified_by_finding: verifiedByFinding,
   };
 }
 
@@ -338,5 +510,6 @@ module.exports = {
   RESULT_INCONCLUSIVE,
   verifyReproReproduction,
   verifyOracleDifferential,
+  reverifyReproRecord,
   readReproVerifiedSummary,
 };

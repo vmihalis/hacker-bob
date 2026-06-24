@@ -243,11 +243,49 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
     capacityLimit = cap;
   }
 
+  // Session spawn governor as the binding ceiling on the closure-phase dispatch.
+  // The cell floor drains exhaustively across drain cycles; when the governor is
+  // set, this cycle may dispatch at most the remaining session budget
+  // (max_total_spawned_agents minus the spawn-tree size already reserved, supplied
+  // by the caller as options.reservedSpawnTotal). RANK != BOUND: nodes beyond the
+  // remaining budget are NOT dropped — they move to skipped and ride the next
+  // drain cycle once this batch settles, so the monotone cell-floor fixpoint is
+  // preserved. A null governor (default) leaves selection untouched =>
+  // byte-identical default-off.
+  let coverageGap = null;
+  if (Number.isInteger(policy.max_total_spawned_agents)) {
+    const reserved = Number.isInteger(options.reservedSpawnTotal) && options.reservedSpawnTotal > 0
+      ? options.reservedSpawnTotal
+      : 0;
+    const remainingBudget = Math.max(0, policy.max_total_spawned_agents - reserved);
+    if (selected.length > remainingBudget) {
+      for (const node of selected.slice(remainingBudget)) skipped.push(node);
+      selected = selected.slice(0, remainingBudget);
+      capacityLimit = Math.min(capacityLimit, remainingBudget);
+    }
+    // Lifetime spawn-budget exhaustion is a COVERAGE GAP, not a silent drop. When the
+    // operator ceiling is fully consumed (remainingBudget === 0) but executable cells
+    // still wait, the selection STOPS (selected stays empty) and names the uncovered
+    // cells so the orchestrator can report the gap — mirroring the wave planner's
+    // spawn_budget_exhausted decision. The cells remain in `skipped` (RANK != BOUND:
+    // they ride the next drain cycle if budget frees, never truncated). A null governor
+    // never sets this => byte-identical default-off.
+    if (remainingBudget === 0 && selected.length === 0 && skipped.length > 0) {
+      coverageGap = {
+        kind: "spawn_budget_exhausted",
+        max_total_spawned_agents: policy.max_total_spawned_agents,
+        reserved_spawn_total: reserved,
+        remaining_budget: remainingBudget,
+        uncovered_node_ids: skipped.map((node) => node.node_id),
+      };
+    }
+  }
+
   const sourceGraphHash = document.hashes && typeof document.hashes.graph_hash === "string"
     ? document.hashes.graph_hash
     : null;
 
-  return {
+  const result = {
     target_domain: domain,
     materialized_at: document.materialized_at || null,
     source_graph_hash: sourceGraphHash,
@@ -258,6 +296,8 @@ function selectNextExecutableNodes(targetDomain, queuePolicy, capacity, options 
     skipped: skipped.map((node) => ({ ...node })),
     policy,
   };
+  if (coverageGap) result.coverage_gap = coverageGap;
+  return result;
 }
 
 module.exports = {

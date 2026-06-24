@@ -115,6 +115,11 @@ const CLAUDE_LAUNCH_TEMPLATES = Object.freeze({
     "Agent(subagent_type: \"surface-router-agent\", name: \"surface-router\", prompt: \"Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Confirm attack_surface.json exists and has surfaces, then call bob_route_surfaces({ target_domain: '[domain]' }) and use .data. If routing fails or returns zero surfaces, report the error and stop. Otherwise return route count, capability-pack counts, and surface_routes_path.\")",
     "```",
   ].join("\n"),
+  "{{SPAWN_RECON_ANGLE_AGENT}}": [
+    "```text",
+    "Agent(subagent_type: \"surface-discovery-agent\", name: \"recon-[angle.id]\", run_in_background: true, prompt: \"DOMAIN=[domain] SESSION=~/hacker-bob-sessions/[domain] ANGLE=[angle.id]\")",
+    "```",
+  ].join("\n"),
   "{{SPAWN_EVALUATOR_AGENT}}": [
     "```text",
     "Agent(subagent_type: \"[assignment.evaluator_agent]\", name: \"evaluator-w[wave]-a[agent]\", run_in_background: true, prompt: \"",

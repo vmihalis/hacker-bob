@@ -21,8 +21,44 @@ const { writeVerificationRound } = require("../mcp/lib/verification-round-store.
 const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
 const { writeGradeVerdict } = require("../mcp/lib/grade-verdict-store.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
-const { gradeArtifactPaths } = require("../mcp/lib/paths.js");
+const { gradeArtifactPaths, findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+const { appendJsonlLine } = require("../mcp/lib/storage.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
+
+// A standalone web (IDOR) finding is an executable-flip class; seed the
+// finding-differential verified_pass arm the grade-time standalone gate requires so a
+// SUBMIT-bound web finding stays reportable. This isolates the degraded-trust gate the
+// test asserts from the standalone-finding gate. Post-A1 the gate re-resolves the verdict
+// against MAC-covered offensive-runs rows, so seed a real signed exploited_safely
+// positive + blocked_by_defense control (high severity) + the verdict line binding them.
+function seedFindingDifferentialArm(domain, findingId, surfaceId = "surface:billing-profile") {
+  const { sessionDir, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+  const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+  const mkRow = (suffix, outcome, ch) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+      offensive_outcome: outcome, dry_run: false, timed_out: false,
+      command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: surfaceId,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow("pos", "exploited_safely", "1".repeat(64));
+  const control = mkRow("ctl", "blocked_by_defense", "2".repeat(64));
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: surfaceId, source: "offensive_runs",
+    positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+    control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+  });
+}
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -151,6 +187,7 @@ function seedFinalChainForSigned(domain) {
     });
   }
   writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+  seedFindingDifferentialArm(domain, "F-1");
 }
 
 test("bob_write_grade_verdict FAILS CLOSED when a reportable finding is unsigned", () => {

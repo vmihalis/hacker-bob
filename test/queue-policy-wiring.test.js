@@ -7,6 +7,7 @@ const path = require("path");
 const {
   CLAMP_CEILING,
   DEFAULT_NESTING_SPAWN_BUDGET,
+  LEAN_PROFILE,
   MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
   loadQueuePolicy,
@@ -17,16 +18,56 @@ const {
 // Review HIGH: nesting opt-in must never be ungoverned. Lifting max_spawn_depth past 1
 // without a session spawn budget would expose the large CLAMP_CEILING width with no
 // preventive spawn-tree bound, so normalizeQueuePolicy fills the governor.
-test("normalizeQueuePolicy: nesting opt-in without a budget defaults the spawn governor", () => {
-  const nested = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 3 });
-  assert.equal(nested.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "depth>1 + null budget => safe default governor");
+test("normalizeQueuePolicy: raising nesting depth ABOVE the default without a budget arms the spawn governor", () => {
+  // depth 5 is above the on-default depth 3, so the auto-fill arms the governor.
+  const nested = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 5 });
+  assert.equal(nested.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "depth above the default + null budget => safe default governor");
 
-  const explicit = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 3, max_total_spawned_agents: 1000 });
+  const explicit = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_spawn_depth: 5, max_total_spawned_agents: 1000 });
   assert.equal(explicit.max_total_spawned_agents, 1000, "an explicit budget is respected, never overridden");
 
-  const off = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY });
+  // Off-path via explicit LEAN override: depth 1, governor stays null (byte-identical
+  // to the old shipped conservative run).
+  const off = normalizeQueuePolicy(LEAN_PROFILE);
   assert.equal(off.max_spawn_depth, 1);
-  assert.equal(off.max_total_spawned_agents, null, "default-off (depth=1) stays ungoverned-but-inert — byte-identical");
+  assert.equal(off.max_total_spawned_agents, null, "the lean override (depth=1) stays governor-null — byte-identical");
+
+  // On-default: depth 3 + null budget, the shipped default is EXEMPT from the
+  // auto-fill so its null governor (the unbounded fixpoint) survives.
+  const onDefault = normalizeQueuePolicy(DEFAULT_QUEUE_POLICY);
+  assert.equal(onDefault.max_spawn_depth, 3);
+  assert.equal(onDefault.max_total_spawned_agents, null, "the shipped on-default keeps the governor null — no coverage cap");
+});
+
+// Lifting WIDTH past the shipped baseline without a sized governor would expose the
+// large CLAMP_CEILING with no binding total ceiling. The auto-fill mirrors the nesting
+// idiom so the binding ceiling is always live when width is raised.
+test("normalizeQueuePolicy: raising width ABOVE the on-default without a governor fails closed to the safe default", () => {
+  // Above the on-default wave cap (128) -> the auto-fill arms.
+  const wideWaveMax = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, standard_wave_max: 256, standard_wave_target: 256 });
+  assert.equal(wideWaveMax.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "wave width above the default => safe governor");
+
+  const wideConc = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, max_concurrent_evaluators: 256 });
+  assert.equal(wideConc.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "concurrency above the default => safe governor");
+
+  const explicit = normalizeQueuePolicy({ ...DEFAULT_QUEUE_POLICY, standard_wave_max: 256, standard_wave_target: 256, max_total_spawned_agents: 2000 });
+  assert.equal(explicit.max_total_spawned_agents, 2000, "an explicit governor is respected, never overridden");
+
+  // Off-path: a lean override whose width exceeds the frozen conservative baseline
+  // still arms the governor (the auto-fill survives the flip for non-default widths).
+  const leanWide = normalizeQueuePolicy({ ...LEAN_PROFILE, standard_wave_max: 32, standard_wave_target: 32 });
+  assert.equal(leanWide.max_total_spawned_agents, DEFAULT_NESTING_SPAWN_BUDGET, "width above the conservative baseline arms the governor even off the default");
+
+  // The lean override AT the conservative baseline keeps the governor null —
+  // byte-identical to the old shipped conservative run.
+  const baseline = normalizeQueuePolicy(LEAN_PROFILE);
+  assert.equal(baseline.max_total_spawned_agents, null, "baseline width stays ungoverned — byte-identical to the old conservative run");
+  const lowConc = normalizeQueuePolicy({ ...LEAN_PROFILE, max_concurrent_evaluators: 4 });
+  assert.equal(lowConc.max_total_spawned_agents, null, "a conservative concurrency cap (<= baseline 8) does not force the governor");
+
+  // On-default: the shipped default is EXEMPT — its raised width keeps the governor null.
+  const onDefault = normalizeQueuePolicy(DEFAULT_QUEUE_POLICY);
+  assert.equal(onDefault.max_total_spawned_agents, null, "the shipped on-default keeps the governor null — width raised without a coverage cap");
 });
 const {
   planNextWave,
@@ -107,9 +148,11 @@ test("MAX_COVERAGE_PROFILE applies in one call: depth-3 nested + maxed cell floo
   assert.equal(p.deep_wave_max, 128);
   assert.ok(p.deep_wave_max >= p.deep_wave_target, "cross-guard pre-satisfied");
   assert.ok(p.standard_wave_max >= p.standard_wave_target);
-  // It is an OPT-IN, not the default: DEFAULT_QUEUE_POLICY stays nesting-off.
-  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 1, "default stays flat/no-nesting");
-  assert.equal(DEFAULT_QUEUE_POLICY.max_total_spawned_agents, null, "default governor is unset");
+  // It differs from the shipped default ONLY by the lifetime governor: the default
+  // now nests (depth 3) too, but keeps the governor null (unbounded fixpoint) while
+  // MAX_COVERAGE_PROFILE sets a finite 512 cost ceiling.
+  assert.equal(DEFAULT_QUEUE_POLICY.max_spawn_depth, 3, "the cross-role fan-out default nests");
+  assert.equal(DEFAULT_QUEUE_POLICY.max_total_spawned_agents, null, "the default governor is null — no coverage cap");
 });
 
 test("reversed priority_order in queue-policy.json reorders wave-planner buckets", () => {
@@ -146,19 +189,22 @@ test("reversed priority_order in queue-policy.json reorders wave-planner buckets
   });
 });
 
-test("default queue policy produces the same wave-1 ordering as the legacy constants", () => {
+test("an explicit lean override produces the legacy wave-1 ordering; the on-default reaches the full candidate count", () => {
   withTempHome(() => {
     const domain = "default-policy.example.com";
     ensureSessionDir(domain);
 
-    const policy = loadQueuePolicy(domain);
-    assert.deepEqual(policy.priority_order, DEFAULT_QUEUE_POLICY.priority_order);
-    assert.equal(policy.standard_wave_target, 4);
-    assert.equal(policy.standard_wave_max, 6);
-    assert.equal(policy.deep_wave_target, 6);
-    assert.equal(policy.deep_wave_max, 8);
-    assert.equal(policy.default_wave_task_lens, "surface_scout");
-    assert.deepEqual(policy.default_wave_task_budget, { max_steps: 6, max_context_tokens: 24000 });
+    // Off-path via an explicit lean override: the legacy 4/6 standard + 6/8 deep
+    // wave caps select the legacy 6-of-8 wave.
+    writeQueuePolicy(domain, LEAN_PROFILE);
+    const leanPolicy = loadQueuePolicy(domain);
+    assert.deepEqual(leanPolicy.priority_order, DEFAULT_QUEUE_POLICY.priority_order);
+    assert.equal(leanPolicy.standard_wave_target, 4);
+    assert.equal(leanPolicy.standard_wave_max, 6);
+    assert.equal(leanPolicy.deep_wave_target, 6);
+    assert.equal(leanPolicy.deep_wave_max, 8);
+    assert.equal(leanPolicy.default_wave_task_lens, "surface_scout");
+    assert.deepEqual(leanPolicy.default_wave_task_budget, { max_steps: 6, max_context_tokens: 24000 });
 
     const surfaces = [
       surface("h5", "HIGH", 10),
@@ -170,19 +216,34 @@ test("default queue policy produces the same wave-1 ordering as the legacy const
       surface("h7", "HIGH", 1),
       surface("m1", "MEDIUM", 100),
     ];
-    const plan = planNextWave({
+    const leanPlan = planNextWave({
       state: baseState(),
       surfaces,
-      queuePolicy: policy,
+      queuePolicy: leanPolicy,
     });
     assert.deepEqual(
-      plan.assignments.map((assignment) => assignment.surface_id),
+      leanPlan.assignments.map((assignment) => assignment.surface_id),
       ["h1", "h2", "h3", "h4", "h5", "h6"],
     );
-    for (const assignment of plan.assignments) {
+    for (const assignment of leanPlan.assignments) {
       assert.equal(assignment.task_lens, "surface_scout");
       assert.deepEqual(assignment.budget, { max_steps: 6, max_context_tokens: 24000 });
     }
+
+    // On-default: the cross-role fan-out default's raised wave cap (128) lets the
+    // wave reach all 8 candidates — width = min(candidates, cap) = min(8, 128) = 8.
+    const onDefaultPolicy = normalizeQueuePolicy(DEFAULT_QUEUE_POLICY);
+    assert.equal(onDefaultPolicy.standard_wave_max, 128);
+    const onDefaultPlan = planNextWave({
+      state: baseState(),
+      surfaces,
+      queuePolicy: onDefaultPolicy,
+    });
+    assert.equal(onDefaultPlan.assignments.length, 8, "the on-default reaches the full candidate count (no artificial throttle)");
+    assert.deepEqual(
+      onDefaultPlan.assignments.map((a) => a.surface_id),
+      ["h1", "h2", "h3", "h4", "h5", "h6", "h7", "m1"],
+    );
   });
 });
 

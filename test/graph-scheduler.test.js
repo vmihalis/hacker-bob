@@ -163,7 +163,10 @@ test("graph-scheduler: empty graph returns empty selection (no frontier events a
     const domain = "x9-empty-graph.example.com";
     // Touch the session directory but emit no node-producing events.
     seedSession(domain);
-    const result = selectNextExecutableNodes(domain, {}, 4);
+    // Explicit off-profile (no in-flight cap) so the single-cap path holds and
+    // capacity_limit equals the requested capacity. (The default's sized in-flight
+    // cap exercises the per-kind split, covered separately by the D2 test.)
+    const result = selectNextExecutableNodes(domain, { max_concurrent_evaluators: null }, 4);
     assert.equal(result.selected.length, 0);
     assert.equal(result.skipped.length, 0);
     assert.equal(result.capacity_used, 0);
@@ -243,6 +246,58 @@ test("graph-scheduler: capacity cap selects top N by priority then deterministic
     // Hypothesis ids carry the proposal_id; ordering is HP-a < HP-b < ...
     assert.equal(result.selected[0].node_id, ids[0]);
     assert.equal(result.selected[1].node_id, ids[1]);
+  });
+});
+
+test("graph-scheduler: max_total_spawned_agents binds the closure-dispatch breadth", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-governor.example.com";
+    seedSession(domain);
+    const ids = ["a", "b", "c", "d"].map((slug) => seedContractedHypothesis(domain, `GP-${slug}`));
+    // Wide capacity so only the governor can bind the dispatch count.
+    const widePolicy = { max_parallel_tasks: 100 };
+
+    // Governor 2, nothing reserved -> exactly 2 dispatched; the rest skipped
+    // (they ride the next drain cycle — no node dropped, fixpoint preserved).
+    const bound = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 2 },
+      100,
+      { reservedSpawnTotal: 0 },
+    );
+    assert.equal(bound.selected.length, 2, "governor clamps the closure dispatch to the remaining budget");
+    assert.equal(bound.skipped.length, 2, "over-budget nodes are skipped, not dropped");
+    assert.equal(bound.considered_count, 4);
+
+    // Reserved 1 of budget 3 -> remaining 2.
+    const reserved = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 3 },
+      100,
+      { reservedSpawnTotal: 1 },
+    );
+    assert.equal(reserved.selected.length, 2, "prior reservations subtract from the closure budget");
+
+    // Governor null -> byte-identical default-off: all four dispatch under the
+    // wide capacity, reservedSpawnTotal ignored.
+    const off = selectNextExecutableNodes(domain, widePolicy, 100, { reservedSpawnTotal: 999 });
+    assert.equal(off.selected.length, 4, "null governor ignores reservedSpawnTotal — byte-identical");
+    assert.deepEqual(ids.slice().sort(), off.selected.map((n) => n.node_id).sort());
+
+    // Fully exhausted budget -> nothing dispatched, but a coverage_gap NAMES the
+    // uncovered cells (STOP + report, never a silent drop). Null governor never
+    // attaches coverage_gap, so default-off stays clean.
+    const exhausted = selectNextExecutableNodes(
+      domain,
+      { ...widePolicy, max_total_spawned_agents: 2 },
+      100,
+      { reservedSpawnTotal: 2 },
+    );
+    assert.equal(exhausted.selected.length, 0, "no budget => nothing dispatched");
+    assert.ok(exhausted.coverage_gap, "exhaustion surfaces a coverage_gap");
+    assert.equal(exhausted.coverage_gap.kind, "spawn_budget_exhausted");
+    assert.equal(exhausted.coverage_gap.uncovered_node_ids.length, 4, "all four cells named as uncovered");
+    assert.equal(off.coverage_gap, undefined, "null governor never attaches coverage_gap");
   });
 });
 
@@ -530,6 +585,11 @@ test("bob_schedule_graph_nodes dispatches a contracted Hypothesis node via prepa
   withTempHome(() => {
     const domain = "x9-e2e-dispatch.example.com";
     seedSession(domain);
+    // Explicit off-profile (no in-flight cap) so capacity_limit equals the
+    // requested capacity through the single-cap path; the default's sized in-flight
+    // cap (per-kind split) is exercised by the D2 test instead.
+    const { writeQueuePolicy: writeLean } = require("../mcp/lib/queue-policy.js");
+    writeLean(domain, { max_concurrent_evaluators: null });
     const nodeId = seedContractedHypothesis(domain, "HP-e2e");
     const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
       target_domain: domain,
@@ -556,6 +616,51 @@ test("bob_schedule_graph_nodes dispatches a contracted Hypothesis node via prepa
     const doc = materializeTaskGraph(domain, { write: false }).document;
     const node = doc.nodes.find((n) => n.node_id === nodeId);
     assert.equal(node.state, "dispatched");
+  });
+});
+
+test("bob_schedule_graph_nodes reserves each dispatched closure cell in the spawn-ledger (cross-cycle bind)", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-ledger.example.com";
+    seedSession(domain);
+    const nodeId = seedContractedHypothesis(domain, "HP-ledger");
+    // Governor set: each dispatched closure cell must reserve one lifetime slot so
+    // the budget binds ACROSS drain cycles (without it, every cycle re-reads the
+    // same reservedSpawnTotal=0 and could re-dispatch up to the budget forever).
+    const { writeQueuePolicy, normalizeQueuePolicy, DEFAULT_QUEUE_POLICY: DQP } =
+      require("../mcp/lib/queue-policy.js");
+    const { readSpawnLedgerEntries, spawnLedgerTotal } = require("../mcp/lib/spawn-ledger.js");
+    writeQueuePolicy(domain, normalizeQueuePolicy({ ...DQP, max_total_spawned_agents: 50 }));
+
+    const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
+      target_domain: domain,
+      capacity: 1,
+    }));
+    assert.equal(result.dispatched.length, 1);
+
+    const rows = readSpawnLedgerEntries(domain);
+    assert.equal(rows.length, 1, "the dispatched cell is reserved");
+    assert.equal(rows[0].kind, "closure_cell");
+    assert.equal(rows[0].surface_id, nodeId);
+    assert.equal(rows[0].root_count, 1);
+    assert.equal(rows[0].descendant_tree, 0, "a closure cell does not nest");
+    assert.equal(rows[0].worst_case_tree, 1);
+    assert.equal(spawnLedgerTotal(domain), 1, "the cell now draws down the lifetime budget");
+  });
+});
+
+test("bob_schedule_graph_nodes closure dispatch with no governor writes no ledger rows — byte-identical", () => {
+  withTempHome(() => {
+    const domain = "x9-closure-ledger-off.example.com";
+    seedSession(domain);
+    seedContractedHypothesis(domain, "HP-ledger-off");
+    const { readSpawnLedgerEntries } = require("../mcp/lib/spawn-ledger.js");
+    const result = JSON.parse(TOOL_HANDLERS.bob_schedule_graph_nodes({
+      target_domain: domain,
+      capacity: 1,
+    }));
+    assert.equal(result.dispatched.length, 1);
+    assert.deepEqual(readSpawnLedgerEntries(domain), [], "no governor => no reservation rows");
   });
 });
 
@@ -994,7 +1099,9 @@ test("E1 selection: flag ON RAISES the hotter-surface cell but drops no cell (mo
     const idorCell = seedContractedCellE1(domain, "surface:idor");
     const genericCell = seedContractedCellE1(domain, "surface:generic", { bugClass: "xss", authProfile: "anon" });
 
-    const off = selectNextExecutableNodes(domain, {}, 8);
+    // The advisory is default-ON; the no-belief baseline is taken with an explicit
+    // operator `false` (assertBoolean honors an explicit false per session).
+    const off = selectNextExecutableNodes(domain, { belief_assisted_priority_enabled: false }, 8);
     const offIds = new Set([...off.selected, ...off.skipped].map((n) => n.node_id));
 
     const on = selectNextExecutableNodes(
@@ -1034,11 +1141,19 @@ test("D2 per-kind cap split: max_concurrent_evaluators scales cells while transi
       ...Array.from({ length: 3 }, (_, i) => ({ node_id: `tr-${i}`, kind: "transition", state: "ready", priority: "medium" })),
     ],
   };
-  // Default (no max_concurrent_evaluators): one combined cap => byte-identical slice.
-  const def = selectNextExecutableNodes("d2-split.example.com", {}, 2, { document });
+  // Off-profile (explicit null in-flight cap): one combined cap => single slice.
+  const def = selectNextExecutableNodes("d2-split.example.com", { max_concurrent_evaluators: null }, 2, { document });
   assert.equal(def.capacity_used, 2);
-  assert.equal(def.capacity_limit, 2, "default keeps the single combined cap");
+  assert.equal(def.capacity_limit, 2, "a null in-flight cap keeps the single combined cap");
   assert.equal(def.capacity_used, def.selected.length);
+
+  // On-default: the shipped default's sized in-flight cap (128) scales the cell kind
+  // while transition/hypothesis stay at the graph cap (the per-kind split is on).
+  const { DEFAULT_QUEUE_POLICY: DQP_D2 } = require("../mcp/lib/queue-policy.js");
+  const onDefault = selectNextExecutableNodes("d2-split.example.com", DQP_D2, 2, { document });
+  assert.equal(onDefault.selected.filter((n) => n.kind === "cell").length, 6, "the on-default scales all 6 cells (cap 128 > 6)");
+  assert.equal(onDefault.selected.filter((n) => n.kind !== "cell").length, 2, "transition/hypothesis stay at the graph cap 2");
+  assert.equal(onDefault.capacity_limit, 130, "capacity_limit = cellCap(128) + graphCap(2)");
 
   // Opt-in: cell cap 5 (max_concurrent_evaluators), graph cap 2 (the `cap` arg = max_parallel_tasks).
   const split = selectNextExecutableNodes("d2-split.example.com", { max_concurrent_evaluators: 5 }, 2, { document });

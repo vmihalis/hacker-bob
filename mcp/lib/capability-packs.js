@@ -133,7 +133,7 @@ const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-evm",
     evaluator_name_prefix: "evaluator-evm",
     chain_id_description: "the EVM chain id (e.g., 1, 137, 10, 42161)",
-    workflow_summary: `bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> bob_halmos_run to symbolically explore the invariant a single concrete fork run cannot exhaust -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "forge",
     blocked_harness_kind_options: "foundry_fork or rpc_endpoint",
   }),

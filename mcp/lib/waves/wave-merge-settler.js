@@ -195,6 +195,7 @@ function serializeMergeResult({ merge, filteredRequeueSurfaceIds, promotions }) 
     terminally_blocked_promoted: promotions,
     bypass_attempts: merge.bypass_attempts,
     bypass_attempts_grouped: merge.bypass_attempts_grouped,
+    unconsumed_pivots: merge.unconsumed_pivots,
     suspicion_flags: merge.suspicion_flags,
     provenance: merge.provenance,
   };

@@ -10,8 +10,16 @@
 # (undefined symbols) and instruments only the harness (no library coverage). This
 # closes that wall.
 #
-# ENGINE=libfuzzer (default) builds /work/out/h. ENGINE=afl builds /work/out/h_afl +
-# /work/out/h_cmplog. Echoes BOB_MULTITU_LAYER=<cmake|autotools|make|compileall> so the
+# ENGINE=libfuzzer (default) builds /work/out/h (ASAN+UBSan+libFuzzer). ENGINE=afl
+# builds /work/out/h_afl + /work/out/h_cmplog. ENGINE=tsan builds /work/out/h_tsan
+# (ThreadSanitizer+libFuzzer) — a separate binary because TSan and ASAN are mutually
+# exclusive instrumentations; its crash banner ("WARNING: ThreadSanitizer: data race")
+# is recognized by sanitizer-report.js and routes into the SAME differential repro gate.
+# MSan is intentionally NOT an engine here: it requires a fully MSan-instrumented
+# toolchain (instrumented libc++ and every dependency) to avoid false uninitialized
+# reads, which is not cleanly injectable in this single-image builder; MSan stays
+# parser-only (a report from an externally MSan-built run still parses + adjudicates).
+# Echoes BOB_MULTITU_LAYER=<cmake|autotools|make|compileall> so the
 # build path is observable in the run ledger.
 set -eu
 ENGINE="${ENGINE:-libfuzzer}"
@@ -108,6 +116,19 @@ if [ "$ENGINE" = afl ]; then
   build_lib /work/libtarget_cl.a /work/bld_cl || link_fail "cmplog lib"
   AFL_LLVM_CMPLOG=1 "$HCC" -g -O1 $NOINT $INC -I/work/bld_cl "$HARNESS" -Wl,--start-group /work/libtarget_cl.a -Wl,--end-group "$DRV" -o "$OUT/h_cmplog" 2>/work/link_cl.log || link_fail "cmplog harness link"
   test -x "$OUT/h_afl" && test -x "$OUT/h_cmplog" && echo BOB_MULTITU_OK
+elif [ "$ENGINE" = tsan ]; then
+  # ThreadSanitizer arm: a SEPARATE binary because -fsanitize=thread cannot coexist
+  # with -fsanitize=address. The library and harness are built with thread (+UBSan,
+  # which IS TSan-compatible) and the libFuzzer driver, so a data race surfaces as a
+  # "WARNING: ThreadSanitizer:" banner with /src frames — recognized by the same
+  # sanitizer-report.js parser and adjudicated by the same differential repro gate.
+  [ "$HARNESS_C" = 1 ] && HCC=clang-18 || HCC=clang++-18
+  export CC=clang-18 CXX=clang++-18
+  LIBFLAGS="-g -O1 -fsanitize=thread,undefined,fuzzer-no-link $NOINT"
+  build_lib /work/libtarget_tsan.a /work/bld_tsan || link_fail "tsan lib"
+  echo "BOB_MULTITU_LAYER=$LAYER"
+  "$HCC" -g -O1 -fsanitize=thread,undefined,fuzzer $NOINT $INC -I/work/bld_tsan "$HARNESS" -Wl,--start-group /work/libtarget_tsan.a -Wl,--end-group -o "$OUT/h_tsan" 2>/work/link_tsan.log || link_fail "tsan harness link"
+  test -x "$OUT/h_tsan" && echo BOB_MULTITU_OK
 else
   [ "$HARNESS_C" = 1 ] && HCC=clang-18 || HCC=clang++-18
   export CC=clang-18 CXX=clang++-18

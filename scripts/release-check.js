@@ -205,10 +205,13 @@ function checkCanonicalPack(rootPackage) {
   // test/package.test.js ceiling (keep the two in lockstep).
   // Raised to 3.6 MB in core when the full offensive arsenal merged on top of core's
   // belief/OSS-repro superset (~3.42 MB lean tarball). Lockstep with test/package.test.js.
-  if (canonical.size < 3600000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.6 MB`);
+  // Raised to 3.7 MB for the open-vocabulary mechanism registry + finding-differential
+  // verifier/ledger and the cross-role fan-out tool surface (recon-angle + per-finding
+  // verification staging) plus their regenerated agent/skill/settings surfaces.
+  if (canonical.size < 3700000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.7 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.6 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.7 MB`);
   }
 
   let foundDisallowed = false;

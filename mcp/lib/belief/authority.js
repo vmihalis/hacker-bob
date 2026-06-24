@@ -137,7 +137,9 @@ function normalizeSignal({ kind, source, provenance, artifact_ref, role = "evide
   }
   // CB-B7: an agent-elicited belief is advisory. It may be a prior or a diagnostic,
   // never evidence -- the honesty rail that keeps llm_inferred from masquerading as a
-  // verified_intervention-grade fact.
+  // verified_intervention-grade fact. The downstream demotion holds: when a
+  // latent has both an elicited prior AND a verified_intervention, the belief-window
+  // posterior follows the verified state (test/belief-evidence-dominates-prior.test.js).
   if (provenance === "llm_inferred" && role === "evidence") {
     throw new Error("llm_inferred is advisory and cannot enter the belief window as evidence; use role 'prior' or 'diagnostic'");
   }

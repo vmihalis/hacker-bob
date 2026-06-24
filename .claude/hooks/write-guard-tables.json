@@ -18,6 +18,8 @@
     "chain-attempts.jsonl",
     "composition-verified.jsonl",
     "repro-verified.jsonl",
+    "invariant-verified.jsonl",
+    "finding-differential-verified.jsonl",
     "offensive-runs.jsonl",
     "oob-tokens.jsonl",
     "diff-impact.json",
@@ -84,6 +86,7 @@
     "claim-clusters.jsonl",
     "chain-tree.jsonl",
     "audit-reports.jsonl",
+    "mechanism-candidates.jsonl",
     "invariant-runs.jsonl",
     "schema-contracts.jsonl",
     "doc-delta-results.json",
@@ -102,7 +105,8 @@
     "belief-scratch",
     "repo-runs",
     "repo-work",
-    "repo-checkouts"
+    "repo-checkouts",
+    "verification-round-partials"
   ],
   "agent_writable_basenames": [
     "attack_surface.json",

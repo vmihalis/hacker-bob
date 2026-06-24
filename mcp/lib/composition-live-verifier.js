@@ -60,6 +60,9 @@ const {
 const {
   hashCanonicalJson,
 } = require("./verification-contracts.js");
+const {
+  emitVerifiedInterventionSignal,
+} = require("./belief/outcome-bridge.js");
 
 const COMPOSITION_VERIFIED_VERSION = 1;
 const COMPOSITION_VERIFIED_MAX_RECORDS = 2000;
@@ -418,6 +421,23 @@ async function verifyCompositionPath(input, deps = {}) {
     });
   });
 
+  // Outcome-bridge: ONE-WAY executed-reality -> belief, advisory only. This runs
+  // strictly AFTER the audit-graded append and is internally try/catch-swallowed, so
+  // a belief write failure can never alter `result` or composition-verified.jsonl.
+  // Only a verified_pass with LEAF_VERIFIED leaves emits anything; each emitted
+  // record is tagged with this row's results_hash and sharpens exactly the matching
+  // request_equivalence latent. NO frontier event, NO grade/claim write (NO GATING).
+  if (result === RESULT_VERIFIED_PASS) {
+    emitVerifiedInterventionSignal({
+      target_domain: targetDomain,
+      base_url: input.base_url,
+      path: input.path,
+      leaves: leaves.map((leaf) => ({ ...leaf, results_hash: record.results_hash })),
+      event_index: index,
+      leaf_verified_status: LEAF_VERIFIED,
+    });
+  }
+
   return {
     target_domain: targetDomain,
     result,
@@ -448,12 +468,28 @@ function readCompositionVerifiedSummary(domain) {
   }
   const verified = records.filter((r) => r.result === RESULT_VERIFIED_PASS);
   const lastVerified = verified.length > 0 ? verified[verified.length - 1] : null;
+  // The full set of path_hash values of EVERY executed verified_pass row for the
+  // domain. The consumer binds a verdict iff THIS path's hash is a member, so the
+  // binding is path-precise: a different recently-verified path no longer
+  // satisfies the binding via the coarse last-hash, and a path whose hash is not
+  // the last but IS in the executed set is no longer wrongly rejected. Same
+  // executed set as verified_pass_count (no recomputation); duplicates collapsed.
+  const verifiedPathHashes = Array.from(
+    new Set(
+      verified
+        .map((r) => r.path_hash)
+        .filter((h) => typeof h === "string" && h),
+    ),
+  );
   return {
     total_runs: records.length,
     verified_pass_count: verified.length,
     refuted_count: records.filter((r) => r.result === RESULT_REFUTED).length,
     inconclusive_count: records.filter((r) => r.result === RESULT_INCONCLUSIVE).length,
     offline_refused_count: records.filter((r) => r.result === RESULT_OFFLINE_REFUSED).length,
+    // Authoritative per-path membership set for verdict binding.
+    verified_path_hashes: verifiedPathHashes,
+    // Retained for back-compat; the array above is authoritative for binding.
     last_verified_path_hash: lastVerified ? lastVerified.path_hash : null,
     // SC1's confirm-half is satisfied ONLY by at least one live verified_pass.
     sc1_confirm_half_satisfied: verified.length > 0,

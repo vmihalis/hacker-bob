@@ -72,6 +72,16 @@ const REFUSAL_REPLAY_MISMATCH = "replay_hash_mismatch";
 // frontier streams (surface.observed, session.seeded, …) cannot launder an
 // exploit-shaped payload into a confirmation.
 const REPLAY_OBSERVATION_KIND = "observation.recorded";
+
+// The edge_type and verdict discriminators are OPEN-VOCABULARY: an agent may
+// MINT a discriminator string for a mechanism no taxonomy names. They are
+// validated by SHAPE (a non-empty string), NOT by membership in a frozen enum.
+// Closedness here only ever bounded the forging-agent's space, not the
+// non-forgeability spine — that spine is the mechanism-AGNOSTIC flip the
+// predicate enforces below (a control exists, its input DIFFERS, its verdict is
+// the OPPOSITE, and the replay_hash binds the whole tuple). These two values
+// are still pinned for reference (the live verifier's K=1 rail, telemetry) but
+// are NOT the acceptance gate: a minted discriminator passes on shape.
 const EDGE_TYPE_VALUES = Object.freeze(["reachability", "guard", "sink"]);
 const REPLAY_VERDICT_VALUES = Object.freeze(["confirmed", "denied"]);
 
@@ -83,36 +93,50 @@ function isNonEmptyValue(value) {
   return true;
 }
 
+// A discriminator (edge_type / verdict) is shape-valid when it is a non-empty
+// string. This is the open-vocabulary gate: an agent-minted mechanism name is
+// accepted by shape; nothing about its spelling can mint a confirmation — only
+// the executed flip can (resolveSynthesizedDifferentialVerdict).
+function isShapeValidDiscriminator(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 // Typed-replay predicate — an OFFLINE artifact-shape gate, NOT a live verifier.
 // It does not execute requests; it validates that the resolved observation is
 // SHAPED for independent replay and is internally tamper-evident:
-//   - a decisive observation (edge_type + request + response + verdict),
+//   - a decisive observation (edge_type + request + response + verdict), where
+//     edge_type and verdict are OPEN-VOCABULARY — an agent-MINTED discriminator
+//     string is accepted by SHAPE (non-empty string), not by membership in a
+//     frozen enum, so a mechanism no taxonomy names can still be expressed,
 //   - a negative control whose request/response actually DIFFER from the
 //     positive (a real discriminating control, not the same input with the
 //     verdict relabelled) and whose verdict is the OPPOSITE (a declared flip),
 //   - a replay_hash that recomputes from the WHOLE decisive tuple
 //     {edge_type, request, response, verdict, negative_control}, so the flip
 //     claim — not just the positive half — is hash-bound.
-// A pass therefore means the evidence is replay-shaped, discriminating, and
-// tamper-evident — a NECESSARY precondition a live verifier must still confirm
-// by re-executing both requests. It does NOT by itself prove the exploit; the
-// harness has no way to run an HTTP/contract call. Returns null on pass, else
-// the refusal reason.
+// The acceptance gate is the mechanism-AGNOSTIC flip, NOT the discriminator's
+// spelling: a minted edge_type/verdict can be SHAPED here but mints nothing on
+// its own — only an EXECUTED differential resolves it to verified
+// (resolveSynthesizedDifferentialVerdict). A pass therefore means the evidence
+// is replay-shaped, discriminating, and tamper-evident — a NECESSARY
+// precondition a live verifier must still confirm by re-executing both
+// requests. It does NOT by itself prove the exploit; the harness has no way to
+// run an HTTP/contract call. Returns null on pass, else the refusal reason.
 function replayObservationRefusal(payload) {
   if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
     return REFUSAL_INVALID_PAYLOAD;
   }
   const { edge_type, request, response, verdict, negative_control, replay_hash } = payload;
-  if (!EDGE_TYPE_VALUES.includes(edge_type)) return REFUSAL_INVALID_PAYLOAD;
+  if (!isShapeValidDiscriminator(edge_type)) return REFUSAL_INVALID_PAYLOAD;
   if (!isNonEmptyValue(request) || !isNonEmptyValue(response)) return REFUSAL_INVALID_PAYLOAD;
-  if (!REPLAY_VERDICT_VALUES.includes(verdict)) return REFUSAL_INVALID_PAYLOAD;
+  if (!isShapeValidDiscriminator(verdict)) return REFUSAL_INVALID_PAYLOAD;
   if (negative_control == null || typeof negative_control !== "object" || Array.isArray(negative_control)) {
     return REFUSAL_INVALID_PAYLOAD;
   }
   if (!isNonEmptyValue(negative_control.request) || !isNonEmptyValue(negative_control.response)) {
     return REFUSAL_INVALID_PAYLOAD;
   }
-  if (!REPLAY_VERDICT_VALUES.includes(negative_control.verdict)) return REFUSAL_INVALID_PAYLOAD;
+  if (!isShapeValidDiscriminator(negative_control.verdict)) return REFUSAL_INVALID_PAYLOAD;
   // The decisive control must FLIP the verdict; an equal verdict is a bound but
   // benign observation (no genuine guard-fail / reachability / sensitivity).
   if (verdict === negative_control.verdict) return REFUSAL_NO_DECISIVE_FLIP;
@@ -132,6 +156,117 @@ function replayObservationRefusal(payload) {
     return REFUSAL_REPLAY_MISMATCH;
   }
   return null;
+}
+
+// Synthesized-differential resolution vocabulary. A minted (open-vocab)
+// observation is RESOLVED to exactly one of these. `verified` is the only one
+// that mints trust, and it is reachable ONLY via an executed differential.
+const SYNTH_VERIFIED = "verified";
+const SYNTH_UNVERIFIED = "unverified";
+
+// Why a synthesized differential is NOT verified. A shape-malformed observation
+// (the shape gate already refuses) is `shape_refused:<reason>`; a shaped-but-
+// unexecuted verdict is `not_executed`; a shaped+executed-but-mismatched
+// binding is `executed_binding_mismatch`. None of these mint trust.
+const SYNTH_REASON_SHAPE = "shape_refused";
+const SYNTH_REASON_NOT_EXECUTED = "declared_verdict_not_executed";
+const SYNTH_REASON_BINDING_MISMATCH = "executed_binding_mismatch";
+
+// resolveSynthesizedDifferentialVerdict — the MINT≠CONFIRM boundary for an
+// open-vocab synthesized differential. The offline shape gate above
+// (replayObservationRefusal) MINTS nothing: it only proves the observation is
+// replay-shaped, discriminating, and tamper-evident. A minted edge_type/verdict
+// — no matter how well-spelled — stays merely ADVISORY until an EXECUTED
+// differential resolves it. This resolver is that boundary, mirroring the
+// repro-gate ledger-by-id pattern (proof-bundle.js readReproVerifiedForReplay):
+// a verdict mints `verified` ONLY when it cites a `verified_pass` row in the
+// MCP-write-only, agent-Write-blocked composition-verified.jsonl ledger
+// (written solely by the live verifier that RE-EXECUTES both legs), bound by id
+// to THIS observation's path and decisive tuple. A declared-but-unexecuted
+// verdict, or one whose cited executed row does not bind to this observation,
+// is REFUSED. It never reads a frontier event (the laundering surface) — only
+// the protected executed ledger.
+//
+// input: { observation, path_hash } — `observation` is the shaped payload (the
+//         same shape replayObservationRefusal accepts); `path_hash` is the
+//         hash of the composition path the observation belongs to, as minted by
+//         runPathCompositionExperiment, so the executed row is bound to the
+//         exact path that was re-executed.
+// deps:  { readExecutedVerifiedSummary } — injected so this module does not
+//         require the live verifier (which already requires this module). The
+//         reader returns the live ledger summary (see
+//         composition-live-verifier.js readCompositionVerifiedSummary):
+//         { verified_pass_count, verified_path_hashes, last_verified_path_hash,
+//         ... }. Binding is path-precise membership: this path's hash must be in
+//         the executed verified_path_hashes[] set. last_verified_path_hash is a
+//         back-compat fallback only when the array is absent.
+function resolveSynthesizedDifferentialVerdict(input, deps = {}) {
+  const observation = input && typeof input === "object" ? input.observation : null;
+  const pathHash = input && typeof input === "object" ? input.path_hash : null;
+
+  // The shape gate is a hard precondition: an un-shaped observation can never be
+  // resolved to verified, regardless of any executed ledger row.
+  const shapeRefusal = replayObservationRefusal(observation);
+  if (shapeRefusal) {
+    return {
+      verdict: SYNTH_UNVERIFIED,
+      reason: `${SYNTH_REASON_SHAPE}:${shapeRefusal}`,
+      claim_authority: false,
+    };
+  }
+
+  if (typeof deps.readExecutedVerifiedSummary !== "function") {
+    throw new TypeError(
+      "deps.readExecutedVerifiedSummary must be a function returning the executed verified-ledger summary",
+    );
+  }
+  if (typeof pathHash !== "string" || !pathHash) {
+    throw new Error("path_hash is required to bind the verdict to an executed differential row");
+  }
+
+  let summary;
+  try {
+    summary = deps.readExecutedVerifiedSummary();
+  } catch {
+    summary = null;
+  }
+  const verifiedCount = summary && typeof summary.verified_pass_count === "number"
+    ? summary.verified_pass_count : 0;
+
+  // LEDGER-BY-ID: a verified verdict requires at least one executed verified_pass
+  // row, and that row must bind to THIS path (the live verifier re-executed
+  // exactly this path's legs). No executed row at all -> the verdict was DECLARED
+  // but never executed -> refused. This is the non-forgeability spine: a single
+  // declared pass never mints verified; only a re-executed differential does.
+  if (verifiedCount < 1) {
+    return {
+      verdict: SYNTH_UNVERIFIED,
+      reason: SYNTH_REASON_NOT_EXECUTED,
+      claim_authority: false,
+    };
+  }
+  const verifiedPaths = Array.isArray(summary.verified_path_hashes)
+    ? summary.verified_path_hashes
+    : (typeof summary.last_verified_path_hash === "string" && summary.last_verified_path_hash
+      ? [summary.last_verified_path_hash]
+      : []);
+  if (!verifiedPaths.includes(pathHash)) {
+    return {
+      verdict: SYNTH_UNVERIFIED,
+      reason: SYNTH_REASON_BINDING_MISMATCH,
+      claim_authority: false,
+    };
+  }
+
+  // Executed + bound: the live verifier re-executed both legs of this path and
+  // minted a verified_pass to the protected ledger. The open-vocab discriminator
+  // is now backed by a real flip, not its spelling.
+  return {
+    verdict: SYNTH_VERIFIED,
+    reason: "executed_differential_bound",
+    bound_path_hash: pathHash,
+    claim_authority: true,
+  };
 }
 
 // Build a one-pass index from event_id → event so each leaf resolves in O(1)
@@ -281,5 +416,12 @@ module.exports = {
   REFUSAL_NONDISCRIMINATING_CONTROL,
   REFUSAL_REPLAY_MISMATCH,
   REFUSAL_UNRESOLVED_EVENT,
+  SYNTH_VERIFIED,
+  SYNTH_UNVERIFIED,
+  SYNTH_REASON_SHAPE,
+  SYNTH_REASON_NOT_EXECUTED,
+  SYNTH_REASON_BINDING_MISMATCH,
+  replayObservationRefusal,
+  resolveSynthesizedDifferentialVerdict,
   runPathCompositionExperiment,
 };

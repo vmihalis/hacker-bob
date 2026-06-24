@@ -42,6 +42,7 @@ const {
 } = require("../scheduler-decisions.js");
 const {
   loadQueuePolicy,
+  normalizeQueuePolicy,
 } = require("../queue-policy.js");
 const {
   materializeTaskGraph,
@@ -66,7 +67,20 @@ function handler(args) {
     : loadQueuePolicy(domain);
   const capacity = input.capacity == null ? null : input.capacity;
 
-  const selection = graphSchedulerModule.selectNextExecutableNodes(domain, policy, capacity);
+  // Feed the binding-breadth governor the spawn-tree size already reserved so the
+  // closure-phase dispatch never exceeds the remaining session budget. Read only
+  // when the governor is set; null governor reads nothing (byte-identical default-off).
+  const normalizedPolicy = normalizeQueuePolicy(policy || {});
+  let reservedSpawnTotal = 0;
+  if (Number.isInteger(normalizedPolicy.max_total_spawned_agents)) {
+    try {
+      reservedSpawnTotal = require("../spawn-ledger.js").spawnLedgerTotal(domain);
+    } catch {
+      reservedSpawnTotal = 0;
+    }
+  }
+
+  const selection = graphSchedulerModule.selectNextExecutableNodes(domain, policy, capacity, { reservedSpawnTotal });
 
   // Step 2: graph-hash drift check. Re-materialize the graph immediately
   // after selection (no agent calls have run yet) and compare hashes.
@@ -134,6 +148,36 @@ function handler(args) {
         });
       }
     }
+  }
+
+  // Reserve each dispatched closure cell as one lifetime spawn slot in the
+  // spawn-ledger so max_total_spawned_agents binds ACROSS drain cycles. A closure
+  // cell does not nest (descendant_tree = 0), but it is still a real dispatched
+  // agent, so it costs one lifetime slot — without this, every drain cycle would
+  // read the same reservedSpawnTotal and could re-dispatch up to the remaining
+  // budget repeatedly, exceeding the operator's lifetime ceiling. Gated on the
+  // governor being set: default-off writes nothing (byte-identical). Best-effort:
+  // the read-path recompute degrades to the conservative remaining-budget clamp.
+  if (Number.isInteger(normalizedPolicy.max_total_spawned_agents) && dispatched.length > 0) {
+    try {
+      const { appendSpawnLedgerEntry } = require("../spawn-ledger.js");
+      for (const d of dispatched) {
+        try {
+          appendSpawnLedgerEntry(domain, {
+            ts: input.ts || new Date().toISOString(),
+            wave: "closure",
+            parent_agent: input.actor || null,
+            surface_id: d.node_id,
+            depth: 0,
+            branching: 0,
+            kind: "closure_cell",
+            root_count: 1,
+            descendant_tree: 0,
+            worst_case_tree: 1,
+          });
+        } catch {}
+      }
+    } catch {}
   }
 
   // Step 4: persist the GraphSchedulerDecision row. The decision lands

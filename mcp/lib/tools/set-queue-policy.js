@@ -95,8 +95,16 @@ module.exports = Object.freeze({
           // the session-wide spawn budget governor (default null = unbounded) bounding the
           // nested fan-out's worst-case tree — the REAL governor that makes a lifted
           // wave/concurrency clamp safe.
-          max_concurrent_evaluators: { type: "integer" },
-          max_total_spawned_agents: { type: "integer" },
+          //
+          // NULLABLE: an operator must be able to pass the literal null these fields
+          // default to (e.g. the LEAN_PROFILE's no-in-flight-cap / null-governor
+          // conservative profile). normalizeQueuePolicy already disambiguates explicit
+          // null (-> null) from an absent key (-> sized default); the schema gate was the
+          // only thing rejecting null at the boundary. The width-at-baseline LEAN profile
+          // stays governor-null (the auto-fill arms only when width/depth is RAISED), so
+          // the RANK != BOUND / unbounded-fixpoint invariants are untouched.
+          max_concurrent_evaluators: { type: ["integer", "null"] },
+          max_total_spawned_agents: { type: ["integer", "null"] },
           // Y.10 (Y-D12 / Y-P12 / D6 + D14) — operator attestation that
           // listed partial surfaces are acknowledged for the
           // OPEN_FRONTIER -> CLAIM_FREEZE runtime gate.

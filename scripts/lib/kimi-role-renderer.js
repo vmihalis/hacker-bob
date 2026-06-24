@@ -82,6 +82,11 @@ function kimiLaunchTemplates() {
       `Agent(subagent_type="coder", prompt: "Bob role: surface-router-agent. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Confirm attack_surface.json exists and has surfaces, then call bob_route_surfaces({ target_domain: '[domain]' }) and use .data. If routing fails or returns zero surfaces, report the error and stop. Otherwise return route count, capability-pack counts, and surface_routes_path. Emit BOB_AGENT_RUN_DONE when finished.")`,
       "```",
     ].join("\n"),
+    "{{SPAWN_RECON_ANGLE_AGENT}}": [
+      "```text",
+      `Agent(subagent_type="coder", prompt: "Bob role: surface-discovery-agent. DOMAIN=[domain] SESSION=~/hacker-bob-sessions/[domain]. Kimi has no subagent pool to drain a recon fan-out, so bob_plan_recon_angles returns mode=sequential here: run ALL surface-discovery steps (no ANGLE var) and produce attack_surface.json. Use Bash, Read, Write, Glob, Grep. Emit BOB_AGENT_RUN_DONE when finished.")`,
+      "```",
+    ].join("\n"),
     "{{SPAWN_EVALUATOR_AGENT}}": [
       "```text",
       `For each assignment, spawn an Agent(subagent_type="coder") for the evaluator family chosen by the MCP capability router (assignment.evaluator_agent from wave-start result.data.assignments[] — one of evaluator-agent or any of the per-pack evaluators listed in the smart-contract pack catalogue: ${evaluatorRoleSpecs().map((role) => role.name).join(", ")}).`,

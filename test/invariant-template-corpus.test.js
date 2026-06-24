@@ -130,6 +130,107 @@ test("object_authorization mechanism template is closed, bounded, and maps to ca
   assert.equal(Object.isFrozen(template.required_entities), true);
 });
 
+test("a non-catalog but CWE-shaped mechanism_id LOADS with cwe_in_catalog:false (annotate, not gate)", () => {
+  const result = loadMechanismTemplates([
+    {
+      // CWE-9999 canonicalizes (shape-valid) but is not in the curated catalog.
+      // It must LOAD as a tier-3 annotated candidate, not vanish.
+      id: "novel_mechanism",
+      mechanism_id: "CWE-9999",
+      candidate: true,
+      tier: 3,
+      claim_authority: false,
+      required_entities: ["principal", "novel_component", "guard", "effect"],
+      interventions: ["exercise_novel_path"],
+      positive_controls: ["novel_effect_observed"],
+      negative_controls: ["benign_baseline_must_hold", "non_discriminating_control_refused"],
+      confounders: ["environment_specific_state"],
+      evidence_predicate: { kind: "differential_effect", required_cwe: "CWE-9999" },
+    },
+  ]);
+  assert.equal(result.templates.length, 1, "a novel-but-CWE-shaped mechanism loads instead of dropping");
+  assert.equal(result.warnings.length, 0);
+  assert.equal(result.templates[0].mechanism_id, "CWE-9999");
+  assert.equal(result.templates[0].cwe_in_catalog, false, "non-catalog membership is annotated, not a drop-gate");
+});
+
+test("a catalog CWE annotates cwe_in_catalog:true", () => {
+  const result = loadMechanismTemplates([
+    {
+      id: "catalog_mechanism",
+      mechanism_id: "CWE-639",
+      required_entities: ["principal", "object"],
+      interventions: ["object_swap"],
+      positive_controls: ["owned_object"],
+      negative_controls: ["public_object_check"],
+      confounders: ["public_object"],
+      evidence_predicate: { kind: "differential_effect" },
+    },
+  ]);
+  assert.equal(result.templates.length, 1);
+  assert.equal(result.templates[0].cwe_in_catalog, true);
+});
+
+test("a non-CWE-shaped mechanism_id still fails the shape floor (catalog relaxed, shape preserved)", () => {
+  const result = loadMechanismTemplates([
+    {
+      id: "shapeless_mechanism",
+      mechanism_id: "not-a-cwe",
+      required_entities: ["principal", "object"],
+      interventions: ["object_swap"],
+      positive_controls: ["owned_object"],
+      negative_controls: ["public_object_check"],
+      confounders: ["public_object"],
+      evidence_predicate: { kind: "differential_effect" },
+    },
+  ]);
+  assert.equal(result.templates.length, 0, "a non-CWE-shaped id is dropped by the shape floor");
+  assert.match(result.warnings[0].warnings.join(" "), /canonicalize|CWE/);
+});
+
+test("the loader output projection PRESERVES tier / candidate / claim_authority", () => {
+  const corpus = loadMechanismTemplates([
+    {
+      id: "corpus_default",
+      mechanism_id: "CWE-639",
+      required_entities: ["principal", "object"],
+      interventions: ["object_swap"],
+      positive_controls: ["owned_object"],
+      negative_controls: ["public_object_check"],
+      confounders: ["public_object"],
+      evidence_predicate: { kind: "differential_effect" },
+    },
+  ]);
+  // A record that declares no tier defaults to the confirmed tier-2 corpus exemplar.
+  assert.equal(corpus.templates[0].tier, 2);
+  assert.equal(corpus.templates[0].candidate, false);
+  assert.equal(corpus.templates[0].claim_authority, false);
+
+  const candidate = loadMechanismTemplates([
+    {
+      id: "tier3_candidate",
+      mechanism_id: "CWE-862",
+      tier: 3,
+      candidate: true,
+      claim_authority: false,
+      source_tier: "cwe_catalog",
+      required_entities: ["principal", "function"],
+      interventions: ["unprivileged_invoke"],
+      positive_controls: ["privileged_allowed"],
+      negative_controls: ["public_function_check"],
+      confounders: ["client_side_only_gating"],
+      evidence_predicate: { kind: "differential_effect" },
+    },
+  ]);
+  // A declared tier-3 candidate keeps its advisory markers and is distinguishable
+  // from a confirmed corpus template by tier !== 2 / candidate === true.
+  assert.equal(candidate.templates[0].tier, 3);
+  assert.equal(candidate.templates[0].candidate, true);
+  assert.equal(candidate.templates[0].claim_authority, false);
+  assert.equal(candidate.templates[0].source_tier, "cwe_catalog");
+  assert.notEqual(candidate.templates[0].tier, corpus.templates[0].tier);
+});
+
 test("mechanism template loader skips malformed records with bounded warnings", () => {
   const result = loadMechanismTemplates([
     {

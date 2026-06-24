@@ -35,6 +35,12 @@ const {
   REFUSAL_NONDISCRIMINATING_CONTROL,
   REFUSAL_REPLAY_MISMATCH,
   REFUSAL_UNRESOLVED_EVENT,
+  SYNTH_VERIFIED,
+  SYNTH_UNVERIFIED,
+  SYNTH_REASON_NOT_EXECUTED,
+  SYNTH_REASON_BINDING_MISMATCH,
+  replayObservationRefusal,
+  resolveSynthesizedDifferentialVerdict,
   runPathCompositionExperiment,
 } = require("../mcp/lib/composition-experiment-harness.js");
 const {
@@ -414,4 +420,223 @@ test("bob_read_composition_telemetry handler returns the composition object", ()
       assert.ok(key in telemetry, `composition telemetry has ${key}`);
     }
   });
+});
+
+// ─── Open-vocabulary shape gate (a minted discriminator is accepted by SHAPE) ─
+
+// Build a shaped observation with an agent-MINTED (open-vocab) edge_type/verdict
+// — a mechanism no frozen enum names. The control input DIFFERS and its verdict
+// is the OPPOSITE, and the replay_hash binds the whole tuple, so it is shaped,
+// discriminating, and tamper-evident.
+function mintedObservation(opts = {}) {
+  const edgeType = "edge_type" in opts ? opts.edge_type : "price_oracle_staleness";
+  const verdict = "verdict" in opts ? opts.verdict : "manipulated";
+  const controlVerdict = opts.controlVerdict || "rejected";
+  const request = { op: "swap", amount: 1000, oracle: "stale" };
+  const response = { out_amount: 999999, drained: true };
+  const negative_control = {
+    request: opts.nondiscriminating === true ? { ...request } : { op: "swap", amount: 1000, oracle: "fresh" },
+    response: opts.nondiscriminating === true ? { ...response } : { out_amount: 1001, drained: false },
+    verdict: opts.flip === false ? verdict : controlVerdict,
+  };
+  const decisive = { edge_type: edgeType, request, response, verdict, negative_control };
+  return {
+    ...decisive,
+    replay_hash: opts.tamperHash === true ? "0".repeat(64) : hashCanonicalJson(decisive),
+  };
+}
+
+test("open-vocab: a MINTED edge_type/verdict whose control flips is accepted by SHAPE", () => {
+  // Neither the edge_type nor the verdict is in the frozen enum, yet the
+  // observation is shaped, discriminating, and tamper-evident -> the shape gate
+  // passes. Acceptance is by shape, not by enum membership.
+  assert.equal(replayObservationRefusal(mintedObservation()), null);
+});
+
+test("open-vocab: a minted discriminator with a non-flipping control is refused (no decisive flip)", () => {
+  assert.equal(
+    replayObservationRefusal(mintedObservation({ flip: false })),
+    REFUSAL_NO_DECISIVE_FLIP,
+  );
+});
+
+test("open-vocab: a minted discriminator with a hash-identical control is refused (nondiscriminating)", () => {
+  // Same input on both legs, only the verdict relabelled: an impossible flip,
+  // regardless of how novel the minted discriminator is.
+  assert.equal(
+    replayObservationRefusal(mintedObservation({ nondiscriminating: true })),
+    REFUSAL_NONDISCRIMINATING_CONTROL,
+  );
+});
+
+test("open-vocab: a minted discriminator with a tampered replay_hash is refused (unreplayable)", () => {
+  assert.equal(
+    replayObservationRefusal(mintedObservation({ tamperHash: true })),
+    REFUSAL_REPLAY_MISMATCH,
+  );
+});
+
+test("open-vocab: an empty-string minted discriminator is refused on shape", () => {
+  assert.equal(replayObservationRefusal(mintedObservation({ edge_type: "" })), REFUSAL_INVALID_PAYLOAD);
+  assert.equal(replayObservationRefusal(mintedObservation({ verdict: "" })), REFUSAL_INVALID_PAYLOAD);
+});
+
+// Regression: the frozen-enum discriminators stay byte-identical in OUTCOME —
+// the shape gate widened acceptance, it did not change today's verdicts.
+test("regression: the frozen enum discriminators still pass the shape gate unchanged", () => {
+  for (const edgeType of ["reachability", "guard", "sink"]) {
+    const request = { method: "GET", url: `/api/${edgeType}/1`, principal: "attacker" };
+    const response = { status: 200, body: `${edgeType}-leaked` };
+    const negative_control = {
+      request: { ...request, principal: "owner" },
+      response: { status: 403, body: "forbidden" },
+      verdict: "denied",
+    };
+    const decisive = { edge_type: edgeType, request, response, verdict: "confirmed", negative_control };
+    const payload = { ...decisive, replay_hash: hashCanonicalJson(decisive) };
+    assert.equal(replayObservationRefusal(payload), null);
+  }
+});
+
+// ─── MINT ≠ CONFIRM: only an EXECUTED differential resolves to verified ──────
+
+// A summary reader stub mirroring composition-live-verifier.js
+// readCompositionVerifiedSummary: verified_pass_count + the verified path hashes.
+function executedSummary(verifiedPathHashes = []) {
+  return () => ({
+    total_runs: verifiedPathHashes.length,
+    verified_pass_count: verifiedPathHashes.length,
+    verified_path_hashes: verifiedPathHashes,
+    last_verified_path_hash: verifiedPathHashes.length ? verifiedPathHashes[verifiedPathHashes.length - 1] : null,
+  });
+}
+
+test("MINT≠CONFIRM: a shaped minted differential with a bound executed verified_pass resolves to verified", () => {
+  const observation = mintedObservation();
+  const pathHash = "path-hash-executed";
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: pathHash },
+    { readExecutedVerifiedSummary: executedSummary([pathHash]) },
+  );
+  assert.equal(out.verdict, SYNTH_VERIFIED);
+  assert.equal(out.claim_authority, true);
+  assert.equal(out.bound_path_hash, pathHash);
+});
+
+test("MINT≠CONFIRM: a declared-but-unexecuted verdict is REFUSED (no executed row, never self-confirms)", () => {
+  // Perfectly shaped, discriminating, tamper-evident — but no executed
+  // differential exists. The declared verdict mints nothing.
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation: mintedObservation(), path_hash: "path-hash-declared" },
+    { readExecutedVerifiedSummary: executedSummary([]) },
+  );
+  assert.equal(out.verdict, SYNTH_UNVERIFIED);
+  assert.equal(out.reason, SYNTH_REASON_NOT_EXECUTED);
+  assert.equal(out.claim_authority, false);
+});
+
+test("MINT≠CONFIRM: an executed verified_pass bound to a DIFFERENT path does not confirm this one", () => {
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation: mintedObservation(), path_hash: "path-hash-mine" },
+    { readExecutedVerifiedSummary: executedSummary(["path-hash-someone-else"]) },
+  );
+  assert.equal(out.verdict, SYNTH_UNVERIFIED);
+  assert.equal(out.reason, SYNTH_REASON_BINDING_MISMATCH);
+  assert.equal(out.claim_authority, false);
+});
+
+test("MINT≠CONFIRM: a non-discriminating control cannot be resolved to verified even with an executed row", () => {
+  // The shape gate is a hard precondition: an impossible-flip control is refused
+  // BEFORE the executed ledger is consulted, so a real executed row for the path
+  // cannot launder a counterfeit flip into verified.
+  const observation = mintedObservation({ nondiscriminating: true });
+  const pathHash = "path-hash-with-executed-row";
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: pathHash },
+    { readExecutedVerifiedSummary: executedSummary([pathHash]) },
+  );
+  assert.equal(out.verdict, SYNTH_UNVERIFIED);
+  assert.match(out.reason, /^shape_refused:/);
+  assert.equal(out.claim_authority, false);
+});
+
+test("MINT≠CONFIRM: path_hash is required to bind a verdict to an executed row", () => {
+  assert.throws(
+    () => resolveSynthesizedDifferentialVerdict(
+      { observation: mintedObservation() },
+      { readExecutedVerifiedSummary: executedSummary(["x"]) },
+    ),
+    /path_hash is required/,
+  );
+});
+
+test("MINT≠CONFIRM: the executed-ledger reader is a required dependency (no implicit reader)", () => {
+  assert.throws(
+    () => resolveSynthesizedDifferentialVerdict({ observation: mintedObservation(), path_hash: "x" }, {}),
+    /readExecutedVerifiedSummary must be a function/,
+  );
+});
+
+test("MINT≠CONFIRM: binding is path-precise — a verified path that is NOT the last executed row still binds", () => {
+  // Multiple executed verified_pass rows; this path was verified earlier, so its
+  // hash is in the set but is not the last. The coarse last-hash check would have
+  // wrongly rejected it; per-path membership accepts it.
+  const observation = mintedObservation();
+  const pathHash = "path-hash-mine-earlier";
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: pathHash },
+    { readExecutedVerifiedSummary: executedSummary([pathHash, "path-hash-later-other"]) },
+  );
+  assert.equal(out.verdict, SYNTH_VERIFIED);
+  assert.equal(out.claim_authority, true);
+  assert.equal(out.bound_path_hash, pathHash);
+});
+
+test("MINT≠CONFIRM: a different recently-verified path (the last executed row) does NOT bind this one", () => {
+  // The last executed verified_pass is for some OTHER path. Old coarse last-hash
+  // logic would compare only that last hash; here this path's hash is simply not
+  // a member of the executed set, so it is refused.
+  const observation = mintedObservation();
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: "path-hash-mine" },
+    { readExecutedVerifiedSummary: executedSummary(["path-hash-old-other", "path-hash-recent-other"]) },
+  );
+  assert.equal(out.verdict, SYNTH_UNVERIFIED);
+  assert.equal(out.reason, SYNTH_REASON_BINDING_MISMATCH);
+  assert.equal(out.claim_authority, false);
+});
+
+test("MINT≠CONFIRM: when the summary omits the array, the last-hash fallback still binds (back-compat)", () => {
+  // A legacy/partial summary with only last_verified_path_hash and no array. The
+  // consumer falls back to the single last hash so older ledgers keep working.
+  const observation = mintedObservation();
+  const pathHash = "path-hash-legacy";
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: pathHash },
+    { readExecutedVerifiedSummary: () => ({ verified_pass_count: 1, last_verified_path_hash: pathHash }) },
+  );
+  assert.equal(out.verdict, SYNTH_VERIFIED);
+  assert.equal(out.bound_path_hash, pathHash);
+});
+
+test("MINT≠CONFIRM: the array is authoritative — a path matching only the stale last-hash is refused when the array excludes it", () => {
+  // The array is present and does NOT contain this path, even though the
+  // back-compat last_verified_path_hash does. The array wins, so the verdict is
+  // refused. This proves the coarse fallback is dead/secondary whenever the
+  // authoritative array exists.
+  const observation = mintedObservation();
+  const pathHash = "path-hash-mine";
+  const out = resolveSynthesizedDifferentialVerdict(
+    { observation, path_hash: pathHash },
+    {
+      readExecutedVerifiedSummary: () => ({
+        verified_pass_count: 1,
+        verified_path_hashes: ["path-hash-other"],
+        last_verified_path_hash: pathHash,
+      }),
+    },
+  );
+  assert.equal(out.verdict, SYNTH_UNVERIFIED);
+  assert.equal(out.reason, SYNTH_REASON_BINDING_MISMATCH);
+  assert.equal(out.claim_authority, false);
 });

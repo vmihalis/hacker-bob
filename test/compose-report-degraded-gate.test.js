@@ -15,13 +15,48 @@ const os = require("os");
 const path = require("path");
 
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
-const { appendCandidateClaim } = require("../mcp/lib/claims.js");
+const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
+const { appendJsonlLine } = require("../mcp/lib/storage.js");
+const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
 const {
+  findingDifferentialVerifiedJsonlPath,
+  offensiveRunsJsonlPath,
   reportMarkdownPath,
   sessionDir,
   verificationRoundPaths,
 } = require("../mcp/lib/paths.js");
+
+const DEGRADED_SURFACE = "surface:export";
+
+// Seed a genuine, re-derivable finding-differential verified_pass arm on DEGRADED_SURFACE
+// so the report-door executed-flip gate is satisfied (independent of the degraded-signature
+// gate under test). The finding is high, so the positive demonstrates high.
+function seedComposeExecutedArm(domain, findingId) {
+  const mkRow = (over) => {
+    const row = {
+      version: 1, target_domain: domain, run_id: over.run_id, tool_id: "bob_http_idor_confirm",
+      target: canonicalizeExploitTarget(`https://${domain}/api/export/${findingId}`),
+      offensive_outcome: over.offensive_outcome, dry_run: false, timed_out: false,
+      command_hash: over.command_hash, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+      demonstrated_severity: "high", surface_id: DEGRADED_SURFACE,
+    };
+    signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+    return row;
+  };
+  const positive = mkRow({ run_id: "fd-positive-1", offensive_outcome: "exploited_safely", command_hash: "1".repeat(64) });
+  const control = mkRow({ run_id: "fd-control-1", offensive_outcome: "blocked_by_defense", command_hash: "2".repeat(64) });
+  appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+    version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+    reason: "executed_finding_differential_flip", surface_id: DEGRADED_SURFACE, source: "offensive_runs",
+    positive_run_id: "fd-positive-1", positive_row_hash: offensiveRowHash(positive),
+    control_run_id: "fd-control-1", control_row_hash: offensiveRowHash(control),
+  });
+}
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -70,6 +105,7 @@ function appendFinding(domain, { findingId, signatureStatus = null }) {
     title: finding.title,
     summary: finding.description,
     severity: finding.severity,
+    surface_ids: [DEGRADED_SURFACE],
     evidence_refs: [{ kind: "finding", finding_id: findingId }],
     payload: { finding },
   });
@@ -147,6 +183,9 @@ test("bob_compose_report flows through unaffected for an all-signed final-report
       repro_steps: ["step 1"],
       evidence_refs: ["frontier_event:e1"],
     }]);
+    // An all-signed, final-reportable high finding is also fully backed by an executed
+    // flip, so it flows through both the degraded-signature gate and the executed-flip gate.
+    seedComposeExecutedArm(domain, "F-1");
 
     const result = JSON.parse(composeReportTool.handler({ target_domain: domain, sections: sections() }));
     assert.equal(result.target_domain, domain);

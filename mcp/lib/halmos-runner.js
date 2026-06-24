@@ -300,6 +300,12 @@ async function runHalmos({
   const parseResult = parseHalmosOutput(result.stdout || "");
   const summary = parseResult.ok ? summarizeHalmosOutput(parseResult.document) : { tests: [], total: 0, passed: 0, failed: 0 };
 
+  // MINT ≠ CONFIRM. `ok` (summary.failed===0 && summary.total>0) is a SINGLE-RUN
+  // PRIMITIVE — "no counterexample on THIS tree" — NOT a verified verdict. A
+  // verified FV finding requires the executed two-arm flip adjudicated by
+  // invariant-runner.js::verifyInvariantDifferential (classifyHalmosViolation maps
+  // this run to held/violated/degraded; `ok` mints only "held"). runHalmos mints no
+  // verdict and writes no audit-graded ledger.
   return {
     ok: result.ok && parseResult.ok && summary.failed === 0 && summary.total > 0,
     timed_out: result.timed_out === true,

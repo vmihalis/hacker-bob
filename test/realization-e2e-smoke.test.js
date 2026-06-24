@@ -97,7 +97,9 @@ const {
   surfaceIndexPath,
   taskQueuePath,
   verificationRoundPaths,
+  findingDifferentialVerifiedJsonlPath,
 } = require("../mcp/lib/paths.js");
+const { appendJsonlLine: appendFindingDifferentialRow } = require("../mcp/lib/storage.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -352,6 +354,43 @@ function driveRealizationFlow(domain) {
   //   - the document total_score must equal the MAX per-finding total_score
   //   - the verdict must match the document total_score against
   //     GRADE_SUBMIT_MIN_SCORE / GRADE_HOLD_MIN_SCORE
+  // Both findings are standalone web (IDOR / mass-assignment) executable-flip classes;
+  // seed each one's finding-differential verified_pass arm so the grade-time standalone
+  // gate is satisfied (NO amputation). Post-A1 the gate re-resolves the verdict against
+  // MAC-covered offensive-runs rows + re-adjudicates the flip, so seed a real signed
+  // exploited_safely positive + blocked_by_defense control (demonstrated severity >= the
+  // finding's), then the verdict line binding them.
+  {
+    const { canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
+    const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+    const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+    const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
+    const { offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
+    for (const findingId of findingIds) {
+      const demonstratedSeverity = findingId === findingIds[0] ? "high" : "medium";
+      const mkRow = (suffix, outcome, ch) => {
+        const row = {
+          version: 1, target_domain: domain, run_id: `${findingId}-${suffix}`, tool_id: "bob_http_idor_confirm",
+          target: canonicalizeExploitTarget(`https://${domain}/api/x/${findingId}`),
+          offensive_outcome: outcome, dry_run: false, timed_out: false,
+          command_hash: ch, exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+          demonstrated_severity: demonstratedSeverity, surface_id: promotedSurfaceId,
+        };
+        signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+        fs.mkdirSync(sessionDir(domain), { recursive: true });
+        fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+        return row;
+      };
+      const positive = mkRow("pos", "exploited_safely", `${findingId === findingIds[0] ? "1" : "3"}`.repeat(64));
+      const control = mkRow("ctl", "blocked_by_defense", `${findingId === findingIds[0] ? "2" : "4"}`.repeat(64));
+      appendFindingDifferentialRow(findingDifferentialVerifiedJsonlPath(domain), {
+        version: 1, target_domain: domain, finding_id: findingId, result: "verified_pass",
+        reason: "executed_finding_differential_flip", surface_id: promotedSurfaceId,
+        source: "offensive_runs", positive_run_id: `${findingId}-pos`, positive_row_hash: offensiveRowHash(positive),
+        control_run_id: `${findingId}-ctl`, control_row_hash: offensiveRowHash(control),
+      });
+    }
+  }
   callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",

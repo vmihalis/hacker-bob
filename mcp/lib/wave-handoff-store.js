@@ -30,12 +30,20 @@ const {
 const {
   assignmentRequiresToken,
   attachHandoffOrigin,
+  computeUnconsumedPivots,
   groupBlockedHarnessRuns,
   groupBlockedPrereqs,
   groupBypassAttempts,
+  pivotEdgeKey,
   validateHandoffProvenance,
   validateWaveHandoffPayload,
 } = require("./wave-handoff-contracts.js");
+const {
+  readTransitionProposals,
+} = require("./task-graph-events.js");
+const {
+  readSurfaceLeadsDocument,
+} = require("./surface-leads.js");
 const {
   latestAgentRunForWaveAgent,
 } = require("./agent-runs.js");
@@ -384,6 +392,41 @@ function buildSuspicionFlags({ smartContractCompletedSurfaceIds, bypassAttemptsF
   return flags;
 }
 
+// Build the consumption context the advisory unconsumed-pivots surfacing
+// checks merged discovered_pivots[] against. Both reads are best-effort and
+// fail-open: a missing/corrupt frontier ledger or surface-leads doc yields
+// empty sets, so the surfacing degrades to "treat every pivot as unconsumed"
+// (still advisory — it gates nothing) rather than breaking the merge. Off the
+// nesting path there are no pivots, so this context is never consulted.
+function buildPivotConsumptionContext(domain) {
+  const proposedEdges = new Set();
+  try {
+    for (const event of readTransitionProposals(domain)) {
+      const payload = event && event.payload;
+      if (!payload || typeof payload !== "object") continue;
+      const fromSurface = typeof payload.from_surface === "string" ? payload.from_surface : "";
+      const toSurface = typeof payload.to_surface === "string" ? payload.to_surface : "";
+      if (fromSurface && toSurface) proposedEdges.add(pivotEdgeKey(fromSurface, toSurface));
+    }
+  } catch {
+    // Fail-open: no transition edges known.
+  }
+  const leadReferenceStrings = new Set();
+  try {
+    const doc = readSurfaceLeadsDocument(domain);
+    for (const lead of (doc && Array.isArray(doc.leads) ? doc.leads : [])) {
+      if (!lead || typeof lead !== "object") continue;
+      for (const field of ["title", "source_surface_id", "contract_address", "promoted_surface_id"]) {
+        const value = lead[field];
+        if (typeof value === "string" && value) leadReferenceStrings.add(value);
+      }
+    }
+  } catch {
+    // Fail-open: no lead references known.
+  }
+  return { proposedEdges, leadReferenceStrings };
+}
+
 function mergeWaveHandoffsInternal(domain, waveNumber) {
   const artifacts = loadWaveArtifacts(domain, waveNumber);
   const readiness = buildWaveReadiness(artifacts, { domain });
@@ -401,6 +444,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const blockedHarnessRuns = [];
   const blockedPrereqs = [];
   const bypassAttempts = [];
+  const discoveredPivots = [];
   const provenance = {
     verified_agents: [],
   };
@@ -509,6 +553,10 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
         agent: assignment.agent,
         surfaceId: assignment.surface_id,
       }));
+      discoveredPivots.push(...attachHandoffOrigin(payload.discovered_pivots || [], {
+        agent: assignment.agent,
+        surfaceId: assignment.surface_id,
+      }));
     } catch (error) {
       invalidAgents.push(assignment.agent);
       invalidHandoffs.push({
@@ -555,6 +603,14 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
     }
   }
 
+  // Advisory: flag discovered_pivots[] with no corresponding consumption
+  // (no proposed transition edge AND no recorded surface lead for the
+  // to_surface). Empty/no-op off the nesting path. Non-gating; reported only.
+  const pivotConsumption = discoveredPivots.length > 0
+    ? buildPivotConsumptionContext(domain)
+    : { proposedEdges: new Set(), leadReferenceStrings: new Set() };
+  const unconsumedPivots = computeUnconsumedPivots(discoveredPivots, pivotConsumption);
+
   return {
     artifacts,
     readiness,
@@ -575,6 +631,8 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       blocked_prereqs_grouped: groupBlockedPrereqs(blockedPrereqs),
       bypass_attempts: bypassAttempts,
       bypass_attempts_grouped: groupBypassAttempts(bypassAttempts),
+      discovered_pivots: discoveredPivots,
+      unconsumed_pivots: unconsumedPivots,
       suspicion_flags: suspicionFlags,
       provenance,
       // CR-3/I4: per-run coordinates the server-side friction mechanization
@@ -683,6 +741,7 @@ function mergeWaveHandoffs(args) {
     blocked_prereqs_grouped: merge.blocked_prereqs_grouped,
     bypass_attempts: merge.bypass_attempts,
     bypass_attempts_grouped: merge.bypass_attempts_grouped,
+    unconsumed_pivots: merge.unconsumed_pivots,
     suspicion_flags: merge.suspicion_flags,
     provenance: merge.provenance,
   });

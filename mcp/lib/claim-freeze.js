@@ -118,6 +118,16 @@ function buildClaimFreezeDocument(domain, { write = false, now = new Date(), fre
     freeze_id: normalizedFreezeId,
     ...base,
   };
+  // freeze_hash is a KEYLESS self-hash of the frozen body. Its integrity rests on (a) the
+  // audit-graded write-block (claim-freeze.json is in AUDIT_GRADED_PATHS, agent-Write-
+  // blocked) and (b) the deferred offensive-sandbox separation — NOT on re-verifying this
+  // hash. Re-verifying a keyless self-hash on read adds nothing against an actor who can
+  // recompute it: a runtime-indirection rewrite of the frozen claims can re-run
+  // hashDocumentExcluding and rewrite freeze_hash to match. The real close is KEYING it (a
+  // per-session MAC), which needs the sandbox-protected key — the same offensive-runs MAC-
+  // key residual documented at claims.js (THREAT-MODEL BOUNDARY) and
+  // finding-differential-verifier.js (reverify note). Until then, do NOT add a read-time
+  // re-hash check that would look like a fix but is not.
   freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
 
   if (write) {
@@ -162,6 +172,11 @@ function readCurrentClaimFreeze(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const filePath = claimFreezePath(domain);
   if (!fs.existsSync(filePath)) return null;
+  // Intentionally does NOT re-verify freeze_hash: it is a keyless self-hash (see the
+  // freeze_hash mint comment above), so a read-time re-hash check is security theater
+  // against a recompute-capable actor. The frozen doc's integrity is the audit-graded
+  // write-block + the deferred offensive-sandbox key separation; keying freeze_hash is the
+  // real close and shares the offensive-runs MAC-key residual.
   return readJsonFile(filePath, { label: "claim-freeze.json" });
 }
 

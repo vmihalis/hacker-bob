@@ -281,6 +281,81 @@ SUBPROCESS_SHELL_RE = re.compile(
 )
 MAX_DEPTH = 6
 
+# pathlib variable-join write form: (BASE / "name"[ / "name2"]).write_text/write_bytes/open.
+# The join BASE operand is a runtime expression the guard cannot fully resolve, but
+# the THREAT is an agent writing an MCP-owned basename to the SESSION dir. So a join
+# is only resolved-under-the-session (and blocked on an MCP-owned basename) when its
+# BASE is plausibly the session dir — the shipped idiom's leftmost operand is a var
+# named `session` (or a base assigned from the session env / SESSIONS_ROOT). When the
+# BASE is a LITERAL path (Path('/tmp'), Path('reports'), a string) or any non-session
+# expression, the REAL path is resolved (base + name) so session_relative() returns
+# None and the write ALLOWs. Group 1 captures the BASE expression; the last group
+# captures the joined NAME. The verb anchor excludes read_text/read_bytes so the
+# read-side join idiom is not falsely tripped.
+JOIN_WRITE_RE = re.compile(
+    r'''\(\s*([^()"']*?)/\s*["']([^"']+)["']\s*\)\s*\.\s*(?:write_text|write_bytes|open)\b''')
+# assigned-then-write: `var = BASE / "name"` then a later var.write_text/write_bytes/open.
+# Group 1 = assigned var, group 2 = BASE expression, group 3 = joined NAME.
+JOIN_ASSIGN_RE = re.compile(
+    r'''^\s*([A-Za-z_]\w*)\s*=\s*([^=\n].*?)/\s*["']([^"']+)["']\s*$''', re.M)
+
+# Identifier heads (lowercased) that name a session directory in the shipped idioms.
+SESSION_BASE_NAMES = {
+    "session", "session_dir", "session_path", "sess",
+    "sessions_root", "session_root",
+}
+# Textual session references that can appear inside a base expression / its RHS.
+_SESSION_TOKEN_RE = re.compile(
+    r'''\bSESSIONS?_ROOT\b|\bSESSION\b|environ|\$\{?SESSION''')
+
+
+def _base_is_session(base_expr, code):
+    """True when a join's BASE operand is plausibly the session directory.
+
+    Conservative classification keyed on the THREAT (an MCP-owned basename written
+    to the session dir): the base names a session var / references the session env
+    or SESSIONS_ROOT, or is a var traced (one level) to such a RHS. Anything else
+    (literal Path('/tmp'), Path('reports'), an opaque alias) is NOT session-derived.
+    """
+    b = base_expr.strip()
+    if _SESSION_TOKEN_RE.search(b):
+        return True
+    m = re.match(r"\s*([A-Za-z_]\w*)", b)
+    if not m:
+        return False
+    if m.group(1).lower() in SESSION_BASE_NAMES:
+        return True
+    # Trace one level: a base var assigned from a session-derived RHS.
+    for am in re.finditer(r"^\s*" + re.escape(m.group(1)) + r"\s*=\s*([^\n]+)$", code, re.M):
+        rhs = am.group(1)
+        if _SESSION_TOKEN_RE.search(rhs):
+            return True
+        hm = re.match(r"\s*([A-Za-z_]\w*)", rhs)
+        if hm and hm.group(1).lower() in SESSION_BASE_NAMES:
+            return True
+    return False
+
+
+def _base_literal(base_expr, code):
+    """Best-effort literal path string for a NON-session base, so the join resolves
+    to its REAL location. Extracts the string from Path('lit')/'lit' in the base
+    expression, tracing one assignment level for a bare var. Returns None when no
+    literal is recoverable (then the relative name resolves against cwd — outside any
+    session root — and ALLOWs)."""
+    def _lit(expr):
+        m = re.search(r"""(?:Path\s*\(\s*)?["']([^"']+)["']""", expr)
+        return m.group(1) if m else None
+    direct = _lit(base_expr)
+    if direct is not None:
+        return direct
+    m = re.match(r"\s*([A-Za-z_]\w*)\s*$", base_expr.strip())
+    if m:
+        for am in re.finditer(r"^\s*" + re.escape(m.group(1)) + r"\s*=\s*([^\n]+)$", code, re.M):
+            lit = _lit(am.group(1))
+            if lit is not None:
+                return lit
+    return None
+
 
 def _pathish(token):
     return (
@@ -452,6 +527,32 @@ def scan_write_ops(code, depth, base_dirs=None):
                     f"BLOCKED: Inline script writes to '{blocked}' in session directory. "
                     f"Use the appropriate hacker-bob MCP tool instead."
                 )
+    # pathlib variable-join writes: `(BASE / "name").write_text(...)` and the
+    # assigned-then-write `p = BASE / "name"; p.write_text(...)`. The base operand
+    # is classified: a SESSION-derived base resolves the joined name under the
+    # session and is fed to the UNCHANGED check_file (agent-writable basenames still
+    # ALLOW; MCP-owned basenames BLOCK — this preserves the leak fix). A LITERAL /
+    # non-session base resolves to its REAL location, so session_relative() returns
+    # None and the write ALLOWs (no false positive on a basename collision off-session).
+    join_targets = []  # (base_expr, name)
+    for m in JOIN_WRITE_RE.finditer(code):
+        join_targets.append((m.group(1), m.group(2)))
+    for m in JOIN_ASSIGN_RE.finditer(code):
+        var, base_expr, name = m.group(1), m.group(2), m.group(3)
+        if re.search(r"\b" + re.escape(var) + r"\s*\.\s*(?:write_text|write_bytes|open)\b", code):
+            join_targets.append((base_expr, name))
+    for base_expr, name in join_targets:
+        if _base_is_session(base_expr, code):
+            target = str(SESSIONS_ROOT / name)
+        else:
+            literal = _base_literal(base_expr, code)
+            target = str(pathlib.Path(literal) / name) if literal is not None else name
+        blocked = check_file(target)
+        if blocked:
+            block(
+                f"BLOCKED: Inline script writes to '{blocked}' in session directory. "
+                f"Use the appropriate hacker-bob MCP tool instead."
+            )
     for match in SUBPROCESS_SHELL_RE.finditer(code):
         analyze_shell_write(match.group(1), depth + 1)
 

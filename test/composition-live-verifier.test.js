@@ -395,6 +395,7 @@ test("SC1 GRADING (LV-3): a shape-pass-only session reports verified_pass_count:
     assert.equal(summary.verified_pass_count, 0);
     assert.equal(summary.sc1_confirm_half_satisfied, false);
     assert.equal(summary.last_verified_path_hash, null);
+    assert.deepEqual(summary.verified_path_hashes, []);
   });
 });
 
@@ -410,6 +411,36 @@ test("SC1 GRADING (LV-3): a live verified_pass advances the count and binds the 
     assert.equal(summary.verified_pass_count, 1);
     assert.equal(summary.sc1_confirm_half_satisfied, true);
     assert.equal(summary.last_verified_path_hash, out.path_hash);
+    // The authoritative per-path membership set carries this executed hash, drawn
+    // from the SAME verified rows as the count (no recomputation).
+    assert.deepEqual(summary.verified_path_hashes, [out.path_hash]);
+  });
+});
+
+test("SC1 GRADING (LV-3): verified_path_hashes holds EVERY executed verified_pass hash (precise binding source)", async () => {
+  await withTempHome(async () => {
+    // First verified path: a guard-leaf object IDOR.
+    const guardEventId = seedGuardObservation(DOMAIN);
+    const first = await verifyCompositionPath(
+      { target_domain: DOMAIN, base_url: BASE_URL, path: [guardLeaf(guardEventId)] },
+      { httpScanFn: makeFakeHttpScan() },
+    );
+    // Second verified path: a query-selected document IDOR → a distinct path_hash.
+    const docEventId = seedGuardObservation(DOMAIN, "guard", "/api/document?id=victim");
+    const second = await verifyCompositionPath(
+      { target_domain: DOMAIN, base_url: BASE_URL, path: [docLeaf(docEventId)] },
+      { httpScanFn: makeDocFakeHttpScan() },
+    );
+    assert.equal(first.result, RESULT_VERIFIED_PASS);
+    assert.equal(second.result, RESULT_VERIFIED_PASS);
+    assert.notEqual(first.path_hash, second.path_hash);
+    const summary = readCompositionVerifiedSummary(DOMAIN);
+    assert.equal(summary.verified_pass_count, 2);
+    // Both executed hashes are members, not just the last — this is what lets the
+    // consumer bind a non-last path precisely instead of via the coarse last hash.
+    assert.ok(summary.verified_path_hashes.includes(first.path_hash));
+    assert.ok(summary.verified_path_hashes.includes(second.path_hash));
+    assert.equal(summary.last_verified_path_hash, second.path_hash);
   });
 });
 

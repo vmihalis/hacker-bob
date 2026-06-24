@@ -952,6 +952,62 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     ...identity, ...internalHostPolicy,
   });
 
+  // The negative-control leg, signed. Reached ONLY from the POST-EXECUTION
+  // server-denied legs below: the safe/authorized variant ACTUALLY RAN (the probes
+  // fired, were audited via runProbe→auditConfirmRequest, and the circuit breaker
+  // counted them) and the server BLOCKED it. That denial is a REAL executed
+  // observation — the same surface, a distinct request from the positive — so it is
+  // the honest control the finding-differential verifier flips against. It signs a
+  // MAC-covered blocked_by_defense row on THIS surface (capture-first, sign-last,
+  // registry-derived severity, identical discipline to the positive) and returns the
+  // run_id the evaluator binds as control_run_ref. Pre-request refusals
+  // (blocked()-helper provenance/provision/scope/transport/probe_audit legs) NEVER
+  // reach this: they have no executed observation and must stay unsigned.
+  const signedBlocked = (reason, deniedUrl, deniedResponse) => {
+    const canonicalTarget = canonicalizeExploitTarget(deniedUrl);
+    const denyDiagnostic = canonicalJson({
+      reason,
+      status: deniedResponse ? deniedResponse.status : null,
+      offensive_outcome: "blocked_by_defense",
+    });
+    const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
+      runIdPrefix: "idor",
+      toolId: TOOL_ID,
+      method,
+      canonicalTarget,
+      surfaceId,
+      // A distinct identity tag from the positive's "B-as-A" so the control's
+      // command_hash differs from the positive's (a true safe-variant differs in
+      // request shape, not just run_id) and the differential sees a genuine flip.
+      identityTag: `control:${reason}`,
+      stdoutContent: denyDiagnostic,
+      stderrContent: denyDiagnostic,
+      relationBooleans: { control_leg: true },
+      offensiveOutcome: "blocked_by_defense",
+    }));
+    return {
+      confirmed: false,
+      target_domain: domain,
+      surface_id: surfaceId,
+      oracle_kind: oracleKind,
+      offensive_outcome: "blocked_by_defense",
+      reason,
+      // row_written:true — this blocked observation IS a signed control row, unlike a
+      // pre-request blocked() refusal (row_written:false).
+      row_written: true,
+      run_id: row.run_id,
+      tool_id: row.tool_id,
+      target: row.target,
+      command_hash: row.command_hash,
+      stdout_hash: row.stdout_hash,
+      stderr_hash: row.stderr_hash,
+      exit_code: row.exit_code,
+      demonstrated_severity: row.demonstrated_severity,
+      ...identity,
+      ...internalHostPolicy,
+    };
+  };
+
   // #1 NON-TRUNCATION (P1/P2/P2′/P5). A truncated proof body could hide the canary
   // or foreign PII past the fetch cap, so every signing-relevant body must be whole.
   if (P1.bodyTruncated !== false || P2.bodyTruncated !== false
@@ -1002,8 +1058,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     return fail("blocked_by_design", "canary_absent_p1");
   }
   if (canaryAt(p2Parsed, fieldPath) !== canary_b) {
-    // The categorical signal: A did not read B's specific object.
-    return fail("blocked_by_defense", "canary_absent_p2_no_cross_tenant_read");
+    // The categorical signal: A did not read B's specific object — the cross-tenant
+    // read (P2) actually fired and the server did NOT return B's object. This is the
+    // negative control: the defense IS present on the safe variant. Sign it as the
+    // flip leg (the cross-tenant probe ran + was audited; this is a real executed
+    // server-denied observation, not a pre-request refusal).
+    return signedBlocked("canary_absent_p2_no_cross_tenant_read", oBUrl, P2);
   }
   // #16 cache origin-proof: canary survives P2′'s never-before-requested URL.
   if (p2primeParsed == null || canaryAt(p2primeParsed, fieldPath) !== canary_b) {
@@ -1040,9 +1100,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   if (bodyLeaksCanary(P4, canary_b) || bodyLeaksCanary(P4id, canary_b)) {
     return fail("blocked_by_design", "canary_leaked_unauthenticated");
   }
-  // #10 ACCESS CONTROL — P4 and P4-id both 401/403.
+  // #10 ACCESS-CONTROL PRECONDITION — the cross-tenant claim is only sound if O_B is
+  // access-controlled on the SAFE (unauthenticated) variant: BOTH the anon read (P4)
+  // and its id-only variant (P4id) must be denied (401/403). If EITHER anon read was
+  // NOT a challenge, the object is anonymously reachable — there is no privilege
+  // boundary for the cross-tenant read to cross, and the server did NOT block anything.
+  // This is a precondition failure, NOT a defense observation: return it UNSIGNED. A
+  // signed blocked_by_defense row here would assert a defense that never fired (an anon
+  // 200 is the OPPOSITE of a server denial), violating the signedBlocked invariant.
   if (!isAuthChallenge(P4) || !isAuthChallenge(P4id)) {
-    return fail("blocked_by_defense", "object_not_access_controlled");
+    return fail("blocked_by_design", "object_not_access_controlled");
   }
   // Login-page-as-200 exclusion (defense in depth on P4).
   if (responseLooksLikeLoginPage(P2) || isLoginRedirect(P2)) {

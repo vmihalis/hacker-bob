@@ -11,23 +11,37 @@
 // repo-env.js fuzz_stats (crashSeen) so detection never diverges between the
 // fuzz-stats path and the proof-contract path.
 
-// A sanitizer / libFuzzer memory-safety crash signal. Matches the ASAN/UBSan/MSan
-// error banner, libFuzzer's own error line, a written crash artifact, or a dedup
-// token. Presence means "a crash-shaped signal was emitted" — necessary but NOT
-// sufficient for a verified reproduction (the verifier additionally requires a
-// /src-resolved frame AND a differential vuln-vs-fix flip).
-const MEMORY_SAFETY_SIGNAL_RE = /(?:==\d+==\s*ERROR:\s*(?:AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer)|ERROR:\s*libFuzzer:|Test unit written to|crash-[0-9a-f]{8,}|DEDUP_TOKEN:)/i;
+// A sanitizer / libFuzzer memory-safety crash signal. Matches the
+// ASAN/UBSan/MSan/TSan/LSan banners (in their ERROR: and WARNING: banner forms),
+// libFuzzer's own error line, a written crash artifact, or a dedup token. Presence
+// means "a crash-shaped signal was emitted" — necessary but NOT sufficient for a
+// verified reproduction (the verifier additionally requires a /src-resolved frame
+// AND a differential vuln-vs-fix flip). TSan/MSan emit a "WARNING:" banner rather
+// than "==N==ERROR:", and MSan's body phrase "use-of-uninitialized-value" is matched
+// directly so an MSan report routes even if the banner line is truncated.
+const MEMORY_SAFETY_SIGNAL_RE = /(?:==\d+==\s*(?:ERROR|WARNING):\s*(?:AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer|ThreadSanitizer|LeakSanitizer)|WARNING:\s*(?:ThreadSanitizer|MemorySanitizer):|ERROR:\s*libFuzzer:|use-of-uninitialized-value|Test unit written to|crash-[0-9a-f]{8,}|DEDUP_TOKEN:)/i;
 
-// ASAN/MSan banner: "==1==ERROR: AddressSanitizer: heap-buffer-overflow ..."
-const BANNER_RE = /==\d+==\s*ERROR:\s*(?<san>[A-Za-z]+Sanitizer):\s*(?<klass>[A-Za-z0-9_-]+)/;
-// UBSan: "file.c:12:34: runtime error: ..."
+// Structured sanitizer banner. ASAN/LSan emit "==1==ERROR: AddressSanitizer: <klass> ..."
+// while TSan/MSan emit a "WARNING:" banner (TSan with the "==N==" pid prefix, MSan
+// without) — so both ERROR and WARNING are accepted, and the "==N==" prefix is
+// optional. <klass> is the issue family ("heap-buffer-overflow", "data race",
+// "use-of-uninitialized-value") used by the §4.3 type gate.
+const BANNER_RE = /(?:==\d+==\s*)?(?:ERROR|WARNING):\s*(?<san>[A-Za-z]+Sanitizer):\s*(?<klass>.+?)(?=\s+on\b|\s+at\b|\s*\(|\s*$)/;
+// UBSan: "file.c:12:34: runtime error: ...". The captured file:line is the
+// attributable location even when UBSan prints no stack frames (its default).
 const UBSAN_RE = /(?<file>\S+):(?<line>\d+):(?<col>\d+):\s*runtime error:/;
 // libFuzzer deadly signal: "==1==ERROR: libFuzzer: deadly signal"
 const LIBFUZZER_RE = /ERROR:\s*libFuzzer:\s*(?<klass>[A-Za-z][A-Za-z -]+?)(?:\s*$|\n)/;
-// A backtrace frame: "    #3 0x4a1b2c in func /src/foo.c:42:10"  (the "in" is optional).
-const FRAME_HEAD_RE = /^\s*#(?<idx>\d+)\s+0x[0-9a-fA-F]+\s+(?:in\s+)?(?<rest>.*\S)\s*$/;
-// Frame tail with a source location: "<func> /src/path:line[:col]".
-const FRAME_SRC_RE = /^(?<func>.+?)\s+(?<file>\/\S+?):(?<line>\d+)(?::\d+)?$/;
+// A backtrace frame. Two shapes are accepted:
+//   ASAN/MSan/LSan/UBSan: "    #3 0x4a1b2c in func /src/foo.c:42:10"  ("in" optional)
+//   TSan:                 "    #0 func /src/race.c:14:7 (mod+0x4a1b2c)" (NO 0x address)
+// TSan omits the leading "0x<addr> in" and appends "(<module>+<offset>)"; the head
+// regex therefore makes the "0x<addr> [in]" prefix optional, and the source-tail
+// regex below tolerates a trailing " (mod+off)".
+const FRAME_HEAD_RE = /^\s*#(?<idx>\d+)\s+(?:0x[0-9a-fA-F]+\s+(?:in\s+)?)?(?<rest>.*\S)\s*$/;
+// Frame tail with a source location: "<func> /src/path:line[:col]" with an optional
+// trailing " (<module>+<offset>)" that TSan appends after the source location.
+const FRAME_SRC_RE = /^(?<func>.+?)\s+(?<file>\/\S+?):(?<line>\d+)(?::\d+)?(?:\s+\([^)]+\))?$/;
 
 // A crash frame is "repo-attributable" only when its source path is NOT a system
 // header, libc, or sanitizer-runtime location. The authoritative root-cause frame
@@ -107,6 +121,13 @@ function parseSanitizerReport(stderrText, stdoutText) {
   let sanitizer = null;
   let crashClass = null;
   let bannerIdx = null;
+  // UBSan prints "<file>:<line>:<col>: runtime error: ..." and, in its DEFAULT
+  // (non-halt) mode, NO backtrace frames. The banner line itself carries the
+  // attributable source location, so capture it as a fallback src_frame — but only
+  // a repo-attributable, /-rooted path counts (a "runtime error:" rooted in a
+  // <stdin>/relative/system path yields no fallback, so a non-/src UBSan line stays
+  // unattributable and is REFUTED by the differential, not minted).
+  let ubsanFallbackFrame = null;
 
   for (let i = 0; i < lines.length; i++) {
     const m = BANNER_RE.exec(lines[i]);
@@ -114,7 +135,23 @@ function parseSanitizerReport(stderrText, stdoutText) {
   }
   if (bannerIdx === null) {
     for (let i = 0; i < lines.length; i++) {
-      if (UBSAN_RE.test(lines[i])) { sanitizer = "UndefinedBehaviorSanitizer"; crashClass = "runtime-error"; bannerIdx = i; break; }
+      const m = UBSAN_RE.exec(lines[i]);
+      if (m) {
+        sanitizer = "UndefinedBehaviorSanitizer";
+        crashClass = "runtime-error";
+        bannerIdx = i;
+        const file = m.groups.file;
+        if (file && file.startsWith("/") && isRepoAttributableFrame(file)) {
+          ubsanFallbackFrame = {
+            idx: 0,
+            func: null,
+            source_path: file,
+            line: Number(m.groups.line),
+            module: null,
+          };
+        }
+        break;
+      }
     }
   }
   if (bannerIdx === null) {
@@ -125,7 +162,9 @@ function parseSanitizerReport(stderrText, stdoutText) {
   }
 
   const topFrames = bannerIdx === null ? [] : parseFramesAfter(lines, bannerIdx);
-  const srcFrame = topFrames.find((f) => isRepoAttributableFrame(f.source_path)) || null;
+  const srcFrame = topFrames.find((f) => isRepoAttributableFrame(f.source_path))
+    || ubsanFallbackFrame
+    || null;
 
   return {
     // A crash is real only with a structured banner; a bare MEMORY_SAFETY_SIGNAL

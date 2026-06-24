@@ -962,7 +962,14 @@ test("surface-discovery agents expose only the governance nucleus read and the b
     "bob_log_capability_friction",
     "bob_log_protocol_drift",
   ]);
+  // deep-surface-discovery additionally records ranked leads through the
+  // MCP-owned writer (surface-leads.json is MCP-owned; the agent no longer
+  // writes it directly), so it alone is granted bob_record_surface_leads.
+  const perAgentExtra = {
+    "deep-surface-discovery-agent": new Set(["bob_record_surface_leads"]),
+  };
   for (const agent of ["surface-discovery-agent", "deep-surface-discovery-agent"]) {
+    const allowed = new Set([...allowedPrimaries, ...(perAgentExtra[agent] || [])]);
     const document = readFile(`.claude/agents/${agent}.md`);
     const frontmatterMatch = document.match(/^---\n[\s\S]*?\n---\n/);
     const body = frontmatterMatch ? document.slice(frontmatterMatch[0].length) : document;
@@ -972,7 +979,7 @@ test("surface-discovery agents expose only the governance nucleus read and the b
     for (const exposure of exposures) {
       const toolName = exposure.replace(MCP_PERMISSION_PREFIX, "");
       assert.ok(
-        allowedPrimaries.has(toolName),
+        allowed.has(toolName),
         `${agent} frontmatter exposes unexpected MCP tool ${exposure}`,
       );
     }
@@ -1128,7 +1135,27 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // The CN Step B "Nested fan-out handoff reconciliation" stanza (default-off —
   // propose discovered_pivots, cross-check spawned_children) adds its paragraph +
   // separator (+2).
-  assert.ok(lines <= 410, `bob-evaluate-runner skill is ${lines} lines (cap 410)`);
+  // The impact-correlation invariant corroboration sub-pass (smart_contract
+  // candidates: bob_suggest_invariants -> bob_run_invariant_for_finding ->
+  // bob_read_invariant_runs, annotate-not-gate) adds its paragraph + separator (+2).
+  // The open-vocabulary mechanism registry adds bob_register_mechanism_template
+  // to the orchestrator bundle (+1 generated allowed-tools line).
+  // The recon multi-modal sweep adds bob_plan_recon_angles to the orchestrator
+  // bundle (+1 generated allowed-tools line) and a SETUP recon-angle dispatch
+  // stanza (the plan call + the sequential/fanout branches + the host-agnostic
+  // angle-worker spawn + assembly merge) to the seed-mapping sub-flow. Cap
+  // bumped 413 -> 425.
+  // The VERIFY state defaults round dispatch to the orchestrator-mediated
+  // one-worker-per-finding path: each worker stages its finding via
+  // bob_stage_verification_round_partial (carrying a finding-scoped replay
+  // context that makes the round concurrent-safe for those leases) and the
+  // union is committed through an empty bob_write_verification_round
+  // invocation. The single-worker whole-round path is the explicit LEAN
+  // fallback (serialized across findings via the attempt_pack lease) for an
+  // operator/host whose live replays are non-idempotent or share a fixture.
+  // Splitting that stanza into the default paragraph + residual note + LEAN
+  // fallback paragraph adds one rendered line. Cap bumped 430 -> 431.
+  assert.ok(lines <= 431, `bob-evaluate-runner skill is ${lines} lines (cap 431)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1437,6 +1464,15 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // PR3 adds bob_http_confirm: read-only against the target and negative-only
   // (never writes signed offensive-runs rows), but it appends http-audit.jsonl
   // records for its probes, so it is a session-artifact writer (mutating).
+  // The web-standalone finding-differential gate adds bob_verify_finding_differential —
+  // the standalone-class sibling of the repro/oracle/invariant verifiers. It binds two
+  // already-executed offensive-runs rows for one finding_id and mints the audit-graded
+  // finding-differential-verified.jsonl on a genuine flip, without a claim-writing tool.
+  // Per-finding round fan-out adds bob_stage_verification_round_partial: a verifier
+  // worker stages ONE finding's validated, attempt/snapshot-bound result; the server
+  // unions the staged partials into the round at commit. It never writes a round
+  // document or a verdict, so it is a session-artifact writer (mutating) but not a
+  // claim-writing tool.
   assert.deepEqual(
     mutating.sort(),
     [
@@ -1445,6 +1481,9 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
       "bob_http_scan",
       "bob_repo_check",
       "bob_repo_docker_run",
+      "bob_stage_verification_round_partial",
+      "bob_verify_finding_differential",
+      "bob_verify_invariant_differential",
       "bob_verify_oracle_differential",
       "bob_verify_repro_reproduction",
       "bob_write_verification_round",

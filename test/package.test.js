@@ -171,7 +171,12 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // Raised to 3.6 MB in core when the full offensive arsenal (XSS/IDOR/CORS/OOB/nuclei
     // producers+tools, HMAC exploit-proof ledger, sandbox+runner) merged on top of core's
     // belief/OSS-repro superset, taking the lean tarball to ~3.42 MB.
-    assert.ok(pack.size < 3600000, `npm pack size ${pack.size} exceeds 3.6 MB threshold`);
+    // Raised to 3.7 MB for the open-vocabulary mechanism registry (bob_register_mechanism_template
+    // + finding-differential-verifier.js + mechanism-candidate-store.js + the finding-differential
+    // audit-graded ledger) and the cross-role fan-out tool surface (bob_plan_recon_angles +
+    // recon-angle-plan.js, bob_stage_verification_round_partial, phase-fanout-plan.js) plus the
+    // regenerated agent/skill/settings surfaces that carry the new tools. Keep in lockstep with scripts/release-check.js.
+    assert.ok(pack.size < 3700000, `npm pack size ${pack.size} exceeds 3.7 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
