@@ -225,7 +225,7 @@ function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
 // independently cannot hide an action delimiter behind a later malformed escape (Codex P1).
 function decodeValidPercentTriplets(segment) {
   let cur = String(segment);
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     const next = cur.replace(/%[0-9a-f]{2}/gi, (m) => {
       try { const d = decodeURIComponent(m); return d === m ? m : d; } catch { return m; }
     });
@@ -243,6 +243,15 @@ function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
     // Recover any VALID percent-triplet a malformed escape elsewhere in the segment would otherwise mask,
     // so /api/transfer%3bv=%zz still surfaces the `;` delimiter (Codex P1).
     const segment = decodeValidPercentTriplets(rawSegment);
+    // FAIL CLOSED on a residual percent-triplet: if a VALID `%XX` survives the bounded decode (deeply
+    // nested `%2525…` layering beyond the iteration cap), a router that decodes further could still expose
+    // a hidden action verb the token split never sees, so refuse rather than POST blind (brutalist).
+    if (/%[0-9a-f]{2}/i.test(segment)) {
+      rejectInvalidArguments(
+        `derived create-collection path retains percent-encoding after decoding; ${toolName} refuses to POST to an unresolved-encoding endpoint`,
+        { path: parsed.pathname },
+      );
+    }
     // Break camelCase / PascalCase by rewriting each boundary to a hyphen (lower|digit->Upper and
     // ACRONYM->Word), so /transferFunds and /refundOrder surface their action verb the same way
     // /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and slip the guard).

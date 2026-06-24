@@ -3045,3 +3045,86 @@ test("PR-D r13 (Codex P1): uuid/guid/uid-suffixed scope+owner fields and bare ui
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }
 }));
+
+// ── PR-D review round 14: tokenized scope/owner, scheme-agnostic URL, query-routed + deep-encoding paths ──
+
+test("PR-D r14 (brutalist/Codex P1): prefixed/composite/slug scope+owner fields & owner canary_field are refused", () => withTempHome(async () => {
+  const domain = "idor-tokenized.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const bodyCases = [
+      { label: "prefixed victim_tenant_id", create_body: { victim_tenant_id: "v" }, reason: "create_body_scope_field" },
+      { label: "composite owner_user_id", create_body: { owner_user_id: "v" }, reason: "create_body_owner_field" },
+      { label: "tenant_slug", create_body: { tenant_slug: "v" }, reason: "create_body_scope_field" },
+      { label: "workspaceKey", create_body: { workspaceKey: "v" }, reason: "create_body_scope_field" },
+      { label: "org_code", create_body: { org_code: "v" }, reason: "create_body_scope_field" },
+    ];
+    for (const c of bodyCases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // owner-named canary_field → canary would land in an ownership slot.
+    for (const cf of ["user_id", "owner_id", "createdBy"]) {
+      const mock = liveArmFetchFn();
+      const r = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(r.reason, "canary_field_overlaps_owner_field", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+    // benign timestamp / content fields must NOT be over-blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { created_at: "2026-01-01", updated_at: "2026-01-02", title: "synthetic" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (brutalist/Codex P1): non-HTTP URI scheme create_body values are refused (scheme-agnostic)", () => withTempHome(async () => {
+  const domain = "idor-uri-schemes.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["redis://internal:6379", "mongodb://internal/db", "ssh://internal", "jdbc:mysql://internal/db"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { conn: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (Codex P1): a query-routed recorded endpoint is refused before any create", () => withTempHome(async () => {
+  const domain = "idor-query-routed.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/items/${OBJ_B}?type=invoice`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), path_template: "/api/items/{id}", canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.reason, "create_collection_query_routed_endpoint");
+    assert.equal(mock.postCount(), 0, "no create derived from a query-routed endpoint");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (brutalist): a deeply-nested percent-encoding cannot hide the action verb", () => {
+  // 13 nested %25 layers in front of a `;`-encoded matrix suffix on `transfer`: the bumped decode depth
+  // resolves the encoding and the verb still surfaces (action-shaped); a residual triplet beyond the decode
+  // budget is separately fail-closed as unresolved-encoding. Either way the create POST is refused.
+  const deep = `https://h/api/transfer%${"25".repeat(13)}3bv=1`;
+  assert.throws(() => assertCreateCollectionShapeSafe(deep, "t"), /action-shaped|unresolved-encoding/);
+});

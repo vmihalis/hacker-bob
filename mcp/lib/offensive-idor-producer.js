@@ -155,7 +155,10 @@ function keyHasReservedSegment(key) {
 // user, team), the _id form (tenant_id, user_id), and the _by[_id] form (created_by, created_by_id) all
 // collapse to one base — closing the alias/suffix tail rather than enumerating it (Codex P1).
 const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", "ownerscope", "namespace", "realm"]);
-const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "creator", "created", "createdby", "assignee"]);
+// Clear ownership SELECTORS only — content-ambiguous nouns (created/creator/author, which appear in benign
+// created_at / author-name fields) are deliberately excluded; the actor pattern *_by (created_by/updated_by)
+// is caught by the "by" token rule in fieldIsOwnerSelector instead.
+const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "assignee"]);
 function baseNoun(normName) {
   let s = String(normName);
   // Strip trailing key-suffixes iteratively so tenant_uuid / workspaceGuid / owner_uid / tenant_ids /
@@ -171,23 +174,47 @@ function baseNoun(normName) {
   }
   return s;
 }
-// Known fetch URL schemes (WHATWG protocol form): an absolute value with one of these can drive a
-// server-side fetch (SSRF / callback) when a create field is treated as a URL.
-const FETCH_URL_PROTOCOLS = new Set(["http:", "https:", "ftp:", "gopher:", "ws:", "wss:"]);
-// True when a create_body string VALUE is a fetch URL (Codex P1). Three layers, fail-closed:
+// TOKENIZE a field name into lowercase word tokens (split on non-alnum AND camelCase/Pascal boundaries).
+// Matching ANY token against the scope/owner sets — instead of normalizing the WHOLE name — catches a
+// PREFIXED selector (victim_tenant_id), a COMPOSITE one (owner_user_id), and an alternative-suffix one
+// (tenant_slug, workspaceKey, org_code) that whole-name base-noun matching misses (brutalist / Codex P1).
+function fieldNameTokens(name) {
+  return String(name)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+const inSet = (set, t) => set.has(t) || set.has(baseNoun(t));
+function fieldIsScopeSelector(name) {
+  // Whole-name match catches a JOINED noun (owner_scope -> "ownerscope"); token match catches a prefixed /
+  // composite / alt-suffix one (victim_tenant_id, tenant_slug).
+  if (inSet(SCOPE_BASE_NOUNS, normalizeFieldName(name))) return true;
+  return fieldNameTokens(name).some((t) => inSet(SCOPE_BASE_NOUNS, t));
+}
+function fieldIsOwnerSelector(name) {
+  if (inSet(OWNER_BASE_NOUNS, normalizeFieldName(name))) return true;
+  const tokens = fieldNameTokens(name);
+  // A trailing-actor field (created_by / updated_by / modified_by / deleted_by) assigns the principal —
+  // detected by a standalone "by" token, so created_at / updated_at (timestamps) are NOT caught.
+  if (tokens.includes("by")) return true;
+  return tokens.some((t) => inSet(OWNER_BASE_NOUNS, t));
+}
+// True when a create_body string VALUE is a fetch/connection URL (brutalist / Codex P1). SCHEME-AGNOSTIC,
+// not an enumerated allowlist — any authority-bearing URI can drive a server-side fetch/connection (SSRF):
 //  - protocol-relative `//host` / `\\host` (either slash direction);
-//  - an explicit known fetch/file scheme with optional (back)slashes then ANY authority char — incl. an
-//    IPv6 `[`, a userinfo `@`, or alnum — so http:host / http:/host / http:\host / http:[::1] / http:@h
-//    (all WHATWG-normalized to absolute URLs) are caught, while "file: report" / "note: hi" / "ratio 3:1"
-//    (no authority char after the colon) are not;
-//  - a WHATWG parse whose protocol is a fetch scheme (catches any spelling the regexes miss).
+//  - ANY `scheme://authority` (http/https/ftp/file/gopher/ldap/ssh/sftp/redis/mongodb/jdbc:mysql://…);
+//  - a known fetch scheme with NO `//` then ANY authority char (incl. IPv6 `[`, userinfo `@`, alnum) — so
+//    http:host / http:[::1] / http:@h (WHATWG-normalized to absolute URLs) are caught;
+//  - a WHATWG parse that yields a non-empty HOST (any scheme), catching anything the regexes miss.
+// "file: report" / "note: hi" / "ratio 3:1" (no `//`, no authority char, unparseable) are NOT URLs.
 function valueLooksLikeUrl(value) {
   const s = String(value).trim();
   if (/^[\\/]{2}/.test(s)) return true;
-  if (/^(?:https?|ftp|file|gopher|wss?|dict|ldaps?):[\\/]*[^\s/\\]/i.test(s)) return true;
-  try {
-    if (FETCH_URL_PROTOCOLS.has(new URL(s).protocol)) return true;
-  } catch { /* not URL-parseable */ }
+  if (/:\/\//.test(s)) return true;
+  if (/^(?:https?|ftp|file|gopher|wss?|dict|ldaps?|sftp|ssh|redis|mongodb|jar):[\\/]*[^\s/\\]/i.test(s)) return true;
+  try { if (new URL(s).host) return true; } catch { /* not URL-parseable */ }
   return false;
 }
 // True when a create_body string value carries a GraphQL mutation/subscription operation (Codex P1). A
@@ -241,13 +268,12 @@ function screenCreateBody(value, idField, depth = 0) {
     if (keyHasReservedSegment(k)) return "reserved_field_name"; // incl. dotted/bracketed deep-setter paths
     const norm = normalizeFieldName(k);
     if (CREATE_BODY_OVERRIDE_KEYS.has(norm)) return "create_body_action_override";
-    const base = baseNoun(norm);
-    if (SCOPE_BASE_NOUNS.has(norm) || SCOPE_BASE_NOUNS.has(base)) return "create_body_scope_field";
+    if (fieldIsScopeSelector(k)) return "create_body_scope_field";
     // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
-    // check it BEFORE the broader owner set so e.g. id_field:"account_id" reports client_supplied_id, while
-    // a non-id owner field (user / user_id / created_by with the default id_field) reports owner_field.
+    // check it BEFORE the broader owner selector so e.g. id_field:"account_id" reports client_supplied_id,
+    // while a non-id owner field (user_id / created_by with the default id_field) reports owner_field.
     if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
-    if (OWNER_BASE_NOUNS.has(norm) || OWNER_BASE_NOUNS.has(base)) return "create_body_owner_field";
+    if (fieldIsOwnerSelector(k)) return "create_body_owner_field";
     const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
@@ -1007,7 +1033,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // host can never reach here), but we capture the single origin and bind the live create + probes to it
   // explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't point
   // a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
-  const { origin: surfaceOrigin } = assertSingleEndpointSingleHost(surface, stateOrigin);
+  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleEndpointSingleHost(surface, stateOrigin);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
   // "path_template path shape does not match any recorded endpoint" unless the
@@ -1106,15 +1132,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
-    // canary_field must not overlap an owning-scope discriminator — owner_scope/tenant_id/org_id/
-    // workspace_id, ANY normalization alias (tenantId, org-id), OR the BARE base noun (tenant, org,
-    // workspace): the producer writes a DISTINCT minted canary into that field per identity, and the
-    // oracle reads those keys as the private tenant discriminator (#13/#14). On an API that normalizes a
-    // bare `tenant` create field to `tenant_id` in the stored/readback object, an unblocked bare alias
-    // would forge "provably distinct tenants" from attacker-chosen values and strip the confidence
-    // downgrade — signing an inflated cross-tenant proof. Refuse via base-noun match (Codex P1).
-    const normCanaryScope = normalizeFieldName(canaryField);
-    if (SCOPE_BASE_NOUNS.has(normCanaryScope) || SCOPE_BASE_NOUNS.has(baseNoun(normCanaryScope))) {
+    // canary_field must not overlap an owning-scope discriminator (tenant/org/workspace, any prefix/
+    // composite/suffix form): the producer writes a DISTINCT minted canary into that field per identity,
+    // and the oracle reads those keys as the private tenant discriminator (#13/#14). On an API that
+    // normalizes such a create field into the stored/readback object, an unblocked alias would forge
+    // "provably distinct tenants" from attacker-chosen values and strip the confidence downgrade — signing
+    // an inflated cross-tenant proof. Refuse via the tokenized scope-selector match (Codex P1).
+    if (fieldIsScopeSelector(canaryField)) {
       return blocked("blocked_by_design", "canary_field_overlaps_scope_key", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
@@ -1125,10 +1149,21 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // screen, so an id-aliasing canary_field places the (server-minted) canary into the OBJECT-ID slot of
     // the create body — on a create/upsert API that honors/normalizes client ids that POSTs an object with
     // a client-supplied id, violating the server-minted-id invariant before the post-write
-    // canary_reflected_in_object_id guard can fire (Codex P1). Refuse the (normalized) alias before any write.
+    // canary_reflected_in_object_id guard can fire (Codex P1). The configured id is the most precise reason,
+    // so check it BEFORE the broader owner selector. Refuse the (normalized) alias before any write.
     const normCanaryField = normalizeFieldName(canaryField);
     if (ID_ALIAS_KEYS.has(normCanaryField) || (normCanaryField && normCanaryField === normalizeFieldName(idField))) {
       return blocked("blocked_by_design", "canary_field_aliases_id_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not be an OWNER selector either (user_id/owner_id/createdBy/…): createObject POSTs
+    // { [canaryField]: canary }, so an owner-named canary_field writes the minted canary into an ownership
+    // slot, and an API honoring it would assign the synthetic object to a caller-chosen real principal
+    // before any readback gate (brutalist / Codex P1).
+    if (fieldIsOwnerSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_owner_field", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
       });
@@ -1158,6 +1193,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // so /api/account-{id} or /api/v1/accounts.{id} would pass there yet strip to /api or /api/v1 — a broader /
     // off-route POST target. Require the final segment to be exactly {id} (optionally {id}.ext) before deriving
     // the collection, else fail closed (Codex P1).
+    // A query-qualified recorded endpoint (/api/items/123?type=invoice) is query-ROUTED: resolveBaselineFromSurface
+    // strips the query, so the derived create collection /api/items may be a broader/different collection than
+    // the one actually recorded + bound. Refuse to derive a create target from a query-routed endpoint (Codex P1).
+    if (String(boundEndpoint.value).includes("?")) {
+      return blocked("blocked_by_design", "create_collection_query_routed_endpoint", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     const finalSegment = pathTemplate.slice(pathTemplate.lastIndexOf("/") + 1);
     if (!/^\{id\}(?:\.[a-z0-9]+)?$/i.test(finalSegment)) {
       return blocked("blocked_by_design", "create_collection_not_id_terminated", {
