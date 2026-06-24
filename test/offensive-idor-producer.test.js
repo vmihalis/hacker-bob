@@ -2133,6 +2133,7 @@ test("round-trip: a claim citing the row under a DIFFERENT surface is rejected (
 // minted canary at leaf `note`. This drives the FULL live arm (create→readback→P0-P8→mint).
 function liveArmFetchFn({ field = "note" } = {}) {
   const created = []; // creation order: [{ id, canary, owner }]
+  const postedBodies = []; // the parsed JSON body of every create POST (for asserting fields are sent)
   const ids = [OBJ_A, OBJ_B, OBJ_C];
   let posts = 0;
   const fn = async ({ url, method, headers, body }) => {
@@ -2142,6 +2143,7 @@ function liveArmFetchFn({ field = "note" } = {}) {
     if (String(method || "GET").toUpperCase() === "POST" && u.pathname === "/api/accounts") {
       posts += 1;
       const parsed = JSON.parse(body || "{}");
+      postedBodies.push(parsed);
       // ENFORCE the declared canary_field: the canary MUST arrive in `field` — a regression that ignores
       // canary_field and writes the canary elsewhere yields NO canary here, so the oracle never fires.
       const v = parsed[field];
@@ -2161,6 +2163,7 @@ function liveArmFetchFn({ field = "note" } = {}) {
     return jsonResponse(200, { id: obj.id, kind: "account", owner_scope: `tenant-${obj.owner}`, viewer_id: `viewer-${who}`, [field]: obj.canary });
   };
   fn.postCount = () => posts;
+  fn.postedBodies = () => postedBodies;
   return fn;
 }
 
@@ -2562,6 +2565,49 @@ test("PR-D r5: an armed run with a synthetic non-canary create_body field still 
     assert.equal(result.confirmed, true, JSON.stringify(result));
     assert.equal(result.demonstrated_severity, "medium");
     assert.equal(mock.postCount(), 3, "synthetic body field flows through; canary still overrides note");
+    // The synthetic fields must ACTUALLY be in each POST body (would still pass postCount if dropped, CR).
+    const bodies = mock.postedBodies();
+    assert.equal(bodies.length, 3);
+    for (const b of bodies) {
+      assert.equal(b.name, "synthetic", "create_body.name reached the target");
+      assert.equal(b.title, "t", "create_body.title reached the target");
+      assert.match(b.note, /^[0-9a-f]{64}$/, "canary still overrides canary_field");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 6: alias / normalization bypasses of the create-contract guards (Codex P1) ──
+
+test("PR-D r6 (Codex P1): canary_field / create_body alias bypasses are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-aliases.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // #3 canary_field aliasing a scope discriminator via camelCase/kebab normalization.
+      { label: "canary_field tenantId (camelCase scope)", args: { canary_field: "tenantId" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field org-id (kebab scope)", args: { canary_field: "org-id" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field OwnerScope (Pascal scope)", args: { canary_field: "OwnerScope" }, reason: "canary_field_overlaps_scope_key" },
+      // #2 client-id ALIAS in create_body (beyond the exact id_field), incl. nested.
+      { label: "create_body object_id", args: { canary_field: "note", create_body: { object_id: "known-object" } }, reason: "create_body_client_supplied_id" },
+      { label: "create_body resourceId (camelCase)", args: { canary_field: "note", create_body: { resourceId: "x" } }, reason: "create_body_client_supplied_id" },
+      { label: "create_body nested id", args: { canary_field: "note", create_body: { data: { id: "x" } } }, reason: "create_body_client_supplied_id" },
+      // #4 owning-scope key in create_body → scope drift during the write (incl. alias + nested envelope).
+      { label: "create_body tenant_id", args: { canary_field: "note", create_body: { tenant_id: "victim-org" } }, reason: "create_body_scope_field" },
+      { label: "create_body workspaceId (camelCase)", args: { canary_field: "note", create_body: { workspaceId: "victim-ws" } }, reason: "create_body_scope_field" },
+      { label: "create_body nested org_id envelope", args: { canary_field: "note", create_body: { meta: { org_id: "victim" } } }, reason: "create_body_scope_field" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
   } finally {
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }

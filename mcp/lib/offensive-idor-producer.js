@@ -125,12 +125,27 @@ const RESERVED_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 // could execute a mutation even though the path action-guard passed, so they are refused in create_body
 // at any depth before any write (Codex P2).
 const CREATE_BODY_OVERRIDE_KEYS = new Set(["_method", "method", "action", "_action", "op", "operation", "cmd", "command", "do"]);
+// Canonicalize a field NAME so camelCase / snake_case / kebab-case / spacing aliases collapse to one form
+// (tenantId / tenant_id / tenant-id -> "tenantid", _id -> "id"). Lets the create-contract guards reject a
+// scope-key or id alias on APIs that normalize JSON field names, not just the exact snake_case spelling
+// (Codex P1). Returns "" for a non-string so a bogus key can never silently pass.
+function normalizeFieldName(name) {
+  return typeof name === "string" ? name.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+}
+// Request-side client-id aliases (normalized): a create/upsert API honoring any of these would let an
+// agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
+// separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
+const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid"]);
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
-// the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on a
-// reserved prototype key (nested prototype-pollution shape), a method/action-dispatch key, or — at the
-// top level — the server-minted id field (the object id must NEVER be agent-supplied: an upsert-on-create
-// API would otherwise use an attacker-chosen id and point the write/probes at an existing resource).
+// the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
+//  - a reserved prototype key (nested prototype-pollution shape);
+//  - a method/action-dispatch key (body-level method override);
+//  - a client-id key — the configured id_field OR a known id alias (object_id/resource_id/uuid/...),
+//    normalized, at ANY depth: the object id must NEVER be agent-supplied (Codex P1);
+//  - an owning-scope key (owner_scope/tenant_id/org_id/workspace_id and their aliases), normalized, at
+//    ANY depth: a {tenant_id:"victim-org"} body would make the live write drift into a caller-chosen
+//    tenant/workspace before the oracle blocks (Codex P1).
 // Returns a blocked() reason string, or null when the body is clean. depth-bounded to fail closed.
 function screenCreateBody(value, idField, depth = 0) {
   if (depth > 8) return "create_body_too_deep";
@@ -139,11 +154,14 @@ function screenCreateBody(value, idField, depth = 0) {
     return null;
   }
   if (!value || typeof value !== "object") return null;
+  const normIdField = normalizeFieldName(idField);
   for (const key of Object.keys(value)) {
     const k = String(key);
     if (RESERVED_PROTO_KEYS.has(k)) return "reserved_field_name";
     if (CREATE_BODY_OVERRIDE_KEYS.has(k.toLowerCase())) return "create_body_action_override";
-    if (depth === 0 && k === idField) return "create_body_client_supplied_id";
+    const norm = normalizeFieldName(k);
+    if (NORMALIZED_SCOPE_KEYS.has(norm)) return "create_body_scope_field";
+    if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
     const r = screenCreateBody(value[key], idField, depth + 1);
     if (r) return r;
   }
@@ -373,6 +391,10 @@ function discoverCanaryFieldPath(parsedBody, canary, maxDepth = 8) {
 // carry different account_ids even within the SAME tenant, which would FALSELY satisfy
 // the cross-tenant discriminator (#14). These keys are unambiguously tenant/owner-level.
 const OWNING_SCOPE_KEYS = Object.freeze(["owner_scope", "tenant_id", "org_id", "workspace_id"]);
+// The same owning-scope keys collapsed to their normalized form, so a canary_field or create_body key
+// that aliases a scope discriminator (tenantId -> tenant_id, org-id -> org_id) is caught even when the
+// target normalizes JSON field names (Codex P1). Drives normalizeFieldName-based create-contract guards.
+const NORMALIZED_SCOPE_KEYS = new Set(OWNING_SCOPE_KEYS.map((k) => k.toLowerCase().replace(/[^a-z0-9]/g, "")));
 const SHARED_SCOPE_VALUES = Object.freeze(["shared", "default", "demo", "sandbox", "public", "global"]);
 
 // Common single-object envelope wrappers: many REST APIs nest the resource under one of these keys
@@ -964,11 +986,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       });
     }
     // canary_field must not overlap an owning-scope discriminator (owner_scope/tenant_id/org_id/
-    // workspace_id): the producer writes a DISTINCT minted canary into that field per identity, and the
-    // oracle reads those same keys as the private tenant discriminator (#13/#14). On an API that reflects
-    // create fields, that would forge "provably distinct tenants" from attacker-chosen values and strip
-    // the confidence downgrade — signing an inflated cross-tenant proof. Refuse the overlap (Codex P2).
-    if (OWNING_SCOPE_KEYS.includes(canaryField)) {
+    // workspace_id) OR any normalization alias of one (tenantId, org-id, …): the producer writes a
+    // DISTINCT minted canary into that field per identity, and the oracle reads those same keys as the
+    // private tenant discriminator (#13/#14). On an API that reflects/normalizes create fields, that
+    // would forge "provably distinct tenants" from attacker-chosen values and strip the confidence
+    // downgrade — signing an inflated cross-tenant proof. Refuse the (normalized) overlap (Codex P1/P2).
+    if (NORMALIZED_SCOPE_KEYS.has(normalizeFieldName(canaryField))) {
       return blocked("blocked_by_design", "canary_field_overlaps_scope_key", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
