@@ -1690,16 +1690,37 @@ test("v2 → MEDIUM (Codex P1): another subject's identifier in a NON-SCALAR sen
   assert.equal(result.demonstrated_severity, "medium");
 }));
 
-test("v2 → MEDIUM (Codex P1/CodeRabbit): the victim only as IN-ROW METADATA (viewer_email constant) is not the row's subject", () => withTempHome(async () => {
-  // The attacker's bulk rows are about OTHER subjects (`email` varies: other1, other2). The victim's email sits
-  // only in a CONSTANT relational-metadata field (`viewer_email`) — it names who is viewing, not the row's
-  // subject. Subject-binding via cross-record variance: the victim is not a value of any VARYING field → no
-  // overlap → MEDIUM (a record-bound any-sensitive-field match would have falsely signed HIGH).
+test("v2 → MEDIUM (Codex P1/CodeRabbit): the victim only as IN-ROW METADATA (viewer_email constant across records) is not the row's subject", () => withTempHome(async () => {
+  // The attacker's bulk rows are about OTHER subjects (`email` varies: other1/2/3). The victim's email sits only
+  // in `viewer_email`, CONSTANT across the rows that carry it — it names who is viewing, not a row's subject.
+  // Subject-binding (cross-record variance + field-consistency): the victim is not a value of any VARYING
+  // subject field → no overlap → MEDIUM (a record-bound any-sensitive-field match would have falsely signed
+  // HIGH). The third row (no viewer_email) keeps base distinct subjects >= MIN despite the shared metadata value.
   const domain = uniqueDomain();
   setupV2Session(domain);
   const attacker = { status: 200, body: JSON.stringify({ data: [
     { id: 1, email: "other1@canary.example.test", viewer_email: CANARY_EMAIL },
-    { id: 2, email: "other2@canary.example.test" },
+    { id: 2, email: "other2@canary.example.test", viewer_email: CANARY_EMAIL },
+    { id: 3, email: "other3@canary.example.test" },
+  ] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ attacker });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "attacker_did_not_read_victim_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM (Codex P1): a VARYING relational-metadata field (manager_email) is not a subject field — the victim as a manager does not overlap", () => withTempHome(async () => {
+  // `manager_email` VARIES per row (different managers), so a variance-only test would treat it as a subject
+  // field and sign HIGH if the victim is one manager. Field-consistency rejects it: the victim's own /me carries
+  // its identity under `email`, not `manager_email`, so a match under `manager_email` is metadata, not the row's
+  // subject. The victim is NOT in the `email` (real subject) values → no overlap → MEDIUM.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const attacker = { status: 200, body: JSON.stringify({ data: [
+    { id: 1, email: "other1@canary.example.test", manager_email: CANARY_EMAIL },
+    { id: 2, email: "other2@canary.example.test", manager_email: "boss2@canary.example.test" },
   ] }), final_url: null, body_truncated: false };
   const { driver } = makeV2Driver({ attacker });
   const result = await runV2(domain, { driver });
