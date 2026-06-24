@@ -1662,6 +1662,53 @@ test("v2 → MEDIUM (Codex P1): the attacker overlap is RECORD-bound — a victi
   assert.equal(result.demonstrated_severity, "medium");
 }));
 
+test("v2 → MEDIUM (Codex P1): two DIFFERENT people in SIBLING fields of ONE object ({email:victim,teammate_email:other}) is NOT single-subject", () => withTempHome(async () => {
+  // A single object whose sibling sensitive fields name TWO people — the victim's `email` and another subject's
+  // `teammate_email`. Object-node UNION (round-2) collapsed both same-shape identifiers into one subject → false
+  // HIGH; per-node MAX-over-shape counts 2 distinct emails in the node → 2 → rejected.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ id: 1, email: CANARY_EMAIL, teammate_email: "teammate@canary.example.test" }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false, JSON.stringify(result));
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM (Codex P1): another subject's identifier in a NON-SCALAR sensitive field ({email:victim,secondary_email:[other]}) is counted", () => withTempHome(async () => {
+  // The victim's own scalar `email` plus a SECOND subject under a sensitively-named ARRAY field. The scalar-only
+  // gate (round-2) skipped the array entirely → counted 1 → false HIGH; serialize-extracting the container under
+  // max-per-shape sees 2 distinct emails in the node → 2 → rejected.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ id: 1, email: CANARY_EMAIL, secondary_email: ["other-subject@canary.example.test"] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false, JSON.stringify(result));
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM (Codex P1/CodeRabbit): the victim only as IN-ROW METADATA (viewer_email constant) is not the row's subject", () => withTempHome(async () => {
+  // The attacker's bulk rows are about OTHER subjects (`email` varies: other1, other2). The victim's email sits
+  // only in a CONSTANT relational-metadata field (`viewer_email`) — it names who is viewing, not the row's
+  // subject. Subject-binding via cross-record variance: the victim is not a value of any VARYING field → no
+  // overlap → MEDIUM (a record-bound any-sensitive-field match would have falsely signed HIGH).
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const attacker = { status: 200, body: JSON.stringify({ data: [
+    { id: 1, email: "other1@canary.example.test", viewer_email: CANARY_EMAIL },
+    { id: 2, email: "other2@canary.example.test" },
+  ] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ attacker });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "attacker_did_not_read_victim_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
 test("v2 HIGH still mints when the two sessions share only a SHORT benign cookie (no over-decline)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   // Distinct long session tokens, but both jars carry the same short benign cookie (locale=en) — that must
