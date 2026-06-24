@@ -198,7 +198,19 @@ function buildAndSignOffensiveRow(domain, {
   stderrContent,
   relationBooleans = {},
   demonstratedSeverityOverride,
+  requireExplicitSeverity = false,
 }) {
+  // Defense-in-depth for a tool whose registry ceiling is above the lowest tier and that decides
+  // severity PER RUN (e.g. bob_http_massread_confirm: medium for v1, high only on a proven victim arm):
+  // with a raised ceiling, an omitted override would default demonstrated_severity to the high ceiling
+  // (fail-OPEN). Such a producer passes requireExplicitSeverity:true so a future call path / refactor that
+  // forgets the override fails CLOSED here instead of silently signing the ceiling severity.
+  if (requireExplicitSeverity && demonstratedSeverityOverride == null) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${toolId} requires an explicit demonstratedSeverityOverride (its registry ceiling is per-run; omitting it would fail open to the ceiling)`,
+    );
+  }
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a
   // generic caller must not be able to smuggle a traversal segment into the
   // capture/ledger write. The IDOR producer hardcoded "idor-"; re-impose that
