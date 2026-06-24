@@ -27,7 +27,7 @@ const { authStore } = require("../mcp/lib/auth.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
 const { attackSurfacePath, offensiveRunsJsonlPath, sessionDir } = require("../mcp/lib/paths.js");
-const { appendCandidateClaim, readOffensiveRunRecords } = require("../mcp/lib/claims.js");
+const { appendCandidateClaim, readOffensiveRunRecords, OFFENSIVE_TOOL_DEMONSTRATED_CEILING } = require("../mcp/lib/claims.js");
 const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const { resetForTests: resetMaterializationDebounce } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -150,9 +150,18 @@ function signedRailBytes(domain) {
 
 // ───────────────────────── wiring / invariants ──────────────────────────
 
-test("MASSREAD ceiling is a frozen MEDIUM (v1; HIGH is the v2 victim-arm)", () => {
-  assert.equal(MASSREAD_DEMONSTRATED_CEILING.bob_http_massread_confirm, "medium");
+test("MASSREAD ceiling is a frozen HIGH that matches the authoritative registry (v1 stamps medium via the override)", () => {
+  // The CEILING is HIGH (the max a proven victim-arm row may demonstrate); the v1 authn-vs-anon path is
+  // stamped MEDIUM via the always-explicit override, asserted by the positive tests below.
+  assert.equal(MASSREAD_DEMONSTRATED_CEILING.bob_http_massread_confirm, "high");
   assert.equal(Object.isFrozen(MASSREAD_DEMONSTRATED_CEILING), true);
+  // The producer's doc constant must never drift from the authoritative claims.js registry that
+  // buildAndSignOffensiveRow actually stamps from.
+  assert.equal(
+    MASSREAD_DEMONSTRATED_CEILING.bob_http_massread_confirm,
+    OFFENSIVE_TOOL_DEMONSTRATED_CEILING.bob_http_massread_confirm,
+    "producer doc ceiling must equal the authoritative registry ceiling",
+  );
 });
 
 test("buildAndSignOffensiveRow is NOT re-exported (no gate-bypassing signed-row path)", () => {
@@ -256,12 +265,16 @@ test("round-trip: the minted row backs an exploited_safely MEDIUM claim and re-h
   }
 }));
 
-test("a claim severity ABOVE the medium ceiling is rejected", () => withTempHome(async () => {
+test("a HIGH claim from a v1 MEDIUM row is rejected by the row-cap (even though the registry ceiling is now HIGH)", () => withTempHome(async () => {
+  // KEY v2 soundness property: raising the tool ceiling to HIGH does NOT let the v1 authn-vs-anon
+  // differential back a HIGH claim — the claim-vs-row cap bounds the claim by the ROW's own
+  // demonstrated_severity ("medium" on a v1 run), not by the registry ceiling.
   const domain = uniqueDomain();
   setupSession(domain);
   const { driver } = makeDriver();
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true);
+  assert.equal(result.demonstrated_severity, "medium");
   assert.throws(() => appendCandidateClaim({
     target_domain: domain,
     title: "over-severity",
@@ -274,7 +287,7 @@ test("a claim severity ABOVE the medium ceiling is rejected", () => withTempHome
       offensive_outcome: "exploited_safely", command_hash: result.command_hash, exit_code: result.exit_code,
       stdout_hash: result.stdout_hash, stderr_hash: result.stderr_hash,
     }],
-  }));
+  }), /claim severity exceeds the maximum demonstrated_severity/);
 }));
 
 // ───────────────────────── negatives (fail closed, NO row) ──────────────────────────
@@ -1177,4 +1190,242 @@ test("a 401 control whose non-JSON body ships BULK non-identifier PII (phones) i
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
   assertNoRow(domain, result, "blocked_by_infra", "control_inconclusive");
+}));
+
+// ═══════════════════════ v2 victim arm (cross-principal HIGH) ═══════════════════════
+// A SECOND authenticated identity reads its OWN private scope; the attacker's bulk read overlapping it,
+// while a fresh anon client is denied that scope, is a categorical cross-PRINCIPAL break → HIGH. The arm
+// is ELEVATING only: any failure leaves the proven v1 MEDIUM intact.
+
+const VICTIM_SURFACE_ID = "surface:victim-me";
+
+// Two routed surfaces: the bulk listing (attacker + anon control) and the victim's own-scope /api/me.
+function seedV2Surfaces(domain) {
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [
+      {
+        id: SURFACE_ID, title: "Synthetic listing surface", surface_type: "web", hosts: [domain],
+        endpoints: [`https://${domain}/api/listing`], tech_stack: ["fixture"], priority: "HIGH",
+      },
+      {
+        id: VICTIM_SURFACE_ID, title: "Victim own-scope surface", surface_type: "web", hosts: [domain],
+        endpoints: [`https://${domain}/api/me`], tech_stack: ["fixture"], priority: "HIGH",
+      },
+    ],
+  }, null, 2)}\n`, "utf8");
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+}
+
+function setupV2Session(domain, { victimCookies = { sid: "victim-session-token" }, attackerCookies } = {}) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/`, block_internal_hosts: false }));
+  seedV2Surfaces(domain);
+  ensureHandoffSigningKey(domain);
+  authStore({ target_domain: domain, profile_name: "attacker", cookies: attackerCookies || { sid: "leaked-session-token" } });
+  authStore({ target_domain: domain, profile_name: "victim", cookies: victimCookies });
+}
+
+// The victim's own-scope body (a /me-style singleton object), bearing the victim's OWN email.
+function victimBody(email = CANARY_EMAIL) { return JSON.stringify({ id: 1, email, full_name: "Victim Zero" }); }
+
+// A 4-arm driver: (cookies?) × (listing vs /api/me path) → one of four seeded responses.
+function makeV2Driver(opts = {}) {
+  const {
+    available = true,
+    attacker = { status: 200, body: bulkBody(3), final_url: null, body_truncated: false },
+    control = { status: 401, body: "", final_url: null, body_truncated: false },
+    victim = { status: 200, body: victimBody(CANARY_EMAIL), final_url: null, body_truncated: false },
+    anonVictim = { status: 401, body: "", final_url: null, body_truncated: false },
+  } = opts;
+  const bodies = { "ms-attacker": attacker, "ms-control": control, "ms-victim": victim, "ms-anon-victim": anonVictim };
+  const calls = { starts: [], fetches: [], closed: 0 };
+  const driver = {
+    isAvailable: () => available,
+    start: async (o) => {
+      const hasCookies = Array.isArray(o.authCookies) && o.authCookies.length > 0;
+      const isVictimPath = String(o.targetUrl || "").includes("/api/me");
+      const sid = isVictimPath ? (hasCookies ? "ms-victim" : "ms-anon-victim") : (hasCookies ? "ms-attacker" : "ms-control");
+      calls.starts.push({ sid, hasCookies, targetUrl: o.targetUrl, authCookies: o.authCookies || null });
+      return { session_id: sid };
+    },
+    authedFetch: async (sessionId, fetchArgs) => { calls.fetches.push({ sessionId, fetchArgs }); return bodies[sessionId]; },
+    close: async () => { calls.closed += 1; return { closed: true }; },
+  };
+  return { driver, calls };
+}
+
+async function runV2(domain, { driver, victimProfile = "victim", victimSurface = VICTIM_SURFACE_ID } = {}) {
+  return massreadConfirm({
+    target_domain: domain, surface_id: SURFACE_ID,
+    victim_surface_id: victimSurface, victim_auth_profile: victimProfile,
+  }, { driver });
+}
+
+test("v2 HIGH: victim reads its own private subject, anon is denied it, attacker's bulk read overlaps → signed HIGH", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const { driver, calls } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.cross_tenant_proven, true);
+  assert.equal(result.victim_elevation, "cross_principal_break_proven");
+  assert.equal(result.demonstrated_severity, "high");
+  assert.equal(result.masked_oracle.victim_overlap_count, 1);
+  assert.equal(result.masked_oracle.relation.victim_read_own_private_scope, true);
+  assert.equal(result.masked_oracle.relation.victim_scope_anon_denied, true);
+  assert.equal(result.masked_oracle.relation.attacker_read_victim_subject, true);
+  assert.equal(result.masked_oracle.relation.victim_distinct_session, true);
+  // Four arms ran (attacker + control + victim + anon-victim), each closed.
+  assert.equal(calls.starts.length, 4);
+  assert.equal(calls.closed, 4);
+
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].demonstrated_severity, "high");
+  assert.equal(rows[0].victim_read_own_private_scope, true);
+  assert.equal(rows[0].attacker_read_victim_subject, true);
+  assert.equal(verifyOffensiveRunRowMac(rows[0], ensureHandoffSigningKey(domain)), true, "HIGH row MAC must verify");
+
+  // Masked rail invariant STILL holds with the victim arm: the overlapping email never reaches disk.
+  const rail = signedRailBytes(domain);
+  assert.ok(!rail.includes(CANARY_EMAIL), "signed rail must NOT contain the overlapping subject value");
+}));
+
+test("v2 HIGH round-trip: the HIGH row backs an exploited_safely HIGH claim and re-hashes stable", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const { driver } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+  assert.equal(result.demonstrated_severity, "high");
+
+  const claim = appendCandidateClaim({
+    target_domain: domain,
+    title: "Cross-tenant BFLA mass-read",
+    summary: "An under-authorized identity bulk-read a collection that includes a distinct victim's private records.",
+    severity: "high",
+    exploit_outcome: { outcome: "exploited_safely", safe_oracle: { kind: "differential_response" } },
+    surface_ids: [SURFACE_ID],
+    evidence_refs: [{
+      kind: "exploit_run", run_id: result.run_id, tool_id: result.tool_id, target: result.target,
+      offensive_outcome: "exploited_safely", command_hash: result.command_hash, exit_code: result.exit_code,
+      stdout_hash: result.stdout_hash, stderr_hash: result.stderr_hash,
+    }],
+  });
+  assert.equal(claim.severity, "high");
+  const row = readOffensiveRunRecords(domain)[0];
+  assert.equal(row.demonstrated_severity, "high");
+  for (let i = 0; i < 3; i += 1) {
+    const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
+    assert.equal(observed.stdout_hash, row.stdout_hash, `verify round ${i + 1} re-hash must match`);
+  }
+}));
+
+test("v2 HIGH: a NESTED victim identifier ({profile:{email}}) is still extracted and overlaps → HIGH", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ id: 1, profile: { contact: { email: CANARY_EMAIL } } }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, true);
+  assert.equal(result.demonstrated_severity, "high");
+}));
+
+test("v2 → MEDIUM: no overlap (victim's own subject is NOT in the attacker's bulk read)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  // Victim's /me carries an email that is NOT one of the attacker's bulk records.
+  const victim = { status: 200, body: victimBody("someone-else@canary.example.test"), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "attacker_did_not_read_victim_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(readOffensiveRunRecords(domain)[0].demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM: anon is NOT denied the victim scope (scope is public, not private)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  // anon reads /api/me too (200 with the same body) → the scope is not private → no elevation. The gated
+  // overlap is ALSO empty (the shared identifier is dropped), but the explicit anon-denied gate reports first.
+  const anonVictim = { status: 200, body: victimBody(CANARY_EMAIL), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ anonVictim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_scope_anon_not_denied");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM: victim profile NAME equals the attacker profile (not a distinct principal); victim arms do not run", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const { driver, calls } = makeV2Driver();
+  const result = await runV2(domain, { driver, victimProfile: "attacker" });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_profile_not_distinct");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2, "victim arms must not run when the profile is not distinct");
+}));
+
+test("v2 → MEDIUM: victim has an IDENTICAL cookie jar to the attacker (same session, not a distinct principal)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  // Distinct profile NAMES but the same cookie value → same session → declines.
+  setupV2Session(domain, { victimCookies: { sid: "leaked-session-token" } });
+  const { driver, calls } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_session_not_distinct");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2, "victim arms must not run when the session is not distinct");
+}));
+
+test("v2 → MEDIUM: victim auth profile not found", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  // Seed only the attacker profile (no "victim" profile).
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/`, block_internal_hosts: false }));
+  seedV2Surfaces(domain);
+  ensureHandoffSigningKey(domain);
+  authStore({ target_domain: domain, profile_name: "attacker", cookies: { sid: "leaked-session-token" } });
+  const { driver, calls } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_auth_profile_not_found");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2);
+}));
+
+test("v2 → MEDIUM: a WAF/throttle on the victim arm leaves the proven MEDIUM intact", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 429, body: "", final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_arm_waf_or_rate_limit");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(readOffensiveRunRecords(domain)[0].demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM: an unroutable victim_surface_id is caught and never fails the proven MEDIUM run", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const { driver } = makeV2Driver();
+  const result = await runV2(domain, { driver, victimSurface: "surface:does-not-exist" });
+  assert.equal(result.confirmed, true);
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_arm_error");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v1 (victim absent): cross_tenant_proven false, not_requested, two arms, MEDIUM (unchanged)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupSession(domain);
+  const { driver, calls } = makeDriver();
+  const result = await run(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "not_requested");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2);
 }));

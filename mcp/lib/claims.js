@@ -794,12 +794,16 @@ const OFFENSIVE_TOOL_DEMONSTRATED_CEILING = Object.freeze(
     bob_http_xss_confirm: "high",
     bob_oob_poll: "medium",
     bob_http_cors_confirm: "medium",
-    // v1 MEDIUM: the oracle proves a credentialed caller bulk-reads PII an UNAUTHENTICATED client is
-    // denied — a real exposure, but NOT machine-proof of under-privilege/BFLA (a fully-authorized user
-    // reading authorized data also satisfies it) nor that the surface is a cross-subject collection. The
-    // authn-vs-anon differential is honestly a MEDIUM; the HIGH (cross-tenant BFLA) needs the v2 second-
-    // authenticated-victim arm. Keeping it MEDIUM avoids signing a HIGH the evidence can't substantiate.
-    bob_http_massread_confirm: "medium",
+    // HIGH is the CEILING (the max a row may demonstrate), NOT what every run stamps. The producer
+    // ALWAYS passes an explicit demonstratedSeverityOverride: "medium" for the v1 authn-vs-ANON
+    // differential (a credentialed caller bulk-reads PII an unauthenticated client is denied — real,
+    // but not machine-proof of under-privilege/BFLA), and "high" ONLY when the v2 second-AUTHENTICATED-
+    // VICTIM arm proves a cross-principal break (the attacker read a subject that a distinct authenticated
+    // victim reads as its own private, anon-denied scope). The override can only LOWER the ceiling
+    // (offensive-capture-writer.js), so a v1 run is stamped MEDIUM on disk and the claim-vs-row cap
+    // (above) then bounds any claim citing it at MEDIUM — raising the ceiling to HIGH never lets a v1
+    // differential back a HIGH claim. Only the proven victim-arm row stamps demonstrated_severity:"high".
+    bob_http_massread_confirm: "high",
   }),
 );
 
