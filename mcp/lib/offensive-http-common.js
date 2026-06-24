@@ -58,6 +58,10 @@ const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch
 // never trigger that blindly, so the derived create collection is held to a STRICTER, fail-closed
 // action-verb set than the read path. Over-blocking is the correct bias here — the only cost is that
 // LIVE auto-provisioning is unavailable on an action-shaped endpoint (the operator can seed-provision).
+// This set is DEFENSE-IN-DEPTH on top of the operator's target-bound write-arming env, NOT the primary
+// boundary: a denylist can never enumerate every product-specific action noun, so it is kept deliberately
+// BROAD (commerce / lifecycle / destructive / auth / workflow / communication verbs) to catch the common
+// classes; the operator arming a SPECIFIC authorized target + the synthetic canary remain the real gate.
 const WRITE_ACTION_VERBS = new Set([
   // financial / value-movement / commerce
   "transfer", "refund", "withdraw", "withdrawal", "deposit", "pay", "payment", "payout",
@@ -72,9 +76,17 @@ const WRITE_ACTION_VERBS = new Set([
   // destructive
   "delete", "remove", "destroy", "terminate", "purge", "wipe", "drop", "truncate", "kill", "flush", "clear",
   // auth / access
-  "login", "logout", "register", "signup", "revoke", "grant", "reset", "ban", "unban",
-  // generic mutation markers
-  "create", "update", "mutation",
+  "login", "logout", "register", "signup", "revoke", "grant", "reset", "ban", "unban", "password",
+  // workflow / fulfillment / provisioning action nouns: these commonly appear as /{verb}/{id} reads, but a
+  // collection POST EXECUTES the action (brutalist / Codex: the read-side denylist was missing this class).
+  "redeem", "claim", "fulfill", "fulfillment", "process", "dispatch", "issue", "escalate", "assign",
+  "schedule", "enqueue", "provision", "deploy", "convert", "swap", "stake",
+  // subscription / billing lifecycle (a collection POST starts billing / changes plan = value movement)
+  "subscribe", "subscription", "renew", "renewal", "upgrade", "downgrade",
+  // outbound communication (a collection POST SENDS a message / invite / notification = real side effect)
+  "notify", "notification", "broadcast", "invite", "invitation", "share", "email", "sms", "alert", "webhook",
+  // generic mutation markers + GraphQL (a derived POST /graphql is an arbitrary-operation surface, not a create)
+  "create", "update", "mutation", "graphql",
 ]);
 
 // An encoded path separator at ANY encoding depth: %2F / %5C, %252F, %2525252F,
@@ -243,10 +255,13 @@ function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
     // Recover any VALID percent-triplet a malformed escape elsewhere in the segment would otherwise mask,
     // so /api/transfer%3bv=%zz still surfaces the `;` delimiter (Codex P1).
     const segment = decodeValidPercentTriplets(rawSegment);
-    // FAIL CLOSED on a residual percent-triplet: if a VALID `%XX` survives the bounded decode (deeply
-    // nested `%2525…` layering beyond the iteration cap), a router that decodes further could still expose
-    // a hidden action verb the token split never sees, so refuse rather than POST blind (brutalist).
-    if (/%[0-9a-f]{2}/i.test(segment)) {
+    // FAIL CLOSED on ANY residual `%` after the bounded valid-triplet decode — not just a still-VALID `%XX`.
+    // A MALFORMED escape (`%64elete%zz` → `delete%zz`) leaves a `%zz` the valid-triplet regex skips, and `%`
+    // is not a token delimiter, so `delete%zz` tokenizes whole and slips the action guard — while a router
+    // that decodes valid triplets independently still routes it to `delete`. A surviving VALID `%XX` (deeply
+    // nested `%2525…` beyond the iteration cap) is equally unsafe. Either way refuse rather than POST blind
+    // (Codex P1 / brutalist).
+    if (/%/.test(segment)) {
       rejectInvalidArguments(
         `derived create-collection path retains percent-encoding after decoding; ${toolName} refuses to POST to an unresolved-encoding endpoint`,
         { path: parsed.pathname },

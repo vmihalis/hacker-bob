@@ -148,6 +148,18 @@ const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "enti
 function keyHasReservedSegment(key) {
   return String(key).split(/[.[\]]/).some((seg) => RESERVED_PROTO_KEYS.has(seg));
 }
+// Client-id alias check that ALSO splits a deep-setter path (dotted / bracketed), mirroring
+// keyHasReservedSegment — so a create_body key like `id.uuid` / `uid[value]` (which a JSON endpoint may
+// expand into an id object, letting the caller choose/upsert the object id before the server-minted-id
+// invariant can be enforced) is caught alongside the whole-name normalized check that only sees the
+// collapsed `iduuid`/`uidvalue` (Codex P1). Each split segment is normalized before matching the alias set
+// or the configured id_field. Used for create_body keys AND the canary_field NAME.
+function keyHasIdAliasSegment(key, normIdField) {
+  return String(key).split(/[.[\]]/).some((seg) => {
+    const n = normalizeFieldName(seg);
+    return n !== "" && (ID_ALIAS_KEYS.has(n) || (normIdField && n === normIdField));
+  });
+}
 // Ownership / scope SELECTOR fields, matched by BASE NOUN rather than an enumerated alias list: a create
 // API honoring one would steer the synthetic object into a caller-chosen real tenant/principal, breaking
 // the synthetic-owned boundary (the object must belong to the creating synthetic identity, inferred from
@@ -201,6 +213,23 @@ function fieldIsOwnerSelector(name) {
   if (tokens.includes("by")) return true;
   return tokens.some((t) => inSet(OWNER_BASE_NOUNS, t));
 }
+// Privilege / authorization-assignment SELECTOR tokens: a create API honoring one would let the
+// operator-armed write mint an ELEVATED synthetic object (an admin/role/permission-bearing account)
+// instead of a plain canary-bearing resource — a confined agent using the operator's write-authorization
+// for privilege escalation rather than the intended cross-tenant READ proof (Codex P1). Matched by TOKEN
+// (like the scope/owner selectors) so role / roles / is_admin / isAdmin / user_role / permission_ids /
+// granted_scopes all trip. Deliberately omits over-generic tokens (root/staff/access/level) that collide
+// with benign fields (root_cause, staff_name); kept to unambiguous privilege markers.
+const PRIVILEGE_BASE_TOKENS = new Set([
+  "role", "roles", "admin", "isadmin", "superuser", "superadmin", "sudo",
+  "privilege", "privileges", "permission", "permissions", "perm", "perms",
+  "grant", "grants", "acl", "scope", "scopes", "capability", "capabilities",
+  "authority", "authorities", "entitlement", "entitlements",
+]);
+function fieldIsPrivilegeSelector(name) {
+  if (PRIVILEGE_BASE_TOKENS.has(normalizeFieldName(name))) return true;
+  return fieldNameTokens(name).some((t) => PRIVILEGE_BASE_TOKENS.has(t) || PRIVILEGE_BASE_TOKENS.has(baseNoun(t)));
+}
 // True when a create_body string VALUE is a fetch/connection URL (brutalist / Codex P1). SCHEME-AGNOSTIC,
 // not an enumerated allowlist — any authority-bearing URI can drive a server-side fetch/connection (SSRF):
 //  - protocol-relative `//host` / `\\host` (either slash direction);
@@ -217,12 +246,16 @@ function valueLooksLikeUrl(value) {
   try { if (new URL(s).host) return true; } catch { /* not URL-parseable */ }
   return false;
 }
-// True when a create_body string value carries a GraphQL mutation/subscription operation (Codex P1). A
-// keyword + a `{` (a selection set must follow) closes the whole grammar tail — directives (@x), comments
-// (#…), commas, named/anonymous ops — in one rule. A benign "mutation rate: 0.5" (no `{`) is not matched.
-function valueLooksLikeGraphqlMutation(value) {
+// True when a create_body string value carries a GraphQL OPERATION document — query, mutation, OR
+// subscription (brutalist / Codex P1: the mutation-only screen let a `{"query":"query {...}"}` body + a
+// derived POST /graphql become an arbitrary authenticated GraphQL surface, where even a read query can
+// exfiltrate data the tool then carries in-process). An operation keyword + a `{` (a selection set must
+// follow) closes the whole grammar tail — directives (@x), comments (#…), commas, named/anonymous ops — in
+// one rule. A benign "mutation rate: 0.5" / "query the manual" (no `{`) is not matched; the derived
+// /graphql COLLECTION itself is independently refused by the action-verb guard (graphql ∈ WRITE_ACTION_VERBS).
+function valueLooksLikeGraphqlOperation(value) {
   const s = String(value);
-  return /\b(?:mutation|subscription)\b/i.test(s) && s.includes("{");
+  return /\b(?:query|mutation|subscription)\b/i.test(s) && s.includes("{");
 }
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
@@ -253,7 +286,7 @@ function screenCreateBody(value, idField, depth = 0) {
     // an encoded `http%3a%2f%2f…` / `mutation%20{` the raw check misses (Codex P1).
     for (const probe of [value, decodeAllEncodingLayers(value)]) {
       if (valueLooksLikeUrl(probe)) return "create_body_url_value";
-      if (valueLooksLikeGraphqlMutation(probe)) return "create_body_graphql_operation";
+      if (valueLooksLikeGraphqlOperation(probe)) return "create_body_graphql_operation";
     }
     return null;
   }
@@ -271,9 +304,16 @@ function screenCreateBody(value, idField, depth = 0) {
     if (fieldIsScopeSelector(k)) return "create_body_scope_field";
     // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
     // check it BEFORE the broader owner selector so e.g. id_field:"account_id" reports client_supplied_id,
-    // while a non-id owner field (user_id / created_by with the default id_field) reports owner_field.
-    if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
+    // while a non-id owner field (user_id / created_by with the default id_field) reports owner_field. The
+    // dotted/bracketed deep-setter form (id.uuid / uid[value]) is caught by keyHasIdAliasSegment, mirroring
+    // keyHasReservedSegment — the whole-name normalize collapses it to a non-alias `iduuid` (Codex P1).
+    if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField) || keyHasIdAliasSegment(k, normIdField)) {
+      return "create_body_client_supplied_id";
+    }
     if (fieldIsOwnerSelector(k)) return "create_body_owner_field";
+    // A privilege/authorization-assignment key (role / is_admin / permissions / granted_scopes) would mint
+    // an ELEVATED synthetic object via the operator-armed write — refuse before the recursive descent (Codex P1).
+    if (fieldIsPrivilegeSelector(k)) return "create_body_privilege_field";
     const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
@@ -452,6 +492,21 @@ function secretShapesIn(parsedBodyOrText) {
     if (re.test(scan)) found.push(label);
   }
   return found;
+}
+
+// Replace the producer's OWN minted canaries with a neutral token before a FOREIGN-PII/secret scan. The
+// canaries are 256-bit nonces the producer generated — known-safe, definitionally not foreign data — but a
+// CHANCE 16+-digit run inside a 64-hex canary can false-positive as a credit card (Luhn) and block a clean
+// mint (~0.4% per canary). Stripping the EXACT 64-char run cannot hide adjacent real PII (only the canary
+// itself is removed, never a neighbouring value), so this is precision-only. Returns a STRING so callers
+// canonicalize a parsed body first. Applied to every body that BOTH reflects a canary AND is foreign-scanned:
+// the create responses (#4), the owner readback (#24), and the signed proof bodies (#17/#17b).
+function neutralizeCanaries(textOrParsed, canaries) {
+  let s = typeof textOrParsed === "string" ? textOrParsed : canonicalJson(textOrParsed);
+  for (const c of canaries) {
+    if (typeof c === "string" && c) s = s.split(c).join("CANARY");
+  }
+  return s;
 }
 
 // Walk a parsed body to a fixed FIELD_PATH (array of string keys) and return the
@@ -857,6 +912,33 @@ function mintCanary() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+// A path segment shaped like a concrete resource INSTANCE (a numeric id, a uuid, or an id-bearing slug
+// like `proj-123` / `tenant_42`) — as opposed to a static route word (`api`, `v1`, `orgs`, `accounts`).
+// Version tags (`v1`, `v2`) and acronym-with-digit route words (`oauth2`, `s3`) are NOT instances: they
+// carry no SEPARATED id portion. Used by pathHasConcreteParentInstance for the #5 nested-container guard.
+const UUID_INSTANCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function segmentLooksLikeResourceInstance(seg) {
+  const s = String(seg);
+  if (/^\d+$/.test(s)) return true;        // 123
+  if (UUID_INSTANCE_RE.test(s)) return true; // 550e8400-e29b-41d4-a716-446655440000
+  if (/[-_.]\d{2,}$/.test(s)) return true; // proj-123, tenant_42, item.99  (separated trailing id)
+  if (/^\d{2,}[-_.]/.test(s)) return true; // 42-acme, 7_widgets            (separated leading id)
+  return false;
+}
+// True when a derived create-collection's PARENT path (the ancestors of the collection segment) contains a
+// concrete resource INSTANCE — i.e. the collection is nested inside a FIXED real container like
+// /api/orgs/acme-corp/projects/proj-123/accounts, where the armed POST would write a synthetic object into
+// a real tenant/project rather than a synthetic-owned collection (#5, brutalist). Inspects only the
+// ANCESTOR segments; the collection itself (last segment) is allowed to be any noun. RESIDUAL: a pure-alpha
+// tenant slug (`acme-corp`, no id portion) is indistinguishable from a static route word and is NOT caught
+// here — but A/B/C then share that container and the downstream same-tenant guard
+// (identities_collided_same_tenant / own_scope_missing) hard-blocks or downgrades the cross-tenant claim,
+// so cross-tenant SOUNDNESS stays backstopped even when this write-side defense-in-depth does not fire.
+function pathHasConcreteParentInstance(parentPath) {
+  const segs = String(parentPath).split("/").filter(Boolean);
+  return segs.slice(0, -1).some(segmentLooksLikeResourceInstance);
+}
+
 // CREATE one synthetic object as `identity` via POST to the derived collection endpoint, the canary
 // written into `canaryField` of a server-templated synthetic body (the producer mints the canary;
 // the body skeleton is PII-screened upstream). Returns the server-minted id (from `idField`) + the
@@ -965,15 +1047,41 @@ async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, c
     }
     return true;
   };
+  // #4 (brutalist): the A/B/C CREATE responses themselves must be screened for foreign PII / secret shapes
+  // BEFORE the next create POST fires or the proof continues — a create endpoint that echoes another tenant's
+  // PII / a credential in its create response would otherwise leak that data into the tool process while the
+  // later readback/proof bodies still pass. Mirrors the owner-readback gate (#24): scan the RAW response bytes
+  // (raw + all decoded layers) and fail CLOSED via a tagged error idorConfirm maps to a precise blocked reason.
+  const assertCreateRespClean = (created) => {
+    const resp = created && created.response;
+    const raw = resp && Buffer.isBuffer(resp.bodyBytes) ? resp.bodyBytes.toString("utf8") : "";
+    if (!raw) return; // a 201-no-body / empty create response carries nothing to leak
+    for (const probe of [raw, decodeAllEncodingLayers(raw)]) {
+      // Neutralize the producer's OWN minted canaries before the FOREIGN-data scan: each is a 256-bit nonce
+      // we generated (known-safe, definitionally not foreign data), but a chance 16-digit run inside a hex
+      // canary can false-positive as a credit card and block a clean mint. Exact 64-char replacement cannot
+      // hide adjacent real PII — only the canary run itself is removed — so this is precision-only.
+      const scan = neutralizeCanaries(probe, [canary_a, canary_b, canary_c]);
+      if (piiScan(scan, allowedEmails).length > 0 || secretShapesIn(scan).length > 0) {
+        const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create response carried foreign PII / secret");
+        e.create_response_contaminated = true;
+        throw e;
+      }
+    }
+  };
   // FAIL FAST: a bad create contract / wrong id_field / unsafe id on the FIRST object must not trigger
-  // the later B/C writes or the readback (Codex P1/P2). Validate the captured id after each create.
+  // the later B/C writes or the readback (Codex P1/P2). Validate the captured id after each create, and
+  // screen each create RESPONSE for foreign data before the next write (#4).
   const a = await createObject({ createUrl, headers: idA.headers, canaryField, canary: canary_a, idField, createBody, probeBase });
+  assertCreateRespClean(a);
   if (!idCaptureSafe(a.id)) return base;
   base.object_a = String(a.id);
   const b = await createObject({ createUrl, headers: idB.headers, canaryField, canary: canary_b, idField, createBody, probeBase });
+  assertCreateRespClean(b);
   if (!idCaptureSafe(b.id)) return base;
   base.object_b = String(b.id);
   const c = await createObject({ createUrl, headers: idC.headers, canaryField, canary: canary_c, idField, createBody, probeBase });
+  assertCreateRespClean(c);
   if (!idCaptureSafe(c.id)) return base;
   base.object_c = String(c.id);
   // All three created → read B's object back AS B (canary-leaf discovery + #24 create-time PII screen).
@@ -1152,7 +1260,9 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // canary_reflected_in_object_id guard can fire (Codex P1). The configured id is the most precise reason,
     // so check it BEFORE the broader owner selector. Refuse the (normalized) alias before any write.
     const normCanaryField = normalizeFieldName(canaryField);
-    if (ID_ALIAS_KEYS.has(normCanaryField) || (normCanaryField && normCanaryField === normalizeFieldName(idField))) {
+    const normIdFieldForCanary = normalizeFieldName(idField);
+    if (ID_ALIAS_KEYS.has(normCanaryField) || (normCanaryField && normCanaryField === normIdFieldForCanary)
+      || keyHasIdAliasSegment(canaryField, normIdFieldForCanary)) {
       return blocked("blocked_by_design", "canary_field_aliases_id_field", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
@@ -1164,6 +1274,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // before any readback gate (brutalist / Codex P1).
     if (fieldIsOwnerSelector(canaryField)) {
       return blocked("blocked_by_design", "canary_field_overlaps_owner_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not be a PRIVILEGE selector (role/is_admin/scopes/…): the same POST-into-an-ownership-
+    // -slot logic applies — an elevation-named canary_field would write the minted canary into a privilege
+    // slot, minting an elevated synthetic object on an API that honors it (Codex P1).
+    if (fieldIsPrivilegeSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_privilege_field", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
       });
@@ -1222,6 +1341,18 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
+    // #5 nested-container guard: route-binding proves the READ is on-surface, but the stripped PARENT path
+    // is not proven to be a synthetic-owned collection. A concrete resource-INSTANCE ancestor (numeric id /
+    // uuid / `proj-123`) means the derived POST would create the synthetic object INSIDE a real fixed
+    // tenant/project container (/api/orgs/acme-corp/projects/proj-123/accounts), so refuse rather than write
+    // there (brutalist). Pure-alpha tenant slugs are a documented residual backstopped by the downstream
+    // same-tenant guard (see pathHasConcreteParentInstance).
+    if (pathHasConcreteParentInstance(createPath)) {
+      return blocked("blocked_by_design", "create_collection_nested_in_real_container", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     const createUrl = new URL(createPath, baselineUrl.origin).toString();
     // The read template passed assertReadOnlyPath, but that guard intentionally allows action-NOUNS like
     // `transfer`/`refund` for a GET-by-id; the DERIVED collection POST /api/transfer would EXECUTE the
@@ -1255,6 +1386,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     } catch (e) {
       if (e && e.probe_audit_failed) {
         return blocked("blocked_by_infra", "provision_audit_failed", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      // #4 (brutalist): a create response that echoed foreign PII / a secret fails CLOSED with a precise
+      // reason — the tool received non-synthetic data, so sign nothing (parity with the readback #24 gate).
+      if (e && e.create_response_contaminated) {
+        return blocked("blocked_by_design", "create_response_contains_foreign_data", {
           target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
           ...identity, ...internalHostPolicy,
         });
@@ -1360,7 +1499,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
 
   // CREATE-TIME FOREIGN-PII (mint condition #24): the fresh owner readback must
   // carry the canary AND no foreign PII shape — else a shared object store.
-  const readbackPii = piiScan(parsedReadback, allowedEmails);
+  // The producer's own canaries are neutralized first (neutralizeCanaries) so a chance card-shaped digit
+  // run inside a hex canary does not false-positive — the readback legitimately reflects canary_b.
+  const ownCanaries = [canary_a, canary_b, canary_c];
+  const readbackPii = piiScan(neutralizeCanaries(parsedReadback, ownCanaries), allowedEmails);
   if (readbackPii.length > 0) {
     return blocked("blocked_by_design", "shared_object_store", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
@@ -1376,7 +1518,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const rawReadback = typeof provision.owner_readback_b_raw === "string" ? provision.owner_readback_b_raw : null;
   if (rawReadback) {
     for (const probe of [rawReadback, decodeAllEncodingLayers(rawReadback)]) {
-      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) {
+      const scan = neutralizeCanaries(probe, ownCanaries);
+      if (piiScan(scan, allowedEmails).length > 0 || secretShapesIn(scan).length > 0) {
         return blocked("blocked_by_design", "shared_object_store", {
           target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
           ...identity, ...internalHostPolicy,
@@ -1751,14 +1894,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // parsed object (canonicalJson resolves escapes but drops shadowed keys), the raw
   // text (keeps shadowed keys but not escapes), and the raw text with \u escapes
   // decoded (keeps shadowed keys AND resolves escapes).
-  const proofParsed = [p1Parsed, p2Parsed, p2primeParsed];
+  // The producer's own canaries are neutralized in every proof-scan form (neutralizeCanaries) so a chance
+  // card-shaped digit run inside a hex canary cannot false-positive — the proof bodies legitimately reflect
+  // canary_b. Exact 64-char replacement leaves any adjacent injected PII/secret intact for the scan.
+  const proofParsedScan = [p1Parsed, p2Parsed, p2primeParsed].map((p) => neutralizeCanaries(p, ownCanaries));
   const proofScanTexts = [P1, P2, P2prime].flatMap((r) => {
     const raw = bodyTextOf(r);
     // raw + ALL decoded layers (\u / percent / layered) — a sensitive value encoded in
     // the body survives JSON.parse + canonicalJson but decodes server-side.
-    return [raw, decodeAllEncodingLayers(raw)];
+    return [neutralizeCanaries(raw, ownCanaries), neutralizeCanaries(decodeAllEncodingLayers(raw), ownCanaries)];
   });
-  if (proofParsed.some((p) => piiScan(p, allowedEmails).length > 0)
+  if (proofParsedScan.some((t) => piiScan(t, allowedEmails).length > 0)
     || proofScanTexts.some((t) => piiScan(t, allowedEmails).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_pii_in_response");
   }
@@ -1766,7 +1912,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // credential-shaped data (JWT / AWS key / PEM / prefixed tokens). O_B is
   // self-provisioned synthetic, so a secret here is a server-injected expanded-record
   // leak. Same parsed + raw + \u-decoded screening as the PII tripwire.
-  if (proofParsed.some((p) => secretShapesIn(p).length > 0)
+  if (proofParsedScan.some((t) => secretShapesIn(t).length > 0)
     || proofScanTexts.some((t) => secretShapesIn(t).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_secret_in_response");
   }
@@ -1888,6 +2034,7 @@ module.exports = {
   createObject,
   idorProvisionAuthorizedFor,
   mintCanary,
+  pathHasConcreteParentInstance,
   IDOR_PROVISION_ENV,
   // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleEndpointSingleHost
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the
