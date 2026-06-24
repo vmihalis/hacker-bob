@@ -666,6 +666,20 @@ function subjectIdentifierSet(bodyText) {
   return out;
 }
 
+// The number of RECORDS (≈ people) a body represents — a multi-element collection's element count, or 1 for a
+// top-level singleton object (a /me). Used for the v2 single-subject gate: "the victim's own scope is ONE
+// record, not a multi-subject org/team listing" (bot-review #L). Counting RECORDS — not distinct identifier
+// KEYS — is what's correct: one person's record legitimately carries SEVERAL subject-identifier shapes (an
+// email AND an ssn), so a key-count would wrongly flag a normal /me as multi-subject (live-validation finding).
+function recordCountOf(bodyText) {
+  if (typeof bodyText !== "string" || bodyText.length === 0) return 0;
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return 0; }
+  const records = extractRecords(parsed);
+  if (records.length > 0) return records.length;
+  return isPlainObject(parsed) ? 1 : 0; // a top-level singleton object is ONE record
+}
+
 // The control-denial PREDICATE, factored out so the v1 LISTING control AND the v2 anon-VICTIM control
 // score denial through ONE battle-tested path (no drift between two copies of a security check). Split
 // into the two questions the inline v1 block asks (kept byte-identical):
@@ -1200,8 +1214,10 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
             // …AND the scope must be SINGLE-SUBJECT (the victim's own /me), not a multi-subject team/org/
             // listing endpoint that merely INCLUDES the victim among others (bot-review #L). On a shared
             // multi-subject scope the victim does not OWN the other subjects' data, so "victim_read_own_
-            // private_scope" would be untruthful; require exactly one distinct subject so the leg is honest.
-            const victimScopeSingleSubject = victimSubjects.size === 1;
+            // private_scope" would be untruthful. Count RECORDS (people), NOT identifier keys: one person's
+            // /me record carries several identifier shapes (email AND ssn), so a key-count wrongly rejected a
+            // normal /me as multi-subject (live-validation finding) — a single record (or singleton) is one subject.
+            const victimScopeSingleSubject = recordCountOf(victim.body) === 1;
             const anonVictimSummary = deriveMaskedSummary(anonVictim.body);
             const anonVictimDenied = controlIsCleanDenial(
               anonVictimSummary, anonVictim, controlReadsAnyPii(anonVictimSummary, anonVictim.body),

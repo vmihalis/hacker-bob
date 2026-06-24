@@ -1578,6 +1578,20 @@ test("v2 → MEDIUM (#L): a multi-subject victim scope (org/team listing incl. t
   assert.equal(result.demonstrated_severity, "medium");
 }));
 
+test("v2 HIGH: a /me carrying MULTIPLE identifier shapes for ONE person (email+ssn) is single-subject (record-count, not key-count)", () => withTempHome(async () => {
+  // LIVE-VALIDATION regression: the single-subject gate must count RECORDS (people), not distinct identifier
+  // KEYS. A real /me returns one person with several identifier shapes (email AND ssn) — a key-count saw 2
+  // and wrongly declined "victim_scope_multi_subject"; a record-count sees ONE record → the victim's own /me.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ id: 1, email: CANARY_EMAIL, ssn: "111-22-9000", phone: "+1-202-555-0150" }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, true, JSON.stringify(result));
+  assert.equal(result.victim_elevation, "cross_principal_break_proven");
+  assert.equal(result.demonstrated_severity, "high");
+}));
+
 test("v2 HIGH still mints when the two sessions share only a SHORT benign cookie (no over-decline)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   // Distinct long session tokens, but both jars carry the same short benign cookie (locale=en) — that must
