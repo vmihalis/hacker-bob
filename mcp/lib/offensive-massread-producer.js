@@ -637,47 +637,54 @@ function subjectIdentifierSet(bodyText) {
   if (typeof bodyText !== "string" || bodyText.length === 0) return out;
   let parsed;
   try { parsed = JSON.parse(bodyText); } catch { return out; }
-  const records = extractRecords(parsed);
-  const scan = records.length > 0 ? records : (isPlainObject(parsed) ? [parsed] : []);
-  const scanLimit = Math.min(scan.length, MASSREAD_PII_SCAN_RECORDS);
-  for (let i = 0; i < scanLimit; i += 1) {
-    let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD;
-    const visit = (node, depth) => {
-      if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
-      if (Array.isArray(node)) {
-        for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
-        return;
-      }
-      for (const key of Object.keys(node)) {
-        if (nodeBudget <= 0) return;
-        nodeBudget -= 1;
-        const value = node[key];
-        if (bucketForFieldName(key)) {
-          const valueText = piiValueText(value);
-          for (const m of (valueText ? piiMatchesInValue(valueText) : [])) {
-            if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
-          }
+  // Scan the ENTIRE body (top-level fields + nested objects + every collection element), NOT an
+  // extractRecords-selected subset: a /me's OWN top-level identifier must be seen even when the body ALSO
+  // embeds a recognized child collection (`{email, items:[...]}` — extractRecords would pick `items` and miss
+  // the top-level email, bot-review #N), and a wrapper / object-map's nested subjects must all be counted
+  // (#M / CodeRabbit). Used in the victim arm for membership (does X contain victimKey) + distinctSubjectCount.
+  let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD * MASSREAD_PII_SCAN_RECORDS; // whole-body, bounded
+  const visit = (node, depth) => {
+    if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH || nodeBudget <= 0) return;
+    if (Array.isArray(node)) {
+      for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      if (nodeBudget <= 0) return;
+      nodeBudget -= 1;
+      const value = node[key];
+      if (bucketForFieldName(key)) {
+        const valueText = piiValueText(value);
+        for (const m of (valueText ? piiMatchesInValue(valueText) : [])) {
+          if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
         }
-        if (value && typeof value === "object") visit(value, depth + 1);
       }
-    };
-    visit(scan[i], 0);
-  }
+      if (value && typeof value === "object") visit(value, depth + 1);
+    }
+  };
+  visit(parsed, 0);
   return out;
 }
 
-// The number of RECORDS (≈ people) a body represents — a multi-element collection's element count, or 1 for a
-// top-level singleton object (a /me). Used for the v2 single-subject gate: "the victim's own scope is ONE
-// record, not a multi-subject org/team listing" (bot-review #L). Counting RECORDS — not distinct identifier
-// KEYS — is what's correct: one person's record legitimately carries SEVERAL subject-identifier shapes (an
-// email AND an ssn), so a key-count would wrongly flag a normal /me as multi-subject (live-validation finding).
-function recordCountOf(bodyText) {
-  if (typeof bodyText !== "string" || bodyText.length === 0) return 0;
-  let parsed;
-  try { parsed = JSON.parse(bodyText); } catch { return 0; }
-  const records = extractRecords(parsed);
-  if (records.length > 0) return records.length;
-  return isPlainObject(parsed) ? 1 : 0; // a top-level singleton object is ONE record
+// Distinct-SUBJECT count for the v2 single-subject gate: the MAX, over each subject-identifier SHAPE
+// (email / ssn — the shapes ~1:1 with a person), of the distinct normalized VALUES of that shape anywhere in
+// the body. ONE person's /me carries at most one of each shape, so a single subject → 1; a multi-subject scope
+// (an array of members, an object-map of users, a team wrapper) carries 2+ distinct EMAILS → >= 2. This is the
+// right measure — shape-agnostic to the container (bot-review #L/#M/#N + CodeRabbit object-map): a RECORD count
+// over-counts a /me with a self-owned child collection and under-counts an unrecognized wrapper / object-map,
+// while a KEY count over-counts one person's email+ssn. Residual (documented, exotic + SAFE-leaning): two people
+// with DISJOINT shapes and <= 1 of each (an email-only subject + an ssn-only subject) would read as 1 — bounded
+// by the operator pointing victim_surface_id at a real single-subject /me + the verification/grader.
+function distinctSubjectCount(bodyText) {
+  const ids = subjectIdentifierSet(bodyText); // `${shape}:${norm}` keys (email/ssn), recursed + normalized
+  const perShape = new Map();
+  for (const k of ids) {
+    const shape = k.slice(0, k.indexOf(":"));
+    perShape.set(shape, (perShape.get(shape) || 0) + 1);
+  }
+  let max = 0;
+  for (const c of perShape.values()) if (c > max) max = c;
+  return max;
 }
 
 // The control-denial PREDICATE, factored out so the v1 LISTING control AND the v2 anon-VICTIM control
@@ -1212,12 +1219,12 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
             // The victim arm must read its OWN known identity from this scope.
             const victimReadsOwnIdentity = victimSubjects.has(victimKey);
             // …AND the scope must be SINGLE-SUBJECT (the victim's own /me), not a multi-subject team/org/
-            // listing endpoint that merely INCLUDES the victim among others (bot-review #L). On a shared
+            // listing/map that merely INCLUDES the victim among others (bot-review #L/#M/#N). On a shared
             // multi-subject scope the victim does not OWN the other subjects' data, so "victim_read_own_
-            // private_scope" would be untruthful. Count RECORDS (people), NOT identifier keys: one person's
-            // /me record carries several identifier shapes (email AND ssn), so a key-count wrongly rejected a
-            // normal /me as multi-subject (live-validation finding) — a single record (or singleton) is one subject.
-            const victimScopeSingleSubject = recordCountOf(victim.body) === 1;
+            // private_scope" would be untruthful. distinctSubjectCount === 1: exactly one subject (one person's
+            // email, plus optionally their own ssn) — a multi-person array / object-map / wrapper carries 2+
+            // distinct emails and is rejected; a /me with email+ssn or a self-owned child collection stays 1.
+            const victimScopeSingleSubject = distinctSubjectCount(victim.body) === 1;
             const anonVictimSummary = deriveMaskedSummary(anonVictim.body);
             const anonVictimDenied = controlIsCleanDenial(
               anonVictimSummary, anonVictim, controlReadsAnyPii(anonVictimSummary, anonVictim.body),

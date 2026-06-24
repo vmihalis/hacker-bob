@@ -1578,10 +1578,11 @@ test("v2 → MEDIUM (#L): a multi-subject victim scope (org/team listing incl. t
   assert.equal(result.demonstrated_severity, "medium");
 }));
 
-test("v2 HIGH: a /me carrying MULTIPLE identifier shapes for ONE person (email+ssn) is single-subject (record-count, not key-count)", () => withTempHome(async () => {
-  // LIVE-VALIDATION regression: the single-subject gate must count RECORDS (people), not distinct identifier
-  // KEYS. A real /me returns one person with several identifier shapes (email AND ssn) — a key-count saw 2
-  // and wrongly declined "victim_scope_multi_subject"; a record-count sees ONE record → the victim's own /me.
+test("v2 HIGH: a /me carrying MULTIPLE identifier shapes for ONE person (email+ssn) is single-subject (distinct-subject count, not key-count)", () => withTempHome(async () => {
+  // LIVE-VALIDATION regression: the single-subject gate counts distinct SUBJECTS (max distinct values per
+  // subject shape), NOT distinct identifier KEYS. One person's /me carries several shapes (email AND ssn) → a
+  // key-count saw 2 and wrongly declined "victim_scope_multi_subject"; distinctSubjectCount sees 1 (one email,
+  // one ssn) → the victim's own /me. (Found by the first live fire; all prior unit tests used email-only bodies.)
   const domain = uniqueDomain();
   setupV2Session(domain);
   const victim = { status: 200, body: JSON.stringify({ id: 1, email: CANARY_EMAIL, ssn: "111-22-9000", phone: "+1-202-555-0150" }), final_url: null, body_truncated: false };
@@ -1589,6 +1590,44 @@ test("v2 HIGH: a /me carrying MULTIPLE identifier shapes for ONE person (email+s
   const result = await runV2(domain, { driver });
   assert.equal(result.cross_tenant_proven, true, JSON.stringify(result));
   assert.equal(result.victim_elevation, "cross_principal_break_proven");
+  assert.equal(result.demonstrated_severity, "high");
+}));
+
+test("v2 → MEDIUM (#M): a singleton WRAPPER around a multi-subject collection (unrecognized key) is NOT single-subject", () => withTempHome(async () => {
+  // {members:[{email:victim},{email:other}]} — `members` isn't a recognized collection key, so a record-count
+  // would see ONE top-level object and falsely pass. distinctSubjectCount sees 2 distinct EMAILS → rejected.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ team_id: 7, members: [{ email: CANARY_EMAIL }, { email: "teammate@canary.example.test" }] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM (CodeRabbit): an OBJECT-MAP of multiple subjects (no array) is NOT single-subject", () => withTempHome(async () => {
+  // {user1:{email:victim}, user2:{email:other}} — an object map, not an array; a record-count of top-level
+  // objects would pass. distinctSubjectCount sees 2 distinct emails → rejected.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ user1: { email: CANARY_EMAIL }, user2: { email: "other@canary.example.test" } }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 HIGH (#N): a /me with a SELF-OWNED child collection (no extra subjects) stays single-subject", () => withTempHome(async () => {
+  // {email:victim, items:[...]} — `items` IS a recognized collection key, so a record-count would return the
+  // child length and falsely decline. The child items carry NO subject identifiers → distinctSubjectCount 1 → HIGH.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ id: 1, email: CANARY_EMAIL, items: [{ sku: "A1", qty: 2 }, { sku: "B2", qty: 1 }, { sku: "C3", qty: 5 }] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, true, JSON.stringify(result));
   assert.equal(result.demonstrated_severity, "high");
 }));
 
