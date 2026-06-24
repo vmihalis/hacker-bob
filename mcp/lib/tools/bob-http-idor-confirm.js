@@ -3,7 +3,6 @@
 const {
   idorConfirm,
   ORACLE_KIND_VALUES,
-  READ_ONLY_METHODS,
 } = require("../offensive-idor-producer.js");
 
 module.exports = Object.freeze({
@@ -23,7 +22,7 @@ module.exports = Object.freeze({
         type: "string",
         description: "Absolute path template under the routed surface's single recorded endpoint origin, containing exactly one server-substituted {id} path slot that must terminate the final path segment, for example /api/accounts/{id}. The create endpoint is derived by dropping the trailing /{id}. No URL, finding_id, object id, severity, tenant, or canary VALUE is accepted.",
       },
-      method: { type: "string", enum: [...READ_ONLY_METHODS] },
+      method: { type: "string", enum: ["GET"], description: "GET only — the canary differential needs a parseable response body, so HEAD is rejected before any live provisioning." },
       identity_a_profile: { type: "string" },
       identity_b_profile: { type: "string" },
       identity_c_profile: { type: "string" },
@@ -60,8 +59,8 @@ module.exports = Object.freeze({
   // global_preapproval:false marks this NOT globally pre-approved as a Bob authority_class — its
   // session-authority is scope-bound (requires a validated session target_url), NOT preapproval_global.
   // DO NOT copy bob_http_confirm's global_preapproval:true. NOTE (Codex review): this does NOT by itself
-  // produce a per-call Claude-Code permission PROMPT — merge-claude-config.js allow-lists every shipped
-  // tool to avoid per-call churn — so do not rely on a per-call human gate here.
+  // produce a per-call host permission PROMPT — the installer's generated tool-permission allow-list
+  // pre-approves every shipped tool to avoid per-call churn — so do not rely on a per-call human gate here.
   //
   // OPERATOR CHECKPOINT (PR-D, the live arm): the MCP dispatcher calls idorConfirm(args) with NO
   // `provision`. The handler self-provisions live ONLY when the operator has ARMED this target

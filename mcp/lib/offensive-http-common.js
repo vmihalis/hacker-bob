@@ -51,6 +51,31 @@ const { redactUrlSensitiveValues } = require("../redaction.js");
 const STATE_CHANGE_PATH_SEGMENT_RE = /(?:^|\/)(?:delete|logout|remove|destroy|deactivate|disable|revoke|reset|unsubscribe|terminate|purge|wipe)(?:[./;,]|\/|$)/i;
 const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch|put|post|submit|send|transfer|refund|reset|revoke|disable|enable|drop|truncate|mutation)$/i;
 
+// A WRITE (create POST) is derived by stripping the trailing /{id} from a read template. The read-only
+// guard (STATE_CHANGE_PATH_SEGMENT_RE) intentionally ALLOWS ambiguous action-nouns like `transfer` /
+// `refund` for a GET-by-id (reading a transfer RECORD is safe), but POSTing to the derived collection
+// /api/transfer typically EXECUTES the action (money movement / state change). A write primitive must
+// never trigger that blindly, so the derived create collection is held to a STRICTER, fail-closed
+// action-verb set than the read path. Over-blocking is the correct bias here — the only cost is that
+// LIVE auto-provisioning is unavailable on an action-shaped endpoint (the operator can seed-provision).
+const WRITE_ACTION_VERBS = new Set([
+  // financial / value-movement
+  "transfer", "refund", "withdraw", "withdrawal", "deposit", "pay", "payment", "payout",
+  "charge", "send", "wire", "remit", "disburse", "disbursement", "checkout", "purchase", "buy", "sell",
+  // generic execution
+  "execute", "exec", "invoke", "trigger", "run", "apply", "submit", "import", "export", "sync", "migrate",
+  // lifecycle / state change
+  "approve", "approval", "reject", "cancel", "void", "capture", "settle", "settlement", "publish",
+  "unpublish", "archive", "unarchive", "lock", "unlock", "enable", "disable", "activate", "deactivate",
+  "start", "stop", "restart", "resume", "suspend", "rollback", "restore",
+  // destructive
+  "delete", "remove", "destroy", "terminate", "purge", "wipe", "drop", "truncate", "kill", "flush", "clear",
+  // auth / access
+  "login", "logout", "register", "signup", "revoke", "grant", "reset", "ban", "unban",
+  // generic mutation markers
+  "create", "update", "mutation",
+]);
+
 // An encoded path separator at ANY encoding depth: %2F / %5C, %252F, %2525252F,
 // etc. (`(25)*` absorbs each extra `%25` layer). Layer-count-independent, so it
 // does not depend on how many times decodePathSegments iterates.
@@ -183,6 +208,30 @@ function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
   // also rejected, not just the literal form.
   if (/\bmutation\b/i.test(pathAndQuery) || /\bmutation\b/i.test(decodedPath)) {
     rejectInvalidArguments(`mutation-shaped path or query is not allowed for ${toolName}`);
+  }
+}
+
+// Fail closed when a DERIVED create-collection path (the trailing /{id} already stripped) resolves to
+// an action-shaped segment. Stricter than assertReadOnlyPath because this is the path the tool will
+// POST to: /api/transfer/{id} reads safely but POST /api/transfer executes a transfer. Each path
+// segment is decoded to a fixed point and split on `. _ -` so /transfer-funds, /transfer_v2 and
+// /transfers all surface the `transfer` action; a token (or its singular) in WRITE_ACTION_VERBS is
+// refused before any write. Resource-noun collections (/api/accounts, /api/notes, /api/orders/{id} →
+// note: `order` IS blocked as an action) pass; the bias is deliberately toward refusing the write.
+function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
+  const parsed = new URL(url);
+  const decodedPath = decodePathSegments(parsed.pathname);
+  for (const rawSegment of decodedPath.split("/")) {
+    if (!rawSegment) continue;
+    for (const token of rawSegment.toLowerCase().split(/[._-]/).filter(Boolean)) {
+      const singular = token.endsWith("s") ? token.slice(0, -1) : token;
+      if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
+        rejectInvalidArguments(
+          `derived create-collection path resolves to an action-shaped segment ("${token}"); ${toolName} refuses to POST to a state-changing endpoint`,
+          { path: parsed.pathname },
+        );
+      }
+    }
   }
 }
 
@@ -907,6 +956,7 @@ module.exports = {
   capturedIdSegmentIsSafe,
   pathTemplateMatchesEndpoint,
   assertReadOnlyPath,
+  assertCreateCollectionShapeSafe,
   normalizePathTemplate,
   findRoutedSurface,
   candidateSurfaceEndpoints,

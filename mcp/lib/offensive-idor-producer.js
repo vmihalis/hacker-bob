@@ -76,6 +76,7 @@ const {
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
+  assertCreateCollectionShapeSafe,
   capturedIdSegmentIsSafe,
   originFromState,
   isResourceShapedResponse,
@@ -112,6 +113,14 @@ const {
 
 const TOOL_ID = "bob_http_idor_confirm";
 const READ_ONLY_METHODS = Object.freeze(["GET", "HEAD"]);
+// The create body is a tiny synthetic skeleton (a few non-canary fields) + a 64-hex canary. safeFetch
+// caps RESPONSES, never request bodies, so an oversized create_body would otherwise be POSTed whole to
+// the target before the oracle could block (Codex P2). Cap the serialized create_body well above any
+// legitimate skeleton; the canary the producer adds is fixed-size and screened separately.
+const MAX_CREATE_BODY_BYTES = 8192;
+// __proto__/constructor/prototype as a JSON create-body key are prototype-pollution payload shapes on
+// many handlers; refused as canary_field / id_field / any create_body key before any write (Codex P2).
+const RESERVED_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const ORACLE_KIND_VALUES = Object.freeze(["differential_response"]);
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -748,7 +757,14 @@ async function createObject({ createUrl, headers, canaryField, canary, idField, 
   const is2xx = response && typeof response.status === "number" && response.status >= 200 && response.status < 300;
   const own = is2xx && parsed && typeof parsed === "object" && !Array.isArray(parsed)
     && Object.prototype.hasOwnProperty.call(parsed, idField) ? parsed[idField] : undefined;
-  const id = (typeof own === "string" || typeof own === "number") ? own : undefined;
+  // A numeric id outside the safe-integer range (common for 64-bit ids) was ALREADY rounded by
+  // JSON.parse, so stringifying it into the readback / probe URL would address a DIFFERENT resource
+  // than the one just created — a credentialed read of an unrelated object and invalid evidence. Accept
+  // a number only when it round-trips exactly (Number.isSafeInteger); require string ids otherwise
+  // (Codex P2). A non-string/non-safe-int value reads as "no id captured" → caller fail-fasts.
+  const id = typeof own === "string" ? own
+    : (typeof own === "number" && Number.isSafeInteger(own)) ? own
+      : undefined;
   return { id, response, parsed };
 }
 
@@ -811,6 +827,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const oracleKind = normalizeOracleKind(args.oracle_kind);
   const method = normalizeMethod(args.method);
+  // HEAD has no response body, so the canary differential can never read B's canary back and the oracle
+  // can never mint — but an armed HEAD call would still self-provision A/B/C (live WRITEs) before the
+  // body-less probes block (Codex P1). Refuse GET-only BEFORE any provisioning. The tool schema also
+  // narrows `method` to GET; this handler guard is the authoritative enforcement.
+  if (method !== "GET") {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm requires method GET; HEAD has no response body for the canary differential and must not reach live object provisioning",
+      { method },
+    );
+  }
   // GAP E: {id}-final clean path segment, no query (mint condition #23).
   const pathTemplate = normalizePathTemplate(args.path_template, TOOL_ID);
 
@@ -901,12 +927,36 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     const idField = typeof args.id_field === "string" && args.id_field.trim() ? args.id_field.trim() : "id";
     const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
       ? args.create_body : {};
+    // __proto__/constructor/prototype as the canary slot, the id field, or any create_body key are
+    // prototype-pollution payload shapes once serialized into the JSON create body; refuse them before
+    // any write so the canary write itself cannot become an unsafe mutation (Codex P2). create_body keys
+    // arrive via JSON.parse, which defines `__proto__` as an OWN key, so Object.keys sees it here.
+    const isReservedKey = (k) => RESERVED_PROTO_KEYS.has(String(k));
+    if (isReservedKey(canaryField) || isReservedKey(idField) || Object.keys(createBody).some(isReservedKey)) {
+      return blocked("blocked_by_design", "reserved_field_name", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Cap the serialized create_body BEFORE any write — safeFetch caps responses, not request bodies, so
+    // an oversized non-PII create_body would otherwise be POSTed whole to the target (Codex P2).
+    if (Buffer.byteLength(JSON.stringify(createBody), "utf8") > MAX_CREATE_BODY_BYTES) {
+      return blocked("blocked_by_design", "create_body_too_large", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     // The create endpoint = the COLLECTION: strip the FINAL path segment (which normalizePathTemplate
     // guarantees holds {id}). Robust to inert-suffix templates (`/api/accounts/{id}.json` → `/api/accounts`,
     // Codex P2) — never POST a malformed `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound
     // template), never an agent free-text write target.
     const createPath = pathTemplate.replace(/\/[^/]*$/, "");
     const createUrl = new URL(createPath || "/", baselineUrl.origin).toString();
+    // The read template passed assertReadOnlyPath, but that guard intentionally allows action-NOUNS like
+    // `transfer`/`refund` for a GET-by-id; the DERIVED collection POST /api/transfer would EXECUTE the
+    // action (real mutation). Hold the create collection to the stricter fail-closed action-verb guard
+    // BEFORE any write (Codex P1) — an action-shaped create path is refused, never POSTed to.
+    assertCreateCollectionShapeSafe(createUrl, TOOL_ID);
     // EVERY byte WRITTEN to the target — the create URL, the serialized body, AND the canary FIELD NAME —
     // is screened for operator PII / secrets BEFORE any write, with LAYERED DECODING (percent / unicode,
     // to a fixed point), mirroring the proof-body gates so an encoded `victim%40example.test` or token can't

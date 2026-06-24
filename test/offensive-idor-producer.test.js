@@ -28,6 +28,7 @@ const {
   piiScan,
   profileHasProvenance,
   liveProvision,
+  createObject,
   idorProvisionAuthorizedFor,
   IDOR_PROVISION_ENV,
 } = require("../mcp/lib/offensive-idor-producer.js");
@@ -2290,6 +2291,110 @@ test("PR-D live arm (armed, no provision): full create→readback→P0-P8→sign
     const rowText = fs.readFileSync(offensiveRunsJsonlPath(domain), "utf8");
     for (const leak of ["eval_a@example.test", "eval_b@example.test", "eval_c@example.test", "eyJatoken", "eyJbtoken", "eyJctoken"]) {
       assert.ok(!rowText.includes(leak), `signed row must not leak identity secret: ${leak}`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 3: write-surface hardening (Codex P1/P2) ───────────────────
+
+test("PR-D r3 (Codex P1): armed HEAD is rejected GET-only BEFORE any live provisioning (no write)", () => withTempHome(async () => {
+  const domain = "idor-head.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), method: "HEAD", canary_field: "note" }, { fetch_fn: mock }),
+      /requires method GET/,
+      "armed HEAD must be rejected before provisioning",
+    );
+    assert.equal(mock.postCount(), 0, "HEAD → ZERO create POSTs (body-less probes can never mint, so nothing is written)");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P1): an action-shaped derived create collection (/api/transfer) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-action-path.example.test";
+  // The read template /api/transfer/{id} passes assertReadOnlyPath (transfer is an allowed action-NOUN
+  // for a GET-by-id), but the DERIVED collection POST /api/transfer would execute a transfer.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/transfer/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/transfer/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+      "an action-shaped create collection must be refused",
+    );
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs to a state-changing endpoint");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P2): createObject captures a string / safe-int id but REJECTS an unsafe-int (rounded) id", () => withTempHome(async () => {
+  const domain = "idor-numeric-id.example.test";
+  setupSession(domain);
+  const mkFetch = (idValue) => async ({ body }) => jsonResponse(201, { id: idValue, owner: "A", note: JSON.parse(body || "{}").note });
+  const probeBase = (fetchFn) => ({ fetchFn, method: "GET", domain, surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() });
+  const call = (idValue) => createObject({
+    createUrl: `https://${domain}/api/accounts`, headers: {}, canaryField: "note",
+    canary: "a".repeat(64), idField: "id", createBody: {}, probeBase: probeBase(mkFetch(idValue)),
+  });
+  assert.equal((await call("acc_42")).id, "acc_42", "string id captured");
+  assert.equal((await call(42)).id, 42, "safe-int id captured");
+  // 2^53 (9007199254740992) is NOT a safe integer — a 64-bit id here was already rounded by JSON.parse,
+  // so it must read as "no id captured" rather than address a different resource in the readback.
+  assert.equal((await call(9007199254740992)).id, undefined, "unsafe-int id rejected (no capture)");
+}));
+
+test("PR-D r3 (Codex P2): an oversized create_body is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-bigbody.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), canary_field: "note", create_body: { blob: "x".repeat(9000) } },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "create_body_too_large");
+    assert.equal(mock.postCount(), 0, "an oversized create_body is never POSTed to the target");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P2): prototype-pollution field names (__proto__/constructor/prototype) are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-proto.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "canary_field __proto__", args: { canary_field: "__proto__" } },
+      { label: "id_field constructor", args: { canary_field: "note", id_field: "constructor" } },
+      // JSON.parse defines `__proto__` as an OWN key, so a create_body parsed from JSON carries it here.
+      { label: "create_body __proto__ key", args: { canary_field: "note", create_body: JSON.parse('{"__proto__":{"polluted":true}}') } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "reserved_field_name", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
     }
   } finally {
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
