@@ -1198,8 +1198,11 @@ test("a 401 control whose non-JSON body ships BULK non-identifier PII (phones) i
 // is ELEVATING only: any failure leaves the proven v1 MEDIUM intact.
 
 const VICTIM_SURFACE_ID = "surface:victim-me";
+// A DIFFERENT surface id that resolves to the SAME endpoint as the bulk listing (alias-replay fixture, #H).
+const VICTIM_ALIAS_SURFACE_ID = "surface:victim-alias";
 
-// Two routed surfaces: the bulk listing (attacker + anon control) and the victim's own-scope /api/me.
+// Routed surfaces: the bulk listing (attacker + anon control), the victim's own-scope /api/me, and an
+// alias surface pointing at the listing endpoint (to exercise the resolved-endpoint replay guard).
 function seedV2Surfaces(domain) {
   fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
   fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
@@ -1211,6 +1214,10 @@ function seedV2Surfaces(domain) {
       {
         id: VICTIM_SURFACE_ID, title: "Victim own-scope surface", surface_type: "web", hosts: [domain],
         endpoints: [`https://${domain}/api/me`], tech_stack: ["fixture"], priority: "HIGH",
+      },
+      {
+        id: VICTIM_ALIAS_SURFACE_ID, title: "Alias of the listing endpoint", surface_type: "web", hosts: [domain],
+        endpoints: [`https://${domain}/api/listing`], tech_stack: ["fixture"], priority: "HIGH",
       },
     ],
   }, null, 2)}\n`, "utf8");
@@ -1308,6 +1315,9 @@ test("v2 HIGH: victim reads its own private subject, anon is denied it, attacker
   let captureBytes = "";
   for (const f of fs.readdirSync(runsDir)) captureBytes += fs.readFileSync(path.join(runsDir, f), "utf8");
   assert.ok(!captureBytes.includes(CANARY_EMAIL), "the signed offensive captures must NOT contain a raw subject value");
+  // #I: the HIGH elevation MAC-covers WHICH victim scope established it (the stderr capture folds into stderr_hash).
+  assert.ok(captureBytes.includes(VICTIM_SURFACE_ID), "the signed captures must record the victim surface id");
+  assert.ok(captureBytes.includes(`https://${domain}/api/me`), "the signed captures must record the victim canonical target");
 }));
 
 test("v2 HIGH round-trip: the HIGH row backs an exploited_safely HIGH claim and re-hashes stable", () => withTempHome(async () => {
@@ -1465,10 +1475,10 @@ test("v1 (victim absent): cross_tenant_proven false, not_requested, two arms, ME
 
 test("v2 → MEDIUM (#A): a SHARED session cookie plus an incidental cookie still declines (no full-jar-equality bypass)", () => withTempHome(async () => {
   const domain = uniqueDomain();
-  // The exact bot finding: attacker {sid:ABC}, victim {sid:ABC, csrf:Z}. The jars are UNEQUAL but share the
-  // SAME session cookie — the same principal. Disjoint-jar distinctness fails closed (the old full-set
+  // The exact bot finding: attacker {sid:TOK}, victim {sid:TOK, csrf:Z}. The jars are UNEQUAL but share the
+  // SAME session token — the same principal. Token-value distinctness fails closed (the old full-set
   // equality would have permitted HIGH here).
-  setupV2Session(domain, { attackerCookies: { sid: "shared-ABC" }, victimCookies: { sid: "shared-ABC", csrf: "Z" } });
+  setupV2Session(domain, { attackerCookies: { sid: "shared-session-tok-XYZ" }, victimCookies: { sid: "shared-session-tok-XYZ", csrf: "Z" } });
   const { driver, calls } = makeV2Driver();
   const result = await runV2(domain, { driver });
   assert.equal(result.cross_tenant_proven, false);
@@ -1525,4 +1535,43 @@ test("sign guard (#G): buildAndSignOffensiveRow with requireExplicitSeverity THR
     relationBooleans: {}, requireExplicitSeverity: true, // no demonstratedSeverityOverride → fail closed
   }), /requires an explicit demonstratedSeverityOverride/);
   assert.ok(!fs.existsSync(offensiveRunsJsonlPath(domain)), "no row may be written when the guard throws");
+}));
+
+test("v2 → MEDIUM (#H): a DIFFERENT victim_surface_id that RESOLVES to the listing endpoint is refused (alias replay)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const { driver, calls } = makeV2Driver();
+  // The alias surface id differs from SURFACE_ID but routes to the SAME /api/listing endpoint.
+  const result = await runV2(domain, { driver, victimSurface: VICTIM_ALIAS_SURFACE_ID });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_endpoint_equals_listing");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2, "an aliased listing endpoint must not run the victim arms");
+}));
+
+test("v2 → MEDIUM (#J): the SAME session token under a DIFFERENT cookie name is not 'distinct'", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  // Same opaque session-token VALUE (>= 16 chars), different cookie NAME → same session, must decline.
+  const token = "abc123def456ghi789jkl"; // 21 chars
+  setupV2Session(domain, { attackerCookies: { sid: token }, victimCookies: { session_token: token } });
+  const { driver, calls } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "victim_session_not_distinct");
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(calls.starts.length, 2, "a reused session token under a different name must not run the victim arms");
+}));
+
+test("v2 HIGH still mints when the two sessions share only a SHORT benign cookie (no over-decline)", () => withTempHome(async () => {
+  const domain = uniqueDomain();
+  // Distinct long session tokens, but both jars carry the same short benign cookie (locale=en) — that must
+  // NOT be read as a shared session (it would gut the feature), so HIGH still mints.
+  setupV2Session(domain, {
+    attackerCookies: { sid: "attacker-session-token-AAA", locale: "en" },
+    victimCookies: { sid: "victim-session-token-BBBBB", locale: "en" },
+  });
+  const { driver } = makeV2Driver();
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, true, JSON.stringify(result));
+  assert.equal(result.demonstrated_severity, "high");
 }));

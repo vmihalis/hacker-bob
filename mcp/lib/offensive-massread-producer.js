@@ -57,8 +57,9 @@
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): the row MAC is tamper-evident against an agent
 // confined to the MCP + guarded-Bash surface; it is NOT cryptographically un-forgeable (a same-UID
-// actor can read the 0600 key and hand-MAC a row — the #131 boundary, bounded to a fabricated MEDIUM
-// by the frozen per-tool ceiling). The authed-vs-control differential is ALSO not tamper-proof — a
+// actor can read the 0600 key and hand-MAC a row — the #131 boundary). With the v2 ceiling now HIGH the
+// same-UID forge residual is bounded to a fabricated HIGH (raised from MEDIUM); closing it needs the
+// deferred offensive-sandbox. The authed-vs-control differential is ALSO not tamper-proof — a
 // hostile target can tell the credentialed arm from the control and could serve forged data — but a
 // target forging a vuln against ITSELF gains nothing, and a single capture is evidence, not proof
 // (the operator corroborates for integrity-sensitive use). The page-controlled-fetch residual is
@@ -692,17 +693,25 @@ function controlIsCleanDenial(summary, resp, readAnyPii) {
     || (ok2xx && summary.record_count < MASSREAD_MIN_RECORDS);
 }
 
-// Do the two cookie jars SHARE ANY cookie value? If so, the two profiles authenticate as (at least
-// partly) the SAME session — so they are NOT distinct principals and the victim arm must decline (fail
-// CLOSED). A full-set-equality check was unsound (bot-review #A): `{sid=ABC}` vs `{sid=ABC, csrf=Z}` are
-// "unequal" yet share the SAME session cookie `sid=ABC`, so the same underlying session could mint HIGH.
-// Requiring DISJOINT jars (no shared name=value) catches a shared session token regardless of incidental
-// cookies; it conservatively also declines on a shared BENIGN cookie (locale, consent), which is the SAFE
-// direction (no false HIGH — at worst a missed elevation). Distinct session ≠ distinct human; the victim's
-// synthetic-identity anchor (victimIdentityKey) + the same-human guard carry the rest.
+// Do the two cookie jars SHARE A SESSION? If so the two profiles authenticate as (at least partly) the
+// SAME session — NOT distinct principals — so the victim arm must decline (fail CLOSED). We decline when
+// the jars share any session-token-shaped VALUE (length >= SESSION_TOKEN_MIN_LEN), compared by VALUE
+// regardless of cookie NAME. This is robust to the two unsound predecessors: full-set equality (bot-review
+// #A: `{sid=ABC}` vs `{sid=ABC, csrf=Z}` are "unequal" yet share the session cookie) and a name=value
+// compare (bot-review #J: the SAME opaque token reused under a DIFFERENT cookie name across app stacks /
+// subdomains would read as distinct). The length floor targets real session tokens (JWT / UUID / base64
+// sids are long) while NOT over-declining on a shared SHORT benign cookie (`locale=en`, `consent=true`,
+// `role=admin`) that two genuinely distinct accounts often carry — declining there would gut the feature,
+// and a shared short value is not evidence of a shared session anyway. Residual (documented): an app using
+// a SHORT (< 16-char, insecure) session id is not caught here; distinct session ≠ distinct human either —
+// the synthetic-identity anchor (victimIdentityKey) + the same-human guard carry the rest.
+const SESSION_TOKEN_MIN_LEN = 16;
 function cookiesShareAnyValue(a, b) {
-  const setB = new Set((b || []).map((c) => `${c.name}=${c.value}`));
-  return (a || []).some((c) => setB.has(`${c.name}=${c.value}`));
+  const tokensB = new Set((b || []).map((c) => String(c.value)).filter((v) => v.length >= SESSION_TOKEN_MIN_LEN));
+  return (a || []).some((c) => {
+    const v = String(c.value);
+    return v.length >= SESSION_TOKEN_MIN_LEN && tokensB.has(v);
+  });
 }
 
 // The victim's KNOWN account identity, as a normalized `email:<norm>` key — available ONLY for a SYNTHETIC
@@ -1149,14 +1158,25 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
         // / findRoutedSurface re-validate scope, so an out-of-scope victim surface throws and is caught below
         // (no out-of-scope fetch happens).
         assertReadOnlyPath(victimEndpointUrl, TOOL_ID);
+        // Value-blind (origin+path, query stripped) victim target — used for the alias-replay guard and as
+        // the MAC-covered audit anchor of the victim scope.
+        const victimCanonicalTarget = canonicalizeExploitTarget(victimEndpointUrl);
         const victimCookies = cookieObjectsFromProfile(victimProfile, victimEndpointObj.origin);
         if (sensitiveShapesPresent(victimEndpointUrl) || findIbans(victimEndpointUrl).length > 0) {
           victimElevation = "victim_endpoint_contains_sensitive_value";
+        } else if (victimCanonicalTarget === canonicalTarget) {
+          // #H: a DIFFERENT surface id that RESOLVES to the same endpoint as the bulk listing is still a
+          // replay (the surface-id check above only catches an identical id). Compare resolved targets.
+          victimElevation = "victim_endpoint_equals_listing";
         } else if (victimCookies.length === 0) {
           victimElevation = "victim_credential_not_cookie_expressible";
         } else if (cookiesShareAnyValue(authCookies, victimCookies)) {
-          victimElevation = "victim_session_not_distinct";        // #A: a shared cookie value = same session
+          victimElevation = "victim_session_not_distinct";        // #A/#J: a shared session = same principal
         } else {
+          // Record the victim SCOPE into the hash-bound diagnostic so a HIGH row MAC-covers WHICH scope
+          // established the cross-principal break (bot-review #I) — value-blind + already PII-screened above.
+          victimDiag.victim_surface_id = victimSurfaceId;
+          victimDiag.victim_canonical_target = victimCanonicalTarget;
           const victimArmUrl = () => {
             const u = new URL(victimEndpointUrl);
             u.searchParams.set("_cb", crypto.randomBytes(8).toString("hex"));
