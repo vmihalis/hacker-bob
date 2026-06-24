@@ -73,6 +73,8 @@ const WRITE_ACTION_VERBS = new Set([
   "approve", "approval", "reject", "cancel", "void", "capture", "settle", "settlement", "publish",
   "unpublish", "archive", "unarchive", "lock", "unlock", "enable", "disable", "activate", "deactivate",
   "start", "stop", "restart", "resume", "suspend", "rollback", "restore",
+  // workflow state-transition verbs (a collection POST advances a record's workflow state)
+  "verify", "confirm", "accept", "decline", "complete", "release", "promote", "demote", "resend", "deliver", "merge",
   // destructive
   "delete", "remove", "destroy", "terminate", "purge", "wipe", "drop", "truncate", "kill", "flush", "clear",
   // auth / access

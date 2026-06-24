@@ -166,7 +166,7 @@ function keyHasIdAliasSegment(key, normIdField) {
 // its auth). `baseNoun` normalizes then strips a trailing "id"/"by" (twice), so the BARE form (tenant,
 // user, team), the _id form (tenant_id, user_id), and the _by[_id] form (created_by, created_by_id) all
 // collapse to one base — closing the alias/suffix tail rather than enumerating it (Codex P1).
-const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", "ownerscope", "namespace", "realm"]);
+const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", "ownerscope", "namespace", "realm", "company", "enterprise", "business"]);
 // Clear ownership SELECTORS only — content-ambiguous nouns (created/creator/author, which appear in benign
 // created_at / author-name fields) are deliberately excluded; the actor pattern *_by (created_by/updated_by)
 // is caught by the "by" token rule in fieldIsOwnerSelector instead.
@@ -230,6 +230,35 @@ function fieldIsPrivilegeSelector(name) {
   if (PRIVILEGE_BASE_TOKENS.has(normalizeFieldName(name))) return true;
   return fieldNameTokens(name).some((t) => PRIVILEGE_BASE_TOKENS.has(t) || PRIVILEGE_BASE_TOKENS.has(baseNoun(t)));
 }
+// Credential / secret-bearing field NAMES: screenCreateBody screens value SHAPES (URL / GraphQL) and the
+// write-byte scan catches narrowly-shaped tokens (AWS / JWT / PEM), but a `{password:"weak"}` /
+// `{api_key:"local-test"}` whose VALUE matches no token regex would be POSTed verbatim — contradicting the
+// "every written byte secret-screened" contract (brutalist / Codex P1). Refuse the field by NAME, fail-closed,
+// regardless of value shape. Matched as a whole normalized name OR a joined-token match (apiKey -> "apikey",
+// client_secret -> "clientsecret") so camel/snake/kebab spellings all trip.
+const CREDENTIAL_WHOLE_NAMES = new Set([
+  "password", "passwd", "pwd", "secret", "apikey", "apisecret", "token", "accesstoken", "refreshtoken",
+  "clientsecret", "privatekey", "secretkey", "authorization", "credential", "credentials", "passphrase",
+  "sessiontoken", "bearertoken",
+]);
+// STRONG markers safe to match as a BARE token inside a compound name (user_password, account_apikey) without
+// false-positiving on benign fields — UNLIKE the generic `secret` / `token` / `authorization`, which match
+// ONLY as a whole name, so secret_note / csrf_token / authorization_status stay clean and still mint.
+const CREDENTIAL_STRONG_TOKENS = new Set([
+  "password", "passwd", "pwd", "apikey", "apisecret", "clientsecret", "privatekey", "secretkey", "passphrase",
+  "accesstoken", "refreshtoken", "sessiontoken", "bearertoken",
+]);
+function fieldIsCredentialSelector(name) {
+  if (CREDENTIAL_WHOLE_NAMES.has(normalizeFieldName(name))) return true;
+  const tokens = fieldNameTokens(name);
+  if (tokens.some((t) => CREDENTIAL_STRONG_TOKENS.has(t))) return true;
+  // Join adjacent tokens so api_key/apiKey -> "apikey", client_secret -> "clientsecret", access_token ->
+  // "accesstoken" all match the joined credential names even when split into two tokens.
+  for (let i = 0; i < tokens.length - 1; i += 1) {
+    if (CREDENTIAL_WHOLE_NAMES.has(tokens[i] + tokens[i + 1])) return true;
+  }
+  return false;
+}
 // True when a create_body string VALUE is a fetch/connection URL (brutalist / Codex P1). SCHEME-AGNOSTIC,
 // not an enumerated allowlist — any authority-bearing URI can drive a server-side fetch/connection (SSRF):
 //  - protocol-relative `//host` / `\\host` (either slash direction);
@@ -255,7 +284,19 @@ function valueLooksLikeUrl(value) {
 // /graphql COLLECTION itself is independently refused by the action-verb guard (graphql ∈ WRITE_ACTION_VERBS).
 function valueLooksLikeGraphqlOperation(value) {
   const s = String(value);
-  return /\b(?:query|mutation|subscription)\b/i.test(s) && s.includes("{");
+  // Named/keyworded operation: query|mutation|subscription + a selection set.
+  if (/\b(?:query|mutation|subscription)\b/i.test(s) && s.includes("{")) return true;
+  // ANONYMOUS query shorthand (brutalist / Codex P1): `{ viewer { email } }` is a valid GraphQL query
+  // document with NO operation keyword, so it slips the keyword check and — on a GraphQL endpoint mounted
+  // at /api or /gql (not literally /graphql, so the action-verb collection guard misses it) — a
+  // `create_body:{query:"{ ... }"}` becomes an authenticated GraphQL READ on the first POST. A brace-wrapped
+  // value that is NOT valid JSON (GraphQL field selections have no quoted keys / colons, unlike a JSON
+  // object) is treated as a GraphQL document and refused. A benign JSON-object string still parses and passes.
+  const t = s.trim();
+  if (t.startsWith("{") && t.includes("}")) {
+    try { JSON.parse(t); } catch { return true; }
+  }
+  return false;
 }
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
@@ -314,6 +355,9 @@ function screenCreateBody(value, idField, depth = 0) {
     // A privilege/authorization-assignment key (role / is_admin / permissions / granted_scopes) would mint
     // an ELEVATED synthetic object via the operator-armed write — refuse before the recursive descent (Codex P1).
     if (fieldIsPrivilegeSelector(k)) return "create_body_privilege_field";
+    // A credential-NAMED key (password / api_key / token / client_secret) would write a secret to the target
+    // verbatim even when its VALUE matches no token-shape regex — refuse by name, fail-closed (Codex P1).
+    if (fieldIsCredentialSelector(k)) return "create_body_credential_field";
     const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
@@ -919,24 +963,33 @@ function mintCanary() {
 const UUID_INSTANCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function segmentLooksLikeResourceInstance(seg) {
   const s = String(seg);
-  if (/^\d+$/.test(s)) return true;        // 123
+  if (/^\d+$/.test(s)) return true;       // 123
   if (UUID_INSTANCE_RE.test(s)) return true; // 550e8400-e29b-41d4-a716-446655440000
-  if (/[-_.]\d{2,}$/.test(s)) return true; // proj-123, tenant_42, item.99  (separated trailing id)
-  if (/^\d{2,}[-_.]/.test(s)) return true; // 42-acme, 7_widgets            (separated leading id)
+  if (/[-_.]\d+$/.test(s)) return true;   // proj-123, tenant_42, org-1   (separated trailing id, incl. 1 digit)
+  if (/^\d+[-_.]/.test(s)) return true;   // 42-acme, 7_widgets           (separated leading id, incl. 1 digit)
   return false;
 }
 // True when a derived create-collection's PARENT path (the ancestors of the collection segment) contains a
 // concrete resource INSTANCE — i.e. the collection is nested inside a FIXED real container like
 // /api/orgs/acme-corp/projects/proj-123/accounts, where the armed POST would write a synthetic object into
 // a real tenant/project rather than a synthetic-owned collection (#5, brutalist). Inspects only the
-// ANCESTOR segments; the collection itself (last segment) is allowed to be any noun. RESIDUAL: a pure-alpha
-// tenant slug (`acme-corp`, no id portion) is indistinguishable from a static route word and is NOT caught
-// here — but A/B/C then share that container and the downstream same-tenant guard
-// (identities_collided_same_tenant / own_scope_missing) hard-blocks or downgrades the cross-tenant claim,
-// so cross-tenant SOUNDNESS stays backstopped even when this write-side defense-in-depth does not fire.
+// ANCESTOR segments; the collection itself (last segment) is allowed to be any noun.
+// Percent-encoding is decoded to a fixed point BEFORE splitting (mirroring assertCreateCollectionShapeSafe's
+// decoder): an encoded id-bearing parent (%34%32 -> 42, proj%2d123 -> proj-123) must be seen as the instance
+// a router decodes it to, and an encoded separator (%2f -> /) re-splits into the real segments — the raw
+// check was parser-inconsistent with the action-verb guard (brutalist / Codex P1). A residual percent-escape
+// in any ancestor fails CLOSED (could decode further at the router to an untested id-bearing segment).
+// RESIDUAL: a pure-alpha tenant slug (`acme-corp`, no id portion) is indistinguishable from a static route
+// word and is NOT caught here — but A/B/C then share that container and the downstream same-tenant guard
+// (identities_collided_same_tenant / own_scope_missing) hard-blocks or downgrades the cross-tenant claim, so
+// cross-tenant SOUNDNESS stays backstopped even when this write-side defense-in-depth does not fire. A fully
+// known-synthetic (operator-seeded) parent contract is the deferred robust closure (ties to canary-injection).
 function pathHasConcreteParentInstance(parentPath) {
-  const segs = String(parentPath).split("/").filter(Boolean);
-  return segs.slice(0, -1).some(segmentLooksLikeResourceInstance);
+  const decoded = decodePercentToFixedPoint(String(parentPath));
+  const segs = decoded.split(/[/\\]/).filter(Boolean);
+  const ancestors = segs.slice(0, -1);
+  if (ancestors.some((s) => /%/.test(s))) return true; // residual encoding → fail closed
+  return ancestors.some(segmentLooksLikeResourceInstance);
 }
 
 // CREATE one synthetic object as `identity` via POST to the derived collection endpoint, the canary
@@ -1054,6 +1107,15 @@ async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, c
   // (raw + all decoded layers) and fail CLOSED via a tagged error idorConfirm maps to a precise blocked reason.
   const assertCreateRespClean = (created) => {
     const resp = created && created.response;
+    // FAIL CLOSED on a TRUNCATED create response (Codex P1): a body capped by safe-fetch is only screened over
+    // the retained prefix, so foreign PII/secret PAST the cap goes unseen while the prefix still yields a usable
+    // id — the tool would proceed to B/C creates + probes after ingesting unscreened non-synthetic data. Mirror
+    // the owner-readback / proof-body truncation gates and refuse before using the captured id.
+    if (resp && resp.bodyTruncated === true) {
+      const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create response truncated; cannot fully screen");
+      e.create_response_truncated = true;
+      throw e;
+    }
     const raw = resp && Buffer.isBuffer(resp.bodyBytes) ? resp.bodyBytes.toString("utf8") : "";
     if (!raw) return; // a 201-no-body / empty create response carries nothing to leak
     for (const probe of [raw, decodeAllEncodingLayers(raw)]) {
@@ -1287,6 +1349,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
+    // canary_field must not be a CREDENTIAL-named field either (password/api_key/token/…): writing the minted
+    // canary into a credential slot is nonsensical and an API honoring it could set a guessable secret (Codex P1).
+    if (fieldIsCredentialSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_credential_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
     // Recursively screen create_body content (nested reserved/proto keys, method/action-dispatch keys,
     // a top-level client-supplied id) BEFORE any write — the body is spread unchanged into the POST so a
     // hostile skeleton must not subvert the target or the server-minted-id invariant (Codex P2).
@@ -1394,6 +1464,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
       // reason — the tool received non-synthetic data, so sign nothing (parity with the readback #24 gate).
       if (e && e.create_response_contaminated) {
         return blocked("blocked_by_design", "create_response_contains_foreign_data", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      // A truncated create response cannot be fully foreign-screened — fail closed (Codex P1).
+      if (e && e.create_response_truncated) {
+        return blocked("blocked_by_design", "create_response_truncated", {
           target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
           ...identity, ...internalHostPolicy,
         });
