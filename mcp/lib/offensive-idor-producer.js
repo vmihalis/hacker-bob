@@ -741,7 +741,14 @@ async function createObject({ createUrl, headers, canaryField, canary, idField, 
   }
   if (error) throw error;
   const parsed = parseJsonBody(response);
-  const id = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed[idField] : undefined;
+  // Only a SUCCESSFUL create supplies a server id (a 4xx/5xx error envelope that happens to carry an
+  // `id`/request-id must NOT be treated as a created object, Codex P2). The id must be the response's
+  // OWN scalar field (hasOwnProperty + string/number) — a missing/inherited key like `toString` /
+  // `constructor` resolves to a prototype function, which must read as "no id captured", not a value.
+  const is2xx = response && typeof response.status === "number" && response.status >= 200 && response.status < 300;
+  const own = is2xx && parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && Object.prototype.hasOwnProperty.call(parsed, idField) ? parsed[idField] : undefined;
+  const id = (typeof own === "string" || typeof own === "number") ? own : undefined;
   return { id, response, parsed };
 }
 
@@ -751,21 +758,35 @@ async function createObject({ createUrl, headers, canaryField, canary, idField, 
 // object back AS B (for the oracle's canary-leaf discovery + #24 create-time PII screen). Returns
 // the `provision` shape idorConfirm's oracle consumes; throws on transport / audit failure.
 // Exported + injectable `fetchFn` so unit tests drive it without a live target.
-async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, createBody, pathTemplate, origin, probeBase }) {
+async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, createBody, pathTemplate, origin, allowedEmails, probeBase }) {
   const canary_a = mintCanary();
   const canary_b = mintCanary();
   const canary_c = mintCanary();
   const base = { object_a: null, object_b: null, object_c: null, canary_a, canary_b, canary_c, owner_readback_b: null };
-  // FAIL FAST: a bad create contract / wrong id_field on the FIRST object must not trigger the later
-  // B/C writes (Codex P2). Validate the captured id after each create before issuing the next POST.
+  // A captured id is interpolated into the readback / probe URLs, so it must be a SAFE single resource
+  // segment carrying no operator PII/secret BEFORE it is dispatched. idorConfirm re-checks the ids after
+  // this returns, but the owner-readback GET below fires inside here — so validate the id at capture
+  // (Codex P1: a bad contract returning `foo/transfer` must not produce a credentialed GET to a
+  // sub-resource before the run blocks). Decoded, mirroring the id screen in idorConfirm.
+  const idCaptureSafe = (id) => {
+    if (id == null) return false;
+    const s = String(id);
+    if (!capturedIdSegmentIsSafe(s)) return false;
+    for (const probe of [s, decodeAllEncodingLayers(s)]) {
+      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) return false;
+    }
+    return true;
+  };
+  // FAIL FAST: a bad create contract / wrong id_field / unsafe id on the FIRST object must not trigger
+  // the later B/C writes or the readback (Codex P1/P2). Validate the captured id after each create.
   const a = await createObject({ createUrl, headers: idA.headers, canaryField, canary: canary_a, idField, createBody, probeBase });
-  if (a.id == null) return base;
+  if (!idCaptureSafe(a.id)) return base;
   base.object_a = String(a.id);
   const b = await createObject({ createUrl, headers: idB.headers, canaryField, canary: canary_b, idField, createBody, probeBase });
-  if (b.id == null) return base;
+  if (!idCaptureSafe(b.id)) return base;
   base.object_b = String(b.id);
   const c = await createObject({ createUrl, headers: idC.headers, canaryField, canary: canary_c, idField, createBody, probeBase });
-  if (c.id == null) return base;
+  if (!idCaptureSafe(c.id)) return base;
   base.object_c = String(c.id);
   // All three created → read B's object back AS B (canary-leaf discovery + #24 create-time PII screen).
   const readbackUrl = buildTargetUrl(pathTemplate, String(b.id), origin).toString();
@@ -908,7 +929,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     try {
       provision = await liveProvision({
         idA, idB, idC, createUrl, canaryField, idField, createBody,
-        pathTemplate, origin: baselineUrl.origin, probeBase: provisionProbeBase,
+        pathTemplate, origin: baselineUrl.origin, allowedEmails, probeBase: provisionProbeBase,
       });
     } catch (e) {
       if (e && e.probe_audit_failed) {

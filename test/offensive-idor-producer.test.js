@@ -2146,7 +2146,9 @@ function liveArmFetchFn({ field = "note" } = {}) {
       created.push({ id, canary, owner: who });
       return jsonResponse(201, { id, owner: who, [field]: canary }); // server-minted id captured by id_field
     }
-    const obj = created.find((o) => u.pathname.endsWith(`/${o.id}`));
+    // Match the EXACT bound account route (not endsWith) — a target-binding regression that read a
+    // different path ending in the id must NOT pass (CR).
+    const obj = created.find((o) => u.pathname === `/api/accounts/${o.id}`);
     if (!obj) return challenge(404);
     if (!who) return challenge(401);                                   // anon → deny (P4/P8)
     const allowed = obj.owner === who || (obj.owner === "B" && who === "A"); // broken: A reads O_B (the IDOR)
@@ -2213,6 +2215,31 @@ test("PR-D: armed create inputs carrying PII / SECRET / ENCODED values are refus
       assert.equal(result.reason, "create_inputs_contain_sensitive_value", c.label);
       assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs before the screen blocks`);
     }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D: PII in a fixed path segment flows into the derived createUrl and is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-createurl-pii.example.test";
+  // Record a surface whose endpoint carries an SSN in a FIXED path segment, so the AC-2-bound
+  // path_template derives a createUrl that embeds it. The pre-write screen must catch the URL bytes too.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/u/123-45-6789/notes/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/u/123-45-6789/notes/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_operator_pii");
+    assert.equal(result.reason, "create_inputs_contain_sensitive_value");
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs when the derived createUrl carries PII");
   } finally {
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }
