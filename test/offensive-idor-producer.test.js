@@ -2896,6 +2896,7 @@ test("PR-D r11 (Codex P1): URL values with bracketed / userinfo authorities are 
     for (const v of ["http:[::1]/meta", "http:@169.254.169.254/latest", "https://[::ffff:169.254.169.254]/x"]) {
       const mock = liveArmFetchFn();
       const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${v}: ${JSON.stringify(result)}`);
       assert.equal(result.reason, "create_body_url_value", v);
       assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
     }
@@ -2939,6 +2940,7 @@ test("PR-D r12 (Codex P1): an ENCODED URL value in create_body is refused", () =
     for (const v of ["http%3a%2f%2f169.254.169.254/latest", "http%3A%2F%2Fattacker.example/h"]) {
       const mock = liveArmFetchFn();
       const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${v}: ${JSON.stringify(result)}`);
       assert.equal(result.reason, "create_body_url_value", v);
       assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
     }
@@ -2956,6 +2958,7 @@ test("PR-D r12 (Codex P1): a BARE scope canary_field (tenant/org/workspace) is r
     for (const cf of ["tenant", "org", "workspace", "tenantIds"]) {
       const mock = liveArmFetchFn();
       const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
       assert.equal(result.reason, "canary_field_overlaps_scope_key", cf);
       assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
     }
@@ -2989,6 +2992,55 @@ test("PR-D r12 (Codex P1): plural / override / dotted create_body keys are refus
       assert.equal(result.reason, c.reason, c.label);
       assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
     }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 13: dotted canary_field, uuid/guid/uid scope+owner+id suffixes ──
+
+test("PR-D r13 (Codex P1): a dotted/bracketed reserved canary_field is refused", () => withTempHome(async () => {
+  const domain = "idor-dotted-canary.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["constructor.prototype.polluted", "__proto__[polluted]"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "reserved_field_name", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r13 (Codex P1): uuid/guid/uid-suffixed scope+owner fields and bare uid are refused", () => withTempHome(async () => {
+  const domain = "idor-uuid-suffix.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "tenant_uuid", create_body: { tenant_uuid: "victim" }, reason: "create_body_scope_field" },
+      { label: "workspaceGuid", create_body: { workspaceGuid: "victim" }, reason: "create_body_scope_field" },
+      { label: "owner_uid", create_body: { owner_uid: "victim" }, reason: "create_body_owner_field" },
+      { label: "bare uid (id alias)", create_body: { uid: "known-object" }, reason: "create_body_client_supplied_id" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // canary_field "uid" aliases the id slot.
+    const mock = liveArmFetchFn();
+    const r = await idorConfirm({ ...baseArgs(domain), canary_field: "uid" }, { fetch_fn: mock });
+    assert.equal(r.reason, "canary_field_aliases_id_field");
+    assert.equal(mock.postCount(), 0);
   } finally {
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }

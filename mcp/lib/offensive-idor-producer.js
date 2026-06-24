@@ -140,7 +140,14 @@ function normalizeFieldName(name) {
 // Request-side client-id aliases (normalized): a create/upsert API honoring any of these would let an
 // agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
 // separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
-const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid"]);
+const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid", "uid"]);
+// Reserved prototype key check that also splits a deep-setter path (dotted / bracketed) — so a JSON
+// endpoint expanding `constructor.prototype.x` / `__proto__[x]` into a prototype write is caught for BOTH
+// create_body keys AND the canary_field / id_field NAMEs (Codex P1). Raw, case-sensitive segments — the
+// JS-meaningful spellings (normalizeFieldName would strip the underscores).
+function keyHasReservedSegment(key) {
+  return String(key).split(/[.[\]]/).some((seg) => RESERVED_PROTO_KEYS.has(seg));
+}
 // Ownership / scope SELECTOR fields, matched by BASE NOUN rather than an enumerated alias list: a create
 // API honoring one would steer the synthetic object into a caller-chosen real tenant/principal, breaking
 // the synthetic-owned boundary (the object must belong to the creating synthetic identity, inferred from
@@ -151,11 +158,13 @@ const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", 
 const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "creator", "created", "createdby", "assignee"]);
 function baseNoun(normName) {
   let s = String(normName);
-  // Strip trailing plural id/by ("ids"/"bys"), singular id/by, and a plural "s", iteratively — so
-  // tenant_ids -> tenantids -> tenant, user_ids -> user, created_by_id -> created, teams -> team all
-  // collapse to the base noun (Codex P1). Bounded; length guards avoid emptying a short token.
-  for (let i = 0; i < 4; i += 1) {
-    if (s.length > 3 && (s.endsWith("ids") || s.endsWith("bys"))) s = s.slice(0, -3);
+  // Strip trailing key-suffixes iteratively so tenant_uuid / workspaceGuid / owner_uid / tenant_ids /
+  // user_ids / created_by_id / teams all collapse to the base noun (tenant, workspace, owner, user,
+  // created, team) — closing the suffix tail rather than enumerating it (Codex P1). Longest suffix first;
+  // length guards keep a BARE "uid"/"uuid"/"guid"/"id" intact (those are caught as id aliases instead).
+  for (let i = 0; i < 5; i += 1) {
+    if (s.length > 4 && (s.endsWith("uuid") || s.endsWith("guid"))) s = s.slice(0, -4);
+    else if (s.length > 3 && (s.endsWith("ids") || s.endsWith("bys") || s.endsWith("uid"))) s = s.slice(0, -3);
     else if (s.length > 2 && (s.endsWith("id") || s.endsWith("by"))) s = s.slice(0, -2);
     else if (s.length > 3 && s.endsWith("s")) s = s.slice(0, -1);
     else break;
@@ -229,11 +238,7 @@ function screenCreateBody(value, idField, depth = 0) {
   const normIdField = normalizeFieldName(idField);
   for (const key of Object.keys(value)) {
     const k = String(key);
-    // Reserved prototype keys: check the raw key AND each dotted/bracketed segment, because a JSON
-    // endpoint with a Mongo/lodash-style deep setter expands `constructor.prototype.x` / `__proto__[x]`
-    // into a prototype write (Codex P2). Raw (case-sensitive) match — `__proto__`/`constructor`/`prototype`
-    // are the JS-meaningful spellings (normalizeFieldName would strip the underscores).
-    for (const seg of k.split(/[.[\]]/)) { if (RESERVED_PROTO_KEYS.has(seg)) return "reserved_field_name"; }
+    if (keyHasReservedSegment(k)) return "reserved_field_name"; // incl. dotted/bracketed deep-setter paths
     const norm = normalizeFieldName(k);
     if (CREATE_BODY_OVERRIDE_KEYS.has(norm)) return "create_body_action_override";
     const base = baseNoun(norm);
@@ -1092,8 +1097,10 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
       ? args.create_body : {};
     // canary_field / id_field NAMES must not be reserved prototype keys (they become JSON body keys).
-    const isReservedKey = (k) => RESERVED_PROTO_KEYS.has(String(k));
-    if (isReservedKey(canaryField) || isReservedKey(idField)) {
+    // canary_field / id_field NAMES become JSON keys in the create body, so reject a reserved prototype
+    // name INCLUDING a dotted/bracketed deep-setter path (constructor.prototype.x, __proto__[x]) — same
+    // segment check the create_body keys use (Codex P1).
+    if (keyHasReservedSegment(canaryField) || keyHasReservedSegment(idField)) {
       return blocked("blocked_by_design", "reserved_field_name", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
