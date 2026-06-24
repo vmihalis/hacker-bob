@@ -2612,3 +2612,66 @@ test("PR-D r6 (Codex P1): canary_field / create_body alias bypasses are refused 
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }
 }));
+
+// ── PR-D review round 8: canary_field id-alias, create_body URL values, audit preflight (Codex P1) ──
+
+test("PR-D r8 (Codex P1): canary_field that ALIASES the id field (uuid/object_id/case) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-canary-idalias.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["uuid", "object_id", "resourceId", "ID", "guid"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "canary_field_aliases_id_field", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs (canary never lands in the id slot)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r8 (Codex P1): a URL-valued create_body field is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-url-body.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "avatar_url http", create_body: { avatar_url: "http://169.254.169.254/latest/meta-data/" } },
+      { label: "callback_url https", create_body: { callback_url: "https://attacker.example/hook" } },
+      { label: "protocol-relative", create_body: { ref: "//internal.svc/x" } },
+      { label: "nested webhook url", create_body: { config: { webhook: "http://internal:8080/" } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "create_body_url_value", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs (no SSRF/callback URL sent)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r8 (Codex P1): createObject pre-flights the audit — an unauditable create POST never fires", () => withTempHome(async () => {
+  const domain = "idor-preflight-audit.example.test";
+  setupSession(domain);
+  let posted = false;
+  const fetchFn = async () => { posted = true; return jsonResponse(201, { id: OBJ_A, note: "x" }); };
+  // probeBase.domain falsy forces auditConfirmRequest -> false (the audit can't be recorded), standing in
+  // for an unwritable http-audit.jsonl. The preflight must abort BEFORE the POST, so fetchFn is never called.
+  await assert.rejects(
+    createObject({
+      createUrl: `https://${domain}/api/accounts`, headers: {}, canaryField: "note",
+      canary: "a".repeat(64), idField: "id", createBody: {},
+      probeBase: { fetchFn, method: "GET", domain: "", surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() },
+    }),
+    /audit preflight write failed/,
+  );
+  assert.equal(posted, false, "the mutating POST must NOT fire when the audit cannot be recorded");
+}));

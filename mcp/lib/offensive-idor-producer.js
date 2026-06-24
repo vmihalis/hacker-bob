@@ -136,6 +136,11 @@ function normalizeFieldName(name) {
 // agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
 // separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
 const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid"]);
+// A URL-shaped create_body VALUE (scheme:// or protocol-relative //): a target that treats a body field
+// as a fetch/import/webhook URL (avatar_url, callback_url, …) would turn the canary create into an
+// off-target callback / internal-network SSRF, so URL-valued fields are refused before any write (Codex
+// P1). A synthetic canary-holder skeleton never needs a URL value. Anchored so "note: hi" is not a URL.
+const URL_VALUE_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
 // the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
@@ -145,7 +150,9 @@ const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "enti
 //    normalized, at ANY depth: the object id must NEVER be agent-supplied (Codex P1);
 //  - an owning-scope key (owner_scope/tenant_id/org_id/workspace_id and their aliases), normalized, at
 //    ANY depth: a {tenant_id:"victim-org"} body would make the live write drift into a caller-chosen
-//    tenant/workspace before the oracle blocks (Codex P1).
+//    tenant/workspace before the oracle blocks (Codex P1);
+//  - a URL-shaped string VALUE at ANY depth (avatar_url/callback_url/…): a target that fetches body URLs
+//    would turn the canary create into an SSRF / off-target callback (Codex P1).
 // Returns a blocked() reason string, or null when the body is clean. depth-bounded to fail closed.
 function screenCreateBody(value, idField, depth = 0) {
   if (depth > 8) return "create_body_too_deep";
@@ -162,7 +169,11 @@ function screenCreateBody(value, idField, depth = 0) {
     const norm = normalizeFieldName(k);
     if (NORMALIZED_SCOPE_KEYS.has(norm)) return "create_body_scope_field";
     if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
-    const r = screenCreateBody(value[key], idField, depth + 1);
+    const child = value[key];
+    // A URL-shaped string value would be sent unchanged; on a target that fetches body URLs it becomes an
+    // SSRF / off-target callback through the canary create. Refuse at any depth (Codex P1).
+    if (typeof child === "string" && URL_VALUE_RE.test(child)) return "create_body_url_value";
+    const r = screenCreateBody(child, idField, depth + 1);
     if (r) return r;
   }
   return null;
@@ -761,6 +772,20 @@ async function createObject({ createUrl, headers, canaryField, canary, idField, 
   });
   const startedAt = Date.now();
   const reqHeaders = { ...(headers || {}), "Content-Type": "application/json" };
+  // PRE-FLIGHT the audit BEFORE the mutating POST (Codex P1): a create is a target WRITE, so it must
+  // never fire if it cannot be recorded in http-audit.jsonl (the circuit-breaker / request-budget trail).
+  // Reserve a request-initiated record (status null); if the audit log is unwritable, ABORT before any
+  // POST so no unaudited mutation escapes the control plane. The completion record (with the real status)
+  // is appended after the POST below; the reserved record stands as the trail entry even if that fails.
+  const reserveOk = auditConfirmRequest({
+    domain: probeBase.domain, surfaceId: probeBase.surfaceId, method: "POST", url: createUrl,
+    egressProfile: probeBase.egressProfile, status: null, scopeDecision: "allowed", startedAt, toolId: TOOL_ID,
+  });
+  if (reserveOk === false) {
+    const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create http-audit preflight write failed");
+    e.probe_audit_failed = true;
+    throw e;
+  }
   let response;
   let error;
   try {
@@ -997,13 +1022,14 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
         ...identity, ...internalHostPolicy,
       });
     }
-    // canary_field must not alias id_field: createObject writes the minted canary into canary_field AFTER
-    // this screen, so canary_field === id_field would place the (server-minted) canary into the OBJECT-ID
-    // slot of the create body — on a create/upsert API that honors client ids that POSTs an object with a
-    // client-supplied id, violating the server-minted-id invariant before the post-write
-    // canary_reflected_in_object_id guard can fire (Codex P2). idField defaults to "id", so this also
-    // rejects canary_field:"id". Refuse before any write.
-    if (canaryField === idField) {
+    // canary_field must not alias id_field OR any client-id alias (id/object_id/resourceId/uuid/…, in any
+    // camel/snake/kebab/case form): createObject writes the minted canary into canary_field AFTER this
+    // screen, so an id-aliasing canary_field places the (server-minted) canary into the OBJECT-ID slot of
+    // the create body — on a create/upsert API that honors/normalizes client ids that POSTs an object with
+    // a client-supplied id, violating the server-minted-id invariant before the post-write
+    // canary_reflected_in_object_id guard can fire (Codex P1). Refuse the (normalized) alias before any write.
+    const normCanaryField = normalizeFieldName(canaryField);
+    if (ID_ALIAS_KEYS.has(normCanaryField) || (normCanaryField && normCanaryField === normalizeFieldName(idField))) {
       return blocked("blocked_by_design", "canary_field_aliases_id_field", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
         ...identity, ...internalHostPolicy,
