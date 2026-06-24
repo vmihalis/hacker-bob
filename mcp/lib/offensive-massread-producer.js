@@ -637,33 +637,177 @@ function subjectIdentifierSet(bodyText) {
   if (typeof bodyText !== "string" || bodyText.length === 0) return out;
   let parsed;
   try { parsed = JSON.parse(bodyText); } catch { return out; }
-  const records = extractRecords(parsed);
-  const scan = records.length > 0 ? records : (isPlainObject(parsed) ? [parsed] : []);
-  const scanLimit = Math.min(scan.length, MASSREAD_PII_SCAN_RECORDS);
-  for (let i = 0; i < scanLimit; i += 1) {
-    let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD;
-    const visit = (node, depth) => {
-      if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
-      if (Array.isArray(node)) {
-        for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
-        return;
+  // Scan the ENTIRE body (top-level fields + nested objects + every collection element), NOT an
+  // extractRecords-selected subset: a /me's OWN top-level identifier must be seen even when the body ALSO
+  // embeds a recognized child collection (`{email, items:[...]}` — extractRecords would pick `items` and miss
+  // the top-level email, bot-review #N), and a wrapper / object-map's nested subjects must all be counted
+  // (#M / CodeRabbit). Used in the victim arm for the own-identity + anon-leak MEMBERSHIP tests only (does this
+  // body contain victimKey); the single-subject COUNT and the attacker OVERLAP each use their own walk below.
+  let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD * MASSREAD_PII_SCAN_RECORDS; // whole-body, bounded
+  const visit = (node, depth) => {
+    if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH || nodeBudget <= 0) return;
+    if (Array.isArray(node)) {
+      for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      if (nodeBudget <= 0) return;
+      nodeBudget -= 1;
+      const value = node[key];
+      if (bucketForFieldName(key)) {
+        const valueText = piiValueText(value);
+        for (const m of (valueText ? piiMatchesInValue(valueText) : [])) {
+          if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
+        }
       }
-      for (const key of Object.keys(node)) {
-        if (nodeBudget <= 0) return;
-        nodeBudget -= 1;
-        const value = node[key];
-        if (bucketForFieldName(key)) {
-          const valueText = piiValueText(value);
-          for (const m of (valueText ? piiMatchesInValue(valueText) : [])) {
-            if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
+      if (value && typeof value === "object") visit(value, depth + 1);
+    }
+  };
+  visit(parsed, 0);
+  return out;
+}
+
+// The field PROPERTY-KEY names under which victimKey appears in the victim's OWN /me — the victim's subject
+// field(s). The /me is the victim reading ITSELF, so whatever key holds victimKey there IS the subject-identity
+// key for this principal (`email`, or a nested `…email`). Used to bind the attacker overlap to the SAME kind of
+// field, so a bulk row's RELATIONAL metadata under a DIFFERENT property key (`viewer_email`, `manager_email`,
+// `requested_by_email`) cannot pose as the victim's record (Codex P1 711). Returns the bare leaf KEY names.
+function victimSubjectLeafNames(victimBodyText, victimKey) {
+  const out = new Set();
+  if (typeof victimBodyText !== "string" || victimBodyText.length === 0) return out;
+  let parsed;
+  try { parsed = JSON.parse(victimBodyText); } catch { return out; }
+  let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD * MASSREAD_PII_SCAN_RECORDS;
+  const visit = (node, depth) => {
+    if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH || nodeBudget <= 0) return;
+    if (Array.isArray(node)) { for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); } return; }
+    for (const key of Object.keys(node)) {
+      if (nodeBudget <= 0) return;
+      nodeBudget -= 1;
+      const value = node[key];
+      if (bucketForFieldName(key)) {
+        for (const m of piiMatchesInValue(piiValueText(value))) {
+          if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape) && `${m.shape}:${m.norm}` === victimKey) out.add(key);
+        }
+      }
+      if (value && typeof value === "object") visit(value, depth + 1);
+    }
+  };
+  visit(parsed, 0);
+  return out;
+}
+
+// Did the attacker read the victim AS A RECORD'S OWN SUBJECT (the v2 OVERLAP)? Record-bound is not enough — it
+// must be SUBJECT-bound (Codex P1 / CodeRabbit): a bulk row's sensitively-named fields include the row's own
+// identity (`email`) AND relational METADATA naming OTHER principals (`viewer_email` = who is viewing,
+// `requested_by_email` = who requested). Two independent guards bind to the row's OWN subject WITHOUT a
+// field-name denylist:
+//   (1) CROSS-RECORD VARIANCE, per FULL PATH — a path whose values VARY (>= 2 distinct) across records is a
+//       SUBJECT field (it identifies each row's principal); a CONSTANT path is shared metadata stamped on every
+//       row. Keying by full path (not bare leaf) keeps a nested metadata path `viewer.email` separate from the
+//       row subject `email` (Codex P1 702).
+//   (2) FIELD-CONSISTENCY with the victim's OWN /me — the matching path's leaf KEY must be one under which the
+//       victim's own /me carried victimKey (victimSubjectLeafNames). So a metadata field under a DIFFERENT key
+//       (`manager_email`, `referred_by_email`) that merely VARIES per row cannot pose as the subject (Codex P1
+//       711), while the victim's genuine subject field (`email`, possibly nested differently in the listing
+//       than in /me) still matches on its leaf key.
+// The victim overlaps iff victimKey is a value of a VARYING path whose leaf key ∈ the victim's /me subject keys.
+// The base gate already requires >= MIN DISTINCT subjects (the subject field necessarily varies), so a genuine
+// victim-subject is caught; empty/non-collection body or unknown victim subject field → fail closed (no overlap).
+function attackerReadVictimSubject(victimBodyText, attackerBodyText, victimKey) {
+  const subjectLeaves = victimSubjectLeafNames(victimBodyText, victimKey);
+  if (subjectLeaves.size === 0) return false; // victim's own subject field unknown → cannot bind → fail closed
+  if (typeof attackerBodyText !== "string" || attackerBodyText.length === 0) return false;
+  let parsed;
+  try { parsed = JSON.parse(attackerBodyText); } catch { return false; }
+  const records = extractRecords(parsed);
+  let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD * MASSREAD_PII_SCAN_RECORDS;
+  const scanLimit = Math.min(records.length, MASSREAD_PII_SCAN_RECORDS);
+  const byPath = new Map(); // full path → { leaf, values: Set of `${shape}:${norm}` across records }
+  const visit = (node, depth, path) => {
+    if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH || nodeBudget <= 0) return;
+    if (Array.isArray(node)) { for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1, path); } return; }
+    for (const key of Object.keys(node)) {
+      if (nodeBudget <= 0) return;
+      nodeBudget -= 1;
+      const value = node[key];
+      const childPath = path ? `${path}.${key}` : key;
+      if (bucketForFieldName(key)) {
+        for (const m of piiMatchesInValue(piiValueText(value))) {
+          if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) {
+            if (!byPath.has(childPath)) byPath.set(childPath, { leaf: key, values: new Set() });
+            byPath.get(childPath).values.add(`${m.shape}:${m.norm}`);
           }
         }
-        if (value && typeof value === "object") visit(value, depth + 1);
       }
-    };
-    visit(scan[i], 0);
+      if (value && typeof value === "object") visit(value, depth + 1, childPath);
+    }
+  };
+  for (let i = 0; i < scanLimit; i += 1) visit(records[i], 0, "");
+  for (const { leaf, values } of byPath.values()) {
+    if (values.size >= 2 && subjectLeaves.has(leaf) && values.has(victimKey)) return true;
   }
-  return out;
+  return false;
+}
+
+// Distinct-SUBJECT count for the v2 single-subject gate — the number of distinct PEOPLE a body exposes. Per
+// OBJECT NODE, count the distinct normalized VALUES of each subject-identifier SHAPE (email / ssn) among that
+// node's sensitively-named fields, and credit the node the MAX over shapes; SUM that across all nodes. Two
+// principles combine:
+//   • MAX-over-shape WITHIN a node — one person carries at most one of each shape, so `{email, ssn}` → max(1
+//     email, 1 ssn) = 1 (the live-validation /me, HIGH), but two DISTINCT same-shape values in sibling fields
+//     `{email:victim, teammate_email:other}` → 2 emails → 2 (Codex P1 752: a node can hold MULTIPLE people).
+//   • SUM ACROSS nodes — each object node is its own subject scope: `[{email:a},{email:b}]` / `{members:[…]}`
+//     (#M) / `{u1:{…},u2:{…}}` (object-map) → separate nodes → 2+; `{email, items:[{sku}…]}` (#N) → items carry
+//     no identifier → 1; `{email:a}` and `{ssn:b}` in separate nodes → 2 (Codex P1 round-2).
+// Object/array VALUES of a sensitive key ARE serialized-extracted (NOT skipped) so `{email:victim,
+// secondary_email:[other]}` counts both (Codex P1 743); under max-per-shape this is SAFE — a multi-subject
+// container reads as >= 2 (→ MEDIUM), never collapsing to a false-HIGH 1. Residual (documented, SAFE-leaning →
+// at worst a missed HIGH that stays MEDIUM, never a false HIGH): one subject SPLIT across separate nested
+// objects (`{email, profile:{ssn}}`) or carrying multiple distinct same-shape values (primary+recovery email)
+// reads as 2 → falls back to the v1 MEDIUM. Two err-toward-HIGH residuals remain, both requiring the victim's
+// OWN /me to embed ANOTHER REAL principal's identifier in a sibling field — impossible for the SYNTHETIC,
+// freshly-minted victim (a brand-new account has no spouse / dependent / teammate data), and otherwise bounded
+// by the operator pointing victim_surface_id at a real /me + 3-round verification + grader: (a) two DIFFERENT
+// people's SAME shape is caught (max counts 2 emails), but two people's DIFFERENT shapes fused into one FLAT
+// object (`{email:victim, spouse_ssn:other}` / `{email:alice, ssn:bobs}`) → max(1,1)=1 (Codex P1 760 — a bare
+// `ssn` sibling is indistinguishable from the victim's OWN ssn without field-name semantics, which would be an
+// incomplete denylist; the robust future upgrade is canary-injection like the IDOR producer). If the bounded
+// node BUDGET is exhausted mid-walk, FAIL CLOSED (return >= 2) so an only-partially-scanned large scope is never
+// accepted as single-subject (CodeRabbit).
+function distinctSubjectCount(bodyText) {
+  if (typeof bodyText !== "string" || bodyText.length === 0) return 0;
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return 0; }
+  let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD * MASSREAD_PII_SCAN_RECORDS; // whole-body, bounded
+  let budgetExhausted = false;
+  let total = 0;
+  const visit = (node, depth) => {
+    if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
+    if (nodeBudget <= 0) { budgetExhausted = true; return; }
+    if (Array.isArray(node)) { for (const item of node) { if (nodeBudget <= 0) { budgetExhausted = true; return; } visit(item, depth + 1); } return; }
+    const perShape = new Map(); // shape → Set of this node's distinct normalized values for that shape
+    for (const key of Object.keys(node)) {
+      if (nodeBudget <= 0) { budgetExhausted = true; return; }
+      nodeBudget -= 1;
+      const value = node[key];
+      if (bucketForFieldName(key)) {
+        for (const m of piiMatchesInValue(piiValueText(value))) {
+          if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) {
+            if (!perShape.has(m.shape)) perShape.set(m.shape, new Set());
+            perShape.get(m.shape).add(m.norm);
+          }
+        }
+      }
+      if (value && typeof value === "object") visit(value, depth + 1); // children are their own nodes
+    }
+    let nodeMax = 0;
+    for (const vals of perShape.values()) if (vals.size > nodeMax) nodeMax = vals.size;
+    total += nodeMax;
+  };
+  visit(parsed, 0);
+  if (budgetExhausted) return Math.max(total, 2); // fail closed: a partial walk must never read as single-subject
+  return total;
 }
 
 // The control-denial PREDICATE, factored out so the v1 LISTING control AND the v2 anon-VICTIM control
@@ -1198,10 +1342,12 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
             // The victim arm must read its OWN known identity from this scope.
             const victimReadsOwnIdentity = victimSubjects.has(victimKey);
             // …AND the scope must be SINGLE-SUBJECT (the victim's own /me), not a multi-subject team/org/
-            // listing endpoint that merely INCLUDES the victim among others (bot-review #L). On a shared
+            // listing/map that merely INCLUDES the victim among others (bot-review #L/#M/#N). On a shared
             // multi-subject scope the victim does not OWN the other subjects' data, so "victim_read_own_
-            // private_scope" would be untruthful; require exactly one distinct subject so the leg is honest.
-            const victimScopeSingleSubject = victimSubjects.size === 1;
+            // private_scope" would be untruthful. distinctSubjectCount === 1: exactly one subject (one person's
+            // email, plus optionally their own ssn) — a multi-person array / object-map / wrapper carries 2+
+            // distinct emails and is rejected; a /me with email+ssn or a self-owned child collection stays 1.
+            const victimScopeSingleSubject = distinctSubjectCount(victim.body) === 1;
             const anonVictimSummary = deriveMaskedSummary(anonVictim.body);
             const anonVictimDenied = controlIsCleanDenial(
               anonVictimSummary, anonVictim, controlReadsAnyPii(anonVictimSummary, anonVictim.body),
@@ -1209,8 +1355,12 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
             // anon must not see the victim's identity in EITHER structured fields or RAW denial text (#F).
             const anonSeesVictimIdentity = subjectIdentifierSet(anonVictim.body).has(victimKey)
               || subjectIdentifiersInRawText(anonVictim.body).has(victimKey);
-            // The anchored overlap: the attacker's bulk read contains the victim's KNOWN identity.
-            const attackerReadsVictim = subjectIdentifierSet(attacker.body).has(victimKey);
+            // The anchored overlap: the attacker's bulk read contains the victim as a RECORD'S OWN SUBJECT —
+            // SUBJECT-bound (not merely record-bound), so a victim identity echoed in row/top-level METADATA
+            // (`requested_by_email` / `viewer_email` / `manager_email`) does NOT count. Bound by cross-record
+            // VARIANCE (varying path = subject, constant = metadata) AND FIELD-CONSISTENCY with the victim's own
+            // /me subject key (so a varying metadata field under a different key cannot pose as the subject).
+            const attackerReadsVictim = attackerReadVictimSubject(victim.body, attacker.body, victimKey);
             const proven = victimReadsOwnIdentity && victimScopeSingleSubject
               && anonVictimDenied && !anonSeesVictimIdentity && attackerReadsVictim;
             victimDiag.victim_status = victim.status;
