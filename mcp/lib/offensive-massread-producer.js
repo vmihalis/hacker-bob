@@ -21,14 +21,24 @@
 // not a merely-public endpoint. A control that ALSO reads the bulk data is a public endpoint, not
 // a privilege break → fail closed (blocked_by_design).
 //
-// SEVERITY: MEDIUM by construction (v1), stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING inside
-// buildAndSignOffensiveRow (NEVER from here, NEVER agent-supplied). The differential proves a
-// credentialed caller bulk-reads PII an UNAUTHENTICATED client is denied — a real exposure — but NOT
-// that the credential is under-privileged (a fully-authorized user reading authorized data also
-// satisfies it) nor that the surface is a cross-subject collection, so the honest ceiling is MEDIUM.
-// The HIGH (cross-tenant BFLA, a second AUTHENTICATED victim denied while the attacker reads its data)
-// is the v2 victim-arm. The underlying vuln (hardcoded/guessable credential, missing object/function-
-// level authz) is the finding; the evaluator + grader certify the class from endpoint + credential context.
+// SEVERITY: stamped from OFFENSIVE_TOOL_DEMONSTRATED_CEILING (registry "high" = the CEILING) inside
+// buildAndSignOffensiveRow (NEVER agent-supplied), but the per-RUN value is decided HERE and passed as
+// an ALWAYS-explicit demonstratedSeverityOverride (never undefined — that would fail OPEN to the high
+// ceiling). Two tiers:
+//   - MEDIUM (v1, the default): the attacker-vs-ANON differential proves a credentialed caller bulk-reads
+//     PII an unauthenticated client is denied — a real exposure — but NOT that the credential is
+//     under-privileged (a fully-authorized user reading authorized data also satisfies it) nor that the
+//     surface is a cross-subject collection. Honestly a MEDIUM.
+//   - HIGH (v2, the victim arm): a SECOND AUTHENTICATED VICTIM identity reads its OWN private scope (an
+//     endpoint a fresh anon client is DENIED), the attacker's bulk read CONTAINS one of those exact
+//     subject identifiers (overlap >= 1), and the two identities are distinct (distinct profile + cookie
+//     jar). That is a categorical cross-PRINCIPAL break — the attacker read a subject that is provably in
+//     a distinct authenticated principal's private scope — so the run stamps demonstrated_severity:"high".
+// The override can only LOWER the ceiling (offensive-capture-writer.js), so a v1 run is MEDIUM on disk and
+// the claim-vs-row cap bounds any claim citing it at MEDIUM; the registry "high" only PERMITS a proven
+// victim-arm row to demonstrate high. The underlying vuln (hardcoded/guessable credential, missing
+// object/function-level authz) is the finding; the evaluator + grader certify the class from endpoint +
+// credential context, under the operator contract that attacker and victim are DIFFERENT principals.
 //
 // DUAL OUTPUT (operator decision):
 //   1. SIGNED proof row (offensive-runs.jsonl) — ALWAYS masked: the hashed+signed capture carries
@@ -47,8 +57,9 @@
 //
 // INTEGRITY BOUNDARY (honest, NOT closed here): the row MAC is tamper-evident against an agent
 // confined to the MCP + guarded-Bash surface; it is NOT cryptographically un-forgeable (a same-UID
-// actor can read the 0600 key and hand-MAC a row — the #131 boundary, bounded to a fabricated MEDIUM
-// by the frozen per-tool ceiling). The authed-vs-control differential is ALSO not tamper-proof — a
+// actor can read the 0600 key and hand-MAC a row — the #131 boundary). With the v2 ceiling now HIGH the
+// same-UID forge residual is bounded to a fabricated HIGH (raised from MEDIUM); closing it needs the
+// deferred offensive-sandbox. The authed-vs-control differential is ALSO not tamper-proof — a
 // hostile target can tell the credentialed arm from the control and could serve forged data — but a
 // target forging a vuln against ITSELF gains nothing, and a single capture is evidence, not proof
 // (the operator corroborates for integrity-sensitive use). The page-controlled-fetch residual is
@@ -129,17 +140,23 @@ const MASSREAD_MIN_RECORDS = 2;
 // Soft per-fetch page budget; the driver's COMMAND_TIMEOUT_MS is the hard ceiling.
 const FETCH_TIMEOUT_MS = 20_000;
 const DEFAULT_AUTH_PROFILE = "attacker";
+// v2 victim arm: the SECOND authenticated identity that reads its OWN private scope. Naming the
+// victim's own-scope surface (victim_surface_id) opts a run into the HIGH cross-principal oracle;
+// the victim profile name defaults to this when only the surface is given.
+const DEFAULT_VICTIM_AUTH_PROFILE = "victim";
 // WAF / rate-limit statuses on the ATTACKER arm: the credentialed read did not actually run, so
 // we cannot prove the read — fail closed rather than read a block page as "0 records".
 const WAF_STATUSES = Object.freeze(new Set([429, 503]));
 // Operator-only full-capture gate. NOT an agent argument by design.
 const OWNER_AUTHORIZED_ENV = "BOB_MASSREAD_OWNER_AUTHORIZED";
 
-// MEDIUM by construction (v1). Frozen + "use strict" → an in-process actor's `MAP.x = "critical"`
-// THROWS. demonstrated_severity is stamped from the registry in buildAndSignOffensiveRow, NEVER here
-// and NEVER agent-supplied; this frozen map documents the intent + anchors a test. The authn-vs-anon
-// differential is honestly a MEDIUM; the HIGH (cross-tenant BFLA / under-privilege) is the v2 victim-arm.
-const MASSREAD_DEMONSTRATED_CEILING = Object.freeze({ bob_http_massread_confirm: "medium" });
+// The CEILING (max a row may demonstrate) is HIGH — but the per-run value is MEDIUM unless the v2
+// victim arm proves a cross-principal break (see the SEVERITY note in the header). Frozen + "use strict"
+// → an in-process actor's `MAP.x = "critical"` THROWS. This frozen map documents the ceiling + anchors a
+// test that cross-checks it against the authoritative claims.js OFFENSIVE_TOOL_DEMONSTRATED_CEILING so the
+// two sources can never drift; demonstrated_severity is stamped from that registry in
+// buildAndSignOffensiveRow (NEVER here, NEVER agent-supplied).
+const MASSREAD_DEMONSTRATED_CEILING = Object.freeze({ bob_http_massread_confirm: "high" });
 
 // Known-sensitive field NAMES (object keys) — used to label WHICH sensitive columns the collection
 // exposes. Names only; values are never stored. Lowercased compare; substring so `user_email`,
@@ -608,6 +625,122 @@ function distinctPiiValuesInText(text) {
   return vals.size;
 }
 
+// IN-MEMORY ONLY: the SET of normalized SUBJECT-identifier keys (`${shape}:${norm}`, email / SSN — the
+// same shapes that form the distinct-subject count) a body exposes in sensitively-NAMED fields. Used
+// ONLY for the v2 cross-principal OVERLAP (intersect the attacker's bulk read with the victim's own-scope
+// read), then DISCARDED — never persisted, never in the signed row (only the overlap COUNT + a boolean
+// survive). Same bounded tree-walk + field-name gate + subject-shape filter as deriveMaskedSummary, so
+// the overlap is over the exact same identifier notion as the count. Treats a top-level singleton OBJECT
+// as a record too (a victim's `/me` is one object, not a collection), like controlBodyExposesPii.
+function subjectIdentifierSet(bodyText) {
+  const out = new Set();
+  if (typeof bodyText !== "string" || bodyText.length === 0) return out;
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return out; }
+  const records = extractRecords(parsed);
+  const scan = records.length > 0 ? records : (isPlainObject(parsed) ? [parsed] : []);
+  const scanLimit = Math.min(scan.length, MASSREAD_PII_SCAN_RECORDS);
+  for (let i = 0; i < scanLimit; i += 1) {
+    let nodeBudget = MASSREAD_MAX_NODES_PER_RECORD;
+    const visit = (node, depth) => {
+      if (node == null || typeof node !== "object" || depth > MASSREAD_MAX_RECORD_DEPTH) return;
+      if (Array.isArray(node)) {
+        for (const item of node) { if (nodeBudget <= 0) return; visit(item, depth + 1); }
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        if (nodeBudget <= 0) return;
+        nodeBudget -= 1;
+        const value = node[key];
+        if (bucketForFieldName(key)) {
+          const valueText = piiValueText(value);
+          for (const m of (valueText ? piiMatchesInValue(valueText) : [])) {
+            if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
+          }
+        }
+        if (value && typeof value === "object") visit(value, depth + 1);
+      }
+    };
+    visit(scan[i], 0);
+  }
+  return out;
+}
+
+// The control-denial PREDICATE, factored out so the v1 LISTING control AND the v2 anon-VICTIM control
+// score denial through ONE battle-tested path (no drift between two copies of a security check). Split
+// into the two questions the inline v1 block asks (kept byte-identical):
+//   controlReadsAnyPii — did the anon arm receive ANY subject/PII data? (a 2xx OR a 401 that still ships
+//     PII is not a denial). pii-bearing record, a top-level singleton object, OR an unparseable bulk
+//     dump of >= MIN distinct PII values (bot-review #784/#819/#821/#837/#581).
+function controlReadsAnyPii(summary, body) {
+  return summary.pii_bearing_count > 0
+    || controlBodyExposesPii(body)
+    || distinctPiiValuesInText(body) >= MASSREAD_MIN_RECORDS;
+}
+//   controlIsCleanDenial — read NO PII AND did not receive the bulk collection (>= MIN records at ANY
+//     status is not a denial, bot-review #669/#677) AND is an explicit 401, an EMPTY 2xx (204 / empty
+//     200), or a parsed 2xx with FEWER than MIN records. A 403 / 5xx / 404 / unparseable-nonempty-2xx is
+//     AMBIGUOUS (WAF/bot-challenge vs authz) and is NEVER scored denied. `readAnyPii` is passed in so the
+//     caller can reuse its own computation (v1 needs it for the split fail reason).
+function controlIsCleanDenial(summary, resp, readAnyPii) {
+  if (readAnyPii) return false;
+  if (summary.parse_ok && summary.record_count >= MASSREAD_MIN_RECORDS) return false;
+  const is2xx = resp.status != null && resp.status >= 200 && resp.status < 300;
+  const bodyEmpty = typeof resp.body !== "string" || resp.body.trim().length === 0;
+  const ok2xx = is2xx && summary.parse_ok;
+  return resp.status === 401
+    || (is2xx && bodyEmpty)
+    || (ok2xx && summary.record_count < MASSREAD_MIN_RECORDS);
+}
+
+// Do the two cookie jars SHARE A SESSION? If so the two profiles authenticate as (at least partly) the
+// SAME session — NOT distinct principals — so the victim arm must decline (fail CLOSED). We decline when
+// the jars share any session-token-shaped VALUE (length >= SESSION_TOKEN_MIN_LEN), compared by VALUE
+// regardless of cookie NAME. This is robust to the two unsound predecessors: full-set equality (bot-review
+// #A: `{sid=ABC}` vs `{sid=ABC, csrf=Z}` are "unequal" yet share the session cookie) and a name=value
+// compare (bot-review #J: the SAME opaque token reused under a DIFFERENT cookie name across app stacks /
+// subdomains would read as distinct). The length floor targets real session tokens (JWT / UUID / base64
+// sids are long) while NOT over-declining on a shared SHORT benign cookie (`locale=en`, `consent=true`,
+// `role=admin`) that two genuinely distinct accounts often carry — declining there would gut the feature,
+// and a shared short value is not evidence of a shared session anyway. Residual (documented): an app using
+// a SHORT (< 16-char, insecure) session id is not caught here; distinct session ≠ distinct human either —
+// the synthetic-identity anchor (victimIdentityKey) + the same-human guard carry the rest.
+const SESSION_TOKEN_MIN_LEN = 16;
+function cookiesShareAnyValue(a, b) {
+  const tokensB = new Set((b || []).map((c) => String(c.value)).filter((v) => v.length >= SESSION_TOKEN_MIN_LEN));
+  return (a || []).some((c) => {
+    const v = String(c.value);
+    return v.length >= SESSION_TOKEN_MIN_LEN && tokensB.has(v);
+  });
+}
+
+// The victim's KNOWN account identity, as a normalized `email:<norm>` key — available ONLY for a SYNTHETIC
+// Bob-minted profile (auth.js stamps profile.email + synthetic provenance ONLY on the in-process
+// bob_auto_signup path; an operator-pasted profile cannot). Anchoring victim OWNERSHIP to this KNOWN
+// identity — NOT to whatever the victim response body happens to contain — is what makes the cross-principal
+// HIGH sound (bot-review #B/#C/#D/#E): a multi-subject private listing, org/team view, replayed collection,
+// or shared static boilerplate (support@) cannot forge ownership of an identifier Bob did not mint for THIS
+// victim. Mirrors the IDOR producer's synthetic-only #18 gate. Returns null when no known identity exists.
+function victimIdentityKey(profile) {
+  if (!profile || typeof profile !== "object") return null;
+  if (profile.synthetic !== true) return null;
+  if (typeof profile.email !== "string" || !profile.email) return null;
+  const norm = normalizePiiValue("email", profile.email);
+  return norm ? `email:${norm}` : null;
+}
+
+// Subject-identifier keys (email / ssn) found ANYWHERE in a RAW text blob (not field-bound). Used to prove
+// the victim's own identity is NOT anon-readable even when an anon denial ships it in UNSTRUCTURED text —
+// e.g. a 401 body `login required for victim@x` that subjectIdentifierSet (field-bound) would miss
+// (bot-review #F). Returns the normalized `${shape}:${norm}` keys for the SUBJECT shapes only.
+function subjectIdentifiersInRawText(text) {
+  const out = new Set();
+  for (const m of piiMatchesInValue(typeof text === "string" ? text : "")) {
+    if (SUBJECT_IDENTIFIER_SHAPES.has(m.shape)) out.add(`${m.shape}:${m.norm}`);
+  }
+  return out;
+}
+
 // Run one credentialed-or-control arm: start a (pinned) session, authed_fetch the endpoint, audit,
 // close. Returns { status, body, final_url, body_truncated } or throws (scope/driver error). The
 // session targetUrl is the exact endpoint host so authed_fetch's required launch DNS-pin covers it.
@@ -781,6 +914,17 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   const authProfileName = typeof args.auth_profile === "string" && args.auth_profile.trim()
     ? args.auth_profile.trim()
     : DEFAULT_AUTH_PROFILE;
+  // v2 victim arm (optional): naming victim_surface_id opts the run into the HIGH cross-principal oracle —
+  // a SECOND authenticated identity reads its OWN private scope (a routed in-scope surface) and the
+  // attacker's bulk read is checked for an overlap with it. victim_auth_profile defaults to "victim".
+  // Both are NAME selectors (a routed surface id + a stored profile name), never raw endpoint/credential.
+  const victimSurfaceId = typeof args.victim_surface_id === "string" && args.victim_surface_id.trim()
+    ? args.victim_surface_id.trim()
+    : null;
+  const victimProfileName = typeof args.victim_auth_profile === "string" && args.victim_auth_profile.trim()
+    ? args.victim_auth_profile.trim()
+    : DEFAULT_VICTIM_AUTH_PROFILE;
+  const victimRequested = victimSurfaceId != null;
 
   const { state } = readSessionStateStrict(domain);
   const internalHostPolicy = blockInternalHostsPolicyFields(state);
@@ -938,9 +1082,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // a non-JSON body (CSV / plaintext / HTML) that ships >= MIN distinct PII values of ANY shape that
   // deriveMaskedSummary cannot parse (bot-review #784/#819/#821/#837/#581; a lone support value stays below
   // the floor).
-  const controlReadAnyPii = controlSummary.pii_bearing_count > 0
-    || controlBodyExposesPii(control.body)
-    || distinctPiiValuesInText(control.body) >= MASSREAD_MIN_RECORDS;
+  const controlReadAnyPii = controlReadsAnyPii(controlSummary, control.body);
   // (a) The control RECEIVED the bulk COLLECTION if its body parses to >= MIN records — REGARDLESS of HTTP
   //     status (a 401/403 that STILL returns the bulk body did NOT deny the client the records; bot-review
   //     #669/#677). It is therefore NOT a clean denial and never mints. Split the reason honestly so we do
@@ -956,26 +1098,152 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     // rather than mint (the redacted-vs-PII mint is the v2 oracle). No longer mislabeled "public" (#914).
     return fail("blocked_by_infra", "control_inconclusive_redacted_bulk");
   }
-  // (b) A CLEAN unauthenticated denial reads NO subject PII AND is an explicit 401, OR a 2xx that did NOT
-  //     return the bulk collection — a PARSED body with FEWER than MIN records, OR an EMPTY 2xx (204 No
-  //     Content / empty 200: the unauth client got NO records at all, bot-review #706). A 403 is AMBIGUOUS
-  //     — a WAF / bot-challenge vs a real authz denial — so it is NEVER scored "denied" (parseability is
-  //     not an auth-denial oracle, bot-review #675); likewise an unparseable NON-empty 2xx (HTML app shell
-  //     / WAF interstitial) stays ambiguous. All fall through to control_inconclusive.
-  const control2xx = control.status != null && control.status >= 200 && control.status < 300;
-  const controlBodyEmpty = typeof control.body !== "string" || control.body.trim().length === 0;
-  const controlOk2xx = control2xx && controlSummary.parse_ok;
-  const controlDenied = !controlReadAnyPii && (
-    control.status === 401
-    || (control2xx && controlBodyEmpty)
-    || (controlOk2xx && controlSummary.record_count < MASSREAD_MIN_RECORDS)
-  );
-  if (!controlDenied) {
+  // (b) A CLEAN unauthenticated denial reads NO subject PII AND did not receive the bulk collection — an
+  //     explicit 401, an EMPTY 2xx (204 / empty 200, bot-review #706), or a parsed 2xx with FEWER than MIN
+  //     records. A 403 / 5xx / 404 / unparseable-nonempty-2xx is AMBIGUOUS (WAF/bot-challenge vs authz,
+  //     bot-review #675) and is NEVER scored denied. The same predicate scores the v2 anon-VICTIM control.
+  if (!controlIsCleanDenial(controlSummary, control, controlReadAnyPii)) {
     // Ambiguous control (403, 5xx, 404, unparseable, timeout, OR a control that itself read subject PII):
     // cannot conclude the control was DENIED, so the differential is unproven. Fail closed rather than
     // mint a MEDIUM off an inconclusive baseline.
     return fail("blocked_by_infra", "control_inconclusive");
   }
+
+  // ── v2 victim arm (optional, ELEVATING only): prove a cross-PRINCIPAL break to stamp HIGH ──
+  // The v1 MEDIUM differential is now proven. If the caller named a victim own-scope surface, run a SECOND
+  // authenticated identity against it plus a fresh anon control, and elevate to HIGH iff ALL hold:
+  //   (1) the victim is a SYNTHETIC Bob-minted identity with a KNOWN account email (victimIdentityKey) — so
+  //       "the victim's own subject" is anchored to an identity Bob minted, NOT inferred from the response
+  //       (bot-review #B/#C/#D/#E: a multi-subject listing / org view / replayed collection / shared
+  //       boilerplate cannot forge ownership of an identifier Bob did not mint for this victim);
+  //   (2) attacker and victim are DISTINCT — distinct profile NAME, DISJOINT cookie jars (no shared session
+  //       value, bot-review #A), and (when the attacker identity is also known) a different account email;
+  //   (3) victim_surface_id differs from the bulk listing (an own-scope endpoint, not a replay, bot-review #C);
+  //   (4) the victim arm 2xx-reads its OWN known identity from that scope (it really is the victim's /me);
+  //   (5) a fresh anon client is DENIED that scope AND the victim's identity is NOT anon-readable even in
+  //       unstructured denial text (bot-review #F), so the identity is genuinely private; and
+  //   (6) the attacker's bulk read CONTAINS the victim's known identity (the anchored overlap).
+  // The victim arm can ONLY elevate — any failure leaves the proven MEDIUM intact and records WHY in the
+  // hash-bound diagnostic. It runs AFTER the base passes, so a failing base never pays for the extra arms.
+  // The overlap is computed over normalized identity VALUES in memory; ONLY booleans + a count are recorded
+  // (the masked rail never carries a raw value). Severity is ALWAYS an explicit override (medium unless all
+  // hold), and the sign path additionally requireExplicitSeverity so the high ceiling can never fail open.
+  let crossTenantProven = false;
+  let victimElevation = victimRequested ? "attempted" : "not_requested";
+  const victimDiag = {};
+  let victimBodyForCapture = null;
+  let anonVictimBodyForCapture = null;
+  if (victimRequested) {
+    try {
+      // Resolve the victim profile's KNOWN identity up front (URL only binds cookies; .email/.synthetic are
+      // URL-independent). attackerIdentityKey is the attacker's own known identity, when it too is synthetic.
+      const victimProfile = resolveAuthProfile(victimProfileName, `https://${domain}/`, domain);
+      const victimKey = victimIdentityKey(victimProfile);
+      const attackerIdentityKey = victimIdentityKey(profile);
+      if (victimProfileName === authProfileName) {
+        victimElevation = "victim_profile_not_distinct";          // same profile name = same identity
+      } else if (victimSurfaceId === surfaceId) {
+        victimElevation = "victim_surface_equals_listing";        // #C: own-scope must differ from the listing
+      } else if (!victimProfile) {
+        victimElevation = "victim_auth_profile_not_found";
+      } else if (!victimKey) {
+        victimElevation = "victim_profile_no_synthetic_identity"; // #B: a KNOWN (synthetic Bob-minted) victim is required
+      } else if (attackerIdentityKey && attackerIdentityKey === victimKey) {
+        victimElevation = "victim_identity_equals_attacker";      // same account on both arms = same principal
+      } else {
+        const { surface: victimSurface } = findRoutedSurface(domain, victimSurfaceId);
+        const victimEndpointObj = resolveSurfaceEndpoint({ domain, surface: victimSurface, state, toolName: TOOL_ID });
+        const victimEndpointUrl = victimEndpointObj.toString();
+        // Read-only + scope guard on the victim endpoint (catches a verb-named segment); resolveSurfaceEndpoint
+        // / findRoutedSurface re-validate scope, so an out-of-scope victim surface throws and is caught below
+        // (no out-of-scope fetch happens).
+        assertReadOnlyPath(victimEndpointUrl, TOOL_ID);
+        // Value-blind (origin+path, query stripped) victim target — used for the alias-replay guard and as
+        // the MAC-covered audit anchor of the victim scope.
+        const victimCanonicalTarget = canonicalizeExploitTarget(victimEndpointUrl);
+        const victimCookies = cookieObjectsFromProfile(victimProfile, victimEndpointObj.origin);
+        if (sensitiveShapesPresent(victimEndpointUrl) || findIbans(victimEndpointUrl).length > 0) {
+          victimElevation = "victim_endpoint_contains_sensitive_value";
+        } else if (victimCanonicalTarget === canonicalTarget) {
+          // #H: a DIFFERENT surface id that RESOLVES to the same endpoint as the bulk listing is still a
+          // replay (the surface-id check above only catches an identical id). Compare resolved targets.
+          victimElevation = "victim_endpoint_equals_listing";
+        } else if (victimCookies.length === 0) {
+          victimElevation = "victim_credential_not_cookie_expressible";
+        } else if (cookiesShareAnyValue(authCookies, victimCookies)) {
+          victimElevation = "victim_session_not_distinct";        // #A/#J: a shared session = same principal
+        } else {
+          // Record the victim SCOPE into the hash-bound diagnostic so a HIGH row MAC-covers WHICH scope
+          // established the cross-principal break (bot-review #I) — value-blind + already PII-screened above.
+          victimDiag.victim_surface_id = victimSurfaceId;
+          victimDiag.victim_canonical_target = victimCanonicalTarget;
+          const victimArmUrl = () => {
+            const u = new URL(victimEndpointUrl);
+            u.searchParams.set("_cb", crypto.randomBytes(8).toString("hex"));
+            return u.toString();
+          };
+          const victim = await runArm(drv, { ...armBase, surfaceId: victimSurfaceId, endpointUrl: victimArmUrl(), authCookies: victimCookies, armTag: "victim" });
+          const anonVictim = await runArm(drv, { ...armBase, surfaceId: victimSurfaceId, endpointUrl: victimArmUrl(), authCookies: null, armTag: "control-victim" });
+          armOrder.push("victim", "control-victim");
+          victimBodyForCapture = victim.body;
+          anonVictimBodyForCapture = anonVictim.body;
+          if ((victim.status != null && WAF_STATUSES.has(victim.status))
+            || (anonVictim.status != null && WAF_STATUSES.has(anonVictim.status))) {
+            victimElevation = "victim_arm_waf_or_rate_limit";
+          } else if (victim.body_truncated || anonVictim.body_truncated) {
+            victimElevation = "victim_arm_response_truncated";
+          } else {
+            const victimOk2xx = victim.status != null && victim.status >= 200 && victim.status < 300;
+            const victimSubjects = victimOk2xx ? subjectIdentifierSet(victim.body) : new Set();
+            // The victim arm must read its OWN known identity from this scope.
+            const victimReadsOwnIdentity = victimSubjects.has(victimKey);
+            // …AND the scope must be SINGLE-SUBJECT (the victim's own /me), not a multi-subject team/org/
+            // listing endpoint that merely INCLUDES the victim among others (bot-review #L). On a shared
+            // multi-subject scope the victim does not OWN the other subjects' data, so "victim_read_own_
+            // private_scope" would be untruthful; require exactly one distinct subject so the leg is honest.
+            const victimScopeSingleSubject = victimSubjects.size === 1;
+            const anonVictimSummary = deriveMaskedSummary(anonVictim.body);
+            const anonVictimDenied = controlIsCleanDenial(
+              anonVictimSummary, anonVictim, controlReadsAnyPii(anonVictimSummary, anonVictim.body),
+            );
+            // anon must not see the victim's identity in EITHER structured fields or RAW denial text (#F).
+            const anonSeesVictimIdentity = subjectIdentifierSet(anonVictim.body).has(victimKey)
+              || subjectIdentifiersInRawText(anonVictim.body).has(victimKey);
+            // The anchored overlap: the attacker's bulk read contains the victim's KNOWN identity.
+            const attackerReadsVictim = subjectIdentifierSet(attacker.body).has(victimKey);
+            const proven = victimReadsOwnIdentity && victimScopeSingleSubject
+              && anonVictimDenied && !anonSeesVictimIdentity && attackerReadsVictim;
+            victimDiag.victim_status = victim.status;
+            victimDiag.anon_victim_status = anonVictim.status;
+            victimDiag.victim_overlap_count = proven ? 1 : 0;
+            // Ordered root-cause first; all but the last reason stay MEDIUM.
+            if (!anonVictimDenied) {
+              victimElevation = "victim_scope_anon_not_denied";
+            } else if (anonSeesVictimIdentity) {
+              victimElevation = "victim_identity_visible_to_anon";   // #F: identity leaked to anon → not private
+            } else if (!victimReadsOwnIdentity) {
+              victimElevation = "victim_did_not_read_own_identity";  // the scope is not the victim's own /me
+            } else if (!victimScopeSingleSubject) {
+              victimElevation = "victim_scope_multi_subject";        // #L: a shared multi-subject scope, not /me
+            } else if (!attackerReadsVictim) {
+              victimElevation = "attacker_did_not_read_victim_subject";
+            } else {
+              crossTenantProven = true;
+              victimElevation = "cross_principal_break_proven";
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // The optional elevation must NEVER fail the proven MEDIUM run (scope/route/transport error) — but an
+      // audit-write failure is a real integrity fault and must surface, like the base arms.
+      if (e && e.probe_audit_failed) throw e;
+      crossTenantProven = false;
+      victimElevation = "victim_arm_error";
+    }
+  }
+  // ALWAYS explicit (never undefined → no fail-open to the high ceiling): high only on a proven break.
+  const severityDecision = crossTenantProven ? "high" : "medium";
 
   // ── build the canonical proof (MASKED, value-blind, PII-screened) ──
   const maskedSummary = {
@@ -986,7 +1254,7 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     pii_shape_present: attackerSummary.pii_shape_present,
   };
   const stdoutContent = canonicalJson(maskedSummary);
-  const stderrContent = canonicalJson({
+  const stderrBundle = {
     attacker_status: attacker.status,
     control_status: control.status,
     attacker_record_count: attackerSummary.record_count,
@@ -997,7 +1265,21 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     credentialed_bulk_pii_read: true,
     unauthenticated_control_denied: true,
     pii_value_shapes_present: true,
-  });
+  };
+  // Fold the v2 victim-arm diagnostics into the hash-bound bundle ONLY when a victim arm was requested
+  // (a pure v1 run's stderr stays byte-identical). victimDiag holds counts/statuses only — never a raw
+  // value — and victim_elevation is a fixed reason code; the PII screen below still guards both.
+  if (victimRequested) {
+    stderrBundle.victim_elevation = victimElevation;
+    Object.assign(stderrBundle, victimDiag);
+    if (crossTenantProven) {
+      stderrBundle.victim_read_own_private_scope = true;
+      stderrBundle.victim_scope_anon_denied = true;
+      stderrBundle.attacker_read_victim_subject = true;
+      stderrBundle.victim_distinct_session = true;
+    }
+  }
+  const stderrContent = canonicalJson(stderrBundle);
   // Fail-closed PII screen: the masked summary is field-NAME buckets + counts + booleans, so a value
   // shape here means something leaked; refuse to sign it.
   if (sensitiveShapesPresent(stdoutContent) || sensitiveShapesPresent(stderrContent)
@@ -1013,14 +1295,25 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
   // cross-tenant BFLA (a second AUTHENTICATED victim identity denied while the attacker reads ITS data)
   // is the v2 oracle. So the signed booleans assert ONLY what is established — never a bare
   // `bfla_proven` / `under_privileged`.
+  // The v2 cross-principal legs are added ONLY on a proven HIGH mint, so a MEDIUM row (victim absent OR
+  // requested-but-unproven) carries exactly the v1 three booleans — the proven victim arm asserts the
+  // extra legs that justify the high severity (the why-not for an unproven attempt lives in stderr).
   const relationBooleans = {
     credentialed_bulk_pii_read: true,
     unauthenticated_control_denied: true,
     pii_value_shapes_present: true,
+    ...(crossTenantProven ? {
+      victim_read_own_private_scope: true,   // a distinct authed victim read these subjects as its OWN
+      victim_scope_anon_denied: true,        // a fresh anon client is DENIED the victim's own scope (private)
+      attacker_read_victim_subject: true,    // the attacker's bulk read overlapped the victim's private subjects
+      victim_distinct_session: true,         // distinct profile name + distinct cookie jar
+    } : {}),
   };
 
-  // demonstrated_severity DERIVED from the per-tool registry inside buildAndSignOffensiveRow (never
-  // passed). Capture FIRST, recompute hashes from on-disk bytes, sign LAST — under the session lock.
+  // demonstrated_severity DERIVED from the per-tool registry inside buildAndSignOffensiveRow, clamped by
+  // our ALWAYS-explicit override (medium for v1, high only on a proven victim-arm break — the override can
+  // only LOWER the high ceiling, so this never fails open). Capture FIRST, recompute hashes from on-disk
+  // bytes, sign LAST — under the session lock.
   const row = withSessionLock(domain, () => buildAndSignOffensiveRow(domain, {
     runIdPrefix: "massread",
     toolId: TOOL_ID,
@@ -1031,6 +1324,10 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     stdoutContent,
     stderrContent,
     relationBooleans,
+    demonstratedSeverityOverride: severityDecision,
+    // The ceiling is HIGH and severity is per-run, so fail CLOSED if a future path ever omits the override
+    // (bot-review #G) rather than silently signing the high ceiling.
+    requireExplicitSeverity: true,
   }));
 
   // OPT-IN full capture — OPERATOR env gate only, OUTSIDE the signed rail. The raw bodies live in
@@ -1046,6 +1343,11 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
         control_status: control.status,
         attacker_body: attacker.body,
         control_body: control.body,
+        // The victim arms' raw bodies (when the elevation arms ran) — held in memory only until here,
+        // under the SAME owner+read-guard gate as the attacker/control bodies. Null when no victim arm ran.
+        victim_elevation: victimRequested ? victimElevation : undefined,
+        victim_body: victimBodyForCapture,
+        anon_victim_body: anonVictimBodyForCapture,
         note: "operator-authorized full capture (BOB_MASSREAD_OWNER_AUTHORIZED). NOT in the signed rail. Delete after the engagement; keep out of any sync/backup path.",
       });
       ownerCaptureWritten = true;
@@ -1070,6 +1372,11 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
     exit_code: row.exit_code,
     demonstrated_severity: row.demonstrated_severity,
     owner_authorized_capture: ownerCaptureWritten,
+    // v2 elevation outcome (so the evaluator/grader see WHY a run is HIGH or only MEDIUM). cross_tenant_proven
+    // is the boolean gate; victim_elevation is the fixed reason code; victim_overlap_count is the count of
+    // the attacker∩victim private-subject overlap (0 unless a victim arm ran AND scored an overlap).
+    cross_tenant_proven: crossTenantProven,
+    victim_elevation: victimElevation,
     masked_oracle: {
       relation: relationBooleans,
       record_count: maskedSummary.record_count,
@@ -1077,6 +1384,9 @@ async function massreadConfirm(args = {}, { driver = null } = {}) {
       distinct_pii_count: maskedSummary.distinct_pii_count,
       sensitive_field_names: maskedSummary.sensitive_field_names,
       pii_shape_present: maskedSummary.pii_shape_present,
+      cross_tenant_proven: crossTenantProven,
+      victim_elevation: victimElevation,
+      victim_overlap_count: typeof victimDiag.victim_overlap_count === "number" ? victimDiag.victim_overlap_count : 0,
       fragment_hash: row.stdout_hash,
     },
     ...internalHostPolicy,
