@@ -249,10 +249,10 @@ function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
     const withBreaks = segment
       .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
       .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2");
-    // Split on `. _ -` AND matrix/param punctuation `; , : =` AND a recovered `/` so a matrix-suffix
-    // collection like /api/transfer;v=1 (or its `%3b`/`%2f` encoded forms) that routers strip and dispatch
-    // as /api/transfer cannot tokenize whole and slip the action-shape guard (Codex P1).
-    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=/]/).filter(Boolean)) {
+    // Split on `. _ -` AND matrix/param punctuation `; , : =` AND a recovered `/` or `\` so a matrix-suffix
+    // collection like /api/transfer;v=1 (or its `%3b`/`%2f`/`%5c` encoded forms — frameworks decode `%5c`
+    // to a path separator) cannot tokenize whole and slip the action-shape guard (Codex P1).
+    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=/\\]/).filter(Boolean)) {
       const singular = token.endsWith("s") ? token.slice(0, -1) : token;
       if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
         rejectInvalidArguments(

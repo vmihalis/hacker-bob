@@ -2793,6 +2793,7 @@ test("PR-D r10 (Codex P2): encoded PII / secret shapes in the RAW readback are c
     const result = await run(domain, { provision });
     assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
     assert.equal(result.reason, "shared_object_store", c.label);
+    assert.equal(readOffensiveRunRecords(domain).length, 0, `${c.label}: encoded/secret readback must sign no row (CR)`);
   }
 }));
 
@@ -2852,3 +2853,77 @@ test("PR-D r10 (Codex P1): a GraphQL operation using ignored tokens (comma / # c
     if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
   }
 }));
+
+// ── PR-D review round 11: class-closing variants — bare scope/owner, URL authorities, GraphQL directives ──
+
+test("PR-D r11 (Codex P1): BARE scope/owner relationship fields in create_body are refused (base-noun)", () => withTempHome(async () => {
+  const domain = "idor-bare-rel.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "bare tenant", create_body: { tenant: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare org", create_body: { org: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare workspace", create_body: { workspace: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare user", create_body: { user: "real-user" }, reason: "create_body_owner_field" },
+      { label: "bare team", create_body: { team: "real-team" }, reason: "create_body_owner_field" },
+      { label: "created_by_id", create_body: { created_by_id: "real-user" }, reason: "create_body_owner_field" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // A benign content field that merely ends in a stripped suffix must NOT be over-blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { created_at: "2026-01-01", title: "synthetic" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): URL values with bracketed / userinfo authorities are refused (parse-based)", () => withTempHome(async () => {
+  const domain = "idor-url-auth.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http:[::1]/meta", "http:@169.254.169.254/latest", "https://[::ffff:169.254.169.254]/x"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): a GraphQL operation with DIRECTIVES is refused (keyword + selection set)", () => withTempHome(async () => {
+  const domain = "idor-gql-directive.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["mutation @custom { deleteUser }", "mutation Named @auth(x:1) { wipe }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", JSON.stringify(op));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): assertCreateCollectionShapeSafe splits a decoded backslash separator (%5C)", () => {
+  for (const p of ["/api/%5Ctransfer", "/api/%5crefund", "/api/transfer%5cv1"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /action-shaped segment/, `expected BLOCK: ${p}`);
+  }
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts%5cx", "t"), "a backslash on a benign noun still passes");
+});

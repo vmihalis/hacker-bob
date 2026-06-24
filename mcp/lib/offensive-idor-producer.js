@@ -136,29 +136,48 @@ function normalizeFieldName(name) {
 // agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
 // separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
 const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid"]);
-// Owner-ASSIGNMENT fields (normalized): a create API honoring these would let an agent steer the
-// produced object's ownership to a caller-chosen real user/account/team, breaking the synthetic-owned
-// boundary (the object must belong to the creating synthetic identity, inferred from its auth). Refused
-// in create_body at any depth (Codex P1). Distinct from tenant scope keys (NORMALIZED_SCOPE_KEYS).
-const OWNER_ID_KEYS = new Set([
-  "userid", "ownerid", "accountid", "customerid", "memberid", "projectid", "teamid", "groupid",
-  "createdby", "owner", "assignee", "authorid", "principalid", "subjectid", "uid",
-]);
-// A URL-shaped create_body VALUE: a target that treats a body field as a fetch/import/webhook URL
-// (avatar_url, callback_url, …) would turn the canary create into an off-target callback / internal-network
-// SSRF, so URL-valued fields are refused before any write (Codex P1). Matches a `scheme://`, a known
-// fetch scheme even WITHOUT slashes or with a single/back slash (http:host, http:/host, http:\host — which
-// WHATWG/Node normalize to absolute URLs), and a protocol-relative `//`/`\\`. A synthetic canary-holder
-// skeleton never needs a URL value. Anchored on a host char after the scheme so "file: report" / "note: hi"
-// / "ratio 3:1" are NOT treated as URLs.
-const URL_VALUE_RE = /^\s*(?:(?:https?|ftp|file|gopher|wss?|dict|ldaps?):[\\/]*[a-z0-9]|[a-z][a-z0-9+.-]*:\/\/|[\\/]{2})/i;
-// A GraphQL mutation/subscription OPERATION inside a create_body string value: on a GraphQL-compatible
-// derived collection, {query:"mutation { ... }"} would execute an arbitrary mutation rather than create a
-// synthetic object (Codex P1). GraphQL treats whitespace, commas, and `#` comments as IGNORED tokens, so
-// the keyword may be separated from the selection set / variable defs by any of them (mutation,{…} or
-// mutation #c\n {…}); the detector allows those before an optional operation name and the `{`/`(`. A
-// benign value like "mutation rate: 0.5" is not matched (no `{`/`(` reachable through ignored tokens+name).
-const GRAPHQL_OP_RE = /\b(?:mutation|subscription)\b(?:\s|,|#[^\n]*\n?)*(?:[A-Za-z_]\w*(?:\s|,|#[^\n]*\n?)*)?[({]/i;
+// Ownership / scope SELECTOR fields, matched by BASE NOUN rather than an enumerated alias list: a create
+// API honoring one would steer the synthetic object into a caller-chosen real tenant/principal, breaking
+// the synthetic-owned boundary (the object must belong to the creating synthetic identity, inferred from
+// its auth). `baseNoun` normalizes then strips a trailing "id"/"by" (twice), so the BARE form (tenant,
+// user, team), the _id form (tenant_id, user_id), and the _by[_id] form (created_by, created_by_id) all
+// collapse to one base — closing the alias/suffix tail rather than enumerating it (Codex P1).
+const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", "ownerscope", "namespace", "realm"]);
+const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "creator", "created", "createdby", "assignee"]);
+function baseNoun(normName) {
+  let s = String(normName);
+  for (let i = 0; i < 2; i += 1) {
+    if (s.length > 2 && (s.endsWith("id") || s.endsWith("by"))) s = s.slice(0, -2);
+    else break;
+  }
+  return s;
+}
+// Known fetch URL schemes (WHATWG protocol form): an absolute value with one of these can drive a
+// server-side fetch (SSRF / callback) when a create field is treated as a URL.
+const FETCH_URL_PROTOCOLS = new Set(["http:", "https:", "ftp:", "gopher:", "ws:", "wss:"]);
+// True when a create_body string VALUE is a fetch URL (Codex P1). Three layers, fail-closed:
+//  - protocol-relative `//host` / `\\host` (either slash direction);
+//  - an explicit known fetch/file scheme with optional (back)slashes then ANY authority char — incl. an
+//    IPv6 `[`, a userinfo `@`, or alnum — so http:host / http:/host / http:\host / http:[::1] / http:@h
+//    (all WHATWG-normalized to absolute URLs) are caught, while "file: report" / "note: hi" / "ratio 3:1"
+//    (no authority char after the colon) are not;
+//  - a WHATWG parse whose protocol is a fetch scheme (catches any spelling the regexes miss).
+function valueLooksLikeUrl(value) {
+  const s = String(value).trim();
+  if (/^[\\/]{2}/.test(s)) return true;
+  if (/^(?:https?|ftp|file|gopher|wss?|dict|ldaps?):[\\/]*[^\s/\\]/i.test(s)) return true;
+  try {
+    if (FETCH_URL_PROTOCOLS.has(new URL(s).protocol)) return true;
+  } catch { /* not URL-parseable */ }
+  return false;
+}
+// True when a create_body string value carries a GraphQL mutation/subscription operation (Codex P1). A
+// keyword + a `{` (a selection set must follow) closes the whole grammar tail — directives (@x), comments
+// (#…), commas, named/anonymous ops — in one rule. A benign "mutation rate: 0.5" (no `{`) is not matched.
+function valueLooksLikeGraphqlMutation(value) {
+  const s = String(value);
+  return /\b(?:mutation|subscription)\b/i.test(s) && s.includes("{");
+}
 // Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
 // unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
 // the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
@@ -183,8 +202,8 @@ function screenCreateBody(value, idField, depth = 0) {
   // Codex P1). A URL-shaped value would be fetched by some targets (SSRF/callback); a GraphQL mutation
   // operation would execute on a GraphQL-compatible derived collection.
   if (typeof value === "string") {
-    if (URL_VALUE_RE.test(value)) return "create_body_url_value";
-    if (GRAPHQL_OP_RE.test(value)) return "create_body_graphql_operation";
+    if (valueLooksLikeUrl(value)) return "create_body_url_value";
+    if (valueLooksLikeGraphqlMutation(value)) return "create_body_graphql_operation";
     return null;
   }
   if (Array.isArray(value)) {
@@ -198,12 +217,13 @@ function screenCreateBody(value, idField, depth = 0) {
     if (RESERVED_PROTO_KEYS.has(k)) return "reserved_field_name";
     if (CREATE_BODY_OVERRIDE_KEYS.has(k.toLowerCase())) return "create_body_action_override";
     const norm = normalizeFieldName(k);
-    if (NORMALIZED_SCOPE_KEYS.has(norm)) return "create_body_scope_field";
+    const base = baseNoun(norm);
+    if (SCOPE_BASE_NOUNS.has(norm) || SCOPE_BASE_NOUNS.has(base)) return "create_body_scope_field";
     // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
-    // check it BEFORE the broader owner-assignment set so e.g. id_field:"account_id" reports
-    // client_supplied_id, while a non-id owner field (user_id with the default id_field) reports owner_field.
+    // check it BEFORE the broader owner set so e.g. id_field:"account_id" reports client_supplied_id, while
+    // a non-id owner field (user / user_id / created_by with the default id_field) reports owner_field.
     if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField)) return "create_body_client_supplied_id";
-    if (OWNER_ID_KEYS.has(norm)) return "create_body_owner_field";
+    if (OWNER_BASE_NOUNS.has(norm) || OWNER_BASE_NOUNS.has(base)) return "create_body_owner_field";
     const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
     if (r) return r;
   }
