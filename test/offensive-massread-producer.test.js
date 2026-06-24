@@ -1631,6 +1631,37 @@ test("v2 HIGH (#N): a /me with a SELF-OWNED child collection (no extra subjects)
   assert.equal(result.demonstrated_severity, "high");
 }));
 
+test("v2 → MEDIUM (Codex P1): a MIXED-SHAPE multi-subject scope ({email:victim}+{ssn:other}) is NOT single-subject", () => withTempHome(async () => {
+  // Two DIFFERENT people exposing DISJOINT identifier shapes — the victim as {email} and a second subject as
+  // {ssn}. The prior max-per-shape count saw max(1 email, 1 ssn) = 1 and FALSELY passed the single-subject gate
+  // → a signed HIGH on a 2-person listing. Object-node grouping sees two separate subject nodes → 2 → rejected.
+  // (Contrast the flat email+ssn /me test above: ONE person's email+ssn are siblings of one node → 1 → HIGH.)
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const victim = { status: 200, body: JSON.stringify({ members: [{ email: CANARY_EMAIL }, { ssn: "987-65-4321" }] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ victim });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.cross_tenant_proven, false, JSON.stringify(result));
+  assert.equal(result.victim_elevation, "victim_scope_multi_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
+test("v2 → MEDIUM (Codex P1): the attacker overlap is RECORD-bound — a victim email in response METADATA does not count", () => withTempHome(async () => {
+  // The victim's known email appears ONLY in a top-level metadata field (requested_by_email), not in any bulk
+  // RECORD the attacker read; the attacker read only OTHER subjects' rows. Whole-body matching would falsely
+  // satisfy the overlap and sign attacker_read_victim_subject HIGH; record-bound matching scans only the `data`
+  // rows → no overlap → stays MEDIUM.
+  const domain = uniqueDomain();
+  setupV2Session(domain);
+  const attacker = { status: 200, body: JSON.stringify({ requested_by_email: CANARY_EMAIL, data: [{ id: 1, email: "other1@canary.example.test" }, { id: 2, email: "other2@canary.example.test" }] }), final_url: null, body_truncated: false };
+  const { driver } = makeV2Driver({ attacker });
+  const result = await runV2(domain, { driver });
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.cross_tenant_proven, false);
+  assert.equal(result.victim_elevation, "attacker_did_not_read_victim_subject");
+  assert.equal(result.demonstrated_severity, "medium");
+}));
+
 test("v2 HIGH still mints when the two sessions share only a SHORT benign cookie (no over-decline)", () => withTempHome(async () => {
   const domain = uniqueDomain();
   // Distinct long session tokens, but both jars carry the same short benign cookie (locale=en) — that must
