@@ -3325,10 +3325,11 @@ test("PR-D r16 (Codex P1): credential-NAMED create_body / canary_field is refuse
       assert.equal(result.reason, "create_body_credential_field", JSON.stringify(body));
       assert.equal(mock.postCount(), 0, "ZERO create POSTs");
     }
-    // canary_field that is a credential name is refused.
+    // canary_field that is a credential name is refused — and must NOT POST before rejecting (CR r16).
     const mock = liveArmFetchFn();
     const r = await idorConfirm({ ...baseArgs(domain), canary_field: "password" }, { fetch_fn: mock });
     assert.equal(r.reason, "canary_field_overlaps_credential_field", JSON.stringify(r));
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs");
     // A benign field merely CONTAINING "secret"/"token" as a sub-word (secret_note / csrf_token) still mints.
     for (const f of ["secret_note", "csrf_token"]) {
       const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { [f]: "x" } }, { fetch_fn: liveArmFetchFn() });
