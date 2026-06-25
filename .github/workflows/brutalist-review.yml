@@ -66,8 +66,8 @@ jobs:
         # @v1 ships the turn-cap 20→50 fix (was hitting "max turns (20)" on large PRs).
         uses: ejmockler/brutalist-mcp/packages/github-action@v1
         env:
-          BRUTALIST_TIMEOUT: "600000"
-          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "900000"
+          BRUTALIST_TIMEOUT: "1800000"
+          BRUTALIST_ORCHESTRATOR_TIMEOUT_MS: "2700000"
           # Freeze agy's binary version for the run (stops self-update drift).
           AGY_CLI_DISABLE_AUTO_UPDATE: "1"
         with:
