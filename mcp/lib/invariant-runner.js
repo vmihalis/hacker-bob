@@ -23,6 +23,22 @@ const {
 } = require("./storage.js");
 const { ERROR_CODES } = require("./envelope.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
+// Cycle B: KEY invariant-runs.jsonl rows with a domain-separated ed25519 signature so a
+// forged row needs the signing key, not just a recomputable content hash. signed at
+// WRITE inside withInvariantSessionWriteLock; verified at the read-time re-derivation
+// sites (readInvariantRunRowForVerification, proof-bundle readInvariantRunRow). Reuses
+// Cycle A's signRowWithMac/verifyRowWithMac (NOT a new MAC). Old unsigned rows are
+// accepted-with-warning (assertRowMacOrLegacy {legacy}); only NEW rows carry row_mac.
+// This does NOT close F3 — the private key is still 0600 at the agent uid, so a same-uid
+// actor can mint a valid row_mac; F2 collapses INTO F3. The genuine close is Cycle C.
+const {
+  assertRowMacOrLegacy,
+  INVARIANT_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  signRowViaIsolatedSignerOrLocal,
+  resolveRowVerifierSafely,
+} = require("./handoff-signing-key.js");
 // REFUTING-ARM (universal): an FV finding is CONFIRMED only by an executed
 // two-sided differential whose negative arm FLIPS — never by a single passing
 // run. We reuse the OSS repro gate's verdict vocabulary AND its branch order so a
@@ -596,7 +612,22 @@ function classifyFoundryOutcome(rawResult) {
 }
 
 function invariantFoundryResultHash(foundryResult) {
-  return hashCanonicalJson(foundryResult == null ? null : foundryResult);
+  if (foundryResult == null) return hashCanonicalJson(null);
+  // container_isolated is a containerization MARKER (was this forge run isolated in
+  // a filesystem namespace, or a degrade-host spawn as the signer?), NOT a part of
+  // the Foundry EXECUTION result. It must be EXCLUDED from foundry_result_hash so
+  // run_hash stays byte-stable whether the run was containerized or not — a control
+  // run on a different box, or a re-derivation, must produce the identical hash, and
+  // every pre-existing invariant-runs fixture (which carries no container_isolated)
+  // must hash identically before and after this change. The marker's integrity is
+  // instead carried by the row_mac (it covers the whole record minus row_mac) and is
+  // consulted by the verdict gate, never by the content hash.
+  if (typeof foundryResult === "object" && !Array.isArray(foundryResult)
+    && Object.prototype.hasOwnProperty.call(foundryResult, "container_isolated")) {
+    const { container_isolated, ...withoutMarker } = foundryResult;
+    return hashCanonicalJson(withoutMarker);
+  }
+  return hashCanonicalJson(foundryResult);
 }
 
 function computeInvariantRunHash({
@@ -792,9 +823,34 @@ async function runInvariantForFinding({
     dry_run: dry_run === true,
     run_id: typeof run_id === "string" && run_id.length > 0 ? run_id : null,
     recorded_at: new Date().toISOString(),
+    // Did THIS invariant run execute inside a filesystem-namespace container, or
+    // degrade to a host spawn AS THE SIGNER? Lifted from the foundry result's
+    // top-level marker (foundry-runner finalizeRun). A host-as-signer (degrade) run
+    // resolves false, because agent-authored Solidity in the foundry test/build runs
+    // as the signer and CAN read the 0400 key to forge a MAC-valid row. This is a
+    // SIBLING top-level field (like recorded_at/run_id) OUTSIDE computeInvariantRunHash
+    // (so run_hash stays byte-stable) but INSIDE the row_mac (signRowViaIsolatedSignerOrLocal
+    // covers the whole record minus row_mac), so an agent cannot strip/flip it without
+    // invalidating the MAC. The verdict gate refuses to trust an SC reportable whose
+    // backing positive row is not container_isolated:true. A legacy row predating this
+    // field carries null/absent and is fail-closed un-isolated at the gate under enforce.
+    container_isolated: foundryRawResult && typeof foundryRawResult === "object"
+      && !Array.isArray(foundryRawResult) && foundryRawResult.container_isolated === true
+      ? true
+      : false,
   };
   if (dry_run !== true) {
     await withInvariantSessionWriteLock(domain, () => {
+      // KEY the executed row INSIDE the producer's existing write lock (C4) through
+      // the single signing seam. run_hash is already computed and EXCLUDES row_mac
+      // (computeInvariantRunHash binds only the 12 listed fields), so signing here
+      // leaves run_hash byte-stable and the row recomputes identically at read;
+      // writeJsonlRuns serializes row_mac verbatim and dedup-by-run_hash preserves it.
+      // NOT a re-hash — a keyed signature over the whole record minus row_mac under the
+      // invariant-run context. The seam isolates the secret when the server runs under a
+      // dedicated signer uid (agent uid then gets EACCES); on the same-uid box it
+      // degrades to a local sign and the verdict-level attestation gate enforces trust.
+      signRowViaIsolatedSignerOrLocal(domain, INVARIANT_RUN_MAC_CONTEXT, record);
       const existing = readJsonlRuns(invariantRunsPath, { symlinkAsEmpty: true });
       const byHash = new Map();
       for (const run of existing) {
@@ -929,11 +985,30 @@ function adjudicateInvariantDifferential({ positiveRun, controlRun }) {
   return { result, reason, positive_violation: positiveViolation, control_violation: controlViolation };
 }
 
+// Resolve the per-call shared verifier for the invariant-run MAC check WITHOUT throwing.
+// Cycle B rows are always ed25519 (v2), so the ed25519 PUBLIC key is the only material
+// these contexts need; resolveRowVerifierSafely yields a public-key-only verifier
+// (hmacKey:null) for a non-offensive ed25519-only session and null for a pre-keypair
+// session. A legacy (unsigned) row carries no row_mac so assertRowMacOrLegacy returns
+// {legacy} and never consults the verifier, while a SIGNED row with a null verifier fails
+// closed. Resolve ONCE per call (it reads keys from disk) and thread it into the per-row
+// validator, never per row (CONSTRAINT 1: no per-row disk re-read).
+function resolveInvariantRowVerifierSafely(domain) {
+  return resolveRowVerifierSafely(domain);
+}
+
 // Re-validate a single invariant-runs.jsonl row exactly as proof-bundle.js's
 // readInvariantRunRow does (the row binds the outcome to the Foundry result and
 // the run identity), then return the row. A forged row is rejected here just as
 // it is at the proof-bundle gate.
-function readInvariantRunRowForVerification(rows, runHash, fieldName, expectedFindingId) {
+//
+// Cycle B: AFTER the content-hash re-derivation (computeInvariantRunHash === run_hash)
+// passes, ALSO assert the keyed row_mac via assertRowMacOrLegacy. A NEW row carries a
+// valid bob.invariant-run.v1 signature; a row whose covered field was mutated with a
+// stale MAC hard-fails (throw → reverify catch → ok:false; proof-bundle rejects the
+// bundle); an OLD unsigned row is accepted-with-warning (still fully re-derived). The
+// MAC is an ADDED O(1) keyed layer, never a replacement for the content-hash check.
+function readInvariantRunRowForVerification(rows, runHash, fieldName, expectedFindingId, verifier = null) {
   if (typeof runHash !== "string" || !/^[0-9a-f]{64}$/i.test(runHash)) {
     throw new Error(`${fieldName} must be a 64-hex invariant run_hash`);
   }
@@ -965,6 +1040,11 @@ function readInvariantRunRowForVerification(rows, runHash, fieldName, expectedFi
   if (classifyFoundryOutcome(row.foundry_result) !== row.outcome) {
     throw new Error(`${fieldName} outcome does not match invariant run Foundry result`);
   }
+  // Cycle B keyed layer: a present-but-invalid row_mac (forged/tampered/cross-context)
+  // throws here; an absent row_mac is accepted-with-warning (legacy in-flight row, still
+  // re-derived above). Throws propagate to the caller's catch (reverify → ok:false) or
+  // to the proof-bundle gate (bundle rejected), mirroring the content-hash failure path.
+  assertRowMacOrLegacy(INVARIANT_RUN_MAC_CONTEXT, row, verifier);
   return row;
 }
 
@@ -984,7 +1064,9 @@ function verifyInvariantDifferential({ target_domain, finding_id, positive_run_h
   }
   const corpusPath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(domain), { createDir: false });
   const rows = readJsonlRuns(corpusPath);
-  const positiveRow = readInvariantRunRowForVerification(rows, positive_run_hash, "positive_run_hash", findingId);
+  // Cycle B: resolve the keyed-MAC verifier ONCE for this call (not per row).
+  const verifier = resolveInvariantRowVerifierSafely(domain);
+  const positiveRow = readInvariantRunRowForVerification(rows, positive_run_hash, "positive_run_hash", findingId, verifier);
 
   // REFUTING-ARM (universal): a confirm needs a refuting control. No control arm
   // => INCONCLUSIVE by construction; the ledger receives no verified_pass.
@@ -1002,7 +1084,7 @@ function verifyInvariantDifferential({ target_domain, finding_id, positive_run_h
     });
   }
 
-  const controlRow = readInvariantRunRowForVerification(rows, control_run_hash, "control_run_hash", findingId);
+  const controlRow = readInvariantRunRowForVerification(rows, control_run_hash, "control_run_hash", findingId, verifier);
 
   // The control MUST be the SAME test on a DIFFERENT tree. It binds finding_id,
   // template_id, contract_name, function_name, slot_values and the
@@ -1107,7 +1189,11 @@ function reverifyInvariantVerifiedRecord(domain, record) {
     const findingId = parseFindingId(record.finding_id, "finding_id");
     const corpusPath = resolveInvariantRunsFilePath(invariantRunsJsonlPath(targetDomain), { createDir: false });
     const rows = readJsonlRuns(corpusPath);
-    const positiveRow = readInvariantRunRowForVerification(rows, record.positive_run_hash, "positive_run_hash", findingId);
+    // Cycle B: resolve the keyed-MAC verifier ONCE for this re-derivation (not per row).
+    // A present-but-invalid row_mac throws inside readInvariantRunRowForVerification →
+    // caught below → ok:false, fail-closed exactly like a content-inconsistent row.
+    const verifier = resolveInvariantRowVerifierSafely(targetDomain);
+    const positiveRow = readInvariantRunRowForVerification(rows, record.positive_run_hash, "positive_run_hash", findingId, verifier);
 
     // A confirm needs a refuting control. No control arm → not a flip → not ok
     // (a single-run pass never confirms; mirrors verifyInvariantDifferential).
@@ -1115,7 +1201,7 @@ function reverifyInvariantVerifiedRecord(domain, record) {
       || (typeof record.control_run_hash === "string" && !record.control_run_hash.trim())) {
       return { ok: false, positive_run_hash: null, control_run_hash: null };
     }
-    const controlRow = readInvariantRunRowForVerification(rows, record.control_run_hash, "control_run_hash", findingId);
+    const controlRow = readInvariantRunRowForVerification(rows, record.control_run_hash, "control_run_hash", findingId, verifier);
 
     // The control MUST be the SAME test on a DIFFERENT tree — identical binding to
     // verifyInvariantDifferential. A control that differs on the test identity
@@ -1144,11 +1230,17 @@ function reverifyInvariantVerifiedRecord(domain, record) {
       ok: result === RESULT_VERIFIED_PASS,
       positive_run_hash: positiveRow.run_hash,
       control_run_hash: controlRow.run_hash,
+      // Surface whether the POSITIVE run row (the row that demonstrates the
+      // violation, i.e. the forgery vector if it ran host-as-signer) was executed
+      // in a filesystem-namespace container. The verdict gate consults this so a
+      // degrade-host SC run can never back a TRUSTED SC reportable. An absent/legacy
+      // value reads false (fail-closed un-isolated at the gate).
+      container_isolated: positiveRow.container_isolated === true,
     };
   } catch {
     // Missing / content-inconsistent / non-flipping / single-run / rotated row →
     // the flip is not re-derivable from the run rows. Fail closed.
-    return { ok: false, positive_run_hash: null, control_run_hash: null };
+    return { ok: false, positive_run_hash: null, control_run_hash: null, container_isolated: false };
   }
 }
 
@@ -1191,6 +1283,11 @@ function readInvariantVerifiedSummary(domain) {
       positive_run_hash: rederived.positive_run_hash,
       control_run_hash: rederived.control_run_hash,
       template_id: r.template_id,
+      // Whether the RE-RESOLVED positive run row was containerized. The verdict gate
+      // treats an SC-backed reportable whose backing positive run was NOT
+      // containerized (a degrade-host-as-signer run) as un-isolated, regardless of
+      // the live signer-key probe. False on a legacy row predating the field.
+      container_isolated: rederived.container_isolated === true,
     };
   }
   return {

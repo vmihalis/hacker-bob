@@ -42,6 +42,8 @@ const {
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("../mcp/lib/claims.js");
 const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
@@ -266,8 +268,9 @@ test("poll HIT (http): signed MEDIUM row bound to the in-scope endpoint, not the
   assert.equal(row.target, canonicalizeExploitTarget(`https://${domain}${ENDPOINT_PATH}`));
   assert.equal(new URL(row.target).host, domain);
   assert.notEqual(new URL(row.target).host, OOB_HOST);
-  // MAC valid + capture re-hashes (freeze re-hash path).
-  assert.equal(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), true);
+  // MAC valid + capture re-hashes (freeze re-hash path). Producer-minted rows are
+  // ed25519 (v2) — verify via the bundle's public key.
+  assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), true);
   const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
   assert.equal(observed.stdout_hash, row.stdout_hash);
 

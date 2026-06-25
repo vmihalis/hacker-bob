@@ -15,6 +15,7 @@ const os = require("os");
 const path = require("path");
 
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const { appendCandidateClaim, canonicalizeExploitTarget } = require("../mcp/lib/claims.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
 const { appendJsonlLine } = require("../mcp/lib/storage.js");
@@ -187,7 +188,7 @@ test("bob_compose_report flows through unaffected for an all-signed final-report
     // flip, so it flows through both the degraded-signature gate and the executed-flip gate.
     seedComposeExecutedArm(domain, "F-1");
 
-    const result = JSON.parse(composeReportTool.handler({ target_domain: domain, sections: sections() }));
+    const result = withIsolatedSigner(() => JSON.parse(composeReportTool.handler({ target_domain: domain, sections: sections() })));
     assert.equal(result.target_domain, domain);
     assert.match(result.report_content_hash, /^[a-f0-9]{64}$/);
     assert.equal(fs.existsSync(reportMarkdownPath(domain)), true, "report.md must render for signed findings");

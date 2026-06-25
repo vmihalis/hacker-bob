@@ -21,7 +21,8 @@ const path = require("node:path");
 const { buildAndSignOffensiveRow } = require("../mcp/lib/offensive-capture-writer.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
 const { withSessionLock } = require("../mcp/lib/storage.js");
 
 function withTempHome(fn) {
@@ -67,7 +68,10 @@ for (const outcome of ["blocked_by_defense", "blocked_by_infra"]) {
     assert.equal(row.dry_run, false);
     assert.equal(row.timed_out, false);
     assert.equal(row.exit_code, 0, "a server-denied response is a completed execution, not a process failure");
-    assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), "the blocked row verifies its MAC");
+    assert.ok(
+      verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)),
+      "the blocked row verifies its MAC",
+    );
   }));
 }
 

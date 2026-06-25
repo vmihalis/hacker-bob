@@ -65,6 +65,7 @@ const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
 const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
 
 const {
@@ -493,7 +494,7 @@ function driveReportSnapshotChain(domain, {
     }
   }
   callTool(advanceSessionTool, { target_domain: domain, to_state: "GRADE" });
-  callTool(writeGradeVerdictTool, {
+  withIsolatedSigner(() => callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
@@ -508,7 +509,7 @@ function driveReportSnapshotChain(domain, {
       feedback: "Cross-stack impact is clear and reproducible.",
     })),
     feedback: "Cross-stack handoff thesis is submission-ready.",
-  });
+  }));
 
   callTool(advanceSessionTool, { target_domain: domain, to_state: "REPORT" });
 

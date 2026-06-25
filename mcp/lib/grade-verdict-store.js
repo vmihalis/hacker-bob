@@ -155,6 +155,29 @@ function normalizeCoverageClosure(value) {
   };
 }
 
+// Durable advisory-trust annotation stamped on a grade recorded under the
+// sandbox-isolation degrade path. A pure trust marker: it never enters
+// enforceGradeVerdictConsistency (the score/verdict math is unchanged), and is
+// carried through read-back so a machine consumer sees the recorded verdict is
+// advisory-trust, not production-trust.
+function normalizeSandboxDowngrade(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("sandbox_downgrade must be an object");
+  }
+  if (value.downgraded !== true) {
+    throw new Error("sandbox_downgrade.downgraded must be true");
+  }
+  const ids = Array.isArray(value.reportable_finding_ids)
+    ? value.reportable_finding_ids.map((id) => assertNonEmptyString(id, "sandbox_downgrade.reportable_finding_ids[]"))
+    : [];
+  return {
+    downgraded: true,
+    reason: assertNonEmptyString(value.reason, "sandbox_downgrade.reason"),
+    reportable_finding_ids: ids,
+    warning: assertNonEmptyString(value.warning, "sandbox_downgrade.warning"),
+  };
+}
+
 function normalizeGradeVerdictDocument(document, { expectedDomain = null, findingIdSet = null } = {}) {
   if (document == null || typeof document !== "object" || Array.isArray(document)) {
     throw new Error("grade verdict document must be an object");
@@ -179,6 +202,14 @@ function normalizeGradeVerdictDocument(document, { expectedDomain = null, findin
   // legacy/surface-only sessions, so their persisted shape is byte-identical.
   if (document.coverage_closure != null) {
     normalized.coverage_closure = normalizeCoverageClosure(document.coverage_closure);
+  }
+
+  // Present only on grade verdicts recorded under the sandbox-isolation degrade
+  // path; absent for clean/enforce-allowed grades, so their shape is byte-
+  // identical. Carried through read-back so a downstream grader/finalizer sees
+  // the recorded verdict is advisory-trust, not production-trust.
+  if (document.sandbox_downgrade != null) {
+    normalized.sandbox_downgrade = normalizeSandboxDowngrade(document.sandbox_downgrade);
   }
 
   if (!Array.isArray(document.findings)) {
@@ -403,6 +434,63 @@ function writeGradeVerdict(args) {
   });
 
   const finalReportableSeveritySet = requireFinalReportableSeveritySet(domain, findingIdSet);
+  // Verdict-level sandbox-isolation gate (the ALL-sessions write-level door
+  // closing the web/SC uniformity gap the repo-only lifecycle gateVerifyToGrade
+  // misses). When a reportable medium+ finding draws on one of the four keyed
+  // verdict ledgers and the LIVE re-probe cannot prove the signer key is isolated
+  // (or a legacy/v1-HMAC row backs a NEW claim): enforce -> refuse to write the
+  // grade (the analog of the compose door's report.md refusal); degrade ->
+  // record the grade but stamp a durable downgrade annotation + emit a loud
+  // warning so the SUBMIT-as-reportable verdict is not trusted as production
+  // grade. Reuses the SAME decision module both verdict seams consume (no logic
+  // fork) and the live probe inside it (never the stored sandbox-isolation.json
+  // flag). A clean / advisory-only / no-verdict-ledger grade is inert
+  // (decision:allow) and writes byte-identically — RANK != BOUND. The gate is
+  // verdict-LEVEL O(1) (one evaluateVerdictSandboxGate per write), never per row.
+  const sandboxGate = require("./sandbox-isolation-gate.js");
+  let sandboxDecision;
+  try {
+    sandboxDecision = sandboxGate.evaluateVerdictSandboxGate(domain);
+  } catch (error) {
+    // Fail CLOSED: refuse to record a trusted grade whose isolation could not be
+    // evaluated rather than launder an unevaluable verdict.
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Refusing to write grade verdict: sandbox-isolation gate evaluation failed (failing closed): ${error.message || String(error)}`,
+      { code: "grade_sandbox_isolation_unattested_unevaluable" },
+      { remediation: sandboxGate.SANDBOX_REMEDIATION },
+    );
+  }
+  let sandboxDowngrade = null;
+  if (sandboxDecision.applies && sandboxDecision.decision === "block") {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      "Refusing to write grade verdict: "
+        + `${sandboxDecision.reportable_finding_ids.length} reportable medium+ finding(s) draw on a keyed verdict `
+        + `ledger but the signing key is not isolated (mode=enforce, reason=${sandboxDecision.reason}); a same-uid `
+        + "agent could forge the backing MAC so a SUBMIT-reportable verdict cannot be trusted",
+      {
+        code: "grade_sandbox_isolation_unattested",
+        reason: sandboxDecision.reason,
+        reportable_finding_ids: sandboxDecision.reportable_finding_ids,
+      },
+      { remediation: sandboxGate.SANDBOX_REMEDIATION },
+    );
+  } else if (sandboxDecision.applies && sandboxDecision.decision === "downgrade") {
+    // degrade: never silent (CONSTRAINT 5). Emit the loud warning AND fold a
+    // durable downgrade annotation into the grade document so a downstream
+    // grader/finalizer sees the recorded verdict is advisory-trust, not
+    // production-trust. The verdict/score math (enforceGradeVerdictConsistency)
+    // is untouched; only the TRUST stamp changes, analogous to the compose
+    // door annotating bob_verified -> external_research provenance.
+    const warning = sandboxGate.emitSandboxDowngradeWarning(sandboxDecision, "bob_write_grade_verdict:");
+    sandboxDowngrade = {
+      downgraded: true,
+      reason: sandboxDecision.reason,
+      reportable_finding_ids: sandboxDecision.reportable_finding_ids,
+      warning,
+    };
+  }
   // Fail-closed trust gate: refuse to bind a trust-degraded (unsigned) finding
   // into the grade verdict at all. Any finding bound into grade.json (seenIds)
   // can drive total_score and the SUBMIT verdict regardless of its reportable
@@ -530,6 +618,14 @@ function writeGradeVerdict(args) {
     }
   } catch {}
 
+  // degrade-mode durable trust annotation. Carried through normalizeGradeVerdict
+  // Document read-back (like coverage_closure) so a downstream consumer sees the
+  // recorded grade is advisory-trust. Absent on a clean/enforce-allowed grade, so
+  // those documents stay byte-identical.
+  if (sandboxDowngrade != null) {
+    document.sandbox_downgrade = sandboxDowngrade;
+  }
+
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");
 
@@ -539,6 +635,9 @@ function writeGradeVerdict(args) {
     written_json: paths.json,
     claim_freeze_id: claimFreezeId,
   };
+  if (sandboxDowngrade != null) {
+    response.sandbox_downgrade = sandboxDowngrade;
+  }
   writeMarkdownMirror(paths.markdown, renderGradeVerdictMarkdown(document), response);
   safeAppendPipelineEventDirect(domain, "grade_written", {
     phase: "GRADE",

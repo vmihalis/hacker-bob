@@ -100,6 +100,23 @@ function handoffSigningKeyPath(domain) {
   return path.join(sessionDir(domain), ".handoff-signing-key.json");
 }
 
+// The ed25519 PRIVATE key (pkcs8 DER, base64url; 0600). It splits SIGN from VERIFY:
+// new offensive rows are signed with it, but the verifiers hold only the public key.
+// It is still minted at the AGENT's uid and is still agent-READABLE there — the same
+// residual the symmetric key has; the sign/verify split is a structural prerequisite,
+// not a custody close. MCP-owned (agent Write blocked) and dotfile-hidden like the
+// symmetric key.
+function handoffSigningPrivateKeyPath(domain) {
+  return path.join(sessionDir(domain), ".handoff-signing-key-ed25519.json");
+}
+
+// The ed25519 PUBLIC key (spki DER, base64url). World-READABLE content (a verifier
+// needs only this), but MCP-owned for WRITE: an agent must not forge the published
+// verify key, so it is agent-Write-blocked like any MCP-owned basename.
+function handoffSigningPublicKeyPath(domain) {
+  return path.join(sessionDir(domain), "handoff-signing-pubkey.json");
+}
+
 function scopeWarningsPath(domain) {
   return path.join(sessionDir(domain), "scope-warnings.log");
 }
@@ -484,6 +501,17 @@ function labAuthorizationPath(domain) {
   return path.join(sessionDir(domain), "lab-authorization.json");
 }
 
+// Signing-key isolation self-attestation. Written ONCE by bob_init_session
+// (sandbox-isolation-attest.recordSandboxIsolationAttestation) after the
+// handoff signing key is ensured. Records, audit-graded, whether the server can
+// read its own 0600 signing key. Audit-graded (see AUDIT_GRADED_BASENAMES) so a
+// prompt-injected agent cannot forge a "the signer is isolated" fact via the
+// Write tool. INERT — nothing reads this to gate a verdict today; it is the
+// truth channel a future out-of-uid signer guardian will consult.
+function sandboxIsolationPath(domain) {
+  return path.join(sessionDir(domain), "sandbox-isolation.json");
+}
+
 // Cycle O.S4 — diff-impact.json is written by bob_summarize_diff_impact after
 // diff impact analysis. Records which files/line-ranges were touched by the
 // diff and which surface IDs they map to. This is MCP-owned; agents MUST NOT
@@ -592,6 +620,11 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // only by bob_init_session) so a prompt-injected agent cannot forge it via the
   // Write tool to self-grant a loopback/RFC1918 scan past the public-DNS gate.
   "lab-authorization.json",
+  // Signing-key isolation posture. MCP-write-only (written only by
+  // bob_init_session) so a prompt-injected agent cannot forge a "the signer
+  // runs under a separate uid" fact via the Write tool. Forensic only — no
+  // verdict path gates on it.
+  "sandbox-isolation.json",
   "report.md",
   "chains.md",
   "evidence-packs.md",
@@ -720,6 +753,11 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "static-scan-results.jsonl",
   "pipeline-events.jsonl",
   ".handoff-signing-key.json",
+  // ed25519 keypair (sign/verify split). The private key is 0600 (still agent-readable
+  // at the agent uid — no custody close). The public key carries world-readable verify
+  // material but is MCP-owned for WRITE so an agent cannot forge the published key.
+  ".handoff-signing-key-ed25519.json",
+  "handoff-signing-pubkey.json",
   // T8 inventory closure — MCP-owned session-root artifacts the path-function
   // inventory produces. These were silently relying on the default-block; now
   // they are explicitly MCP-owned so the inventory check is closed against the
@@ -1106,6 +1144,7 @@ module.exports = {
   repoEnvPath,
   repoInventoryPath,
   labAuthorizationPath,
+  sandboxIsolationPath,
   repoRunsDir,
   repoWorkDir,
   scopeWarningsPath,
@@ -1121,6 +1160,8 @@ module.exports = {
   techniqueAttemptsJsonlPath,
   techniquePackReadsJsonlPath,
   handoffSigningKeyPath,
+  handoffSigningPrivateKeyPath,
+  handoffSigningPublicKeyPath,
   auditReportsJsonlPath,
   mechanismCandidatesJsonlPath,
   authDifferentialResultsPath,

@@ -1,6 +1,7 @@
 {
   "audit_graded_basenames": [
     "lab-authorization.json",
+    "sandbox-isolation.json",
     "report.md",
     "chains.md",
     "evidence-packs.md",
@@ -67,6 +68,8 @@
     "static-scan-results.jsonl",
     "pipeline-events.jsonl",
     ".handoff-signing-key.json",
+    ".handoff-signing-key-ed25519.json",
+    "handoff-signing-pubkey.json",
     ".session.lock",
     "session-nucleus.json",
     "session-events.jsonl",

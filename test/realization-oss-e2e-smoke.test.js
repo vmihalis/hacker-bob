@@ -45,6 +45,7 @@ const repoPrepareEnvTool = require("../mcp/lib/tools/repo-prepare-env.js");
 const scheduleTasksTool = require("../mcp/lib/tools/schedule-tasks.js");
 const writeEvidencePacksTool = require("../mcp/lib/tools/write-evidence-packs.js");
 const writeGradeVerdictTool = require("../mcp/lib/tools/write-grade-verdict.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const writeVerificationRoundTool = require("../mcp/lib/tools/write-verification-round.js");
 
 const {
@@ -479,7 +480,7 @@ async function driveOssRealizationFlow({
   // Step 14 — grade verdict. Per grade-verdict-store consistency rules the
   // per-finding total_score must equal the sum of its rubric scores and the
   // document total_score must equal the MAX per-finding total_score.
-  callTool(writeGradeVerdictTool, {
+  withIsolatedSigner(() => callTool(writeGradeVerdictTool, {
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
@@ -494,7 +495,7 @@ async function driveOssRealizationFlow({
       feedback: "OSS smoke: synthesized fixture finding is reproducible.",
     })),
     feedback: "Both OSS smoke findings are submission-ready against the synthesized fixture.",
-  });
+  }));
   assert.ok(fs.existsSync(gradeArtifactPaths(domain).json), "grade.json must be written");
 
   // Step 15 — bob_advance_session(REPORT).

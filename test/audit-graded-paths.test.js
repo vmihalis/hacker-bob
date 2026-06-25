@@ -15,7 +15,9 @@ const path = require("path");
 
 const {
   AUDIT_GRADED_PATHS,
+  WRITE_GUARD_TABLES,
   isAuditGradedPath,
+  sandboxIsolationPath,
   sessionDir,
 } = require("../mcp/lib/paths.js");
 
@@ -87,6 +89,20 @@ test("isAuditGradedPath matches verification-attempts/ directory prefix", () => 
   const domain = "example.com";
   const attemptFile = path.join(sessionDir(domain), "verification-attempts", "att-1.json");
   assert.equal(isAuditGradedPath(attemptFile, domain), true);
+});
+
+test("sandbox-isolation.json is audit-graded and in the write-guard BLOCK set", () => {
+  const domain = "example.com";
+  // The isolation attestation is MCP-write-only; an agent Write must be blocked.
+  assert.equal(isAuditGradedPath(sandboxIsolationPath(domain), domain), true);
+  assert.ok(
+    AUDIT_GRADED_PATHS.basenames.includes("sandbox-isolation.json"),
+    "sandbox-isolation.json must be an audit-graded basename",
+  );
+  assert.ok(
+    WRITE_GUARD_TABLES.audit_graded_basenames.includes("sandbox-isolation.json"),
+    "sandbox-isolation.json must be in the PreToolUse write-guard BLOCK set",
+  );
 });
 
 test("isAuditGradedPath returns false for paths outside the session dir", () => {

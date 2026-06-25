@@ -1222,18 +1222,26 @@ test("#111 verify mirror: a forged freeze with an empty claim surface fails clos
     impact: "Bounded fixture impact.",
   });
   freezeClaims(domain);
-  // Forge in place BEFORE entering verify (so the snapshot hash is computed over the
-  // forged content): set the single claim surface to "". assertSnapshotMatchesFreeze
-  // trusts the recorded freeze_hash field, so the mutated claims still load.
+  // Forge in place BEFORE entering verify: set the single claim surface to "". The claims
+  // array is a freeze_mac-COVERED field, so mutating it on disk while keeping the now-stale
+  // freeze_mac makes the freeze a present-but-INVALID mac. Under MEDIUM A, readCurrentClaimFreeze
+  // re-throws STATE_CONFLICT on a tampered freeze (a tampered freeze must never silently relax a
+  // validation), so the forge is HARD-CAUGHT at verify entry — a strictly stronger close than the
+  // old "row ineligible -> clamp to baseline" tolerance (the inflated severity is refused either
+  // way, but now the tamper itself is surfaced rather than silently absorbed).
   const freezePath = claimFreezePath(domain);
   const doc = JSON.parse(fs.readFileSync(freezePath, "utf8"));
   for (const c of doc.claims) {
     if (Array.isArray(c.surface_ids) && c.surface_ids.length === 1) c.surface_ids = [""];
   }
   fs.writeFileSync(freezePath, JSON.stringify(doc));
-  const context = enterVerifyV2(domain);
-  writeV2Round(domain, context, "brutalist", [
-    v2VerificationResult("F-1", { severity: "critical", confidence_reasons: ["exploit_replay_confirmed"] }),
-  ]);
-  assert.equal(persistedSeverity(domain, "brutalist"), "low", "empty claim surface -> row ineligible -> clamp to baseline");
+  assert.throws(
+    () => enterVerifyV2(domain),
+    (err) => {
+      assert.equal(err.code, "STATE_CONFLICT");
+      assert.match(String(err.message), /freeze_mac present but does not verify|tampered/);
+      return true;
+    },
+    "a forged (freeze_mac-invalidating) freeze hard-fails at verify entry, never silently relaxing the clamp",
+  );
 }));

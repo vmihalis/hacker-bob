@@ -176,7 +176,12 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // audit-graded ledger) and the cross-role fan-out tool surface (bob_plan_recon_angles +
     // recon-angle-plan.js, bob_stage_verification_round_partial, phase-fanout-plan.js) plus the
     // regenerated agent/skill/settings surfaces that carry the new tools. Keep in lockstep with scripts/release-check.js.
-    assert.ok(pack.size < 3700000, `npm pack size ${pack.size} exceeds 3.7 MB threshold`);
+    // Raised to 3.9 MB for the offensive-sandbox isolation arc (sandbox-isolation-attest.js +
+    // sandbox-isolation-gate.js + sc-container-exec.js + signing-key-custody.js, the ed25519/scheme-tagged
+    // MAC + keyed verdict ledgers across handoff-signing-key.js/offensive-row-mac.js, the container routing
+    // of the seven SC runners, and scripts/launch-bob-signer.sh), which took the lean tarball just over the
+    // prior 3.7 MB ceiling. Keep in lockstep with scripts/release-check.js.
+    assert.ok(pack.size < 3900000, `npm pack size ${pack.size} exceeds 3.9 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

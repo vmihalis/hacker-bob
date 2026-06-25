@@ -19,8 +19,14 @@ const path = require("node:path");
 
 const writer = require("../mcp/lib/offensive-capture-writer.js");
 const { initSession } = require("../mcp/lib/session-state.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+const {
+  ensureHandoffSigningKey,
+  readHandoffSigningPublicKey,
+  readHandoffSigningKey,
+  resolveOffensiveRowVerifier,
+} = require("../mcp/lib/handoff-signing-key.js");
 const { withSessionLock } = require("../mcp/lib/storage.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -141,6 +147,30 @@ test("buildAndSignOffensiveRow: demonstratedSeverityOverride can only LOWER the 
     const none = withSessionLock(domain, () =>
       writer.buildAndSignOffensiveRow(domain, buildArgs({})));
     assert.equal(none.demonstrated_severity, "medium", "no override keeps the registry ceiling");
+  });
+});
+
+test("buildAndSignOffensiveRow mints a v2 ed25519 row_mac that verifies with the PUBLIC key only", () => {
+  withTempHome(() => {
+    const domain = "ed25519row.example.test";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    const row = withSessionLock(domain, () => writer.buildAndSignOffensiveRow(domain, buildArgs()));
+
+    assert.equal(row.row_mac.version, 2, "new rows carry the v2 envelope");
+    assert.equal(row.row_mac.scheme, "ed25519", "new rows are ed25519-signed");
+    assert.equal(typeof row.row_mac.signature, "string");
+    assert.equal(row.row_mac.digest, undefined, "an ed25519 envelope has no hmac digest");
+
+    // The verifier holds ONLY the public key — no secret — and accepts the row.
+    const pub = readHandoffSigningPublicKey(domain);
+    assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, { scheme: "ed25519", publicKey: pub.publicKey }), true);
+
+    // The symmetric key alone CANNOT verify the ed25519 row.
+    const hmacKey = readHandoffSigningKey(domain);
+    assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, { scheme: "hmac-sha256", key: hmacKey }), false);
+
+    // The combined bundle the verify sites use (public + symmetric) accepts it via scheme dispatch.
+    assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), true);
   });
 });
 

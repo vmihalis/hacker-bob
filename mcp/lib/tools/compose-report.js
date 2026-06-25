@@ -388,6 +388,146 @@ function assertComposedVerifiedSectionsAreExecuted(domain, sections) {
   );
 }
 
+// Cycle C / F3 — verdict-level sandbox-isolation gate at the report door. This
+// is the belt-and-suspenders sibling of the verify->grade gate (the SAME live
+// re-probe + the SAME single decision module, sandbox-isolation-gate.js). When a
+// reportable medium+ finding draws on one of the four keyed verdict ledgers
+// (offensive/invariant/repro/freeze) and the LIVE re-probe cannot prove the
+// signer key is isolated (or a legacy/v1-HMAC row backs a NEW claim):
+//   * enforce mode -> THROW STATE_CONFLICT and refuse to render report.md (the
+//     same shape as the executed-flip gate above);
+//   * degrade mode -> DOWNGRADE every bob_verified section to advisory in place
+//     (provenance bob_verified -> external_research, a loud banner prefixed to
+//     the prose) and emit a loud stderr warning. The section still renders, but
+//     never as a reportable/bob_verified verdict.
+// Returns the (possibly downgraded) sections array. A clean / advisory-only /
+// pure-OSINT session is unaffected (the gate is inert — RANK != BOUND, only the
+// verdict-ledger-backed reportable medium+ set is ever touched). The probe is
+// verdict-LEVEL (one syscall per render), never on the per-row read path
+// (CONSTRAINT 1); it consumes the LIVE probe, NEVER the stored sandbox-isolation
+// .json flag (forward-note ii).
+function assertComposedVerdictSectionsAreSandboxAttested(domain, sections) {
+  const gate = require("../sandbox-isolation-gate.js");
+  let decision;
+  try {
+    decision = gate.evaluateVerdictSandboxGate(domain);
+  } catch (error) {
+    // Fail CLOSED: refuse to render rather than launder a verdict whose isolation
+    // could not be evaluated.
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Refusing to render report.md: sandbox-isolation gate evaluation failed (failing closed): ${error.message || String(error)}`,
+      { code: "compose_report_sandbox_isolation_unevaluable" },
+      { remediation: gate.SANDBOX_REMEDIATION },
+    );
+  }
+  if (!decision.applies || decision.decision === "allow") return sections;
+  if (decision.decision === "block") {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      "Refusing to render report.md: "
+        + `${decision.reportable_finding_ids.length} reportable medium+ finding(s) draw on a keyed verdict `
+        + `ledger but the signing key is not isolated (mode=enforce, reason=${decision.reason}); a same-uid `
+        + "agent could forge the backing MAC, so the verdict cannot be reported as bob_verified",
+      {
+        code: "compose_report_sandbox_isolation_unattested",
+        reason: decision.reason,
+        reportable_finding_ids: decision.reportable_finding_ids,
+      },
+      { remediation: gate.SANDBOX_REMEDIATION },
+    );
+  }
+  // degrade: downgrade ONLY the bob_verified sections tied to a GATED finding +
+  // loud warning. RANK != BOUND at the section layer: the gate decided exactly which
+  // findings are verdict-ledger-backed-and-unattested (decision.reportable_finding_ids);
+  // a bob_verified section whose evidence cites a NON-gated finding (e.g. a pure-OSINT
+  // reportable finding) must render unchanged. Section -> finding linkage resolves the
+  // section's verification_round evidence_ref(s) to finding_id(s); a section whose
+  // linkage cannot be resolved is downgraded (fail CLOSED) — scope-narrowing only SKIPS
+  // the downgrade when the section is PROVABLY tied to a non-gated finding.
+  const gatedFindingIds = new Set(decision.reportable_finding_ids);
+  const warning = gate.emitSandboxDowngradeWarning(decision, "bob_compose_report:");
+  const banner =
+    "[ADVISORY — sandbox isolation unattested: this finding's verdict-ledger MAC "
+    + "could be forged by a same-uid agent on this box; downgraded from bob_verified "
+    + "to advisory. Not a production-trust reportable verdict.]";
+  let downgraded = 0;
+  const next = sections.map((section) => {
+    if (!section || section.provenance !== "bob_verified") return section;
+    if (!sectionTargetsGatedFinding(domain, section, gatedFindingIds)) return section;
+    downgraded += 1;
+    return {
+      ...section,
+      provenance: "external_research",
+      prose: `${banner}\n\n${section.prose}`,
+    };
+  });
+  return { sections: next, downgraded, warning, downgrade: true };
+}
+
+// Resolve a bob_verified section's verification_round evidence_ref(s) to finding_id(s)
+// and return true iff ANY resolves to a gated finding id. The evidence_ref strings carry
+// the form "verification_round:<round>:<result_id>" or "verification_round:<result_id>";
+// the id after the prefix parses the SAME way validateVerificationRoundRef parses it
+// (<round>:<result_id> or a bare result_id), and the matched round result's finding_id
+// is the section's finding linkage.
+//
+// FAIL CLOSED (regression_risks #6): if a bob_verified section carries NO parseable
+// verification_round linkage to a finding id, return true (downgrade it). Scope-narrowing
+// only SKIPS the downgrade when the section is PROVABLY tied to a finding id that is NOT
+// in the gated set — never on an unresolved linkage (under-downgrade would be fail-open).
+function sectionTargetsGatedFinding(domain, section, gatedFindingIds) {
+  const refs = Array.isArray(section.evidence_refs) ? section.evidence_refs : [];
+  let resolvedAnyFinding = false;
+  for (const ref of refs) {
+    const classified = classifyEvidenceRef(ref);
+    if (!classified || classified.prefix !== "verification_round:") continue;
+    const findingIds = verificationRoundRefFindingIds(domain, classified.id);
+    for (const findingId of findingIds) {
+      resolvedAnyFinding = true;
+      if (gatedFindingIds.has(findingId)) return true;
+    }
+  }
+  // PROVABLY non-gated only when at least one finding id resolved and NONE was gated.
+  // No resolvable finding linkage => fail closed (downgrade).
+  return !resolvedAnyFinding;
+}
+
+// Resolve a verification_round evidence_ref id (the part after "verification_round:",
+// i.e. "<round>:<result_id>" or a bare result_id) to the set of finding_id(s) it matches
+// across the round artifacts. Mirrors validateVerificationRoundRef's round/result parse,
+// but returns the matched results' finding_ids (the linkage the section-scoping needs).
+function verificationRoundRefFindingIds(domain, id) {
+  const parts = id.split(":");
+  const round = parts.length === 2 ? parts[0] : null;
+  const resultId = parts.length === 2 ? parts[1] : id;
+  const rounds = round ? [round] : ["final", "balanced", "brutalist"];
+  const findingIds = new Set();
+  for (const r of rounds) {
+    let paths;
+    try {
+      paths = verificationRoundPaths(domain, r);
+    } catch {
+      continue;
+    }
+    if (!fs.existsSync(paths.json)) continue;
+    try {
+      const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+      const results = Array.isArray(doc && doc.results) ? doc.results : [];
+      for (const result of results) {
+        if (!result) continue;
+        if ((result.finding_id === resultId || result.result_id === resultId)
+          && typeof result.finding_id === "string" && result.finding_id.trim()) {
+          findingIds.add(result.finding_id);
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return findingIds;
+}
+
 function validateProofBundleRef(domain, id) {
   const paths = proofBundlePaths(domain);
   if (!fs.existsSync(paths.json)) return false;
@@ -798,13 +938,23 @@ function handler(args) {
   if (!Array.isArray(args.sections) || args.sections.length === 0) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "sections must be a non-empty array");
   }
-  const sections = args.sections.map(normalizeSection);
+  const normalizedSections = args.sections.map(normalizeSection);
   const severitySummary = args.severity_summary == null
     ? ""
     : assertString(args.severity_summary, "severity_summary", { maxLength: SEVERITY_SUMMARY_MAX, minLength: 0 });
   const reproSteps = normalizeReproSteps(args.repro_steps_by_finding);
 
   return withSessionLock(domain, () => {
+    // Cycle C / F3 — verdict-level sandbox-isolation gate FIRST, under the lock
+    // and before the bob_verified-specific gates: enforce throws and refuses the
+    // render; degrade rewrites the affected bob_verified sections to advisory in
+    // place (so the executed-flip/provenance gates below see the downgraded
+    // shape, never a verified verdict whose MAC a same-uid agent could forge).
+    const sandboxResult = assertComposedVerdictSectionsAreSandboxAttested(domain, normalizedSections);
+    let sections = Array.isArray(sandboxResult) ? sandboxResult : sandboxResult.sections;
+    const sandboxDowngrade = Array.isArray(sandboxResult)
+      ? null
+      : { downgraded: sandboxResult.downgraded, warning: sandboxResult.warning };
     // Provenance enforcement (Y-P13c). Runs under the session lock so
     // cross-artifact proof/evidence binding checks share the render window.
     for (const section of sections) {
@@ -835,7 +985,7 @@ function handler(args) {
     const reportPath = reportMarkdownPath(domain);
     fs.writeFileSync(reportPath, markdown, "utf8");
     const contentHash = crypto.createHash("sha256").update(markdown, "utf8").digest("hex");
-    return JSON.stringify({
+    const result = {
       version: 1,
       target_domain: domain,
       report_path: reportPath,
@@ -845,7 +995,17 @@ function handler(args) {
       amendments_rendered: amendments.length,
       cvss_annotations_rendered: cvssAnnotations.length,
       coverage_closure_rendered: coverageClosure != null,
-    });
+    };
+    // CONSTRAINT 5: degrade is never silent. When the sandbox gate downgraded
+    // bob_verified sections to advisory, surface it in the structured result so a
+    // headless harness that discards stderr still sees the downgrade.
+    if (sandboxDowngrade && sandboxDowngrade.downgraded > 0) {
+      result.sandbox_isolation_downgrade = {
+        sections_downgraded_to_advisory: sandboxDowngrade.downgraded,
+        warning: sandboxDowngrade.warning,
+      };
+    }
+    return JSON.stringify(result);
   });
 }
 
@@ -913,4 +1073,10 @@ module.exports = wrapWriteTool({
   SECTION_PROSE_MAX,
   SEVERITY_SUMMARY_MAX,
   REPRO_STEPS_PER_FINDING_MAX,
+  // Exposed for unit coverage of the LOW-3 degrade-scoping (the end-to-end "non-gated
+  // bob_verified section" is unreachable because the executed-flip gate makes every
+  // renderable bob_verified medium+ section keyed-ledger-backed-and-thus-gated; the
+  // scoping is defense-in-depth against a future provenance/backing-set divergence).
+  sectionTargetsGatedFinding,
+  verificationRoundRefFindingIds,
 });

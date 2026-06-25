@@ -31,6 +31,7 @@ const {
   requireFinalReportableSeveritySet,
 } = require("../mcp/lib/grade-verdict-store.js");
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const { offensiveRowHash } = require("../mcp/lib/finding-differential-verifier.js");
 const {
@@ -188,10 +189,10 @@ test("the compose-rendered CVSS block re-reads a hand-bumped severity as its fro
   // Runtime-indirection bump of the persisted final round high -> critical.
   bumpPersistedSeverity(domain, "critical");
 
-  const response = composeReportTool.handler({
+  const response = withIsolatedSigner(() => composeReportTool.handler({
     target_domain: domain,
     sections: [{ kind: "impact", heading: "Impact", prose: "An attacker can read other users' orders.", provenance: "operator_osint", evidence_refs: [] }],
-  });
+  }));
   JSON.parse(typeof response === "string" ? response : JSON.stringify(response));
   const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
   // The CVSS block labels the FINAL-round severity through readFinalVerificationByFinding,

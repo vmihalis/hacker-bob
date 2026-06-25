@@ -208,10 +208,12 @@ function checkCanonicalPack(rootPackage) {
   // Raised to 3.7 MB for the open-vocabulary mechanism registry + finding-differential
   // verifier/ledger and the cross-role fan-out tool surface (recon-angle + per-finding
   // verification staging) plus their regenerated agent/skill/settings surfaces.
-  if (canonical.size < 3700000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.7 MB`);
+  // Raised to 3.9 MB for the offensive-sandbox isolation arc (attestation + verdict gate +
+  // sc-container-exec + ed25519/keyed-ledger MAC + the seven SC container runners + launcher).
+  if (canonical.size < 3900000) {
+    pass(`canonical pack size ${canonical.size} bytes is under 3.9 MB`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.7 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds 3.9 MB`);
   }
 
   let foundDisallowed = false;

@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -72,7 +72,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnCargo(args, { workdir, env, timeoutMs }) {
+function spawnCargo(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     const stdoutChunks = [];
@@ -82,11 +82,15 @@ function spawnCargo(args, { workdir, env, timeoutMs }) {
 
     let child;
     try {
-      child = spawn("cargo", args, {
+      // The container route mounts ONLY this workdir (never the session tree /
+      // signing key) and runs as a non-signer container user; the degrade route
+      // is a byte-identical direct spawn.
+      child = scSubprocessContainerExec("cargo", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
@@ -108,7 +112,15 @@ function spawnCargo(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -147,6 +159,12 @@ function spawnCargo(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this cargo in a filesystem-namespace container (true)
+        // or degraded to a host spawn AS THE SIGNER (false). absence/non-true defaults
+        // to false. CosmWasm backs findings via candidate-claims/verification-rounds, not
+        // a keyed invariant-runs-style ledger, so the gate does not inspect this row
+        // today; lifted for symmetry across all seven families.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -234,6 +252,7 @@ async function runCosmwasmTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest) {
@@ -287,14 +306,14 @@ async function runCosmwasmTest({
     // Local-only run: cw-multi-test integration tests run pure Rust without
     // network access. The cosmwasm vm is an in-process simulator. So a missing
     // network is fine when network is null/localnet.
-    const result = await spawnCargo(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnCargo(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkBlock, fork_used: null, rpcPolicyRejections });
   }
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
     const env = { BOB_COSMWASM_FORK_URL: url, BOB_COSMWASM_NETWORK: network || "" };
-    const result = await spawnCargo(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env });
+    const result = await spawnCargo(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -325,6 +344,10 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
       reason: result && result.reason === "cargo_not_in_path" ? "cosmwasm_not_in_path"
         : (result && result.reason ? result.reason : "spawn_failed"),
       error: result && result.error ? result.error : null,
+      // A not-in-path / spawn-failed / refused run never executed the SC tool, so it is
+      // by definition not containerized. Surface false explicitly (fail-closed un-isolated)
+      // so the lift is present on EVERY return shape, not just success.
+      container_isolated: false,
       command: ["cargo", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -372,6 +395,9 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
     timed_out: result.timed_out === true,
     exit_code: result.exit_code,
     signal: result.signal || null,
+    // TOP-LEVEL containerization signal lifted from the spawnCargo result. Symmetry
+    // with the keyed-ledger families; a host-as-signer (degrade) run resolves false.
+    container_isolated: result.container_isolated === true,
     fork_used,
     fork_block: forkBlock || null,
     fork_block_used: forkBlockUsed,

@@ -1580,6 +1580,11 @@ test("verifyInvariantDifferential verifies a real two-sided differential", () =>
       positive_run_hash: positive.run_hash,
       control_run_hash: control.run_hash,
       template_id: positive.template_id,
+      // HIGH-1: the re-resolved positive row carries no container_isolated field
+      // (makeInvariantRunRow predates it / omits it), so the summary surfaces false
+      // (fail-closed un-isolated) — the gate then refuses to trust an SC reportable
+      // backed by this verdict unless the run was containerized.
+      container_isolated: false,
     });
   } finally {
     cleanupDomain(domain);

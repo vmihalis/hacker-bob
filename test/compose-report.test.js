@@ -21,6 +21,7 @@ const path = require("path");
 
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
 const recordClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const { deriveCvss31 } = require("../mcp/lib/cvss31.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
 const { appendJsonlLine } = require("../mcp/lib/storage.js");
@@ -326,7 +327,7 @@ test("bob_compose_report renders a server-derived CVSS v3.1 + CWE block whose ve
     // finding; seed a genuine high-severity arm so the CVSS render path is reached.
     seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "high" });
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "impact",
@@ -335,7 +336,7 @@ test("bob_compose_report renders a server-derived CVSS v3.1 + CWE block whose ve
         provenance: "operator_osint",
         evidence_refs: [],
       }],
-    });
+    }));
 
     assert.equal(result.cvss_annotations_rendered, 1);
     const expected = deriveCvss31(cvssInputs);
@@ -449,7 +450,7 @@ test("bob_compose_report renders the insufficient-verified-facts marker for a le
     // finding; a medium-severity arm satisfies the ceiling while inputs are absent.
     seedComposeExecutedArm(domain, "F-1", { positiveSeverity: "medium" });
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "impact",
@@ -458,7 +459,7 @@ test("bob_compose_report renders the insufficient-verified-facts marker for a le
         provenance: "operator_osint",
         evidence_refs: [],
       }],
-    });
+    }));
 
     assert.equal(result.cvss_annotations_rendered, 1);
     const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");
@@ -500,7 +501,7 @@ test("bob_compose_report content hash binds the CVSS block; non-reportable findi
         evidence_refs: [],
       }],
     };
-    const result = callTool(composeReportTool, args);
+    const result = withIsolatedSigner(() => callTool(composeReportTool, args));
     // Only the reportable finding is annotated.
     assert.equal(result.cvss_annotations_rendered, 1);
     const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");

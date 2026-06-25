@@ -58,6 +58,7 @@ const {
 const {
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -217,7 +218,7 @@ function seedFindingDifferentialArm(domain, findingId, {
   });
 }
 
-test("a standalone web finding with NO arm row fails the grade gate (STATE_CONFLICT)", () => withTempHome(() => {
+test("a standalone web finding with NO arm row fails the grade gate (STATE_CONFLICT)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "fd-gate-noarm.example.com";
   seedStandaloneWebFinding(domain);
   assert.throws(
@@ -233,9 +234,9 @@ test("a standalone web finding with NO arm row fails the grade gate (STATE_CONFL
       return true;
     },
   );
-}));
+})));
 
-test("a standalone web finding WITH a verified_pass arm row grades SUBMIT and stays reportable", () => withTempHome(() => {
+test("a standalone web finding WITH a verified_pass arm row grades SUBMIT and stays reportable", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "fd-gate-arm.example.com";
   seedStandaloneWebFinding(domain);
   seedFindingDifferentialArm(domain, "F-1");
@@ -247,9 +248,9 @@ test("a standalone web finding WITH a verified_pass arm row grades SUBMIT and st
   }));
   assert.equal(written.verdict, "SUBMIT");
   assert.equal(written.findings_count, 1, "the arm keeps the finding in the reportable grade set");
-}));
+})));
 
-test("B1 surface bind: a verified_pass arm minted for surface B does NOT satisfy a finding whose surface is A (finding_differential_surface_mismatch)", () => withTempHome(() => {
+test("B1 surface bind: a verified_pass arm minted for surface B does NOT satisfy a finding whose surface is A (finding_differential_surface_mismatch)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "fd-gate-surfacebind.example.com";
   seedStandaloneWebFinding(domain); // finding F-1 carries WEB_SURFACE
   // A genuine, re-derivable flip — but minted on a DIFFERENT surface.
@@ -264,9 +265,9 @@ test("B1 surface bind: a verified_pass arm minted for surface B does NOT satisfy
       return true;
     },
   );
-}));
+})));
 
-test("B1 severity ceiling: a low/medium flip does NOT back a HIGH finding (finding_differential_severity_below_finding)", () => withTempHome(() => {
+test("B1 severity ceiling: a low/medium flip does NOT back a HIGH finding (finding_differential_severity_below_finding)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "fd-gate-sevbelow.example.com";
   seedStandaloneWebFinding(domain, { severity: "high" }); // finding is HIGH
   // Same surface, genuine flip, but the executed flip only demonstrated MEDIUM.
@@ -280,9 +281,9 @@ test("B1 severity ceiling: a low/medium flip does NOT back a HIGH finding (findi
       return true;
     },
   );
-}));
+})));
 
-test("B1 severity ceiling: a HIGH flip DOES back a HIGH finding (grades SUBMIT)", () => withTempHome(() => {
+test("B1 severity ceiling: a HIGH flip DOES back a HIGH finding (grades SUBMIT)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "fd-gate-sevok.example.com";
   seedStandaloneWebFinding(domain, { severity: "high" });
   seedFindingDifferentialArm(domain, "F-1", { positiveSeverity: "high" });
@@ -291,7 +292,7 @@ test("B1 severity ceiling: a HIGH flip DOES back a HIGH finding (grades SUBMIT)"
   }));
   assert.equal(written.verdict, "SUBMIT");
   assert.equal(written.findings_count, 1);
-}));
+})));
 
 test("a finding lowered below medium is inert (not in the reportable medium+ set)", () => withTempHome(() => {
   const domain = "fd-gate-low.example.com";

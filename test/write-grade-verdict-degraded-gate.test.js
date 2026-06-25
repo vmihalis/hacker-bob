@@ -20,6 +20,7 @@ const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
 const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
 const { writeEvidencePacks } = require("../mcp/lib/evidence.js");
 const { writeGradeVerdict } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const { ERROR_CODES } = require("../mcp/lib/envelope.js");
 const { gradeArtifactPaths, findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
 const { appendJsonlLine } = require("../mcp/lib/storage.js");
@@ -191,7 +192,7 @@ function seedFinalChainForSigned(domain) {
 }
 
 test("bob_write_grade_verdict FAILS CLOSED when a reportable finding is unsigned", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "grade-degraded.example.com";
     seedFinalChainForUnsigned(domain, "F-1");
 
@@ -210,11 +211,11 @@ test("bob_write_grade_verdict FAILS CLOSED when a reportable finding is unsigned
     assert.equal(typeof err.remediation, "string");
     assert.match(err.remediation, /re-?verify/i);
     assert.equal(fs.existsSync(gradeArtifactPaths(domain).json), false, "grade.json must not be written");
-  });
+  }));
 });
 
 test("bob_write_grade_verdict FAILS CLOSED when a bound finding is unsigned even if it is not reportable", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "grade-launder.example.com";
     // F-1: signed, reportable high — a legitimate SUBMIT enabler.
     recordFindingTool.handler({
@@ -285,11 +286,11 @@ test("bob_write_grade_verdict FAILS CLOSED when a bound finding is unsigned even
     assert.equal(err.code, ERROR_CODES.STATE_CONFLICT);
     assert.match(err.message, /F-2/);
     assert.equal(fs.existsSync(gradeArtifactPaths(domain).json), false, "grade.json must not be written");
-  });
+  }));
 });
 
 test("bob_write_grade_verdict flows through unaffected for an all-signed finding", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "grade-signed.example.com";
     seedFinalChainForSigned(domain);
 
@@ -302,5 +303,5 @@ test("bob_write_grade_verdict flows through unaffected for an all-signed finding
     assert.equal(written.verdict, "SUBMIT");
     assert.equal(written.findings_count, 1);
     assert.equal(fs.existsSync(gradeArtifactPaths(domain).json), true, "grade.json must be written for signed findings");
-  });
+  }));
 });

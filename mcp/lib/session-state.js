@@ -61,7 +61,10 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
-const { ensureHandoffSigningKey } = require("./handoff-signing-key.js");
+const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("./handoff-signing-key.js");
+const {
+  recordSandboxIsolationAttestation,
+} = require("./sandbox-isolation-attest.js");
 const {
   buildGovernanceContext,
   buildGovernanceContextFromNucleus,
@@ -311,6 +314,18 @@ function initSession(args) {
     // finds it. Idempotent: creates it exclusively-atomically if absent, reads
     // it otherwise. Wave assignment still ensures it lazily as a safety net.
     ensureHandoffSigningKey(domain);
+    // Provision the ed25519 keypair alongside the symmetric key (same lock). New
+    // offensive rows sign with the private key; verifiers hold only the public key.
+    // The private key is still 0600 at the agent uid (no custody close) — the split
+    // is the structural prerequisite, not the close.
+    ensureHandoffKeypair(domain);
+    // Record, audit-graded, whether the agent uid is OS-excluded from the
+    // signer's key (Mechanism A). Runs AFTER ensureHandoffSigningKey because the
+    // probe lstats the key file itself (the inverse ordering from
+    // recordLabAuthorization, which records before the key exists). INERT:
+    // nothing reads this to gate a verdict; on the same-uid box it honestly
+    // records attested:false.
+    const sandboxIsolation = recordSandboxIsolationAttestation(domain);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
       source: "bob_init_session",
@@ -321,6 +336,10 @@ function initSession(args) {
       // Audit trail: record whether this session was operator-authorized to
       // scope a private (loopback/RFC1918) target past the public-DNS gate.
       lab_authorized: labAuthorization ? true : false,
+      // Audit trail: record whether the server's signing key is isolated from
+      // the agent uid. Forensic only — no path gates on it (false on the
+      // same-uid dev box).
+      sandbox_isolation_attested: sandboxIsolation.attested,
       ...egressFields,
     }, buildGovernanceContextFromNucleus(sessionNucleus));
 

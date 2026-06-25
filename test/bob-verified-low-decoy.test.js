@@ -14,6 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const composeReportTool = require("../mcp/lib/tools/compose-report.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const { buildClaimFreeze } = require("../mcp/lib/claim-freeze.js");
 const { writeVerificationRound } = require("../mcp/lib/verification-round-store.js");
@@ -152,20 +153,20 @@ test("a bob_verified section citing a LOW (reclamped) final-reportable finding i
   assert.equal(fs.existsSync(reportMarkdownPath(domain)), false, "no report.md on a refused low-decoy compose");
 }));
 
-test("a bob_verified section citing a MEDIUM+ reportable finding WITH a real executed flip RENDERS", () => withTempHome(() => {
+test("a bob_verified section citing a MEDIUM+ reportable finding WITH a real executed flip RENDERS", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "bob-verified-medium.example.com";
   seedStandaloneWebFinding(domain, { severity: "high" });
   seedFindingDifferentialArm(domain, "F-1");
   const out = JSON.parse(composeReportTool.handler({ target_domain: domain, sections: verifiedSections() }));
   assert.equal(out.sections_rendered, 1);
   assert.ok(fs.existsSync(reportMarkdownPath(domain)), "report.md is written for a medium+ bob_verified section with an executed flip");
-}));
+})));
 
-test("a MEDIUM+ bob_verified section WITHOUT an executed flip is still refused (the floor does not loosen the executed gate)", () => withTempHome(() => {
+test("a MEDIUM+ bob_verified section WITHOUT an executed flip is still refused (the floor does not loosen the executed gate)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "bob-verified-medium-noarm.example.com";
   seedStandaloneWebFinding(domain, { severity: "high" }); // medium+ + reportable, but NO arm
   assert.throws(
     () => composeReportTool.handler({ target_domain: domain, sections: verifiedSections() }),
     /executed-flip binding/,
   );
-}));
+})));

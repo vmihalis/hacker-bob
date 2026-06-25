@@ -31,8 +31,14 @@ const {
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+
+// New offensive rows are ed25519 (v2); the verifier bundle (public key + symmetric
+// key) verifies them with the PUBLIC key while still accepting any legacy v1 hmac row.
+function rowMacVerifies(domain, row) {
+  return verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain));
+}
 const { attackSurfacePath, offensiveRunsJsonlPath, offensiveRunsDir } = require("../mcp/lib/paths.js");
 const {
   appendCandidateClaim,
@@ -351,7 +357,8 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   assert.equal(row.demonstrated_severity, "medium");
   assert.equal(row.surface_id, SURFACE_ID);
   assert.equal(row.target, canonicalizeExploitTarget(endpointFor(domain)));
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.equal(row.row_mac.version, 2, "new rows are the v2 ed25519 envelope");
+  assert.ok(rowMacVerifies(domain, row), "row must be MAC-signed");
   // three hashes returned + on the row
   for (const h of ["command_hash", "stdout_hash", "stderr_hash"]) {
     assert.match(result[h], /^[0-9a-f]{64}$/);
@@ -394,7 +401,7 @@ test("AC-6 via production stamp: identities armed by authStore(2nd-arg provenanc
   assert.equal(result.demonstrated_severity, "medium");
   const rows = readOffensiveRunRecords(domain);
   assert.equal(rows.length, 1);
-  assert.ok(rows[0].row_mac && rows[0].row_mac.digest, "row must be MAC-signed");
+  assert.ok(rowMacVerifies(domain, rows[0]), "row must be MAC-signed");
 }));
 
 test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NOT block", () => withTempHome(async () => {
@@ -624,7 +631,7 @@ for (let ni = 0; ni < NEGATIVE_CASES.length; ni += 1) {
       const row = rows[0];
       assert.equal(row.offensive_outcome, "blocked_by_defense");
       assert.equal(row.surface_id, SURFACE_ID, `${label}: control row binds the finding surface`);
-      assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), `${label}: control row verifies its MAC`);
+      assert.ok(rowMacVerifies(domain, row), `${label}: control row verifies its MAC`);
       assert.equal(row.exit_code, 0, `${label}: a server-denied response is a completed execution`);
       assert.equal(result.run_id, row.run_id);
     } else {
@@ -661,7 +668,7 @@ test("AC-6 negative: P2 does NOT carry the canary (no cross-tenant read) → blo
   const row = rows[0];
   assert.equal(row.offensive_outcome, "blocked_by_defense");
   assert.equal(row.surface_id, SURFACE_ID);
-  assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), "control row verifies its MAC");
+  assert.ok(rowMacVerifies(domain, row), "control row verifies its MAC");
   assert.equal(row.exit_code, 0, "a server-denied response is a completed execution");
   assert.equal(result.run_id, row.run_id);
 }));
@@ -1865,7 +1872,7 @@ test("soft-gated fire: confidence_signals are hash-bound into the durable stderr
   assert.equal(rows.length, 1);
   const row = rows[0];
   assert.equal(row.demonstrated_severity, "low", "the signed row carries the LOW soft-gate severity");
-  assert.ok(row.row_mac && row.row_mac.digest, "row must be MAC-signed");
+  assert.ok(rowMacVerifies(domain, row), "row must be MAC-signed");
   assert.equal(row.stderr_hash, result.stderr_hash);
 
   // the signal text is physically in the frozen stderr capture, and that capture re-hashes

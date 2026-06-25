@@ -282,6 +282,7 @@ const {
   renderGradeVerdictMarkdown,
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   normalizeVerificationRoundDocument,
   readVerificationRound,
@@ -3366,7 +3367,7 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
 });
 
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
     const rawPocSecret = "pipeline-raw-poc-secret";
     const rawHandoffSecret = "pipeline-raw-handoff-secret";
@@ -3566,7 +3567,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
       assert.equal(analyticsText.includes(forbidden), false, `${forbidden} leaked into pipeline analytics`);
       assert.equal(JSON.stringify(rows).includes(forbidden), false, `${forbidden} leaked into pipeline events`);
     }
-  });
+  }));
 });
 
 test("pipeline analytics backfills legacy sessions from artifacts without an event log", () => {
@@ -4050,7 +4051,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
   // "low-score reportables below the HOLD threshold" (grader correctly
   // applied its scoring rule). Neither is anomalous — only HOLD asks for
   // operator action.
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const skipCleanDomain = "skip-clean.example.com";
     seedSessionState(skipCleanDomain, { phase: "REPORT" });
     seedVerificationPipeline(skipCleanDomain, []);
@@ -4126,7 +4127,7 @@ test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants 
     const hold = JSON.parse(readPipelineAnalytics({ target_domain: holdDomain, include_events: true }));
     assert.ok(hold.sessions[0].health.reasons.includes("grade_hold"));
     assert.ok(hold.bottlenecks.some((bottleneck) => bottleneck.code === "grade_hold"));
-  });
+  }));
 });
 
 test("pipeline analytics treats malformed evidence packs as invalid metadata", () => {
@@ -4651,7 +4652,7 @@ test("operator note set read and clear works and rejects secret-looking values",
 });
 
 test("bob_read_session_summary derives compact status without raw proof evidence or report text", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "summary.example.com";
     const rawPoc = "raw-poc-text-that-must-not-escape";
     const rawEvidence = "raw-evidence-text-that-must-not-escape";
@@ -4725,7 +4726,7 @@ test("bob_read_session_summary derives compact status without raw proof evidence
     assert.doesNotMatch(JSON.stringify(result), new RegExp(rawEvidence));
     assert.doesNotMatch(JSON.stringify(result), new RegExp(fullReport));
     assert.doesNotMatch(JSON.stringify(result), /representative_samples/);
-  });
+  }));
 });
 
 test("bob_read_session_summary aggregates blocked_prereqs by (kind, identifier_hint)", () => {
@@ -14266,7 +14267,7 @@ test("bob_write_grade_verdict requires valid final verification before grading",
 });
 
 test("bob_write_grade_verdict enforces score totals, thresholds, and final reportability", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
     seedFinding(domain, { severity: "high" });
     const verified = [{
@@ -14318,11 +14319,11 @@ test("bob_write_grade_verdict enforces score totals, thresholds, and final repor
       findings: [gradeFinding],
       feedback: null,
     }), /expected SUBMIT/);
-  });
+  }));
 });
 
 test("bob_write_grade_verdict requires evidence packs for final reportables before writing", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const domain = "grade-evidence-required.example.com";
     seedFinding(domain, { severity: "high" });
     seedVerificationPipeline(domain, [{
@@ -14369,7 +14370,7 @@ test("bob_write_grade_verdict requires evidence packs for final reportables befo
       }],
       feedback: "Evidence collection did not run.",
     }), /Evidence packs.*Missing evidence packs JSON/);
-  });
+  }));
 });
 
 test("bob_write_grade_verdict permits only SKIP when final verification has no medium-or-higher reportable finding", () => {

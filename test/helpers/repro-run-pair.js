@@ -22,6 +22,18 @@ const {
 } = require("../../mcp/lib/paths.js");
 const { appendJsonlLine } = require("../../mcp/lib/storage.js");
 const { hashCanonicalJson } = require("../../mcp/lib/verification-contracts.js");
+// Cycle B: an admitted LIVE repo-command-runs row now carries a domain-separated
+// row_mac. The {sign} opt mints it the way the producer (repo-env.js) does so a test
+// that drives reverifyReproRecord through the keyed read path admits the pair; default
+// unsigned keeps the legacy-acceptance (accept-with-warning) coverage intact.
+const {
+  signRowWithMac,
+  REPO_COMMAND_RUN_MAC_CONTEXT,
+} = require("../../mcp/lib/offensive-row-mac.js");
+const {
+  ensureHandoffKeypair,
+  readHandoffSigningPrivateKey,
+} = require("../../mcp/lib/handoff-signing-key.js");
 
 // A real ASAN crash with a /src root-cause frame (the muparser/oss-fuzz shape).
 const DEFAULT_VULN_STDERR = `==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x511
@@ -51,6 +63,7 @@ function writeCapture(domain, runId, stdoutText, stderrText) {
 // sha256(JSON.stringify(command)) === hashCanonicalJson(command) for a scalar argv.
 function seedRepoRunRow(domain, {
   runId, command, exitCode, stdoutHash, stderrHash, checkoutRef = null, checkoutKind = null,
+  sign = false,
 }) {
   const row = {
     version: 1,
@@ -67,6 +80,13 @@ function seedRepoRunRow(domain, {
   };
   if (checkoutRef) row.checkout_ref = checkoutRef;
   if (checkoutKind) row.checkout_kind = checkoutKind;
+  // Cycle B: sign the live row exactly as the producer does (ed25519 over the row minus
+  // row_mac under the repo-command-run context) when {sign} is set; otherwise leave it a
+  // legacy unsigned row (accept-with-warning at the keyed read site).
+  if (sign) {
+    ensureHandoffKeypair(domain);
+    signRowWithMac(REPO_COMMAND_RUN_MAC_CONTEXT, row, readHandoffSigningPrivateKey(domain));
+  }
   appendJsonlLine(repoCommandRunsJsonlPath(domain), row);
   return row;
 }
@@ -101,15 +121,18 @@ function seedGenuineReproPair(domain, opts = {}) {
   const vulnHashes = writeCapture(domain, vulnRunId, "", vulnStderr);
   const controlHashes = writeCapture(domain, controlRunId, "", controlStderr);
 
+  const sign = opts.sign === true;
   seedRepoRunRow(domain, {
     runId: vulnRunId, command: argv, exitCode: 1,
     stdoutHash: vulnHashes.stdout_hash, stderrHash: vulnHashes.stderr_hash,
+    sign,
   });
   seedRepoRunRow(domain, {
     runId: controlRunId, command: controlCommand,
     exitCode: opts.noflip ? 1 : 0,
     stdoutHash: controlHashes.stdout_hash, stderrHash: controlHashes.stderr_hash,
     checkoutRef: controlRef, checkoutKind: "upstream_fix",
+    sign,
   });
 
   const verdict = {

@@ -144,7 +144,69 @@ function gateVerifyToGrade(context) {
         "rerun bob_repo_inventory and verify candidate claims cite repo surface_ids emitted by the inventory",
     });
   }
+  // Cycle C / F3: verdict-level sandbox-isolation gate. When a reportable medium+
+  // finding draws on one of the four keyed verdict ledgers (offensive / invariant
+  // / repro / freeze) AND the LIVE re-probe cannot prove the signer key is
+  // isolated (or a legacy/v1-HMAC row backs a NEW claim), enforce mode pushes a
+  // STATE_CONFLICT blocker; degrade mode lets the transition through but stamps a
+  // loud downgrade note onto the blocker-free path (the report door downgrades
+  // those sections to advisory). A clean / advisory-only / pure-OSINT session is
+  // unaffected (the gate is inert — RANK != BOUND). The probe is verdict-LEVEL
+  // (one syscall here), never on the per-row read path (CONSTRAINT 1).
+  for (const entry of sandboxIsolationBlockersForReportableVerdictClaims(context.target_domain)) {
+    blockers.push(entry);
+  }
   return blockers;
+}
+
+// Verdict-level sandbox blocker producer for gateVerifyToGrade. Returns [] when
+// the gate is inert OR when degrade mode lets the transition proceed (the loud
+// downgrade is surfaced at the report door, not as a transition blocker). Under
+// enforce with a non-isolated signer (or a legacy/v1-HMAC backing row), returns a
+// single STATE_CONFLICT blocker so bob_advance_session refuses VERIFY -> GRADE
+// with a legible reason. Any internal failure fails CLOSED with a blocker rather
+// than silently allowing the transition.
+function sandboxIsolationBlockersForReportableVerdictClaims(targetDomain) {
+  let decision;
+  try {
+    decision = require("./sandbox-isolation-gate.js").evaluateVerdictSandboxGate(targetDomain);
+  } catch (error) {
+    return [{
+      code: "sandbox_isolation_unattested",
+      blocked_by: "sandbox_isolation_unattested",
+      message:
+        "VERIFY -> GRADE blocked: sandbox-isolation gate evaluation failed (failing closed): "
+        + compactError(error),
+      error: compactError(error),
+      remediation: require("./sandbox-isolation-gate.js").SANDBOX_REMEDIATION,
+    }];
+  }
+  if (!decision.applies || decision.decision === "allow") return [];
+  if (decision.decision === "downgrade") {
+    // degrade mode: do NOT block the transition. Emit the loud warning here so a
+    // headless harness still surfaces it; the report door turns the affected
+    // sections advisory. The transition proceeds (CONSTRAINT 7: in-flight
+    // sessions are never hard-crashed under degrade).
+    try {
+      require("./sandbox-isolation-gate.js").emitSandboxDowngradeWarning(decision, "VERIFY -> GRADE:");
+    } catch {
+      // warning emission is best-effort; never block on it.
+    }
+    return [];
+  }
+  // enforce + block.
+  return [{
+    code: "sandbox_isolation_unattested",
+    blocked_by: "sandbox_isolation_unattested",
+    reason: decision.reason,
+    reportable_finding_ids: decision.reportable_finding_ids,
+    message:
+      "VERIFY -> GRADE blocked: "
+      + `${decision.reportable_finding_ids.length} reportable medium+ finding(s) draw on a keyed verdict `
+      + `ledger but the signing key is not isolated (mode=enforce, reason=${decision.reason}); a same-uid `
+      + "agent could forge the backing MAC",
+    remediation: require("./sandbox-isolation-gate.js").SANDBOX_REMEDIATION,
+  }];
 }
 
 function gateGradeToReport(context) {
@@ -547,4 +609,8 @@ module.exports = {
   evaluateLifecycleTransition,
   isTransitionAllowed,
   transitionKey,
+  // Exported so the verdict-level sandbox blocker is testable in isolation
+  // (the upstream verification/reachability checks short-circuit gateVerifyToGrade
+  // before this block, so a focused test exercises the production producer directly).
+  sandboxIsolationBlockersForReportableVerdictClaims,
 };

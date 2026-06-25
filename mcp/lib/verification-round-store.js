@@ -56,7 +56,7 @@ const {
   OFFENSIVE_TOOL_DEMONSTRATED_CEILING,
 } = require("./claims.js");
 const {
-  readHandoffSigningKey,
+  resolveRowVerifierSafely,
 } = require("./handoff-signing-key.js");
 const {
   sessionNucleusFromState,
@@ -198,6 +198,12 @@ function reclampSeveritiesAgainstFreeze(domain, results) {
   try {
     freeze = readCurrentClaimFreeze(domain);
   } catch (error) {
+    // readCurrentClaimFreeze now RE-THROWS on a present-but-INVALID freeze_mac (a
+    // tampered/forged/cross-context freeze). Converting that throw into a
+    // STATE_CONFLICT halt is the MEDIUM-A close: a tampered freeze HALTS the severity
+    // clamp instead of returning an empty Map that would silently un-clamp inflated
+    // severities. A genuinely-absent freeze (or a torn/corrupt one) returns null below,
+    // never reaching this catch.
     throw new ToolError(
       ERROR_CODES.STATE_CONFLICT,
       `severity-rise guard could not read claim freeze: ${error.message || String(error)}`,
@@ -261,7 +267,7 @@ function reclampSeveritiesAgainstFreeze(domain, results) {
   }
 
   let runRows = null;
-  let signingKey = null;
+  let verifier = null;
   for (const result of results) {
     if (!result || typeof result.severity !== "string") continue;
 
@@ -274,11 +280,11 @@ function reclampSeveritiesAgainstFreeze(domain, results) {
     if (isWebScope && base && base.exploitRunRefs.length > 0) {
       if (runRows === null) runRows = readOffensiveRunRecords(domain);
       if (runRows.length > 0) {
-        if (signingKey === null) signingKey = readHandoffSigningKey(domain);
+        if (verifier === null) verifier = resolveRowVerifierSafely(domain);
         for (const { ref, surfaceId } of base.exploitRunRefs) {
           for (const row of runRows) {
             if (
-              offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey)
+              offensiveRunRowSatisfiesEvidence(row, ref, domain, verifier)
               && rowAttemptFreshForState(row, sessionState)
               && surfaceId !== null
               && typeof row.surface_id === "string"

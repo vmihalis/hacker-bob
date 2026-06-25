@@ -39,10 +39,11 @@ const {
   ToolError,
 } = require("./envelope.js");
 const {
-  readHandoffSigningKey,
+  resolveRowVerifierSafely,
 } = require("./handoff-signing-key.js");
 const {
-  verifyOffensiveRunRowMac,
+  verifyRowWithMac,
+  OFFENSIVE_ROW_MAC_CONTEXT,
 } = require("./offensive-row-mac.js");
 const {
   SEVERITY_VALUES,
@@ -839,24 +840,28 @@ function exploitTargetHostInScope(targetUrl, domain) {
   return host === scope || host.endsWith(`.${scope}`);
 }
 
-function offensiveRunRowSatisfiesEvidence(row, ref, domain, signingKey) {
+function offensiveRunRowSatisfiesEvidence(row, ref, domain, verifier) {
   if (!row || typeof row !== "object") return false;
-  // PR #108: the row must be HMAC-signed by the trusted producer (offensive runner) with
-  // the per-session key. An agent-authored / symlinked / tampered / wrong-key row has no
-  // valid MAC and fails here before any field check.
+  // The row must be MAC-signed by the trusted producer (offensive runner). New rows
+  // are ed25519 (v2) — verified with the world-readable PUBLIC key; legacy rows are
+  // symmetric HMAC (v1) — verified with the symmetric key. The verifier bundle carries
+  // both, so verifyRowWithMac dispatches per row on the row's declared scheme. An
+  // agent-authored / symlinked / tampered / wrong-key row has no valid MAC and fails
+  // here before any field check. Verification is in-process crypto only (no disk
+  // re-read, no subprocess on the read hot path).
   //
-  // THREAT-MODEL BOUNDARY (Codex round-6 P1, be honest about this): the MAC defends
-  // against an agent confined to the MCP tool surface and the guarded Bash surface. It
-  // does NOT, on its own, defend against an agent that executes arbitrary in-process code
-  // (e.g. `node -e` that require()s readHandoffSigningKey and reads the 0600 key via fs) —
-  // a same-UID actor with arbitrary code execution can read any file its UID can, and the
-  // PreToolUse hooks cannot mediate in-process syscalls. This is the SAME assumption Bob's
-  // existing wave-handoff signing already makes (cf. wave-handoff-contracts.js
-  // validateHandoffProvenance). Absolute un-fakeability therefore requires running the
-  // offensive runner/agent under privilege or container separation so the agent's UID
-  // cannot read the signing key — a HARD REQUIREMENT of the offensive-sandbox PR. The MAC
-  // is the necessary foundation that makes that separation sufficient.
-  if (!verifyOffensiveRunRowMac(row, signingKey)) return false;
+  // THREAT-MODEL BOUNDARY (be honest about this): the sign/verify split removes the
+  // SECRET from the verifiers — they hold only the public key — but the ed25519 PRIVATE
+  // key is still 0600 at the agent uid. An agent that executes arbitrary in-process code
+  // (e.g. `node -e` that require()s readHandoffSigningPrivateKey and reads the 0600 key
+  // via fs) can STILL read it and forge a MAC-valid row, exactly as with the symmetric
+  // key. A same-UID actor reads any file its UID can; the PreToolUse hooks cannot mediate
+  // in-process syscalls. The structural close requires running the signer under a separate
+  // OS uid (gated by the sandbox-isolation attestation) so the agent uid cannot read the
+  // key at all. The split is the necessary foundation that makes that separation
+  // sufficient; it is NOT the close.
+  if (!verifier || typeof verifier !== "object") return false;
+  if (!verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, verifier)) return false;
   // PR #108 review (Codex P1): require the row to AFFIRMATIVELY assert a
   // completed, non-dry-run execution. Accepting an omitted/non-boolean dry_run
   // or timed_out would let a hand-authored/incomplete row stand as proof.
@@ -1111,10 +1116,13 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
       .filter((ref) => ref && ref.kind === "exploit_run");
     if (frozenExploitRunRefs.length === 0) return { skip: false, asserted };
     const runRows = readOffensiveRunRecords(domain);
-    const signingKey = runRows.length > 0 ? readHandoffSigningKey(domain) : null;
+    // resolveRowVerifierSafely returns { publicKey, hmacKey:null } for an ed25519-only
+    // session (no symmetric key on disk) instead of throwing STATE_CONFLICT into this
+    // live read-time re-verification path.
+    const verifier = runRows.length > 0 ? resolveRowVerifierSafely(domain) : null;
     for (const ref of frozenExploitRunRefs) {
       const row = runRows.find((candidate) => (
-        offensiveRunRowSatisfiesEvidence(candidate, ref, domain, signingKey)
+        offensiveRunRowSatisfiesEvidence(candidate, ref, domain, verifier)
       ));
       if (!row) continue;
       // The MAC-covered surface_id must equal the frozen claim's single surface (mirror the
@@ -1339,11 +1347,13 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
     );
   }
   const runRows = readOffensiveRunRecords(claim.target_domain);
-  // Read the signing key only when there are rows to verify. If we read it
-  // unconditionally, the legitimate "no ledger yet" case would throw STATE_CONFLICT
-  // ("Missing handoff signing key") instead of the intended INVALID_ARGUMENTS
-  // exploit_proof_unbacked_exploit_run_evidence.
-  const signingKey = runRows.length > 0 ? readHandoffSigningKey(claim.target_domain) : null;
+  // Resolve the verifier bundle (public key + optional symmetric key) only when there
+  // are rows to verify. resolveRowVerifierSafely never throws on a missing symmetric
+  // key (an ed25519-only session), so the legitimate "no symmetric key" case cannot
+  // surface STATE_CONFLICT instead of the intended INVALID_ARGUMENTS proof gate; the
+  // "no rows yet" case stays null so an empty ledger reports
+  // exploit_proof_unbacked_exploit_run_evidence rather than a missing-key throw.
+  const verifier = runRows.length > 0 ? resolveRowVerifierSafely(claim.target_domain) : null;
   // PR #108 review (Codex P2): require EVERY exploit_run ref to be backed by an
   // in-scope, non-dry-run ledger row — not just one. `some()` would let an extra
   // unbacked or out-of-scope exploit_run ref ride along into claims.jsonl/the
@@ -1353,7 +1363,7 @@ function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
   const backedRows = [];
   for (const ref of exploitRunRefs) {
     const row = runRows.find((candidate) => (
-      offensiveRunRowSatisfiesEvidence(candidate, ref, claim.target_domain, signingKey)
+      offensiveRunRowSatisfiesEvidence(candidate, ref, claim.target_domain, verifier)
     ));
     if (!row) {
       throw new ToolError(

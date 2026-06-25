@@ -37,6 +37,7 @@ const {
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -158,7 +159,7 @@ function osintSections() {
   }];
 }
 
-test("a bob_verified MEDIUM+ section for a final-reportable finding with NO executed arm is REJECTED (even with reportable:true)", () => withTempHome(() => {
+test("a bob_verified MEDIUM+ section for a final-reportable finding with NO executed arm is REJECTED (even with reportable:true)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "compose-exec-noarm.example.com";
   seedStandaloneWebFinding(domain);
   assert.throws(
@@ -171,16 +172,16 @@ test("a bob_verified MEDIUM+ section for a final-reportable finding with NO exec
     },
   );
   assert.equal(fs.existsSync(reportMarkdownPath(domain)), false, "report.md must not be written on a rejected compose");
-}));
+})));
 
-test("the SAME finding WITH a genuine re-derivable verified_pass arm RENDERS", () => withTempHome(() => {
+test("the SAME finding WITH a genuine re-derivable verified_pass arm RENDERS", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "compose-exec-arm.example.com";
   seedStandaloneWebFinding(domain);
   seedFindingDifferentialArm(domain, "F-1");
   const out = JSON.parse(composeReportTool.handler({ target_domain: domain, sections: verifiedSections() }));
   assert.equal(out.sections_rendered, 1);
   assert.ok(fs.existsSync(reportMarkdownPath(domain)), "report.md is written when the executed flip is present");
-}));
+})));
 
 test("a low-severity finding renders regardless (RANK != BOUND at the report layer)", () => withTempHome(() => {
   const domain = "compose-exec-low.example.com";
@@ -190,7 +191,7 @@ test("a low-severity finding renders regardless (RANK != BOUND at the report lay
   assert.equal(out.sections_rendered, 1);
 }));
 
-test("an operator_osint section renders regardless of any executed arm (non-vuln provenance untouched)", () => withTempHome(() => {
+test("an operator_osint section renders regardless of any executed arm (non-vuln provenance untouched)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "compose-exec-osint.example.com";
   seedStandaloneWebFinding(domain); // high + reportable, but NO arm...
   // ...yet the section is operator_osint (not bob_verified). The executed gate inspects
@@ -198,9 +199,9 @@ test("an operator_osint section renders regardless of any executed arm (non-vuln
   // unbacked medium+ finding is still refused — assert that explicitly, then prove an
   // osint-only session with NO reportable medium+ finding renders.
   assert.throws(() => composeReportTool.handler({ target_domain: domain, sections: osintSections() }), /executed-flip binding/);
-}));
+})));
 
-test("a native(O-P4) finding renders WITHOUT a finding-differential arm (skip parity with the grade gate)", () => withTempHome(() => {
+test("a native(O-P4) finding renders WITHOUT a finding-differential arm (skip parity with the grade gate)", () => withTempHome(() => withIsolatedSigner(() => {
   const domain = "compose-exec-native.example.com";
   const surfaceId = "repo:module:src-parser.c";
   appendFrontierEvent({
@@ -238,7 +239,7 @@ test("a native(O-P4) finding renders WITHOUT a finding-differential arm (skip pa
     assert.doesNotMatch(String(err.message), /finding_differential/, "native finding is NOT routed through the standalone differential gate");
     assert.match(String(err.message), /no_verified_pass|no_repro_command_argv/, "it is owned by the O-P4 repro gate (skip parity)");
   }
-}));
+})));
 
 // The non-`final`-round laundering path. validateVerificationRoundRef first-matches over
 // [brutalist, balanced, final], so a section citing a brutalist/balanced-reportable result

@@ -79,6 +79,7 @@ const {
 const {
   persistingRunner,
 } = require("./helpers/repro-run-pair.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -280,12 +281,15 @@ function drivePipelineToReportWritten(domain) {
   // a real MAC-signed exploited_safely positive + blocked_by_defense control (high
   // demonstrated severity), then the verdict line binding them.
   seedFindingDifferentialArm(domain, "F-1", "surface:billing-profile");
-  writeGradeVerdict({
+  // The shared pipeline driver grades a verdict-ledger-backed reportable finding
+  // to reach report.md; this helper exercises the snapshot-binding cascade, not
+  // the sandbox posture, so the grade runs under an isolated signer (inert gate).
+  withIsolatedSigner(() => writeGradeVerdict({
     target_domain: domain,
     verdict: "SUBMIT",
     total_score: 75,
     findings: [gradeFindingInput("F-1")],
-  });
+  }));
 
   // C.7 requires a V2-shape final round bound to the claim freeze (the
   // final_verification_hash field is only stamped on V2 final rounds). We

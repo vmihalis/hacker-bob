@@ -1,6 +1,6 @@
 "use strict";
 
-const { spawn } = require("child_process");
+const { scSubprocessContainerExec } = require("./sc-container-exec.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -71,7 +71,7 @@ function assertHarnessPath(harnessPath) {
   return realResolved;
 }
 
-function spawnForge(args, { workdir, env, timeoutMs }) {
+function spawnForge(args, { workdir, env, timeoutMs, targetDomain = null }) {
   return new Promise((resolve) => {
     let killed = false;
     let stdoutChunks = [];
@@ -83,17 +83,24 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
     try {
       // detached: true lets us kill the process group on timeout. Forge spawns
       // solc and (when forking) anvil subprocesses; a parent-only kill leaves
-      // them running.
-      child = spawn("forge", args, {
+      // them running. The container route mounts ONLY this workdir (never the
+      // session tree / signing key) and runs as a non-signer container user;
+      // the degrade route is a byte-identical direct spawn. targetDomain lets the
+      // seam probe signer isolation so it can REFUSE a host-as-signer degrade under
+      // enforce (HIGH-1) rather than run the SC tool as the signer.
+      child = scSubprocessContainerExec("forge", args, {
         cwd: workdir,
         env: directSmartContractSubprocessEnv(env),
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
+        targetDomain,
       });
     } catch (error) {
       resolve({
         ok: false,
-        reason: "forge_spawn_failed",
+        reason: error && error.code === "sc_isolation_refused"
+          ? "sc_isolation_refused"
+          : "forge_spawn_failed",
         error: error.message || String(error),
       });
       return;
@@ -110,7 +117,15 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
     const timer = setTimeout(() => {
       killed = true;
       killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), 5000);
+      // The killGroup above only kills the docker CLIENT; a daemon-managed container
+      // detaches and keeps running. teardownContainer() issues `docker kill <name>`
+      // so the daemon reaps the container. Optional-chained: the degrade/refuse-route
+      // child has no method, so this is a no-op there (normal path untouched).
+      try { child.teardownContainer && child.teardownContainer(); } catch {}
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        try { child.teardownContainer && child.teardownContainer(); } catch {}
+      }, 5000);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -149,6 +164,13 @@ function spawnForge(args, { workdir, env, timeoutMs }) {
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
         truncated: stdoutBytes > MAX_OUTPUT_BYTES || stderrBytes > MAX_OUTPUT_BYTES,
+        // Whether the SC seam ran this forge in a filesystem-namespace container
+        // (true) or degraded to a host spawn AS THE SIGNER (false). The seam sets
+        // child.container_isolated; absence/non-true defaults to false (un-isolated)
+        // so a host-as-signer run can never masquerade as containerized. This rides
+        // up through finalizeRun -> the invariant-runs record so the verdict gate can
+        // refuse to trust an SC verdict whose backing run was NOT containerized.
+        container_isolated: child.container_isolated === true,
       });
     });
   });
@@ -230,6 +252,7 @@ async function runFoundryTest({
   forkUrls,
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  targetDomain = null,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
   if (!matchTest && !matchContract) {
@@ -295,14 +318,14 @@ async function runFoundryTest({
     }
     // No chain_id supplied — run a local-only test (covers chain-independent
     // fixtures and pure-fuzz harnesses).
-    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkBlock, fork_used: null, rpcPolicyRejections });
   }
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
     const args = [...baseArgs, "--fork-url", url];
-    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {} });
+    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),
@@ -331,11 +354,18 @@ async function runFoundryTest({
 }
 
 function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPolicyRejections = [] }) {
-  if (!result || result.reason === "forge_not_in_path" || result.reason === "forge_spawn_failed") {
+  if (!result
+    || result.reason === "forge_not_in_path"
+    || result.reason === "forge_spawn_failed"
+    || result.reason === "sc_isolation_refused") {
     return {
       ok: false,
       reason: result && result.reason ? result.reason : "spawn_failed",
       error: result && result.error ? result.error : null,
+      // A refused run NEVER ran the SC tool host-as-signer, so it is by definition
+      // not containerized; surface false so a producer that records this envelope
+      // never marks the (non-existent) run as isolated.
+      container_isolated: false,
       command: ["forge", ...redactRpcEndpointArgs(args)],
       rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
       fork_attempts: forkAttempts,
@@ -395,6 +425,14 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
     fork_block: forkBlock || null,
     fork_block_used: forkBlockUsed,
     fork_attempts: forkAttempts,
+    // TOP-LEVEL containerization signal (NOT inside any hashed sub-object). It is
+    // lifted from the spawnForge result, which read child.container_isolated from
+    // the SC seam. The invariant-runner records it as a sibling top-level record
+    // field (outside computeInvariantRunHash) so run_hash stays byte-stable whether
+    // the run was containerized or a degrade-host spawn; the field is covered by the
+    // row_mac and consulted by the verdict gate. A host-as-signer (degrade) run
+    // resolves false, so its backing row can never back a trusted SC reportable.
+    container_isolated: result.container_isolated === true,
     command: ["forge", ...redactRpcEndpointArgs(args)],
     rpc_policy_rejections: summarizeRpcPolicyRejections(rpcPolicyRejections),
     summary: {

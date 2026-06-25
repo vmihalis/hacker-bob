@@ -54,6 +54,17 @@ const {
 const {
   readReproVerifiedSummary,
 } = require("./repro-replay-verifier.js");
+// Cycle B: verify the keyed invariant-run row_mac at the proof-bundle gate, AFTER the
+// existing content-hash re-derivation. A present-but-invalid MAC rejects the bundle; an
+// old unsigned row is accepted-with-warning (still re-derived). Reuses Cycle A's
+// verify path; does NOT close F3 (the key is still agent-readable — F2 collapses INTO F3).
+const {
+  assertRowMacOrLegacy,
+  INVARIANT_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  resolveRowVerifierSafely,
+} = require("./handoff-signing-key.js");
 
 const PROOF_BUNDLES_VERSION = 1;
 const PROOF_BUNDLE_KINDS = Object.freeze(["replay_script", "invariant", "differential"]);
@@ -438,7 +449,7 @@ function normalizeReplayArtifact(artifact, { domain, repoCommandRunRows, index, 
 // (the safe assertion failed → a counterexample / violation), the control arm must
 // be test_passed (the invariant holds). This is the EXACT INVERSION of the old
 // single-row gate, which accepted a bare test_passed as verified.
-function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId, expectedOutcome) {
+function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId, expectedOutcome, verifier = null) {
   const normalizedRunHash = assertHex64(runHash, fieldName);
   const matchingRows = rows.filter((entry) => entry && entry.run_hash === normalizedRunHash);
   if (matchingRows.length === 0) {
@@ -477,6 +488,11 @@ function readInvariantRunRow(rows, runHash, fieldName, expectedFindingId, expect
   if (expectedOutcome && row.outcome !== expectedOutcome) {
     throw new Error(`${fieldName} must reference an invariant run with outcome ${expectedOutcome}`);
   }
+  // Cycle B keyed layer: AFTER the content-hash/outcome re-derivation, assert the keyed
+  // row_mac. A present-but-invalid (forged/tampered/cross-context) row_mac throws and
+  // rejects the bundle; an absent row_mac is accepted-with-warning (legacy in-flight row,
+  // still re-derived above). The MAC is an ADDED O(1) keyed layer, not a replacement.
+  assertRowMacOrLegacy(INVARIANT_RUN_MAC_CONTEXT, row, verifier);
   return row;
 }
 
@@ -496,11 +512,16 @@ function normalizeInvariantArtifact(artifact, { domain, invariantRunRows, index,
   if (artifact.run_hash != null && artifact.positive_run_hash == null) {
     throw new Error(`artifacts[${index}] must carry positive_run_hash + control_run_hash; a lone run_hash invariant proof is no longer accepted (it has no refuting control to flip against)`);
   }
+  // Cycle B: resolve the keyed-MAC verifier ONCE for this artifact (the two rows share
+  // it; CONSTRAINT 1: no per-row disk re-read). resolveRowVerifierSafely yields a
+  // public-key-only verifier (hmacKey:null) for a non-offensive ed25519-only session and
+  // null for a pre-keypair session; a signed row with a null verifier fails closed.
+  const invariantRowVerifier = resolveRowVerifierSafely(domain);
   const positiveRow = readInvariantRunRow(
-    invariantRunRows, artifact.positive_run_hash, `artifacts[${index}].positive_run_hash`, findingId, "test_failed",
+    invariantRunRows, artifact.positive_run_hash, `artifacts[${index}].positive_run_hash`, findingId, "test_failed", invariantRowVerifier,
   );
   const controlRow = readInvariantRunRow(
-    invariantRunRows, artifact.control_run_hash, `artifacts[${index}].control_run_hash`, findingId, "test_passed",
+    invariantRunRows, artifact.control_run_hash, `artifacts[${index}].control_run_hash`, findingId, "test_passed", invariantRowVerifier,
   );
   // The control MUST be the SAME generated test on a DIFFERENT tree.
   for (const key of ["template_id", "contract_name", "function_name", "execution_context_hash"]) {

@@ -19,8 +19,8 @@ const { idorConfirm } = require("../mcp/lib/offensive-idor-producer.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath } = require("../mcp/lib/auth.js");
-const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
-const { verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
+const { ensureHandoffSigningKey, resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 const { attackSurfacePath, offensiveRunsJsonlPath } = require("../mcp/lib/paths.js");
 const { readOffensiveRunRecords } = require("../mcp/lib/claims.js");
 const {
@@ -172,7 +172,10 @@ function assertSignedBlockedControl(domain, result) {
   assert.equal(row.exit_code, 0, "a server-denied response is a completed execution");
   assert.equal(row.dry_run, false);
   assert.equal(row.timed_out, false);
-  assert.ok(verifyOffensiveRunRowMac(row, ensureHandoffSigningKey(domain)), "the control row verifies its MAC");
+  assert.ok(
+    verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)),
+    "the control row verifies its MAC",
+  );
   assert.equal(result.run_id, row.run_id);
   return row;
 }

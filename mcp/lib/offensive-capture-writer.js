@@ -16,10 +16,10 @@ const {
   SEVERITY_VALUES,
 } = require("./constants.js");
 const {
-  signOffensiveRunRow,
+  OFFENSIVE_ROW_MAC_CONTEXT,
 } = require("./offensive-row-mac.js");
 const {
-  readHandoffSigningKey,
+  signRowViaIsolatedSignerOrLocal,
 } = require("./handoff-signing-key.js");
 const {
   offensiveRunsDir,
@@ -343,8 +343,15 @@ function buildAndSignOffensiveRow(domain, {
     ...relationBooleans,
   };
 
-  // STEP 4 — sign LAST (whole-row MAC auto-binds the relation booleans).
-  signOffensiveRunRow(row, readHandoffSigningKey(domain));
+  // STEP 4 — sign LAST (whole-row MAC auto-binds the relation booleans) through the
+  // single signing seam, inside the caller's session lock. New rows are ed25519 (v2):
+  // the verifiers verify them with the world-readable public key and never need a
+  // secret. The seam isolates the secret when the operator runs the server under a
+  // dedicated signer uid (the agent uid then gets EACCES on the key); on the same-uid
+  // box it degrades to a local sign and the trust consequence is enforced at the
+  // verdict-level attestation gate, not here. The seam backfills the keypair for a
+  // session created before this surface existed.
+  signRowViaIsolatedSignerOrLocal(domain, OFFENSIVE_ROW_MAC_CONTEXT, row);
 
   // APPEND — MCP-owned hardened writer.
   appendSignedRowHardened(domain, row);

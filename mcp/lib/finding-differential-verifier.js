@@ -46,10 +46,11 @@ const {
   readOffensiveRunRecords,
 } = require("./claims.js");
 const {
-  verifyOffensiveRunRowMac,
+  verifyRowWithMac,
+  OFFENSIVE_ROW_MAC_CONTEXT,
 } = require("./offensive-row-mac.js");
 const {
-  readHandoffSigningKey,
+  resolveOffensiveRowVerifier,
 } = require("./handoff-signing-key.js");
 
 const FINDING_DIFFERENTIAL_VERIFIED_VERSION = 1;
@@ -104,7 +105,7 @@ function offensiveRowHash(row) {
 // agent-authored/tampered/wrong-key row is rejected before any field check), and must
 // affirmatively assert a completed, non-dry-run, non-timed-out execution — mirroring
 // offensiveRunRowSatisfiesEvidence's integrity preconditions. Returns the row or throws.
-function resolveExecutedRow(domain, ref, signingKey, label) {
+function resolveExecutedRow(domain, ref, verifier, label) {
   if (ref == null || typeof ref !== "object") {
     throw new Error(`${label}_run_ref must be an object { ledger, row_id }`);
   }
@@ -127,9 +128,13 @@ function resolveExecutedRow(domain, ref, signingKey, label) {
     throw new Error(`${label}_run_ref.row_id matches more than one offensive-runs row (corrupt ledger): ${ref.row_id}`);
   }
   const row = matches[0];
-  // INTEGRITY boundary: the row must be MAC-signed by the trusted producer with the
-  // per-session key. Same threat-model boundary as offensiveRunRowSatisfiesEvidence.
-  if (!verifyOffensiveRunRowMac(row, signingKey)) {
+  // INTEGRITY boundary: the row must be MAC-signed by the trusted producer. New rows
+  // are ed25519 (verified with the public key); legacy rows are symmetric HMAC. The
+  // verifier bundle carries both and verifyRowWithMac dispatches per row on the row's
+  // declared scheme. Same threat-model boundary as offensiveRunRowSatisfiesEvidence:
+  // the verifier holds no secret, but the ed25519 private key is still 0600 at the
+  // agent uid, so this split is the foundation, not the close.
+  if (!verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, verifier)) {
     throw new Error(`${label}_run_ref.row_id is not a validly MAC-signed offensive-runs row: ${ref.row_id}`);
   }
   if (row.dry_run !== false) {
@@ -249,9 +254,9 @@ function verifyFindingDifferential(input) {
   if (!surfaceId) throw new Error("surface_id (the finding's single bound surface) is required");
 
   return withSessionLock(targetDomain, () => {
-    const signingKey = readHandoffSigningKey(targetDomain);
-    const positiveRow = resolveExecutedRow(targetDomain, input.positive_run_ref, signingKey, "positive");
-    const controlRow = resolveExecutedRow(targetDomain, input.control_run_ref, signingKey, "control");
+    const verifier = resolveOffensiveRowVerifier(targetDomain);
+    const positiveRow = resolveExecutedRow(targetDomain, input.positive_run_ref, verifier, "positive");
+    const controlRow = resolveExecutedRow(targetDomain, input.control_run_ref, verifier, "control");
 
     // run_id single-use: a row already bound to a finding-differential verdict cannot
     // bind another (mirror duplicateExploitRunIds / the offensive run_id single-use
@@ -371,23 +376,32 @@ function mintFindingDifferentialRecord({
 // asset — if it is gone, the verdict is no longer provable.
 //
 // Runs under NO lock (read-only, like the summary reader). Returns
-// { ok, surface_id, demonstrated_severity } — surface_id + demonstrated_severity are
-// taken from the RE-RESOLVED POSITIVE ROW, never the verdict record's stored fields.
+// { ok, surface_id, demonstrated_severity, container_isolated } — surface_id +
+// demonstrated_severity + container_isolated are taken from the RE-RESOLVED POSITIVE
+// ROW, never the verdict record's stored fields. container_isolated mirrors the
+// invariant leg's HIGH-1 re-resolution (readInvariantVerifiedSummary): the verdict gate
+// treats an SC finding-differential-backed reportable whose positive offensive row was
+// NOT containerized as un-isolated. Offensive-runs rows do not carry container_isolated
+// today, so this re-resolves to false for every existing finding-differential row — the
+// CORRECT fail-closed posture (no containerization proof => un-isolated).
 function reverifyFindingDifferentialRecord(domain, record) {
   const targetDomain = assertSafeDomain(domain);
-  if (record == null || typeof record !== "object") return { ok: false, surface_id: null, demonstrated_severity: null };
+  if (record == null || typeof record !== "object") return { ok: false, surface_id: null, demonstrated_severity: null, container_isolated: false };
   try {
-    const signingKey = readHandoffSigningKey(targetDomain);
+    // Read-time re-derivation (CONSTRAINT 6): the MAC is re-checked here at read time,
+    // in-memory, no disk re-check beyond reading the verifier bundle once. Scheme
+    // dispatch is per row, so the verdict flips identically for ed25519 and legacy rows.
+    const verifier = resolveOffensiveRowVerifier(targetDomain);
     const positiveRow = resolveExecutedRow(
       targetDomain,
       { ledger: SUPPORTED_LEDGER_OFFENSIVE_RUNS, row_id: record.positive_run_id },
-      signingKey,
+      verifier,
       "positive",
     );
     const controlRow = resolveExecutedRow(
       targetDomain,
       { ledger: SUPPORTED_LEDGER_OFFENSIVE_RUNS, row_id: record.control_run_id },
-      signingKey,
+      verifier,
       "control",
     );
     if (positiveRow.run_id === controlRow.run_id) {
@@ -409,11 +423,17 @@ function reverifyFindingDifferentialRecord(domain, record) {
       demonstrated_severity: typeof positiveRow.demonstrated_severity === "string"
         ? positiveRow.demonstrated_severity
         : null,
+      // Whether the RE-RESOLVED positive offensive row was executed in a
+      // filesystem-namespace container. Re-resolved from the MAC-covered positive row;
+      // absence reads false (fail-closed un-isolated at the verdict gate). HIGH-1
+      // belt-and-suspenders: an SC finding-differential-backed reportable whose backing
+      // run was not containerized must not be trusted on an isolated box.
+      container_isolated: positiveRow.container_isolated === true,
     };
   } catch {
     // Missing / duplicate / foreign-MAC / dry-run / timed-out row, or an absent key →
     // the flip is not re-derivable from signed bytes. Fail closed.
-    return { ok: false, surface_id: null, demonstrated_severity: null };
+    return { ok: false, surface_id: null, demonstrated_severity: null, container_isolated: false };
   }
 }
 
@@ -444,6 +464,13 @@ function readFindingDifferentialVerifiedSummary(domain) {
       // From the MAC-covered positive row, NOT the verdict record's stored fields.
       surface_id: rederived.surface_id,
       demonstrated_severity: rederived.demonstrated_severity,
+      // Whether the RE-RESOLVED positive offensive row was containerized, mirroring
+      // readInvariantVerifiedSummary. The verdict gate's SC-containerization consult
+      // (sandbox-isolation-gate.js scBackingUnIsolatedFindingIds) treats a
+      // finding-differential-backed SC reportable whose backing run was NOT
+      // containerized as un-isolated. False on every existing offensive row (the field
+      // is not minted there yet) — the correct fail-closed posture.
+      container_isolated: rederived.container_isolated === true,
     };
   }
   return {

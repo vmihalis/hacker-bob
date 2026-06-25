@@ -29,6 +29,7 @@ const {
   allowedTargetsFor,
   evaluateLifecycleTransition,
 } = require("../mcp/lib/lifecycle-gates.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   appendCandidateClaim,
 } = require("../mcp/lib/claims.js");
@@ -442,11 +443,11 @@ test("VERIFY -> GRADE blocks repo sessions when I9 exists but a reportable findi
       runInventory: true,
     });
 
-    const evaluation = evaluateLifecycleTransition({
+    const evaluation = withIsolatedSigner(() => evaluateLifecycleTransition({
       target_domain: domain,
       from_state: "VERIFY",
       to_state: "GRADE",
-    });
+    }));
 
     assert.equal(evaluation.blockers.length, 1);
     assert.equal(evaluation.blockers[0].code, "reachability_stamp_missing");
@@ -470,11 +471,11 @@ test("VERIFY -> GRADE treats malformed I9 reachability as present but unresolved
     };
     fs.writeFileSync(inventoryPath, JSON.stringify(inventory), "utf8");
 
-    const evaluation = evaluateLifecycleTransition({
+    const evaluation = withIsolatedSigner(() => evaluateLifecycleTransition({
       target_domain: domain,
       from_state: "VERIFY",
       to_state: "GRADE",
-    });
+    }));
 
     assert.equal(evaluation.blockers.length, 1);
     assert.equal(evaluation.blockers[0].code, "reachability_stamp_missing");
@@ -491,11 +492,11 @@ test("VERIFY -> GRADE blocks when a frozen repo module surface is missing from p
       runInventory: true,
     });
 
-    const evaluation = evaluateLifecycleTransition({
+    const evaluation = withIsolatedSigner(() => evaluateLifecycleTransition({
       target_domain: domain,
       from_state: "VERIFY",
       to_state: "GRADE",
-    });
+    }));
 
     assert.equal(evaluation.blockers.length, 1);
     assert.equal(evaluation.blockers[0].code, "reachability_stamp_missing");
@@ -551,11 +552,11 @@ test("VERIFY -> GRADE reachability gate fails closed for repo sessions before I9
       runInventory: false,
     });
 
-    const evaluation = evaluateLifecycleTransition({
+    const evaluation = withIsolatedSigner(() => evaluateLifecycleTransition({
       target_domain: domain,
       from_state: "VERIFY",
       to_state: "GRADE",
-    });
+    }));
 
     assert.equal(evaluation.blockers.length, 1);
     assert.equal(evaluation.blockers[0].code, "reachability_stamp_missing");

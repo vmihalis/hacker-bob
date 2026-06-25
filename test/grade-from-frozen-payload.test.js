@@ -65,13 +65,18 @@ const {
 const {
   hashDocumentExcluding,
 } = require("../mcp/lib/fabric-common.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-grade-from-frozen-"));
   process.env.HOME = home;
   try {
-    return fn(home);
+    // These tests grade verdict-ledger-backed reportable findings to exercise the
+    // frozen-payload grade math, not the sandbox posture; run under an isolated
+    // signer so the grade-door sandbox gate is inert (passes under enforce AND
+    // degrade).
+    return withIsolatedSigner(() => fn(home));
   } finally {
     process.env.HOME = previousHome;
     resetMaterializationDebounce();
@@ -987,6 +992,13 @@ test("reachability assertion ordering sorts missing created_at after valid times
     assert.ok(undatedClaim, "fixture must include a network assertion to make timestamp fallback observable");
     delete undatedClaim.created_at;
     freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
+    // This fixture hand-edits the frozen doc (drops a claim's created_at) and re-writes it
+    // raw, so the Cycle B freeze_mac minted by buildClaimFreeze no longer covers the
+    // content. Drop it so the re-written doc is a clean LEGACY (unsigned) freeze accepted-
+    // with-warning by readCurrentClaimFreeze — not a present-but-invalid (tampered) mac,
+    // which would correctly fail closed. The keying integrity is exercised in the dedicated
+    // claim-freeze-mac-keying tests; this test exercises reachability-assertion ordering.
+    delete freeze.freeze_mac;
     writeFileAtomic(claimFreezePath(domain), `${JSON.stringify(freeze, null, 2)}\n`);
     for (const round of ["brutalist", "balanced", "final"]) {
       writeVerificationRound({

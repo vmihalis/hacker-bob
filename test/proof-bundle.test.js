@@ -41,6 +41,7 @@ const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
 const { persistingRunner } = require("./helpers/repro-run-pair.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -857,7 +858,7 @@ test("bob_compose_report accepts proof_bundle refs bound to current V2 final ver
     seedFindingDifferentialArm(domain);
     writeNormalizedProofBundleDocument(domain, { binding });
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "proof_bundle",
@@ -866,7 +867,7 @@ test("bob_compose_report accepts proof_bundle refs bound to current V2 final ver
         provenance: "bob_verified",
         evidence_refs: ["verification_round:final:F-1", "proof_bundle:F-1"],
       }],
-    });
+    }));
 
     assert.equal(result.target_domain, domain);
   });
@@ -1006,7 +1007,7 @@ test("bob_compose_report accepts a proof_bundle evidence_ref after proof bundle 
     assert.deepEqual(written.missing_finding_ids, []);
     assert.equal(fs.existsSync(proofBundlePaths(domain).json), true);
 
-    const result = callTool(composeReportTool, {
+    const result = withIsolatedSigner(() => callTool(composeReportTool, {
       target_domain: domain,
       sections: [{
         kind: "proof_bundle",
@@ -1015,7 +1016,7 @@ test("bob_compose_report accepts a proof_bundle evidence_ref after proof bundle 
         provenance: "bob_verified",
         evidence_refs: ["verification_round:final:F-1", "proof_bundle:F-1"],
       }],
-    });
+    }));
 
     assert.equal(result.target_domain, domain);
     const rendered = fs.readFileSync(reportMarkdownPath(domain), "utf8");

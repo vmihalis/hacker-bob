@@ -18,6 +18,7 @@ const {
   readGradeVerdict,
   writeGradeVerdict,
 } = require("../mcp/lib/grade-verdict-store.js");
+const { withIsolatedSigner } = require("./helpers/sandbox-isolated-signer.js");
 const {
   gradeArtifactPaths,
   sessionDir,
@@ -449,7 +450,7 @@ test("verification round store writes, reads, mirrors markdown, and enforces pri
 });
 
 test("grade verdict store requires final verification and valid evidence before read/write", () => {
-  withTempHome(() => {
+  withTempHome(() => withIsolatedSigner(() => {
     const missingFinalDomain = "grade-missing-final.example.com";
     seedFinding(missingFinalDomain);
     assert.throws(
@@ -500,7 +501,7 @@ test("grade verdict store requires final verification and valid evidence before 
     const analytics = readSessionArtifactSummary(domain);
     assert.equal(analytics.grade.valid, false);
     assert.match(analytics.grade.error, /Evidence packs are required/);
-  });
+  }));
 });
 
 test("verification status contract keeps verification context and analytics aligned for current and archived attempts", () => {

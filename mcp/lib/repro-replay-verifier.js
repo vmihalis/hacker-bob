@@ -41,6 +41,18 @@ const {
 const {
   hashCanonicalJson,
 } = require("./verification-contracts.js");
+// Cycle B: verify the keyed repo-command-run row_mac at the read-time re-resolution,
+// AFTER the existing dry_run/timed_out checks and BEFORE the capture re-hash. A present-
+// but-invalid MAC throws inside resolveRepoRunRow → reverifyReproRecord catch → ok:false;
+// an old unsigned row is accepted-with-warning (still re-resolved + capture-re-checked).
+// Reuses Cycle A's verify path; does NOT close F3 (key still agent-readable; F2 → F3).
+const {
+  assertRowMacOrLegacy,
+  REPO_COMMAND_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  resolveRowVerifierSafely,
+} = require("./handoff-signing-key.js");
 
 const REPRO_VERIFIED_VERSION = 1;
 const REPRO_VERIFIED_MAX_RECORDS = 2000;
@@ -328,7 +340,7 @@ function readRepoCommandRunRows(domain) {
 // Re-resolve a single repo-command-runs row by run_id (mirror evidence.js
 // readRepoCommandRunRow): missing → throw; ambiguous content-divergent duplicates →
 // throw. A dry-run / timed-out row is not a real execution.
-function resolveRepoRunRow(rows, runId) {
+function resolveRepoRunRow(rows, runId, verifier = null) {
   if (typeof runId !== "string" || !runId) throw new Error("run_id must be a non-empty string");
   const matching = rows.filter((row) => row && row.run_id === runId);
   if (matching.length === 0) throw new Error(`run_id ${runId} does not resolve to a repo-command-runs row`);
@@ -339,6 +351,11 @@ function resolveRepoRunRow(rows, runId) {
   const row = matching[0];
   if (row.dry_run !== false) throw new Error(`run_id ${runId} must reference a live non-dry-run repo docker run`);
   if (row.timed_out === true) throw new Error(`run_id ${runId} must reference a completed repo docker run, not a timed-out run`);
+  // Cycle B keyed layer: AFTER the dry_run/timed_out checks, assert the keyed row_mac.
+  // A present-but-invalid (forged/tampered/cross-context) row_mac throws → the caller's
+  // catch (reverifyReproRecord) maps it to ok:false; an absent row_mac is accepted-with-
+  // warning (legacy in-flight row; the capture re-hash in runFromRow still binds it).
+  assertRowMacOrLegacy(REPO_COMMAND_RUN_MAC_CONTEXT, row, verifier);
   return row;
 }
 
@@ -418,8 +435,13 @@ function reverifyReproRecord(domain, record) {
     if (vulnRunId === controlRunId) throw new Error("vuln_run_id must differ from control_run_id");
 
     const rows = readRepoCommandRunRows(targetDomain);
-    const vulnRow = resolveRepoRunRow(rows, vulnRunId);
-    const controlRow = resolveRepoRunRow(rows, controlRunId);
+    // Cycle B: resolve the keyed-MAC verifier ONCE for this re-resolution (not per row;
+    // CONSTRAINT 1: no per-row disk re-read). resolveRowVerifierSafely yields a
+    // public-key-only verifier (hmacKey:null) for a non-offensive ed25519-only session
+    // and null for a pre-keypair session; a signed row with a null verifier fails closed.
+    const repoRowVerifier = resolveRowVerifierSafely(targetDomain);
+    const vulnRow = resolveRepoRunRow(rows, vulnRunId, repoRowVerifier);
+    const controlRow = resolveRepoRunRow(rows, controlRunId, repoRowVerifier);
 
     // RE-BIND command_hash off the VULN (no-checkout) row for repro-mode records. An
     // oracle-mode record's vuln run is checkout-wrapped, so the equality does not apply.

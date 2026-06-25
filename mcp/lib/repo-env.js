@@ -88,6 +88,19 @@ const {
   normalizeHistoryRef,
   readRepoSession,
 } = require("./repo-target.js");
+// Cycle B: KEY the LIVE repo-command-runs.jsonl row with a domain-separated ed25519
+// signature so a forged run row needs the signing key, not just a recomputable content
+// hash. Signed at WRITE inside the producer's withSessionLock; verified at the read-time
+// re-resolution site (repro-replay-verifier.js resolveRepoRunRow). Reuses Cycle A's
+// signRowWithMac (NOT a new MAC). The dry-run PLAN row is NEVER signed — it is never a
+// trust root (resolveRepoRunRow rejects dry_run!==false). Does NOT close F3: the private
+// key is still 0600 at the agent uid (F2 collapses INTO F3; genuine close = Cycle C).
+const {
+  REPO_COMMAND_RUN_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  signRowViaIsolatedSignerOrLocal,
+} = require("./handoff-signing-key.js");
 
 const execFilePromise = promisify(execFile);
 
@@ -767,6 +780,63 @@ function buildDockerfileBob({
   lines.push("RUN mkdir -p /work/repo /work/out && chown -R 1000:1000 /work");
   lines.push("USER 1000:1000");
   lines.push("WORKDIR /src");
+  lines.push("");
+  return lines.join("\n") + "\n";
+}
+
+// SC-TOOLCHAIN IMAGE CONTRACT (authored; the image build/publish/pin is a
+// follow-on provisioning arc, not built here).
+//
+// The OSS image (buildDockerfileBob, ubuntu:24.04) carries only the C/fuzz
+// toolchain; forge/halmos/anchor/cargo+wasm/aptos/sui are NOT in it. The SC
+// container route (sc-container-exec.js) runs the SC tool inside a SEPARATE
+// image whose tag the operator pins via BOB_SC_TOOLCHAIN_IMAGE (operator-only,
+// out of model reach). The seam NEVER builds the image; it consumes a pinned
+// tag. This function emits the Dockerfile that DOCUMENTS the recommended
+// base+install provisioning so the image arc has one canonical recipe to build
+// and pin.
+//
+// Image contract:
+//  - ONE base+install image (per-family images rejected: 7 images = 7 pin
+//    oracles + 7 publish jobs; one image keeps a single pin).
+//  - Each toolchain is fetched from a PINNED release and sha256-verified,
+//    fail-closed (mirroring the chain-prover provisioning pattern). The
+//    `<pin:...>` placeholders below are the pin slots the image arc fills with
+//    real versions + digests and wires a non-gameable pin-drift oracle for.
+//  - USER 1000:1000 lands LAST so the non-signer, non-root user holds at run
+//    time (the container route relies on this for the key-exclusion close).
+//  - No ENV carries a credential/proxy/RPC token; the run-time env is threaded
+//    via --env by the seam, never baked into the image.
+function buildDockerfileScToolchain({
+  baseImage = "ubuntu:24.04",
+} = {}) {
+  const lines = [];
+  lines.push("# SC-toolchain image contract (consumed via BOB_SC_TOOLCHAIN_IMAGE).");
+  lines.push("# Base+install, pinned releases, sha256-verified fail-closed.");
+  lines.push("# The <pin:...> slots are filled by the SC-toolchain provisioning arc;");
+  lines.push("# that arc also wires the pin-drift oracle. No credential ENV is baked.");
+  lines.push("");
+  lines.push(`FROM ${baseImage}`);
+  lines.push("RUN apt-get update \\");
+  lines.push("    && apt-get install -y --no-install-recommends \\");
+  lines.push("       ca-certificates curl git build-essential pkg-config libssl-dev python3 python3-pip \\");
+  lines.push("    && rm -rf /var/lib/apt/lists/*");
+  lines.push("# foundry (forge) — pinned foundryup release, sha256-verified fail-closed.");
+  lines.push("RUN : install forge <pin:foundry-version> <pin:foundry-sha256>");
+  lines.push("# halmos — pinned pip release.");
+  lines.push("RUN : pip install --no-deps halmos==<pin:halmos-version>");
+  lines.push("# anchor — pinned cargo release (solana/anchor toolchain).");
+  lines.push("RUN : cargo install --locked anchor-cli --version <pin:anchor-version>");
+  lines.push("# cosmwasm/substrate — pinned rust toolchain + wasm32 target.");
+  lines.push("RUN : rustup toolchain install <pin:rust-version> && rustup target add wasm32-unknown-unknown");
+  lines.push("# aptos / sui — pinned release tarballs, sha256-verified.");
+  lines.push("RUN : install aptos <pin:aptos-version> <pin:aptos-sha256>");
+  lines.push("RUN : install sui <pin:sui-version> <pin:sui-sha256>");
+  // Writable staging dir owned by the non-signer user. /work is the per-run
+  // harness mount (RW) the seam binds at run time.
+  lines.push("RUN mkdir -p /work && chown -R 1000:1000 /work");
+  lines.push("USER 1000:1000");
+  lines.push("WORKDIR /work");
   lines.push("");
   return lines.join("\n") + "\n";
 }
@@ -2457,6 +2527,16 @@ async function repoDockerRun({
   // against future producer slips.
   validateNoSensitiveMaterial(liveRow, "repo_command_runs");
   withSessionLock(domain, () => {
+    // KEY the live row INSIDE the producer's existing write lock (C4), AFTER
+    // validateNoSensitiveMaterial (so the base64 signature is not scanned), BEFORE
+    // append, through the single signing seam. Covers liveRow minus row_mac —
+    // command_hash, argv_hash, stdout_hash, stderr_hash, exit_code, timed_out, dry_run,
+    // run_id, target_domain, the checkout fields — the executed identity runFromRow/
+    // reverifyReproRecord re-check. NOT a re-hash — a keyed signature. The seam isolates
+    // the secret when the server runs under a dedicated signer uid (agent uid then gets
+    // EACCES); on the same-uid box it degrades to a local sign and the verdict-level
+    // attestation gate enforces trust.
+    signRowViaIsolatedSignerOrLocal(domain, REPO_COMMAND_RUN_MAC_CONTEXT, liveRow);
     appendJsonlLine(repoCommandRunsJsonlPath(domain), liveRow);
   });
 
@@ -2511,6 +2591,7 @@ module.exports = {
   repoDockerRun,
   // Helpers exposed for cross-module reuse / tests
   buildDockerfileBob,
+  buildDockerfileScToolchain,
   buildDockerBuildArgv,
   buildDifferentialCheckoutCommand,
   buildDockerRunArgv,

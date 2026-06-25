@@ -9,6 +9,9 @@ async function handler(args) {
     matchContract: args.match_contract || null,
     extraArgs: Array.isArray(args.extra_args) ? args.extra_args : [],
     timeoutMs: args.timeout_ms || DEFAULT_TIMEOUT_MS,
+    // Lets the SC seam probe signer isolation to refuse a host-as-signer degrade
+    // on an isolated box (HIGH-1).
+    targetDomain: typeof args.target_domain === "string" ? args.target_domain : null,
   });
   return JSON.stringify(result);
 }

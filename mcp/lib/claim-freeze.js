@@ -39,8 +39,27 @@ const {
   withSessionLock,
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
 } = require("./storage.js");
+// Cycle B: KEY claim-freeze.json with a domain-separated ed25519 signature carried in a
+// freeze_mac field (the SAME signRowWithMac envelope/preimage as the JSONL ledgers, only
+// the carrier field differs — NOT a new MAC, NOT a read-time re-hash of the keyless
+// freeze_hash). The signed preimage covers the freeze minus freeze_mac, which INCLUDES
+// freeze_hash, so freeze_hash is transitively keyed with no re-derivation theater (the
+// re-hash forbidden at the freeze_hash mint comment / claim-freeze.js:120-130 is NOT
+// added). Signed at WRITE inside withSessionLock when write===true; verified in
+// readCurrentClaimFreeze (protects exploitRunSkipReverifies + reclampSeveritiesAgainstFreeze).
+// Does NOT close F3: the private key is still 0600 at the agent uid (F2 collapses INTO F3;
+// genuine close = Cycle C). A read-only preview (write!==true) is not signed (no key).
+const {
+  assertRowMacOrLegacy,
+  CLAIM_FREEZE_MAC_CONTEXT,
+} = require("./offensive-row-mac.js");
+const {
+  signRowViaIsolatedSignerOrLocal,
+  resolveRowVerifierSafely,
+} = require("./handoff-signing-key.js");
 
 const CLAIM_FREEZE_VERSION = 1;
+const CLAIM_FREEZE_MAC_FIELD = "freeze_mac";
 
 // EvidenceReference helpers come from claims.js. The schema lives there because
 // CandidateClaim is the first-class carrier of evidence_refs[]; this module
@@ -131,6 +150,21 @@ function buildClaimFreezeDocument(domain, { write = false, now = new Date(), fre
   freeze.freeze_hash = hashDocumentExcluding(freeze, ["frozen_at", "freeze_hash"]);
 
   if (write) {
+    // KEY the freeze before persisting (buildClaimFreeze wraps write:true in
+    // withSessionLock, C4) through the single signing seam. The signed preimage covers
+    // the freeze minus freeze_mac — freeze_id, version, target_domain, counts,
+    // source_hashes, claims[], clusters[], cluster_ids[], AND freeze_hash itself
+    // (transitively keyed, no re-derivation). A keyed signature, NOT a read-time re-hash
+    // of the keyless freeze_hash (forbidden above). The seam isolates the secret when the
+    // server runs under a dedicated signer uid; on the same-uid box it degrades to a
+    // local sign and the verdict-level attestation gate enforces trust. A read-only
+    // preview (write===false) needs no key and carries no freeze_mac.
+    signRowViaIsolatedSignerOrLocal(
+      domain,
+      CLAIM_FREEZE_MAC_CONTEXT,
+      freeze,
+      { macField: CLAIM_FREEZE_MAC_FIELD },
+    );
     writeJsonDocument(claimFreezePath(domain), freeze);
   }
   return freeze;
@@ -172,12 +206,62 @@ function readCurrentClaimFreeze(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const filePath = claimFreezePath(domain);
   if (!fs.existsSync(filePath)) return null;
-  // Intentionally does NOT re-verify freeze_hash: it is a keyless self-hash (see the
-  // freeze_hash mint comment above), so a read-time re-hash check is security theater
-  // against a recompute-capable actor. The frozen doc's integrity is the audit-graded
-  // write-block + the deferred offensive-sandbox key separation; keying freeze_hash is the
-  // real close and shares the offensive-runs MAC-key residual.
-  return readJsonFile(filePath, { label: "claim-freeze.json" });
+  // Still does NOT re-verify freeze_hash: it is a keyless self-hash (see the freeze_hash
+  // mint comment above), so a read-time re-hash is theater against a recompute-capable
+  // actor. Cycle B instead KEYS the freeze with freeze_mac (a signature the actor cannot
+  // produce without the key) and verifies THAT here — a real keying, not a re-hash.
+  //
+  // THREE-STATE contract (CONSTRAINT 7), distinguished so a TAMPERED freeze can never
+  // silently relax a validation:
+  //   * file ABSENT                      -> null (handled above; genuine absence, inert);
+  //   * freeze present, freeze_mac ABSENT (assertRowMacOrLegacy -> {legacy:true}, no
+  //     throw) -> return the doc WITH a one-line accept-with-warning (legacy in-flight
+  //     freeze; the audit-graded write-block still guards it — backward-compat for
+  //     in-flight sessions);
+  //   * freeze present, freeze_mac PRESENT-BUT-INVALID (forged/tampered/cross-context;
+  //     assertRowMacOrLegacy THROWS a STATE_CONFLICT) -> RE-THROW so the read HARD-FAILS
+  //     up the stack. The relaxing consumer (reclampSeveritiesAgainstFreeze) already
+  //     wraps this read in try/catch -> STATE_CONFLICT halt, so a tampered freeze HALTS
+  //     the severity clamp instead of silently un-clamping (the MEDIUM-A fail-open);
+  //   * CORRUPT/oversized/unparseable freeze (readJsonFile throws BEFORE the verifier
+  //     assert, i.e. NOT the freeze_mac STATE_CONFLICT) -> null (torn-write fail-closed,
+  //     distinct from a tamper — the two consumers see the same null as the absent-file
+  //     state).
+  //
+  // Does NOT close F3: a same-uid actor holding the agent-readable key can re-sign a
+  // tampered freeze; F2 collapses INTO F3 (Cycle C). Cycle B freeze_mac is ed25519;
+  // resolveRowVerifierSafely yields a public-key-only verifier (hmacKey:null) for a
+  // non-offensive session and null for a pre-keypair session, and a present freeze_mac
+  // with a null verifier fails the verify -> THROW (re-thrown here as a tamper).
+  let freeze;
+  try {
+    freeze = readJsonFile(filePath, { label: "claim-freeze.json" });
+  } catch {
+    // A corrupt/oversized/unparseable freeze is a torn write, NOT a tamper: fail closed
+    // to null so the two consumers match the absent-file two-state contract.
+    return null;
+  }
+  const verifier = resolveRowVerifierSafely(domain);
+  // assertRowMacOrLegacy returns {legacy:true} for an ABSENT freeze_mac (accept-with-
+  // warning) and THROWS a STATE_CONFLICT for a PRESENT-BUT-INVALID one. We re-throw the
+  // tamper (hard-fail) and emit a single stderr line for the legacy accept path.
+  const macState = assertRowMacOrLegacy(
+    CLAIM_FREEZE_MAC_CONTEXT,
+    freeze,
+    verifier,
+    { macField: CLAIM_FREEZE_MAC_FIELD },
+  );
+  if (macState && macState.legacy === true && freeze && freeze[CLAIM_FREEZE_MAC_FIELD] == null) {
+    try {
+      process.stderr.write(
+        "claim-freeze: accepting an unsigned legacy in-flight freeze (no freeze_mac); "
+        + "the audit-graded write-block still guards it. Re-run buildClaimFreeze to key it.\n",
+      );
+    } catch {
+      // stderr unavailable; the accept is still honored (the doc is returned).
+    }
+  }
+  return freeze;
 }
 
 // Iterate the EvidenceReference entries on every CandidateClaim in the freeze.

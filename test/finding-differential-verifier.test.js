@@ -432,3 +432,22 @@ test("A1: reverifyFindingDifferentialRecord fails closed when the backing rows w
   fs.rmSync(offensiveRunsJsonlPath(domain));
   assert.equal(readFindingDifferentialVerifiedSummary(domain).verified_by_finding["F-2"], undefined);
 }));
+
+test("HIGH-1: verified_by_finding carries container_isolated:false when the positive offensive row lacks the field (fail-closed, mirrors the invariant leg)", () => withTempHome(() => {
+  const domain = "fd-container-isolated.example.com";
+  // Offensive-runs rows do NOT carry container_isolated today, so the re-resolved value
+  // must read false -- the CORRECT fail-closed posture: a finding-differential-backed SC
+  // reportable has NO containerization proof and the verdict gate's SC consult treats it
+  // as un-isolated. This mirrors readInvariantVerifiedSummary's container_isolated
+  // re-resolution from the MAC-covered positive row.
+  seedFlippingPair(domain);
+  const out = verifyFindingDifferential({
+    target_domain: domain, finding_id: "F-2", surface_id: SURFACE,
+    positive_run_ref: REF_POS, control_run_ref: REF_CTL,
+  });
+  assert.equal(out.result, "verified_pass");
+  const entry = readFindingDifferentialVerifiedSummary(domain).verified_by_finding["F-2"];
+  assert.ok(entry, "the honest flip is included");
+  assert.equal(entry.container_isolated, false,
+    "an offensive positive row with no container_isolated field re-resolves to false (fail-closed un-isolated)");
+}));
