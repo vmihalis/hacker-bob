@@ -76,6 +76,16 @@ jobs:
           codex-auth: ${{ secrets.CODEX_AUTH }}
           agy-oauth-token: ${{ secrets.AGY_OAUTH_TOKEN }}
           minimum-severity: medium
+          # GLM routed critic — Anthropic-compatible gateway (public Tailscale Funnel).
+          # Additive 4th critic, hardened by default. GLM is the slowest critic
+          # (~5min healthy); down=fast preflight, over-quota 429 retries ~3-4min/chunk.
+          # Reviews are advisory, so this never gates merges.
+          custom-claude-client-id: glm
+          custom-claude-base-url: https://immersivecommons13.tail5da903.ts.net
+          custom-claude-auth-token: ${{ secrets.GLM_TOKEN }}
+          custom-claude-model: glm-5.1
+          custom-claude-small-fast-model: glm-4.5-air
+          custom-claude-context-window: 128000
           # Coding-agent PRs are huge: the action's old default (80000) truncated
           # a real 1.39M-char diff to ~78K (94% dropped), so the review silently
           # missed almost everything. Pin a high explicit cap that works on the
