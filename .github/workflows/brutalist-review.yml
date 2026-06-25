@@ -35,7 +35,7 @@ jobs:
       - name: Install CLI critics
         working-directory: .github/brutalist-tools
         env:
-          EXPECTED_TOOLS_LOCK_SHA256: 3f51525eacc6d4e8f96838ebc6eb32f92dfe8057f62ffe2c3133c5400b324294
+          EXPECTED_TOOLS_LOCK_SHA256: 32506d6d425025783e47d005561698244373696505d1a3df0ad7f66b1fbd8147
         run: |
           actual="$(sha256sum package-lock.json | cut -d ' ' -f1)"
           if [ "$actual" != "$EXPECTED_TOOLS_LOCK_SHA256" ]; then
