@@ -9,6 +9,8 @@
   "test/verification-contracts.test.js",
   "test/session-state-store.test.js",
   "test/session-state-legacy-phase.test.js",
+  "test/session-root-canonical-only.test.js",
+  "test/purge-legacy-session-root.test.js",
   "test/governance-contracts.test.js",
   "test/repo-target-binding.test.js",
   "test/repo-inventory.test.js",

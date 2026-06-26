@@ -555,7 +555,7 @@ function printInstallSummary(summary) {
   console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
-  console.log("  ~/hacker-bob-sessions/  (legacy ~/bounty-agent-sessions/ remains readable until v2.1.0)");
+  console.log("  ~/hacker-bob-sessions/  (canonical session root; run with --purge-legacy-session-root to remove a pre-v2.0 ~/bounty-agent-sessions/)");
   console.log("");
   console.log("Dependency check:");
   console.log("");
@@ -607,6 +607,122 @@ function printInstallSummary(summary) {
   }
 }
 
+// Opt-in, destructive cleanup of a leftover pre-v2.0 session root. The runtime
+// no longer auto-resolves or auto-copies `~/bounty-agent-sessions`; this removes
+// a stale legacy root once an operator has confirmed they no longer need it.
+// Dry-run by default; `--yes` (confirmed: true) is required to delete. NEVER
+// touches the canonical `~/hacker-bob-sessions` root or the home directory.
+function purgeLegacySessionRoot({ dryRun = true, confirmed = false, home = os.homedir(), includeTelemetry = false } = {}) {
+  const homeDir = home;
+  const legacyRoot = path.join(homeDir, "bounty-agent-sessions");
+  const canonicalRoot = path.join(homeDir, "hacker-bob-sessions");
+  const legacyTelemetryDir = path.join(homeDir, "bounty-agent-telemetry");
+
+  const report = {
+    legacy_root: legacyRoot,
+    canonical_root: canonicalRoot,
+    dry_run: dryRun || !confirmed,
+    purged: false,
+    would_delete: [],
+    deleted_root: null,
+    count: 0,
+    telemetry_root: includeTelemetry ? legacyTelemetryDir : null,
+    telemetry_purged: false,
+    reason: null,
+  };
+
+  // Fail-closed guards. Refuse if the legacy root itself is a symlink (so a
+  // recursive delete cannot escape through it), collapses onto the canonical
+  // root, or is the home directory / filesystem root. The leaf-symlink check
+  // uses lstat so an ancestor symlink (e.g. macOS /var -> /private/var) does
+  // not spuriously block a genuine `~/bounty-agent-sessions` directory.
+  function purgeBlocked() {
+    if (legacyRoot === canonicalRoot) return "legacy_equals_canonical";
+    if (legacyRoot === homeDir) return "legacy_equals_home";
+    if (path.dirname(legacyRoot) === legacyRoot) return "legacy_is_fs_root";
+    if (path.basename(legacyRoot) !== "bounty-agent-sessions") return "legacy_basename_mismatch";
+    let legacyStat;
+    try {
+      legacyStat = fs.lstatSync(legacyRoot);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return null;
+      return `lstat_failed:${error && error.code ? error.code : "unknown"}`;
+    }
+    if (legacyStat.isSymbolicLink()) return "legacy_root_symlink_escape";
+    if (!legacyStat.isDirectory()) return "legacy_root_not_directory";
+    return null;
+  }
+
+  const blocked = purgeBlocked();
+  if (blocked) {
+    report.reason = blocked;
+    return report;
+  }
+
+  if (!fs.existsSync(legacyRoot)) {
+    report.reason = "no_legacy_root";
+    return report;
+  }
+
+  let domains = [];
+  try {
+    domains = fs.readdirSync(legacyRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch (_) {
+    domains = [];
+  }
+  report.would_delete = domains;
+  report.count = domains.length;
+
+  if (report.dry_run) {
+    report.reason = "dry_run";
+    return report;
+  }
+
+  // Confirmed: delete ONLY the legacy root. The canonical root is never even a
+  // candidate for deletion.
+  fs.rmSync(legacyRoot, { recursive: true, force: true });
+  report.purged = true;
+  report.deleted_root = legacyRoot;
+  report.reason = "purged";
+
+  if (includeTelemetry && fs.existsSync(legacyTelemetryDir)) {
+    fs.rmSync(legacyTelemetryDir, { recursive: true, force: true });
+    report.telemetry_purged = true;
+  }
+
+  return report;
+}
+
+function printPurgeLegacySessionRootReport(report) {
+  if (report.reason === "no_legacy_root") {
+    console.log(`No legacy session root to purge (${report.legacy_root} does not exist).`);
+    return;
+  }
+  if (report.reason && report.reason !== "dry_run" && report.reason !== "purged") {
+    console.log(`Refused to purge legacy session root (${report.reason}). No files were deleted.`);
+    console.log(`  Legacy root: ${report.legacy_root}`);
+    return;
+  }
+  if (report.dry_run) {
+    console.log(`DRY RUN — would delete the legacy session root and ${report.count} session director${report.count === 1 ? "y" : "ies"}:`);
+    console.log(`  ${report.legacy_root}`);
+    for (const domain of report.would_delete) {
+      console.log(`    - ${domain}`);
+    }
+    console.log(`  Canonical root ${report.canonical_root} is NOT affected.`);
+    console.log("  Re-run with --yes to actually delete. This is irreversible.");
+    return;
+  }
+  console.log(`Deleted legacy session root ${report.deleted_root} (${report.count} director${report.count === 1 ? "y" : "ies"}).`);
+  if (report.telemetry_purged) {
+    console.log(`Deleted legacy telemetry directory ${report.telemetry_root}.`);
+  }
+  console.log(`Canonical root ${report.canonical_root} was not touched.`);
+}
+
 module.exports = {
   BOB_RESOURCE_DIR,
   NEUTRAL_INSTALL_SCHEMA_VERSION,
@@ -620,6 +736,8 @@ module.exports = {
   neutralVersionPath,
   patchrightAvailable,
   printInstallSummary,
+  printPurgeLegacySessionRootReport,
+  purgeLegacySessionRoot,
   readNeutralInstallMetadata,
   resolveInstallAdapters,
   writeNeutralInstallMetadata,

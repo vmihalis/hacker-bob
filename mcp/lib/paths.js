@@ -37,20 +37,12 @@ function labAuthorizationPath(domain) {
   return path.join(sessionDir(domain), "lab-authorization.json");
 }
 
-// Canonical session root. Cycle P.2 of the frontier-topology realization
-// hypergraph moves the session root from `~/bounty-agent-sessions` to
-// `~/hacker-bob-sessions`. Per Risk R6, the legacy root is *preserved*: it is
-// still resolvable as a read-fallback (so sessions created before the
-// migration remain readable), and the migration shim copies — never moves —
-// legacy session directories into the canonical location. The destructive
-// purge is gated behind the explicit `--purge-legacy-session-root` flag and
-// is reserved for v2.1.0.
+// Canonical session root. All session reads and writes resolve here. The
+// pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or
+// auto-copied; operators clean up a leftover legacy root with
+// `hacker-bob install --purge-legacy-session-root`.
 function sessionsRoot() {
   return path.join(os.homedir(), "hacker-bob-sessions");
-}
-
-function legacySessionsRoot() {
-  return path.join(os.homedir(), "bounty-agent-sessions");
 }
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
@@ -1048,7 +1040,6 @@ const INVENTORY_PROBE_DOMAIN = "example.com";
 const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   "sessionDir",
   "sessionsRoot",
-  "legacySessionsRoot",
   "telemetryDir",
   "telemetryToolInvocationsJsonlPath",
   "isAuditGradedPath",
@@ -1185,7 +1176,6 @@ module.exports = {
   invariantVerifiedJsonlPath,
   findingDifferentialVerifiedJsonlPath,
   isAuditGradedPath,
-  legacySessionsRoot,
   reportAmendmentsJsonlPath,
   reportSnapshotsJsonlPath,
   schedulerDecisionsJsonlPath,

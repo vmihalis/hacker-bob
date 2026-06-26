@@ -770,7 +770,7 @@ function renderAgentPrompt({ manifest }) {
     "",
     "Storage roots used by this release:",
     "- `~/hacker-bob-sessions` (canonical session root)",
-    "- `~/bounty-agent-sessions` (legacy session root, read-fallback preserved until v2.1.0 `--purge-legacy-session-root`)",
+    "- `~/bounty-agent-sessions` (pre-v2.0 session root; no longer auto-resolved — remove a leftover legacy root with `hacker-bob install --purge-legacy-session-root`)",
     "- `~/bounty-agent-telemetry`",
     "",
     "Do not rename those storage roots as part of a routine improvement patch unless the operator explicitly asks for a storage migration.",

@@ -9,6 +9,12 @@
 - Removed the `bounty_transition_phase` → `bob_advance_session` legacy phase-FSM redirect. Call `bob_advance_session(to_state)` with the six-state lifecycle enum.
 - Installer: a pinned `mcp__hacker-bob__bounty_*` tool permission in `.claude/settings.json` whose `bob_*` twin no longer exists (for example `bounty_report_written`, `bounty_transition_phase`) now fails the install with a message naming the stale string and its `bob_*` replacement, instead of silently rewriting to a permission that grants nothing. A `bounty_*` permission whose `bob_*` twin still exists continues to migrate cleanly. The `mcp__bountyagent__*` server-name permission compatibility is unchanged.
 
+### Retired the legacy session-root and telemetry-file migration shims
+
+- Retired the pre-v2.0 `~/bounty-agent-sessions` session-root read-fallback and its copy-migration shim. The runtime now resolves sessions only from the canonical `~/hacker-bob-sessions`; the legacy root is no longer auto-resolved on read or auto-copied on startup.
+- Retired the one-time `~/bounty-agent-telemetry/agent-runs.jsonl` → `tool-invocations.jsonl` telemetry-file migration. The telemetry directory itself (`~/bounty-agent-telemetry`, overridable via `BOUNTY_TELEMETRY_DIR`) is unchanged; only the pre-rename file migration is removed.
+- Added the opt-in, destructive `hacker-bob install --purge-legacy-session-root` flag to remove a leftover pre-v2.0 legacy session root. It is dry-run by default and requires `--yes` to delete, names the absolute path it removes, never touches the canonical `~/hacker-bob-sessions` root or the home directory, and only removes `~/bounty-agent-telemetry` when `--include-legacy-telemetry` is also passed.
+
 ## [2.0.1] - 2026-06-08
 
 First npm publication of the v2 line. `v2.0.0` was tagged but never released to npm; the registry `latest` remained on the v1.3.x maintenance line. `2.0.1` publishes the accumulated v2.0.x work on top of the [2.0.0] topology.

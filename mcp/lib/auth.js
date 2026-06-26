@@ -77,9 +77,10 @@ function applyAuthProfileHeaders(headers, profile) {
 }
 
 function resolveAuthJsonPath(targetDomain, { allowLegacyFallback = false } = {}) {
-  // Cycle P.2: scan the canonical `~/hacker-bob-sessions/` root for the
-  // legacy-fallback discovery path. Sessions copied from
-  // `~/bounty-agent-sessions/` by the migration shim land here.
+  // When no target_domain is supplied, `allowLegacyFallback` enables a
+  // no-target discovery path that picks the most-recently-modified session
+  // under the canonical `~/hacker-bob-sessions/` root. This is unrelated to the
+  // retired legacy session root; it never reads `~/bounty-agent-sessions/`.
   const sessionsDir = sessionsRoot();
   if (targetDomain) {
     assertSafeDomain(targetDomain);
