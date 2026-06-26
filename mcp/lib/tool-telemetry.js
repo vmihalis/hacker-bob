@@ -12,7 +12,7 @@ const {
 } = require("./storage.js");
 const {
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
-  agentRunStopSuppressedPath,
+  agentRunStopSeenDir,
   statePath,
   telemetryDir,
   telemetryToolInvocationsJsonlPath,
@@ -896,22 +896,34 @@ function slimToolInvocationEvent(event) {
   };
 }
 
-// Observability counterpart to the dedupe gate in agent-run-completion.js: how
-// many phantom missing_marker re-fires the gate suppressed. Surfaced under
-// bob_read_tool_telemetry so a low (near-zero) true blocked rate is not mistaken
-// for a healthy pipeline that is actually hiding a storm of suppressed re-fires.
-// Fail-safe to 0 on any read error (missing/corrupt counter file).
-function readSuppressedPhantomMissingMarkerTotal(env = process.env) {
+// Observability counterpart to the per-transcript dedupe gate in
+// agent-run-completion.js: the LIFETIME, telemetry-dir-wide count of phantom
+// null-coord block-row re-fires the gate suppressed. Derived at READ time by
+// summing each transcript marker's OWN suppressed counter — there is no shared
+// mutable counter to race on. Surfaced under bob_read_tool_telemetry so a low
+// (near-zero) true blocked rate is not mistaken for a healthy pipeline that is
+// actually hiding a storm of suppressed re-fires. Fail-safe to 0 on any read
+// error (missing dir, unreadable/corrupt marker).
+function readLifetimeSuppressedPhantomBlockRows(env = process.env) {
+  const dir = agentRunStopSeenDir(env);
+  let entries;
   try {
-    const filePath = agentRunStopSuppressedPath(env);
-    if (!fs.existsSync(filePath)) return 0;
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return Number.isInteger(parsed.suppressed_total) && parsed.suppressed_total >= 0
-      ? parsed.suppressed_total
-      : 0;
+    entries = fs.readdirSync(dir);
   } catch {
     return 0;
   }
+  let total = 0;
+  for (const name of entries) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+      if (Number.isInteger(parsed.suppressed) && parsed.suppressed >= 0) {
+        total += parsed.suppressed;
+      }
+    } catch {
+      // Skip an unreadable/corrupt marker; the sum stays best-effort.
+    }
+  }
+  return total;
 }
 
 function summarizeToolInvocationTelemetryEvents(events, {
@@ -943,7 +955,14 @@ function summarizeToolInvocationTelemetryEvents(events, {
     filters,
     total_runs: events.length,
     malformed_lines: readResult ? readResult.malformed_lines : 0,
-    suppressed_phantom_missing_marker: readSuppressedPhantomMissingMarkerTotal(env),
+    // Lifetime/global, NOT filter-scoped: this suppressed-re-fire total spans the
+    // whole telemetry dir and ignores the target_domain/wave/agent/surface_id
+    // filters above. The explicit { scope, total } shape keeps it from being
+    // misread as a peer of the filter-scoped total_runs / by_status counts.
+    suppressed_phantom_block_rows: {
+      scope: "lifetime_global",
+      total: readLifetimeSuppressedPhantomBlockRows(env),
+    },
     totals: {
       runs: events.length,
       by_status: byStatus,

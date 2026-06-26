@@ -53,12 +53,19 @@ function legacySessionsRoot() {
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
 const TELEMETRY_TOOL_INVOCATIONS_FILE_NAME = "tool-invocations.jsonl";
-// Phantom-no-marker dedupe counter. The SubagentStop hook's block() re-fires on
-// every exit(2)-forced continuation of the same subagent; the dedupe gate in
-// agent-run-completion.js records the FIRST stop per transcript_path and counts
-// the suppressed re-fires here. Lives in the telemetry dir (not a session dir):
-// these rows have null target_domain, so there is no session to key them to.
-const TELEMETRY_AGENT_RUN_STOP_SUPPRESSED_FILE_NAME = "agent-run-stop-suppressed.json";
+// Phantom null-coord block-row dedupe markers. The SubagentStop hook's block()
+// re-fires the same null-coord row on every exit(2)-forced continuation of one
+// subagent; the dedupe gate in agent-run-completion.js records the FIRST stop
+// per transcript and writes ONE small marker file per DISTINCT phantom subagent
+// under this directory, keyed by sha256(transcript_path)[:16]. Each marker holds
+// only that transcript's suppressed-re-fire count, and tool-telemetry.js sums
+// the markers at READ time for the lifetime/global observability total — there
+// is no shared mutable counter to race on across concurrent hook processes.
+// Lives in the telemetry dir (not a session dir): these rows have null
+// target_domain, so there is no session to key them to. Growth is bounded to one
+// file per distinct phantom subagent, and the directory is operator-cleaned like
+// the rest of the telemetry dir (no rotation/cron here).
+const TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME = "agent-run-stop-seen";
 
 function telemetryDir(env = process.env) {
   const override = typeof env.BOUNTY_TELEMETRY_DIR === "string"
@@ -71,11 +78,11 @@ function telemetryToolInvocationsJsonlPath(env = process.env) {
   return path.join(telemetryDir(env), TELEMETRY_TOOL_INVOCATIONS_FILE_NAME);
 }
 
-// Single source of truth for the phantom-no-marker dedupe counter path, shared
-// by the writer (agent-run-completion.js) and the reader (tool-telemetry.js) so
-// the basename never drifts across modules.
-function agentRunStopSuppressedPath(env = process.env) {
-  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SUPPRESSED_FILE_NAME);
+// Single source of truth for the phantom-row dedupe marker directory, shared by
+// the writer (agent-run-completion.js) and the reader (tool-telemetry.js) so the
+// directory name never drifts across modules.
+function agentRunStopSeenDir(env = process.env) {
+  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SEEN_DIR_NAME);
 }
 
 function statePath(domain) {
@@ -755,7 +762,7 @@ module.exports = {
   staticScanResultsJsonlPath,
   taskGraphPath,
   taskQueuePath,
-  agentRunStopSuppressedPath,
+  agentRunStopSeenDir,
   telemetryDir,
   telemetryToolInvocationsJsonlPath,
   trafficJsonlPath,

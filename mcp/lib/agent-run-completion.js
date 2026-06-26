@@ -17,7 +17,7 @@ const {
 } = require("./assignments.js");
 const {
   sessionDir,
-  agentRunStopSuppressedPath,
+  agentRunStopSeenDir,
 } = require("./paths.js");
 const {
   readJsonFile,
@@ -184,6 +184,7 @@ const {
 } = require("./envelope.js");
 const {
   safeRecordToolInvocationTelemetry,
+  telemetryEnabled,
 } = require("./tool-telemetry.js");
 const {
   safeRecordEvaluatorStoppedPipelineEvent,
@@ -466,46 +467,110 @@ function telemetryInput(evaluation, {
   };
 }
 
-// A "phantom no-marker row" is the telemetry shape the SubagentStop hook emits
-// when an agent stops without any final marker: status "blocked", block_code
-// "missing_marker" (camelCase `blockCode` after telemetryInput), and null
-// coordinates (no marker -> no target_domain/wave/agent). The hook's block()
-// re-fires this identical row on every exit(2)-forced continuation of the same
-// subagent, so it is the only row class that needs per-subagent deduping.
-function isPhantomNoMarkerRow(input) {
+// A "phantom null-coord block row" is the telemetry shape the SubagentStop hook
+// emits when an agent stops without USABLE coordinates: status "blocked", a
+// block_code of "missing_marker" (no marker at all) or "malformed_marker" (the
+// MARKER string present but unparseable, or a parsed marker missing every
+// coordinate), AND null target_domain/wave/agent. The hook's block() re-fires
+// this identical row on every exit(2)-forced continuation of the same subagent,
+// so it is the row class that needs per-subagent deduping.
+//
+// malformed_marker is widened in here DELIBERATELY but ONLY for the null-coord
+// shape: a malformed_marker that carries a real target_domain/wave/agent (the
+// common partial-marker case — e.g. a "w0" wave that fails the positive-wN
+// regex) keeps its coordinates and is therefore NOT gated. The all-coords-null
+// discriminator is exactly what isolates the un-attributable storm shape from an
+// attributable, individually-meaningful block.
+const PHANTOM_NULL_COORD_BLOCK_CODES = new Set(["missing_marker", "malformed_marker"]);
+
+function isPhantomNullCoordBlockRow(input) {
   return Boolean(input)
     && input.status === "blocked"
-    && input.blockCode === "missing_marker"
+    && PHANTOM_NULL_COORD_BLOCK_CODES.has(input.blockCode)
     && input.target_domain == null && input.wave == null && input.agent == null;
 }
 
-// First occurrence per transcript_path -> record (return true). Duplicate ->
-// suppress (increment counter, return false). FAIL-OPEN: any error returns true
-// so a real failure is never hidden by a fault in this dedupe helper. readJsonFile
-// has no default-on-missing mode (it stat-throws on an absent file), so the first
-// occurrence (counter file absent) is handled explicitly via fs.existsSync — that
-// path both records the row and seeds the counter so later re-fires are caught.
-function recordFirstPhantomMissingMarker(input, env = process.env) {
+// Stable 16-hex dedupe key for a phantom row's transcript_path. Returns null
+// when there is no usable transcript key (missing / non-string / blank). A null
+// key is the caller's FAIL-OPEN signal: a keyless row is always recorded and
+// never deduped, so unrelated keyless rows can never collapse onto one shared
+// (empty-string) key and cross-suppress each other.
+function phantomTranscriptKey(input) {
+  const transcriptPath = input && typeof input.transcript_path === "string"
+    ? input.transcript_path.trim()
+    : "";
+  if (!transcriptPath) return null;
+  return crypto.createHash("sha256").update(transcriptPath).digest("hex").slice(0, 16);
+}
+
+// Per-transcript phantom-row dedupe. The storm re-fires within ONE transcript
+// are SEQUENTIAL (stop -> hook -> exit(2) -> continue -> stop ...), so the
+// per-transcript marker file needs no cross-process lock; concurrency happens
+// only ACROSS transcripts, which hash to DISTINCT marker files. Invariants:
+//   * row-before-mark: a marker is created only AFTER recordRow() reports the
+//     first row was actually written, so a sink failure can never suppress an
+//     unwritten first row (the fail-CLOSED hole is closed).
+//   * fail-open: telemetry disabled, no usable transcript key, or ANY fault in
+//     this path -> record the row (treat as a first occurrence).
+//   * bounded growth: exactly one small marker file per DISTINCT phantom
+//     transcript; same-transcript re-fires only bump that file's own counter.
+// recordRow() must return true iff the invocation row was actually written.
+function recordPhantomBlockRowOnce(input, recordRow, env = process.env) {
+  // Telemetry opt-out: the dedupe machinery writes nothing; the row sink honors
+  // the same opt-out, so the gate as a whole writes nothing.
+  if (!telemetryEnabled(env)) {
+    recordRow();
+    return;
+  }
+  const key = phantomTranscriptKey(input);
+  if (!key) {
+    // No usable transcript key -> cannot dedupe safely. Fail open: record.
+    recordRow();
+    return;
+  }
+  let markerFile;
   try {
-    const file = agentRunStopSuppressedPath(env);
-    const state = fs.existsSync(file)
-      ? readJsonFile(file)
-      : { version: 1, suppressed_total: 0, transcripts: {} };
-    const key = crypto.createHash("sha256")
-      .update(typeof input.transcript_path === "string" ? input.transcript_path : "")
-      .digest("hex")
-      .slice(0, 16);
-    if (state.transcripts[key] == null) {
-      state.transcripts[key] = 0;
-      writeFileAtomic(file, JSON.stringify(state));
-      return true;
-    }
-    state.transcripts[key] += 1;
-    state.suppressed_total += 1;
-    writeFileAtomic(file, JSON.stringify(state));
-    return false;
+    markerFile = path.join(agentRunStopSeenDir(env), key);
   } catch {
-    return true;
+    recordRow();
+    return;
+  }
+  // Duplicate re-fire for this transcript: suppress the row, but COUNT it in the
+  // transcript's OWN marker file. Same-transcript re-fires are sequential, so
+  // this read-modify-write has no concurrent writer for the same key.
+  if (fs.existsSync(markerFile)) {
+    bumpPhantomTranscriptSuppressed(markerFile);
+    return;
+  }
+  // First occurrence for this transcript: write the row FIRST, then mark seen.
+  // If the row sink could not write it, leave the transcript UNMARKED so the
+  // next re-fire records again (fail open; never a marker without a written
+  // first row).
+  if (recordRow() !== true) return;
+  try {
+    writeFileAtomic(markerFile, JSON.stringify({ version: 1, suppressed: 0 }));
+  } catch {
+    // Mark failed -> stays unmarked; a later re-fire will record again.
+  }
+}
+
+// Increment one transcript's suppressed-re-fire counter. Best-effort and
+// isolated to that transcript's marker file: a corrupt/unreadable marker is
+// rewritten with a fresh count rather than throwing into the telemetry path.
+function bumpPhantomTranscriptSuppressed(markerFile) {
+  try {
+    let suppressed = 0;
+    try {
+      const state = readJsonFile(markerFile);
+      if (state && Number.isInteger(state.suppressed) && state.suppressed >= 0) {
+        suppressed = state.suppressed;
+      }
+    } catch {
+      // Unreadable/corrupt marker -> restart its count from 0.
+    }
+    writeFileAtomic(markerFile, JSON.stringify({ version: 1, suppressed: suppressed + 1 }));
+  } catch {
+    // Counter bump is best-effort; never throw.
   }
 }
 
@@ -523,19 +588,28 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
     return evaluation;
   }
   const input = telemetryInput(evaluation, options);
-  // Phantom no-marker dedupe. The SubagentStop hook's block() re-fires on every
-  // exit(2)-forced continuation of the same subagent, each emitting an identical
-  // null-coord missing_marker row. Record the FIRST stop per subagent
-  // (transcript_path); suppress + COUNT re-fires. exit(2) lives in block() and is
-  // untouched — this only decides whether the telemetry row is written.
-  if (isPhantomNoMarkerRow(input) && !recordFirstPhantomMissingMarker(input)) {
-    return input; // suppressed duplicate; counter already incremented
+  // recordRow writes the invocation row + the (phantom-row no-op) pipeline
+  // event, returning true iff the invocation row was actually written. The
+  // pipeline-event sink short-circuits on a null target_domain, so for phantom
+  // rows only the invocation sink decides "was the row written".
+  const recordRow = () => {
+    const recorded = safeRecordToolInvocationTelemetry(input);
+    safeRecordEvaluatorStoppedPipelineEvent(
+      input,
+      safeGovernanceContextForDomain(input.target_domain),
+    );
+    return recorded != null;
+  };
+  // Phantom null-coord block-row dedupe. The SubagentStop hook's block()
+  // re-fires the same null-coord row on every exit(2)-forced continuation of one
+  // subagent; record the FIRST per transcript and COUNT the re-fires. exit(2)
+  // lives in block() and is untouched — this only decides whether the telemetry
+  // row is written.
+  if (isPhantomNullCoordBlockRow(input)) {
+    recordPhantomBlockRowOnce(input, recordRow);
+    return input;
   }
-  safeRecordToolInvocationTelemetry(input);
-  safeRecordEvaluatorStoppedPipelineEvent(
-    input,
-    safeGovernanceContextForDomain(input.target_domain),
-  );
+  recordRow();
   return input;
 }
 
