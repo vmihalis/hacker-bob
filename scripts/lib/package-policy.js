@@ -5,6 +5,17 @@ const path = require("node:path");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
+// Single source of truth for the npm pack-size tripwire. Imported by BOTH
+// test/package.test.js and scripts/release-check.js so the ceiling cannot drift
+// between them (no duplicated magic number). Ratcheted from the historical 3.4 MB
+// after the 921 KB docs/hacker-bob-social.png was excluded from the pack
+// (EXCLUDED_CANONICAL_PACKAGE_FILES): the lean pack fell to ~2.48 MB, so this snug
+// 2.7 MB ceiling keeps ~217 KB of operating headroom — enough to absorb the ~3 KB
+// pack-size non-determinism plus a couple PRs of normal source growth, while still
+// firing early on a surprising regression (a re-added asset, a vendored dep). Bump
+// it deliberately (and only here) when a real growth stream warrants it.
+const CANONICAL_PACKAGE_MAX_BYTES = 2_700_000;
+
 const WRAPPER_PACKAGE_SPECS = Object.freeze([
   Object.freeze({
     name: "hacker-bob-cc",
@@ -76,6 +87,11 @@ const STALE_HOOK_SCRIPT_NAMES = Object.freeze([
 const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   ...STALE_HOOK_SCRIPT_NAMES.map((name) => `.claude/hooks/${name}`),
   "docs/hacker-bob-offline-guide.pdf",
+  // The 921 KB social-preview card is a web/marketing asset (referenced only by the
+  // non-packed site/ and GitHub's social-preview, never by the installed runtime). It
+  // dominated the tarball at ~27% of pack size; excluding it reclaims the budget headroom
+  // the comment in test/package.test.js long flagged as the obvious trim target.
+  "docs/hacker-bob-social.png",
   "scripts/authority-inventory.js",
   "scripts/replay-refusal.js",
   "scripts/bench-prompts.sh",
@@ -190,6 +206,7 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
 }
 
 module.exports = {
+  CANONICAL_PACKAGE_MAX_BYTES,
   DISALLOWED_PACKED_FILE_PATTERNS,
   DISALLOWED_PACKED_TEXT_PATTERNS,
   EXCLUDED_CANONICAL_PACKAGE_FILES,

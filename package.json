@@ -51,6 +51,7 @@
     "docs/**/*.json",
     "docs/**/*.html",
     "docs/**/*.png",
+    "!docs/hacker-bob-social.png",
     "mcp/**/*",
     "!mcp/node_modules/**",
     "prompts/**/*",

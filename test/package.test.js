@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  CANONICAL_PACKAGE_MAX_BYTES,
   DISALLOWED_PACKED_FILE_PATTERNS,
   DISALLOWED_PACKED_TEXT_PATTERNS,
   EXCLUDED_CANONICAL_PACKAGE_FILES,
@@ -174,10 +175,20 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // route/client in mcp/lib/dashboard.js, #151). Headroom had fallen to ~0 KB and the
     // npm-pack tarball size is non-deterministic by ~3 KB across runs (CI measured
     // 3,300,833 B on a commit a parallel run packed under 3.3 MB — the budget was
-    // flapping), so this restores a stable margin (lean pack ~3.30 MB) without trimming
-    // assets (the 921 KB docs/hacker-bob-social.png remains the obvious trim target if a
-    // future squeeze warrants it). Mirror of the same budget in scripts/release-check.js.
-    assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
+    // flapping), so this restored a stable margin (lean pack ~3.30 MB).
+    // That future squeeze then arrived: the lean pack crept back to ~3.40 MB (~0 KB
+    // headroom, CI-red), so the 921 KB docs/hacker-bob-social.png — a web/marketing asset
+    // unused by the installed runtime — is now excluded from the pack (see
+    // EXCLUDED_CANONICAL_PACKAGE_FILES in scripts/lib/package-policy.js), dropping the lean
+    // pack to ~2.48 MB. The ceiling was then RATCHETED DOWN from 3.4 MB to a snug 2.7 MB so
+    // the reclaimed ~0.9 MB is not unmonitored slack — the tripwire keeps ~217 KB of working
+    // headroom and again fires early on growth. The ceiling is a single source of truth
+    // (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js), shared with
+    // scripts/release-check.js so the two cannot drift.
+    assert.ok(
+      pack.size < CANONICAL_PACKAGE_MAX_BYTES,
+      `npm pack size ${pack.size} exceeds ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`,
+    );
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);
