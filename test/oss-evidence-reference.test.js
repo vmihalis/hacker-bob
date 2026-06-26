@@ -182,10 +182,13 @@ test("EVIDENCE_REFERENCE_KIND_VALUES carries the two O.8 additions alongside the
     "http_audit",
     "smart_contract_evidence",
     "agent_run",
+    "exploit_run",
   ]) {
     assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes(existing), `regression: ${existing} removed`);
   }
-  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 9);
+  // composition_path is the additive cross-stack composition-path binding kind.
+  assert.ok(EVIDENCE_REFERENCE_KIND_VALUES.includes("composition_path"));
+  assert.equal(EVIDENCE_REFERENCE_KIND_VALUES.length, 10);
 });
 
 // ── 2. deterministic lookup keys ─────────────────────────────────────────────

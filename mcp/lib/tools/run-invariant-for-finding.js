@@ -8,6 +8,12 @@ async function adapter(args) {
     workdir: args.harness_path,
     matchTest: args.match_test || null,
     matchContract: args.match_contract || null,
+    // HIGH-1: the invariant runner pins forge to the EXACT generated file and anchors the
+    // match filters to the full identifier so a same-named shadow .t.sol cannot poison the
+    // signed row. These are runner-controlled (never agent free-text) — the standalone
+    // bob_foundry_run tool does not set them, so its caller match strings stay unanchored.
+    matchPath: typeof args.match_path === "string" ? args.match_path : null,
+    anchorMatch: args.anchor_match === true,
     chainId: args.chain_id || null,
     forkBlock: args.fork_block || null,
     forkUrls: Array.isArray(args.fork_urls) ? args.fork_urls : null,
@@ -17,6 +23,11 @@ async function adapter(args) {
     // SC seam probes signer isolation from it to refuse a host-as-signer degrade
     // under enforce (HIGH-1), so the invariant run never mints a forgeable row.
     targetDomain: typeof args.target_domain === "string" ? args.target_domain : null,
+    // The cross-stack consumable bytes (Buffer) runInvariantForFinding fetched from the
+    // named cause_run_id's MCP-owned capture, verified non-forgeable against the offensive
+    // row's MAC-covered hash. Injected into the foundry subprocess as BOB_CONSUMED_ARTIFACT;
+    // null on the control arm (empty env = the controlled variable).
+    consumedArtifact: Buffer.isBuffer(args.consumed_artifact) ? args.consumed_artifact : null,
   });
   return result;
 }
@@ -35,6 +46,9 @@ async function runInvariantForFindingHandler(args) {
     extra_args: args.extra_args,
     timeout_ms: args.timeout_ms,
     run_id: args.run_id,
+    tree_ref: args.tree_ref,
+    checkout_kind: args.checkout_kind,
+    cause_run_id: args.cause_run_id,
     dry_run: args.dry_run,
   });
 }
@@ -75,6 +89,9 @@ module.exports = Object.freeze({
       extra_args: { type: "array", items: { type: "string", minLength: 1, maxLength: 200 }, maxItems: 12 },
       timeout_ms: { type: "integer", minimum: 5000, maximum: 300000 },
       run_id: { type: "string" },
+      tree_ref: { type: "string", description: "Optional. Names WHICH tree this run executed against (the real target by default; a control tree for the refuting arm). Bound into row_mac + run_hash so a control row cannot be re-pointed at a different tree." },
+      checkout_kind: { type: "string", description: "Optional. The checkout kind for tree_ref (e.g. tree, upstream_fix). The differential verifier requires the positive and control to share the same test and differ only in tree_ref/checkout_kind." },
+      cause_run_id: { type: "string", description: "Optional. For a CROSS-STACK violated arm: the offensive_runs run_id whose state this invariant executed against. A MAC-covered sibling (not in run_hash), so a violated arm cryptographically NAMES the stack-A cause it consumed; the cross-stack verifier refuses any flip whose violated arm does not bind this cause." },
       dry_run: { type: "boolean", description: "When true, returns the planned test source without writing files or invoking forge." },
     },
     required: ["target_domain", "finding", "harness_path"],

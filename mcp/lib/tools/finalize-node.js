@@ -69,6 +69,12 @@ const {
 const {
   readSurfaceRoutesStrict,
 } = require("../surface-router.js");
+const {
+  readCompositionVerifiedSummary,
+} = require("../composition-live-verifier.js");
+const {
+  isBindLeaf,
+} = require("../cross-stack-differential-verifier.js");
 
 // Adjudication chain shape per X-D9: severity_floor → rounds. The X.8
 // finalize emits the chain REQUEST shape into the verification round
@@ -198,6 +204,114 @@ function computeUnblockedDownstream(document, finalizedNode) {
     }
   }
   return out.sort();
+}
+
+// Resolve a surface_ref's stack family from the route-metadata map already built
+// in handler() via safeSurfaceRouteMap. web vs smart_contract are distinct stacks;
+// an absent/unknown surface_type collapses to null (NOT a third stack) so a
+// missing-metadata surface NEVER manufactures a spurious distinct stack.
+function surfaceStackFamily(surfaceRef, surfaceMetadataById) {
+  const meta = surfaceMetadataById && surfaceMetadataById[surfaceRef];
+  const surfaceType = meta && typeof meta.surface_type === "string" ? meta.surface_type.trim() : "";
+  if (surfaceType === "web" || surfaceType === "smart_contract" || surfaceType === "code_module") {
+    return surfaceType;
+  }
+  return null;
+}
+
+// surfacesSpanDistinctStacks — true iff the node's surface_refs resolve (via the
+// route-metadata map) to >=2 DISTINCT stack families. A web<->web "nesting"
+// transition (both surfaces web) returns false. This is the POSITIVE detector for an
+// EXPLICITLY distinct-stack span; the fail-closed leg below (surfacesProvenSameStack)
+// is what catches a genuinely cross-stack transition whose route metadata is too poor
+// to resolve here.
+function surfacesSpanDistinctStacks(surfaceRefs, surfaceMetadataById) {
+  if (!Array.isArray(surfaceRefs)) return false;
+  const families = new Set();
+  for (const ref of surfaceRefs) {
+    if (typeof ref !== "string") continue;
+    const family = surfaceStackFamily(ref, surfaceMetadataById);
+    if (family) families.add(family);
+  }
+  return families.size >= 2;
+}
+
+// surfacesProvenSameStack — the FAIL-CLOSED inversion of the distinct-stack heuristic.
+// True ONLY when a multi-surface transition can be PROVEN same-stack: EVERY surface has
+// KNOWN route metadata AND they all share ONE family. ANY surface with absent/unknown
+// metadata returns false — we CANNOT prove same-stack, so the transition must produce a
+// bound cross-stack verified_pass rather than escape the gate on missing metadata. A
+// degenerate (<2 surfaces) transition is trivially same-stack (not multi-surface).
+function surfacesProvenSameStack(surfaceRefs, surfaceMetadataById) {
+  if (!Array.isArray(surfaceRefs) || surfaceRefs.length < 2) return true;
+  const families = new Set();
+  for (const ref of surfaceRefs) {
+    const family = surfaceStackFamily(ref, surfaceMetadataById);
+    if (family == null) return false; // ANY unknown-metadata surface -> NOT proven same-stack
+    families.add(family);
+  }
+  return families.size === 1; // all known and identical family
+}
+
+// anyWitnessOrLeafIsBindShaped — a Contract whose evidence carries a bind leaf
+// (positive_run_ref + control_run_ref, the cross-stack-differential-verifier
+// shape) is an explicit cross-stack claim. Today Contracts carry no leaf array,
+// so this scans the OPTIONAL cross_stack_verification.path_hash declaration as
+// the primary marker and any witness predicate object that is itself bind-shaped
+// (a defensive, forward-compatible read — absent in every existing Contract).
+function anyWitnessOrLeafIsBindShaped(contract) {
+  if (!contract || typeof contract !== "object") return false;
+  const witnesses = Array.isArray(contract.witnesses) ? contract.witnesses : [];
+  for (const witness of witnesses) {
+    if (witness && typeof witness === "object" && isBindLeaf(witness.predicate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// claimsCrossStackMechanism — the PRECISE, additive, FAIL-CLOSED trigger predicate for
+// the finalize cross-stack gate. Fires when ALL hold:
+//   (1) the node is a Transition node (kind === "transition") — a Hypothesis
+//       (even a cross-stack-SHAPED relational_value_match witness) NEVER triggers.
+//   (2) surface_refs is an array of length >= 2 — a single-surface transition
+//       (degenerate) never triggers.
+//   (3) a cross-stack claim: surface_refs span >= 2 distinct stacks, OR
+//       contract.cross_stack_verification.required === true, OR a bind-shaped witness
+//       predicate, OR — FAIL-CLOSED — a multi-surface transition we CANNOT PROVE is
+//       same-stack (poor/unknown route metadata). Inverting the trigger from "can I
+//       PROVE distinct" to "can I PROVE same-stack" closes the hole where a genuinely
+//       cross-stack transition with absent route metadata and no explicit marker
+//       escaped the gate (surfacesSpanDistinctStacks fails open on unknown metadata).
+// A two-surface SAME-stack transition with COMPLETE metadata (web<->web nesting) is
+// surfacesProvenSameStack -> NOT a cross-stack claim and finalizes EXACTLY as today.
+function claimsCrossStackMechanism(node, contract, surfaceMetadataById) {
+  if (!node || node.kind !== "transition") return false;
+  if (!Array.isArray(node.surface_refs) || node.surface_refs.length < 2) return false;
+  if (surfacesSpanDistinctStacks(node.surface_refs, surfaceMetadataById)) return true;
+  if (contract && contract.cross_stack_verification && contract.cross_stack_verification.required === true) {
+    return true;
+  }
+  if (anyWitnessOrLeafIsBindShaped(contract)) return true;
+  // FAIL-CLOSED: a multi-surface transition we cannot PROVE is same-stack must produce a
+  // bound cross-stack verified_pass — missing/unknown route metadata no longer lets it
+  // escape the gate. A genuine web<->web nesting transition with COMPLETE metadata is
+  // surfacesProvenSameStack===true here and still finalizes as before (no regression).
+  if (!surfacesProvenSameStack(node.surface_refs, surfaceMetadataById)) return true;
+  return false;
+}
+
+// crossStackDeclaredPathHash — the path_hash the transition's cross-stack
+// mechanism is bound to. Only the EXPLICIT cross_stack_verification.path_hash is
+// authoritative; without it the gate refuses (an unbound cross-stack claim cannot
+// name the verified_pass it would be satisfied by). Returns null when undeclared.
+function crossStackDeclaredPathHash(contract) {
+  if (contract && contract.cross_stack_verification
+    && typeof contract.cross_stack_verification.path_hash === "string"
+    && contract.cross_stack_verification.path_hash) {
+    return contract.cross_stack_verification.path_hash;
+  }
+  return null;
 }
 
 function handler(args) {
@@ -431,6 +545,103 @@ function handler(args) {
       executed_event_id: executedEvent.event_id,
       failed_event_id: failedEvent.event_id,
     });
+  }
+
+  // Cross-stack mechanism gate (ADDITIVE — runs AFTER the mechanical verifier
+  // passes, BEFORE the executed → verified append). The structural mechanical
+  // verifier proves the witnesses resolve; it does NOT prove a cross-stack
+  // composition path's mechanism was executed and flipped. A Transition node
+  // that CLAIMS a cross-stack mechanism (claimsCrossStackMechanism: kind ===
+  // "transition", surface_refs span >= 2 distinct stacks / cross_stack_
+  // verification.required / a bind-shaped witness) requires a bound cross-stack
+  // verified_pass — the path_hash declared on the Contract must be a member of
+  // the audit-graded composition-verified.jsonl verified_path_hashes[], which
+  // is RE-RESOLVED (bind rows RE-MAC-verified, the flip RE-adjudicated) at read
+  // time. The agent cannot Write-forge that ledger. An ordinary transition (web
+  // <-> web nesting, single-surface, or no cross-stack marker) does NOT trigger
+  // this gate and finalizes EXACTLY as before; the object-auth guard re-execute
+  // path is never a kind === "transition" finalize and is untouched.
+  if (claimsCrossStackMechanism(finalizedNode, attached.contract, surfaceMetadataById)) {
+    const declaredPathHash = crossStackDeclaredPathHash(attached.contract);
+    let bound = false;
+    if (declaredPathHash) {
+      try {
+        const summary = readCompositionVerifiedSummary(domain);
+        // HIGH-3: a cross-stack mechanism requires has_bind_leaf && is_cross_stack
+        // membership — a guard-only or same-stack-family verified_pass can no longer
+        // satisfy this gate by plain path_hash membership.
+        const crossStackSet = Array.isArray(summary.verified_cross_stack_path_hashes)
+          ? summary.verified_cross_stack_path_hashes
+          : [];
+        if (crossStackSet.includes(declaredPathHash)) {
+          // HIGH-2: reconcile the bound path's surface_refs against THIS node's
+          // surface_refs — a verified_pass minted for a different node's surfaces must
+          // not arm this node's gate by plain membership. Bound surface_refs are
+          // ["invariant:<finding>:<contract>", "offensive:<surface_id>"]; require the
+          // bound offensive surface_id to be one of the node's surface_refs (the node's
+          // surface_refs are raw surface ids, no offensive:/invariant: prefix). An empty
+          // bound-surface set (a legacy row) falls back to membership alone.
+          const refsMap = summary.verified_cross_stack_path_surface_refs;
+          const boundSurfaceRefs = refsMap && Array.isArray(refsMap[declaredPathHash])
+            ? refsMap[declaredPathHash]
+            : [];
+          const nodeSurfaces = new Set(
+            Array.isArray(finalizedNode.surface_refs)
+              ? finalizedNode.surface_refs.filter((s) => typeof s === "string")
+              : [],
+          );
+          if (boundSurfaceRefs.length === 0) {
+            bound = true; // legacy row without surface_refs: membership alone
+          } else {
+            for (const ref of boundSurfaceRefs) {
+              if (typeof ref !== "string") continue;
+              if (ref.startsWith("offensive:") && nodeSurfaces.has(ref.slice("offensive:".length))) {
+                bound = true;
+                break;
+              }
+            }
+          }
+        }
+      } catch {
+        bound = false; // fail-closed on an unreadable ledger
+      }
+    }
+    if (!bound) {
+      const failureReason = {
+        reason: "cross_stack_mechanism_unverified",
+        contract_hash: attached.contract.contract_hash,
+        surface_refs: Array.isArray(finalizedNode.surface_refs)
+          ? finalizedNode.surface_refs.slice()
+          : [],
+        declared_path_hash: declaredPathHash,
+        detail: "this transition claims a cross-stack mechanism (surface_refs span >= 2 stacks / a bind leaf / cross_stack_verification.required); run bob_verify_composition_path binding the positive executed row and its flipping control to mint a verified_pass to composition-verified.jsonl keyed by this path_hash before finalizing.",
+      };
+      const failedEvent = appendNodeTransition({
+        target_domain: domain,
+        node_id: nodeId,
+        from_state: "executed",
+        to_state: "failed",
+        contract_hash: attached.contract.contract_hash,
+        failure_reason: failureReason,
+        verification: verdict,
+        ts: input.ts,
+        source: { tool: "bob_finalize_node" },
+        actor: input.actor,
+      });
+      try { scheduleMaterialization(domain); } catch {}
+      return JSON.stringify({
+        version: 1,
+        target_domain: domain,
+        node_id: nodeId,
+        to_state: "failed",
+        // NOT null: the mechanical verifier DID pass; this is a second, additive gate.
+        mechanical_verdict: verdict,
+        failure_reason: failureReason,
+        contract_hash: attached.contract.contract_hash,
+        executed_event_id: executedEvent.event_id,
+        failed_event_id: failedEvent.event_id,
+      });
+    }
   }
 
   // Mechanical verifier passed → queue adjudication chain per X-D9.

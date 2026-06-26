@@ -436,12 +436,14 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
   // belief<->executed boundary and are NARROW, documented exemptions — they are NOT
   // claim/closure/grade gates and they do NOT close the belief->dispatch->belief loop:
   //
-  //   (1) composition-live-verifier.js — the LOOP-BREAKER. It imports the executed
-  //       probes (live-object-auth-probe + differential-tester) to RE-EXECUTE a guard
-  //       leaf, and emits a verified_intervention ONLY from that executed outcome. It
-  //       must NOT import the dispatch-belief machinery (scheduler-priority /
-  //       intervention-calculus / factor-graph), or a verified result could feed back
-  //       into the same belief that picked the dispatch.
+  //   (1) composition-live-verifier.js — the LOOP-BREAKER. It is a mechanism-agnostic
+  //       DISPATCHER: it resolves each guard leaf to its registered verifier template
+  //       (mechanism-template-registry.js), which imports the executed probes
+  //       (live-object-auth-probe + differential-tester) to RE-EXECUTE the leaf, and
+  //       emits a verified_intervention ONLY from that executed outcome. Neither the
+  //       dispatcher NOR the template registry may import the dispatch-belief
+  //       machinery (scheduler-priority / intervention-calculus / factor-graph), or a
+  //       verified result could feed back into the same belief that picked the dispatch.
   //   (2) belief-window.js — the one-way audit->belief CONSUMER. It reads
   //       verified_intervention to sharpen a request_equivalence latent, but must NOT
   //       import the dispatch-belief machinery either: the window consumes
@@ -449,12 +451,19 @@ test("INV-12 narrow exemptions: the two belief<->executed boundary modules consu
   const DISPATCH_BELIEF_IMPORT = /require\(\s*['"][^'"]*(scheduler-priority|intervention-calculus|factor-graph)[^'"]*['"]\s*\)/;
 
   const verifier = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/composition-live-verifier.js"), "utf8");
-  // Non-vacuity: the loop-breaker REALLY imports the executed probes it is exempt for.
-  assert.match(verifier, /require\(\s*['"][^'"]*\/belief\/live-object-auth-probe[^'"]*['"]\s*\)/, "verifier imports the live-object-auth probe (executed)");
-  assert.match(verifier, /require\(\s*['"][^'"]*\/belief\/differential-tester[^'"]*['"]\s*\)/, "verifier imports the differential tester (executed)");
+  // Non-vacuity: the loop-breaker REALLY routes through the template registry, which is
+  // where the executed-probe re-execution lives after the dispatcher relocation.
+  const registry = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/mechanism-template-registry.js"), "utf8");
+  assert.match(verifier, /require\(\s*['"][^'"]*mechanism-template-registry[^'"]*['"]\s*\)/, "verifier dispatches through the mechanism-template registry");
+  assert.match(registry, /require\(\s*['"][^'"]*\/belief\/live-object-auth-probe[^'"]*['"]\s*\)/, "the object-auth template imports the live-object-auth probe (executed)");
+  assert.match(registry, /require\(\s*['"][^'"]*\/belief\/differential-tester[^'"]*['"]\s*\)/, "the object-auth template imports the differential tester (executed)");
   assert.ok(
     !DISPATCH_BELIEF_IMPORT.test(verifier),
     "composition-live-verifier must NOT import scheduler-priority/intervention-calculus/factor-graph — it executes, it does not dispatch belief",
+  );
+  assert.ok(
+    !DISPATCH_BELIEF_IMPORT.test(registry),
+    "mechanism-template-registry must NOT import scheduler-priority/intervention-calculus/factor-graph — the executed re-execution path it hosts does not dispatch belief",
   );
 
   const window = fs.readFileSync(path.join(REPO_ROOT, "mcp/lib/belief/belief-window.js"), "utf8");

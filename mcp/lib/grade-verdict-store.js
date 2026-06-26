@@ -575,6 +575,33 @@ function writeGradeVerdict(args) {
       },
     );
   }
+  // Cross-stack composition-path proof gate. The single-surface finding-differential
+  // gate above runs FIRST and is unchanged; THIS gate only adds coverage for the
+  // residual CROSS-STACK finding (surfaces span >=2 stacks OR a composition_path
+  // ref). A final-reportable medium+ cross-stack finding whose proof IS a
+  // composition path must carry that path_hash in the audit-graded
+  // composition-verified.jsonl verified_path_hashes[] (re-resolved at read time —
+  // bind rows RE-MAC-verified, the flip RE-adjudicated). Reasoning-only / unbound
+  // proof caps to advisory (the RANK != BOUND outcome — excluded from the
+  // reportable set, applied per finding, never a class bound, never dropped). A
+  // single-surface finding fails the cross-stack predicate and is untouched here.
+  const { crossStackPathGapForReportableFindings } = require("./claims.js");
+  const crossStackGap = crossStackPathGapForReportableFindings(domain, {
+    reportableFindingIds: finalReportableSeveritySet,
+    finalSeverities,
+  });
+  if (crossStackGap.missing.length > 0) {
+    const detail = crossStackGap.missing.map((m) => `${m.finding_id} (${m.reason})`).join(", ");
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Cross-stack composition path verified_pass is required for final reportable medium+ cross-stack finding(s) before grading: ${detail}.`,
+      { code: "missing_cross_stack_path_verified_pass", missing: crossStackGap.missing },
+      {
+        remediation:
+          "Run bob_verify_composition_path binding the positive executed row (stack A) and its flipping control (stack B) for this finding's composition path, then cite the minted path_hash on the claim as an evidence_refs[] item of kind \"composition_path\" (cross_stack_path_unbound = no composition_path ref on the claim; cross_stack_path_not_verified = the cited path_hash is not a member of the audit-graded cross-stack verified set, e.g. it is a guard-only or same-stack-family verified_pass; cross_stack_path_surface_mismatch = the bound verified_pass is for a different finding's surfaces); or lower its severity below medium / exclude it from the reportable set.",
+      },
+    );
+  }
   const findings = normalizedFindings.map((finding) => {
     const recordedSeverity = finalSeverities.get(finding.finding_id);
     if (!recordedSeverity) return finding;

@@ -12,6 +12,7 @@ const {
   suggestInvariantsForFinding,
   suggestInvariantsForReport,
 } = require("../mcp/lib/invariant-template-corpus.js");
+const { buildTestSource } = require("../mcp/lib/invariant-runner.js");
 
 test("SUPPORTED_CLASSES covers the smart-contract bug classes IP4 emits", () => {
   for (const cls of [
@@ -114,6 +115,43 @@ test("template ids are unique", () => {
     assert.ok(!ids.has(template.id), `duplicate template id: ${template.id}`);
     ids.add(template.id);
   }
+});
+
+test("the CONSUMING template reads the artifact (wires bobConsumedArtifact) and is indexed under signature_validation", () => {
+  // The consuming corpus template makes the cross-stack same-tree artifact-presence
+  // differential satisfiable: its VIOLATE is contingent on reading + using the web-captured
+  // artifact. It must (1) be indexed under signature_validation, (2) reference the helper
+  // bobConsumedArtifact() (the consume), and (3) feed the captured bytes into the gated call.
+  const sigClass = getTemplatesForClass("signature_validation");
+  const consuming = sigClass.find((t) => t.id === "INV-CROSS-STACK-AUTH-REPLAY-001");
+  assert.ok(consuming, "the consuming template is indexed under signature_validation");
+  assert.equal(consuming.vulnerability_class, "signature_validation");
+  assert.match(consuming.foundry_test_template, /bobConsumedArtifact\(\)/, "the template READS the consumed artifact (no longer a dead helper)");
+  assert.match(consuming.foundry_test_template, /vm\.expectRevert\(\)/, "the invariant is that the gated call REVERTS (HOLD), violated only when accepted");
+  // The captured bytes are passed INTO the gated function (used contract-semantically),
+  // not branched-on (which would be a tautology).
+  assert.match(consuming.foundry_test_template, /\{GATED_FUNCTION\}\(\{VICTIM_OBJECT\}, capturedAuth\)/);
+  assert.ok(consuming.parameter_slots.includes("target_contract"));
+  assert.ok(consuming.parameter_slots.includes("gated_function"));
+  assert.ok(consuming.parameter_slots.includes("victim_object"));
+});
+
+test("the CONSUMING template's generated source wires the consume helper through buildTestSource (the helper is live, not dead)", () => {
+  const consuming = getTemplatesForClass("signature_validation").find((t) => t.id === "INV-CROSS-STACK-AUTH-REPLAY-001");
+  // suggestInvariantsForFinding fills the slots; the generated foundry_test body then sits
+  // inside buildTestSource, which exposes bobConsumedArtifact(). Both halves must align: the
+  // template calls bobConsumedArtifact() and the scaffold DEFINES it.
+  const filled = suggestInvariantsForFinding(
+    { vulnerability_class: "signature_validation" },
+    { slot_values: { target_contract: "Vault", gated_function: "execute", victim_object: "victimId" } },
+  ).suggestions.find((s) => s.template_id === "INV-CROSS-STACK-AUTH-REPLAY-001");
+  assert.ok(filled, "the consuming template is suggested for signature_validation findings");
+  assert.match(filled.foundry_test, /Vault\.execute\(victimId, capturedAuth\)/, "slots fill into the gated call (the captured bytes are the auth arg)");
+  assert.match(filled.foundry_test, /bobConsumedArtifact\(\)/, "the filled test still consumes the artifact");
+  const scaffold = buildTestSource({ contractName: "BobInvariantTest_consume", functionBody: filled.foundry_test });
+  assert.match(scaffold, /function bobConsumedArtifact\(\) internal view returns \(bytes memory\)/, "the scaffold DEFINES the helper the template CALLS (live, not dead)");
+  assert.match(scaffold, /Vault\.execute\(victimId, capturedAuth\)/, "the gated call survives into the full generated source");
+  void consuming;
 });
 
 test("object_authorization mechanism template is closed, bounded, and maps to catalog CWE", () => {

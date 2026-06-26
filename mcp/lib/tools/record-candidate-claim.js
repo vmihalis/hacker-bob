@@ -488,6 +488,15 @@ function buildSecretEvidenceBypassRows(secretBypass) {
   return rows;
 }
 
+// The evidence_ref kinds the public record-candidate-claim input path accepts.
+// exploit_run is the offensive proof handle; composition_path is the ADDITIVE
+// cross-stack composition-path binding (kind="composition_path" carrying a
+// path_hash into the audit-graded composition-verified.jsonl). Both are deep-
+// shape-validated by normalizeEvidenceReferenceShape. Any other kind is refused
+// here (the finding-derived kind="finding" ref is appended internally, never
+// taken from caller input).
+const CLAIM_INPUT_EVIDENCE_REF_KINDS = Object.freeze(new Set(["exploit_run", "composition_path"]));
+
 function normalizeExploitRunEvidenceRefs(rawRefs) {
   if (rawRefs == null) return [];
   if (!Array.isArray(rawRefs)) {
@@ -497,12 +506,13 @@ function normalizeExploitRunEvidenceRefs(rawRefs) {
     if (ref == null || typeof ref !== "object" || Array.isArray(ref)) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}] must be an object`, { code: "evidence_ref_not_object" });
     }
-    if (ref.kind !== "exploit_run") {
-      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be exploit_run`, { code: "evidence_ref_kind_invalid" });
+    if (!CLAIM_INPUT_EVIDENCE_REF_KINDS.has(ref.kind)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `evidence_refs[${index}].kind must be one of [${[...CLAIM_INPUT_EVIDENCE_REF_KINDS].join(", ")}]`, { code: "evidence_ref_kind_invalid" });
     }
     // normalizeEvidenceReferenceShape does the DEEP shape checks (e.g. absolute
-    // target URL); it throws a bare Error, which would surface as INTERNAL_ERROR.
-    // Rethrow as INVALID_ARGUMENTS so malformed caller input is a client fault.
+    // target URL for exploit_run, 64-hex path_hash for composition_path); it
+    // throws a bare Error, which would surface as INTERNAL_ERROR. Rethrow as
+    // INVALID_ARGUMENTS so malformed caller input is a client fault.
     try {
       return normalizeEvidenceReferenceShape({ ...ref }, `evidence_refs[${index}]`);
     } catch (error) {
@@ -1004,23 +1014,37 @@ module.exports = Object.freeze({
       },
       "evidence_refs": {
         "type": "array",
-        "description": "Optional exploit proof references. bob_record_candidate_claim only accepts kind=\"exploit_run\" here; it always adds the finding ref itself.",
+        "description": "Optional proof references. bob_record_candidate_claim accepts kind=\"exploit_run\" (offensive proof) or kind=\"composition_path\" (cross-stack composition-path binding, carrying the path_hash minted to the audit-graded composition-verified.jsonl); it always adds the finding ref itself.",
         "items": {
-          "type": "object",
-          "properties": {
-            "kind": { "type": "string", "enum": ["exploit_run"] },
-            "run_id": { "type": "string" },
-            "tool_id": { "type": "string" },
-            "target": { "type": "string" },
-            "offensive_outcome": { "type": "string", "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"] },
-            "command_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "exit_code": { "type": ["integer", "null"] },
-            "stdout_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "stderr_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "source_run_id": { "type": "string" }
-          },
-          "required": ["kind", "run_id", "tool_id", "target", "offensive_outcome", "command_hash", "exit_code", "stdout_hash", "stderr_hash"],
-          "additionalProperties": false
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["exploit_run"] },
+                "run_id": { "type": "string" },
+                "tool_id": { "type": "string" },
+                "target": { "type": "string" },
+                "offensive_outcome": { "type": "string", "enum": ["exploited_safely", "blocked_by_defense", "blocked_by_infra"] },
+                "command_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "exit_code": { "type": ["integer", "null"] },
+                "stdout_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "stderr_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "source_run_id": { "type": "string" }
+              },
+              "required": ["kind", "run_id", "tool_id", "target", "offensive_outcome", "command_hash", "exit_code", "stdout_hash", "stderr_hash"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": { "type": "string", "enum": ["composition_path"] },
+                "path_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "source_run_id": { "type": "string" }
+              },
+              "required": ["kind", "path_hash"],
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "surface_id": {

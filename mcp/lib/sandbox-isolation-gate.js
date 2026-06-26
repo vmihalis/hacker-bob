@@ -143,6 +143,7 @@ function verdictLedgerMacClasses(domain) {
     invariantRunsJsonlPath,
     repoCommandRunsJsonlPath,
     claimFreezePath,
+    compositionVerifiedJsonlPath,
   } = require("./paths.js");
   let present = false;
   let hasLegacyOrV1 = false;
@@ -157,6 +158,20 @@ function verdictLedgerMacClasses(domain) {
       const cls = classifyMacEnvelope(row && row.row_mac);
       if (cls === "unsigned" || cls === "v1_hmac") hasLegacyOrV1 = true;
       if (present && hasLegacyOrV1) return { present, hasLegacyOrV1 };
+    }
+  }
+
+  // composition-verified.jsonl (cross-stack bind / object-auth guard verified_pass rows)
+  // makes the session DRAW on a keyed verdict ledger: a live cross-stack flip exists, so
+  // an indeterminate cross-stack reportable claim must fail closed (ledgerPresent true).
+  // These rows carry no row_mac envelope (they are re-resolved bind/guard verdicts, not
+  // MAC-keyed leaves), so they only contribute `present`, never hasLegacyOrV1 — a
+  // re-resolved bind row's trust rests on its source rows' MACs, not a row_mac on the
+  // composition row itself.
+  for (const row of readJsonlRowsRaw(compositionVerifiedJsonlPath(domain))) {
+    if (row && row.result === "verified_pass") {
+      present = true;
+      break;
     }
   }
 
@@ -336,6 +351,23 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
     invariantVerified = {};
   }
 
+  // The cross-stack composition_path backing leg. A cross-stack finding is backed ONLY by
+  // a composition_path evidence_ref whose path_hash is a RE-RESOLVED member of
+  // composition-verified.jsonl's verified_path_hashes (bind rows re-MAC-verified at read
+  // time, so a forged ledger line does not count). Without this leg the enforce gate is
+  // INERT on a cross-stack finding (hasKeyedRowRef only matches exploit_run /
+  // repo_command_run). Read once (verdict-LEVEL).
+  let verifiedCompositionPathHashes = new Set();
+  try {
+    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
+    const summary = readCompositionVerifiedSummary(domain);
+    if (Array.isArray(summary.verified_path_hashes)) {
+      verifiedCompositionPathHashes = new Set(summary.verified_path_hashes);
+    }
+  } catch {
+    verifiedCompositionPathHashes = new Set();
+  }
+
   for (const findingId of reportableIds) {
     if (Object.prototype.hasOwnProperty.call(differentialVerified, findingId)
       || Object.prototype.hasOwnProperty.call(invariantVerified, findingId)) {
@@ -370,7 +402,17 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
     const hasKeyedRowRef = refs.some((ref) => (
       ref && (ref.kind === "exploit_run" || ref.kind === "repo_command_run")
     ));
-    if (hasKeyedRowRef) {
+    // The cross-stack composition_path leg: a claim citing a composition_path ref whose
+    // path_hash RE-RESOLVES into composition-verified.jsonl's verified_path_hashes is
+    // backed by a cross-stack executed verified_pass — gate it like any executed-row
+    // backing. A composition_path ref whose path_hash is NOT a re-resolved member does NOT
+    // back the finding here (it is a separate cross-stack-gap concern in claims.js).
+    const hasVerifiedCompositionPath = refs.some((ref) => (
+      ref && ref.kind === "composition_path"
+      && typeof ref.path_hash === "string"
+      && verifiedCompositionPathHashes.has(ref.path_hash)
+    ));
+    if (hasKeyedRowRef || hasVerifiedCompositionPath) {
       backed.add(findingId);
     }
     // No claim-freeze leg: freeze membership is NOT a per-finding executed-verdict
@@ -456,6 +498,62 @@ function scBackingUnIsolatedFindingIds(domain, findingIds) {
   } catch {
     differentialVerified = {};
   }
+  // The cross-stack composition_path isolation map: a re-resolved cross-stack path is
+  // trusted-isolated iff EVERY backing invariant arm (positive/control/decoy) ran
+  // container_isolated. Read once (verdict-LEVEL). A cross-stack finding whose backing
+  // path is NOT in this map (or maps false) is treated as un-isolated, mirroring the
+  // single-surface invariant posture — the cross-stack mint wrote a third ledger
+  // (composition-verified.jsonl) the SC isolation consult previously never read.
+  let crossStackVerifiedHashes = new Set();
+  let crossStackContainerIsolated = {};
+  let claims = [];
+  try {
+    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
+    const summary = readCompositionVerifiedSummary(domain);
+    if (Array.isArray(summary.verified_cross_stack_path_hashes)) {
+      crossStackVerifiedHashes = new Set(summary.verified_cross_stack_path_hashes);
+    }
+    if (summary.verified_cross_stack_path_container_isolated
+      && typeof summary.verified_cross_stack_path_container_isolated === "object") {
+      crossStackContainerIsolated = summary.verified_cross_stack_path_container_isolated;
+    }
+  } catch {
+    crossStackVerifiedHashes = new Set();
+    crossStackContainerIsolated = {};
+  }
+  try {
+    const { readCandidateClaims } = require("./claims.js");
+    claims = readCandidateClaims(domain);
+  } catch {
+    claims = [];
+  }
+  // Resolve each finding -> the composition_path evidence_refs on its claim (dual index by
+  // payload.finding.id and a kind:"finding" evidence_ref), so a cross-stack finding's
+  // backing path_hash is recoverable for the isolation consult.
+  const compositionPathHashesByFinding = new Map();
+  for (const claim of claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+    const pathHashes = refs
+      .filter((ref) => ref && ref.kind === "composition_path" && typeof ref.path_hash === "string" && ref.path_hash)
+      .map((ref) => ref.path_hash);
+    if (pathHashes.length === 0) continue;
+    const payloadFinding = claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload.finding : null;
+    const payloadFindingId = payloadFinding && typeof payloadFinding === "object" ? payloadFinding.id : null;
+    if (typeof payloadFindingId === "string") {
+      const set = compositionPathHashesByFinding.get(payloadFindingId) || new Set();
+      for (const h of pathHashes) set.add(h);
+      compositionPathHashesByFinding.set(payloadFindingId, set);
+    }
+    for (const ref of refs) {
+      if (ref && ref.kind === "finding" && typeof ref.finding_id === "string") {
+        const set = compositionPathHashesByFinding.get(ref.finding_id) || new Set();
+        for (const h of pathHashes) set.add(h);
+        compositionPathHashesByFinding.set(ref.finding_id, set);
+      }
+    }
+  }
   for (const findingId of findingIds) {
     // INVARIANT leg: every invariant verdict is an SC run; gate on containerization.
     if (Object.prototype.hasOwnProperty.call(invariantVerified, findingId)) {
@@ -467,6 +565,25 @@ function scBackingUnIsolatedFindingIds(domain, findingIds) {
         unIsolated.add(findingId);
       }
       continue;
+    }
+    // COMPOSITION-PATH leg (cross-stack): a finding backed by a cross-stack composition_path
+    // whose backing arms degraded (host-as-signer) is un-isolated. This mirrors the single-
+    // surface invariant posture for the cross-stack path the mint-side adjudicator now
+    // refuses, so a row admitted under degrade is still treated as un-isolated at report
+    // time. Consult ONLY a path that re-resolves into the cross-stack verified set.
+    const pathHashes = compositionPathHashesByFinding.get(findingId);
+    if (pathHashes && pathHashes.size > 0) {
+      let consultedCrossStack = false;
+      let anyUnIsolated = false;
+      for (const h of pathHashes) {
+        if (!crossStackVerifiedHashes.has(h)) continue;
+        consultedCrossStack = true;
+        if (crossStackContainerIsolated[h] !== true) anyUnIsolated = true;
+      }
+      if (consultedCrossStack) {
+        if (anyUnIsolated) unIsolated.add(findingId);
+        continue;
+      }
     }
     // FINDING-DIFFERENTIAL leg (belt-and-suspenders): SC-SCOPED so HTTP differential
     // findings are unaffected. Consult ONLY when the finding's bound surface is a

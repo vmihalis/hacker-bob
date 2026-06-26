@@ -256,7 +256,7 @@ test("(2) NON-PASS EMITS NOTHING: a refuted path emits ZERO verified_interventio
   });
 });
 
-test("(2) NON-PASS EMITS NOTHING: an inconclusive (K=1 non-guard) path emits ZERO verified_intervention signals", async () => {
+test("(2) NON-PASS EMITS NOTHING: an inconclusive (no-template non-guard) path emits ZERO verified_intervention signals", async () => {
   await withTempHome(async () => {
     const { event_id } = seedGuardObservation(DOMAIN, "sink"); // shape-valid sink => inconclusive
     const out = await verifyCompositionPath(

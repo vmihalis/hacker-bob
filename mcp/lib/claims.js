@@ -123,6 +123,13 @@ const EVIDENCE_REFERENCE_KIND_VALUES = Object.freeze([
   "repo_file",
   "repo_command_run",
   "exploit_run",
+  // ADDITIVE: a claim whose proof IS a cross-stack composition path declares it
+  // with a composition_path ref carrying the path_hash bound in the audit-graded
+  // composition-verified.jsonl. It is the precise machine signal that a finding's
+  // proof is a cross-stack composition path (vs an incidental multi-surface
+  // finding); the grade/claims cross-stack gate binds it. A claim WITHOUT this
+  // ref whose surfaces are single-stack is never cross-stack and is untouched.
+  "composition_path",
 ]);
 
 function isHex64(value) {
@@ -258,6 +265,19 @@ function assertExploitRunEvidenceShape(ref, fieldName) {
   }
 }
 
+function assertCompositionPathEvidenceShape(ref, fieldName) {
+  // composition_path payload contract:
+  //   {kind: "composition_path", path_hash}
+  // path_hash is the 64-hex key into the audit-graded composition-verified.jsonl
+  // ledger (fullPathHash over the path's leaves). It is the only field that binds
+  // the claim to a cross-stack verified_pass; the grade/claims gate tests its
+  // membership in verified_path_hashes[] (re-resolved at read time). No content is
+  // carried here — the proof lives in the MCP-write-only ledger.
+  if (!isHex64(ref.path_hash)) {
+    throw new Error(`${fieldName}.path_hash must be a 64-hex composition path_hash for kind="composition_path"`);
+  }
+}
+
 function normalizeEvidenceReferenceShape(ref, fieldName = "evidence_refs[]") {
   if (ref == null || typeof ref !== "object" || Array.isArray(ref)) {
     throw new Error(`${fieldName} must be an object`);
@@ -290,6 +310,8 @@ function normalizeEvidenceReferenceShape(ref, fieldName = "evidence_refs[]") {
     // Value-blind redaction before the target is hash-bound into the claim, so
     // no embedded secret is ever persisted (see canonicalizeExploitTarget).
     ref.target = canonicalizeExploitTarget(ref.target);
+  } else if (kind === "composition_path") {
+    assertCompositionPathEvidenceShape(ref, fieldName);
   }
   return ref;
 }
@@ -339,6 +361,10 @@ function evidenceReferenceLookupKey(ref) {
   }
   if (kind === "exploit_run" && typeof ref.run_id === "string") {
     return `exploit_run:${ref.run_id}`;
+  }
+  // composition_path identity is its path_hash (the composition-verified.jsonl key).
+  if (kind === "composition_path" && typeof ref.path_hash === "string") {
+    return `composition_path:${ref.path_hash}`;
   }
   return `${kind}:${ref.artifact_path || ""}:${ref.content_hash || ""}`;
 }
@@ -1315,6 +1341,162 @@ function findingDifferentialGapForStandaloneReportableFindings(domain, { reporta
   return { missing };
 }
 
+// Cross-stack composition-path proof contract — the report-verdict gate that
+// makes a reportable CROSS-STACK finding (one whose proof IS a composition path
+// spanning >=2 stacks) non-fabricatable. It is a sibling of
+// findingDifferentialGapForStandaloneReportableFindings, extended from a SINGLE
+// surface to a cross-SURFACE path: a finding that is final-reportable at medium+
+// AND whose claim is cross-stack must carry a composition path_hash that is a
+// member of the audit-graded composition-verified.jsonl verified_path_hashes[]
+// (re-resolved at read time — bind rows RE-MAC-verified, the flip RE-adjudicated).
+//
+// The cross-stack PREDICATE (precise, additive, never over-fires): the claim's
+// surface_ids span >=2 DISTINCT stacks (web vs smart_contract vs code_module,
+// resolved via claimSurfaceLanguageMap) OR the claim carries a composition_path
+// evidence_ref with a path_hash. A SINGLE-surface or same-stack finding with no
+// composition_path ref is NOT cross-stack and is left ENTIRELY to the existing
+// finding-differential gate — no double-coverage, no regression.
+//
+// SKIP (verify identically): a cross-stack finding that ALREADY carries a bound
+// cross-stack verified_pass (its declared path_hash is in verified_path_hashes[])
+// is armed and skipped. Native-repro / FV-invariant / exploit_run-backed findings
+// are single-surface arms and never reach the cross-stack branch (they fail the
+// distinct-stacks test and carry no composition_path ref).
+//
+// CAP NOT DROP (RANK != BOUND): a residual cross-stack reportable medium+ finding
+// with no bound flip caps to advisory (excluded from the reportable set by
+// grade-verdict-store), applied PER FINDING, never a class bound, never silently
+// dropped — the seam is surfaced as advisory.
+//
+// args: { reportableFindingIds: Set<finding_id>, finalSeverities: Map<finding_id, severity> }
+// returns: { missing: [{ finding_id, reason }] }
+//   reason "cross_stack_path_unbound"      -> no composition_path link on the claim
+//   reason "cross_stack_path_not_verified" -> path_hash present but not a member
+function crossStackPathGapForReportableFindings(domain, { reportableFindingIds, finalSeverities } = {}) {
+  const reportable = reportableFindingIds instanceof Set ? reportableFindingIds : new Set();
+  const severities = finalSeverities instanceof Map ? finalSeverities : new Map();
+  if (reportable.size === 0) return { missing: [] };
+
+  // Resolve each reportable finding's claim — same dual-index as the
+  // finding-differential gate (payload.finding.id, else a finding evidence_ref).
+  const claimByFinding = new Map();
+  let claims = [];
+  try {
+    claims = readCandidateClaims(domain);
+  } catch {
+    claims = [];
+  }
+  for (const claim of claims) {
+    const finding = claim && claim.payload && typeof claim.payload === "object" && !Array.isArray(claim.payload)
+      ? claim.payload.finding
+      : null;
+    const findingId = finding && typeof finding === "object" ? finding.id : null;
+    if (typeof findingId === "string" && !claimByFinding.has(findingId)) {
+      claimByFinding.set(findingId, claim);
+    }
+    if (!findingId) {
+      const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+      for (const ref of refs) {
+        if (ref && ref.kind === "finding" && typeof ref.finding_id === "string" && !claimByFinding.has(ref.finding_id)) {
+          claimByFinding.set(ref.finding_id, claim);
+        }
+      }
+    }
+  }
+
+  // The audit-graded set of bound CROSS-STACK path_hashes (bind rows re-resolved, gated on
+  // has_bind_leaf && is_cross_stack — HIGH-3), plus the per-path bound surface_refs used to
+  // reconcile the bound path against THIS claim's surfaces (HIGH-2). A guard-only or same-
+  // family verified_pass is NOT in this set, so it can never satisfy a cross-stack gate.
+  const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
+  let verifiedPathHashes = new Set();
+  let crossStackSurfaceRefsByHash = {};
+  try {
+    const summary = readCompositionVerifiedSummary(domain);
+    if (Array.isArray(summary.verified_cross_stack_path_hashes)) {
+      verifiedPathHashes = new Set(summary.verified_cross_stack_path_hashes);
+    }
+    if (summary.verified_cross_stack_path_surface_refs && typeof summary.verified_cross_stack_path_surface_refs === "object") {
+      crossStackSurfaceRefsByHash = summary.verified_cross_stack_path_surface_refs;
+    }
+  } catch {
+    verifiedPathHashes = new Set();
+    crossStackSurfaceRefsByHash = {};
+  }
+
+  const missing = [];
+  for (const findingId of reportable) {
+    const severity = severities.get(findingId);
+    if (!MEDIUM_OR_HIGHER_SEVERITIES.has(severity)) continue;
+    const claim = claimByFinding.get(findingId);
+    if (!claim) continue; // unresolvable claim; other gates own coverage.
+
+    const surfaceIds = Array.isArray(claim.surface_ids) ? claim.surface_ids : [];
+    const surfaceInfo = claimSurfaceLanguageMap(domain, surfaceIds);
+    const stacks = new Set();
+    for (const id of surfaceIds) {
+      const info = surfaceInfo.get(id);
+      const kind = info && typeof info.kind === "string" ? info.kind.trim() : "";
+      if (kind === "web" || kind === "smart_contract" || kind === "code_module") {
+        stacks.add(kind);
+      }
+    }
+    const evidenceRefs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+    const compositionRef = evidenceRefs.find(
+      (ref) => ref && ref.kind === "composition_path" && typeof ref.path_hash === "string" && ref.path_hash,
+    );
+
+    // CROSS-STACK predicate: >=2 distinct stacks OR an explicit composition_path
+    // ref. A single-surface / same-stack finding with no composition_path ref is
+    // NOT cross-stack — left to the existing finding-differential gate.
+    const isCrossStack = stacks.size >= 2 || compositionRef != null;
+    if (!isCrossStack) continue;
+
+    // No path_hash link on the claim -> unbound (reasoning-only proof).
+    if (compositionRef == null) {
+      missing.push({ finding_id: findingId, reason: "cross_stack_path_unbound" });
+      continue;
+    }
+    // path_hash present but NOT a member of the cross-stack verified set -> binding
+    // mismatch (also catches a guard-only / same-family verified_pass cited as cross-stack).
+    if (!verifiedPathHashes.has(compositionRef.path_hash)) {
+      missing.push({ finding_id: findingId, reason: "cross_stack_path_not_verified" });
+      continue;
+    }
+    // HIGH-2 — SURFACE RECONCILIATION: the bound verified_pass must be bound to THIS
+    // finding's surfaces, not merely be a member of the set. A verified_pass minted for
+    // finding/surfaces X must not arm a cross-stack gate on a DIFFERENT finding Y just
+    // because Y's claim declares X's path_hash. The bound path's surface_refs are
+    // ["invariant:<finding>:<contract>", "offensive:<surface_id>"]; require either the
+    // bound offensive surface_id to be one of THIS claim's surface_ids, OR the bound
+    // invariant finding_id to equal THIS finding's id.
+    const boundSurfaceRefs = Array.isArray(crossStackSurfaceRefsByHash[compositionRef.path_hash])
+      ? crossStackSurfaceRefsByHash[compositionRef.path_hash]
+      : [];
+    const claimSurfaceSet = new Set(surfaceIds);
+    let reconciled = false;
+    for (const ref of boundSurfaceRefs) {
+      if (typeof ref !== "string") continue;
+      if (ref.startsWith("offensive:")) {
+        if (claimSurfaceSet.has(ref.slice("offensive:".length))) { reconciled = true; break; }
+      } else if (ref.startsWith("invariant:")) {
+        // invariant:<finding>:<contract> — the bound finding id is the first segment.
+        const rest = ref.slice("invariant:".length);
+        const boundFinding = rest.indexOf(":") >= 0 ? rest.slice(0, rest.indexOf(":")) : rest;
+        if (boundFinding === findingId) { reconciled = true; break; }
+      }
+    }
+    // Only enforce reconciliation when we actually resolved bound surface_refs; an empty
+    // set (a legacy row that did not carry surface_refs) falls back to membership alone.
+    if (boundSurfaceRefs.length > 0 && !reconciled) {
+      missing.push({ finding_id: findingId, reason: "cross_stack_path_surface_mismatch" });
+      continue;
+    }
+    // else: bound cross-stack verified_pass exists AND reconciles to this finding -> armed.
+  }
+  return { missing };
+}
+
 function assertExploitedClaimHasProof(claim, { existingClaims = [] } = {}) {
   const evidenceRefs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
   const exploitRunRefs = evidenceRefs.filter((ref) => ref && ref.kind === "exploit_run");
@@ -1564,6 +1746,7 @@ module.exports = {
   assertNotStaticOnlyNativeHighSeverity,
   reproVerifiedGapForNativeReportableFindings,
   findingDifferentialGapForStandaloneReportableFindings,
+  crossStackPathGapForReportableFindings,
   nativeCodeSurfacesForClaim,
   claimReproCommandArgv,
   claimSurfaceLanguageMap,

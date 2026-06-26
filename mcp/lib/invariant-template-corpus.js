@@ -117,6 +117,42 @@ const TEMPLATES = Object.freeze([
       "}",
     ].join("\n"),
   }),
+  // CROSS-STACK auth replay — the CONSUMING template. Its VIOLATE is CONTINGENT on the
+  // web-captured artifact: the generated test reads bobConsumedArtifact() (the bytes the
+  // stack-A web attack captured, delivered as BOB_CONSUMED_ARTIFACT) and feeds them into the
+  // gated on-chain call as the AUTHORIZATION argument. The invariant is that the call
+  // REVERTS — a privileged effect must not be reachable with an authorization payload minted
+  // off-chain. The contract's OWN gate decides the outcome (the test never branches on the
+  // artifact's presence, so it is not a tautology): with the artifact ABSENT (control,
+  // empty env) the call passes an empty authorization and a correct gate reverts -> HELD;
+  // with the well-formed-but-forged artifact PRESENT (positive) a vulnerable gate that trusts
+  // an off-chain payload accepts it, the effect lands, the call does NOT revert -> VIOLATED.
+  // The present->VIOLATE / absent->HOLD flip is provably contingent on consuming the bytes,
+  // which is exactly the same-tree artifact-presence differential the cross-stack verifier
+  // requires. Same bug family as INV-SIGNATURE-REPLAY-001, but the replayed material crosses
+  // from the web stack to the EVM stack via the consumed artifact.
+  Object.freeze({
+    id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+    vulnerability_class: "signature_validation",
+    name: "Web-captured authorization payload accepted on-chain",
+    description: "Asserts that a privileged on-chain effect reverts when invoked with an authorization payload (a forged identity / signed relayer message / session-bound token) captured off-chain by a web-stack attack and consumed as BOB_CONSUMED_ARTIFACT. The invariant HOLDS when the contract rejects the captured payload and is VIOLATED only when the gate accepts it and the effect lands. The control arm runs artifact-absent (empty BOB_CONSUMED_ARTIFACT) over the SAME path with a benign empty authorization and the gate holds, so the flip is contingent on the web-captured bytes being CONSUMED, not on the tree.",
+    parameter_slots: ["target_contract", "gated_function", "victim_object"],
+    foundry_test_template: [
+      "function testCapturedAuthPayloadRejected() public {",
+      "    // The off-chain (web) attack's captured authorization payload, delivered as",
+      "    // BOB_CONSUMED_ARTIFACT. Empty on the artifact-absent control arm (the controlled",
+      "    // variable); the well-formed-but-forged bytes on the positive arm.",
+      "    bytes memory capturedAuth = bobConsumedArtifact();",
+      "    // Invoke the gated effect on the victim object USING the web-captured payload as the",
+      "    // on-chain authorization argument. The invariant is that this REVERTS (an off-chain-",
+      "    // captured payload is not valid on-chain auth). The contract's own gate decides the",
+      "    // outcome; the test does not branch on whether capturedAuth is present.",
+      "    vm.prank(makeAddr(\"crossStackAttacker\"));",
+      "    vm.expectRevert();",
+      "    {TARGET_CONTRACT}.{GATED_FUNCTION}({VICTIM_OBJECT}, capturedAuth);",
+      "}",
+    ].join("\n"),
+  }),
 ]);
 
 const OBJECT_AUTHORIZATION_MECHANISM_TEMPLATE = Object.freeze({
@@ -356,17 +392,110 @@ function getTemplatesForClass(vulnerabilityClass) {
   return (TEMPLATES_BY_CLASS.get(vulnerabilityClass) || []).slice();
 }
 
+// The cross-stack consuming template id. The consume-bind path (a cause_run_id
+// injection that feeds a web-captured artifact into the generated test as the
+// on-chain authorization argument) is reachable ONLY for this template, whose body
+// is fixed corpus text that reads bobConsumedArtifact() and passes it as the auth
+// argument. An arbitrary corpus template (whose body is fully agent-influenced via
+// slots) may never bind a cause.
+const CROSS_STACK_CONSUME_TEMPLATE_ID = "INV-CROSS-STACK-AUTH-REPLAY-001";
+
+// fillSlots does RAW string substitution into a Solidity test body. Without a
+// lexical floor a slot value can carry parentheses/braces/semicolons/whitespace and
+// thereby inject arbitrary Solidity (closing the gated call early, then defining a
+// tautological self-gate inside the generated test). The restricted grammar makes
+// each slot a single TOKEN of one admissible lexical class, never a statement: by
+// construction no `(` `)` `{` `}` `;` `,` whitespace newline quote can survive into
+// the generated body. The class is keyed by the slot's ROLE; an unmapped slot
+// defaults to the most restrictive useful class (a Solidity identifier) and must
+// opt into hex/uint explicitly.
+const SLOT_KIND_IDENTIFIER = "identifier";
+const SLOT_KIND_HEX_ADDRESS = "hex_address";
+const SLOT_KIND_NUMERIC = "numeric";
+
+const SLOT_VALUE_GRAMMAR = Object.freeze({
+  // A bare Solidity identifier: leading [A-Za-z_$], then [A-Za-z0-9_$], bounded
+  // length. No `.` member path, no parentheses/commas/whitespace/braces/semicolons.
+  [SLOT_KIND_IDENTIFIER]: /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/,
+  // A 20-byte hex address literal.
+  [SLOT_KIND_HEX_ADDRESS]: /^0x[0-9a-fA-F]{40}$/,
+  // A Solidity numeric literal: a decimal/hex/scientific number (digits, underscores,
+  // one decimal point, an `e`/`E` exponent, or a 0x-hex form) with an OPTIONAL single
+  // unit suffix (wei/gwei/ether/seconds/minutes/hours/days/weeks) after one space. The
+  // anchored class admits `1`, `1_000`, `1e18`, `0xff`, `1 ether` but forbids EVERY
+  // injection character (no parentheses/braces/semicolons/commas/quotes/newline and no
+  // second token), so a value can only ever be a numeric argument, never a statement.
+  [SLOT_KIND_NUMERIC]: /^(0x[0-9a-fA-F]+|[0-9][0-9_]*(?:\.[0-9_]+)?(?:[eE][0-9]+)?)( (?:wei|gwei|ether|seconds|minutes|hours|days|weeks))?$/,
+});
+
+// The lexical class for each known slot. Identifier is the conservative default for
+// any slot absent from this map (validateSlotValues falls back to it), so a new slot
+// is a single identifier unless it explicitly opts into hex/uint here.
+const SLOT_KIND_BY_NAME = Object.freeze({
+  target_contract: SLOT_KIND_IDENTIFIER,
+  vulnerable_function: SLOT_KIND_IDENTIFIER,
+  admin_function: SLOT_KIND_IDENTIFIER,
+  admin_role_check: SLOT_KIND_IDENTIFIER,
+  gated_function: SLOT_KIND_IDENTIFIER,
+  victim_object: SLOT_KIND_IDENTIFIER,
+  oracle_contract: SLOT_KIND_IDENTIFIER,
+  victim_function: SLOT_KIND_IDENTIFIER,
+  swap_pool: SLOT_KIND_IDENTIFIER,
+  callee_contract: SLOT_KIND_IDENTIFIER,
+  proxy_contract: SLOT_KIND_IDENTIFIER,
+  implementation_contract: SLOT_KIND_IDENTIFIER,
+  withdraw_amount: SLOT_KIND_NUMERIC,
+});
+
+function slotKindFor(slotName) {
+  return SLOT_KIND_BY_NAME[slotName] || SLOT_KIND_IDENTIFIER;
+}
+
+// Validate the supplied values for THIS template's declared slots against the restricted
+// grammar for each slot's lexical class. A value for a slot NOT declared by this template
+// is IGNORED (not a violation): the suggest API applies one shared slot_values object across
+// every template in a class, so a sibling template's slot key legitimately rides along, and
+// such a key never substitutes into THIS template's body (so it cannot inject here). The
+// undeclared-key smuggling-into-run_hash concern is the RUNNER's (one chosen template), and
+// is enforced separately there. Returns { ok, violations: [{ slot, kind, value }] }.
+function validateSlotValues(template, values) {
+  const violations = [];
+  if (!isPlainObject(values)) return { ok: true, violations };
+  for (const slot of Array.isArray(template.parameter_slots) ? template.parameter_slots : []) {
+    if (!Object.prototype.hasOwnProperty.call(values, slot)) continue;
+    const kind = slotKindFor(slot);
+    const re = SLOT_VALUE_GRAMMAR[kind];
+    if (!re.test(String(values[slot]))) {
+      violations.push({ slot, kind, value: String(values[slot]) });
+    }
+  }
+  return { ok: violations.length === 0, violations };
+}
+
 function fillSlots(template, values) {
-  let body = template.foundry_test_template;
+  const body = template.foundry_test_template;
   if (!isPlainObject(values)) return body;
+  // Validate FIRST and throw on any violation — the corpus module is the single
+  // substitution chokepoint, so validating here covers every caller (suggest-for-
+  // finding, suggest-for-report, the runner). An injected value never substitutes.
+  const { ok, violations } = validateSlotValues(template, values);
+  if (!ok) {
+    const detail = violations
+      .map((v) => `${v.slot} (not a valid ${v.kind})`)
+      .join(", ");
+    throw new Error(
+      `slot value(s) violate the restricted invariant-template grammar (identifiers/0x-addresses/decimal-uints only, no parentheses/braces/semicolons/whitespace): ${detail}`,
+    );
+  }
+  let filled = body;
   for (const slot of template.parameter_slots) {
     const placeholder = `{${slot.toUpperCase()}}`;
     if (Object.prototype.hasOwnProperty.call(values, slot)) {
       const value = values[slot];
-      body = body.split(placeholder).join(String(value));
+      filled = filled.split(placeholder).join(String(value));
     }
   }
-  return body;
+  return filled;
 }
 
 function suggestInvariantsForFinding(finding, options) {
@@ -447,6 +576,9 @@ module.exports = {
   TEMPLATES,
   SUPPORTED_CLASSES,
   CORPUS_TEMPLATE_TIER,
+  CROSS_STACK_CONSUME_TEMPLATE_ID,
+  SLOT_VALUE_GRAMMAR,
+  validateSlotValues,
   getTemplatesForClass,
   getMechanismTemplate,
   getMechanismTemplatesForDomain,

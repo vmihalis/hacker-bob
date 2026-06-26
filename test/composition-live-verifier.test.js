@@ -228,7 +228,7 @@ test("OFFLINE PRECONDITION: a tampered observation is offline_refused — nothin
   });
 });
 
-test("K=1 RAIL: a non-guard (sink) leaf returns inconclusive — never verified_pass, never a producer-string fallback", async () => {
+test("NO-TEMPLATE RAIL: a non-guard (sink) leaf with no registered template returns inconclusive — never verified_pass, never a producer-string fallback", async () => {
   await withTempHome(async () => {
     const eventId = seedGuardObservation(DOMAIN, "sink"); // shape-valid sink observation
     const out = await verifyCompositionPath(
@@ -238,7 +238,7 @@ test("K=1 RAIL: a non-guard (sink) leaf returns inconclusive — never verified_
     assert.equal(out.result, RESULT_INCONCLUSIVE);
     assert.equal(out.verified_leaf_count, 0);
     assert.equal(out.leaves[0].leaf_status, "inconclusive");
-    assert.match(out.leaves[0].reason, /not live-verifiable at K=1/);
+    assert.match(out.leaves[0].reason, /no registered verifier template/);
   });
 });
 

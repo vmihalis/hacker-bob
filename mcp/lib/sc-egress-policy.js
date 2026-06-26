@@ -40,6 +40,16 @@ const SC_CONTROLLED_SUBPROCESS_ENV_KEYS = Object.freeze(new Set([
   "BOB_COSMWASM_FORK_URL",
 ]));
 
+// The cross-stack consumable-artifact env var the foundry runner injects on a violated
+// arm (hex-encoded captured bytes). It is a CONTROLLED, Bob-injected value, never an
+// inherited secret/RPC, so it must pass through to the subprocess intact. It matches
+// neither SC_SECRET_ENV_KEY_RE nor SC_RPC_ENV_KEY_RE today; this explicit pass-through
+// allowlist keeps it delivered even if the secret regex is later tightened to catch an
+// "ARTIFACT"-adjacent token, so a future hardening cannot silently break the consume path.
+const SC_CONTROLLED_ARTIFACT_ENV_KEYS = Object.freeze(new Set([
+  "BOB_CONSUMED_ARTIFACT",
+]));
+
 let testLookupOverride = null;
 
 function setSmartContractRpcLookupForTesting(lookupFn) {
@@ -72,6 +82,9 @@ function shouldStripInheritedSmartContractEnvKey(key) {
 }
 
 function shouldStripControlledSmartContractEnvKey(key) {
+  // An explicitly controlled, Bob-injected artifact var is ALWAYS passed through, even
+  // ahead of the secret/proxy checks, so a future secret-regex tightening cannot strip it.
+  if (SC_CONTROLLED_ARTIFACT_ENV_KEYS.has(key)) return false;
   if (SC_PROXY_ENV_KEYS.includes(key) || SC_SECRET_ENV_KEY_RE.test(key)) return true;
   return SC_RPC_ENV_KEY_RE.test(key) && !SC_CONTROLLED_SUBPROCESS_ENV_KEYS.has(key);
 }
@@ -292,6 +305,7 @@ module.exports = {
   SC_PROXY_ENV_KEYS,
   SC_RPC_ENV_KEY_RE,
   SC_SECRET_ENV_KEY_RE,
+  SC_CONTROLLED_ARTIFACT_ENV_KEYS,
   assertResolvedPublicRpcEndpoint,
   directSmartContractSubprocessEnv,
   filterResolvedPublicRpcEndpoints,

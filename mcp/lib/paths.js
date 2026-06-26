@@ -651,6 +651,15 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // so an FV verified_pass cannot be hand-forged; the proof-bundle invariant gate
   // grades on it (a bare single-run pass no longer mints verified).
   "invariant-verified.jsonl",
+  // The RAW executed invariant-runs ledger (forge/halmos outcomes). Audit-graded so a
+  // same-uid agent cannot append an UNSIGNED invariant row past the best-effort hook to
+  // launder a cross-stack verified_pass: the cross-stack bind STRICTLY MAC-asserts every
+  // invariant arm it consumes, and audit-grading closes the residual unsigned-append path
+  // the hook only best-effort covers. Written ONLY by bob_run_invariant_for_finding (not a
+  // wrapWriteTool composer), so it is NOT in AUDIT_GRADED_WRITER_TOOLS — the strict MAC at
+  // the bind is the primary non-forgeability guarantee; the audit-grade move makes
+  // isAuditGradedPath true so the negative-grep / composer whitelist also cover it.
+  "invariant-runs.jsonl",
   // Web-standalone finding-differential verified_pass ledger. MCP-write-only so a
   // standalone-class verdict cannot be hand-forged; the grade-time gate for
   // residual reportable findings (auth-bypass/IDOR/SSRF/business-logic/info-
@@ -785,7 +794,9 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   // is blocked) but NOT audit-graded — it carries leads that re-verify on reuse,
   // never a hash-bound verdict the grader reads.
   "mechanism-candidates.jsonl",
-  "invariant-runs.jsonl",
+  // invariant-runs.jsonl is NOW in AUDIT_GRADED_BASENAMES (see above): a same-uid agent
+  // appending an unsigned invariant row could otherwise launder a cross-stack
+  // verified_pass. The two sets are asserted DISJOINT, so it lives in exactly one.
   "schema-contracts.jsonl",
   "doc-delta-results.json",
   "auth-differential-results.json",
