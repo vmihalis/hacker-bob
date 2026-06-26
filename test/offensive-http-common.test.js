@@ -33,7 +33,7 @@ const { readHttpAuditRecordsFromJsonl } = require("../mcp/lib/http-records.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { readSessionStateStrict } = require("../mcp/lib/session-state-store.js");
-const { attackSurfacePath } = require("../mcp/lib/paths.js");
+const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/lib/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -64,6 +64,23 @@ function seedRoutedSurface(domain, surfaceId, endpoint) {
       tech_stack: ["fixture"],
       priority: "HIGH",
     }],
+  }, null, 2)}\n`, "utf8");
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+}
+
+// Seed + route N web surfaces at once (for the bounded-error-list assertions).
+function seedSurfaces(domain, ids) {
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: ids.map((id) => ({
+      id,
+      title: "Synthetic surface",
+      surface_type: "web",
+      hosts: [domain],
+      endpoints: [`https://${domain}/p/${encodeURIComponent(id)}`],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    })),
   }, null, 2)}\n`, "utf8");
   JSON.parse(routeSurfaces({ target_domain: domain }));
 }
@@ -333,6 +350,57 @@ test("findRoutedSurface suggests the prefixed id when a caller drops the surface
   assert.match(caught.message, /did you mean surface:search\?/);
   assert.match(caught.message, /routed surface_ids: surface:search/);
   assert.equal(caught.details.suggested_surface_id, "surface:search");
+}));
+
+test("findRoutedSurface caps the listed ids at 20 and reports the full count", () => withTempHome(() => {
+  const domain = "common-find-cap.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, Array.from({ length: 21 }, (_, i) => `surface:s${String(i).padStart(2, "0")}`));
+
+  let caught;
+  try { findRoutedSurface(domain, "definitely-missing"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.details.routed_surface_count, 21, "full count is reported");
+  assert.equal(caught.details.routed_surface_ids.length, 20, "structured list is capped at 20");
+  assert.match(caught.message, /\(21 total\)/);
+}));
+
+test("findRoutedSurface clips an oversized routed surface_id to 120 chars in the error", () => withTempHome(() => {
+  const domain = "common-find-clip.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  const longId = `surface:${"x".repeat(140)}`;
+  seedSurfaces(domain, [longId]);
+
+  let caught;
+  try { findRoutedSurface(domain, "miss"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.details.routed_surface_ids.length, 1);
+  const emitted = caught.details.routed_surface_ids[0];
+  assert.ok(emitted.endsWith("…"), "oversized id is clipped with an ellipsis");
+  assert.equal(emitted.length, 120, "clipped to the 120-char bound");
+}));
+
+test("findRoutedSurface points a dropped-prefix caller at a QUARANTINED surface (re-run hint)", () => withTempHome(() => {
+  // A corrupt route file QUARANTINES surface:search (the v2.1 hunter_agent->evaluator_agent
+  // rename shape) so it is absent from the live routes. A dropped-prefix caller ("search")
+  // should still be told it exists-but-needs-rerouting, not a bare "unknown".
+  const domain = "common-find-quarantine.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:search"]);
+  const rp = surfaceRoutesPath(domain);
+  const doc = JSON.parse(fs.readFileSync(rp, "utf8"));
+  for (const r of doc.routes) {
+    if (r.surface_id === "surface:search") { delete r.evaluator_agent; r.hunter_agent = "hunter-agent"; }
+  }
+  fs.writeFileSync(rp, `${JSON.stringify(doc, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "search"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
+  assert.match(caught.message, /surface:search exists but has a malformed route — re-run bob_route_surfaces/);
+  assert.equal(caught.details.quarantined_match, "surface:search");
+  assert.equal(caught.details.suggested_surface_id, null);
 }));
 
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---

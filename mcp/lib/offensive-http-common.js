@@ -379,6 +379,16 @@ function findRoutedSurface(domain, surfaceId) {
     const suggestion = known.find((id) => id === `surface:${surfaceId}`)
       || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
       || null;
+    // If no LIVE route matches but a QUARANTINED (malformed) route does on the same exact
+    // relation, the surface exists — it just needs re-routing. Say so rather than a bare
+    // "unknown" the caller can't action (the exact-id malformed branch above only fires when
+    // the caller already used the canonical id; this covers the dropped-prefix slip too).
+    const quarantinedMatch = suggestion
+      ? null
+      : (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
+        .map((entry) => entry && entry.surface_id)
+        .filter((id) => typeof id === "string" && id)
+        .find((id) => id === `surface:${surfaceId}` || id === surfaceId.replace(/^surface:/, "")) || null;
     // Bound BOTH the count AND the per-id length on the emitted list. envelope.js reflects
     // details verbatim with no size bound, so an unbounded list — or a single oversized id —
     // would amplify the error payload on every miss (this error deliberately drives a retry).
@@ -390,9 +400,14 @@ function findRoutedSurface(domain, surfaceId) {
     const listed = emitted.length
       ? emitted.join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
       : "(none)";
+    const hint = suggestion
+      ? ` (did you mean ${suggestion}?)`
+      : quarantinedMatch
+        ? ` (${quarantinedMatch} exists but has a malformed route — re-run bob_route_surfaces)`
+        : "";
     rejectInvalidArguments(
-      `unknown or unrouted surface_id ${surfaceId}${suggestion ? ` (did you mean ${suggestion}?)` : ""}; routed surface_ids: ${listed}`,
-      { code: "surface_id_unrouted", routed_surface_ids: emitted, routed_surface_count: known.length, suggested_surface_id: suggestion },
+      `unknown or unrouted surface_id ${surfaceId}${hint}; routed surface_ids: ${listed}`,
+      { code: "surface_id_unrouted", routed_surface_ids: emitted, routed_surface_count: known.length, suggested_surface_id: suggestion, quarantined_match: quarantinedMatch },
     );
   }
   const surfaces = currentSurfaces(domain);
