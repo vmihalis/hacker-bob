@@ -52,7 +52,6 @@ allowed-tools:
   - mcp__hacker-bob__bob_set_operator_note
   - mcp__hacker-bob__bob_clear_operator_note
   - mcp__hacker-bob__bob_clear_terminal_block
-  - mcp__hacker-bob__bounty_report_written
   - mcp__hacker-bob__bob_compose_report
   - mcp__hacker-bob__bob_amend_report
   - mcp__hacker-bob__bob_write_chain_rollup

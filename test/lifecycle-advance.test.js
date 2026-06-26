@@ -993,18 +993,3 @@ test("advanceSession trims a padded auth_status (honored, not thrown deep, and t
     assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).auth_status, "authenticated");
   });
 });
-
-test("legacy bounty_transition_phase adapter DROPS auth_status (no authority conflation via override_reason)", () => {
-  const tool = require("../mcp/lib/tools/advance-session.js");
-  const adapter = tool.aliases[0].arg_adapter;
-  // override_reason -> operator_force is lifecycle-bypass authority; it must NOT also carry an
-  // auth_status assertion through to bob_advance_session (where operator_force is auth authority).
-  const out = adapter({
-    target_domain: "x.test",
-    to_phase: "VERIFY",
-    override_reason: "bypass the gate",
-    auth_status: "authenticated",
-  });
-  assert.equal(out.override, "operator_force");
-  assert.equal(Object.prototype.hasOwnProperty.call(out, "auth_status"), false);
-});

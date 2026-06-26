@@ -23,7 +23,6 @@ module.exports = wrapWriteTool({
   // partial is a validated, attempt/snapshot-bound submission for ONE finding
   // that the server unions at commit. Staging never writes a round document.
   writes_audit_graded: false,
-  aliases: ["bounty_stage_verification_round_partial"],
   description:
     "Stage one finding's verification result for a round. A per-finding verifier worker submits the validated, attempt/snapshot-bound result for ONE finding_id; the server unions the staged partials into the single round document at commit (an empty bob_write_verification_round invocation triggers the union). Requires a v2 VERIFY attempt. Re-staging the same finding overwrites the prior submission.",
   inputSchema: {

@@ -31,7 +31,6 @@ function readSurfaceRoutes(args) {
 
 module.exports = Object.freeze({
   name: "bob_read_surface_routes",
-  aliases: ["bounty_read_surface_routes"],
   description:
     "Read the MCP-owned surface-routes.json: per-surface capability_pack, evaluator_agent, brief_profile, confidence, and reasons. Use to dispatch verifier/chain/evidence/reporter prompts on assignment.capability_pack without re-deriving from surface_type or chain_family.",
   inputSchema: {

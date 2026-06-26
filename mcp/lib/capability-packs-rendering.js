@@ -272,18 +272,51 @@ function substituteHandoffFieldLimits(document) {
   return document.split(HANDOFF_FIELD_LIMITS_PLACEHOLDER).join(renderHandoffFieldLimits());
 }
 
+// The shared evaluator posture — the OBJECTIVE framing, the verification bar
+// stated as an instruction, and the anti-termination stance. It is the same
+// across every evaluator role because the verification plane it mirrors is the
+// same: a surface is closed only by an executed differential whose negative
+// control flips (or an honest partial/blocked record), never by walking a
+// procedure. The chain-specific bar tool names, the attack-condition taxonomy,
+// and the causal fetch->trust-map->scaffold->run prerequisites are NOT here;
+// they are authored per-role next to this token because they are the physics of
+// each stack. Living in one source keeps the posture from drifting per role —
+// the documented failure mode of duplicated prose.
+const EVALUATOR_REFRAME_POSTURE_PLACEHOLDER = "{{EVALUATOR_REFRAME_POSTURE}}";
+
+function renderEvaluatorReframePosture() {
+  return [
+    "Objective:",
+    "- Break an invariant on this surface, or demonstrate attacker-reachable impact. You are not here to walk a procedure; you are here to find the state where a privileged assumption fails. Confirming the surface is safe is a possible outcome, never the goal.",
+    "",
+    "The bar (the same one the completion gate enforces — say it out loud):",
+    "- Nothing counts as done until the ledger holds proof the gate cannot forge: an executed differential whose negative control flips — a harness run whose assertion fails on the live state and holds on the control. Running a test is not completion; a flipped control is. A surface closes only with that proof recorded, or with an honest `partial` plus a concrete next step / `blocked_harness_runs[]` entry.",
+    "",
+    "This is recon, not exhaustion:",
+    "- A stop-condition firing is the start of the hypothesis, not the end of the work. \"An audit reports this fixed\", \"this is admin / role / governance-gated\", \"a trusted relayer / DVN / oracle handles this\", \"an existing test passes\" name where the assumption lives — break the assumption, do not record the control as the result. Time-on-surface is not depth: a quick confirm-the-audit pass is recon. Consult `bob_spec_status.program.severity_system.admin_rule.exceptions` before deciding a role-gated bypass is out of scope.",
+  ].join("\n");
+}
+
+function substituteEvaluatorReframePosture(document) {
+  if (!document.includes(EVALUATOR_REFRAME_POSTURE_PLACEHOLDER)) return document;
+  return document.split(EVALUATOR_REFRAME_POSTURE_PLACEHOLDER).join(renderEvaluatorReframePosture());
+}
+
 module.exports = {
   BLOCKED_HARNESS_RUN_KINDS,
   BLOCKED_PREREQ_KINDS,
   CAPABILITY_PACK_VERIFIER_TABLE_PLACEHOLDER,
   HANDOFF_FIELD_LIMITS_PLACEHOLDER,
   EVALUATOR_PACK_CATALOGUE_PLACEHOLDER,
+  EVALUATOR_REFRAME_POSTURE_PLACEHOLDER,
   renderCapabilityPackVerifierTable,
   renderClaudeEvaluatorPackCatalogue,
   renderCodexEvaluatorPackCatalogue,
   renderHandoffFieldLimits,
+  renderEvaluatorReframePosture,
   substituteCapabilityPackVerifierTable,
   substituteClaudeEvaluatorPackCatalogue,
   substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
 };

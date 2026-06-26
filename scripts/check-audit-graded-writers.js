@@ -20,8 +20,9 @@
 // set, so `missing` is non-empty, so this guard fails.
 //
 // Scope: wrapWriteTool callers only — the whitelist is the wrapWriteTool
-// composer whitelist. (Non-wrapWriteTool tools such as `bounty_report_written`
-// are a separate surface and out of this registry's closure guarantee.)
+// composer whitelist. Tools that emit pipeline events without wrapping a
+// write composer are a separate surface and out of this registry's closure
+// guarantee.
 
 const fs = require("fs");
 const path = require("path");

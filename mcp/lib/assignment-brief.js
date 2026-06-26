@@ -308,7 +308,7 @@ const WEB_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("static_scan_hints", 4096 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.staticScanHints, true),
   briefSliceEntry("schema_slice", 8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.schemaSlice, true),
   briefSliceEntry("surface_graph_slice", 8192 + UNTRUSTED_FENCE_OVERHEAD_CHARS, (context) => context.surfaceGraphSlice, true),
-  briefSliceEntry("auth_profiles_hint", 512, () => "Call `bob_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bob_http_scan`."),
+  briefSliceEntry("auth_profiles_hint", 512, () => "Call `bob_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bob_http_scan`. Offensive-confirm producers are available — escalate a find to its confirm tool (reflected canary -> browser execution, baseline read -> cross-identity read, blind sink -> out-of-band callback) to mint the signed row that closes the surface."),
 ]);
 
 // Plane T cycle T.4 — partition the selected technique packs by lens affinity

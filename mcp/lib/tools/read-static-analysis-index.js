@@ -4,7 +4,6 @@ const { readStaticAnalysisIndexTool } = require("../static-analysis-index.js");
 
 module.exports = Object.freeze({
   name: "bob_read_static_analysis_index",
-  aliases: ["bounty_read_static_analysis_index"],
   description:
     "Read the bounded, scrubbed static-analysis index for a repo session. Returns unverified lead seeds only; never records findings, skips, or promotions.",
   inputSchema: {

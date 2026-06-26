@@ -842,7 +842,6 @@ function degradedReportableFindingIds(domain) {
 
 module.exports = Object.freeze({
   name: "bob_record_candidate_claim",
-  aliases: ["bob_record_finding", "bounty_record_finding"],
   description:
     "Record a validated candidate claim to claims.jsonl with an embedded finding-shaped payload, plus a claim.candidate.linked frontier event. Survives context rotation.",
   inputSchema: {

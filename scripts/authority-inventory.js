@@ -201,7 +201,6 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // initialized_session_read because the tool reads session-bound
   // artifacts and never mutates session state.
   bob_resolve_body: "initialized_session_read",
-  bounty_report_written: "initialized_session_mutation",
   bob_route_surfaces: "initialized_session_mutation",
   bob_run_auth_differential: "scoped_http_network",
   bob_run_doc_delta: "scoped_http_network",
@@ -510,11 +509,9 @@ function classifyTool(tool) {
 }
 
 function validateExplicitAuthorityMap(registryTools) {
-  // Cycle P.1 aliases inherit authority from their primary, so they don't need
-  // their own entry in EXPLICIT_AUTHORITY_CLASS_BY_TOOL. The runtime resolves
-  // through the alias_of indirection.
-  const primaryTools = registryTools.filter((tool) => !tool.alias_of);
-  const registeredNames = new Set(primaryTools.map((tool) => tool.name));
+  // Every registered tool is its own canonical primary and carries an explicit
+  // authority class in EXPLICIT_AUTHORITY_CLASS_BY_TOOL.
+  const registeredNames = new Set(registryTools.map((tool) => tool.name));
   const mappedNames = new Set(Object.keys(EXPLICIT_AUTHORITY_CLASS_BY_TOOL));
   const missing = [...registeredNames].filter((name) => !mappedNames.has(name)).sort();
   const extra = [...mappedNames].filter((name) => !registeredNames.has(name)).sort();
@@ -565,7 +562,6 @@ function validateExplicitAuthorityMap(registryTools) {
   }
 
   for (const tool of registryTools) {
-    if (tool.alias_of) continue;
     if (hasTargetDomain(tool) && !requiresTargetDomain(tool) && !Object.prototype.hasOwnProperty.call(MODE_RULES, tool.name)) {
       // bootstrap_session tools create the authority record and may accept an
       // optional target_domain (e.g. bob_init_repo_session derives the slug
@@ -724,7 +720,7 @@ function modeSummary(toolName) {
 function buildRows() {
   validateExplicitAuthorityMap(TOOL_REGISTRY);
   const files = toolFileMap();
-  return TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => {
+  return TOOL_REGISTRY.map((tool) => {
     const authorityClass = classifyTool(tool);
     if (!AUTHORITY_CLASSES.includes(authorityClass)) {
       throw new Error(`unknown authority class for ${tool.name}: ${authorityClass}`);

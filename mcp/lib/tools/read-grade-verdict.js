@@ -4,7 +4,6 @@ const { readGradeVerdict } = require("../grade-verdict-store.js");
 
 module.exports = Object.freeze({
   name: "bob_read_grade_verdict",
-  aliases: ["bounty_read_grade_verdict"],
   description:
     "Read the authoritative grade verdict JSON document.",
   inputSchema: {

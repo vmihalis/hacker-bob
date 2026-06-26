@@ -4,7 +4,6 @@ const { clearOperatorNote } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "bob_clear_operator_note",
-  aliases: ["bounty_clear_operator_note"],
   description:
     "Clear the compact operator note from session state.",
   inputSchema: {

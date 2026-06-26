@@ -10,7 +10,6 @@ function importHttpTraffic(args) {
 
 module.exports = Object.freeze({
   name: "bob_import_http_traffic",
-  aliases: ["bounty_import_http_traffic"],
   description:
     "Import Burp/HAR-style request history into session-owned traffic.jsonl. Entries are validated, capped, deduped, and limited to the target's first-party hosts.",
   inputSchema: {

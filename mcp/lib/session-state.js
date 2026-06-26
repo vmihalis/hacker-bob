@@ -1147,33 +1147,6 @@ function clearTerminalBlock(args) {
   });
 }
 
-function reportWritten(args) {
-  const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const reportPath = require("./paths.js").reportMarkdownPath(domain);
-  if (!fs.existsSync(reportPath)) {
-    throw new ToolError(
-      ERROR_CODES.STATE_CONFLICT,
-      `report.md is not present at ${reportPath}; call bounty_report_written only after writing the report`,
-    );
-  }
-  const stats = fs.statSync(reportPath);
-  const { state } = readSessionStateStrict(domain);
-  safeAppendPipelineEventDirect(domain, "report_written", {
-    status: "written",
-    source: "bounty_report_written",
-    counts: {
-      report_size_bytes: stats.size,
-    },
-  }, buildGovernanceContext(state));
-  return JSON.stringify({
-    version: 1,
-    report_written: true,
-    path: reportPath,
-    size_bytes: stats.size,
-    mtime: stats.mtime.toISOString(),
-  });
-}
-
 module.exports = {
   advanceSession,
   assertBlockInternalHostsCompatibleWithEgress,
@@ -1181,7 +1154,6 @@ module.exports = {
   clearTerminalBlock,
   deriveAdvanceAuthContext,
   initSession,
-  reportWritten,
   resolveAndAssertSessionEgressIdentity,
   setOperatorNote,
   readSessionState,

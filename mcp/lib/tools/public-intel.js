@@ -8,7 +8,6 @@ async function bountyPublicIntel(args) {
 
 module.exports = Object.freeze({
   name: "bob_public_intel",
-  aliases: ["bounty_public_intel"],
   description:
     "Fetch optional public bug bounty intel: HackerOne-style program policy summary, stats, structured scopes, disclosed report hints, and operator-provided NVD/CVE JSON matched against the current attack surface. Network/API failures degrade to empty results with errors.",
   inputSchema: {

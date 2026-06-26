@@ -4,7 +4,6 @@ const { readSessionState } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "bob_read_session_state",
-  aliases: ["bounty_read_session_state"],
   description:
     "Read normalized orchestrator session state from authoritative storage.",
   inputSchema: {

@@ -18,7 +18,6 @@ function appendChainNodeHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_append_chain_node",
-  aliases: ["bounty_append_chain_node"],
   capability_id: "I7_chain_state_tree",
   description:
     "Record one node in the content-addressed chain state tree. node_hash is computed from (parent_state_hash, action_canonical) so re-recording the same attempt is idempotent. state_hash is computed from (node_hash, observed_canonical) so a child can pin to it for backtracking. Pass parent_state_hash from a prior node's state_hash to extend a branch; omit to anchor at the root.",

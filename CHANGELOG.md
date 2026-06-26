@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.1.0]
+
+### Removed the bounty_* tool-alias layer
+
+- Removed the v2.0.x `bounty_*` → `bob_*` one-release tool-alias layer from `tool-registry.js`, along with the per-module `aliases:[...]` arrays. A v1.x caller pinned to a `bounty_*` tool name now receives `UNKNOWN_TOOL`; call the `bob_*` primary directly. The `governance.tool_deprecated` event kind is retired with the alias handler that emitted it.
+- Removed the deprecated `bounty_report_written` tool. Use `bob_compose_report` + `bob_finalize_report`, which renders `report.md` server-side, emits the `report_written` pipeline event, and binds the hash-bound `ReportSnapshot` row.
+- Removed the `bounty_transition_phase` → `bob_advance_session` legacy phase-FSM redirect. Call `bob_advance_session(to_state)` with the six-state lifecycle enum.
+- Installer: a pinned `mcp__hacker-bob__bounty_*` tool permission in `.claude/settings.json` whose `bob_*` twin no longer exists (for example `bounty_report_written`, `bounty_transition_phase`) now fails the install with a message naming the stale string and its `bob_*` replacement, instead of silently rewriting to a permission that grants nothing. A `bounty_*` permission whose `bob_*` twin still exists continues to migrate cleanly. The `mcp__bountyagent__*` server-name permission compatibility is unchanged.
+
 ## [2.0.1] - 2026-06-08
 
 First npm publication of the v2 line. `v2.0.0` was tagged but never released to npm; the registry `latest` remained on the v1.3.x maintenance line. `2.0.1` publishes the accumulated v2.0.x work on top of the [2.0.0] topology.

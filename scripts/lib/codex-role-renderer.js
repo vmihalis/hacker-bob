@@ -12,6 +12,7 @@ const {
   substituteCapabilityPackVerifierTable,
   substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -193,7 +194,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("reporter")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Write the canonical ~/hacker-bob-sessions/[domain]/report.md before calling bounty_report_written.` Include the full `reporter` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: report-writer. Domain: [domain]. Session: ~/hacker-bob-sessions/[domain]. Compose ~/hacker-bob-sessions/[domain]/report.md via bob_compose_report, then finalize with bob_finalize_report.` Include the full `reporter` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the report, then `close_agent`.",
       "```",
     ].join("\n"),
@@ -281,8 +282,10 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       // evidence prompts embed the verifier-table placeholder and evaluator
       // prompts embed the handoff-limits placeholder; Codex workers read
       // both from the appendix in bob-evaluate SKILL.md.
-      substituteHandoffFieldLimits(
-        substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
+      substituteEvaluatorReframePosture(
+        substituteHandoffFieldLimits(
+          substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
+        ),
       ),
       `END ${roleId} CONTRACT`,
     );
@@ -316,6 +319,7 @@ function renderCodexPromptBody(roleId, body, options = {}) {
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelForPack);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${codexOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${codexRoleContractAppendix(options)}\n`;

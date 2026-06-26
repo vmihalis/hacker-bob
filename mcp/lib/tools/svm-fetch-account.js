@@ -57,7 +57,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_svm_fetch_account",
-  aliases: ["bounty_svm_fetch_account"],
   description: "Read-only Solana getAccountInfo against a pubkey through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Returns lamports, owner program, executable flag, rent_epoch, and base64-encoded account data plus the slot the read was anchored at. Used by SVM evaluators to read program state, multisig members, and account-data layouts before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",

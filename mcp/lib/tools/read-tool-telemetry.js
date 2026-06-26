@@ -6,7 +6,6 @@ const {
 
 module.exports = Object.freeze({
   name: "bob_read_tool_telemetry",
-  aliases: ["bounty_read_tool_telemetry"],
   description:
     "Read diagnostic MCP tool-call telemetry summaries. Returns counts, success rates, latency percentiles, error histograms, authority decision aggregates, last calls, and recent failures without raw tool arguments or payloads.",
   inputSchema: {

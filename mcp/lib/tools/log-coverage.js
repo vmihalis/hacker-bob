@@ -4,7 +4,6 @@ const { logCoverage } = require("../coverage.js");
 
 module.exports = Object.freeze({
   name: "bob_log_coverage",
-  aliases: ["bounty_log_coverage"],
   description:
     "Append concise endpoint/bug-class/auth-profile coverage records for the assigned surface. Call after meaningful tests and before long pivots so coverage survives maxTurns. Validated against wave assignments.",
   inputSchema: {

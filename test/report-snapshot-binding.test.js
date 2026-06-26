@@ -25,7 +25,6 @@ const os = require("os");
 const path = require("path");
 
 const finalizeReportTool = require("../mcp/lib/tools/finalize-report.js");
-const reportWrittenTool = require("../mcp/lib/tools/report-written.js");
 const recordFindingTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
   buildClaimFreeze,
@@ -131,7 +130,6 @@ function seedFindingDifferentialArm(domain, findingId = "F-1", surfaceId = "surf
 }
 
 // Mirror of the seedSessionState helper used by mcp-server.test.js. The
-// reportWritten path reads state.json for governance context, and the
 // verification-write path requires a baseline state document so its
 // schema-version probe selects V1 (no verification-input-snapshot.json on
 // disk yet, no V2 marker in state).
@@ -697,53 +695,6 @@ test("bob_finalize_report refuses when report.md is missing", async () => {
   });
 });
 
-test("legacy bounty_report_written dual-writes a ReportSnapshot row when all four upstream hashes resolve", async () => {
-  await withTempHome(async () => {
-    const domain = "legacy-dualwrite.example.com";
-    drivePipelineToReportWritten(domain);
-    // Seed the legacy state so reportWritten's pipeline-event path resolves
-    // governance context; without state.json the legacy tool still works but
-    // skips the event emission. We need at minimum the report.md present —
-    // already created by drivePipelineToReportWritten.
-    // The dual-write should append a ReportSnapshot row regardless of state.
-    const response = JSON.parse(reportWrittenTool.handler({ target_domain: domain }));
-    assert.equal(response.report_written, true);
-
-    const snapshots = readReportSnapshots(domain);
-    assert.equal(snapshots.length, 1, "legacy report-written must dual-write a snapshot row");
-    const row = snapshots[0];
-    assert.match(row.claim_freeze_hash, HASH_HEX_RE);
-    assert.match(row.final_verification_hash, HASH_HEX_RE);
-    assert.match(row.evidence_hash, HASH_HEX_RE);
-    assert.match(row.grade_verdict_hash, HASH_HEX_RE);
-    assert.match(row.report_content_hash, HASH_HEX_RE);
-
-    const events = readFrontierEvents(domain)
-      .filter((event) => event.kind === "claim.report_snapshot.appended");
-    assert.equal(events.length, 1, "legacy dual-write must emit the claim.report_snapshot.appended event");
-    assert.equal(events[0].payload.via_legacy_tool, true);
-  });
-});
-
-test("legacy bounty_report_written stays event-only when the four upstream hashes cannot be resolved", async () => {
-  await withTempHome(async () => {
-    const domain = "legacy-eventonly.example.com";
-    // Skip the freeze/verify/grade/evidence pipeline; only seed state and
-    // create report.md. The legacy tool must succeed (its sole legacy
-    // contract is "emit report_written when report.md exists") while the
-    // dual-write path silently no-ops because no freeze / verification /
-    // evidence / grade exist.
-    seedSessionState(domain);
-    fs.writeFileSync(reportMarkdownPath(domain), "# Bob Report\n");
-
-    const response = JSON.parse(reportWrittenTool.handler({ target_domain: domain }));
-    assert.equal(response.report_written, true);
-    assert.equal(readReportSnapshots(domain).length, 0,
-      "no snapshot row when upstream hashes are unresolved (legacy event-only path preserved)",
-    );
-  });
-});
-
 test("bob_finalize_report descriptor binds to the reporter role bundle", async () => {
   assert.equal(finalizeReportTool.name, "bob_finalize_report");
   assert.deepEqual(
@@ -753,11 +704,4 @@ test("bob_finalize_report descriptor binds to the reporter role bundle", async (
   );
   assert.equal(finalizeReportTool.mutating, true);
   assert.ok(finalizeReportTool.session_artifacts_written.includes("report-snapshots.jsonl"));
-});
-
-test("legacy bounty_report_written tool descriptor is marked deprecated", async () => {
-  assert.equal(reportWrittenTool.name, "bounty_report_written");
-  assert.equal(reportWrittenTool.deprecated, true,
-    "Cycle C.7 marks bounty_report_written deprecated; bob_finalize_report is the canonical path",
-  );
 });

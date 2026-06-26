@@ -43,7 +43,6 @@ function querySurfaceGraphHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_query_surface_graph",
-  aliases: ["bounty_query_surface_graph"],
   capability_id: "I1_surface_graph",
   description:
     "Query the surface graph. Default mode filters edges by source/target type, source/target id, and edge_type. Pass mode: 'neighbors' with node_type and node_id to walk adjacency, mode: 'mechanism' for bounded principal/credential/policy_gate/effect/intervention projection edges, or mode: 'covered_paths' for the F1 chain substrate (bounded principal->effect candidate paths over the covered mechanism graph + covered cross-surface transition hops) the chain phase traverses.",

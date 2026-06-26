@@ -18,7 +18,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_halmos_run",
-  aliases: ["bounty_halmos_run"],
   description: "Run halmos symbolic execution over a Foundry-shape test function. Halmos explores all reachable states up to a bounded depth, surfacing counterexamples that concrete fuzzing misses (signature replay variants, oracle staleness boundaries, donation/rounding edge cases). Halmos is a downstream subprocess; Bob scrubs inherited proxy/RPC/secret env but does not DNS-pin any socket it opens. Requires `halmos` in PATH (Python tool: pip install halmos). Subprocess hard-killed at timeout (default 120s, max 600s). extra_args allowlisted to safe halmos flags only — no FFI, no solver-command override.",
   inputSchema: {
     "type": "object",

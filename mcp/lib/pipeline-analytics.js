@@ -1046,7 +1046,7 @@ function actionForBottleneck(bottleneck) {
     missing_evidence: "Run the evidence agent and validate evidence packs before grading or reporting.",
     missing_grade: "Write a valid grade verdict before report completion.",
     missing_report: "Write report.md or move the session out of REPORT if report writing is still pending.",
-    report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bounty_report_written.",
+    report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bob_finalize_report.",
     stale_pending_wave: "Re-enter resume flow for the stale pending wave and settle handoffs.",
     delayed_wave_reconciliation: "Audit and tighten the resume flow after evaluator completion so wave reconciliation runs promptly.",
   };

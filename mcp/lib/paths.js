@@ -967,18 +967,11 @@ const AUDIT_GRADED_WRITER_TOOLS = Object.freeze([
   "bob_write_proof_bundle",
 ]);
 
-// Y-P13 (T4) — alias→canonical. Six audit-graded writers ship a `bounty_*`
-// alias; a caller identity arriving under an alias normalizes to its canonical
-// name before the whitelist membership check, so an alias-dispatch is not
-// falsely denied. (amend/compose/chain-rollup/finalize have no alias.)
-const AUDIT_GRADED_WRITER_ALIASES = Object.freeze({
-  bounty_write_verification_round: "bob_write_verification_round",
-  bounty_write_evidence_packs: "bob_write_evidence_packs",
-  bounty_write_grade_verdict: "bob_write_grade_verdict",
-  bounty_write_wave_handoff: "bob_write_wave_handoff",
-  bounty_write_chain_attempt: "bob_write_chain_attempt",
-  bounty_write_proof_bundle: "bob_write_proof_bundle",
-});
+// Y-P13 (T4) — caller-identity → canonical writer-name normalization. Every
+// audit-graded writer dispatches under its canonical `bob_*` name; the map is
+// the seam for any future caller-identity aliasing, kept empty now that the
+// `bounty_*` tool surface is removed so normalization is the identity.
+const AUDIT_GRADED_WRITER_ALIASES = Object.freeze({});
 
 function canonicalWriterName(toolName) {
   if (toolName == null) return null;

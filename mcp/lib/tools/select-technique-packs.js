@@ -4,7 +4,6 @@ const { selectTechniquePacks } = require("../technique-packs.js");
 
 module.exports = Object.freeze({
   name: "bob_select_technique_packs",
-  aliases: ["bounty_select_technique_packs"],
   description:
     "Select bounded candidate technique packs for one routed attack surface using deterministic metadata and prior attempt logs.",
   inputSchema: {

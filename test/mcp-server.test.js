@@ -179,7 +179,6 @@ const {
   initSession,
   readSessionState,
   advanceSession,
-  reportWritten,
   setOperatorNote,
   readStateSummary,
 } = require("../mcp/lib/session-state.js");
@@ -481,7 +480,6 @@ const EXPECTED_TOOL_NAMES = [
   "bob_set_operator_note",
   "bob_clear_operator_note",
   "bob_clear_terminal_block",
-  "bounty_report_written",
   "bob_finalize_report",
   "bob_compose_report",
   "bob_amend_report",
@@ -1002,11 +1000,9 @@ function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
-// Test compat shim. Cycle D.1 retired the bounty_transition_phase tool and
-// its handler; tests that drove the legacy phase machine via direct
-// transitionPhase(...) calls now route through bob_advance_session. The
-// legacy phase-to-lifecycle mapping is the same one the registry alias
-// uses (see mcp/lib/tools/advance-session.js arg_adapter). When the target
+// Test compat shim. The lifecycle FSM speaks a six-state enum; tests that
+// drove fixtures forward with the older eight-phase names route those names
+// through bob_advance_session via this local mapping. When the target
 // lifecycle state equals the current one (e.g., legacy AUTH -> EVALUATE both
 // collapse to OPEN_FRONTIER), the helper returns a synthetic success
 // envelope instead of calling advanceSession so existing legacy chains keep
@@ -1941,19 +1937,18 @@ test("mcp server public exports remain stable", () => {
 });
 
 test("MCP tool registry and dispatch cases stay in sync", async () => {
-  // Cycle P.1: TOOLS publishes only primary names. TOOL_REGISTRY carries both
-  // primaries and bounty_* deprecation aliases for handler routing; aliases
-  // are registry-only entries (alias_of set) that share their primary's
-  // metadata. EXPECTED_TOOL_NAMES enumerates the primary surface.
+  // Every registered tool is its own canonical bob_* primary: TOOLS,
+  // TOOL_REGISTRY, and EXPECTED_TOOL_NAMES are the same surface in the same
+  // order. The v2.1.0 break removed the bounty_* alias layer, so there are no
+  // registry-only alias entries.
   const toolNames = TOOLS.map((tool) => tool.name);
-  const primaryRegistryNames = TOOL_REGISTRY
-    .filter((tool) => !tool.alias_of)
-    .map((tool) => tool.name);
+  const registryNames = TOOL_REGISTRY.map((tool) => tool.name);
   assert.deepEqual(toolNames, EXPECTED_TOOL_NAMES);
-  assert.deepEqual(primaryRegistryNames, EXPECTED_TOOL_NAMES);
+  assert.deepEqual(registryNames, EXPECTED_TOOL_NAMES);
   assert.deepEqual(TOOL_MODULES.map((tool) => defineTool(tool).name), EXPECTED_TOOL_NAMES);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
-  assert.ok(toolNames.every((name) => name.startsWith("bounty_") || name.startsWith("bob_")));
+  assert.ok(toolNames.every((name) => name.startsWith("bob_")), "every tool name is bob_-prefixed");
+  assert.ok(!toolNames.some((name) => name.startsWith("bounty_")), "no bounty_* tool survives the v2.1.0 break");
   assert.ok(!toolNames.includes("bob_auth_manual"));
   assert.ok(!toolNames.includes("bob_read_handoff"));
   assert.equal(
@@ -1961,37 +1956,17 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
     "^SA-[1-9][0-9]*$",
   );
 
-  // Every primary that declares aliases must have a corresponding registry
-  // entry for each alias. Aliases must point back to a registered primary.
-  // Aliases may be plain strings or descriptor objects with .name; both
-  // shapes are materialized by buildToolRegistry into top-level alias
-  // entries with tool.alias_of pointing at the primary.
-  const allRegistryNames = new Set(TOOL_REGISTRY.map((tool) => tool.name));
+  // Dispatch surfaces exactly the registered primaries; no module declares an
+  // alias array any more.
   for (const tool of TOOL_REGISTRY) {
-    if (tool.alias_of) {
-      assert.ok(allRegistryNames.has(tool.alias_of), `alias ${tool.name} points to unknown primary ${tool.alias_of}`);
-    } else if (Array.isArray(tool.aliases)) {
-      for (const alias of tool.aliases) {
-        const aliasName = typeof alias === "string" ? alias : alias.name;
-        assert.ok(allRegistryNames.has(aliasName), `${tool.name} declares missing alias ${aliasName}`);
-      }
-    }
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "alias_of"), `${tool.name} must not carry alias_of`);
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "aliases"), `${tool.name} must not carry an aliases array`);
   }
-
-  // Dispatch resolves both primary and alias names so existing clients that
-  // still call bounty_* can route through the same handler.
-  const dispatchNames = Object.keys(TOOL_HANDLERS);
-  const dispatchPrimaryNames = dispatchNames.filter((name) => {
-    const tool = TOOL_REGISTRY.find((entry) => entry.name === name);
-    return tool && !tool.alias_of;
-  });
-  assert.deepEqual(dispatchPrimaryNames, toolNames);
+  assert.deepEqual(Object.keys(TOOL_HANDLERS), toolNames);
   assert.deepEqual(Object.keys(TOOL_MANIFEST), toolNames);
   for (const tool of TOOL_REGISTRY) {
     assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
-    if (!tool.alias_of) {
-      assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
-    }
+    assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
   }
   await withTempHome(async () => {
     assert.deepEqual(await executeTool("__unknown_tool__", {}), {
@@ -2152,8 +2127,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.role_bundles, ["evidence"]);
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.session_artifacts_written, ["evidence-packs.json", "evidence-packs.md", "verification-manifest.json"]);
   assert.deepEqual(TOOL_MANIFEST.bob_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
-  // bob_advance_session replaces the legacy bounty_transition_phase tool;
-  // the registry alias is exercised by the dispatch tests below.
+  // bob_advance_session is the sole lifecycle-FSM tool.
   assert.deepEqual(TOOL_MANIFEST.bob_advance_session.session_artifacts_written, [
     "session-nucleus.json",
     "session-events.jsonl",
@@ -4867,12 +4841,11 @@ test("bob_write_chain_attempt rejects malformed references and invalid outcomes"
   });
 });
 
-// Cycle D.1 deleted the bounty_transition_phase / transitionPhase tests
-// because the legacy phase FSM and its gating helpers no longer exist; the
-// replacement coverage lives in bob_advance_session and lifecycle-gates
-// tests. The bounty_transition_phase tool name survives as a registry alias
-// that arg-adapts onto bob_advance_session; its dispatch and deprecation
-// telemetry are exercised by the registry/dispatch tests.
+// The legacy eight-phase FSM and its standalone tool no longer exist; lifecycle
+// coverage lives in bob_advance_session and the lifecycle-gates tests. The
+// transitionPhase(...) helper above is a local test shim that maps the older
+// phase names onto bob_advance_session so existing fixtures keep driving
+// forward.
 
 test("session lock busy blocks mutating tools and stale locks are recoverable", () => {
   withTempHome(() => {
@@ -6652,33 +6625,6 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
     assert.equal(events[0].kind, "auth_missing");
     assert.equal(events[0].identifier_hint, "attacker");
     assert.equal(events[0].wave_number, 2);
-  });
-});
-
-test("bounty_report_written emits report_written when report.md is present", () => {
-  withTempHome(() => {
-    const domain = "report-event.example.com";
-    const dir = sessionDir(domain);
-    fs.mkdirSync(dir, { recursive: true });
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    fs.writeFileSync(path.join(dir, "report.md"), "# Report\n\nNo findings.\n");
-
-    const result = JSON.parse(reportWritten({ target_domain: domain }));
-    assert.equal(result.report_written, true);
-    assert.ok(result.size_bytes > 0);
-
-    const eventsResult = readPipelineEvents(domain);
-    const events = eventsResult.events.filter((e) => e.type === "report_written");
-    assert.equal(events.length, 1);
-    assert.ok(events[0].counts.report_size_bytes > 0);
-  });
-});
-
-test("bounty_report_written rejects when report.md is absent", () => {
-  withTempHome(() => {
-    const domain = "no-report.example.com";
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    assert.throws(() => reportWritten({ target_domain: domain }), /report\.md is not present/);
   });
 });
 

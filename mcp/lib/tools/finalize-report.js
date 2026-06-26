@@ -1,11 +1,9 @@
 "use strict";
 
-// Cycle C.7: bob_finalize_report is the hash-bound replacement for
-// bounty_report_written. Both tools coexist during the deprecation window
-// (Pact P2 — dual-write before deletion); both append a ReportSnapshot row
-// when all four upstream hashes resolve. The new tool refuses to finalize
-// unless every upstream hash is present so the ReportSnapshot ledger never
-// admits an orphan row.
+// bob_finalize_report is the hash-bound report completion tool. It emits the
+// report_written pipeline event and appends a ReportSnapshot row only when all
+// four upstream hashes resolve, refusing to finalize unless every upstream hash
+// is present so the ReportSnapshot ledger never admits an orphan row.
 
 const {
   appendFrontierEvent,
@@ -83,9 +81,8 @@ function handler(args) {
     // append.
   }
 
-  // Dual-write per Pact P2: keep the legacy report_written pipeline event so
-  // analytics and pipeline-analytics bottleneck detection continue to see the
-  // canonical signal even when callers migrate to bob_finalize_report.
+  // Emit the report_written pipeline event so analytics and pipeline-analytics
+  // bottleneck detection see the canonical report-completion signal.
   try {
     safeAppendPipelineEventDirect(bundle.target_domain, "report_written", {
       status: "written",

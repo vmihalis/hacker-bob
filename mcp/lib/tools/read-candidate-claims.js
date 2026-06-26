@@ -34,7 +34,6 @@ function readCandidateClaimsTool(args) {
 
 module.exports = Object.freeze({
   name: "bob_read_candidate_claims",
-  aliases: ["bob_read_findings", "bounty_read_findings"],
   description:
     "Read all recorded candidate claims for a target. Returns the embedded finding payloads projected off claims.jsonl.",
   inputSchema: {

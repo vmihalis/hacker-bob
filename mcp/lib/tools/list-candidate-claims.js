@@ -29,7 +29,6 @@ function listCandidateClaims(args) {
 
 module.exports = Object.freeze({
   name: "bob_list_candidate_claims",
-  aliases: ["bob_list_findings", "bounty_list_findings"],
   description:
     "List all recorded candidate claims for a target. Each row is projected from the claim's inline finding payload.",
   inputSchema: {
