@@ -369,43 +369,52 @@ function findRoutedSurface(domain, surfaceId) {
     // signed producer — falling back to a hand-rolled scan + manual claim, the exact under-firing
     // the offensive arsenal is meant to replace. The MESSAGE is the load-bearing self-correction
     // interface (the caller is an LLM reading the error text); no consumer reads a structured
-    // route inventory, so details stay at the stable {code}. Everything echoed is length-bounded
-    // so a single miss can't bloat the payload (this error deliberately drives a retry loop).
+    // route inventory, so details stay at the stable {code}. EVERY id echoed into the message —
+    // the caller's surface_id, the listed routes, the suggestion, and the quarantine hint — is
+    // passed through safe() (bound to MAX_ID_LEN AND control-char-stripped), so no echo path can
+    // bloat the line or forge extra message/log content. Uniform: no echo path is exempt.
     const MAX_LISTED = 20;
     const MAX_ID_LEN = 120;
-    const clip = (id) => (id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id);
-    // The caller's surface_id is untrusted free-text: bound it AND strip control chars, so a huge
-    // or newline-laden value can neither bloat the line nor forge extra message/log content.
-    const safeId = clip(surfaceId).replace(/[\x00-\x1f\x7f]/g, "·");
+    const safe = (id) => {
+      const clipped = id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id;
+      return clipped.replace(/[\x00-\x1f\x7f]/g, "·");
+    };
     const known = routed.document.routes
       .map((entry) => entry.surface_id)
       .filter((id) => typeof id === "string" && id);
-    // Suggest the closest routed id by EXACT EQUALITY only (the dropped `surface:` prefix or its
-    // inverse) — never a substring/suffix wildcard, which for a short/typo'd input could point at
-    // the wrong (if in-scope) surface, against this file's {id}-must-terminate discipline.
-    const suggestion = known.find((id) => id === `surface:${surfaceId}`)
-      || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
-      || null;
-    // If no LIVE route matches but a QUARANTINED (malformed) route matches the same exact
-    // relation, the surface exists — it just needs re-routing; say so rather than a bare
-    // "unknown" (the exact-id malformed branch above only covers the canonical-id caller; a
-    // surface that still has a valid route resolves above and never reaches here).
-    const quarantinedMatch = suggestion
-      ? null
-      : (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
-        .map((entry) => entry && entry.surface_id)
-        .filter((id) => typeof id === "string" && id)
-        .find((id) => id === `surface:${surfaceId}` || id === surfaceId.replace(/^surface:/, "")) || null;
+    const quarantined = (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
+      .map((entry) => entry && entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    // Suggest the closest id by EXACT EQUALITY only (the dropped `surface:` prefix or its inverse)
+    // — never a substring/suffix wildcard, which for a short/typo'd input could point at the wrong
+    // (if in-scope) surface, against this file's {id}-must-terminate discipline. An exact match is
+    // only possible within ±"surface:".length of a candidate id's length, so for anything longer we
+    // skip the key-building entirely — it cannot match, and this bounds both the work and the
+    // rebuilt `surface:${surfaceId}` string on a pathologically long surface_id.
+    const maxCandidateLen = [...known, ...quarantined].reduce((max, id) => Math.max(max, id.length), 0);
+    const canMatch = surfaceId.length <= maxCandidateLen + "surface:".length;
+    const matchExact = (ids) => (canMatch
+      ? ids.find((id) => id === `surface:${surfaceId}`)
+        || ids.find((id) => id === surfaceId.replace(/^surface:/, ""))
+        || null
+      : null);
+    // Prefer a LIVE routed id (the caller can act on it immediately). Only when no live id matches
+    // do we point at a QUARANTINED (malformed) duplicate — a surface that exists but needs
+    // re-routing. A surface that still has a valid route resolves above and never reaches here, so a
+    // live suggestion is always the most actionable hint even when a malformed duplicate of the
+    // same id also exists.
+    const suggestion = matchExact(known);
+    const quarantinedMatch = suggestion ? null : matchExact(quarantined);
     const listed = known.length
-      ? known.slice(0, MAX_LISTED).map(clip).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+      ? known.slice(0, MAX_LISTED).map(safe).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
       : "(none)";
     const hint = suggestion
-      ? ` (did you mean ${clip(suggestion)}?)`
+      ? ` (did you mean ${safe(suggestion)}?)`
       : quarantinedMatch
-        ? ` (${clip(quarantinedMatch)} exists but has a malformed route — re-run bob_route_surfaces)`
+        ? ` (${safe(quarantinedMatch)} exists but has a malformed route — re-run bob_route_surfaces)`
         : "";
     rejectInvalidArguments(
-      `unknown or unrouted surface_id ${safeId}${hint}; routed surface_ids: ${listed}`,
+      `unknown or unrouted surface_id ${safe(surfaceId)}${hint}; routed surface_ids: ${listed}`,
       { code: "surface_id_unrouted" },
     );
   }
