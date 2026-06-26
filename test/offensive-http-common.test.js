@@ -463,6 +463,10 @@ test("findRoutedSurface bounds the suggestion lookup on a pathologically long su
   assert.ok(caught);
   assert.ok(!caught.message.includes(huge), "the huge caller id is clipped, not echoed in full");
   assert.match(caught.message, /…/, "the echoed caller id is clipped to the bound");
+  // Pin the EXACT clip (MAX_ID_LEN=120 → 119 chars + ellipsis): a drift to 121/130/any other
+  // shorter-than-full bound is caught, not just "shorter than the full id" (CodeRabbit round-8).
+  assert.ok(caught.message.includes(`${"z".repeat(119)}…`), "echo clipped to exactly 119 chars + ellipsis");
+  assert.ok(!caught.message.includes("z".repeat(120)), "no 120th pre-ellipsis char — the clip is exactly MAX_ID_LEN");
   assert.ok(!/did you mean/.test(caught.message), "no suggestion is attempted for an unmatchable huge id");
   assert.ok(caught.message.length < 1000, "the error message stays bounded");
 }));
