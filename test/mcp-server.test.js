@@ -5710,7 +5710,6 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -7331,7 +7330,7 @@ test("bob_write_wave_handoff rejects smart_contract complete without findings or
       surface_status: "complete",
       summary: "Audit confirms fixed; nothing to test.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7362,6 +7361,76 @@ test("bob_write_wave_handoff accepts smart_contract complete with bypass_attempt
     assert.equal(payload.bypass_attempts.length, 1);
     assert.equal(payload.bypass_attempts[0].condition, "admin_eoa_compromise");
     assert.equal(payload.bypass_attempts[0].outcome, "no_finding");
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a thin bypass_attempt", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // Clears the write existence floor (condition >= 4, summary >= 30) but not
+    // the substance floor (summary < 60): a thin attestation. Rejected at WRITE,
+    // so the artifact never persists to feed a finalize-retry or requeue loop.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Audit says fixed; admin-gated.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "admin_role_gate", attempt_summary: "Role-gated function; we did not attempt a bypass.", outcome: "no_finding" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a bare partial_evidence claim", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence OUTCOME LABEL is not substance without a finding_id or a
+    // documented mechanism. The cheapest laundering path, refused at write.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the oracle path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle", attempt_summary: "Partial evidence captured but inconclusive.", outcome: "partial_evidence" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff accepts smart_contract partial_evidence that documents the mechanism", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence attempt clearing the substance floor (condition >= 8,
+    // mechanism >= 60) is admissible.
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the price oracle staleness path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle_staleness", attempt_summary: "Forge fork test pushes a stale Chainlink round; the consumer accepts it but the downstream guard reverts before value moves. Inconclusive.", outcome: "partial_evidence" },
+      ],
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.bypass_attempts[0].outcome, "partial_evidence");
   });
 });
 
@@ -7462,7 +7531,7 @@ test("smart_contract gate ignores agent-mutated attack_surface.json (assignment 
       surface_status: "complete",
       summary: "Tampered with attack_surface.json; expected to bypass gate.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7503,12 +7572,14 @@ test("merge re-derives smart_contract surface_type even when stored handoff cach
   });
 });
 
-test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_attempts are substantive", () => {
+test("merge admits a substantive smart_contract complete in the dual-write fallback regime", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
     seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // No finalize call -> the AgentRun row stays `assigned` -> merge runs in the
+    // file-presence fallback regime. Substantive attempts clear the depth bar.
     writeWaveHandoff({
       target_domain: domain,
       wave: "w1",
@@ -7523,34 +7594,8 @@ test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_
       ],
     });
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.deepEqual(merged.suspicion_flags, []);
-  });
-});
-
-test("merge emits sc_complete_with_zero_evidence suspicion flag when bypass_attempts are low-effort attestations", () => {
-  withTempHome(() => {
-    const domain = "example.com";
-    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
-    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
-    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
-    writeWaveHandoff({
-      target_domain: domain,
-      wave: "w1",
-      agent: "a1",
-      surface_id: "surface-a",
-      surface_status: "complete",
-      summary: "Audit confirms fixed.",
-      content: "# Handoff\n",
-      bypass_attempts: [
-        // Clears the schema floors (condition >= 4, attempt_summary >= 30) but
-        // cites no real condition and documents no exercised mechanism.
-        { condition: "gate", attempt_summary: "role-gated so we did not test it.", outcome: "no_finding" },
-      ],
-    });
-    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.equal(merged.suspicion_flags.length, 1);
-    assert.equal(merged.suspicion_flags[0].flag, "sc_complete_with_zero_evidence");
-    assert.equal(merged.suspicion_flags[0].surface_id, "surface-a");
+    assert.ok(merged.completed_surface_ids.includes("surface-a"));
+    assert.ok(!merged.missing_surface_ids.includes("surface-a"));
   });
 });
 
@@ -9200,7 +9245,6 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -9252,7 +9296,6 @@ test("bob_merge_wave_handoffs requeues missing and invalid assigned handoffs whi
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: [],
       },
