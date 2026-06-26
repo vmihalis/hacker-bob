@@ -313,6 +313,7 @@ test("findRoutedSurface returns the routed surface and throws on an unknown id",
   // The error lists the routed ids so a caller can self-correct instead of dead-ending.
   assert.match(caught.message, /routed surface_ids: surface:accounts/);
   assert.deepEqual(caught.details.routed_surface_ids, [surfaceId]);
+  assert.equal(caught.details.routed_surface_count, 1);
 }));
 
 test("findRoutedSurface suggests the prefixed id when a caller drops the surface: prefix", () => withTempHome(() => {

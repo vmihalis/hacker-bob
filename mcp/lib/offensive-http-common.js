@@ -372,18 +372,24 @@ function findRoutedSurface(domain, surfaceId) {
     const known = routed.document.routes
       .map((entry) => entry.surface_id)
       .filter((id) => typeof id === "string" && id);
+    // Suggest the closest routed id by EXACT relation only — never a bare substring, which
+    // for a short/typo'd input ("a", "api") could point an agent at the wrong (if in-scope)
+    // surface, against this file's {id}-must-terminate discipline. Covers the real slip: a
+    // dropped `surface:` prefix (and the inverse).
     const suggestion = known.find((id) => id === `surface:${surfaceId}`)
       || known.find((id) => id.endsWith(`:${surfaceId}`))
       || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
-      || known.find((id) => id.includes(surfaceId))
       || null;
     const MAX_LISTED = 20;
     const listed = known.length
       ? known.slice(0, MAX_LISTED).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
       : "(none)";
+    // Cap the STRUCTURED list too: envelope.js reflects details verbatim with no size bound,
+    // so the message-only cap would still dump the full route table on every miss (an
+    // amplification footgun, since this error is meant to drive a corrected retry).
     rejectInvalidArguments(
       `unknown or unrouted surface_id ${surfaceId}${suggestion ? ` (did you mean ${suggestion}?)` : ""}; routed surface_ids: ${listed}`,
-      { code: "surface_id_unrouted", routed_surface_ids: known, suggested_surface_id: suggestion },
+      { code: "surface_id_unrouted", routed_surface_ids: known.slice(0, MAX_LISTED), routed_surface_count: known.length, suggested_surface_id: suggestion },
     );
   }
   const surfaces = currentSurfaces(domain);
