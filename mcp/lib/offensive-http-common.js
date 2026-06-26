@@ -372,24 +372,27 @@ function findRoutedSurface(domain, surfaceId) {
     const known = routed.document.routes
       .map((entry) => entry.surface_id)
       .filter((id) => typeof id === "string" && id);
-    // Suggest the closest routed id by EXACT relation only — never a bare substring, which
-    // for a short/typo'd input ("a", "api") could point an agent at the wrong (if in-scope)
-    // surface, against this file's {id}-must-terminate discipline. Covers the real slip: a
-    // dropped `surface:` prefix (and the inverse).
+    // Suggest the closest routed id by EXACT EQUALITY only — the canonical `surface:` prefix the
+    // caller dropped, or its inverse. No substring/suffix wildcard: for a short/typo'd input
+    // ("a", "api") a wildcard could point an agent at the wrong (if in-scope) surface, against
+    // this file's {id}-must-terminate discipline.
     const suggestion = known.find((id) => id === `surface:${surfaceId}`)
-      || known.find((id) => id.endsWith(`:${surfaceId}`))
       || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
       || null;
+    // Bound BOTH the count AND the per-id length on the emitted list. envelope.js reflects
+    // details verbatim with no size bound, so an unbounded list — or a single oversized id —
+    // would amplify the error payload on every miss (this error deliberately drives a retry).
+    // The actionable `suggested_surface_id` is left whole so the caller can copy it verbatim.
     const MAX_LISTED = 20;
-    const listed = known.length
-      ? known.slice(0, MAX_LISTED).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+    const MAX_ID_LEN = 120;
+    const clip = (id) => (id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id);
+    const emitted = known.slice(0, MAX_LISTED).map(clip);
+    const listed = emitted.length
+      ? emitted.join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
       : "(none)";
-    // Cap the STRUCTURED list too: envelope.js reflects details verbatim with no size bound,
-    // so the message-only cap would still dump the full route table on every miss (an
-    // amplification footgun, since this error is meant to drive a corrected retry).
     rejectInvalidArguments(
       `unknown or unrouted surface_id ${surfaceId}${suggestion ? ` (did you mean ${suggestion}?)` : ""}; routed surface_ids: ${listed}`,
-      { code: "surface_id_unrouted", routed_surface_ids: known.slice(0, MAX_LISTED), routed_surface_count: known.length, suggested_surface_id: suggestion },
+      { code: "surface_id_unrouted", routed_surface_ids: emitted, routed_surface_count: known.length, suggested_surface_id: suggestion },
     );
   }
   const surfaces = currentSurfaces(domain);
