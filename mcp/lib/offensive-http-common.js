@@ -351,6 +351,19 @@ function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
 
 function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
+  // Sanitize EVERY id/reason echoed by ANY rejection below. surfaceId is agent-controlled, and all
+  // three rejection sites in this function (malformed-route, unrouted, routed-but-absent) feed the
+  // same rejectInvalidArguments sink. Bound each echo to MAX_ID_LEN AND strip control chars so none
+  // can bloat the line or forge extra message/log content — e.g. an ESC/RTL-override sequence in a
+  // surfaceId that exact-matches a quarantined route, or a 100 KB id. Hoisted above the FIRST
+  // rejection so the guarantee is function-wide, not one branch (a per-branch helper would leave the
+  // sibling rejections half-hardened and the "uniform" claim false).
+  const MAX_ID_LEN = 120;
+  const safe = (value) => {
+    const text = String(value ?? "");
+    const clipped = text.length > MAX_ID_LEN ? `${text.slice(0, MAX_ID_LEN - 1)}…` : text;
+    return clipped.replace(/[\x00-\x1f\x7f]/g, "·");
+  };
   // Check quarantined routes for THIS surface FIRST — BEFORE accepting a route — so a corrupt file
   // (even one with a valid-first occurrence AND a malformed duplicate for the same surface_id) is
   // rejected here exactly as getContextBudget rejects it. Otherwise live offensive probes would
@@ -359,7 +372,10 @@ function findRoutedSurface(domain, surfaceId) {
   if (Array.isArray(routed.malformed_routes)) {
     const malformed = routed.malformed_routes.find((entry) => entry.surface_id === surfaceId);
     if (malformed) {
-      rejectInvalidArguments(`surface_id ${surfaceId} has a malformed route (re-run bob_route_surfaces): ${malformed.reason}`);
+      rejectInvalidArguments(
+        `surface_id ${safe(surfaceId)} has a malformed route (re-run bob_route_surfaces): ${safe(malformed.reason)}`,
+        { code: "surface_id_malformed_route" },
+      );
     }
   }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
@@ -369,16 +385,11 @@ function findRoutedSurface(domain, surfaceId) {
     // signed producer — falling back to a hand-rolled scan + manual claim, the exact under-firing
     // the offensive arsenal is meant to replace. The MESSAGE is the load-bearing self-correction
     // interface (the caller is an LLM reading the error text); no consumer reads a structured
-    // route inventory, so details stay at the stable {code}. EVERY id echoed into the message —
-    // the caller's surface_id, the listed routes, the suggestion, and the quarantine hint — is
-    // passed through safe() (bound to MAX_ID_LEN AND control-char-stripped), so no echo path can
-    // bloat the line or forge extra message/log content. Uniform: no echo path is exempt.
+    // route inventory, so details stay at the stable {code}. Every echoed id goes through the
+    // hoisted safe() (declared at the top of this function), so the listed routes, the suggestion,
+    // and the quarantine hint are all bounded + control-char-stripped exactly like the caller's
+    // surface_id — the same guarantee the malformed-route and routed-but-absent rejections get.
     const MAX_LISTED = 20;
-    const MAX_ID_LEN = 120;
-    const safe = (id) => {
-      const clipped = id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id;
-      return clipped.replace(/[\x00-\x1f\x7f]/g, "·");
-    };
     const known = routed.document.routes
       .map((entry) => entry.surface_id)
       .filter((id) => typeof id === "string" && id);
@@ -421,7 +432,10 @@ function findRoutedSurface(domain, surfaceId) {
   const surfaces = currentSurfaces(domain);
   const surface = (surfaces.surfaces || []).find((entry) => entry && entry.id === surfaceId) || null;
   if (!surface) {
-    rejectInvalidArguments(`surface_id ${surfaceId} is routed but not present in current surfaces`);
+    rejectInvalidArguments(
+      `surface_id ${safe(surfaceId)} is routed but not present in current surfaces`,
+      { code: "surface_id_not_in_surfaces" },
+    );
   }
   return { route, surface };
 }

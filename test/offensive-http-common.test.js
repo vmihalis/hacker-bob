@@ -467,6 +467,48 @@ test("findRoutedSurface bounds the suggestion lookup on a pathologically long su
   assert.ok(caught.message.length < 1000, "the error message stays bounded");
 }));
 
+test("findRoutedSurface sanitizes the surface_id echoed by the malformed-route rejection", () => withTempHome(() => {
+  // The malformed-route rejection (reached when the caller's EXACT id is a quarantined route) echoes
+  // the agent-controlled surface_id; a control char in it must be stripped by the SAME safe() as the
+  // unrouted branch — proving the hardening is function-wide, not an island (the round-6 finding).
+  const domain = "common-find-malformed-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:bad\u0007id"]);
+  const rp = surfaceRoutesPath(domain);
+  const doc = JSON.parse(fs.readFileSync(rp, "utf8"));
+  for (const r of doc.routes) {
+    if (r.surface_id === "surface:bad\u0007id") { delete r.evaluator_agent; r.hunter_agent = "hunter-agent"; }
+  }
+  fs.writeFileSync(rp, `${JSON.stringify(doc, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "surface:bad\u0007id"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /surface_id surface:bad·id has a malformed route/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the malformed-route rejection");
+}));
+
+test("findRoutedSurface sanitizes the surface_id echoed by the routed-but-absent rejection", () => withTempHome(() => {
+  // The routed-but-not-present rejection also echoes the agent-controlled surface_id; the same
+  // safe() must cover it — the third echo site the function-wide 'uniform' invariant must hold for.
+  const domain = "common-find-absent-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:gho\u0007st"]); // routes BOTH ids
+  // Drop the BEL surface from attack_surface.json so it stays ROUTED but is no longer present.
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: "surface:keep", title: "t", surface_type: "web", hosts: [domain],
+      endpoints: [`https://${domain}/k`], tech_stack: ["fixture"], priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "surface:gho\u0007st"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /surface_id surface:gho·st is routed but not present/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the routed-but-absent rejection");
+}));
+
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---
 
 test("originFromState returns the in-scope origin and rejects a missing/invalid target_url", () => withTempHome(() => {
