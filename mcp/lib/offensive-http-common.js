@@ -353,8 +353,10 @@ function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
   // Sanitize EVERY id/reason echoed by ANY rejection below. surfaceId is agent-controlled, and all
   // three rejection sites in this function (malformed-route, unrouted, routed-but-absent) feed the
-  // same rejectInvalidArguments sink. Bound each echo to MAX_ID_LEN AND strip control chars so none
-  // can bloat the line or forge extra message/log content — e.g. an ESC/RTL-override sequence in a
+  // same rejectInvalidArguments sink. Bound each echo to MAX_ID_LEN AND strip both ASCII C0/C1+DEL
+  // controls and the Unicode line-separator + bidi-control set (U+2028/9, U+202A-E, U+2066-9, the
+  // LRM/RLM/ALM marks) so none can bloat the line or forge/visually-reorder message/log content —
+  // e.g. an ESC or RTL-override (Trojan-Source) sequence in a
   // surfaceId that exact-matches a quarantined route, or a 100 KB id. Hoisted above the FIRST
   // rejection so the guarantee is function-wide, not one branch (a per-branch helper would leave the
   // sibling rejections half-hardened and the "uniform" claim false).
@@ -362,7 +364,7 @@ function findRoutedSurface(domain, surfaceId) {
   const safe = (value) => {
     const text = String(value ?? "");
     const clipped = text.length > MAX_ID_LEN ? `${text.slice(0, MAX_ID_LEN - 1)}…` : text;
-    return clipped.replace(/[\x00-\x1f\x7f]/g, "·");
+    return clipped.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, "·");
   };
   // Check quarantined routes for THIS surface FIRST — BEFORE accepting a route — so a corrupt file
   // (even one with a valid-first occurrence AND a malformed duplicate for the same surface_id) is

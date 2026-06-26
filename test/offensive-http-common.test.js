@@ -509,6 +509,28 @@ test("findRoutedSurface sanitizes the surface_id echoed by the routed-but-absent
   assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the routed-but-absent rejection");
 }));
 
+test("findRoutedSurface strips Unicode line/bidi controls from the echoed surface_id", () => withTempHome(() => {
+  // safe() must also strip the Unicode log-forging / Trojan-Source set (line/paragraph separators and
+  // bidi embeddings/overrides/isolates), not just ASCII controls — else a U+2028 forges a log line and
+  // a U+202E (RLO) visually reorders the echoed id. (round-7 Codex/brutalist finding.) String.fromCharCode
+  // keeps these out of the source as raw bytes while still exercising the real chars at runtime.
+  const RLO = String.fromCharCode(0x202e); // RIGHT-TO-LEFT OVERRIDE (Trojan-Source bidi)
+  const LS = String.fromCharCode(0x2028);  // LINE SEPARATOR (a JS/log line terminator)
+  const PDI = String.fromCharCode(0x2069); // POP DIRECTIONAL ISOLATE
+  const domain = "common-find-unicode-strip.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep"]);
+
+  let caught;
+  try { findRoutedSurface(domain, `a${RLO}b${LS}c${PDI}d`); } catch (error) { caught = error; }
+  assert.ok(caught);
+  // each stripped char becomes "·": the echoed caller id is a·b·c·d, no raw separator/bidi survives.
+  assert.match(caught.message, /unknown or unrouted surface_id a·b·c·d/);
+  assert.ok(!caught.message.includes(RLO), "no raw RLO (bidi override) survives");
+  assert.ok(!caught.message.includes(LS), "no raw line separator survives");
+  assert.ok(!caught.message.includes(PDI), "no raw bidi isolate survives");
+}));
+
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---
 
 test("originFromState returns the in-scope origin and rejects a missing/invalid target_url", () => withTempHome(() => {
