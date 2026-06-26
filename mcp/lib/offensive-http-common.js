@@ -364,7 +364,27 @@ function findRoutedSurface(domain, surfaceId) {
   }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
-    rejectInvalidArguments(`unknown or unrouted surface_id ${surfaceId}`);
+    // Help the caller self-correct. An agent that drops the canonical `surface:` prefix
+    // (e.g. passes "search" for "surface:search") otherwise hits a dead-end error and
+    // abandons the signed producer — falling back to a hand-rolled scan + manual claim,
+    // the exact under-firing the offensive arsenal is meant to replace. List the routed
+    // ids and suggest the closest match so the next call can fire instead.
+    const known = routed.document.routes
+      .map((entry) => entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    const suggestion = known.find((id) => id === `surface:${surfaceId}`)
+      || known.find((id) => id.endsWith(`:${surfaceId}`))
+      || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
+      || known.find((id) => id.includes(surfaceId))
+      || null;
+    const MAX_LISTED = 20;
+    const listed = known.length
+      ? known.slice(0, MAX_LISTED).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+      : "(none)";
+    rejectInvalidArguments(
+      `unknown or unrouted surface_id ${surfaceId}${suggestion ? ` (did you mean ${suggestion}?)` : ""}; routed surface_ids: ${listed}`,
+      { code: "surface_id_unrouted", routed_surface_ids: known, suggested_surface_id: suggestion },
+    );
   }
   const surfaces = currentSurfaces(domain);
   const surface = (surfaces.surfaces || []).find((entry) => entry && entry.id === surfaceId) || null;

@@ -310,6 +310,28 @@ test("findRoutedSurface returns the routed surface and throws on an unknown id",
   assert.ok(caught);
   assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
   assert.match(caught.message, /unknown or unrouted surface_id surface:does-not-exist/);
+  // The error lists the routed ids so a caller can self-correct instead of dead-ending.
+  assert.match(caught.message, /routed surface_ids: surface:accounts/);
+  assert.deepEqual(caught.details.routed_surface_ids, [surfaceId]);
+}));
+
+test("findRoutedSurface suggests the prefixed id when a caller drops the surface: prefix", () => withTempHome(() => {
+  // Regression (smoke-test 2026-06-26): an agent that routed to a producer with "search"
+  // instead of "surface:search" got a no-hint error and abandoned the producer (fell back to
+  // a hand-rolled scan + manual claim). The error must name the closest routed id so the next
+  // call fires — the whole point of routing to the signed producer.
+  const domain = "common-find-suggest.example.test";
+  const surfaceId = "surface:search";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/search?q=test`);
+
+  let caught;
+  try { findRoutedSurface(domain, "search"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
+  assert.match(caught.message, /did you mean surface:search\?/);
+  assert.match(caught.message, /routed surface_ids: surface:search/);
+  assert.equal(caught.details.suggested_surface_id, "surface:search");
 }));
 
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---
