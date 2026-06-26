@@ -10,6 +10,16 @@ const {
 const {
   STALE_HOOK_SCRIPT_NAMES,
 } = require("./lib/package-policy.js");
+const { TOOLS } = require("../mcp/lib/tool-registry.js");
+
+// Canonical primary tool names this install ships. Drives the upgrade rewrite:
+// a legacy `bounty_<suffix>` permission is migrated to `bob_<suffix>` only when
+// that canonical tool actually exists. A `bounty_*` permission whose `bob_*`
+// twin is absent (e.g. the removed report_written / transition_phase tools)
+// would otherwise be silently rewritten to a dead permission, so the installer
+// fails loud instead. Registry-driven so a future tool removal stays covered
+// without editing a hardcoded list.
+const CANONICAL_TOOL_NAMES = Object.freeze(new Set(TOOLS.map((tool) => tool.name)));
 
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
@@ -53,18 +63,16 @@ const LEGACY_HOOK_COMMAND_REWRITES = Object.freeze([
 
 // Permission-string tool-name rewrites applied to merged `.claude/settings.json`
 // so v1.x installs that allow-listed `mcp__hacker-bob__bounty_*` (the legacy
-// tool-suffix from the pre-P.1 rename generation) get their canonical
+// tool-suffix from a prior rename generation) get their canonical
 // `mcp__hacker-bob__bob_*` permission on upgrade. Server-key migration is
 // handled separately by `rewriteLegacyPermissionString` (bountyagent ->
 // hacker-bob); this rewrite is layered on top to also normalize the suffix.
 //
-// Excludes the bona-fide P.1 deprecation-shim tool names — those have their
-// own registry modules and route through their own handler with the legacy
-// argument schema; their permission strings must remain `bounty_*`.
-const PRESERVED_BOUNTY_TOOL_NAMES = Object.freeze([
-  "bounty_transition_phase",
-  "bounty_report_written",
-]);
+// The `bounty_*` tool surface was removed in v2.1.0. A pinned `bounty_<suffix>`
+// permission whose canonical `bob_<suffix>` twin still exists migrates cleanly;
+// one whose twin was removed (e.g. `bounty_report_written`,
+// `bounty_transition_phase`) would rewrite to a dead permission, so the
+// installer fails loud and names the replacement instead of granting nothing.
 const LEGACY_TOOL_NAME_PREFIX = "bounty_";
 const CANONICAL_TOOL_NAME_PREFIX = "bob_";
 const HACKER_BOB_BOUNTY_PERMISSION_PATTERN = new RegExp(
@@ -82,12 +90,19 @@ function rewriteLegacyToolNamePermission(value) {
   const match = HACKER_BOB_BOUNTY_PERMISSION_PATTERN.exec(value);
   if (!match) return value;
   const suffix = match[1];
-  const fullToolName = `${LEGACY_TOOL_NAME_PREFIX}${suffix}`;
-  // Bona-fide P.1 shim tools own their own handler and keep the bounty_
-  // prefix in the permission allow-list because the server still dispatches
-  // them under that exact name (they are not aliases of a bob_ primary).
-  if (PRESERVED_BOUNTY_TOOL_NAMES.includes(fullToolName)) return value;
-  return `${CANONICAL_PERMISSION_PREFIX}${CANONICAL_TOOL_NAME_PREFIX}${suffix}`;
+  const canonicalName = `${CANONICAL_TOOL_NAME_PREFIX}${suffix}`;
+  const canonicalPermission = `${CANONICAL_PERMISSION_PREFIX}${canonicalName}`;
+  if (CANONICAL_TOOL_NAMES.has(canonicalName)) {
+    return canonicalPermission;
+  }
+  throw new Error(
+    `Stale pinned MCP permission '${value}' references the removed bounty_* ` +
+    `tool alias layer (dropped in v2.1.0) and has no canonical replacement ` +
+    `named '${canonicalName}'. Edit .claude/settings.json permissions.allow: ` +
+    `remove '${value}' (e.g. report-written is now covered by ` +
+    `mcp__hacker-bob__bob_finalize_report; transition-phase by ` +
+    `mcp__hacker-bob__bob_advance_session), then re-run the installer.`,
+  );
 }
 
 function migrateLegacyMcp(existing) {
@@ -370,10 +385,8 @@ function mergeSettings(existing, bobSettings) {
   //      (e.g. browser-driver + pack telemetry) land in the workspace allow-
   //      list even when they are not part of the globally-preapproved default
   //      set, so agents whose brief mentions them can invoke without per-call
-  //      permission churn. Aliases are filtered out by permissionsForAllTools();
-  //      the bona-fide `bounty_transition_phase` and `bounty_report_written`
-  //      shim tools own their own primary registry entries and are surfaced
-  //      here under their canonical (and only) names.
+  //      permission churn. Every tool is surfaced under its canonical bob_*
+  //      name; the bounty_* tool surface was removed in v2.1.0.
   next.permissions = {
     ...existingPermissions,
     allow: uniqueStrings([
@@ -452,7 +465,6 @@ module.exports = {
   LEGACY_PERMISSION_PREFIX,
   CANONICAL_PERMISSION_PREFIX,
   LEGACY_TOOL_NAME_PREFIX,
-  PRESERVED_BOUNTY_TOOL_NAMES,
   STALE_GLOBAL_MCP_PERMISSIONS,
   STALE_HOOK_SCRIPT_NAMES,
   hookScriptName,
