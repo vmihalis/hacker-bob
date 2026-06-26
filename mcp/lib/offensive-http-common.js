@@ -364,50 +364,49 @@ function findRoutedSurface(domain, surfaceId) {
   }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
-    // Help the caller self-correct. An agent that drops the canonical `surface:` prefix
-    // (e.g. passes "search" for "surface:search") otherwise hits a dead-end error and
-    // abandons the signed producer — falling back to a hand-rolled scan + manual claim,
-    // the exact under-firing the offensive arsenal is meant to replace. List the routed
-    // ids and suggest the closest match so the next call can fire instead.
+    // Help the caller self-correct. An agent that drops the canonical `surface:` prefix (e.g.
+    // passes "search" for "surface:search") otherwise hits a dead-end error and abandons the
+    // signed producer — falling back to a hand-rolled scan + manual claim, the exact under-firing
+    // the offensive arsenal is meant to replace. The MESSAGE is the load-bearing self-correction
+    // interface (the caller is an LLM reading the error text); no consumer reads a structured
+    // route inventory, so details stay at the stable {code}. Everything echoed is length-bounded
+    // so a single miss can't bloat the payload (this error deliberately drives a retry loop).
+    const MAX_LISTED = 20;
+    const MAX_ID_LEN = 120;
+    const clip = (id) => (id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id);
+    // The caller's surface_id is untrusted free-text: bound it AND strip control chars, so a huge
+    // or newline-laden value can neither bloat the line nor forge extra message/log content.
+    const safeId = clip(surfaceId).replace(/[\x00-\x1f\x7f]/g, "·");
     const known = routed.document.routes
       .map((entry) => entry.surface_id)
       .filter((id) => typeof id === "string" && id);
-    // Suggest the closest routed id by EXACT EQUALITY only — the canonical `surface:` prefix the
-    // caller dropped, or its inverse. No substring/suffix wildcard: for a short/typo'd input
-    // ("a", "api") a wildcard could point an agent at the wrong (if in-scope) surface, against
-    // this file's {id}-must-terminate discipline.
+    // Suggest the closest routed id by EXACT EQUALITY only (the dropped `surface:` prefix or its
+    // inverse) — never a substring/suffix wildcard, which for a short/typo'd input could point at
+    // the wrong (if in-scope) surface, against this file's {id}-must-terminate discipline.
     const suggestion = known.find((id) => id === `surface:${surfaceId}`)
       || known.find((id) => id === surfaceId.replace(/^surface:/, ""))
       || null;
-    // If no LIVE route matches but a QUARANTINED (malformed) route does on the same exact
-    // relation, the surface exists — it just needs re-routing. Say so rather than a bare
-    // "unknown" the caller can't action (the exact-id malformed branch above only fires when
-    // the caller already used the canonical id; this covers the dropped-prefix slip too).
+    // If no LIVE route matches but a QUARANTINED (malformed) route matches the same exact
+    // relation, the surface exists — it just needs re-routing; say so rather than a bare
+    // "unknown" (the exact-id malformed branch above only covers the canonical-id caller; a
+    // surface that still has a valid route resolves above and never reaches here).
     const quarantinedMatch = suggestion
       ? null
       : (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
         .map((entry) => entry && entry.surface_id)
         .filter((id) => typeof id === "string" && id)
         .find((id) => id === `surface:${surfaceId}` || id === surfaceId.replace(/^surface:/, "")) || null;
-    // Bound BOTH the count AND the per-id length on the emitted list. envelope.js reflects
-    // details verbatim with no size bound, so an unbounded list — or a single oversized id —
-    // would amplify the error payload on every miss (this error deliberately drives a retry).
-    // The actionable `suggested_surface_id` is left whole so the caller can copy it verbatim.
-    const MAX_LISTED = 20;
-    const MAX_ID_LEN = 120;
-    const clip = (id) => (id.length > MAX_ID_LEN ? `${id.slice(0, MAX_ID_LEN - 1)}…` : id);
-    const emitted = known.slice(0, MAX_LISTED).map(clip);
-    const listed = emitted.length
-      ? emitted.join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+    const listed = known.length
+      ? known.slice(0, MAX_LISTED).map(clip).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
       : "(none)";
     const hint = suggestion
-      ? ` (did you mean ${suggestion}?)`
+      ? ` (did you mean ${clip(suggestion)}?)`
       : quarantinedMatch
-        ? ` (${quarantinedMatch} exists but has a malformed route — re-run bob_route_surfaces)`
+        ? ` (${clip(quarantinedMatch)} exists but has a malformed route — re-run bob_route_surfaces)`
         : "";
     rejectInvalidArguments(
-      `unknown or unrouted surface_id ${surfaceId}${hint}; routed surface_ids: ${listed}`,
-      { code: "surface_id_unrouted", routed_surface_ids: emitted, routed_surface_count: known.length, suggested_surface_id: suggestion, quarantined_match: quarantinedMatch },
+      `unknown or unrouted surface_id ${safeId}${hint}; routed surface_ids: ${listed}`,
+      { code: "surface_id_unrouted" },
     );
   }
   const surfaces = currentSurfaces(domain);

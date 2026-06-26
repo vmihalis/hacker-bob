@@ -329,8 +329,7 @@ test("findRoutedSurface returns the routed surface and throws on an unknown id",
   assert.match(caught.message, /unknown or unrouted surface_id surface:does-not-exist/);
   // The error lists the routed ids so a caller can self-correct instead of dead-ending.
   assert.match(caught.message, /routed surface_ids: surface:accounts/);
-  assert.deepEqual(caught.details.routed_surface_ids, [surfaceId]);
-  assert.equal(caught.details.routed_surface_count, 1);
+  assert.equal(caught.details.code, "surface_id_unrouted");
 }));
 
 test("findRoutedSurface suggests the prefixed id when a caller drops the surface: prefix", () => withTempHome(() => {
@@ -349,7 +348,6 @@ test("findRoutedSurface suggests the prefixed id when a caller drops the surface
   assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
   assert.match(caught.message, /did you mean surface:search\?/);
   assert.match(caught.message, /routed surface_ids: surface:search/);
-  assert.equal(caught.details.suggested_surface_id, "surface:search");
 }));
 
 test("findRoutedSurface caps the listed ids at 20 and reports the full count", () => withTempHome(() => {
@@ -360,9 +358,10 @@ test("findRoutedSurface caps the listed ids at 20 and reports the full count", (
   let caught;
   try { findRoutedSurface(domain, "definitely-missing"); } catch (error) { caught = error; }
   assert.ok(caught);
-  assert.equal(caught.details.routed_surface_count, 21, "full count is reported");
-  assert.equal(caught.details.routed_surface_ids.length, 20, "structured list is capped at 20");
+  // The message reports the full count and truncates the list (s00..s19 shown, s20 cut).
   assert.match(caught.message, /\(21 total\)/);
+  assert.match(caught.message, /surface:s00/);
+  assert.ok(!caught.message.includes("surface:s20"), "the 21st id is beyond the 20-cap");
 }));
 
 test("findRoutedSurface clips an oversized routed surface_id to 120 chars in the error", () => withTempHome(() => {
@@ -374,10 +373,9 @@ test("findRoutedSurface clips an oversized routed surface_id to 120 chars in the
   let caught;
   try { findRoutedSurface(domain, "miss"); } catch (error) { caught = error; }
   assert.ok(caught);
-  assert.equal(caught.details.routed_surface_ids.length, 1);
-  const emitted = caught.details.routed_surface_ids[0];
-  assert.ok(emitted.endsWith("…"), "oversized id is clipped with an ellipsis");
-  assert.equal(emitted.length, 120, "clipped to the 120-char bound");
+  // The message clips the oversized id (119 + ellipsis); the full 140-char value never appears.
+  assert.match(caught.message, /…/);
+  assert.ok(!caught.message.includes(longId), "the full oversized id is not echoed");
 }));
 
 test("findRoutedSurface points a dropped-prefix caller at a QUARANTINED surface (re-run hint)", () => withTempHome(() => {
@@ -399,8 +397,25 @@ test("findRoutedSurface points a dropped-prefix caller at a QUARANTINED surface 
   assert.ok(caught);
   assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
   assert.match(caught.message, /surface:search exists but has a malformed route — re-run bob_route_surfaces/);
-  assert.equal(caught.details.quarantined_match, "surface:search");
-  assert.equal(caught.details.suggested_surface_id, null);
+}));
+
+test("findRoutedSurface bounds AND sanitizes the echoed caller surface_id", () => withTempHome(() => {
+  // surface_id is untrusted free-text: control chars (newline/tab) must be stripped so they
+  // can't forge extra log/message lines, and an oversized value must be clipped.
+  const domain = "common-find-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, "surface:real", `https://${domain}/api/real`);
+
+  let caught;
+  try { findRoutedSurface(domain, "a\nb\tc"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /unknown or unrouted surface_id a·b·c/);
+  assert.ok(!/[\x00-\x1f]/.test(caught.message), "no raw control chars survive into the message");
+
+  let caught2;
+  try { findRoutedSurface(domain, "z".repeat(200)); } catch (error) { caught2 = error; }
+  assert.ok(caught2);
+  assert.ok(!caught2.message.includes("z".repeat(200)), "the oversized caller id is clipped");
 }));
 
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---
