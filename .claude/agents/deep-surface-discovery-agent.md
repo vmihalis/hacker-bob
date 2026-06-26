@@ -214,7 +214,7 @@ while read -r root; do timeout 50 curl -ks "https://web.archive.org/cdx/search/c
 { awk '{print $1}' "$SESSION/live_hosts.txt" 2>/dev/null; awk '{print $1}' "$SESSION/family_live.txt" 2>/dev/null; } | sort -u | head -n 80 > "$SESSION/crawl_roots.txt"
 : > "$SESSION/katana_urls.txt"
 KATANA=""; for c in "$HOME/go/bin/katana" "$(command -v katana 2>/dev/null||true)"; do [ -n "$c" ] && [ -x "$c" ] && ! { [ "$(head -c2 "$c" 2>/dev/null)" = '#!' ] && head -1 "$c" 2>/dev/null | grep -qi python; } && { KATANA="$c"; break; }; done
-if [ -n "$KATANA" ] && [ -s "$SESSION/crawl_roots.txt" ]; then timeout 180 "$KATANA" -list "$SESSION/crawl_roots.txt" -silent -d 2 -jc -kf robotstxt,sitemapxml -fs rdn -rl 20 -timeout 8 -o "$SESSION/katana_urls.txt" 2>/dev/null || true; fi
+if [ -n "$KATANA" ] && [ -s "$SESSION/crawl_roots.txt" ]; then timeout 180 "$KATANA" -list "$SESSION/crawl_roots.txt" -silent -d 3 -jc -kf all -fs rdn -rl 20 -timeout 8 -o "$SESSION/katana_urls.txt" 2>/dev/null || true; fi
 cat "$SESSION/katana_urls.txt" >> "$SESSION/all_urls.txt" 2>/dev/null || true
 sort -u -o "$SESSION/all_urls.txt" "$SESSION/all_urls.txt"
 python3 - "$SESSION" <<'PY'
