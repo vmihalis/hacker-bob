@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  CANONICAL_PACKAGE_MAX_BYTES,
   DISALLOWED_PACKED_FILE_PATTERNS,
   DISALLOWED_PACKED_TEXT_PATTERNS,
   EXCLUDED_CANONICAL_PACKAGE_FILES,
@@ -207,11 +208,14 @@ function checkCanonicalPack(rootPackage) {
   // primitive→producer evaluator prose (P12) crossed 3.3 MB (lean pack ~3.30 MB).
   // The 921 KB docs/hacker-bob-social.png (a web/marketing asset) is now excluded
   // from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES), dropping the lean pack to
-  // ~2.48 MB under this unchanged budget. Stays in lockstep with test/package.test.js.
-  if (canonical.size < 3400000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.4 MB`);
+  // ~2.48 MB, and the ceiling was RATCHETED DOWN from 3.4 MB to a snug 2.7 MB so the
+  // reclaimed space is not unmonitored slack. The ceiling is a single source of truth
+  // (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js) shared with
+  // test/package.test.js — they cannot drift.
+  if (canonical.size < CANONICAL_PACKAGE_MAX_BYTES) {
+    pass(`canonical pack size ${canonical.size} bytes is under the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.4 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   }
 
   let foundDisallowed = false;
