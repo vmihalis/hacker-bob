@@ -53,6 +53,12 @@ function legacySessionsRoot() {
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
 const TELEMETRY_TOOL_INVOCATIONS_FILE_NAME = "tool-invocations.jsonl";
+// Phantom-no-marker dedupe counter. The SubagentStop hook's block() re-fires on
+// every exit(2)-forced continuation of the same subagent; the dedupe gate in
+// agent-run-completion.js records the FIRST stop per transcript_path and counts
+// the suppressed re-fires here. Lives in the telemetry dir (not a session dir):
+// these rows have null target_domain, so there is no session to key them to.
+const TELEMETRY_AGENT_RUN_STOP_SUPPRESSED_FILE_NAME = "agent-run-stop-suppressed.json";
 
 function telemetryDir(env = process.env) {
   const override = typeof env.BOUNTY_TELEMETRY_DIR === "string"
@@ -65,6 +71,12 @@ function telemetryToolInvocationsJsonlPath(env = process.env) {
   return path.join(telemetryDir(env), TELEMETRY_TOOL_INVOCATIONS_FILE_NAME);
 }
 
+// Single source of truth for the phantom-no-marker dedupe counter path, shared
+// by the writer (agent-run-completion.js) and the reader (tool-telemetry.js) so
+// the basename never drifts across modules.
+function agentRunStopSuppressedPath(env = process.env) {
+  return path.join(telemetryDir(env), TELEMETRY_AGENT_RUN_STOP_SUPPRESSED_FILE_NAME);
+}
 
 function statePath(domain) {
   return path.join(sessionDir(domain), "state.json");
@@ -743,6 +755,7 @@ module.exports = {
   staticScanResultsJsonlPath,
   taskGraphPath,
   taskQueuePath,
+  agentRunStopSuppressedPath,
   telemetryDir,
   telemetryToolInvocationsJsonlPath,
   trafficJsonlPath,

@@ -25,6 +25,7 @@ const {
 } = require("../mcp/lib/verification-contracts.js");
 const {
   verificationReplayLeaseDir,
+  agentRunStopSuppressedPath,
 } = require("../mcp/lib/paths.js");
 const {
   TECHNIQUE_FULL_ITEM_MAX_CHARS,
@@ -353,6 +354,7 @@ const {
 } = require("../mcp/lib/signup.js");
 const {
   finalizeAgentRun,
+  recordAgentCompletionTelemetry,
 } = require("../mcp/lib/agent-run-completion.js");
 const {
   applyWaveMerge,
@@ -8192,6 +8194,107 @@ test("evaluator SubagentStop hook blocks missing final marker", () => {
     assert.equal(rows[0].block_code, "missing_marker");
     assert.equal(rows[0].target_domain, null);
     assert.equal(rows[0].telemetry_source, "agent-run-stop");
+  });
+});
+
+test("evaluator SubagentStop dedupes a phantom missing_marker storm per subagent and preserves exit(2)", () => {
+  withTempHome((tempHome) => {
+    // Same transcript_path => same subagent. block() re-fires on every
+    // exit(2)-forced continuation; only the first stop should emit a row.
+    const payload = {
+      last_assistant_message: "I wrote notes but no marker.",
+      transcript_path: path.join(tempHome, "transcript-storm.jsonl"),
+    };
+    const first = runEvaluatorSubagentStop(payload, { home: tempHome });
+    const second = runEvaluatorSubagentStop(payload, { home: tempHome });
+
+    // exit(2) contract preserved on BOTH continuations (the gate is decoupled
+    // from block()'s process.exit(2)).
+    assert.equal(first.status, 2);
+    assert.equal(second.status, 2);
+    assert.match(first.stderr, /BOB_AGENT_RUN_DONE/);
+    assert.match(second.stderr, /BOB_AGENT_RUN_DONE/);
+
+    // Exactly one telemetry row despite two stops.
+    const rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].block_code, "missing_marker");
+    assert.equal(rows[0].target_domain, null);
+
+    // The suppressed re-fire is COUNTED, not silently dropped.
+    const counter = JSON.parse(fs.readFileSync(agentRunStopSuppressedPath(), "utf8"));
+    assert.equal(counter.suppressed_total, 1);
+
+    // Change 2: the suppressed count is observable under bob_read_tool_telemetry
+    // so a near-zero blocked rate cannot mask a storm of suppressed re-fires.
+    const telemetry = readToolTelemetry({ include_agent_runs: true });
+    assert.equal(telemetry.agent_runs.suppressed_phantom_missing_marker, 1);
+  });
+});
+
+test("evaluator SubagentStop does not cross-suppress phantom rows from distinct subagents", () => {
+  withTempHome((tempHome) => {
+    // Different transcript_path => different subagents => no suppression.
+    const a = runEvaluatorSubagentStop({
+      last_assistant_message: "No marker A.",
+      transcript_path: path.join(tempHome, "transcript-a.jsonl"),
+    }, { home: tempHome });
+    const b = runEvaluatorSubagentStop({
+      last_assistant_message: "No marker B.",
+      transcript_path: path.join(tempHome, "transcript-b.jsonl"),
+    }, { home: tempHome });
+
+    assert.equal(a.status, 2);
+    assert.equal(b.status, 2);
+
+    const rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 2);
+
+    const counter = JSON.parse(fs.readFileSync(agentRunStopSuppressedPath(), "utf8"));
+    assert.equal(counter.suppressed_total, 0);
+  });
+});
+
+test("recordAgentCompletionTelemetry gates only phantom missing_marker rows", () => {
+  withTempHome(() => {
+    const transcriptPath = path.join(os.tmpdir(), "phantom-unit-transcript.jsonl");
+    const phantom = {
+      status: "blocked",
+      block_code: "missing_marker",
+      marker: null,
+      transcript_path: transcriptPath,
+    };
+    // Two phantom-shaped stops sharing a transcript_path => 1 row + 1 suppressed.
+    recordAgentCompletionTelemetry(phantom, { transcript_path: transcriptPath });
+    recordAgentCompletionTelemetry(phantom, { transcript_path: transcriptPath });
+
+    let rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].block_code, "missing_marker");
+    assert.equal(rows[0].target_domain, null);
+
+    const counter = JSON.parse(fs.readFileSync(agentRunStopSuppressedPath(), "utf8"));
+    assert.equal(counter.suppressed_total, 1);
+
+    // A real-coord blocked row (e.g. missing_handoff WITH wave/agent/target) is
+    // NOT a phantom and must ALWAYS be recorded — even sharing the transcript.
+    const realBlocked = {
+      status: "blocked",
+      block_code: "missing_handoff",
+      marker: { target_domain: "example.com", wave: "w1", agent: "a1", surface_id: "surface-a" },
+      handoff: { present: false, valid: false },
+      transcript_path: transcriptPath,
+    };
+    recordAgentCompletionTelemetry(realBlocked, { transcript_path: transcriptPath });
+
+    rows = readJsonl(toolInvocationTelemetryPath());
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].block_code, "missing_handoff");
+    assert.equal(rows[1].target_domain, "example.com");
+
+    // The real row did not touch the phantom suppression counter.
+    const counterAfter = JSON.parse(fs.readFileSync(agentRunStopSuppressedPath(), "utf8"));
+    assert.equal(counterAfter.suppressed_total, 1);
   });
 });
 

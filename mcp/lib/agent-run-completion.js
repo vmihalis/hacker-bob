@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const {
   assertNonEmptyString,
   parseAgentId,
@@ -16,9 +17,11 @@ const {
 } = require("./assignments.js");
 const {
   sessionDir,
+  agentRunStopSuppressedPath,
 } = require("./paths.js");
 const {
   readJsonFile,
+  writeFileAtomic,
 } = require("./storage.js");
 
 const EVIDENCE_MODE = "evidence";
@@ -463,6 +466,49 @@ function telemetryInput(evaluation, {
   };
 }
 
+// A "phantom no-marker row" is the telemetry shape the SubagentStop hook emits
+// when an agent stops without any final marker: status "blocked", block_code
+// "missing_marker" (camelCase `blockCode` after telemetryInput), and null
+// coordinates (no marker -> no target_domain/wave/agent). The hook's block()
+// re-fires this identical row on every exit(2)-forced continuation of the same
+// subagent, so it is the only row class that needs per-subagent deduping.
+function isPhantomNoMarkerRow(input) {
+  return Boolean(input)
+    && input.status === "blocked"
+    && input.blockCode === "missing_marker"
+    && input.target_domain == null && input.wave == null && input.agent == null;
+}
+
+// First occurrence per transcript_path -> record (return true). Duplicate ->
+// suppress (increment counter, return false). FAIL-OPEN: any error returns true
+// so a real failure is never hidden by a fault in this dedupe helper. readJsonFile
+// has no default-on-missing mode (it stat-throws on an absent file), so the first
+// occurrence (counter file absent) is handled explicitly via fs.existsSync — that
+// path both records the row and seeds the counter so later re-fires are caught.
+function recordFirstPhantomMissingMarker(input, env = process.env) {
+  try {
+    const file = agentRunStopSuppressedPath(env);
+    const state = fs.existsSync(file)
+      ? readJsonFile(file)
+      : { version: 1, suppressed_total: 0, transcripts: {} };
+    const key = crypto.createHash("sha256")
+      .update(typeof input.transcript_path === "string" ? input.transcript_path : "")
+      .digest("hex")
+      .slice(0, 16);
+    if (state.transcripts[key] == null) {
+      state.transcripts[key] = 0;
+      writeFileAtomic(file, JSON.stringify(state));
+      return true;
+    }
+    state.transcripts[key] += 1;
+    state.suppressed_total += 1;
+    writeFileAtomic(file, JSON.stringify(state));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // Evidence-mode input is already a fully-formed telemetry record (the hook
   // builds it directly because evidence runs have no wave/agent and skip the
@@ -477,6 +523,14 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
     return evaluation;
   }
   const input = telemetryInput(evaluation, options);
+  // Phantom no-marker dedupe. The SubagentStop hook's block() re-fires on every
+  // exit(2)-forced continuation of the same subagent, each emitting an identical
+  // null-coord missing_marker row. Record the FIRST stop per subagent
+  // (transcript_path); suppress + COUNT re-fires. exit(2) lives in block() and is
+  // untouched — this only decides whether the telemetry row is written.
+  if (isPhantomNoMarkerRow(input) && !recordFirstPhantomMissingMarker(input)) {
+    return input; // suppressed duplicate; counter already incremented
+  }
   safeRecordToolInvocationTelemetry(input);
   safeRecordEvaluatorStoppedPipelineEvent(
     input,

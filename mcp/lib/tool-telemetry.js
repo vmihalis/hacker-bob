@@ -12,6 +12,7 @@ const {
 } = require("./storage.js");
 const {
   TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
+  agentRunStopSuppressedPath,
   statePath,
   telemetryDir,
   telemetryToolInvocationsJsonlPath,
@@ -895,6 +896,24 @@ function slimToolInvocationEvent(event) {
   };
 }
 
+// Observability counterpart to the dedupe gate in agent-run-completion.js: how
+// many phantom missing_marker re-fires the gate suppressed. Surfaced under
+// bob_read_tool_telemetry so a low (near-zero) true blocked rate is not mistaken
+// for a healthy pipeline that is actually hiding a storm of suppressed re-fires.
+// Fail-safe to 0 on any read error (missing/corrupt counter file).
+function readSuppressedPhantomMissingMarkerTotal(env = process.env) {
+  try {
+    const filePath = agentRunStopSuppressedPath(env);
+    if (!fs.existsSync(filePath)) return 0;
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return Number.isInteger(parsed.suppressed_total) && parsed.suppressed_total >= 0
+      ? parsed.suppressed_total
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function summarizeToolInvocationTelemetryEvents(events, {
   limit = DEFAULT_RECENT_FAILURE_LIMIT,
   readResult = null,
@@ -924,6 +943,7 @@ function summarizeToolInvocationTelemetryEvents(events, {
     filters,
     total_runs: events.length,
     malformed_lines: readResult ? readResult.malformed_lines : 0,
+    suppressed_phantom_missing_marker: readSuppressedPhantomMissingMarkerTotal(env),
     totals: {
       runs: events.length,
       by_status: byStatus,
