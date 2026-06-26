@@ -904,6 +904,16 @@ function slimToolInvocationEvent(event) {
 // (near-zero) true blocked rate is not mistaken for a healthy pipeline that is
 // actually hiding a storm of suppressed re-fires. Fail-safe to 0 on any read
 // error (missing dir, unreadable/corrupt marker).
+// Marker filenames are sha256(transcript_path)[:16] — a 16-char lowercase hex
+// string and nothing else. The reader hardens the scan against a telemetry dir
+// that has grown large or been tampered with: only well-formed marker names are
+// read, the scan is capped, symlinks/non-regular files are skipped (lstat, never
+// followed), and each marker is size-bounded before parse (a marker is tiny:
+// {"version":1,"suppressed":N}).
+const PHANTOM_MARKER_NAME = /^[0-9a-f]{16}$/;
+const PHANTOM_MARKER_SCAN_CAP = 100000;
+const PHANTOM_MARKER_MAX_BYTES = 256;
+
 function readLifetimeSuppressedPhantomBlockRows(env = process.env) {
   const dir = agentRunStopSeenDir(env);
   let entries;
@@ -913,14 +923,21 @@ function readLifetimeSuppressedPhantomBlockRows(env = process.env) {
     return 0;
   }
   let total = 0;
+  let scanned = 0;
   for (const name of entries) {
+    if (scanned >= PHANTOM_MARKER_SCAN_CAP) break;
+    if (!PHANTOM_MARKER_NAME.test(name)) continue;
+    const file = path.join(dir, name);
     try {
-      const parsed = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+      const st = fs.lstatSync(file);
+      if (!st.isFile() || st.size > PHANTOM_MARKER_MAX_BYTES) continue;
+      scanned += 1;
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
       if (Number.isInteger(parsed.suppressed) && parsed.suppressed >= 0) {
         total += parsed.suppressed;
       }
     } catch {
-      // Skip an unreadable/corrupt marker; the sum stays best-effort.
+      // Skip an unreadable/corrupt/missing marker; the sum stays best-effort.
     }
   }
   return total;
