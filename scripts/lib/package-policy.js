@@ -76,6 +76,11 @@ const STALE_HOOK_SCRIPT_NAMES = Object.freeze([
 const EXCLUDED_CANONICAL_PACKAGE_FILES = Object.freeze([
   ...STALE_HOOK_SCRIPT_NAMES.map((name) => `.claude/hooks/${name}`),
   "docs/hacker-bob-offline-guide.pdf",
+  // The 921 KB social-preview card is a web/marketing asset (referenced only by the
+  // non-packed site/ and GitHub's social-preview, never by the installed runtime). It
+  // dominated the tarball at ~27% of pack size; excluding it reclaims the budget headroom
+  // the comment in test/package.test.js long flagged as the obvious trim target.
+  "docs/hacker-bob-social.png",
   "scripts/authority-inventory.js",
   "scripts/replay-refusal.js",
   "scripts/bench-prompts.sh",

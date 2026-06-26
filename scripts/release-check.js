@@ -205,7 +205,9 @@ function checkCanonicalPack(rootPackage) {
   // test/package.test.js ceiling (keep the two in lockstep).
   // Raised to 3.4 MB: accumulated offensive-surface growth since PR7 plus the
   // primitive→producer evaluator prose (P12) crossed 3.3 MB (lean pack ~3.30 MB).
-  // Stays in lockstep with test/package.test.js.
+  // The 921 KB docs/hacker-bob-social.png (a web/marketing asset) is now excluded
+  // from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES), dropping the lean pack to
+  // ~2.48 MB under this unchanged budget. Stays in lockstep with test/package.test.js.
   if (canonical.size < 3400000) {
     pass(`canonical pack size ${canonical.size} bytes is under 3.4 MB`);
   } else {

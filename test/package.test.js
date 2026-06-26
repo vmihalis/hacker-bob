@@ -174,9 +174,13 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // route/client in mcp/lib/dashboard.js, #151). Headroom had fallen to ~0 KB and the
     // npm-pack tarball size is non-deterministic by ~3 KB across runs (CI measured
     // 3,300,833 B on a commit a parallel run packed under 3.3 MB — the budget was
-    // flapping), so this restores a stable margin (lean pack ~3.30 MB) without trimming
-    // assets (the 921 KB docs/hacker-bob-social.png remains the obvious trim target if a
-    // future squeeze warrants it). Mirror of the same budget in scripts/release-check.js.
+    // flapping), so this restored a stable margin (lean pack ~3.30 MB).
+    // That future squeeze then arrived: the lean pack crept back to ~3.40 MB (~0 KB
+    // headroom, CI-red), so the 921 KB docs/hacker-bob-social.png — a web/marketing asset
+    // unused by the installed runtime — is now excluded from the pack (see
+    // EXCLUDED_CANONICAL_PACKAGE_FILES in scripts/lib/package-policy.js). The lean pack
+    // dropped to ~2.48 MB, restoring ~0.9 MB of headroom under this unchanged 3.4 MB
+    // budget. Mirror of the same budget in scripts/release-check.js.
     assert.ok(pack.size < 3400000, `npm pack size ${pack.size} exceeds 3.4 MB threshold`);
 
     for (const file of files) {
