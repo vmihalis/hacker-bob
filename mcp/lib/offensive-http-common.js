@@ -351,6 +351,21 @@ function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
 
 function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
+  // Sanitize EVERY id/reason echoed by ANY rejection below. surfaceId is agent-controlled, and all
+  // three rejection sites in this function (malformed-route, unrouted, routed-but-absent) feed the
+  // same rejectInvalidArguments sink. Bound each echo to MAX_ID_LEN AND strip both ASCII C0/C1+DEL
+  // controls and the Unicode line-separator + bidi-control set (U+2028/9, U+202A-E, U+2066-9, the
+  // LRM/RLM/ALM marks) so none can bloat the line or forge/visually-reorder message/log content —
+  // e.g. an ESC or RTL-override (Trojan-Source) sequence in a
+  // surfaceId that exact-matches a quarantined route, or a 100 KB id. Hoisted above the FIRST
+  // rejection so the guarantee is function-wide, not one branch (a per-branch helper would leave the
+  // sibling rejections half-hardened and the "uniform" claim false).
+  const MAX_ID_LEN = 120;
+  const safe = (value) => {
+    const text = String(value ?? "");
+    const clipped = text.length > MAX_ID_LEN ? `${text.slice(0, MAX_ID_LEN - 1)}…` : text;
+    return clipped.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, "·");
+  };
   // Check quarantined routes for THIS surface FIRST — BEFORE accepting a route — so a corrupt file
   // (even one with a valid-first occurrence AND a malformed duplicate for the same surface_id) is
   // rejected here exactly as getContextBudget rejects it. Otherwise live offensive probes would
@@ -359,17 +374,70 @@ function findRoutedSurface(domain, surfaceId) {
   if (Array.isArray(routed.malformed_routes)) {
     const malformed = routed.malformed_routes.find((entry) => entry.surface_id === surfaceId);
     if (malformed) {
-      rejectInvalidArguments(`surface_id ${surfaceId} has a malformed route (re-run bob_route_surfaces): ${malformed.reason}`);
+      rejectInvalidArguments(
+        `surface_id ${safe(surfaceId)} has a malformed route (re-run bob_route_surfaces): ${safe(malformed.reason)}`,
+        { code: "surface_id_malformed_route" },
+      );
     }
   }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
-    rejectInvalidArguments(`unknown or unrouted surface_id ${surfaceId}`);
+    // Help the caller self-correct. An agent that drops the canonical `surface:` prefix (e.g.
+    // passes "search" for "surface:search") otherwise hits a dead-end error and abandons the
+    // signed producer — falling back to a hand-rolled scan + manual claim, the exact under-firing
+    // the offensive arsenal is meant to replace. The MESSAGE is the load-bearing self-correction
+    // interface (the caller is an LLM reading the error text); no consumer reads a structured
+    // route inventory, so details stay at the stable {code}. Every echoed id goes through the
+    // hoisted safe() (declared at the top of this function), so the listed routes, the suggestion,
+    // and the quarantine hint are all bounded + control-char-stripped exactly like the caller's
+    // surface_id — the same guarantee the malformed-route and routed-but-absent rejections get.
+    const MAX_LISTED = 20;
+    const known = routed.document.routes
+      .map((entry) => entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    const quarantined = (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
+      .map((entry) => entry && entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    // Suggest the closest id by EXACT EQUALITY only (the dropped `surface:` prefix or its inverse)
+    // — never a substring/suffix wildcard, which for a short/typo'd input could point at the wrong
+    // (if in-scope) surface, against this file's {id}-must-terminate discipline. An exact match is
+    // only possible within ±"surface:".length of a candidate id's length, so for anything longer we
+    // skip the key-building entirely — it cannot match, and this bounds both the work and the
+    // rebuilt `surface:${surfaceId}` string on a pathologically long surface_id.
+    const maxCandidateLen = [...known, ...quarantined].reduce((max, id) => Math.max(max, id.length), 0);
+    const canMatch = surfaceId.length <= maxCandidateLen + "surface:".length;
+    const matchExact = (ids) => (canMatch
+      ? ids.find((id) => id === `surface:${surfaceId}`)
+        || ids.find((id) => id === surfaceId.replace(/^surface:/, ""))
+        || null
+      : null);
+    // Prefer a LIVE routed id (the caller can act on it immediately). Only when no live id matches
+    // do we point at a QUARANTINED (malformed) duplicate — a surface that exists but needs
+    // re-routing. A surface that still has a valid route resolves above and never reaches here, so a
+    // live suggestion is always the most actionable hint even when a malformed duplicate of the
+    // same id also exists.
+    const suggestion = matchExact(known);
+    const quarantinedMatch = suggestion ? null : matchExact(quarantined);
+    const listed = known.length
+      ? known.slice(0, MAX_LISTED).map(safe).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+      : "(none)";
+    const hint = suggestion
+      ? ` (did you mean ${safe(suggestion)}?)`
+      : quarantinedMatch
+        ? ` (${safe(quarantinedMatch)} exists but has a malformed route — re-run bob_route_surfaces)`
+        : "";
+    rejectInvalidArguments(
+      `unknown or unrouted surface_id ${safe(surfaceId)}${hint}; routed surface_ids: ${listed}`,
+      { code: "surface_id_unrouted" },
+    );
   }
   const surfaces = currentSurfaces(domain);
   const surface = (surfaces.surfaces || []).find((entry) => entry && entry.id === surfaceId) || null;
   if (!surface) {
-    rejectInvalidArguments(`surface_id ${surfaceId} is routed but not present in current surfaces`);
+    rejectInvalidArguments(
+      `surface_id ${safe(surfaceId)} is routed but not present in current surfaces`,
+      { code: "surface_id_not_in_surfaces" },
+    );
   }
   return { route, surface };
 }
