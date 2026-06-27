@@ -362,7 +362,13 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
-  for (const file of ["server.js", "auto-signup.js", "redaction.js"]) {
+  // browser-driver.js is the Patchright subprocess server.js spawns as DRIVER_SCRIPT_PATH
+  // (mcp/browser-driver.js — top-level, NOT under lib/, so the lib/*.js copy below misses it).
+  // It backs EVERY bob_browser_* tool plus the trusted authed_fetch transport (#155) the
+  // offensive mass-read producer drives; omitting it leaves an install/refresh frozen on
+  // whatever driver first landed, so newer driver commands (set_auth_cookies / authed_fetch)
+  // throw browser_transport_error while the older commands keep working.
+  for (const file of ["server.js", "auto-signup.js", "redaction.js", "browser-driver.js"]) {
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
@@ -555,7 +561,7 @@ function printInstallSummary(summary) {
   }
   console.log(`  ${summary.bypassTables} neutral bypass tables`);
   console.log(`  ${summary.knowledge} neutral evaluator knowledge files`);
-  console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
+  console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, browser-driver.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
   console.log("  ~/hacker-bob-sessions/  (legacy ~/bounty-agent-sessions/ remains readable until v2.1.0)");

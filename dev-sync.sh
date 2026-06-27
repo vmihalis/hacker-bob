@@ -93,6 +93,10 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
+  # browser-driver.js (top-level mcp/, NOT lib/) is the Patchright subprocess server.js spawns —
+  # backs every bob_browser_* tool + the trusted authed_fetch transport. Mirror install.js so a
+  # dev-sync refreshes it too (else the driver stays frozen on whatever first landed).
+  cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
   rm -rf "$TARGET_ABS/mcp/lib/tools"
   mkdir -p "$TARGET_ABS/mcp/lib/tools"
