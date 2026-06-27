@@ -480,6 +480,34 @@ test("AC-2 (Codex P1): a QUERY-ROUTED sibling endpoint refuses to confirm", () =
   assert.equal(readOffensiveRunRecords(domain).length, 0);
 }));
 
+test("AC-2 (Codex %2F): an ENCODED-SEPARATOR final segment is NOT an item form — refuses, no row", () => withTempHome(async () => {
+  // /api/accounts/foo%2Fsettings has the item-route SHAPE (3 segments, /api/accounts prefix) but its final
+  // segment is route-smuggling: %2F decodes to a "/", reaching a sub-resource. capturedIdSegmentIsSafe
+  // rejects %2F everywhere else (it is how pathTemplateMatchesEndpoint vets the baseline), so it must NOT
+  // classify as a clean item form here either. Without that guard it lands in `items` and escapes the
+  // others/isCollection reject; with it, it falls through and the surface is refused. No row is signed.
+  const domain = "idor-encoded-sep.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/foo%2Fsettings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (brutalist agy/glm): boundEntry is order-INDEPENDENT — a query sibling rejects in EITHER endpoint order", () => withTempHome(async () => {
+  // A clean concrete item form (/api/accounts/obj-b-200) plus a query-bearing concrete item form
+  // (/api/accounts/other?type=x) of the SAME route. The bind prefers the clean (query-free) match, so the
+  // clean form ALWAYS binds and the query form is ALWAYS a non-bound query-routed sibling → the SAME hard
+  // reject regardless of endpoints[] order. Before the fix, items.find()||items[0] made the outcome depend
+  // on order (query form first → soft block; clean form first → throw) for identical surface content.
+  for (const [domain, endpoints] of [
+    ["idor-order-a.example.test", [`https://idor-order-a.example.test/api/accounts/${OBJ_B}`, "https://idor-order-a.example.test/api/accounts/other?type=x"]],
+    ["idor-order-b.example.test", ["https://idor-order-b.example.test/api/accounts/other?type=x", `https://idor-order-b.example.test/api/accounts/${OBJ_B}`]],
+  ]) {
+    setupSession(domain, { endpoints });
+    await assert.rejects(() => run(domain), /query-routed/, `${domain}: query sibling must reject regardless of endpoint order`);
+    assert.equal(readOffensiveRunRecords(domain).length, 0, `${domain}: no offensive row is signed`);
+  }
+}));
+
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {
   const domain = "idor-multi-host.example.test";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));

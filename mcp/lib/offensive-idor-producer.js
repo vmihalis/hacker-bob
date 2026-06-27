@@ -893,8 +893,22 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const templatePath = String(pathTemplate).split("?")[0];
   const templateSegments = templatePath.split("/").filter(Boolean);
   const collectionSegments = templateSegments.slice(0, -1);
-  const isItemForm = (segs) => segs.length === templateSegments.length
-    && collectionSegments.every((seg, index) => segs[index] === seg);
+  // A ":id"/"{id}" route-pattern marker — a recorded template form, not a smuggling id (capturedIdSegmentIsSafe
+  // rejects the ":" so markers need their own clause). new URL() percent-encodes "{"/"}", so accept the
+  // %7B…%7D form too.
+  const isRouteParamMarker = (seg) => /^:[^/]+$/.test(seg)
+    || /^\{[^/]+\}$/.test(seg)
+    || /^%7b[^/]+%7d$/i.test(seg);
+  const isItemForm = (segs) => {
+    if (segs.length !== templateSegments.length) return false;
+    if (!collectionSegments.every((seg, index) => segs[index] === seg)) return false;
+    // The id segment must be a CLEAN resource id (the SAME capturedIdSegmentIsSafe rule pathTemplateMatchesEndpoint
+    // applies to the baseline) or an explicit route-pattern marker. An encoded-separator / action-punctuation
+    // final segment ("foo%2Fsettings", "a;b") is route-smuggling to a sub-resource, NOT an item form — without
+    // this it would land in `items` and escape the others/isCollection reject entirely (Codex %2F).
+    const finalSeg = segs[segs.length - 1];
+    return isRouteParamMarker(finalSeg) || capturedIdSegmentIsSafe(finalSeg);
+  };
   const isCollection = (segs) => segs.length === collectionSegments.length
     && collectionSegments.every((seg, index) => segs[index] === seg);
   const items = [];
@@ -930,10 +944,38 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
       );
     }
   }
-  // Bind to a CONCRETE item form (one resolveBaselineFromSurface will also match via
-  // pathTemplateMatchesEndpoint) so row.target is a real recorded instance; fall back to the first item
-  // form if only a route pattern was recorded (resolveBaselineFromSurface then rejects for no concrete).
-  const boundEntry = items.find((item) => pathTemplateMatchesEndpoint(templatePath, item.pathname)) || items[0];
+  // Bind DETERMINISTICALLY (brutalist agy/glm: identical surface content must select the same endpoint AND
+  // the same outcome regardless of recorded-endpoint order — candidateSurfaceEndpoints returns surface.uri
+  // before endpoints[], so the order is real). Sort by pathname, then prefer a CLEAN (query-free) CONCRETE
+  // instance: row.target is then a real recorded value, AND the bound entry — which is exempt from the
+  // query-routed sibling reject below — is never itself query-routed, so a surface with a bindable clean item
+  // form is not turned into an order-dependent soft-block-vs-throw coin flip (agy's false negative). Fall back
+  // to a query-bearing concrete (its own query is caught downstream by the create-collection ?-guard), then a
+  // clean route pattern, then any item form (resolveBaselineFromSurface rejects a no-concrete surface
+  // downstream). All item forms are the SAME id-route (others-must-be-collection admits nothing else), so this
+  // only fixes determinism; it does not widen what binds.
+  //
+  // RESIDUAL — laundering-class, accepted + tracked (brutalist agy + Claude, both MEDIUM): the "one resource"
+  // boundary is drawn from path_template's segment SHAPE, and a path segment's SEMANTICS are not structurally
+  // knowable, so two shapes slip through:
+  //   (a) action siblings — a concrete final segment is indistinguishable from an id ("/api/accounts/export"
+  //       vs the slug id "/api/accounts/alice"), so a static action under the collection classifies as an item;
+  //   (b) shallow-template collapse — a too-shallow template ("/api/{id}") treats a COLLECTION segment as the
+  //       id, so "/api/users" and "/api/orders" both classify as item forms of one "resource".
+  // Both are BOUNDED, not unbounded: row.target is always the path_template-derived URL (never the action
+  // endpoint / sibling collection — see the call site), demonstrated_severity is MEDIUM-capped, the derived
+  // create POST to a non-collection typically fails (no row minted), and the 3 blind verification rounds
+  // re-examine the finding's subject. The DURABLE close is binding the finding's subject to the proven
+  // row.target in the claims gate (claims.js:1043 names this a PRODUCER obligation the string-binding gate
+  // cannot meet); tracked as issue #173, NOT closed structurally here.
+  const byPathname = (a, b) => (a.pathname < b.pathname ? -1 : a.pathname > b.pathname ? 1 : 0);
+  const sortedItems = [...items].sort(byPathname);
+  const concreteMatches = sortedItems.filter((item) => pathTemplateMatchesEndpoint(templatePath, item.pathname));
+  const boundEntry =
+    concreteMatches.find((item) => !item.search)
+    || concreteMatches[0]
+    || sortedItems.find((item) => !item.search)
+    || sortedItems[0];
   // Every NON-bound recorded endpoint must be clean path-routed. The BOUND endpoint's own query, if any,
   // is caught downstream by the create-collection ?-guard (which returns a blocked result, reason
   // create_collection_query_routed_endpoint — see PR-D r14). But a query-routed SIBLING (e.g. a
@@ -1293,10 +1335,12 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const stateOrigin = originFromState(domain, state, TOOL_ID);
   // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleHostBoundEndpoint
   // rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared host can
-  // never reach here) and binds boundEndpoint to the ONE recorded endpoint that path_template matches
-  // (rejecting an ambiguous >1-match). We capture the single origin and bind the live create + probes to
-  // it explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't
-  // point a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
+  // never reach here) and DETERMINISTICALLY binds boundEndpoint to a recorded item-route endpoint that
+  // path_template matches (sorted by pathname, concrete instance preferred — all item forms are the same
+  // id-route, so the choice is order-independent rather than an ambiguity reject). We capture the single
+  // origin and bind the live create + probes to it explicitly below — so even a future change to
+  // resolveBaselineFromSurface's origin ordering can't point a WRITE at the session apex instead of the
+  // surface-declared host (Codex P1, defense-in-depth).
   const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
