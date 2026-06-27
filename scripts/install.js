@@ -16,6 +16,20 @@ const { commandExists } = require("./lib/command-exists.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
+
+// The top-level mcp/ runtime files the installer ships (server.js loads/spawns each). An EXPLICIT
+// manifest, NOT a glob: deny-by-default so a stray top-level mcp/*.js (a scratch/test file) never
+// ships to every install. Completeness is enforced mechanically by test/install-smoke.test.js, which
+// asserts this set EQUALS the real top-level mcp/*.js on disk — so a NEW runtime file (as
+// browser-driver.js, the Patchright DRIVER_SCRIPT_PATH server.js spawns, once was) that is added to
+// mcp/ but forgotten here FAILS the test instead of silently freezing the operational copy (the drift
+// that broke the offensive mass-read producer's authed_fetch transport while older commands worked).
+const MCP_TOP_LEVEL_RUNTIME_FILES = Object.freeze([
+  "server.js",
+  "auto-signup.js",
+  "redaction.js",
+  "browser-driver.js",
+]);
 const RESOURCE_SETS = Object.freeze([
   {
     name: "bypassTables",
@@ -374,7 +388,15 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
-  for (const file of ["server.js", "auto-signup.js", "redaction.js"]) {
+  // Copy Bob's top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest.
+  // copyFile OVERWRITES, so a reinstall refreshes a stale prior version — that is what fixes the frozen
+  // browser-driver.js this PR is about. We deliberately do NOT delete other top-level mcp/*.js: the
+  // install target is the user's project and may hold files Bob never placed, so deleting by negation
+  // would destroy them (Codex/glm round-4). A Bob runtime file later renamed/removed lingers harmlessly
+  // (server.js never require()s it). The manifest is the single source of truth; install-smoke.test.js
+  // pins it EQUAL to the real top-level mcp/*.js, so a NEW runtime file can't be silently forgotten —
+  // the drift that hid browser-driver.js. lib/ + its subdirs are copied separately below.
+  for (const file of MCP_TOP_LEVEL_RUNTIME_FILES) {
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
@@ -564,7 +586,7 @@ function printInstallSummary(summary) {
   }
   console.log(`  ${summary.bypassTables} neutral bypass tables`);
   console.log(`  ${summary.knowledge} neutral evaluator knowledge files`);
-  console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
+  console.log(`  MCP runtime (mcp/{${MCP_TOP_LEVEL_RUNTIME_FILES.join(", ")}}, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
   console.log("  ~/hacker-bob-sessions/  (canonical session root; run with --purge-legacy-session-root to remove a pre-v2.0 ~/bounty-agent-sessions/)");
@@ -737,6 +759,7 @@ function printPurgeLegacySessionRootReport(report) {
 
 module.exports = {
   BOB_RESOURCE_DIR,
+  MCP_TOP_LEVEL_RUNTIME_FILES,
   NEUTRAL_INSTALL_SCHEMA_VERSION,
   RESOURCE_SETS,
   commandExists,
