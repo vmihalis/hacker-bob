@@ -730,9 +730,16 @@ function invariantFoundryResultHash(foundryResult) {
   // must hash identically before and after this change. The marker's integrity is
   // instead carried by the row_mac (it covers the whole record minus row_mac) and is
   // consulted by the verdict gate, never by the content hash.
+  // target_binding/target_binding_error are EXCLUDED for the same reason: they are a
+  // cross-stack target attestation (the executed target's address + runtime-bytecode sha256,
+  // parsed from the pinned template's emitted log), carried OUTSIDE run_hash so run_hash stays
+  // byte-stable and every pre-existing fixture hashes identically. Their integrity rides in the
+  // row_mac via the target_* record siblings, and the cross-stack verifier consults those.
   if (typeof foundryResult === "object" && !Array.isArray(foundryResult)
-    && Object.prototype.hasOwnProperty.call(foundryResult, "container_isolated")) {
-    const { container_isolated, ...withoutMarker } = foundryResult;
+    && (Object.prototype.hasOwnProperty.call(foundryResult, "container_isolated")
+      || Object.prototype.hasOwnProperty.call(foundryResult, "target_binding")
+      || Object.prototype.hasOwnProperty.call(foundryResult, "target_binding_error"))) {
+    const { container_isolated, target_binding, target_binding_error, ...withoutMarker } = foundryResult;
     return hashCanonicalJson(withoutMarker);
   }
   return hashCanonicalJson(foundryResult);
@@ -947,6 +954,11 @@ async function runInvariantForFinding({
   let outcome = "dry_run";
   let runHash = null;
   let invariantRunsRetention = null;
+  // Cross-stack target binding (siblings, outside run_hash, inside row_mac). Null on
+  // single-surface / dry runs; set on a cross-stack run that emitted the pinned binding.
+  let targetAddress = null;
+  let targetCodeSha256 = null;
+  let targetOnchainCodeSha256 = null;
   if (dry_run !== true) {
     const bobDir = ensureHarnessTestDir(harness_path);
     writtenPath = writeInvariantSourceFile(bobDir, `${contract_name}.t.sol`, source);
@@ -1001,6 +1013,36 @@ async function runInvariantForFinding({
       outcome = "identity_unbound";
       consumedArtifactHash = null;
       consumedArtifactBytes = null;
+    }
+    // CROSS-STACK TARGET BINDING. The pinned template emits exactly one
+    // "BOB_TARGET_BIND:<address>:<sha256(target.code)>" line (foundry-runner parses it into
+    // foundry_result.target_binding; a setUp-injected second line sets target_binding_error
+    // → refused). Cross-check the executed runtime-bytecode sha256 against the REAL on-chain
+    // bytecode at the SAME address+fork_block via eth_getCode on the trusted fork endpoints.
+    // The agent controls the executed target but NOT the runner's eth_getCode against the
+    // real chain, so a fake-deployed or vm.etch'd target yields a mismatch the cross-stack
+    // verifier refuses. Single-surface runs emit no binding (these stay null). Fail closed:
+    // any parse/RPC failure leaves target_onchain_code_sha256 null → the verifier refuses.
+    const tbResult = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding : null;
+    const tbError = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding_error : null;
+    if (!tbError && tbResult && typeof tbResult.address === "string" && typeof tbResult.code_sha256 === "string") {
+      targetAddress = tbResult.address.toLowerCase();
+      targetCodeSha256 = tbResult.code_sha256.toLowerCase();
+      if (chain_id != null && fork_block != null && Array.isArray(fork_urls) && fork_urls.length > 0) {
+        try {
+          const { ethGetCode } = require("./evm-client.js");
+          const resp = await ethGetCode({ chainId: chain_id, address: targetAddress, block: fork_block, endpoints: fork_urls });
+          const onchainCode = resp && typeof resp.result === "string"
+            ? resp.result
+            : (typeof resp === "string" ? resp : null);
+          if (typeof onchainCode === "string") {
+            const hex = onchainCode.replace(/^0x/, "");
+            targetOnchainCodeSha256 = `0x${crypto.createHash("sha256").update(Buffer.from(hex, "hex")).digest("hex")}`;
+          }
+        } catch {
+          targetOnchainCodeSha256 = null;
+        }
+      }
     }
     runHash = computeInvariantRunHash({
       finding_id: findingId,
@@ -1104,6 +1146,15 @@ async function runInvariantForFinding({
     // the whole record minus row_mac), so an agent cannot forge which bytes a violated
     // arm consumed. The O-B verifier binds this to sha256 of the named cause's stored bytes.
     consumed_artifact_hash: consumedArtifactHash,
+    // CROSS-STACK TARGET BINDING siblings — top-level, OUTSIDE run_hash (so run_hash stays
+    // byte-stable and pre-binding rows hash identically) but INSIDE the row_mac. The
+    // cross-stack verifier requires all three and refuses unless target_code_sha256 (the
+    // executed runtime-bytecode hash the pinned template emitted) equals
+    // target_onchain_code_sha256 (eth_getCode at the same address+fork_block). The agent
+    // controls target_code_sha256 via its target but NOT target_onchain_code_sha256.
+    target_address: targetAddress,
+    target_code_sha256: targetCodeSha256,
+    target_onchain_code_sha256: targetOnchainCodeSha256,
   };
   if (dry_run !== true) {
     await withInvariantSessionWriteLock(domain, () => {

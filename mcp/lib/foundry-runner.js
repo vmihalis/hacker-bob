@@ -194,13 +194,27 @@ function parseForgeJson(stdout) {
   return { ok: false, reason: "unparseable_json" };
 }
 
+// The cross-stack target-binding line the PINNED template emits exactly once, before the
+// gated call: "BOB_TARGET_BIND:<0xaddress>:<0xsha256(target.code)>". Captured here so the
+// invariant runner can cross-check the executed target's runtime bytecode against the real
+// on-chain bytecode (eth_getCode). EXACTLY ONE must appear in the run's decoded logs: the
+// pinned emission always fires and cannot be suppressed, so an agent-authored harness that
+// injects a second (fake) BOB_TARGET_BIND in setUp pushes the count to >1 → refused.
+const TARGET_BIND_PREFIX = "BOB_TARGET_BIND:";
+const TARGET_BIND_RE = /^BOB_TARGET_BIND:(0x[0-9a-fA-F]{40}):(0x[0-9a-fA-F]{64})$/;
+
 function summarizeForgeJson(document) {
   const tests = [];
   let total = 0;
   let passed = 0;
   let failed = 0;
   let truncated = false;
-  if (!document || typeof document !== "object") return { tests, total, passed, failed, truncated };
+  let target_binding = null;
+  let target_binding_error = null;
+  const targetBindLines = [];
+  if (!document || typeof document !== "object") {
+    return { tests, total, passed, failed, truncated, target_binding, target_binding_error };
+  }
   // Forge JSON uses "Success"/"Failure"/"Skipped" status strings. Verifier
   // prompts speak "Pass"/"Fail" for the test-pass=bug-reproduced convention.
   // Translate at the runner so prompts and runner share one vocabulary; if the
@@ -232,9 +246,29 @@ function summarizeForgeJson(document) {
       } else {
         truncated = true;
       }
+      // Collect cross-stack target-binding lines from this test's decoded logs.
+      const decodedLogs = Array.isArray(result?.decoded_logs) ? result.decoded_logs : [];
+      for (const logLine of decodedLogs) {
+        if (typeof logLine === "string" && logLine.startsWith(TARGET_BIND_PREFIX)) {
+          targetBindLines.push(logLine.trim());
+        }
+      }
     }
   }
-  return { tests, total, passed, failed, truncated };
+  // EXACTLY ONE BOB_TARGET_BIND line: the pinned template emits it once and cannot be
+  // suppressed, so 0 means no cross-stack binding ran (single-surface / old template) and
+  // >1 means an agent-authored setUp injected a fake → refuse (target_binding stays null).
+  if (targetBindLines.length === 1) {
+    const m = TARGET_BIND_RE.exec(targetBindLines[0]);
+    if (m) {
+      target_binding = { address: m[1].toLowerCase(), code_sha256: m[2].toLowerCase() };
+    } else {
+      target_binding_error = "malformed BOB_TARGET_BIND line";
+    }
+  } else if (targetBindLines.length > 1) {
+    target_binding_error = `multiple BOB_TARGET_BIND lines (found ${targetBindLines.length}, expected exactly 1) — setUp-injection refused`;
+  }
+  return { tests, total, passed, failed, truncated, target_binding, target_binding_error };
 }
 
 function truncateString(value, maxChars) {
@@ -482,6 +516,11 @@ function finalizeRun({ result, args, forkAttempts, forkBlock, fork_used, rpcPoli
     },
     tests: summary.tests,
     tests_truncated: summary.truncated === true,
+    // Cross-stack target binding parsed from the pinned template's single emitted log line
+    // ({ address, code_sha256 } or null), plus an injection/malformed error if the count != 1.
+    // The invariant runner cross-checks code_sha256 against eth_getCode at fork_block.
+    target_binding: summary.target_binding || null,
+    target_binding_error: summary.target_binding_error || null,
     raw_excerpt: {
       stdout: truncateString(redactRpcEndpointText(result.stdout || ""), RAW_EXCERPT_BYTES),
       stderr: truncateString(redactRpcEndpointText(result.stderr || ""), RAW_EXCERPT_BYTES),

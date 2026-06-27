@@ -3484,7 +3484,7 @@ async function seedCrossStackComposition(domain, surfaceId, findingId) {
   const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
   const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
   const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
-  const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, ...opts });
+  const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, ...opts });
 
   const causeRunId = `${findingId}-web-cause`;
   const consumedBytes = Buffer.from("forged-relay-payload:0xdeadbeef", "utf8");

@@ -83,6 +83,7 @@ function seedInvariantRunRow(domain, opts = {}) {
   return seedInvariantRunRowRaw(domain, {
     templateId: CONSUME_TEMPLATE_ID,
     containerIsolated: true,
+    crossStackTargetBound: true,
     ...opts,
   });
 }

@@ -827,6 +827,34 @@ function adjudicateCrossStackFlip(positiveLeg, controlLeg, causeLeg, decoyArmLeg
     return refuse("the decoy arm must reference the SAME tree/checkout as the positive run (the consumed bytes, not the tree, are the controlled variable)");
   }
 
+  // CROSS-STACK TARGET BINDING — the executed EVM "effect" must run against the REAL audited
+  // on-chain contract, not an agent-deployed/vm.etch'd target. Without this, an agent who
+  // writes the harness setUp deploys a MaliciousTarget that reverts iff bytes != capturedAuth
+  // and satisfies positive=VIOLATED/control=HELD/decoy=HELD legitimately, minting a forged
+  // verified_pass. Each arm carries (outside run_hash, inside row_mac): target_code_sha256
+  // (the executed runtime-bytecode sha256 the PINNED template emitted, exactly once) and
+  // target_onchain_code_sha256 (sha256 of eth_getCode at the SAME address+fork_block, fetched
+  // by the runner over the trusted fork endpoints — the agent controls the executed value but
+  // NOT the on-chain one). They MUST be equal: a fake-deployed or vm.etch'd target has a
+  // different runtime bytecode than the chain carried at fork_block. REQUIRED on all three
+  // arms; a row minted BEFORE this binding (no target fields) is REFUSED (fail-closed
+  // migration), never accepted-with-warning.
+  for (const [armName, row] of [["positive", p], ["control", c], ["decoy", d]]) {
+    if (typeof row.target_address !== "string" || typeof row.target_code_sha256 !== "string"
+      || typeof row.target_onchain_code_sha256 !== "string") {
+      return refuse(`${armName} arm missing cross-stack target binding (target_address / target_code_sha256 / target_onchain_code_sha256) — a cross-stack invariant must bind its EVM target to the audited on-chain bytecode; a row minted before target binding is REFUSED`);
+    }
+    if (row.target_code_sha256 !== row.target_onchain_code_sha256) {
+      return refuse(`${armName} arm: executed target bytecode sha256 (${row.target_code_sha256}) does not equal the on-chain bytecode at fork_block (${row.target_onchain_code_sha256}) — a fake-deployed or vm.etch'd target is REFUSED`);
+    }
+  }
+  if (p.target_address !== c.target_address || p.target_address !== d.target_address) {
+    return refuse("cross-stack arms must reference the SAME target address (the same test on the same tree)");
+  }
+  if (p.target_onchain_code_sha256 !== c.target_onchain_code_sha256 || p.target_onchain_code_sha256 !== d.target_onchain_code_sha256) {
+    return refuse("cross-stack arms must execute against the SAME on-chain target bytecode (an intermediate upgrade/swap between arms is REFUSED)");
+  }
+
   // Distinct executed identity (the non-forgeability spine). The arms share a tree but flip
   // outcome (violated vs held), so their foundry_result_hash differs -> run_hash differs
   // (consumed_artifact_hash is OUTSIDE computeInvariantRunHash). An identical run_hash would
