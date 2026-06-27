@@ -9,6 +9,9 @@ const {
   loadWaveAssignments,
 } = require("./assignments.js");
 const {
+  markAgentRunStartedIdempotent,
+} = require("./agent-runs.js");
+const {
   blockInternalHostsPolicyFields,
 } = require("./session-state-contracts.js");
 const {
@@ -1344,6 +1347,29 @@ function readAssignmentBrief(args) {
   if (!assignment) {
     throw new Error(`Agent ${agent} is not assigned in wave ${wave}`);
   }
+
+  // Universal MCP-side start-recording. Reading the brief is every evaluator's
+  // documented first action, so this is the single universal first surface-scoped
+  // tool call: record the (target_domain, wave, agent, surface_id) agent-run as
+  // `running` so the wave-handoff merge gate sees a real started lifecycle without
+  // depending on any adapter wiring a SubagentStart hook. surface_id comes from
+  // the resolved on-disk assignment, never from an agent-asserted field, so the
+  // start cannot be forged or mis-attributed; the call is idempotent
+  // (first-transition-only). bob_read_assignment_brief stays read-only
+  // (mutating:false) — this is a non-contractual observability side-effect, like
+  // tool telemetry, and a ledger write must never break brief composition, so it
+  // is best-effort.
+  try {
+    markAgentRunStartedIdempotent({
+      targetDomain: domain,
+      wave,
+      agent,
+      surfaceId: assignment.surface_id,
+    });
+  } catch {
+    // Swallow: start-recording is best-effort and never fails the brief.
+  }
+
   // normalizeAssignmentRouteMetadata already validates brief_profile against
   // the capability-packs registry; any registered profile (web today, plus
   // smart_contract_* once SC packs are added) is accepted by assignment-brief.

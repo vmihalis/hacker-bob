@@ -47,32 +47,45 @@ const {
 const {
   latestAgentRunForWaveAgent,
 } = require("./agent-runs.js");
+const {
+  evaluateTechniqueAttemptRequirement,
+} = require("./technique-attempt-gate.js");
 
-// Cycle S.5: drive the merge gate from AgentRun.state instead of the
-// handoff-file presence on disk. Pact P2 keeps file-presence as the fallback
-// during the deprecation window: until the SubagentStart hook lands in every
-// adapter, freshly-started agents may have only an `assigned` row when the
-// merge gate inspects them. Treat the three signals as follows:
+// Drive the merge gate from the AgentRun lifecycle rather than handoff-file
+// presence. The lifecycle is recorded non-forgeably from real subagent activity:
+// universal MCP-side start-recording marks `running` on the agent's first
+// surface-scoped tool call (bob_read_assignment_brief), and the SubagentStart
+// hook marks it even earlier at spawn on adapters that wire it. Each row maps to
+// a gate verdict:
 //
-//   settled                       -> handoff authoritative, no fallback.
-//   failed | abandoned            -> explicit terminal-non-settled, refuse.
-//   running                       -> agent observed running but never settled;
-//                                    the SubagentStop hook should have fired
-//                                    to either settle or mark terminal, so a
-//                                    stuck `running` row means the agent died
-//                                    mid-flight — refuse.
-//   assigned | completed | null   -> not enough state-machine signal yet; fall
-//                                    back to handoff-file presence so the
-//                                    dual-write window keeps producing valid
-//                                    merges for legacy callers and adapters
-//                                    that have not wired the SubagentStart
-//                                    hook yet.
+//   settled              -> handoff authoritative; accept on the row.
+//   failed | abandoned   -> stop-hook terminal-non-settled; refuse (subject to
+//                           the recoverable-block relaxation below, which
+//                           re-validates a provenance-valid handoff on disk).
+//                           This path carries the merge-time teeth of the
+//                           stop-hook finalize controls (e.g. attempt_log_required
+//                           on ordinary surface-* runs is NON-recoverable, so a
+//                           valid handoff cannot merge over it) and is unchanged.
+//   running              -> the agent provably started; the work product (the
+//                           handoff) is the authority, so DEFER to full on-disk
+//                           validation (validateWaveHandoffPayload +
+//                           validateHandoffProvenance) instead of refusing on the
+//                           bare status. A started run with a provenance-valid
+//                           handoff is received; with an absent/invalid handoff
+//                           it is missing (the genuine died-mid-flight case).
+//   assigned | completed | null
+//                        -> no lifecycle progress recorded (an agent that never
+//                           read its brief, or a lost best-effort start write).
+//                           This is the documented degraded path: validate the
+//                           handoff on disk. A provenance-valid handoff is a
+//                           permanent fail-safe — never regressed to missing —
+//                           even when its `running` start-record was lost.
 //
 // A `gate` of "settled" closes the merge gate in favor of the AgentRun row.
 // A `gate` of "closed_terminal_non_settled" closes it against the agent.
-// A `gate` of "fallback" defers to file-presence checks at the call site.
-const AGENT_RUN_GATE_FALLBACK_STATUSES = new Set([null, "assigned", "completed"]);
-
+// A `gate` of "started" and a `gate` of "fallback" both defer to full on-disk
+// handoff validation at the call site — the existence boolean is no longer the
+// decider; the started lifecycle plus payload+provenance validation are.
 function agentRunGateForAssignment(domain, wave, assignment) {
   let run = null;
   try {
@@ -94,18 +107,20 @@ function agentRunGateForAssignment(domain, wave, assignment) {
   if (status === "settled") {
     return { status, gate: "settled", blockCode };
   }
-  if (status === "failed" || status === "abandoned" || status === "running") {
+  if (status === "failed" || status === "abandoned") {
     return { status, gate: "closed_terminal_non_settled", blockCode };
+  }
+  if (status === "running") {
+    return { status, gate: "started", blockCode };
   }
   return { status, gate: "fallback", blockCode };
 }
 
-// Step 2b: only a stop-hook-written terminal status (`failed`/`abandoned`) is
-// eligible for the verified-handoff relaxation below. A stuck `running` row
-// means the agent died mid-flight without ever cleanly settling — that stays
-// gated closed even if a handoff file is on disk (Cycle S.5 semantics), so we
-// do NOT relax it. The relaxation exists solely to undo the runaway loop's
-// `failed`-row poisoning of a settleable run.
+// Only a stop-hook-written terminal status (`failed`/`abandoned`) is eligible
+// for the verified-handoff relaxation below. A `running` row is NOT terminal —
+// it routes through the "started" gate, which already defers to full on-disk
+// handoff validation, so it needs no relaxation here. The relaxation exists
+// solely to undo the runaway loop's `failed`-row poisoning of a settleable run.
 function gateStatusIsHookTerminal(status) {
   return status === "failed" || status === "abandoned";
 }
@@ -130,6 +145,45 @@ function isRecoverableBlockCode(blockCode, surfaceId) {
     return typeof surfaceId === "string" && surfaceId.startsWith("lead-");
   }
   return blockCode === "missing_handoff" || blockCode === "invalid_handoff";
+}
+
+// Branch-uniform technique-attempt requirement for the merge/readiness
+// HANDOFF-ACCEPTANCE gates. The finalize/SubagentStop gate
+// (agent-run-completion.js evaluateAgentCompletion) only runs when the agent
+// reaches SubagentStop; a run whose handoff is accepted on a non-settled
+// branch — started (running), fallback (assigned/completed/null), or a recovered
+// terminal row whose handoff re-validates on disk — never reaches that gate, so a
+// technique-log-less handoff would otherwise merge over the
+// `attempt_log_required` control on whichever branch it took. Re-run the SAME
+// shared evaluateTechniqueAttemptRequirement at the merge gate so the merge gate
+// and the finalize gate never diverge: a surface whose route metadata sets
+// context_budget.attempt_log_required (web/OSS) must carry a completion-status
+// technique attempt before its handoff is honored. attempt_log_required=false
+// (smart_contract) returns null inside the shared check, so SC handoffs are not
+// gated here — the independent SC completion-substance depth gate inside
+// validateWaveHandoffPayload still runs first. The predicate is branch-agnostic;
+// the CALLER restricts it to the non-settled acceptance branches (a settled run
+// already cleared the finalize technique gate) and invokes it only after payload
+// + provenance validation succeed. The lead-* relaxation is composed via the
+// SAME isRecoverableBlockCode predicate the closed-terminal path uses: a
+// missing_technique_attempt_log on a "lead-*" surface is relaxed (merges); on an
+// ordinary "surface-*" it is refused. invalid_technique_attempt_log (an
+// unreadable log) is never relaxed and always fails closed. The check keys on the
+// handoff surface_id + the on-disk technique-attempts.jsonl + attempt_log_required,
+// all independent of the lifecycle ledger, so a lost AgentRun row does not
+// over-gate beyond what attempt_log_required already dictates.
+function handoffMissingRequiredTechniqueAttempt(domain, assignment, wave) {
+  const block = evaluateTechniqueAttemptRequirement(
+    {
+      target_domain: domain,
+      wave,
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+    },
+    assignment,
+  );
+  if (!block) return false;
+  return !isRecoverableBlockCode(block.block_code, assignment.surface_id);
 }
 
 // Step 2b: a `failed`/`abandoned` AgentRun row drives the gate to
@@ -269,32 +323,47 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
   }
 
   for (const assignment of artifacts.assignments) {
-    // Cycle S.5: drive readiness from AgentRun.state with file-presence as
-    // the deprecation-window fallback (Pact P2).
+    // Drive readiness from the AgentRun lifecycle; a "started" or "fallback"
+    // gate defers to the on-disk handoff validation below. Without a `domain`
+    // there is no ledger to consult, so the only signal is file-presence
+    // (the principled degraded path).
     const handoffPresent = artifacts.handoffPathByAgent.has(assignment.agent);
     const gate = domain
       ? agentRunGateForAssignment(domain, artifacts.wave, assignment)
       : { status: null, gate: "fallback" };
     if (gate.gate === "closed_terminal_non_settled") {
-      // Step 2b: a stop-hook `failed`/`abandoned` row from the runaway loop
-      // must NOT mask a cryptographically verified handoff. Only fall through
-      // to "received" when the row is hook-terminal AND the block_code is a
-      // recoverable one (runaway-loop handoff poisoning, or a promoted-lead
-      // technique-log gap) AND full HMAC provenance validates on disk. A
-      // non-recoverable blocker (e.g. missing_oss_coverage), a stuck `running`
-      // row (agent died mid-flight), and a forged/absent handoff all stay gated
-      // closed.
+      // A stop-hook `failed`/`abandoned` row from the runaway loop must NOT mask
+      // a cryptographically verified handoff. Only fall through to "received"
+      // when the row is hook-terminal AND the block_code is a recoverable one
+      // (runaway-loop handoff poisoning, or a promoted-lead technique-log gap)
+      // AND full HMAC provenance validates on disk. A non-recoverable blocker
+      // (e.g. missing_oss_coverage) and a forged/absent handoff stay gated
+      // closed. (A `running` row never reaches here — it routes through the
+      // "started" gate above.)
       if (domain
         && gateStatusIsHookTerminal(gate.status)
         && isRecoverableBlockCode(gate.blockCode, assignment.surface_id)
         && verifiedHandoffOnDiskForAssignment(domain, artifacts, assignment, { signingKey, signingKeyError })) {
+        // The recovered terminal row accepts its on-disk handoff; apply the same
+        // branch-uniform technique-attempt requirement the started/fallback
+        // branch below uses so a recovered web/OSS handoff with no attempt is
+        // refused (lead-* relaxed, SC unaffected). Depth + provenance already
+        // ran inside verifiedHandoffOnDiskForAssignment.
+        if (handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+          missingAgents.push(assignment.agent);
+          continue;
+        }
         receivedAgents.push(assignment.agent);
         continue;
       }
       missingAgents.push(assignment.agent);
       continue;
     }
-    if (gate.gate === "fallback" && !handoffPresent) {
+    if ((gate.gate === "started" || gate.gate === "fallback") && !handoffPresent) {
+      // A started run with no handoff on disk is the genuine died-mid-flight
+      // case; a fallback run with no handoff never produced one. Both are
+      // missing. A started/fallback run WITH a handoff falls through to the full
+      // payload + provenance validation below.
       missingAgents.push(assignment.agent);
       continue;
     }
@@ -327,7 +396,16 @@ function buildWaveReadiness(artifacts, { domain = null } = {}) {
       });
       void payload;
       validateHandoffProvenance(handoffJson, assignment, { signingKey });
-      receivedAgents.push(assignment.agent);
+      // Branch-uniform technique-attempt requirement on the non-settled
+      // acceptance branches (started ∪ fallback here; recovery is handled
+      // inline above). A settled run already cleared the finalize technique
+      // gate, so it is not re-checked.
+      if (gate.gate !== "settled"
+        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+        missingAgents.push(assignment.agent);
+      } else {
+        receivedAgents.push(assignment.agent);
+      }
     } catch {
       invalidAgents.push(assignment.agent);
     }
@@ -419,25 +497,27 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
 
   for (const assignment of artifacts.assignments) {
     const filePath = artifacts.handoffPathByAgent.get(assignment.agent);
-    // Cycle S.5: drive the merge gate from AgentRun.state. The file-presence
-    // check stays as a fallback when no AgentRun row exists yet (legacy
-    // session, pre-S.5 wave, or hook write failure) per Pact P2.
+    // Drive the merge gate from the AgentRun lifecycle. A "started" or
+    // "fallback" gate defers to the on-disk handoff validation below; the
+    // existence check only buckets a started/fallback run with no handoff as
+    // missing.
     const gate = agentRunGateForAssignment(domain, artifacts.wave, assignment);
     if (gate.gate === "closed_terminal_non_settled"
       && !(gateStatusIsHookTerminal(gate.status)
         && isRecoverableBlockCode(gate.blockCode, assignment.surface_id)
         && verifiedHandoffOnDiskForAssignment(domain, artifacts, assignment, { signingKey }))) {
-      // Step 2b: a stop-hook `failed`/`abandoned` row gates the surface closed
-      // UNLESS the block_code is recoverable (runaway-loop handoff poisoning, or
-      // a promoted-lead technique-log gap) AND a cryptographically verified
-      // handoff is present on disk — only then is it the runaway loop poisoning
-      // a settleable run, so re-validate and let it fall through to the normal
+      // A stop-hook `failed`/`abandoned` row gates the surface closed UNLESS the
+      // block_code is recoverable (runaway-loop handoff poisoning, or a
+      // promoted-lead technique-log gap) AND a cryptographically verified handoff
+      // is present on disk — only then is it the runaway loop poisoning a
+      // settleable run, so re-validate and let it fall through to the normal
       // merge bucketing below. A non-recoverable blocker (e.g.
-      // missing_oss_coverage) and a stuck `running` row stay closed regardless.
+      // missing_oss_coverage) stays closed regardless. (A `running` row never
+      // reaches here — it routes through the "started" gate.)
       missingSurfaceIds.push(assignment.surface_id);
       continue;
     }
-    if (gate.gate === "fallback" && !filePath) {
+    if ((gate.gate === "started" || gate.gate === "fallback") && !filePath) {
       missingSurfaceIds.push(assignment.surface_id);
       continue;
     }
@@ -463,6 +543,18 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
         findingsForRun,
       });
       validateHandoffProvenance(handoffJson, assignment, { signingKey });
+
+      // A run accepted on a non-settled branch never reached the finalize gate;
+      // refuse its technique-log-less handoff here (the same requirement, lead-*
+      // relaxed, SC unaffected) so the residual cannot merge. One guard covers
+      // started + fallback + the recovered terminal row (which falls through to
+      // this try-block, gate "closed_terminal_non_settled" !== "settled"); a
+      // settled run already cleared the finalize technique gate, so it is skipped.
+      if (gate.gate !== "settled"
+        && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave)) {
+        missingSurfaceIds.push(assignment.surface_id);
+        continue;
+      }
 
       receivedAgents.push(assignment.agent);
       provenance.verified_agents.push(assignment.agent);
@@ -723,20 +815,22 @@ function buildWaveHandoffsDocument(domain, waveNumbers) {
 
     for (const assignment of artifacts.assignments) {
       const filePath = artifacts.handoffPathByAgent.get(assignment.agent);
-      // Cycle S.5: drive the readout from AgentRun.state with file-presence as
-      // the deprecation-window fallback (Pact P2).
+      // Drive the readout from the AgentRun lifecycle. A "started" or "fallback"
+      // gate defers to the on-disk handoff validation below; only a
+      // started/fallback run with no handoff on disk is reported missing.
       const gate = agentRunGateForAssignment(domain, artifacts.wave, assignment);
       if (gate.gate === "closed_terminal_non_settled"
         && !(gateStatusIsHookTerminal(gate.status)
           && isRecoverableBlockCode(gate.blockCode, assignment.surface_id)
           && verifiedHandoffOnDiskForAssignment(domain, artifacts, assignment, { signingKey, signingKeyError }))) {
-        // Step 2b: don't let a stop-hook `failed`/`abandoned` row force this
-        // agent into missing_handoffs (RCA gate self-poison flip) when the
-        // block_code is recoverable (runaway-loop handoff poisoning, or a
-        // promoted-lead technique-log gap) and a cryptographically verified
-        // handoff sits on disk. Only fall through when full HMAC provenance
-        // passes; a non-recoverable blocker (e.g. missing_oss_coverage), a
-        // forged/absent handoff, or a stuck `running` row stays missing.
+        // Don't let a stop-hook `failed`/`abandoned` row force this agent into
+        // missing_handoffs (RCA gate self-poison flip) when the block_code is
+        // recoverable (runaway-loop handoff poisoning, or a promoted-lead
+        // technique-log gap) and a cryptographically verified handoff sits on
+        // disk. Only fall through when full HMAC provenance passes; a
+        // non-recoverable blocker (e.g. missing_oss_coverage) or a forged/absent
+        // handoff stays missing. (A `running` row routes through the "started"
+        // gate, not here.)
         missingHandoffs.push({
           wave: artifacts.wave,
           agent: assignment.agent,
@@ -744,7 +838,7 @@ function buildWaveHandoffsDocument(domain, waveNumbers) {
         });
         continue;
       }
-      if (gate.gate === "fallback" && !filePath) {
+      if ((gate.gate === "started" || gate.gate === "fallback") && !filePath) {
         missingHandoffs.push({
           wave: artifacts.wave,
           agent: assignment.agent,
@@ -778,6 +872,18 @@ function buildWaveHandoffsDocument(domain, waveNumbers) {
           findingsForRun,
         });
         const provenance = validateHandoffProvenance(handoffJson, assignment, { signingKey });
+        // The merge-side technique-attempt check (handoffMissingRequiredTechniqueAttempt)
+        // is deliberately NOT applied here. This document is consumed by the
+        // finalize gate (agent-run-completion.js evaluateAgentCompletion), which
+        // calls evaluateTechniqueAttemptRequirement itself and must keep
+        // producing block_code missing_technique_attempt_log (terminal on an
+        // ordinary surface). Refusing the handoff here would relabel that block
+        // as missing_handoff (which is recoverable + verified-handoff-relaxed at
+        // merge), reopening the attempt_log_required bypass. The technique-log
+        // residual is closed at the authoritative merge gate
+        // (mergeWaveHandoffsInternal) and the readiness gate (buildWaveReadiness)
+        // that apply_wave_merge consults; this readout intentionally still
+        // surfaces the on-disk handoff.
         const handoff = {
           wave: artifacts.wave,
           agent: assignment.agent,

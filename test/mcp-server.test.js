@@ -1501,6 +1501,25 @@ function seedTechniqueAttempt(domain, {
   }));
 }
 
+// Seed a completion-status technique attempt for every attempt_log_required
+// (web/OSS) surface assigned in the wave, mirroring an evaluator that logged its
+// attempt before finalizing. The branch-uniform merge gate requires this for a
+// non-settled handoff to be honored on any acceptance branch; SC surfaces
+// (attempt_log_required=false) and missing/invalid handoffs are unaffected.
+function seedWaveTechniqueAttempts(domain, waveNumber) {
+  const info = loadWaveAssignments(domain, waveNumber);
+  for (const assignment of info.assignments) {
+    if (!assignment.context_budget || assignment.context_budget.attempt_log_required !== true) {
+      continue;
+    }
+    seedTechniqueAttempt(domain, {
+      wave: info.wave,
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+    });
+  }
+}
+
 function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
@@ -5344,6 +5363,7 @@ test("bob_apply_wave_merge returns pending without mutating state when handoffs 
       content: "# A1",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const before = fs.readFileSync(statePath(domain), "utf8");
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5576,6 +5596,7 @@ test("bob_apply_wave_merge adds surface_status: complete surfaces to state.explo
       summary: "Surface tested; one endpoint marked requeue while triaging others, then closed.",
       content: "# A1",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5647,6 +5668,7 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       "[2026-01-01T00:00:01Z] OUT-OF-SCOPE (http_scan): api.other.example (url: https://api.other.example/admin)",
     ].join("\n"));
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -6001,6 +6023,7 @@ test("deep wave merge records handoff surface leads but leaves automatic promoti
         score: 78,
       }],
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6125,6 +6148,7 @@ test("bob_apply_wave_merge requeues unfinished coverage without treating tested 
       });
     }
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -6200,6 +6224,7 @@ test("bob_apply_wave_merge force-merges missing and invalid handoffs and compute
       summary: "A3 partial.",
       content: "# A3",
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6280,6 +6305,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     let fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
@@ -6301,6 +6327,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
@@ -6337,6 +6364,7 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6355,6 +6383,7 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "marker repeated" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
@@ -6383,6 +6412,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker profile required" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6403,6 +6433,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker still missing" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].identifier_hint, "attacker");
@@ -6430,6 +6461,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "balance gate requires funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6447,6 +6479,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "still no funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "funded_wallet_missing");
@@ -6599,6 +6632,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no profile" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6616,6 +6650,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "still none" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
 
     const eventsResult = readPipelineEvents(domain);
@@ -6716,6 +6751,7 @@ test("bob_clear_terminal_block lets a re-blocked surface start fresh recurrence 
         { kind: "auth_missing", identifier_hint: "attacker", reason: "blocker reappeared" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 3);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 3, force_merge: false }));
     // After the clear, history is RETAINED but the loop detector ignores
     // entries from waves <= cleared_at_wave (which was 2). Wave 3's
@@ -7699,6 +7735,7 @@ test("tokenized wave handoffs require the correct token and report verified prov
     assert.equal(handoffs.data.handoffs[0].summary, "Tested the assigned surface.");
     assert.deepEqual(handoffs.data.handoffs[0].chain_notes, ["No chainable primitive found."]);
 
+    seedWaveTechniqueAttempts(domain, 1);
     const merged = await executeTool("bob_apply_wave_merge", {
       target_domain: domain,
       wave_number: 1,
@@ -9020,6 +9057,7 @@ test("bob_wave_handoff_status reports complete when all assigned handoffs exist"
       content: "# A2",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 1 }));
 
     assert.deepEqual(status, {
@@ -9074,6 +9112,7 @@ test("markdown-only handoffs do not satisfy readiness or advance merges", () => 
       summary: "Structured handoff summary.",
       content: "# structured handoff",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -9167,6 +9206,7 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       waf_blocked_endpoints: ["/admin", " /reports "],
       lead_surface_ids: ["surface-c", "surface-d"],
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 2 }));
 

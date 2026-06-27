@@ -96,6 +96,7 @@
   "test/installer-bounty-tool-rewrite.test.js",
   "test/command-exists.test.js",
   "test/agent-run-merge-gate.test.js",
+  "test/agent-run-start-recording.test.js",
   "test/claim-clusters-priors-saturation.test.js",
   "test/cross-stack-brief-composition.test.js",
   "test/dashboard.test.js",
