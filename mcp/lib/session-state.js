@@ -71,6 +71,7 @@ const {
 } = require("./scope.js");
 const {
   parseLabAuthorization,
+  labBootstrapPolicyViolation,
   recordLabAuthorization,
 } = require("./lab-target-attest.js");
 const {
@@ -202,11 +203,12 @@ function initSession(args) {
   // fail-closed). When present, a loopback/RFC1918 target_domain that the
   // public-DNS gate would reject is permitted for this session only.
   const labAuthorization = parseLabAuthorization(args.lab_authorization);
-  if (labAuthorization && args.block_internal_hosts === true) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      "lab_authorization cannot be combined with block_internal_hosts: an attested private target requires internal-host egress to be reachable",
-    );
+  // Both lab POLICY constraints (no block_internal_hosts, default egress only) are enforced through
+  // the shared validator so this handler and the pre-handler authority gate (session-authority.js)
+  // stay in lockstep — a gate "allowed" must never become a handler reject.
+  const labPolicyViolation = labBootstrapPolicyViolation(args, labAuthorization);
+  if (labPolicyViolation) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, labPolicyViolation.message);
   }
   let domain;
   try {
@@ -238,17 +240,9 @@ function initSession(args) {
   const requestedEgressProfile = args.egress_profile == null
     ? "default"
     : assertNonEmptyString(args.egress_profile, "egress_profile");
-  // A lab attestation certifies the operator owns the private target on their
-  // OWN network. A non-default (proxy-backed) egress profile would route the
-  // scan through the proxy's network instead — turning an attested private
-  // target into a private-address scan from someone else's vantage. Require
-  // direct egress so the scan originates from the attested lab network.
-  if (labAuthorization && requestedEgressProfile !== "default") {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      "lab_authorization requires the default (direct) egress profile: a proxy-backed egress would scan the attested private target from the proxy's network, not the operator's lab network",
-    );
-  }
+  // (The lab_authorization + non-default-egress rejection — why a proxy-backed egress would scan the
+  // attested private target from the proxy's network rather than the operator's lab — is enforced at
+  // the top via labBootstrapPolicyViolation, the same validator the authority gate uses.)
 
   return withSessionLock(domain, () => {
     const dir = sessionDir(domain);
