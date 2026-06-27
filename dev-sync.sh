@@ -90,15 +90,14 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/.hacker-bob/bypass-tables/"*.txt "$BOB_DIR/bypass-tables/"
 
   mkdir -p "$TARGET_ABS/mcp/lib"
-  # Copy the top-level mcp/ runtime files from the SAME manifest the shipped installer uses
-  # (scripts/install.js MCP_TOP_LEVEL_RUNTIME_FILES) so dev and ship never skew on which files are
-  # runtime. browser-driver.js — the Patchright driver server.js spawns — is in that manifest; its
-  # earlier omission is the gap this fix closes. (dev-sync still copies only the targeted runtime set,
-  # not the full install: lib/body-resolvers/ + the offensive-image lock are out of scope here.)
-  mcp_runtime_files=$(node -e "process.stdout.write(require('$SCRIPT_DIR/scripts/install.js').MCP_TOP_LEVEL_RUNTIME_FILES.join(' '))")
-  for mcp_runtime_file in $mcp_runtime_files; do
-    cp "$SCRIPT_DIR/mcp/$mcp_runtime_file" "$TARGET_ABS/mcp/"
-  done
+  # Top-level mcp/ runtime files. scripts/install.js MCP_TOP_LEVEL_RUNTIME_FILES is the canonical,
+  # test-enforced list (install-smoke.test.js pins it == the real top-level mcp/*.js); keep these in
+  # step with it. browser-driver.js — the Patchright driver server.js spawns — is the file the installer
+  # historically missed; dev-sync must copy it too so a dev workspace gets the current driver.
+  cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
   rm -rf "$TARGET_ABS/mcp/lib/tools"
   mkdir -p "$TARGET_ABS/mcp/lib/tools"

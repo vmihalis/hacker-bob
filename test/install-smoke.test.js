@@ -55,10 +55,17 @@ test("installer copies a require-able complete MCP runtime", () => {
       .filter((name) => name.endsWith(".js") && fs.statSync(path.join(dir, name)).isFile())
       .sort();
     const manifest = [...MCP_TOP_LEVEL_RUNTIME_FILES].sort();
+    // Drift guard: the manifest must list exactly the real top-level mcp/*.js, so a NEW runtime file
+    // (as browser-driver.js once was) or a deletion forces a manifest update instead of silently
+    // shipping the wrong set — the drift that froze the operational driver.
     assert.deepEqual(topLevelJs(path.join(ROOT, "mcp")), manifest,
       "MCP_TOP_LEVEL_RUNTIME_FILES must equal the real top-level mcp/*.js — update the manifest when a runtime file is added/removed");
-    assert.deepEqual(topLevelJs(path.join(workspace, "mcp")), manifest,
-      "installer must copy EXACTLY the manifest top-level mcp/*.js — no dropped runtime file, no stray");
+    // Ship guard: every manifest runtime file is installed. A SUPERSET check, not equality — the
+    // installer never deletes target files it did not place, so it must not assert the target holds
+    // ONLY these (a user's own top-level mcp/*.js is legitimately preserved).
+    for (const name of manifest) {
+      assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `installer must copy top-level mcp/${name}`);
+    }
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "egress-profiles.js")));
@@ -548,12 +555,12 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
   }
 });
 
-test("reinstall removes a stale top-level mcp/ runtime file no longer in the manifest", () => {
-  // Codex: the manifest copy alone leaves a top-level runtime .js an OLDER version shipped (later
-  // renamed/dropped) lingering on a reinstall — the same stale-file hazard this PR fixes one level up.
-  // The installer removes stale top-level *.js before copying, so a reinstall converges to the manifest.
-  const { MCP_TOP_LEVEL_RUNTIME_FILES } = require("../scripts/install.js");
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-stale-"));
+test("reinstall preserves a user-owned top-level mcp/ file Bob did not place", () => {
+  // Codex/glm round-4: the installer must NEVER delete a top-level mcp/*.js it did not place — the
+  // target is the user's project. (An earlier "converge to the manifest" cleanup deleted by negation,
+  // which would destroy user files; reverted.) A Bob runtime file later renamed/removed lingers
+  // harmlessly; a user's own file is preserved across reinstalls.
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-userfile-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));
   const workspace = path.join(tempRoot, "workspace");
   fs.mkdirSync(workspace, { recursive: true });
@@ -564,14 +571,11 @@ test("reinstall removes a stale top-level mcp/ runtime file no longer in the man
   });
   try {
     install();
-    const stale = path.join(workspace, "mcp", "legacy-driver.js");
-    fs.writeFileSync(stale, "// stale top-level runtime file from an older install\n");
-    assert.ok(fs.existsSync(stale));
+    const userFile = path.join(workspace, "mcp", "my-own-mcp-thing.js");
+    fs.writeFileSync(userFile, "// a file the user placed in their own mcp/ dir\n");
     install(); // reinstall over the existing workspace
-    assert.ok(!fs.existsSync(stale), "reinstall must remove a stale top-level mcp/ runtime .js not in the manifest");
-    for (const name of MCP_TOP_LEVEL_RUNTIME_FILES) {
-      assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `reinstall must keep manifest file mcp/${name}`);
-    }
+    assert.ok(fs.existsSync(userFile), "reinstall must NOT delete a top-level mcp/ file Bob did not place");
+    assert.ok(fs.existsSync(path.join(workspace, "mcp", "browser-driver.js")), "reinstall still refreshes Bob's runtime");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });

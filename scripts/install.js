@@ -376,20 +376,14 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
-  // On a REINSTALL the target mcp/ may carry a top-level runtime .js from an older version the current
-  // manifest no longer lists (a renamed/dropped file). Remove those stale top-level .js FIRST so a
-  // reinstall CONVERGES to exactly the manifest — the same stale-lingering hazard this fix closes, one
-  // level up (Codex). Scoped to top-level *.js files only; lib/ + node_modules/ are directories managed
-  // by their own copies below.
-  for (const name of fs.readdirSync(mcpDir)) {
-    if (!name.endsWith(".js") || MCP_TOP_LEVEL_RUNTIME_FILES.includes(name)) continue;
-    const candidate = path.join(mcpDir, name);
-    if (fs.statSync(candidate).isFile()) fs.rmSync(candidate, { force: true });
-  }
-  // Copy the top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest
-  // (deny-by-default — a stray top-level mcp/*.js never ships; the manifest's completeness vs the
-  // real dir is test-enforced, so a forgotten new runtime file fails CI rather than silently freezing
-  // the operational copy). lib/ + its subdirs are copied separately below.
+  // Copy Bob's top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest.
+  // copyFile OVERWRITES, so a reinstall refreshes a stale prior version — that is what fixes the frozen
+  // browser-driver.js this PR is about. We deliberately do NOT delete other top-level mcp/*.js: the
+  // install target is the user's project and may hold files Bob never placed, so deleting by negation
+  // would destroy them (Codex/glm round-4). A Bob runtime file later renamed/removed lingers harmlessly
+  // (server.js never require()s it). The manifest is the single source of truth; install-smoke.test.js
+  // pins it EQUAL to the real top-level mcp/*.js, so a NEW runtime file can't be silently forgotten —
+  // the drift that hid browser-driver.js. lib/ + its subdirs are copied separately below.
   for (const file of MCP_TOP_LEVEL_RUNTIME_FILES) {
     copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
   }
