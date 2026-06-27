@@ -283,6 +283,14 @@ test("session-authority bootstrap threads lab_authorization for an operator-atte
         target_domain: "127.0.0.1", target_url: "http://10.9.9.9:8899/", lab_authorization: { private_targets: true },
       }));
 
+      // (e) gate ⊆ handler: the gate now mirrors the handler's lab POLICY checks via the shared
+      // validator (no split-brain), so an attested lab init the handler would reject — lab auth +
+      // block_internal_hosts, or lab auth + a non-default egress profile — is also rejected AT THE GATE.
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: true }));
+      assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), egress_profile: "proxy-eu" }));
+
       // A public target is unaffected by any of this (labAuthorization is null for it).
       process.env.BOB_LAB_TARGET_ACK = ACK;
       process.env.BOB_LAB_TARGET = "127.0.0.1";

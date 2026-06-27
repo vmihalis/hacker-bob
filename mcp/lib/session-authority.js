@@ -17,6 +17,7 @@ const {
 } = require("./scope.js");
 const {
   parseLabAuthorization,
+  labBootstrapPolicyViolation,
 } = require("./lab-target-attest.js");
 const {
   normalizeSessionStateDocument,
@@ -852,13 +853,28 @@ function authorizeBootstrap(rule, args) {
       match: true,
     });
   }
-  // Operator-attested lab/private-target escape: the handler (session-state.js)
-  // threads lab_authorization into assertHttpScopeDomain, but this pre-handler
-  // bootstrap gate runs FIRST and must thread it too — otherwise a fresh private
-  // lab init deadlocks (the persisted lab-authorization.json the fallback reads
-  // is only written by the handler this gate would block). parseLabAuthorization
+  // Operator-attested lab/private-target escape: this pre-handler bootstrap gate runs FIRST, so it
+  // must enforce the SAME rules the initSession handler does — otherwise a fresh private-lab init
+  // either deadlocks (scope) or the gate decision diverges from execution (policy). It threads
+  // lab_authorization through the scope checks (assertHttpScopeDomain/validateHttpScanScope) AND runs
+  // the handler's lab POLICY checks via the SHARED labBootstrapPolicyViolation, so gate-validation ⊆
+  // handler-validation holds (a gate "allowed" is never a handler reject — important the day a
+  // fast-path trusts this decision instead of always re-reaching the handler). parseLabAuthorization
   // still requires the operator env ack, so non-lab targets are unaffected.
   const labAuthorization = parseLabAuthorization(args.lab_authorization);
+  // Policy check BEFORE the scope normalization, mirroring the handler's order (block_internal is
+  // checked before assertHttpScopeDomain there) so the gate and handler surface the same error first.
+  const labPolicyViolation = labBootstrapPolicyViolation(args, labAuthorization);
+  if (labPolicyViolation) {
+    throw blockedDecision(rule, args, {
+      errorCode: labPolicyViolation.code,
+      envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+      message: labPolicyViolation.message,
+      authorityTargetDomain: null,
+      sessionPresent: false,
+      match: false,
+    });
+  }
   const authorityTargetDomain = normalizeArgumentTarget(rule, args, { labAuthorization });
   if (!hasUrl) {
     throw blockedDecision(rule, args, {

@@ -146,6 +146,35 @@ function labTargetPermitted(host, { authorization } = {}) {
   return operatorAuthorizedLabHost(host);
 }
 
+// The two POLICY constraints an operator-attested lab init must satisfy, factored into ONE place so
+// the pre-handler authority gate (session-authority.js authorizeBootstrap) and the initSession
+// handler (session-state.js) enforce IDENTICAL rules — no split-brain where the gate returns
+// "allowed" for a lab init the handler then rejects. Returns a {code, message} violation descriptor
+// or null; each caller throws it in its own form (the handler a ToolError, the gate a blockedDecision).
+function labBootstrapPolicyViolation(args, labAuthorization) {
+  if (!labAuthorization) return null;
+  // (1) An attested private target needs internal-host egress to be reachable, so it cannot be
+  // combined with an explicit block_internal_hosts:true.
+  if (args && args.block_internal_hosts === true) {
+    return {
+      code: "lab_authorization_block_internal_conflict",
+      message: "lab_authorization cannot be combined with block_internal_hosts: an attested private target requires internal-host egress to be reachable",
+    };
+  }
+  // (2) A proxy-backed egress would scan the attested private target from the proxy's network, not
+  // the operator's lab network — require the default (direct) egress profile.
+  const egress = args && typeof args.egress_profile === "string" && args.egress_profile.trim()
+    ? args.egress_profile.trim()
+    : "default";
+  if (egress !== "default") {
+    return {
+      code: "lab_authorization_requires_default_egress",
+      message: "lab_authorization requires the default (direct) egress profile: a proxy-backed egress would scan the attested private target from the proxy's network, not the operator's lab network",
+    };
+  }
+  return null;
+}
+
 // Read the persisted, audit-graded attestation for a target's session. Returns
 // the normalized authorization or null. FAIL CLOSED on any read/parse error
 // (missing file, malformed JSON, forged shape). Lazy-require paths/storage to
@@ -199,6 +228,7 @@ module.exports = {
   labTargetEligibleHost,
   parseLabAuthorization,
   labTargetPermitted,
+  labBootstrapPolicyViolation,
   labAuthorizationForTarget,
   recordLabAuthorization,
 };
