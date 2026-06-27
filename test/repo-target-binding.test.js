@@ -269,6 +269,20 @@ test("session-authority bootstrap threads lab_authorization for an operator-atte
       process.env.BOB_LAB_TARGET = "127.0.0.1";
       assert.throws(() => authorizeToolCall(initSessionTool, labArgs()));
 
+      // (d) SSRF-pivot guard — THE case this fix first activates: WITH the full attestation for
+      // 127.0.0.1, a target_url whose HOST differs from the attested target_domain must STILL be
+      // blocked. Opening the private dispatch path must not become a pivot to a neighbouring RFC1918
+      // host or the cloud-metadata endpoint (validateHttpScanScope's url-drift check is independent
+      // of the lab eligibility relaxation).
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://169.254.169.254:8899/", lab_authorization: { private_targets: true },
+      }));
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://10.9.9.9:8899/", lab_authorization: { private_targets: true },
+      }));
+
       // A public target is unaffected by any of this (labAuthorization is null for it).
       process.env.BOB_LAB_TARGET_ACK = ACK;
       process.env.BOB_LAB_TARGET = "127.0.0.1";
