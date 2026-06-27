@@ -416,16 +416,36 @@ test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NO
 
 // ───────────────────────── AC-2 (provenance + cardinality) ──────────────────────────
 
-test("AC-2 cardinality: a multi-endpoint surface refuses to confirm", () => withTempHome(async () => {
+test("AC-2 cardinality: a surface where path_template matches MULTIPLE recorded endpoints refuses to confirm (ambiguous)", () => withTempHome(async () => {
   const domain = "idor-multi-endpoint.example.test";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  // BOTH /api/accounts/<id> and /api/accounts/other match path_template /api/accounts/{id}: the bound
+  // target is ambiguous, so the producer refuses rather than guess which endpoint to confirm.
   seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain), {
     endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`],
   });
   seedSyntheticProfiles(domain);
   ensureHandoffSigningKey(domain);
-  await assert.rejects(() => run(domain), /single-endpoint/);
+  await assert.rejects(() => run(domain), /matches more than one recorded endpoint/);
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("AC-2 cardinality: a multi-endpoint single-host surface (collection + item) FIRES, bound to the matched item endpoint", () => withTempHome(async () => {
+  // Real discovery bundles BOTH the collection (/api/accounts) and the item (/api/accounts/{id}) route
+  // under one surface — the case the first live orchestrated run hit ("non-fire on endpoint_count=3").
+  // path_template matches ONLY the item endpoint (the collection has fewer segments) → exactly one match,
+  // same single host → the producer binds to the item endpoint and fires (no longer rejected on count).
+  const domain = "idor-multi-endpoint-fires.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts`] });
+  const result = await run(domain);
+
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  // row.target is pinned to the path_template-MATCHED item endpoint, never the collection.
+  assert.equal(rows[0].target, canonicalizeExploitTarget(endpointFor(domain)));
 }));
 
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {

@@ -73,6 +73,7 @@ const {
 const {
   findRoutedSurface,
   candidateSurfaceEndpoints,
+  pathTemplateMatchesEndpoint,
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
@@ -819,27 +820,36 @@ function profileHasProvenance(profile) {
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────
 
-// GAP A: v1 is scoped to single-endpoint, single-host surfaces. row.target is
-// pinned to that single endpoint, never agent free-text.
-function assertSingleEndpointSingleHost(surface, stateOrigin) {
+// GAP A (relaxed for multi-endpoint surfaces): v1 confirms single-HOST surfaces. A surface may record
+// MULTIPLE endpoints (real discovery bundles a collection + item routes under one surface), but they
+// must ALL resolve to ONE origin, and the agent-supplied path_template must bind to exactly ONE recorded
+// endpoint — that matched endpoint is returned as the bound target, so row.target stays pinned to a
+// server-RECORDED endpoint (the same one resolveBaselineFromSurface selects), never agent free-text.
+function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const endpoints = candidateSurfaceEndpoints(surface);
-  if (endpoints.length !== 1) {
+  if (endpoints.length === 0) {
     rejectInvalidArguments(
-      "bob_http_idor_confirm v1 only confirms single-endpoint surfaces; this surface records more than one endpoint.",
-      { code: "idor_producer_surface_not_single_endpoint", endpoint_count: endpoints.length },
+      "bob_http_idor_confirm requires a surface with at least one recorded endpoint.",
+      { code: "idor_producer_surface_no_endpoint", endpoint_count: 0 },
     );
   }
-  // Count the origin(s) the surface's endpoint actually LIVES on — an absolute
-  // endpoint resolves to its OWN origin (which may be an in-scope subdomain of the
-  // session base), a relative endpoint to the session origin — PLUS any surface.hosts.
-  // Do NOT seed the bare session origin the way resolveSurfaceOrigins does, or a single
-  // endpoint on a subdomain would falsely count as two hosts and be rejected.
-  const origins = new Set();
-  for (const { value } of endpoints) {
+  // Resolve an endpoint value to its URL: absolute → its OWN origin (may be an in-scope subdomain),
+  // relative → the session origin. Returns null for an unparseable / non-http(s) value.
+  const resolveUrl = (value) => {
     try {
       const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? new URL(value) : new URL(value, stateOrigin);
-      if (u.protocol === "http:" || u.protocol === "https:") origins.add(u.origin);
+      if (u.protocol === "http:" || u.protocol === "https:") return u;
     } catch {}
+    return null;
+  };
+  // SINGLE HOST: every endpoint PLUS any surface.hosts must collapse to ONE origin — so a relative
+  // endpoint and a DIFFERENT declared host can never split the target across origins. Do NOT seed the
+  // bare session origin the way resolveSurfaceOrigins does, or an endpoint on an in-scope subdomain
+  // would falsely count as two.
+  const origins = new Set();
+  for (const { value } of endpoints) {
+    const u = resolveUrl(value);
+    if (u) origins.add(u.origin);
   }
   if (Array.isArray(surface.hosts)) {
     let protocol = "https:";
@@ -852,10 +862,25 @@ function assertSingleEndpointSingleHost(surface, stateOrigin) {
   if (origins.size !== 1) {
     rejectInvalidArguments(
       "bob_http_idor_confirm v1 only confirms single-host surfaces; this surface resolves to more than one origin.",
-      { code: "idor_producer_surface_not_single_endpoint", origin_count: origins.size },
+      { code: "idor_producer_surface_not_single_host", origin_count: origins.size },
     );
   }
-  return { endpoint: endpoints[0], origin: [...origins][0] };
+  // Bind to the ONE recorded endpoint whose path matches path_template (the SAME selection
+  // resolveBaselineFromSurface makes via pathTemplateMatchesEndpoint). >1 match is ambiguous and is
+  // rejected here; 0 matches is left to resolveBaselineFromSurface's AC-2 rejection right after, so the
+  // caller still gets its precise "path_template ... does not match any recorded endpoint" message.
+  const templatePath = String(pathTemplate).split("?")[0];
+  const matched = endpoints.filter(({ value }) => {
+    const u = resolveUrl(value);
+    return u ? pathTemplateMatchesEndpoint(templatePath, u.pathname) : false;
+  });
+  if (matched.length > 1) {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm: path_template matches more than one recorded endpoint on this single-host surface; cannot bind an unambiguous target.",
+      { code: "idor_producer_surface_ambiguous_endpoint", match_count: matched.length },
+    );
+  }
+  return { endpoint: matched[0] || endpoints[0], origin: [...origins][0] };
 }
 
 // ── the P0–P6 canary runner ──────────────────────────────────────────────────
@@ -1198,12 +1223,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // Resolve + route the surface; AC-2 cardinality (GAP A, mint condition #22).
   const { surface } = findRoutedSurface(domain, surfaceId);
   const stateOrigin = originFromState(domain, state, TOOL_ID);
-  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleEndpointSingleHost
-  // already rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared
-  // host can never reach here), but we capture the single origin and bind the live create + probes to it
-  // explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't point
-  // a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
-  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleEndpointSingleHost(surface, stateOrigin);
+  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleHostBoundEndpoint
+  // rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared host can
+  // never reach here) and binds boundEndpoint to the ONE recorded endpoint that path_template matches
+  // (rejecting an ambiguous >1-match). We capture the single origin and bind the live create + probes to
+  // it explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't
+  // point a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
+  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
   // "path_template path shape does not match any recorded endpoint" unless the
@@ -2113,7 +2139,7 @@ module.exports = {
   mintCanary,
   pathHasConcreteParentInstance,
   IDOR_PROVISION_ENV,
-  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleEndpointSingleHost
+  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleHostBoundEndpoint
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the
   // mint-condition gates (those live in idorConfirm), so re-exporting it would give an
   // internal caller a gate-bypassing signed-row path. Keep the row builder private to the
