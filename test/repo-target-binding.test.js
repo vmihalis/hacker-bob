@@ -232,6 +232,58 @@ test("session-authority bootstrap still accepts url-only arguments (regression)"
   });
 });
 
+test("session-authority bootstrap threads lab_authorization for an operator-attested private target (regression)", () => {
+  // REGRESSION (found by the first full orchestrated lab run): the pre-handler bootstrap gate runs
+  // BEFORE the handler and must thread lab_authorization through assertHttpScopeDomain/
+  // validateHttpScanScope exactly as the handler does. Before the fix it ran first WITHOUT it and
+  // hard-deadlocked a fresh private-lab init (the persisted lab-authorization.json the fallback reads
+  // is only written by the very handler this gate was blocking). Direct initSession() harnesses never
+  // caught it because they bypass this gate; only a real MCP dispatch exercises it.
+  withTempHome(() => {
+    const ACK = "i-own-and-am-authorized-to-test-these-private-targets";
+    const prevAck = process.env.BOB_LAB_TARGET_ACK;
+    const prevHost = process.env.BOB_LAB_TARGET;
+    const labArgs = () => ({
+      target_domain: "127.0.0.1",
+      target_url: "http://127.0.0.1:8899/",
+      lab_authorization: { private_targets: true },
+    });
+    try {
+      // Full operator attestation: env ack + THIS exact host bound + in-call intent → ALLOWED.
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      const ok = authorizeToolCall(initSessionTool, labArgs());
+      assert.equal(ok.authority_result, "allowed");
+      assert.equal(ok.authority_target_domain, "127.0.0.1");
+
+      // Fail-closed, all three ways — the relaxation is ONLY for the attested host:
+      // (a) no in-call intent (lab_authorization) → blocked even with the env ack.
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://127.0.0.1:8899/",
+      }));
+      // (b) env ack names a DIFFERENT host → this host is not authorized.
+      process.env.BOB_LAB_TARGET = "10.9.9.9";
+      assert.throws(() => authorizeToolCall(initSessionTool, labArgs()));
+      // (c) no env ack at all → blocked regardless of the in-call intent.
+      delete process.env.BOB_LAB_TARGET_ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, labArgs()));
+
+      // A public target is unaffected by any of this (labAuthorization is null for it).
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      const pub = authorizeToolCall(initSessionTool, {
+        target_domain: "example.com", target_url: "https://example.com/",
+      });
+      assert.equal(pub.authority_result, "allowed");
+      assert.equal(pub.authority_target_domain, "example.com");
+    } finally {
+      if (prevAck === undefined) delete process.env.BOB_LAB_TARGET_ACK; else process.env.BOB_LAB_TARGET_ACK = prevAck;
+      if (prevHost === undefined) delete process.env.BOB_LAB_TARGET; else process.env.BOB_LAB_TARGET = prevHost;
+    }
+  });
+});
+
 test("bob_init_session refuses target_repo with a redirect pointer", () => {
   withTempHome(() => {
     const repoPath = makeTempRepoDir();

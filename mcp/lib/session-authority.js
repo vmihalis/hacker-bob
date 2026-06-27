@@ -16,6 +16,9 @@ const {
   validateHttpScanScope,
 } = require("./scope.js");
 const {
+  parseLabAuthorization,
+} = require("./lab-target-attest.js");
+const {
   normalizeSessionStateDocument,
 } = require("./session-state-contracts.js");
 
@@ -569,7 +572,7 @@ function shadowDecision(error, tool, rule) {
   };
 }
 
-function normalizeArgumentTarget(rule, args) {
+function normalizeArgumentTarget(rule, args, opts = {}) {
   if (rule.target_domain !== "required") {
     return null;
   }
@@ -592,7 +595,7 @@ function normalizeArgumentTarget(rule, args) {
     return trimmed;
   }
   try {
-    const normalized = assertHttpScopeDomain(args.target_domain);
+    const normalized = assertHttpScopeDomain(args.target_domain, opts);
     args.target_domain = normalized;
     return normalized;
   } catch (error) {
@@ -849,7 +852,14 @@ function authorizeBootstrap(rule, args) {
       match: true,
     });
   }
-  const authorityTargetDomain = normalizeArgumentTarget(rule, args);
+  // Operator-attested lab/private-target escape: the handler (session-state.js)
+  // threads lab_authorization into assertHttpScopeDomain, but this pre-handler
+  // bootstrap gate runs FIRST and must thread it too — otherwise a fresh private
+  // lab init deadlocks (the persisted lab-authorization.json the fallback reads
+  // is only written by the handler this gate would block). parseLabAuthorization
+  // still requires the operator env ack, so non-lab targets are unaffected.
+  const labAuthorization = parseLabAuthorization(args.lab_authorization);
+  const authorityTargetDomain = normalizeArgumentTarget(rule, args, { labAuthorization });
   if (!hasUrl) {
     throw blockedDecision(rule, args, {
       errorCode: "normalization_failed",
@@ -861,7 +871,7 @@ function authorizeBootstrap(rule, args) {
     });
   }
   try {
-    validateHttpScanScope(args.target_url, authorityTargetDomain);
+    validateHttpScanScope(args.target_url, authorityTargetDomain, { labAuthorization });
   } catch (error) {
     throw blockedDecision(rule, args, {
       errorCode: "target_url_drift",
