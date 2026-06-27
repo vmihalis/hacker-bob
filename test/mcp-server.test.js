@@ -3471,6 +3471,109 @@ test("completion-depth gate is forgery-closed: a hand-written verified_pass whos
   }));
 });
 
+// D1comp: a cross-stack composition verified_pass is PATH-keyed, never in verified_by_finding,
+// so the completion gate must credit the offensive CAUSE surface of a re-verified cross-stack
+// flip via verified_cross_stack_path_surface_refs (re-derived at read time from MAC-resolved
+// bind leaves). Mints a REAL bound cross-stack verified_pass whose offensive cause is surfaceId.
+async function seedCrossStackComposition(domain, surfaceId, findingId) {
+  const crypto = require("node:crypto");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/lib/claims.js");
+  const { verifyCompositionPath } = require("../mcp/lib/composition-live-verifier.js");
+  const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/lib/paths.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
+  const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
+  const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, ...opts });
+
+  const causeRunId = `${findingId}-web-cause`;
+  const consumedBytes = Buffer.from("forged-relay-payload:0xdeadbeef", "utf8");
+  const consumedHash = crypto.createHash("sha256").update(consumedBytes).digest("hex");
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  fs.writeFileSync(surfaceRoutesPath(domain), JSON.stringify({ version: 1, route_version: 1, routes: [
+    { surface_id: surfaceId, surface_type: "web", capability_pack: "web", capability_pack_version: 1, evaluator_agent: "evaluator-agent", brief_profile: "web" },
+    { surface_id: "surface:evm-b", surface_type: "smart_contract", capability_pack: "smart_contract_evm", capability_pack_version: 1, evaluator_agent: "evaluator-evm-agent", brief_profile: "smart_contract_evm" },
+  ] }));
+  const row = {
+    version: 1, target_domain: domain, run_id: causeRunId, tool_id: "bob_http_idor_confirm",
+    target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+    offensive_outcome: "exploited_safely", dry_run: false, timed_out: false,
+    command_hash: "1".repeat(64), exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+    demonstrated_severity: "high", surface_id: surfaceId, consumed_artifact_hash: consumedHash, container_isolated: true,
+  };
+  signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  fs.mkdirSync(path.dirname(offensiveRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  fs.writeFileSync(path.join(offensiveRunsDir(domain), `${causeRunId}.consumed`), consumedBytes);
+  appendCandidateClaim({
+    target_domain: domain, title: `cross-stack finding ${findingId}`,
+    summary: "web cause scoped to the effect finding for the fail-closed finding-scope gate",
+    severity: "high", status: "candidate", surface_ids: [surfaceId], payload: { finding: { id: findingId } },
+  });
+  const evmPositive = seedInvariantRunRow(domain, { findingId, outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true, causeRunId, consumedArtifactHash: consumedHash });
+  const evmControl = seedInvariantRunRow(domain, { findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true });
+  appendDecoyCapture(domain);
+  const decoyArm = seedInvariantRunRow(domain, {
+    findingId, outcome: "test_passed", treeRef: evmPositive.tree_ref, checkoutKind: evmPositive.checkout_kind,
+    contractName: evmPositive.contract_name, functionName: evmPositive.function_name,
+    executionContextHash: evmPositive.execution_context_hash, slotValues: evmPositive.slot_values,
+    sign: true, causeRunId: DECOY_RUN_ID, consumedArtifactHash: DECOY_HASH,
+  });
+  const res = await verifyCompositionPath(
+    {
+      target_domain: domain, base_url: `https://${domain}`,
+      path: [{
+        edge_type: "web_seeds_evm_state_corruption",
+        positive_run_ref: { ledger: "invariant_runs", row_id: evmPositive.run_hash },
+        control_run_ref: { ledger: "invariant_runs", row_id: evmControl.run_hash },
+        cause_run_ref: { ledger: "offensive_runs", row_id: causeRunId },
+        decoy_run_ref: { ledger: "invariant_runs", row_id: decoyArm.run_hash },
+        decoy_cause_run_ref: { ledger: "offensive_runs", row_id: DECOY_RUN_ID },
+      }],
+    },
+    { httpScanFn: () => { throw new Error("bind path must not fetch"); } },
+  );
+  assert.equal(res.result, "verified_pass");
+}
+
+test("completion-depth gate clears a complete cross-stack offensive surface bound to a re-verified composition verified_pass (no coverage)", () => withTempHome(() => withIsolatedSigner(async () => {
+  const domain = "example.com";
+  const SURFACE = "surface:web-a";
+  const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: SURFACE, hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: SURFACE }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain, title: "web cause for cross-stack", severity: "high", cwe: "CWE-639",
+    endpoint: "/api/billing/1", description: "Web cause feeding an EVM state corruption.",
+    proof_of_concept: "poc", response_evidence: "evidence", impact: "PII.", validated: true,
+    wave: "w1", agent: "a1", surface_id: SURFACE,
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain, wave: "w1", agent: "a1", surface_id: SURFACE,
+    surface_status: "complete", handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete", content: "# Handoff\n\nbody",
+  }));
+
+  // RED — complete, recorded finding never executed, no coverage, no composition.
+  const before = completionDepthGapForCompleteSurfaces(domain);
+  assert.equal(before.missing.length, 1);
+  assert.equal(before.missing[0].surface_id, SURFACE);
+
+  // A genuine bound cross-stack composition verified_pass whose offensive CAUSE is SURFACE
+  // (a distinct finding from the handoff's F-1; the gate credits the SURFACE, not the finding).
+  await seedCrossStackComposition(domain, SURFACE, "F-2");
+
+  // GREEN — credited via offensive:surface:web-a in verified_cross_stack_path_surface_refs.
+  assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+})));
+
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";

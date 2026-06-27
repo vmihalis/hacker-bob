@@ -1764,8 +1764,10 @@ function readCandidateClaims(targetDomain) {
 // the report's "surface tested" prose. This is the GRADE-time home (post-verification,
 // where the verifier-owned verified rows already exist); an evaluation-time gate would
 // deadlock because evaluators cannot mint verified rows. Cross-stack composition proofs
-// are path-keyed (no verified_by_finding), so a cross-stack surface clears here via its
-// cell coverage; binding composition path_hashes to the finding is a follow-up. Returns
+// are path-keyed (no verified_by_finding); a re-verified cross-stack flip is credited to
+// its offensive CAUSE surface via verified_cross_stack_path_surface_refs (re-derived from
+// MAC-resolved bind leaves), so such a surface clears on the executed differential even
+// without a coverage row. Returns
 // { missing: [{ surface_id, finding_id, reason }] }; the grade door fails closed on a
 // non-empty missing[].
 function completionDepthGapForCompleteSurfaces(domain) {
@@ -1818,6 +1820,31 @@ function completionDepthGapForCompleteSurfaces(domain) {
     } catch { /* missing/unreadable ledger contributes nothing to the executed set */ }
   }
 
+  // (a-executed, cross-stack arm) composition verified_pass rows are PATH-keyed, not
+  // finding-keyed, so they never appear in verified_by_finding above. But a re-verified
+  // CROSS-STACK composition flip binds its offensive CAUSE surface_ids, and that binding is
+  // re-derived at read time: verified_cross_stack_path_surface_refs is built ONLY from rows
+  // whose bind leaves MAC-resolve and re-adjudicate (reverifyCrossStackLeaf — a failing leaf
+  // excludes the whole row), and the offensive: prefix originates from the MAC-verified
+  // offensive row's surface_id, never a hand-written field. So an offensive surface that
+  // participated in a re-verified cross-stack differential has an executed-differential
+  // basis for completion even with no coverage row of its own. (The effect SC arm carries no
+  // surface_id ref, so a complete SC effect surface still requires its own basis — the
+  // conservative, fail-closed direction.)
+  const compositionExecutedSurfaces = new Set();
+  try {
+    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
+    const surfaceRefsByHash = readCompositionVerifiedSummary(domain).verified_cross_stack_path_surface_refs || {};
+    for (const refs of Object.values(surfaceRefsByHash)) {
+      if (!Array.isArray(refs)) continue;
+      for (const ref of refs) {
+        if (typeof ref === "string" && ref.startsWith("offensive:")) {
+          compositionExecutedSurfaces.add(ref.slice("offensive:".length));
+        }
+      }
+    }
+  } catch { /* missing/unreadable composition-verified contributes nothing */ }
+
   const { bypassAttemptHasSubstance } = require("./wave-handoff-contracts.js");
 
   // Aggregate evidence per complete surface — a surface may be re-tested across waves,
@@ -1834,7 +1861,8 @@ function completionDepthGapForCompleteSurfaces(domain) {
     const hasCoverage = (coverageBySurface.get(surfaceId) || 0) > 0;
     const findings = findingsBySurface.get(surfaceId) || [];
     const hasExecuted = findings.some((findingId) => executedFindings.has(findingId));
-    if (hasBypass || hasCoverage || hasExecuted) continue;
+    const hasCompositionExecuted = compositionExecutedSurfaces.has(surfaceId);
+    if (hasBypass || hasCoverage || hasExecuted || hasCompositionExecuted) continue;
     missing.push({
       surface_id: surfaceId,
       finding_id: findings.length > 0 ? findings[0] : null,
