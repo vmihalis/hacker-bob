@@ -16,6 +16,20 @@ const { commandExists } = require("./lib/command-exists.js");
 
 const BOB_RESOURCE_DIR = ".hacker-bob";
 const NEUTRAL_INSTALL_SCHEMA_VERSION = 2;
+
+// The top-level mcp/ runtime files the installer ships (server.js loads/spawns each). An EXPLICIT
+// manifest, NOT a glob: deny-by-default so a stray top-level mcp/*.js (a scratch/test file) never
+// ships to every install. Completeness is enforced mechanically by test/install-smoke.test.js, which
+// asserts this set EQUALS the real top-level mcp/*.js on disk — so a NEW runtime file (as
+// browser-driver.js, the Patchright DRIVER_SCRIPT_PATH server.js spawns, once was) that is added to
+// mcp/ but forgotten here FAILS the test instead of silently freezing the operational copy (the drift
+// that broke the offensive mass-read producer's authed_fetch transport while older commands worked).
+const MCP_TOP_LEVEL_RUNTIME_FILES = Object.freeze([
+  "server.js",
+  "auto-signup.js",
+  "redaction.js",
+  "browser-driver.js",
+]);
 const RESOURCE_SETS = Object.freeze([
   {
     name: "bypassTables",
@@ -362,16 +376,13 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
-  // Copy EVERY top-level mcp/ runtime file via a glob, NOT a hardcoded list. The original list
-  // ["server.js", "auto-signup.js", "redaction.js"] silently omitted browser-driver.js — the
-  // Patchright subprocess server.js spawns as DRIVER_SCRIPT_PATH (mcp/browser-driver.js; top-level,
-  // so the lib/*.js copy below also misses it). That froze the operational driver: the older
-  // bob_browser_* commands kept working but the newer set_auth_cookies/authed_fetch (#155) the
-  // offensive mass-read producer drives threw browser_transport_error. A glob makes any NEW top-level
-  // runtime file ship automatically instead of silently — the drift that hid this bug. (Top-level
-  // mcp/ holds only these runtime .js files; lib/ + node_modules/ are directories, which
-  // copyDirFiles skips by design, and are copied explicitly below.)
-  copyDirFiles(path.join(sourceRoot, "mcp"), mcpDir, (name) => name.endsWith(".js"));
+  // Copy the top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest
+  // (deny-by-default — a stray top-level mcp/*.js never ships; the manifest's completeness vs the
+  // real dir is test-enforced, so a forgotten new runtime file fails CI rather than silently freezing
+  // the operational copy). lib/ + its subdirs are copied separately below.
+  for (const file of MCP_TOP_LEVEL_RUNTIME_FILES) {
+    copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
+  }
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
   copyDirFiles(path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
   // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
@@ -619,6 +630,7 @@ function printInstallSummary(summary) {
 
 module.exports = {
   BOB_RESOURCE_DIR,
+  MCP_TOP_LEVEL_RUNTIME_FILES,
   NEUTRAL_INSTALL_SCHEMA_VERSION,
   RESOURCE_SETS,
   commandExists,

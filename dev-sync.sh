@@ -90,10 +90,12 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/.hacker-bob/bypass-tables/"*.txt "$BOB_DIR/bypass-tables/"
 
   mkdir -p "$TARGET_ABS/mcp/lib"
-  # Glob every top-level mcp/ runtime .js (server, auto-signup, redaction, browser-driver) — a glob,
-  # NOT a hardcoded list, so a new top-level runtime file (as browser-driver.js once was — the
-  # Patchright driver server.js spawns) ships automatically instead of silently freezing the
-  # operational copy. Mirrors install.js.
+  # Copy every top-level mcp/ runtime .js (server, auto-signup, redaction, browser-driver — the
+  # Patchright driver server.js spawns; its earlier omission is what this fix addresses). dev-sync is
+  # the LOCAL test-workspace dev path, so a glob is fine here; the shipped installer
+  # (scripts/install.js) uses an explicit, test-enforced manifest instead. dev-sync intentionally does
+  # NOT fully mirror install.js — it omits e.g. lib/body-resolvers/ and the offensive-image lock,
+  # which are out of scope for a dev test workspace.
   cp "$SCRIPT_DIR/mcp/"*.js "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
   rm -rf "$TARGET_ABS/mcp/lib/tools"

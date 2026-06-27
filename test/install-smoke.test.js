@@ -44,18 +44,21 @@ test("installer copies a require-able complete MCP runtime", () => {
     const installedServer = path.join(workspace, "mcp", "server.js");
     assert.ok(fs.existsSync(installedServer));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
-    // The installer copies EVERY top-level mcp/ runtime .js via a glob. Assert the INSTALLED set
-    // covers the SOURCE set so a new top-level runtime file can never be silently dropped again:
-    // the omission of browser-driver.js (the Patchright DRIVER_SCRIPT_PATH server.js spawns) is
-    // exactly what froze the operational driver and broke the authed_fetch transport (#155) while
-    // the older bob_browser_* commands kept working.
-    const sourceMcpDir = path.join(__dirname, "..", "mcp");
-    const sourceTopLevelJs = fs.readdirSync(sourceMcpDir)
-      .filter((name) => name.endsWith(".js") && fs.statSync(path.join(sourceMcpDir, name)).isFile());
-    assert.ok(sourceTopLevelJs.includes("browser-driver.js"), "source mcp/ must contain the Patchright driver this guard protects");
-    for (const name of sourceTopLevelJs) {
-      assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `installer must copy top-level mcp/${name}`);
-    }
+    // The installer ships an EXPLICIT manifest of top-level mcp/ runtime files (deny-by-default).
+    // Guard BOTH regressions the manifest-vs-glob review raised:
+    //  (1) the manifest EQUALS the real source top-level mcp/*.js — a NEW runtime file (as
+    //      browser-driver.js, the DRIVER_SCRIPT_PATH server.js spawns, once was) or a DELETION makes
+    //      manifest != source and fails here, closing the silent-drift gap that broke authed_fetch (#155);
+    //  (2) the INSTALLED top-level mcp/*.js EQUALS the manifest — a dropped OR a stray file fails too.
+    const { MCP_TOP_LEVEL_RUNTIME_FILES } = require("../scripts/install.js");
+    const topLevelJs = (dir) => fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".js") && fs.statSync(path.join(dir, name)).isFile())
+      .sort();
+    const manifest = [...MCP_TOP_LEVEL_RUNTIME_FILES].sort();
+    assert.deepEqual(topLevelJs(path.join(ROOT, "mcp")), manifest,
+      "MCP_TOP_LEVEL_RUNTIME_FILES must equal the real top-level mcp/*.js — update the manifest when a runtime file is added/removed");
+    assert.deepEqual(topLevelJs(path.join(workspace, "mcp")), manifest,
+      "installer must copy EXACTLY the manifest top-level mcp/*.js — no dropped runtime file, no stray");
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "egress-profiles.js")));
