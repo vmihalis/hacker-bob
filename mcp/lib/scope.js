@@ -29,6 +29,32 @@ let publicSuffixOverlayCache = {
   overlay: null,
 };
 
+// OPERATOR-ARMED CROSS-HOST ROAM (default OFF). When the operator sets
+// BOB_HTTP_ROAM_AUTHORIZED=<target_domain> (target-bound, exactly like the IDOR live arm
+// BOB_IDOR_PROVISION_AUTHORIZED), validateHttpScanScope stops rejecting a URL whose host is OUTSIDE the
+// session's target_domain — so Bob may follow an engagement off the apex (OAuth IdP, CDN, redirect/SSRF
+// chain, sibling app) when the operator has explicitly authorized it for THIS target. The env is the
+// deliberate out-of-band gate: a confined MCP/Bash agent cannot set the server's process.env (the same
+// boundary as the row-MAC key + the IDOR arm), so this is an operator decision, not an agent one.
+//
+// SCOPE OF THE RELAXATION — deliberately narrow:
+//  - Target-bound: roam is authorized ONLY for the session whose target_domain EQUALS the env value, so
+//    arming one engagement never silently relaxes another.
+//  - The lab-attested private-target path is NOT relaxed (it returns BEFORE this check), so an attested
+//    192.168/127.0.0.1 session can never be roamed onto 169.254.169.254 or a LAN neighbour.
+//  - block_internal_hosts is a SEPARATE policy enforced at DNS resolution (safe-fetch.js resolveSafeAddress),
+//    NOT here — so roam relaxes the target-DOMAIN boundary only; internal/metadata IPs stay blocked unless
+//    the operator ALSO disables block_internal_hosts. Roam ≠ SSRF-to-internal.
+const ROAM_AUTHORIZED_ENV = "BOB_HTTP_ROAM_AUTHORIZED";
+
+function roamAuthorizedForTarget(targetDomain) {
+  const armed = process.env[ROAM_AUTHORIZED_ENV];
+  if (typeof armed !== "string" || !armed.trim()) return false;
+  const domain = typeof targetDomain === "string" ? targetDomain.trim().toLowerCase() : "";
+  if (!domain) return false;
+  return armed.trim().toLowerCase() === domain;
+}
+
 function normalizeDnsHostToAscii(value, fieldName) {
   const raw = String(value || "").trim().replace(/\.+$/, "");
   if (!raw) throw new Error(`${fieldName} is required`);
@@ -283,6 +309,25 @@ function validateHttpScanScope(url, targetDomain, opts = {}) {
   }
 
   if (!isFirstPartyHost(host, domain)) {
+    // OPERATOR-ARMED ROAM (default OFF): if the operator armed BOB_HTTP_ROAM_AUTHORIZED=<target_domain>
+    // for THIS session, allow the cross-host URL instead of rejecting it. The lab-attested path above
+    // already returned, so this never relaxes an attested private target; block_internal_hosts (enforced
+    // separately at DNS resolution in safe-fetch.js) still blocks internal/metadata IPs. The roamed host
+    // is described from ITS OWN public-suffix info so the audit shows exactly where the request went.
+    if (roamAuthorizedForTarget(domain)) {
+      const roamedSuffixInfo = publicSuffixInfoForHost(host);
+      return {
+        allowed: true,
+        scope_decision: "allowed",
+        reason: "operator_armed_roam",
+        host,
+        target_domain: domain,
+        registrable_domain: roamedSuffixInfo.registrable_domain,
+        public_suffix: roamedSuffixInfo.public_suffix,
+        public_suffix_source: roamedSuffixInfo.public_suffix_source,
+        psl_overlay_file: roamedSuffixInfo.psl_overlay_file,
+      };
+    }
     const domainSuffixInfo = publicSuffixInfoForHost(domain);
     throw makeScopeBlockedError(
       `URL host ${host} is outside target_domain ${domain}`,
@@ -350,11 +395,13 @@ function filterExclusionsByHosts(entries, hosts, cap = 100) {
 }
 
 module.exports = {
+  ROAM_AUTHORIZED_ENV,
   assertHttpScopeDomain,
   filterExclusionsByHosts,
   normalizeScopeExclusionToken,
   publicSuffixInfoForHost,
   readScopeExclusions,
   resolveHttpScanTargetDomain,
+  roamAuthorizedForTarget,
   validateHttpScanScope,
 };

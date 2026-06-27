@@ -130,6 +130,23 @@ By default Bob's scope kernel rejects any non-public target — bare IPs, loopba
 
 All three are required. Without the env vars the declaration alone does nothing, and the grant is **bound to the host(s) named in `BOB_LAB_TARGET`** — so an active session cannot be turned against a neighboring private host. Only IPv4 loopback (`127.0.0.0/8`) and RFC1918 (`10/8`, `172.16/12`, `192.168/16`) are eligible; IPv6, link-local (`169.254/16`), cloud-metadata, and `.internal`/`.local` names are never eligible even with the attestation. The attestation is recorded as an audit-graded session artifact, pins scope to that one host, and requires the default (direct) egress profile.
 
+### Cross-host roam (following an engagement off the apex)
+
+By default Bob's scope kernel rejects any URL whose host is **outside** the session's `target_domain` ("URL host … is outside target_domain …"), so an authorized scan of `target.com` cannot wander onto an unrelated host. When an engagement legitimately spans hosts you are authorized to test (an OAuth/SSO identity provider, a CDN/asset host, a sibling app, or a redirect/SSRF chain you may follow), the **operator** can arm cross-host roam out-of-band — the agent cannot arm it for itself (it never sets the server's environment):
+
+```text
+export BOB_HTTP_ROAM_AUTHORIZED=target.com   # the session's exact target_domain
+```
+
+This is **default-off** and **target-bound**: roam is authorized only for the session whose `target_domain` equals the value, so arming one engagement never relaxes another. When armed, an out-of-`target_domain` request is allowed and recorded with `scope_decision: allowed, reason: operator_armed_roam` (every roamed host stays visible in the audit). One scope chokepoint covers the HTTP tools, the browser driver (navigate / authed_fetch), and redirect-following.
+
+Two boundaries are deliberately **not** relaxed by roam:
+
+- **Attested lab targets stay pinned.** A `BOB_LAB_TARGET` session remains locked to its exact attested host even if roam is armed — a loopback/RFC1918 session can never pivot to `169.254.169.254` or a LAN neighbour.
+- **Internal/metadata hosts stay blocked.** `block_internal_hosts` is a separate DNS-resolution policy; roam relaxes the *target-domain* boundary only. To also reach internal IPs you must separately disable `block_internal_hosts` — roam alone is not SSRF-to-internal.
+
+Only arm roam when the engagement's scope explicitly authorizes the other hosts.
+
 ## Lifecycle States
 
 A `/bob-evaluate` run advances through six lifecycle states driven by `bob_advance_session(to_state)`:

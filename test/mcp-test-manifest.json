@@ -2,6 +2,7 @@
   "test/mcp-server.test.js",
   "test/wave-merge-friction-mechanization.test.js",
   "test/lab-target-attest.test.js",
+  "test/operator-armed-roam.test.js",
   "test/pii-detector.test.js",
   "test/auto-signup-pii-gate.test.js",
   "test/pipeline-events.test.js",
