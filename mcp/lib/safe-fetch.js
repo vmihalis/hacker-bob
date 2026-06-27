@@ -6,6 +6,7 @@ const https = require("https");
 const net = require("net");
 const {
   isBlockedInternalHost,
+  isFirstPartyHost,
   shouldBlockInternalHosts,
   validateScanUrl,
 } = require("./url-surface.js");
@@ -33,6 +34,21 @@ function makeScopeBlockedError(message) {
   const error = new Error(message);
   error.scope_decision = "blocked";
   return error;
+}
+
+// On a cross-SITE redirect (the next host is not first-party to the scoped target — e.g. a host reached
+// via operator-armed roam), drop target-bound credentials so the original site's Cookie/Authorization are
+// never replayed to a different site. Standard browser behaviour; load-bearing now that roam can let a
+// redirect cross hosts (Codex P1). A same-site redirect (a first-party subdomain) keeps its headers.
+function stripCredentialHeaders(headers) {
+  if (!headers || typeof headers !== "object") return headers;
+  const cleaned = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = String(name).toLowerCase();
+    if (lower === "authorization" || lower === "cookie") continue;
+    cleaned[name] = value;
+  }
+  return cleaned;
 }
 
 function assertSafeRequestUrl(url, targetDomain, options = {}) {
@@ -337,12 +353,14 @@ async function safeFetch(url, options = {}) {
   let currentUrl = String(url);
   let currentMethod = String(options.method || "GET").toUpperCase();
   let currentBody = options.body;
+  let currentHeaders = options.headers;
   let redirects = 0;
 
   while (true) {
     assertSafeRequestUrl(currentUrl, targetDomain, { blockInternalHosts });
     const response = await requestOnce(currentUrl, {
       ...options,
+      headers: currentHeaders,
       blockInternalHosts,
       method: currentMethod,
       body: currentBody,
@@ -364,6 +382,15 @@ async function safeFetch(url, options = {}) {
 
     const nextUrl = new URL(location, currentUrl).toString();
     assertSafeRequestUrl(nextUrl, targetDomain, { blockInternalHosts });
+    // Cross-SITE redirect (a roamed host that is not first-party to the scoped target): strip target-bound
+    // credentials before the next hop so the original site's Cookie/Authorization never reach it.
+    if (targetDomain) {
+      let nextHost = "";
+      try { nextHost = new URL(nextUrl).hostname; } catch { nextHost = ""; }
+      if (nextHost && !isFirstPartyHost(nextHost, targetDomain)) {
+        currentHeaders = stripCredentialHeaders(currentHeaders);
+      }
+    }
     redirects += 1;
     const normalized = normalizeRedirectMethod(response.status, currentMethod, currentBody);
     currentMethod = normalized.method;
@@ -383,4 +410,5 @@ module.exports = {
   isRedirectStatus,
   normalizeRedirectMethod,
   safeFetch,
+  stripCredentialHeaders,
 };

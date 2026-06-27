@@ -143,9 +143,10 @@ This is **default-off** and **target-bound**: roam is authorized only for the se
 Two boundaries are deliberately **not** relaxed by roam:
 
 - **Attested lab targets stay pinned.** A `BOB_LAB_TARGET` session remains locked to its exact attested host even if roam is armed — a loopback/RFC1918 session can never pivot to `169.254.169.254` or a LAN neighbour.
-- **Internal/metadata hosts stay blocked.** `block_internal_hosts` is a separate DNS-resolution policy; roam relaxes the *target-domain* boundary only. To also reach internal IPs you must separately disable `block_internal_hosts` — roam alone is not SSRF-to-internal.
+- **Roam reaches PUBLIC hosts only — never internal/metadata.** Roam authorizes cross-host to other registrable **public DNS** hosts; an IP literal, loopback, RFC1918/link-local, cloud-metadata (`169.254.169.254`), or a non-public name (`.internal`/`.local`/bare host) is **never** roamable — even if `block_internal_hosts` is off. The browser-navigate path disables `block_internal_hosts` and leans entirely on this scope kernel, so roam holds that line itself: it is never an SSRF-to-internal primitive.
+- **Credentials are not replayed across sites.** On a redirect to a roamed (non-first-party) host, `Cookie`/`Authorization` are stripped, so an authenticated first-party scan that follows a 302 off-site never sends the target's credentials to the other host.
 
-Only arm roam when the engagement's scope explicitly authorizes the other hosts.
+A roamed request is recorded with `scope_reason: operator_armed_roam` in the HTTP audit. Only arm roam when the engagement's scope explicitly authorizes the other hosts.
 
 ## Lifecycle States
 

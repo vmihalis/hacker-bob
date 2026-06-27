@@ -18,6 +18,8 @@ const {
   LAB_TARGET_ACK_ENV,
   LAB_TARGET_HOST_ENV,
 } = require("../mcp/lib/lab-target-attest.js");
+const { stripCredentialHeaders } = require("../mcp/lib/safe-fetch.js");
+const { isFirstPartyHost } = require("../mcp/lib/url-surface.js");
 
 const TARGET = "vu.nl";
 const CROSS_HOST_URL = "https://attacker.example.org/x"; // host outside vu.nl; registrable example.org
@@ -104,6 +106,70 @@ test("CRITICAL: an attested LAB target is NOT roamed off even with roam armed (n
     if (prevHost === undefined) delete process.env[LAB_TARGET_HOST_ENV];
     else process.env[LAB_TARGET_HOST_ENV] = prevHost;
   }
+});
+
+test("CRITICAL: roam armed for a PUBLIC target does NOT reach an internal/metadata host", () => {
+  // The SSRF case the browser navigate path (blockInternalHosts:false) leans ENTIRELY on this kernel to
+  // block. Roam authorizes cross-host to other PUBLIC hosts only — an IP literal / internal name is not
+  // public, so it falls through to the cross-host block even with roam armed for the public target.
+  withRoamEnv(TARGET, () => {
+    assert.throws(
+      () => validateHttpScanScope("http://169.254.169.254/latest/meta-data/", TARGET),
+      /outside target_domain/,
+      "cloud-metadata IP must stay blocked under roam",
+    );
+    for (const u of [
+      "http://127.0.0.1/",          // loopback
+      "http://10.0.0.5/",           // RFC1918
+      "http://[::1]/",              // IPv6 loopback
+      "http://metadata.internal/",  // non-public name
+      "http://printer.local/",      // non-public name
+      "http://intranet/",           // bare host, no public suffix
+    ]) {
+      assert.throws(() => validateHttpScanScope(u, TARGET), undefined, `must stay blocked under roam: ${u}`);
+    }
+  });
+});
+
+test("roam matches an IDN target armed in its Unicode form (normalized to punycode)", () => {
+  // assertHttpScopeDomain normalizes the session domain to ASCII before validateHttpScanScope sees it;
+  // the arm must normalize the same way so the operator can arm with the Unicode name.
+  const PUNY = "xn--85x722f.com.cn"; // 食狮.com.cn
+  withRoamEnv("食狮.com.cn", () => {
+    assert.equal(validateHttpScanScope(CROSS_HOST_URL, PUNY).reason, "operator_armed_roam");
+  });
+});
+
+// ── P1 #2: roamed redirects must not carry the target's credentials ──────────────────────────────────
+
+test("safeFetch strips Cookie + Authorization (case-insensitive) and keeps other headers", () => {
+  const out = stripCredentialHeaders({
+    Cookie: "sid=secret",
+    authorization: "Bearer a",
+    AUTHORIZATION: "Bearer b",
+    "User-Agent": "bob",
+    Accept: "application/json",
+  });
+  assert.equal(out.Cookie, undefined);
+  assert.equal(out.authorization, undefined);
+  assert.equal(out.AUTHORIZATION, undefined);
+  assert.equal(out["User-Agent"], "bob");
+  assert.equal(out.Accept, "application/json");
+});
+
+test("stripCredentialHeaders is null/empty safe", () => {
+  assert.equal(stripCredentialHeaders(null), null);
+  assert.equal(stripCredentialHeaders(undefined), undefined);
+  assert.deepEqual(stripCredentialHeaders({}), {});
+});
+
+test("redirect cred-strip decision: a roamed cross-site host is not first-party (strip), a first-party subdomain is (keep)", () => {
+  // safeFetch strips credentials on a redirect whose host is NOT first-party to targetDomain — so a 302
+  // from the target to a roamed host never replays the target's Cookie/Authorization, while a first-party
+  // subdomain redirect keeps them. This is the predicate that gates the strip.
+  assert.equal(isFirstPartyHost("evil.example.org", "vu.nl"), false); // roamed → strip
+  assert.equal(isFirstPartyHost("api.vu.nl", "vu.nl"), true);         // first-party subdomain → keep
+  assert.equal(isFirstPartyHost("vu.nl", "vu.nl"), true);            // same host → keep
 });
 
 test("roamAuthorizedForTarget unit: empty/whitespace/mismatch false; exact (trim/case) true", () => {

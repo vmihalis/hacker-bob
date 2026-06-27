@@ -50,9 +50,16 @@ const ROAM_AUTHORIZED_ENV = "BOB_HTTP_ROAM_AUTHORIZED";
 function roamAuthorizedForTarget(targetDomain) {
   const armed = process.env[ROAM_AUTHORIZED_ENV];
   if (typeof armed !== "string" || !armed.trim()) return false;
-  const domain = typeof targetDomain === "string" ? targetDomain.trim().toLowerCase() : "";
-  if (!domain) return false;
-  return armed.trim().toLowerCase() === domain;
+  if (typeof targetDomain !== "string" || !targetDomain.trim()) return false;
+  // Normalize BOTH sides through the SAME DNS/IDNA + trailing-dot + lowercase path the target domain
+  // already passed (assertHttpScopeDomain → normalizeDnsHostToAscii), so an operator who arms the Unicode
+  // form of an IDN target (食狮.com.cn) still matches the punycode session domain (xn--85x722f.com.cn).
+  // Fail closed on a value that won't normalize.
+  try {
+    return normalizeDnsHostToAscii(armed, ROAM_AUTHORIZED_ENV) === normalizeDnsHostToAscii(targetDomain, "target_domain");
+  } catch {
+    return false;
+  }
 }
 
 function normalizeDnsHostToAscii(value, fieldName) {
@@ -315,18 +322,33 @@ function validateHttpScanScope(url, targetDomain, opts = {}) {
     // separately at DNS resolution in safe-fetch.js) still blocks internal/metadata IPs. The roamed host
     // is described from ITS OWN public-suffix info so the audit shows exactly where the request went.
     if (roamAuthorizedForTarget(domain)) {
-      const roamedSuffixInfo = publicSuffixInfoForHost(host);
-      return {
-        allowed: true,
-        scope_decision: "allowed",
-        reason: "operator_armed_roam",
-        host,
-        target_domain: domain,
-        registrable_domain: roamedSuffixInfo.registrable_domain,
-        public_suffix: roamedSuffixInfo.public_suffix,
-        public_suffix_source: roamedSuffixInfo.public_suffix_source,
-        psl_overlay_file: roamedSuffixInfo.psl_overlay_file,
-      };
+      // Roam authorizes cross-host to other PUBLIC DNS hosts ONLY. An IP literal, loopback, RFC1918 /
+      // link-local, cloud-metadata, or any non-public name is NEVER roamable — even when a caller disables
+      // block_internal_hosts (the browser navigate path passes blockInternalHosts:false and leans ENTIRELY
+      // on this kernel), so roam can never become an SSRF-to-metadata/localhost primitive. The roamed host
+      // must clear the SAME public-DNS bar assertHttpScopeDomain holds the target to (registrable domain
+      // under a public suffix); anything that fails it falls through to the cross-host block below.
+      let roamedHostIsPublic = false;
+      try {
+        assertHttpScopeDomain(host);
+        roamedHostIsPublic = true;
+      } catch {
+        roamedHostIsPublic = false;
+      }
+      if (roamedHostIsPublic) {
+        const roamedSuffixInfo = publicSuffixInfoForHost(host);
+        return {
+          allowed: true,
+          scope_decision: "allowed",
+          reason: "operator_armed_roam",
+          host,
+          target_domain: domain,
+          registrable_domain: roamedSuffixInfo.registrable_domain,
+          public_suffix: roamedSuffixInfo.public_suffix,
+          public_suffix_source: roamedSuffixInfo.public_suffix_source,
+          psl_overlay_file: roamedSuffixInfo.psl_overlay_file,
+        };
+      }
     }
     const domainSuffixInfo = publicSuffixInfoForHost(domain);
     throw makeScopeBlockedError(

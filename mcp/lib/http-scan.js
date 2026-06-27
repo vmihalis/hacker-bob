@@ -45,6 +45,12 @@ function scopeAuditFields(scopeDecision) {
   for (const field of ["registrable_domain", "public_suffix", "public_suffix_source", "psl_overlay_file"]) {
     if (scopeDecision[field] != null) fields[field] = scopeDecision[field];
   }
+  // Persist the scope-decision REASON so an audited request shows WHY it was allowed — in particular
+  // operator_armed_roam, so a roamed (cross-host) request is loud in the trail rather than an inferred
+  // diff of URL hosts (Codex P2). Same spread path as the suffix fields above.
+  if (typeof scopeDecision.reason === "string" && scopeDecision.reason) {
+    fields.scope_reason = scopeDecision.reason;
+  }
   return fields;
 }
 
