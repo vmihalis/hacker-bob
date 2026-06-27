@@ -232,6 +232,103 @@ test("session-authority bootstrap still accepts url-only arguments (regression)"
   });
 });
 
+test("session-authority bootstrap threads lab_authorization for an operator-attested private target (regression)", () => {
+  // REGRESSION (found by the first full orchestrated lab run): the pre-handler bootstrap gate runs
+  // BEFORE the handler and must thread lab_authorization through assertHttpScopeDomain/
+  // validateHttpScanScope exactly as the handler does. Before the fix it ran first WITHOUT it and
+  // hard-deadlocked a fresh private-lab init (the persisted lab-authorization.json the fallback reads
+  // is only written by the very handler this gate was blocking). Direct initSession() harnesses never
+  // caught it because they bypass this gate; only a real MCP dispatch exercises it.
+  withTempHome(() => {
+    const ACK = "i-own-and-am-authorized-to-test-these-private-targets";
+    const prevAck = process.env.BOB_LAB_TARGET_ACK;
+    const prevHost = process.env.BOB_LAB_TARGET;
+    const labArgs = () => ({
+      target_domain: "127.0.0.1",
+      target_url: "http://127.0.0.1:8899/",
+      lab_authorization: { private_targets: true },
+    });
+    try {
+      // Full operator attestation: env ack + THIS exact host bound + in-call intent → ALLOWED.
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      const ok = authorizeToolCall(initSessionTool, labArgs());
+      assert.equal(ok.authority_result, "allowed");
+      assert.equal(ok.authority_target_domain, "127.0.0.1");
+
+      // Fail-closed, all three ways — the relaxation is ONLY for the attested host:
+      // (a) no in-call intent (lab_authorization) → blocked even with the env ack.
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://127.0.0.1:8899/",
+      }));
+      // (b) env ack names a DIFFERENT host → this host is not authorized.
+      process.env.BOB_LAB_TARGET = "10.9.9.9";
+      assert.throws(() => authorizeToolCall(initSessionTool, labArgs()));
+      // (c) no env ack at all → blocked regardless of the in-call intent.
+      delete process.env.BOB_LAB_TARGET_ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, labArgs()));
+
+      // (d) SSRF-pivot guard — THE case this fix first activates: WITH the full attestation for
+      // 127.0.0.1, a target_url whose HOST differs from the attested target_domain must STILL be
+      // blocked. Opening the private dispatch path must not become a pivot to a neighbouring RFC1918
+      // host or the cloud-metadata endpoint (validateHttpScanScope's url-drift check is independent
+      // of the lab eligibility relaxation).
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://169.254.169.254:8899/", lab_authorization: { private_targets: true },
+      }));
+      assert.throws(() => authorizeToolCall(initSessionTool, {
+        target_domain: "127.0.0.1", target_url: "http://10.9.9.9:8899/", lab_authorization: { private_targets: true },
+      }));
+
+      // (e) gate ⊆ handler: the gate now mirrors the handler's lab POLICY checks via the shared
+      // validator (no split-brain), so an attested lab init the handler would reject — lab auth +
+      // block_internal_hosts, or lab auth + a non-default egress profile — is also rejected AT THE GATE.
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: true }));
+      assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), egress_profile: "proxy-eu" }));
+      // ...including the MALFORMED egress variants the handler's assertNonEmptyString rejects (empty,
+      // whitespace, number, object, array): the gate must reject them too, not coerce to "default"
+      // and allow — the validator normalizes egress identically to the handler (gate ⊆ handler).
+      for (const badEgress of ["", "   ", 42, { name: "x" }, ["proxy"]]) {
+        assert.throws(
+          () => authorizeToolCall(initSessionTool, { ...labArgs(), egress_profile: badEgress }),
+          `lab + malformed egress_profile ${JSON.stringify(badEgress)} must be blocked at the gate`,
+        );
+      }
+      // ...and the NON-BOOLEAN block_internal_hosts variants the handler's assertBoolean rejects: a
+      // truthy-but-non-boolean value must be blocked at the gate too (strict === true alone would
+      // admit it). false is fine (no conflict).
+      for (const badBlock of ["yes", 1, {}, "true"]) {
+        assert.throws(
+          () => authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: badBlock }),
+          `lab + non-boolean block_internal_hosts ${JSON.stringify(badBlock)} must be blocked at the gate`,
+        );
+      }
+      assert.equal(
+        authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: false }).authority_result,
+        "allowed",
+        "lab + block_internal_hosts:false is allowed (no conflict)",
+      );
+
+      // A public target is unaffected by any of this (labAuthorization is null for it).
+      process.env.BOB_LAB_TARGET_ACK = ACK;
+      process.env.BOB_LAB_TARGET = "127.0.0.1";
+      const pub = authorizeToolCall(initSessionTool, {
+        target_domain: "example.com", target_url: "https://example.com/",
+      });
+      assert.equal(pub.authority_result, "allowed");
+      assert.equal(pub.authority_target_domain, "example.com");
+    } finally {
+      if (prevAck === undefined) delete process.env.BOB_LAB_TARGET_ACK; else process.env.BOB_LAB_TARGET_ACK = prevAck;
+      if (prevHost === undefined) delete process.env.BOB_LAB_TARGET; else process.env.BOB_LAB_TARGET = prevHost;
+    }
+  });
+});
+
 test("bob_init_session refuses target_repo with a redirect pointer", () => {
   withTempHome(() => {
     const repoPath = makeTempRepoDir();

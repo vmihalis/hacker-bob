@@ -16,6 +16,10 @@ const {
   validateHttpScanScope,
 } = require("./scope.js");
 const {
+  parseLabAuthorization,
+  labBootstrapPolicyViolation,
+} = require("./lab-target-attest.js");
+const {
   normalizeSessionStateDocument,
 } = require("./session-state-contracts.js");
 const {
@@ -573,7 +577,7 @@ function shadowDecision(error, tool, rule) {
   };
 }
 
-function normalizeArgumentTarget(rule, args) {
+function normalizeArgumentTarget(rule, args, opts = {}) {
   if (rule.target_domain !== "required") {
     return null;
   }
@@ -596,7 +600,7 @@ function normalizeArgumentTarget(rule, args) {
     return trimmed;
   }
   try {
-    const normalized = assertHttpScopeDomain(args.target_domain);
+    const normalized = assertHttpScopeDomain(args.target_domain, opts);
     args.target_domain = normalized;
     return normalized;
   } catch (error) {
@@ -853,7 +857,31 @@ function authorizeBootstrap(rule, args) {
       match: true,
     });
   }
-  const authorityTargetDomain = normalizeArgumentTarget(rule, args);
+  // Operator-attested lab/private-target escape: this pre-handler bootstrap gate runs FIRST, so for
+  // the lab PATH it must agree with the initSession handler — otherwise a fresh private-lab init
+  // either deadlocks (scope) or the gate's lab decision diverges from execution (policy). It threads
+  // lab_authorization through the scope checks (assertHttpScopeDomain/validateHttpScanScope) AND runs
+  // the handler's two lab POLICY checks via the SHARED labBootstrapPolicyViolation (which normalizes
+  // block_internal_hosts/egress_profile with the same assertBoolean/assertNonEmptyString the handler
+  // uses) — so a gate "allowed" is never a handler reject on those lab POLICY + SCOPE grounds. It is
+  // NOT a full input validator: the handler still validates OTHER fields (e.g. allow_internal_hosts
+  // type) after the gate, so a future fast-path trusting this decision must still reach the handler
+  // for those. parseLabAuthorization requires the operator env ack, so non-lab targets are unaffected.
+  const labAuthorization = parseLabAuthorization(args.lab_authorization);
+  // Policy check BEFORE the scope normalization, mirroring the handler's order (block_internal is
+  // checked before assertHttpScopeDomain there) so the gate and handler surface the same error first.
+  const labPolicyViolation = labBootstrapPolicyViolation(args, labAuthorization);
+  if (labPolicyViolation) {
+    throw blockedDecision(rule, args, {
+      errorCode: labPolicyViolation.code,
+      envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+      message: labPolicyViolation.message,
+      authorityTargetDomain: null,
+      sessionPresent: false,
+      match: false,
+    });
+  }
+  const authorityTargetDomain = normalizeArgumentTarget(rule, args, { labAuthorization });
   if (!hasUrl) {
     throw blockedDecision(rule, args, {
       errorCode: "normalization_failed",
@@ -865,7 +893,7 @@ function authorizeBootstrap(rule, args) {
     });
   }
   try {
-    validateHttpScanScope(args.target_url, authorityTargetDomain);
+    validateHttpScanScope(args.target_url, authorityTargetDomain, { labAuthorization });
   } catch (error) {
     throw blockedDecision(rule, args, {
       errorCode: "target_url_drift",
