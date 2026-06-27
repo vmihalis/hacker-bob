@@ -44,11 +44,18 @@ test("installer copies a require-able complete MCP runtime", () => {
     const installedServer = path.join(workspace, "mcp", "server.js");
     assert.ok(fs.existsSync(installedServer));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "redaction.js")));
-    // browser-driver.js is the Patchright subprocess server.js spawns (DRIVER_SCRIPT_PATH).
-    // It is top-level mcp/, NOT lib/, so the lib/*.js copy misses it — a "complete MCP runtime"
-    // that omits it leaves every bob_browser_* tool + the authed_fetch transport (#155) broken on
-    // a fresh install/refresh. Asserting it here is the regression guard for that installer gap.
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "browser-driver.js")));
+    // The installer copies EVERY top-level mcp/ runtime .js via a glob. Assert the INSTALLED set
+    // covers the SOURCE set so a new top-level runtime file can never be silently dropped again:
+    // the omission of browser-driver.js (the Patchright DRIVER_SCRIPT_PATH server.js spawns) is
+    // exactly what froze the operational driver and broke the authed_fetch transport (#155) while
+    // the older bob_browser_* commands kept working.
+    const sourceMcpDir = path.join(__dirname, "..", "mcp");
+    const sourceTopLevelJs = fs.readdirSync(sourceMcpDir)
+      .filter((name) => name.endsWith(".js") && fs.statSync(path.join(sourceMcpDir, name)).isFile());
+    assert.ok(sourceTopLevelJs.includes("browser-driver.js"), "source mcp/ must contain the Patchright driver this guard protects");
+    for (const name of sourceTopLevelJs) {
+      assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `installer must copy top-level mcp/${name}`);
+    }
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "dispatch.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "tools", "index.js")));
     assert.ok(fs.existsSync(path.join(workspace, "mcp", "lib", "egress-profiles.js")));

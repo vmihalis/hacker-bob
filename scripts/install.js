@@ -362,15 +362,16 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
-  // browser-driver.js is the Patchright subprocess server.js spawns as DRIVER_SCRIPT_PATH
-  // (mcp/browser-driver.js — top-level, NOT under lib/, so the lib/*.js copy below misses it).
-  // It backs EVERY bob_browser_* tool plus the trusted authed_fetch transport (#155) the
-  // offensive mass-read producer drives; omitting it leaves an install/refresh frozen on
-  // whatever driver first landed, so newer driver commands (set_auth_cookies / authed_fetch)
-  // throw browser_transport_error while the older commands keep working.
-  for (const file of ["server.js", "auto-signup.js", "redaction.js", "browser-driver.js"]) {
-    copyFile(path.join(sourceRoot, "mcp", file), path.join(mcpDir, file));
-  }
+  // Copy EVERY top-level mcp/ runtime file via a glob, NOT a hardcoded list. The original list
+  // ["server.js", "auto-signup.js", "redaction.js"] silently omitted browser-driver.js — the
+  // Patchright subprocess server.js spawns as DRIVER_SCRIPT_PATH (mcp/browser-driver.js; top-level,
+  // so the lib/*.js copy below also misses it). That froze the operational driver: the older
+  // bob_browser_* commands kept working but the newer set_auth_cookies/authed_fetch (#155) the
+  // offensive mass-read producer drives threw browser_transport_error. A glob makes any NEW top-level
+  // runtime file ship automatically instead of silently — the drift that hid this bug. (Top-level
+  // mcp/ holds only these runtime .js files; lib/ + node_modules/ are directories, which
+  // copyDirFiles skips by design, and are copied explicitly below.)
+  copyDirFiles(path.join(sourceRoot, "mcp"), mcpDir, (name) => name.endsWith(".js"));
   fs.chmodSync(path.join(mcpDir, "server.js"), 0o755);
   copyDirFiles(path.join(sourceRoot, "mcp", "lib"), path.join(mcpDir, "lib"), (name) => name.endsWith(".js"));
   // The offensive arsenal image digest lockfile is operator-minted JSON data (scripts/build-offensive-image.sh).
