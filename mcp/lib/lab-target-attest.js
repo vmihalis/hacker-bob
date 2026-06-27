@@ -32,9 +32,9 @@
 // cannot self-grant a private-target scan by forging the file.
 
 const net = require("net");
-// Used so the lab-bootstrap validator normalizes egress_profile IDENTICALLY to the initSession
-// handler (validation.js is a leaf utility — no import cycle back to this module).
-const { assertNonEmptyString } = require("./validation.js");
+// Used so the lab-bootstrap validator normalizes egress_profile / block_internal_hosts IDENTICALLY
+// to the initSession handler (validation.js is a leaf utility — no import cycle back to this module).
+const { assertNonEmptyString, assertBoolean } = require("./validation.js");
 
 // Operator attestation channel. The ack is an ENVIRONMENT variable, NOT a tool
 // argument: a model that can call bob_init_session must not be able to authorize
@@ -149,20 +149,36 @@ function labTargetPermitted(host, { authorization } = {}) {
   return operatorAuthorizedLabHost(host);
 }
 
-// The two POLICY constraints an operator-attested lab init must satisfy, factored into ONE place so
-// the pre-handler authority gate (session-authority.js authorizeBootstrap) and the initSession
-// handler (session-state.js) enforce IDENTICAL rules — no split-brain where the gate returns
-// "allowed" for a lab init the handler then rejects. Returns a {code, message} violation descriptor
-// or null; each caller throws it in its own form (the handler a ToolError, the gate a blockedDecision).
+// The two lab POLICY constraints an operator-attested lab init must satisfy — no block_internal_hosts,
+// and the default (direct) egress — factored into ONE place so the pre-handler authority gate
+// (session-authority.js authorizeBootstrap) and the initSession handler (session-state.js) decide
+// these two THE SAME WAY, normalizing the two fields they read (block_internal_hosts, egress_profile)
+// with the same assertBoolean/assertNonEmptyString the handler uses. Scope note: this is the lab
+// POLICY layer ONLY — it is NOT a full input validator. Validation of OTHER fields (allow_internal_hosts
+// type, target_url/target_domain shape beyond scope, future handler checks) stays handler-side and is
+// reached after the gate; a fast-path that trusts a gate "allowed" must still run the handler for those.
+// Returns a {code, message} violation descriptor or null; each caller throws it in its own form (the
+// handler a ToolError, the gate a blockedDecision).
 function labBootstrapPolicyViolation(args, labAuthorization) {
   if (!labAuthorization) return null;
   // (1) An attested private target needs internal-host egress to be reachable, so it cannot be
-  // combined with an explicit block_internal_hosts:true.
-  if (args && args.block_internal_hosts === true) {
-    return {
+  // combined with block_internal_hosts. Normalize the flag with the SAME assertBoolean the handler's
+  // deriveBlockInternalHostsPolicy uses (throws on a non-boolean) — caught as a violation so a
+  // truthy-but-non-boolean value (e.g. "yes") is rejected at the gate too, not silently admitted.
+  if (args && args.block_internal_hosts != null) {
+    const blockInternalConflict = {
       code: "lab_authorization_block_internal_conflict",
       message: "lab_authorization cannot be combined with block_internal_hosts: an attested private target requires internal-host egress to be reachable",
     };
+    let blockInternal;
+    try {
+      blockInternal = assertBoolean(args.block_internal_hosts, "block_internal_hosts");
+    } catch {
+      return blockInternalConflict;
+    }
+    if (blockInternal === true) {
+      return blockInternalConflict;
+    }
   }
   // (2) A proxy-backed egress would scan the attested private target from the proxy's network, not
   // the operator's lab network — require the default (direct) egress profile. Normalize EXACTLY as

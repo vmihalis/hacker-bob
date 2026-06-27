@@ -299,6 +299,20 @@ test("session-authority bootstrap threads lab_authorization for an operator-atte
           `lab + malformed egress_profile ${JSON.stringify(badEgress)} must be blocked at the gate`,
         );
       }
+      // ...and the NON-BOOLEAN block_internal_hosts variants the handler's assertBoolean rejects: a
+      // truthy-but-non-boolean value must be blocked at the gate too (strict === true alone would
+      // admit it). false is fine (no conflict).
+      for (const badBlock of ["yes", 1, {}, "true"]) {
+        assert.throws(
+          () => authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: badBlock }),
+          `lab + non-boolean block_internal_hosts ${JSON.stringify(badBlock)} must be blocked at the gate`,
+        );
+      }
+      assert.equal(
+        authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: false }).authority_result,
+        "allowed",
+        "lab + block_internal_hosts:false is allowed (no conflict)",
+      );
 
       // A public target is unaffected by any of this (labAuthorization is null for it).
       process.env.BOB_LAB_TARGET_ACK = ACK;

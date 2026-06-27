@@ -853,14 +853,16 @@ function authorizeBootstrap(rule, args) {
       match: true,
     });
   }
-  // Operator-attested lab/private-target escape: this pre-handler bootstrap gate runs FIRST, so it
-  // must enforce the SAME rules the initSession handler does — otherwise a fresh private-lab init
-  // either deadlocks (scope) or the gate decision diverges from execution (policy). It threads
+  // Operator-attested lab/private-target escape: this pre-handler bootstrap gate runs FIRST, so for
+  // the lab PATH it must agree with the initSession handler — otherwise a fresh private-lab init
+  // either deadlocks (scope) or the gate's lab decision diverges from execution (policy). It threads
   // lab_authorization through the scope checks (assertHttpScopeDomain/validateHttpScanScope) AND runs
-  // the handler's lab POLICY checks via the SHARED labBootstrapPolicyViolation, so gate-validation ⊆
-  // handler-validation holds (a gate "allowed" is never a handler reject — important the day a
-  // fast-path trusts this decision instead of always re-reaching the handler). parseLabAuthorization
-  // still requires the operator env ack, so non-lab targets are unaffected.
+  // the handler's two lab POLICY checks via the SHARED labBootstrapPolicyViolation (which normalizes
+  // block_internal_hosts/egress_profile with the same assertBoolean/assertNonEmptyString the handler
+  // uses) — so a gate "allowed" is never a handler reject on those lab POLICY + SCOPE grounds. It is
+  // NOT a full input validator: the handler still validates OTHER fields (e.g. allow_internal_hosts
+  // type) after the gate, so a future fast-path trusting this decision must still reach the handler
+  // for those. parseLabAuthorization requires the operator env ack, so non-lab targets are unaffected.
   const labAuthorization = parseLabAuthorization(args.lab_authorization);
   // Policy check BEFORE the scope normalization, mirroring the handler's order (block_internal is
   // checked before assertHttpScopeDomain there) so the gate and handler surface the same error first.
