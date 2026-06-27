@@ -548,6 +548,36 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
   }
 });
 
+test("reinstall removes a stale top-level mcp/ runtime file no longer in the manifest", () => {
+  // Codex: the manifest copy alone leaves a top-level runtime .js an OLDER version shipped (later
+  // renamed/dropped) lingering on a reinstall — the same stale-file hazard this PR fixes one level up.
+  // The installer removes stale top-level *.js before copying, so a reinstall converges to the manifest.
+  const { MCP_TOP_LEVEL_RUNTIME_FILES } = require("../scripts/install.js");
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-stale-"));
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const install = () => execFileSync(process.execPath, [CLI, "install", workspace], {
+    cwd: ROOT,
+    env: { ...process.env, HOME: tempHome },
+    stdio: "pipe",
+  });
+  try {
+    install();
+    const stale = path.join(workspace, "mcp", "legacy-driver.js");
+    fs.writeFileSync(stale, "// stale top-level runtime file from an older install\n");
+    assert.ok(fs.existsSync(stale));
+    install(); // reinstall over the existing workspace
+    assert.ok(!fs.existsSync(stale), "reinstall must remove a stale top-level mcp/ runtime .js not in the manifest");
+    for (const name of MCP_TOP_LEVEL_RUNTIME_FILES) {
+      assert.ok(fs.existsSync(path.join(workspace, "mcp", name)), `reinstall must keep manifest file mcp/${name}`);
+    }
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("codex adapter installs direct skills and doctor checks MCP wiring", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bob-codex-adapter-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));

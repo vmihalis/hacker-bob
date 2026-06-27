@@ -376,6 +376,16 @@ function installProject(projectDir, options = {}) {
 
   const mcpDir = path.join(targetAbs, "mcp");
   fs.mkdirSync(path.join(mcpDir, "lib", "tools"), { recursive: true });
+  // On a REINSTALL the target mcp/ may carry a top-level runtime .js from an older version the current
+  // manifest no longer lists (a renamed/dropped file). Remove those stale top-level .js FIRST so a
+  // reinstall CONVERGES to exactly the manifest — the same stale-lingering hazard this fix closes, one
+  // level up (Codex). Scoped to top-level *.js files only; lib/ + node_modules/ are directories managed
+  // by their own copies below.
+  for (const name of fs.readdirSync(mcpDir)) {
+    if (!name.endsWith(".js") || MCP_TOP_LEVEL_RUNTIME_FILES.includes(name)) continue;
+    const candidate = path.join(mcpDir, name);
+    if (fs.statSync(candidate).isFile()) fs.rmSync(candidate, { force: true });
+  }
   // Copy the top-level mcp/ runtime files from the explicit MCP_TOP_LEVEL_RUNTIME_FILES manifest
   // (deny-by-default — a stray top-level mcp/*.js never ships; the manifest's completeness vs the
   // real dir is test-enforced, so a forgotten new runtime file fails CI rather than silently freezing
@@ -573,7 +583,7 @@ function printInstallSummary(summary) {
   }
   console.log(`  ${summary.bypassTables} neutral bypass tables`);
   console.log(`  ${summary.knowledge} neutral evaluator knowledge files`);
-  console.log(`  MCP runtime (mcp/server.js, auto-signup.js, redaction.js, browser-driver.js, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
+  console.log(`  MCP runtime (mcp/{${MCP_TOP_LEVEL_RUNTIME_FILES.join(", ")}}, lib/*.js, lib/tools/*.js, dependency files ${summary.runtimeDependencyFiles})`);
   console.log("  .hacker-bob/ resources");
   console.log("  .hacker-bob/VERSION and install.json");
   console.log("  ~/hacker-bob-sessions/  (legacy ~/bounty-agent-sessions/ remains readable until v2.1.0)");

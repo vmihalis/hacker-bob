@@ -90,13 +90,15 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/.hacker-bob/bypass-tables/"*.txt "$BOB_DIR/bypass-tables/"
 
   mkdir -p "$TARGET_ABS/mcp/lib"
-  # Copy every top-level mcp/ runtime .js (server, auto-signup, redaction, browser-driver — the
-  # Patchright driver server.js spawns; its earlier omission is what this fix addresses). dev-sync is
-  # the LOCAL test-workspace dev path, so a glob is fine here; the shipped installer
-  # (scripts/install.js) uses an explicit, test-enforced manifest instead. dev-sync intentionally does
-  # NOT fully mirror install.js — it omits e.g. lib/body-resolvers/ and the offensive-image lock,
-  # which are out of scope for a dev test workspace.
-  cp "$SCRIPT_DIR/mcp/"*.js "$TARGET_ABS/mcp/"
+  # Copy the top-level mcp/ runtime files from the SAME manifest the shipped installer uses
+  # (scripts/install.js MCP_TOP_LEVEL_RUNTIME_FILES) so dev and ship never skew on which files are
+  # runtime. browser-driver.js — the Patchright driver server.js spawns — is in that manifest; its
+  # earlier omission is the gap this fix closes. (dev-sync still copies only the targeted runtime set,
+  # not the full install: lib/body-resolvers/ + the offensive-image lock are out of scope here.)
+  mcp_runtime_files=$(node -e "process.stdout.write(require('$SCRIPT_DIR/scripts/install.js').MCP_TOP_LEVEL_RUNTIME_FILES.join(' '))")
+  for mcp_runtime_file in $mcp_runtime_files; do
+    cp "$SCRIPT_DIR/mcp/$mcp_runtime_file" "$TARGET_ABS/mcp/"
+  done
   cp "$SCRIPT_DIR/mcp/lib/"*.js "$TARGET_ABS/mcp/lib/"
   rm -rf "$TARGET_ABS/mcp/lib/tools"
   mkdir -p "$TARGET_ABS/mcp/lib/tools"
