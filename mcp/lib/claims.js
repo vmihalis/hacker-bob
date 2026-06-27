@@ -1729,6 +1729,101 @@ function readCandidateClaims(targetDomain) {
   );
 }
 
+// Completion-depth contract — a surface marked surface_status:complete must bind to
+// REAL work, not a bare claim. Acceptable bases are (a) an executed differential: a
+// re-derived verified_pass for one of the surface's findings, read back through the
+// finding-differential / repro / invariant summaries (each re-resolves the MAC-covered
+// SOURCE rows and re-adjudicates the flip at read time, so a hand-written verified_*
+// line whose source rows do not MAC-resolve never counts), OR (b) documented honest
+// exhaustion: at least one coverage row for the surface, OR a substantive bypass_attempt.
+// A surface closed complete on finding EXISTENCE alone — never executed, no probing,
+// no bypass — is the surface-completion masquerade: the hunter-depth "I claimed a bug
+// so the surface is done", whose harm is false exhaustion feeding coverage_closure and
+// the report's "surface tested" prose. This is the GRADE-time home (post-verification,
+// where the verifier-owned verified rows already exist); an evaluation-time gate would
+// deadlock because evaluators cannot mint verified rows. Cross-stack composition proofs
+// are path-keyed (no verified_by_finding), so a cross-stack surface clears here via its
+// cell coverage; binding composition path_hashes to the finding is a follow-up. Returns
+// { missing: [{ surface_id, finding_id, reason }] }; the grade door fails closed on a
+// non-empty missing[].
+function completionDepthGapForCompleteSurfaces(domain) {
+  const { buildWaveHandoffsDocument, listWaveAssignmentNumbers } = require("./wave-handoff-store.js");
+  let doc;
+  try {
+    doc = buildWaveHandoffsDocument(domain, listWaveAssignmentNumbers(domain));
+  } catch {
+    return { missing: [] };
+  }
+  const completeHandoffs = (doc && Array.isArray(doc.handoffs) ? doc.handoffs : [])
+    .filter((handoff) => handoff && handoff.surface_status === "complete" && handoff.surface_id);
+  if (completeHandoffs.length === 0) return { missing: [] };
+
+  // (a-honest-exhaustion) coverage rows per surface
+  const coverageBySurface = new Map();
+  try {
+    const { readCoverageRecordsFromJsonl } = require("./coverage.js");
+    for (const record of readCoverageRecordsFromJsonl(domain)) {
+      if (!record || !record.surface_id) continue;
+      coverageBySurface.set(record.surface_id, (coverageBySurface.get(record.surface_id) || 0) + 1);
+    }
+  } catch { /* no coverage ledger — surfaces fall to the executed/bypass arms */ }
+
+  // finding_ids per surface (from the recorded claims)
+  const findingsBySurface = new Map();
+  try {
+    const { findingPayloadsFromClaims } = require("./tools/record-candidate-claim.js");
+    for (const finding of findingPayloadsFromClaims(domain)) {
+      if (!finding || !finding.surface_id || !finding.id) continue;
+      if (!findingsBySurface.has(finding.surface_id)) findingsBySurface.set(finding.surface_id, []);
+      findingsBySurface.get(finding.surface_id).push(finding.id);
+    }
+  } catch { /* unreadable claims — surfaces fall to the coverage/bypass arms */ }
+
+  // (a-executed) union of re-derived verified_pass by finding across the executed ledgers.
+  // composition-verified is path-keyed (verified_by_finding absent → contributes {}).
+  const executedFindings = new Set();
+  const verifiedSummaryReaders = [
+    () => require("./finding-differential-verifier.js").readFindingDifferentialVerifiedSummary(domain),
+    () => require("./repro-replay-verifier.js").readReproVerifiedSummary(domain),
+    () => require("./invariant-runner.js").readInvariantVerifiedSummary(domain),
+  ];
+  for (const readSummary of verifiedSummaryReaders) {
+    try {
+      const byFinding = readSummary().verified_by_finding || {};
+      for (const findingId of Object.keys(byFinding)) {
+        if (byFinding[findingId]) executedFindings.add(findingId);
+      }
+    } catch { /* missing/unreadable ledger contributes nothing to the executed set */ }
+  }
+
+  const { bypassAttemptHasSubstance } = require("./wave-handoff-contracts.js");
+
+  // Aggregate evidence per complete surface — a surface may be re-tested across waves,
+  // and ANY handoff supplying a substantive bypass clears it.
+  const surfaceBypass = new Map();
+  for (const handoff of completeHandoffs) {
+    const attempts = Array.isArray(handoff.bypass_attempts) ? handoff.bypass_attempts : [];
+    if (attempts.some(bypassAttemptHasSubstance)) surfaceBypass.set(handoff.surface_id, true);
+    else if (!surfaceBypass.has(handoff.surface_id)) surfaceBypass.set(handoff.surface_id, false);
+  }
+
+  const missing = [];
+  for (const [surfaceId, hasBypass] of surfaceBypass) {
+    const hasCoverage = (coverageBySurface.get(surfaceId) || 0) > 0;
+    const findings = findingsBySurface.get(surfaceId) || [];
+    const hasExecuted = findings.some((findingId) => executedFindings.has(findingId));
+    if (hasBypass || hasCoverage || hasExecuted) continue;
+    missing.push({
+      surface_id: surfaceId,
+      finding_id: findings.length > 0 ? findings[0] : null,
+      reason: findings.length > 0
+        ? "complete_surface_finding_not_executed"
+        : "complete_surface_no_evidence",
+    });
+  }
+  return { missing };
+}
+
 module.exports = {
   CLAIMS_MAX_RECORDS,
   CLAIM_SEVERITIES,
@@ -1747,6 +1842,7 @@ module.exports = {
   reproVerifiedGapForNativeReportableFindings,
   findingDifferentialGapForStandaloneReportableFindings,
   crossStackPathGapForReportableFindings,
+  completionDepthGapForCompleteSurfaces,
   nativeCodeSurfacesForClaim,
   claimReproCommandArgv,
   claimSurfaceLanguageMap,

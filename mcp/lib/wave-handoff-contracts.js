@@ -769,6 +769,7 @@ module.exports = {
   assertBlockedHarnessConsistency,
   assertBlockedPrereqConsistency,
   assertSmartContractCompletionEvidence,
+  bypassAttemptHasSubstance,
   assignmentRequiresToken,
   attachHandoffOrigin,
   computeHandoffAssignmentHash,

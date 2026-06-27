@@ -3359,6 +3359,118 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
   }
 });
 
+// Completion-depth gate (claims.js completionDepthGapForCompleteSurfaces). A surface
+// marked surface_status:complete must bind to REAL work — a re-derived executed
+// differential for one of its findings, OR documented exhaustion (a coverage row /
+// substantive bypass) — not finding EXISTENCE alone. The grade door fails closed.
+function seedCompleteBareFinding(domain) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain,
+    wave_number: 1,
+    assignments: [{ agent: "a1", surface_id: "surface-a" }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain,
+    title: "IDOR on export",
+    severity: "high",
+    cwe: "CWE-639",
+    endpoint: "/api/export",
+    description: "Cross-account export is possible.",
+    proof_of_concept: "poc",
+    response_evidence: "evidence",
+    impact: "PII disclosure.",
+    validated: true,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+    surface_status: "complete",
+    handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete",
+    content: "# Handoff\n\nbody",
+  }));
+  return started;
+}
+
+test("completion-depth gate fires on a complete surface whose only basis is an unexecuted finding; a coverage row clears it", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+
+    const before = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(before.missing.length, 1);
+    assert.equal(before.missing[0].surface_id, "surface-a");
+    assert.equal(before.missing[0].finding_id, "F-1");
+    assert.equal(before.missing[0].reason, "complete_surface_finding_not_executed");
+
+    // Documented honest exhaustion (a coverage row) is an accepted basis.
+    JSON.parse(logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{ endpoint: "/api/export", method: "GET", bug_class: "idor", status: "tested", evidence_summary: "probed cross-account export" }],
+    }));
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate clears a complete surface when its finding carries a re-derived executed differential", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 1);
+
+    // A genuine finding-differential verified_pass (MAC-signed source rows) is the
+    // executed arm — no coverage row needed.
+    seedFindingDifferentialArm(domain, "F-1", "surface-a");
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate is forgery-closed: a hand-written verified_pass whose source rows do not MAC-resolve does not clear the surface", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+    const { appendJsonlLine } = require("../mcp/lib/storage.js");
+    seedCompleteBareFinding(domain);
+
+    // Hand-write a bare verified_pass for F-1 citing source rows that resolve to nothing.
+    // readFindingDifferentialVerifiedSummary re-derives from the MAC-covered source rows,
+    // so this forged line is excluded — the surface stays unbacked.
+    appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+      version: 1,
+      target_domain: domain,
+      finding_id: "F-1",
+      result: "verified_pass",
+      reason: "forged",
+      surface_id: "surface-a",
+      source: "offensive_runs",
+      positive_run_id: "F-1-pos",
+      positive_row_hash: "d".repeat(64),
+      control_run_id: "F-1-ctl",
+      control_row_hash: "e".repeat(64),
+    });
+
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].surface_id, "surface-a");
+    assert.equal(gap.missing[0].reason, "complete_surface_finding_not_executed");
+  }));
+});
+
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";
