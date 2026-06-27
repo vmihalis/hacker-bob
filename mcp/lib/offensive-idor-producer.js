@@ -820,11 +820,15 @@ function profileHasProvenance(profile) {
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────
 
-// GAP A (relaxed for multi-endpoint surfaces): v1 confirms single-HOST surfaces. A surface may record
-// MULTIPLE endpoints (real discovery bundles a collection + item routes under one surface), but they
-// must ALL resolve to ONE origin, and the agent-supplied path_template must bind to exactly ONE recorded
-// endpoint — that matched endpoint is returned as the bound target, so row.target stays pinned to a
-// server-RECORDED endpoint (the same one resolveBaselineFromSurface selects), never agent free-text.
+// GAP A (relaxed to SAME-COLLECTION multi-endpoint surfaces): v1 confirms single-HOST surfaces. A
+// surface may record MULTIPLE endpoints (real discovery bundles a collection + item route under one
+// surface), but they must (a) ALL resolve to ONE origin, (b) bind path_template to EXACTLY ONE recorded
+// endpoint (the returned target), and (c) ALL live under path_template's COLLECTION — so the surface
+// represents ONE resource family, never an aggregation of unrelated resources. (c) is load-bearing: the
+// downstream proof gate binds a row to a finding by surface_id, so a surface bundling /api/accounts/{id}
+// + /api/users/{id} would let an accounts IDOR proof back a users finding — the intra-surface laundering
+// the old single-endpoint guard prevented (Codex P1). row.target stays pinned to a server-RECORDED
+// endpoint (the same one resolveBaselineFromSurface selects), never agent free-text.
 function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const endpoints = candidateSurfaceEndpoints(surface);
   if (endpoints.length === 0) {
@@ -833,12 +837,20 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
       { code: "idor_producer_surface_no_endpoint", endpoint_count: 0 },
     );
   }
-  // Resolve an endpoint value to its URL: absolute → its OWN origin (may be an in-scope subdomain),
-  // relative → the session origin. Returns null for an unparseable / non-http(s) value.
+  // Resolve an endpoint to its URL: absolute → its OWN origin (may be an in-scope subdomain), a
+  // path-absolute "/x" → the session origin. Reject a "//host" network-path ref (it resolves to a
+  // FOREIGN origin, escaping the surface-host binding) exactly as urlFromEndpoint does. null = skip.
   const resolveUrl = (value) => {
+    if (typeof value !== "string") return null;
     try {
-      const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? new URL(value) : new URL(value, stateOrigin);
-      if (u.protocol === "http:" || u.protocol === "https:") return u;
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        const u = new URL(value);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
+      if (value.startsWith("/") && !value.startsWith("//")) {
+        const u = new URL(value, stateOrigin);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
     } catch {}
     return null;
   };
@@ -865,22 +877,44 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
       { code: "idor_producer_surface_not_single_host", origin_count: origins.size },
     );
   }
-  // Bind to the ONE recorded endpoint whose path matches path_template (the SAME selection
-  // resolveBaselineFromSurface makes via pathTemplateMatchesEndpoint). >1 match is ambiguous and is
-  // rejected here; 0 matches is left to resolveBaselineFromSurface's AC-2 rejection right after, so the
-  // caller still gets its precise "path_template ... does not match any recorded endpoint" message.
+  // Bind to the ONE recorded endpoint whose path matches path_template (the SAME match
+  // resolveBaselineFromSurface performs via pathTemplateMatchesEndpoint). Reject BOTH 0 and >1 HERE, so
+  // boundEndpoint is ALWAYS a genuine match — never a coincidence-safe fallback to a non-matching value.
   const templatePath = String(pathTemplate).split("?")[0];
   const matched = endpoints.filter(({ value }) => {
     const u = resolveUrl(value);
     return u ? pathTemplateMatchesEndpoint(templatePath, u.pathname) : false;
   });
-  if (matched.length > 1) {
+  if (matched.length !== 1) {
     rejectInvalidArguments(
-      "bob_http_idor_confirm: path_template matches more than one recorded endpoint on this single-host surface; cannot bind an unambiguous target.",
-      { code: "idor_producer_surface_ambiguous_endpoint", match_count: matched.length },
+      matched.length === 0
+        ? "bob_http_idor_confirm: path_template path shape does not match any recorded endpoint on this single-host surface."
+        : "bob_http_idor_confirm: path_template matches more than one recorded endpoint on this single-host surface; cannot bind an unambiguous target.",
+      {
+        code: matched.length === 0 ? "idor_producer_surface_no_matched_endpoint" : "idor_producer_surface_ambiguous_endpoint",
+        match_count: matched.length,
+      },
     );
   }
-  return { endpoint: matched[0] || endpoints[0], origin: [...origins][0] };
+  // SAME COLLECTION: every recorded endpoint must live under path_template's collection (its path with
+  // the trailing /{id} segment removed), so the surface can't aggregate UNRELATED resources whose proofs
+  // would launder across the shared surface_id (Codex P1). Segment-aware (NOT string startsWith, so
+  // /api/accounts-archive is not "under" /api/accounts).
+  const collectionSegments = templatePath.replace(/\/[^/]*$/, "").split("/").filter(Boolean);
+  const underCollection = (pathname) => {
+    const segs = pathname.split("/").filter(Boolean);
+    return collectionSegments.every((seg, index) => segs[index] === seg);
+  };
+  for (const { value } of endpoints) {
+    const u = resolveUrl(value);
+    if (!u || !underCollection(u.pathname)) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: this surface records an endpoint outside path_template's collection; it aggregates unrelated resources (intra-surface laundering risk).",
+        { code: "idor_producer_surface_aggregates_unrelated_endpoints" },
+      );
+    }
+  }
+  return { endpoint: matched[0], origin: [...origins][0] };
 }
 
 // ── the P0–P6 canary runner ──────────────────────────────────────────────────

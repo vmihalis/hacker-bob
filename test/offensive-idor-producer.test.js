@@ -448,6 +448,17 @@ test("AC-2 cardinality: a multi-endpoint single-host surface (collection + item)
   assert.equal(rows[0].target, canonicalizeExploitTarget(endpointFor(domain)));
 }));
 
+test("AC-2 (Codex P1): a surface aggregating UNRELATED endpoints (different collection) refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // path_template binds /api/accounts/{id}, but the surface ALSO records /api/users/<id> — a DIFFERENT
+  // resource (collection /api/users vs /api/accounts). The downstream proof gate binds a row to a
+  // finding by surface_id ONLY, so allowing this would let an accounts IDOR proof back a users finding.
+  // The relaxed gate requires every endpoint under path_template's collection, so it refuses.
+  const domain = "idor-aggregate-unrelated.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/users/${OBJ_B}`] });
+  await assert.rejects(() => run(domain), /aggregates unrelated resources/);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {
   const domain = "idor-multi-host.example.test";
   JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
