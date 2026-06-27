@@ -32,6 +32,9 @@
 // cannot self-grant a private-target scan by forging the file.
 
 const net = require("net");
+// Used so the lab-bootstrap validator normalizes egress_profile IDENTICALLY to the initSession
+// handler (validation.js is a leaf utility — no import cycle back to this module).
+const { assertNonEmptyString } = require("./validation.js");
 
 // Operator attestation channel. The ack is an ENVIRONMENT variable, NOT a tool
 // argument: a model that can call bob_init_session must not be able to authorize
@@ -162,15 +165,25 @@ function labBootstrapPolicyViolation(args, labAuthorization) {
     };
   }
   // (2) A proxy-backed egress would scan the attested private target from the proxy's network, not
-  // the operator's lab network — require the default (direct) egress profile.
-  const egress = args && typeof args.egress_profile === "string" && args.egress_profile.trim()
-    ? args.egress_profile.trim()
-    : "default";
+  // the operator's lab network — require the default (direct) egress profile. Normalize EXACTLY as
+  // the initSession handler does (null/undefined → "default", else assertNonEmptyString which trims
+  // and throws on a non-string/empty/whitespace value), catching that throw as a violation — so the
+  // gate rejects precisely what the handler rejects, with no "gate allowed → handler throws" gap on a
+  // malformed egress_profile (this is what makes gate-validation ⊆ handler-validation actually hold).
+  const egressViolation = {
+    code: "lab_authorization_requires_default_egress",
+    message: "lab_authorization requires the default (direct) egress profile: a proxy-backed egress would scan the attested private target from the proxy's network, not the operator's lab network",
+  };
+  let egress;
+  try {
+    egress = args == null || args.egress_profile == null
+      ? "default"
+      : assertNonEmptyString(args.egress_profile, "egress_profile");
+  } catch {
+    return egressViolation;
+  }
   if (egress !== "default") {
-    return {
-      code: "lab_authorization_requires_default_egress",
-      message: "lab_authorization requires the default (direct) egress profile: a proxy-backed egress would scan the attested private target from the proxy's network, not the operator's lab network",
-    };
+    return egressViolation;
   }
   return null;
 }

@@ -290,6 +290,15 @@ test("session-authority bootstrap threads lab_authorization for an operator-atte
       process.env.BOB_LAB_TARGET = "127.0.0.1";
       assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), block_internal_hosts: true }));
       assert.throws(() => authorizeToolCall(initSessionTool, { ...labArgs(), egress_profile: "proxy-eu" }));
+      // ...including the MALFORMED egress variants the handler's assertNonEmptyString rejects (empty,
+      // whitespace, number, object, array): the gate must reject them too, not coerce to "default"
+      // and allow — the validator normalizes egress identically to the handler (gate ⊆ handler).
+      for (const badEgress of ["", "   ", 42, { name: "x" }, ["proxy"]]) {
+        assert.throws(
+          () => authorizeToolCall(initSessionTool, { ...labArgs(), egress_profile: badEgress }),
+          `lab + malformed egress_profile ${JSON.stringify(badEgress)} must be blocked at the gate`,
+        );
+      }
 
       // A public target is unaffected by any of this (labAuthorization is null for it).
       process.env.BOB_LAB_TARGET_ACK = ACK;
