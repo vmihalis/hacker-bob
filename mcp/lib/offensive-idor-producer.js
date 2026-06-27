@@ -820,15 +820,16 @@ function profileHasProvenance(profile) {
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────
 
-// GAP A (relaxed to SAME-COLLECTION multi-endpoint surfaces): v1 confirms single-HOST surfaces. A
-// surface may record MULTIPLE endpoints (real discovery bundles a collection + item route under one
-// surface), but they must (a) ALL resolve to ONE origin, (b) bind path_template to EXACTLY ONE recorded
-// endpoint (the returned target), and (c) ALL live under path_template's COLLECTION — so the surface
-// represents ONE resource family, never an aggregation of unrelated resources. (c) is load-bearing: the
-// downstream proof gate binds a row to a finding by surface_id, so a surface bundling /api/accounts/{id}
-// + /api/users/{id} would let an accounts IDOR proof back a users finding — the intra-surface laundering
-// the old single-endpoint guard prevented (Codex P1). row.target stays pinned to a server-RECORDED
-// endpoint (the same one resolveBaselineFromSurface selects), never agent free-text.
+// GAP A (relaxed to ONE-RESOURCE multi-endpoint surfaces): v1 confirms single-HOST surfaces. A surface
+// may record MULTIPLE endpoints (real discovery records a route pattern, sampled concrete instances, and
+// the collection — e.g. the lab's ["/api/users/:id", "/api/users/1"]), but they must ALL resolve to ONE
+// origin AND describe ONE resource: only path_template's item-route forms (the collection segments + an
+// id segment, concrete OR a ":id"/"{id}" pattern) plus that route's collection are allowed. Any OTHER
+// endpoint — a sub-resource, an unrelated resource, or a query-routed sibling — fails closed, because the
+// downstream proof gate binds a row to a finding by surface_id ONLY, so a second resource on the surface
+// could launder an item proof onto a different finding (the intra-surface laundering the old
+// single-endpoint guard prevented; Codex P1). The bound target is a server-RECORDED item endpoint (the
+// same route resolveBaselineFromSurface selects), never agent free-text. See the classification below.
 function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const endpoints = candidateSurfaceEndpoints(surface);
   if (endpoints.length === 0) {
@@ -877,44 +878,77 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
       { code: "idor_producer_surface_not_single_host", origin_count: origins.size },
     );
   }
-  // Bind to the ONE recorded endpoint whose path matches path_template (the SAME match
-  // resolveBaselineFromSurface performs via pathTemplateMatchesEndpoint). Reject BOTH 0 and >1 HERE, so
-  // boundEndpoint is ALWAYS a genuine match — never a coincidence-safe fallback to a non-matching value.
+  // Classify every recorded endpoint STRUCTURALLY against path_template's shape. path_template has a
+  // single, trailing {id} slot, so the route is COLLECTION-segments + one id segment. An endpoint is an
+  // ITEM FORM of the route iff it has the same segment count AND its non-final segments equal the
+  // collection — the final segment is the id in ANY recorded form (a concrete value OR a ":id"/"{id}"
+  // route-pattern marker). Multiple item forms are the SAME route (a pattern + sampled instances), NOT
+  // distinct targets. The only OTHER endpoint allowed is the route's COLLECTION itself. Everything else
+  // fails closed, because the downstream proof gate binds a row to a finding by surface_id ONLY, so any
+  // OTHER resource sharing the surface could be laundered:
+  //   - a sub-resource (/api/accounts/{id}/settings) — a DIFFERENT, often higher-sensitivity resource;
+  //   - an unrelated resource (/api/users/{id} under /api/accounts/{id});
+  //   - a query-routed sibling (/api/items?type=invoice) — selects different data than its bare path and
+  //     would make the derived create-collection POST to a broader/different collection than recorded.
   const templatePath = String(pathTemplate).split("?")[0];
-  const matched = endpoints.filter(({ value }) => {
-    const u = resolveUrl(value);
-    return u ? pathTemplateMatchesEndpoint(templatePath, u.pathname) : false;
-  });
-  if (matched.length !== 1) {
+  const templateSegments = templatePath.split("/").filter(Boolean);
+  const collectionSegments = templateSegments.slice(0, -1);
+  const isItemForm = (segs) => segs.length === templateSegments.length
+    && collectionSegments.every((seg, index) => segs[index] === seg);
+  const isCollection = (segs) => segs.length === collectionSegments.length
+    && collectionSegments.every((seg, index) => segs[index] === seg);
+  const items = [];
+  const others = [];
+  for (const ep of endpoints) {
+    const u = resolveUrl(ep.value);
+    if (!u) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a recorded endpoint could not be resolved to an in-scope http(s) URL.",
+        { code: "idor_producer_surface_unresolvable_endpoint" },
+      );
+    }
+    const segs = u.pathname.split("/").filter(Boolean);
+    const entry = { ep, search: u.search, pathname: u.pathname, segs };
+    if (isItemForm(segs)) items.push(entry);
+    else others.push(entry);
+  }
+  // No item form at all → path_template is off-route for this surface (the AC-2 message, mirroring
+  // resolveBaselineFromSurface which rejects the same case right after).
+  if (items.length === 0) {
     rejectInvalidArguments(
-      matched.length === 0
-        ? "bob_http_idor_confirm: path_template path shape does not match any recorded endpoint on this single-host surface."
-        : "bob_http_idor_confirm: path_template matches more than one recorded endpoint on this single-host surface; cannot bind an unambiguous target.",
-      {
-        code: matched.length === 0 ? "idor_producer_surface_no_matched_endpoint" : "idor_producer_surface_ambiguous_endpoint",
-        match_count: matched.length,
-      },
+      "bob_http_idor_confirm: path_template path shape does not match any recorded endpoint on this single-host surface.",
+      { code: "idor_producer_surface_no_matched_endpoint", match_count: 0 },
     );
   }
-  // SAME COLLECTION: every recorded endpoint must live under path_template's collection (its path with
-  // the trailing /{id} segment removed), so the surface can't aggregate UNRELATED resources whose proofs
-  // would launder across the shared surface_id (Codex P1). Segment-aware (NOT string startsWith, so
-  // /api/accounts-archive is not "under" /api/accounts).
-  const collectionSegments = templatePath.replace(/\/[^/]*$/, "").split("/").filter(Boolean);
-  const underCollection = (pathname) => {
-    const segs = pathname.split("/").filter(Boolean);
-    return collectionSegments.every((seg, index) => segs[index] === seg);
-  };
-  for (const { value } of endpoints) {
-    const u = resolveUrl(value);
-    if (!u || !underCollection(u.pathname)) {
+  // With ≥1 item form, every OTHER endpoint MUST be exactly the route's collection — a sub-resource or
+  // unrelated resource means the surface aggregates more than one resource and is rejected (Codex P1).
+  for (const other of others) {
+    if (!isCollection(other.segs)) {
       rejectInvalidArguments(
-        "bob_http_idor_confirm: this surface records an endpoint outside path_template's collection; it aggregates unrelated resources (intra-surface laundering risk).",
+        "bob_http_idor_confirm: this surface records an endpoint that is neither path_template's item route nor its collection; it aggregates a different resource (intra-surface laundering risk).",
         { code: "idor_producer_surface_aggregates_unrelated_endpoints" },
       );
     }
   }
-  return { endpoint: matched[0], origin: [...origins][0] };
+  // Bind to a CONCRETE item form (one resolveBaselineFromSurface will also match via
+  // pathTemplateMatchesEndpoint) so row.target is a real recorded instance; fall back to the first item
+  // form if only a route pattern was recorded (resolveBaselineFromSurface then rejects for no concrete).
+  const boundEntry = items.find((item) => pathTemplateMatchesEndpoint(templatePath, item.pathname)) || items[0];
+  // Every NON-bound recorded endpoint must be clean path-routed. The BOUND endpoint's own query, if any,
+  // is caught downstream by the create-collection ?-guard (which returns a blocked result, reason
+  // create_collection_query_routed_endpoint — see PR-D r14). But a query-routed SIBLING (e.g. a
+  // query-routed collection) escapes that guard and could let the derived POST hit a broader/different
+  // collection than recorded — so reject it here (Codex).
+  for (const entry of [...items, ...others]) {
+    if (entry !== boundEntry && entry.search) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a non-bound recorded endpoint is query-routed; v1 confirms only clean path-routed sibling endpoints.",
+        { code: "idor_producer_surface_query_routed_endpoint" },
+      );
+    }
+  }
+  const boundEndpoint = boundEntry.ep;
+  return { endpoint: boundEndpoint, origin: [...origins][0] };
 }
 
 // ── the P0–P6 canary runner ──────────────────────────────────────────────────

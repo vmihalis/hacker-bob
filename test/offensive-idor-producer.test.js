@@ -416,18 +416,19 @@ test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NO
 
 // ───────────────────────── AC-2 (provenance + cardinality) ──────────────────────────
 
-test("AC-2 cardinality: a surface where path_template matches MULTIPLE recorded endpoints refuses to confirm (ambiguous)", () => withTempHome(async () => {
-  const domain = "idor-multi-endpoint.example.test";
-  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  // BOTH /api/accounts/<id> and /api/accounts/other match path_template /api/accounts/{id}: the bound
-  // target is ambiguous, so the producer refuses rather than guess which endpoint to confirm.
-  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain), {
-    endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`],
-  });
-  seedSyntheticProfiles(domain);
-  ensureHandoffSigningKey(domain);
-  await assert.rejects(() => run(domain), /matches more than one recorded endpoint/);
-  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+test("AC-2 cardinality: multiple recorded FORMS of the same item route (concrete instances) FIRE — not ambiguous", () => withTempHome(async () => {
+  // /api/accounts/<id> and /api/accounts/other are two concrete instances of the SAME route
+  // /api/accounts/{id} (discovery records a route pattern + sampled instances). path_template has a
+  // single trailing {id}, so every match shares the literal collection — they are one resource, not
+  // distinct targets. The producer binds the route and fires. (The lab's real IDOR surface is exactly
+  // this shape: ["/api/users/:id", "/api/users/1"].)
+  const domain = "idor-multi-form.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`] });
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(readOffensiveRunRecords(domain).length, 1);
 }));
 
 test("AC-2 cardinality: a multi-endpoint single-host surface (collection + item) FIRES, bound to the matched item endpoint", () => withTempHome(async () => {
@@ -455,8 +456,28 @@ test("AC-2 (Codex P1): a surface aggregating UNRELATED endpoints (different coll
   // The relaxed gate requires every endpoint under path_template's collection, so it refuses.
   const domain = "idor-aggregate-unrelated.example.test";
   setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/users/${OBJ_B}`] });
-  await assert.rejects(() => run(domain), /aggregates unrelated resources/);
+  await assert.rejects(() => run(domain), /aggregates a different resource|intra-surface laundering/);
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (Codex P1): a SUB-RESOURCE under the same collection refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // /api/accounts/<id>/settings is a DIFFERENT (often higher-sensitivity) resource than /api/accounts/{id};
+  // a prefix-only collection check would wrongly admit it. An IDOR proof on the item must not be able to
+  // back a settings finding under the shared surface_id — so the sub-resource fails closed.
+  const domain = "idor-subresource.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `${endpointFor(domain)}/settings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
+}));
+
+test("AC-2 (Codex P1): a QUERY-ROUTED sibling endpoint refuses to confirm", () => withTempHome(async () => {
+  // /api/accounts?type=invoice selects different data than its bare path and would make the derived
+  // create-collection POST target ambiguous; v1 confirms only clean path-routed endpoints.
+  const domain = "idor-query-routed.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts?type=invoice`] });
+  await assert.rejects(() => run(domain), /query-routed/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
 }));
 
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {
