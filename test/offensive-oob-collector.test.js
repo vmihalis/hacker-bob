@@ -44,6 +44,7 @@ const {
 const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
 const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyFindingDifferential } = require("../mcp/lib/finding-differential-verifier.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
@@ -470,4 +471,76 @@ test("negative gate: a row stamped target == the OOB host is unbacked (proves th
     threw = e;
   }
   assert.ok(threw, "a claim citing an OOB-host-targeted row must be unbacked (out of scope)");
+}));
+
+// ───────────────────────── decoy-silent control arm (expect=silence) ────────
+// A single OOB callback is not a self-contained binding (the exploit_run skip refuses it).
+// The control arm lets an OOB finding EARN a finding-differential verified_pass: an injected
+// token that fired (positive) flipped against a decoy token confirmed silent (control).
+
+test("expect=silence: a decoy silent against a reachable sink signs a blocked_by_defense control", () => withTempHome(async () => {
+  const domain = "oob-control.example.test";
+  setupSession(domain);
+  const mintRes = await oobMint(mintArgs(domain), { config: CONFIG });
+  const res = await oobPoll(
+    { target_domain: domain, token_handle: mintRes.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(res.control, true);
+  assert.equal(res.confirmed, false);
+  assert.equal(res.offensive_outcome, "blocked_by_defense");
+  assert.equal(res.row_written, true);
+  assert.equal(res.oracle_kind, "out_of_band_interaction");
+  const ctl = readOffensiveRunRecords(domain).find((r) => r.run_id === res.run_id);
+  assert.ok(ctl, "control row persisted");
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  assert.equal(ctl.oracle_kind, "out_of_band_interaction");
+  assert.equal(ctl.surface_id, SURFACE_ID);
+  // MAC validity + downstream consumability are proven by the end-to-end flip test below
+  // (verifyFindingDifferential resolves this row through its MAC-verifying executed-row gate).
+}));
+
+test("expect=silence: a decoy that DID interact is refused as a control (never signed)", () => withTempHome(async () => {
+  const domain = "oob-control-fired.example.test";
+  setupSession(domain);
+  const mintRes = await oobMint(mintArgs(domain), { config: CONFIG });
+  const token = tokenFor(domain, mintRes.token_handle);
+  const res = await oobPoll(
+    { target_domain: domain, token_handle: mintRes.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: hitSource(token) },
+  );
+  assert.equal(res.confirmed, false);
+  assert.equal(res.reason, "decoy_interaction_observed");
+  assert.equal(res.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("the injected-and-fired positive + the decoy-silent control flip to a verified_pass via finding-differential", () => withTempHome(async () => {
+  const domain = "oob-flip.example.test";
+  setupSession(domain);
+  // POSITIVE — a real token, injected into the surface, fires.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG, interaction_source: hitSource(t1) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  // CONTROL — a decoy token, never injected, stays silent.
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The FLIP — the existing mechanism-agnostic finding-differential verifier mints a
+  // verified_pass: positive exploited, control blocked, same surface, distinct hash.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.equal(verdict.result, "verified_pass");
 }));

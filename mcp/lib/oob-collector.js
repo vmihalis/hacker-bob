@@ -183,6 +183,16 @@ function normalizeOracleKind(value) {
   return assertEnumValue(assertRequiredText(value, "oracle_kind"), ORACLE_KIND_VALUES, "oracle_kind");
 }
 
+// poll arm selector. "interaction" (default) requires a matching callback and signs the
+// exploited_safely positive; "silence" is the negative control — a DECOY token the agent
+// did NOT inject, confirmed silent against a reachable sink, signed blocked_by_defense so
+// finding-differential can FLIP the pair. It is an arm selector, never a target input.
+const EXPECT_VALUES = Object.freeze(["interaction", "silence"]);
+function normalizeExpect(value) {
+  if (value == null) return "interaction";
+  return assertEnumValue(assertRequiredText(value, "expect"), EXPECT_VALUES, "expect");
+}
+
 // prefix + 128 bits of hex = a DNS-label-safe ([a-z0-9], <= 63 chars), high-entropy
 // nonce. No metacharacters, never an action verb — the only thing the sink ever
 // keys on.
@@ -484,6 +494,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   assertNoForbiddenInputs(args, POLL_TOOL_ID, OOB_FORBIDDEN_EXTRAS);
   const domain = assertRequiredText(args.target_domain, "target_domain");
   const tokenHandle = assertRequiredText(args.token_handle, "token_handle");
+  const expect = normalizeExpect(args.expect);
 
   if (!config.configured) {
     return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { available: false });
@@ -507,6 +518,110 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
 
   // Exact-token match ONLY. Stray / non-minted interactions are dropped → no row.
   const matched = normalizeInteractions(parsed).filter((i) => i.token === binding.token);
+
+  if (expect === "silence") {
+    // CONTROL ARM (decoy-silent). The agent declares a token it did NOT inject into the
+    // target. A REACHABLE sink (the fetch above succeeded) with NO interaction for this
+    // token is an affirmative silent control: it signs a blocked_by_defense row so
+    // finding-differential can FLIP it against the injected-and-fired positive on the same
+    // surface — closing the "the sink fires for ANY token / ambient noise" false positive.
+    // (It does NOT resolve the INTERMEDIARY-ATTRIBUTION residual — an intermediary in the
+    // target's request path fires only for the injected token — so that caveat is unchanged.)
+    // A decoy that DID interact is refused as a control: either the agent injected it, or
+    // the sink fires for a non-injected token (which would itself refute positive
+    // specificity) — never signed as a silent control.
+    if (matched.length > 0) {
+      return notConfirmed("blocked_by_design", "decoy_interaction_observed");
+    }
+    const controlStdout = canonicalJson({
+      token: binding.token,
+      oob_host: config.host,
+      decoy_silent: true,
+      bound_surface_id: binding.surface_id,
+    });
+    const controlStderr = canonicalJson({
+      interaction_count: 0,
+      token_match: "none",
+      sink_reachable: true,
+    });
+    if (
+      sensitiveShapesPresent(binding.canonical_target) ||
+      sensitiveShapesPresent(controlStdout) ||
+      sensitiveShapesPresent(controlStderr)
+    ) {
+      return notConfirmed("blocked_operator_pii", "capture_contains_sensitive_value");
+    }
+    const controlRelation = {
+      oob_host_is_constant: true,
+      token_minted_server_side: true,
+      interaction_observed: false,
+      decoy_silent_against_reachable_sink: true,
+      source_is_remote: true,
+    };
+    const controlResult = withSessionLock(domain, () => {
+      const reread = resolveBinding(domain, tokenHandle);
+      if (reread.consume && typeof reread.consume.run_id === "string") {
+        return { idempotent: true, run_id: reread.consume.run_id };
+      }
+      const row = buildAndSignOffensiveRow(domain, {
+        runIdPrefix: "oobctl",
+        toolId: POLL_TOOL_ID,
+        method: binding.method || "GET",
+        canonicalTarget: binding.canonical_target,
+        surfaceId: binding.surface_id,
+        identityTag: "unauth-oob-control",
+        stdoutContent: controlStdout,
+        stderrContent: controlStderr,
+        relationBooleans: controlRelation,
+        // A denial, never a positive cause leg. blocked_by_defense is the affirmative
+        // safe-variant the finding-differential flip contract requires for a control.
+        offensiveOutcome: "blocked_by_defense",
+        oracleKind: ORACLE_KIND_VALUES[0],
+      });
+      appendOobTokenRecordHardened(domain, {
+        kind: "consume",
+        token_handle: tokenHandle,
+        run_id: row.run_id,
+        consumed_at: clock(),
+      });
+      return { idempotent: false, row };
+    });
+    if (controlResult.idempotent) {
+      return {
+        confirmed: false,
+        control: true,
+        idempotent: true,
+        row_written: false,
+        target_domain: domain,
+        surface_id: binding.surface_id,
+        oracle_kind: ORACLE_KIND_VALUES[0],
+        offensive_outcome: "blocked_by_defense",
+        run_id: controlResult.run_id,
+        note: "token already consumed; returning the previously-signed control run_id (no second row)",
+      };
+    }
+    const controlRow = controlResult.row;
+    return {
+      confirmed: false,
+      control: true,
+      idempotent: false,
+      row_written: true,
+      target_domain: domain,
+      surface_id: binding.surface_id,
+      oracle_kind: ORACLE_KIND_VALUES[0],
+      offensive_outcome: "blocked_by_defense",
+      run_id: controlRow.run_id,
+      tool_id: controlRow.tool_id,
+      target: controlRow.target,
+      command_hash: controlRow.command_hash,
+      stdout_hash: controlRow.stdout_hash,
+      stderr_hash: controlRow.stderr_hash,
+      exit_code: controlRow.exit_code,
+      demonstrated_severity: controlRow.demonstrated_severity,
+      note: "silent decoy control signed (blocked_by_defense); pair it with the injected-and-fired positive via bob_verify_finding_differential",
+    };
+  }
+
   if (matched.length === 0) {
     return notConfirmed("blocked_by_infra", "no_matching_interaction");
   }
