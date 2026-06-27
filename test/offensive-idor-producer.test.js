@@ -416,16 +416,96 @@ test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NO
 
 // ───────────────────────── AC-2 (provenance + cardinality) ──────────────────────────
 
-test("AC-2 cardinality: a multi-endpoint surface refuses to confirm", () => withTempHome(async () => {
-  const domain = "idor-multi-endpoint.example.test";
-  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain), {
-    endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`],
-  });
-  seedSyntheticProfiles(domain);
-  ensureHandoffSigningKey(domain);
-  await assert.rejects(() => run(domain), /single-endpoint/);
+test("AC-2 cardinality: multiple recorded FORMS of the same item route (concrete instances) FIRE — not ambiguous", () => withTempHome(async () => {
+  // /api/accounts/<id> and /api/accounts/other are two concrete instances of the SAME route
+  // /api/accounts/{id} (discovery records a route pattern + sampled instances). path_template has a
+  // single trailing {id}, so every match shares the literal collection — they are one resource, not
+  // distinct targets. The producer binds the route and fires. (The lab's real IDOR surface is exactly
+  // this shape: ["/api/users/:id", "/api/users/1"].)
+  const domain = "idor-multi-form.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`] });
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(readOffensiveRunRecords(domain).length, 1);
+}));
+
+test("AC-2 cardinality: a multi-endpoint single-host surface (collection + item) FIRES, bound to the matched item endpoint", () => withTempHome(async () => {
+  // Real discovery bundles BOTH the collection (/api/accounts) and the item (/api/accounts/{id}) route
+  // under one surface — the case the first live orchestrated run hit ("non-fire on endpoint_count=3").
+  // path_template matches ONLY the item endpoint (the collection has fewer segments) → exactly one match,
+  // same single host → the producer binds to the item endpoint and fires (no longer rejected on count).
+  const domain = "idor-multi-endpoint-fires.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts`] });
+  const result = await run(domain);
+
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  // row.target is pinned to the path_template-MATCHED item endpoint, never the collection.
+  assert.equal(rows[0].target, canonicalizeExploitTarget(endpointFor(domain)));
+}));
+
+test("AC-2 (Codex P1): a surface aggregating UNRELATED endpoints (different collection) refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // path_template binds /api/accounts/{id}, but the surface ALSO records /api/users/<id> — a DIFFERENT
+  // resource (collection /api/users vs /api/accounts). The downstream proof gate binds a row to a
+  // finding by surface_id ONLY, so allowing this would let an accounts IDOR proof back a users finding.
+  // The relaxed gate requires every endpoint under path_template's collection, so it refuses.
+  const domain = "idor-aggregate-unrelated.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/users/${OBJ_B}`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|intra-surface laundering/);
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (Codex P1): a SUB-RESOURCE under the same collection refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // /api/accounts/<id>/settings is a DIFFERENT (often higher-sensitivity) resource than /api/accounts/{id};
+  // a prefix-only collection check would wrongly admit it. An IDOR proof on the item must not be able to
+  // back a settings finding under the shared surface_id — so the sub-resource fails closed.
+  const domain = "idor-subresource.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `${endpointFor(domain)}/settings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
+}));
+
+test("AC-2 (Codex P1): a QUERY-ROUTED sibling endpoint refuses to confirm", () => withTempHome(async () => {
+  // /api/accounts?type=invoice selects different data than its bare path and would make the derived
+  // create-collection POST target ambiguous; v1 confirms only clean path-routed endpoints.
+  const domain = "idor-query-routed.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts?type=invoice`] });
+  await assert.rejects(() => run(domain), /query-routed/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
+}));
+
+test("AC-2 (Codex %2F): an ENCODED-SEPARATOR final segment is NOT an item form — refuses, no row", () => withTempHome(async () => {
+  // /api/accounts/foo%2Fsettings has the item-route SHAPE (3 segments, /api/accounts prefix) but its final
+  // segment is route-smuggling: %2F decodes to a "/", reaching a sub-resource. capturedIdSegmentIsSafe
+  // rejects %2F everywhere else (it is how pathTemplateMatchesEndpoint vets the baseline), so it must NOT
+  // classify as a clean item form here either. Without that guard it lands in `items` and escapes the
+  // others/isCollection reject; with it, it falls through and the surface is refused. No row is signed.
+  const domain = "idor-encoded-sep.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/foo%2Fsettings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (brutalist agy/glm): boundEntry is order-INDEPENDENT — a query sibling rejects in EITHER endpoint order", () => withTempHome(async () => {
+  // A clean concrete item form (/api/accounts/obj-b-200) plus a query-bearing concrete item form
+  // (/api/accounts/other?type=x) of the SAME route. The bind prefers the clean (query-free) match, so the
+  // clean form ALWAYS binds and the query form is ALWAYS a non-bound query-routed sibling → the SAME hard
+  // reject regardless of endpoints[] order. Before the fix, items.find()||items[0] made the outcome depend
+  // on order (query form first → soft block; clean form first → throw) for identical surface content.
+  for (const [domain, endpoints] of [
+    ["idor-order-a.example.test", [`https://idor-order-a.example.test/api/accounts/${OBJ_B}`, "https://idor-order-a.example.test/api/accounts/other?type=x"]],
+    ["idor-order-b.example.test", ["https://idor-order-b.example.test/api/accounts/other?type=x", `https://idor-order-b.example.test/api/accounts/${OBJ_B}`]],
+  ]) {
+    setupSession(domain, { endpoints });
+    await assert.rejects(() => run(domain), /query-routed/, `${domain}: query sibling must reject regardless of endpoint order`);
+    assert.equal(readOffensiveRunRecords(domain).length, 0, `${domain}: no offensive row is signed`);
+  }
 }));
 
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {

@@ -73,6 +73,7 @@ const {
 const {
   findRoutedSurface,
   candidateSurfaceEndpoints,
+  pathTemplateMatchesEndpoint,
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
@@ -819,27 +820,49 @@ function profileHasProvenance(profile) {
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────
 
-// GAP A: v1 is scoped to single-endpoint, single-host surfaces. row.target is
-// pinned to that single endpoint, never agent free-text.
-function assertSingleEndpointSingleHost(surface, stateOrigin) {
+// GAP A (relaxed to ONE-RESOURCE multi-endpoint surfaces): v1 confirms single-HOST surfaces. A surface
+// may record MULTIPLE endpoints (real discovery records a route pattern, sampled concrete instances, and
+// the collection — e.g. the lab's ["/api/users/:id", "/api/users/1"]), but they must ALL resolve to ONE
+// origin AND describe ONE resource: only path_template's item-route forms (the collection segments + an
+// id segment, concrete OR a ":id"/"{id}" pattern) plus that route's collection are allowed. Any OTHER
+// endpoint — a sub-resource, an unrelated resource, or a query-routed sibling — fails closed, because the
+// downstream proof gate binds a row to a finding by surface_id ONLY, so a second resource on the surface
+// could launder an item proof onto a different finding (the intra-surface laundering the old
+// single-endpoint guard prevented; Codex P1). The bound target is a server-RECORDED item endpoint (the
+// same route resolveBaselineFromSurface selects), never agent free-text. See the classification below.
+function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const endpoints = candidateSurfaceEndpoints(surface);
-  if (endpoints.length !== 1) {
+  if (endpoints.length === 0) {
     rejectInvalidArguments(
-      "bob_http_idor_confirm v1 only confirms single-endpoint surfaces; this surface records more than one endpoint.",
-      { code: "idor_producer_surface_not_single_endpoint", endpoint_count: endpoints.length },
+      "bob_http_idor_confirm requires a surface with at least one recorded endpoint.",
+      { code: "idor_producer_surface_no_endpoint", endpoint_count: 0 },
     );
   }
-  // Count the origin(s) the surface's endpoint actually LIVES on — an absolute
-  // endpoint resolves to its OWN origin (which may be an in-scope subdomain of the
-  // session base), a relative endpoint to the session origin — PLUS any surface.hosts.
-  // Do NOT seed the bare session origin the way resolveSurfaceOrigins does, or a single
-  // endpoint on a subdomain would falsely count as two hosts and be rejected.
+  // Resolve an endpoint to its URL: absolute → its OWN origin (may be an in-scope subdomain), a
+  // path-absolute "/x" → the session origin. Reject a "//host" network-path ref (it resolves to a
+  // FOREIGN origin, escaping the surface-host binding) exactly as urlFromEndpoint does. null = skip.
+  const resolveUrl = (value) => {
+    if (typeof value !== "string") return null;
+    try {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        const u = new URL(value);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
+      if (value.startsWith("/") && !value.startsWith("//")) {
+        const u = new URL(value, stateOrigin);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
+    } catch {}
+    return null;
+  };
+  // SINGLE HOST: every endpoint PLUS any surface.hosts must collapse to ONE origin — so a relative
+  // endpoint and a DIFFERENT declared host can never split the target across origins. Do NOT seed the
+  // bare session origin the way resolveSurfaceOrigins does, or an endpoint on an in-scope subdomain
+  // would falsely count as two.
   const origins = new Set();
   for (const { value } of endpoints) {
-    try {
-      const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? new URL(value) : new URL(value, stateOrigin);
-      if (u.protocol === "http:" || u.protocol === "https:") origins.add(u.origin);
-    } catch {}
+    const u = resolveUrl(value);
+    if (u) origins.add(u.origin);
   }
   if (Array.isArray(surface.hosts)) {
     let protocol = "https:";
@@ -852,10 +875,122 @@ function assertSingleEndpointSingleHost(surface, stateOrigin) {
   if (origins.size !== 1) {
     rejectInvalidArguments(
       "bob_http_idor_confirm v1 only confirms single-host surfaces; this surface resolves to more than one origin.",
-      { code: "idor_producer_surface_not_single_endpoint", origin_count: origins.size },
+      { code: "idor_producer_surface_not_single_host", origin_count: origins.size },
     );
   }
-  return { endpoint: endpoints[0], origin: [...origins][0] };
+  // Classify every recorded endpoint STRUCTURALLY against path_template's shape. path_template has a
+  // single, trailing {id} slot, so the route is COLLECTION-segments + one id segment. An endpoint is an
+  // ITEM FORM of the route iff it has the same segment count AND its non-final segments equal the
+  // collection — the final segment is the id in ANY recorded form (a concrete value OR a ":id"/"{id}"
+  // route-pattern marker). Multiple item forms are the SAME route (a pattern + sampled instances), NOT
+  // distinct targets. The only OTHER endpoint allowed is the route's COLLECTION itself. Everything else
+  // fails closed, because the downstream proof gate binds a row to a finding by surface_id ONLY, so any
+  // OTHER resource sharing the surface could be laundered:
+  //   - a sub-resource (/api/accounts/{id}/settings) — a DIFFERENT, often higher-sensitivity resource;
+  //   - an unrelated resource (/api/users/{id} under /api/accounts/{id});
+  //   - a query-routed sibling (/api/items?type=invoice) — selects different data than its bare path and
+  //     would make the derived create-collection POST to a broader/different collection than recorded.
+  const templatePath = String(pathTemplate).split("?")[0];
+  const templateSegments = templatePath.split("/").filter(Boolean);
+  const collectionSegments = templateSegments.slice(0, -1);
+  // A ":id"/"{id}" route-pattern marker — a recorded template form, not a smuggling id (capturedIdSegmentIsSafe
+  // rejects the ":" so markers need their own clause). new URL() percent-encodes "{"/"}", so accept the
+  // %7B…%7D form too.
+  const isRouteParamMarker = (seg) => /^:[^/]+$/.test(seg)
+    || /^\{[^/]+\}$/.test(seg)
+    || /^%7b[^/]+%7d$/i.test(seg);
+  const isItemForm = (segs) => {
+    if (segs.length !== templateSegments.length) return false;
+    if (!collectionSegments.every((seg, index) => segs[index] === seg)) return false;
+    // The id segment must be a CLEAN resource id (the SAME capturedIdSegmentIsSafe rule pathTemplateMatchesEndpoint
+    // applies to the baseline) or an explicit route-pattern marker. An encoded-separator / action-punctuation
+    // final segment ("foo%2Fsettings", "a;b") is route-smuggling to a sub-resource, NOT an item form — without
+    // this it would land in `items` and escape the others/isCollection reject entirely (Codex %2F).
+    const finalSeg = segs[segs.length - 1];
+    return isRouteParamMarker(finalSeg) || capturedIdSegmentIsSafe(finalSeg);
+  };
+  const isCollection = (segs) => segs.length === collectionSegments.length
+    && collectionSegments.every((seg, index) => segs[index] === seg);
+  const items = [];
+  const others = [];
+  for (const ep of endpoints) {
+    const u = resolveUrl(ep.value);
+    if (!u) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a recorded endpoint could not be resolved to an in-scope http(s) URL.",
+        { code: "idor_producer_surface_unresolvable_endpoint" },
+      );
+    }
+    const segs = u.pathname.split("/").filter(Boolean);
+    const entry = { ep, search: u.search, pathname: u.pathname, segs };
+    if (isItemForm(segs)) items.push(entry);
+    else others.push(entry);
+  }
+  // No item form at all → path_template is off-route for this surface (the AC-2 message, mirroring
+  // resolveBaselineFromSurface which rejects the same case right after).
+  if (items.length === 0) {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm: path_template path shape does not match any recorded endpoint on this single-host surface.",
+      { code: "idor_producer_surface_no_matched_endpoint", match_count: 0 },
+    );
+  }
+  // With ≥1 item form, every OTHER endpoint MUST be exactly the route's collection — a sub-resource or
+  // unrelated resource means the surface aggregates more than one resource and is rejected (Codex P1).
+  for (const other of others) {
+    if (!isCollection(other.segs)) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: this surface records an endpoint that is neither path_template's item route nor its collection; it aggregates a different resource (intra-surface laundering risk).",
+        { code: "idor_producer_surface_aggregates_unrelated_endpoints" },
+      );
+    }
+  }
+  // Bind DETERMINISTICALLY (brutalist agy/glm: identical surface content must select the same endpoint AND
+  // the same outcome regardless of recorded-endpoint order — candidateSurfaceEndpoints returns surface.uri
+  // before endpoints[], so the order is real). Sort by pathname, then prefer a CLEAN (query-free) CONCRETE
+  // instance: row.target is then a real recorded value, AND the bound entry — which is exempt from the
+  // query-routed sibling reject below — is never itself query-routed, so a surface with a bindable clean item
+  // form is not turned into an order-dependent soft-block-vs-throw coin flip (agy's false negative). Fall back
+  // to a query-bearing concrete (its own query is caught downstream by the create-collection ?-guard), then a
+  // clean route pattern, then any item form (resolveBaselineFromSurface rejects a no-concrete surface
+  // downstream). All item forms are the SAME id-route (others-must-be-collection admits nothing else), so this
+  // only fixes determinism; it does not widen what binds.
+  //
+  // RESIDUAL — laundering-class, accepted + tracked (brutalist agy + Claude, both MEDIUM): the "one resource"
+  // boundary is drawn from path_template's segment SHAPE, and a path segment's SEMANTICS are not structurally
+  // knowable, so two shapes slip through:
+  //   (a) action siblings — a concrete final segment is indistinguishable from an id ("/api/accounts/export"
+  //       vs the slug id "/api/accounts/alice"), so a static action under the collection classifies as an item;
+  //   (b) shallow-template collapse — a too-shallow template ("/api/{id}") treats a COLLECTION segment as the
+  //       id, so "/api/users" and "/api/orders" both classify as item forms of one "resource".
+  // Both are BOUNDED, not unbounded: row.target is always the path_template-derived URL (never the action
+  // endpoint / sibling collection — see the call site), demonstrated_severity is MEDIUM-capped, the derived
+  // create POST to a non-collection typically fails (no row minted), and the 3 blind verification rounds
+  // re-examine the finding's subject. The DURABLE close is binding the finding's subject to the proven
+  // row.target in the claims gate (claims.js:1043 names this a PRODUCER obligation the string-binding gate
+  // cannot meet); tracked as issue #173, NOT closed structurally here.
+  const byPathname = (a, b) => (a.pathname < b.pathname ? -1 : a.pathname > b.pathname ? 1 : 0);
+  const sortedItems = [...items].sort(byPathname);
+  const concreteMatches = sortedItems.filter((item) => pathTemplateMatchesEndpoint(templatePath, item.pathname));
+  const boundEntry =
+    concreteMatches.find((item) => !item.search)
+    || concreteMatches[0]
+    || sortedItems.find((item) => !item.search)
+    || sortedItems[0];
+  // Every NON-bound recorded endpoint must be clean path-routed. The BOUND endpoint's own query, if any,
+  // is caught downstream by the create-collection ?-guard (which returns a blocked result, reason
+  // create_collection_query_routed_endpoint — see PR-D r14). But a query-routed SIBLING (e.g. a
+  // query-routed collection) escapes that guard and could let the derived POST hit a broader/different
+  // collection than recorded — so reject it here (Codex).
+  for (const entry of [...items, ...others]) {
+    if (entry !== boundEntry && entry.search) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a non-bound recorded endpoint is query-routed; v1 confirms only clean path-routed sibling endpoints.",
+        { code: "idor_producer_surface_query_routed_endpoint" },
+      );
+    }
+  }
+  const boundEndpoint = boundEntry.ep;
+  return { endpoint: boundEndpoint, origin: [...origins][0] };
 }
 
 // ── the P0–P6 canary runner ──────────────────────────────────────────────────
@@ -1198,12 +1333,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // Resolve + route the surface; AC-2 cardinality (GAP A, mint condition #22).
   const { surface } = findRoutedSurface(domain, surfaceId);
   const stateOrigin = originFromState(domain, state, TOOL_ID);
-  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleEndpointSingleHost
-  // already rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared
-  // host can never reach here), but we capture the single origin and bind the live create + probes to it
-  // explicitly below — so even a future change to resolveBaselineFromSurface's origin ordering can't point
-  // a WRITE at the session apex instead of the surface-declared host (Codex P1, defense-in-depth).
-  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleEndpointSingleHost(surface, stateOrigin);
+  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleHostBoundEndpoint
+  // rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared host can
+  // never reach here) and DETERMINISTICALLY binds boundEndpoint to a recorded item-route endpoint that
+  // path_template matches (sorted by pathname, concrete instance preferred — all item forms are the same
+  // id-route, so the choice is order-independent rather than an ambiguity reject). We capture the single
+  // origin and bind the live create + probes to it explicitly below — so even a future change to
+  // resolveBaselineFromSurface's origin ordering can't point a WRITE at the session apex instead of the
+  // surface-declared host (Codex P1, defense-in-depth).
+  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
   // "path_template path shape does not match any recorded endpoint" unless the
@@ -2113,7 +2251,7 @@ module.exports = {
   mintCanary,
   pathHasConcreteParentInstance,
   IDOR_PROVISION_ENV,
-  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleEndpointSingleHost
+  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleHostBoundEndpoint
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the
   // mint-condition gates (those live in idorConfirm), so re-exporting it would give an
   // internal caller a gate-bypassing signed-row path. Keep the row builder private to the
