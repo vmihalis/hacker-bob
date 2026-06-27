@@ -555,11 +555,14 @@ test("install doctor uninstall dry-run uninstall and reinstall workflow works", 
   }
 });
 
-test("reinstall preserves a user-owned top-level mcp/ file Bob did not place", () => {
-  // Codex/glm round-4: the installer must NEVER delete a top-level mcp/*.js it did not place — the
-  // target is the user's project. (An earlier "converge to the manifest" cleanup deleted by negation,
-  // which would destroy user files; reverted.) A Bob runtime file later renamed/removed lingers
-  // harmlessly; a user's own file is preserved across reinstalls.
+test("reinstall REFRESHES a stale Bob runtime file but preserves user-owned mcp/ files", () => {
+  // Two contracts at once:
+  //  - REFRESH (CodeRabbit/glm round-5): the actual bug was a FROZEN browser-driver.js. copyFile
+  //    overwrites, so a reinstall must replace a stale driver with the current source — assert the
+  //    seeded-stale content is gone, not just that the file exists.
+  //  - PRESERVE (Codex/glm round-4): the installer must NEVER delete a top-level mcp/*.js it did not
+  //    place — the target is the user's project. (An earlier "converge to the manifest" cleanup deleted
+  //    by negation, which would destroy user files; reverted.)
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-userfile-"));
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-home-"));
   const workspace = path.join(tempRoot, "workspace");
@@ -573,12 +576,31 @@ test("reinstall preserves a user-owned top-level mcp/ file Bob did not place", (
     install();
     const userFile = path.join(workspace, "mcp", "my-own-mcp-thing.js");
     fs.writeFileSync(userFile, "// a file the user placed in their own mcp/ dir\n");
+    const driver = path.join(workspace, "mcp", "browser-driver.js");
+    const staleMarker = "// STALE driver from an older install — must be overwritten on reinstall\n";
+    fs.writeFileSync(driver, staleMarker);
     install(); // reinstall over the existing workspace
     assert.ok(fs.existsSync(userFile), "reinstall must NOT delete a top-level mcp/ file Bob did not place");
-    assert.ok(fs.existsSync(path.join(workspace, "mcp", "browser-driver.js")), "reinstall still refreshes Bob's runtime");
+    const refreshed = fs.readFileSync(driver, "utf8");
+    assert.notEqual(refreshed, staleMarker, "reinstall must overwrite a stale browser-driver.js (the frozen-driver bug)");
+    assert.equal(refreshed, fs.readFileSync(path.join(ROOT, "mcp", "browser-driver.js"), "utf8"),
+      "reinstall must refresh browser-driver.js to the current source version");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("dev-sync.sh copies every top-level mcp/ runtime file in the manifest", () => {
+  // agy round-5: dev-sync.sh's explicit cp list can drift from MCP_TOP_LEVEL_RUNTIME_FILES. Rather than
+  // couple dev-sync to the install.js require-graph at runtime (reverted in round 4 — fragile + a
+  // single-quote-path hazard), pin the two with a TEST: every manifest runtime file must appear as a
+  // dev-sync cp target, so adding a runtime file to the manifest without updating dev-sync fails CI.
+  const { MCP_TOP_LEVEL_RUNTIME_FILES } = require("../scripts/install.js");
+  const devSync = fs.readFileSync(path.join(ROOT, "dev-sync.sh"), "utf8");
+  for (const name of MCP_TOP_LEVEL_RUNTIME_FILES) {
+    assert.ok(devSync.includes(`mcp/${name}`),
+      `dev-sync.sh must copy top-level mcp/${name} (keep its cp list in step with MCP_TOP_LEVEL_RUNTIME_FILES)`);
   }
 });
 
