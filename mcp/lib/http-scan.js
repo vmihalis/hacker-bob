@@ -206,8 +206,14 @@ async function httpScan(args) {
       // Merge only the profile's HEADER fields; the canonical PROFILE_METADATA_KEYS strip
       // (credentials/storage + PR-PROV synthetic provenance flags + synthetic mailbox)
       // ensures Bob-local secrets never reach the target as request headers. Pure helper:
-      // returns a new map, so reassign.
-      headers = applyAuthProfileHeaders(headers, auth);
+      // returns a new map, so reassign. BUT do NOT apply the target's auth_profile to a ROAMED host
+      // (initialScopeDecision.reason === operator_armed_roam): a credential bound to the target must never
+      // be sent to a different site, even on a direct operator-armed roam request (round-2 agy HIGH) — the
+      // redirect path strips cross-site too; this closes the initial hop. A roamed host proceeds uncredentialed.
+      const roamedInitialRequest = !!(initialScopeDecision && initialScopeDecision.reason === "operator_armed_roam");
+      if (!roamedInitialRequest) {
+        headers = applyAuthProfileHeaders(headers, auth);
+      }
     } else {
       audit({
         status: null,
@@ -234,6 +240,7 @@ async function httpScan(args) {
       bodyTruncated,
       text,
       arrayBuffer,
+      scopeReason,
     } = await safeFetch(url, {
       method,
       headers,
@@ -267,12 +274,17 @@ async function httpScan(args) {
     const responseMode = args.response_mode || "full";
     const bodyLimit = args.body_limit || 2000;
     const auditTs = new Date().toISOString();
+    // Audit the FINAL hop's scope reason: a first-party request that redirects INTO a roamed host must
+    // record operator_armed_roam, not the initial first-party decision (round-2 CodeRabbit/Codex).
+    const auditScopeDecision = scopeReason
+      ? { ...(initialScopeDecision || {}), reason: scopeReason }
+      : initialScopeDecision;
     audit({
       status,
       error: null,
       scope_decision: "allowed",
       final_url: redactUrlSensitiveValues(finalUrl),
-      ...scopeAuditFields(initialScopeDecision),
+      ...scopeAuditFields(auditScopeDecision),
     });
     // Plane T Cycle T.5 — JWT-as-observation-kind. Scan response headers + body
     // for JWT-shaped tokens; emit one observation.recorded per distinct token

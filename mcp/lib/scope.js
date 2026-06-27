@@ -249,7 +249,11 @@ function assertHttpScopeDomain(targetDomain, opts = {}) {
     // attestation. The attestation is supplied explicitly (opts.labAuthorization,
     // the init bootstrap before state is persisted) or read from the persisted
     // audit-graded session artifact. See lab-target-attest.js.
-    if (labTargetEligibleHost(host)) {
+    // ignoreLabAttestation (roam): a roamed host must clear the PUBLIC-DNS bar with NO lab escape, so a
+    // session-or-env lab attestation (BOB_LAB_TARGET) can never reclassify an internal/loopback host as
+    // roamable — otherwise roam on a public target would inherit a concurrent lab attestation and become a
+    // LAN/loopback SSRF (round-2 CRITICAL). Without the flag the existing lab escape is unchanged.
+    if (!opts.ignoreLabAttestation && labTargetEligibleHost(host)) {
       const authorization = opts.labAuthorization != null
         ? opts.labAuthorization
         : labAuthorizationForTarget(host);
@@ -322,15 +326,16 @@ function validateHttpScanScope(url, targetDomain, opts = {}) {
     // separately at DNS resolution in safe-fetch.js) still blocks internal/metadata IPs. The roamed host
     // is described from ITS OWN public-suffix info so the audit shows exactly where the request went.
     if (roamAuthorizedForTarget(domain)) {
-      // Roam authorizes cross-host to other PUBLIC DNS hosts ONLY. An IP literal, loopback, RFC1918 /
-      // link-local, cloud-metadata, or any non-public name is NEVER roamable — even when a caller disables
-      // block_internal_hosts (the browser navigate path passes blockInternalHosts:false and leans ENTIRELY
-      // on this kernel), so roam can never become an SSRF-to-metadata/localhost primitive. The roamed host
-      // must clear the SAME public-DNS bar assertHttpScopeDomain holds the target to (registrable domain
-      // under a public suffix); anything that fails it falls through to the cross-host block below.
+      // Roam authorizes cross-host to other PUBLIC DNS hosts ONLY, with NO lab escape (ignoreLabAttestation):
+      // an IP literal, loopback, RFC1918/link-local, cloud-metadata, or non-public name — OR a host a
+      // concurrent lab attestation (BOB_LAB_TARGET) would otherwise whitelist — is never roamable and falls
+      // through to the cross-host block. A public NAME can still RESOLVE to an internal IP (DNS rebinding),
+      // so the decision carries enforce_internal_block:true and the fetch/driver layer ALWAYS resolves and
+      // blocks internal IPs for a roamed request, even when the caller disabled block_internal_hosts (the
+      // browser navigate path does) — closing the round-2 CRITICALs (lab-escape SSRF + rebind-to-internal).
       let roamedHostIsPublic = false;
       try {
-        assertHttpScopeDomain(host);
+        assertHttpScopeDomain(host, { ignoreLabAttestation: true });
         roamedHostIsPublic = true;
       } catch {
         roamedHostIsPublic = false;
@@ -341,6 +346,7 @@ function validateHttpScanScope(url, targetDomain, opts = {}) {
           allowed: true,
           scope_decision: "allowed",
           reason: "operator_armed_roam",
+          enforce_internal_block: true,
           host,
           target_domain: domain,
           registrable_domain: roamedSuffixInfo.registrable_domain,

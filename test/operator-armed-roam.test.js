@@ -10,6 +10,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   ROAM_AUTHORIZED_ENV,
+  assertHttpScopeDomain,
   roamAuthorizedForTarget,
   validateHttpScanScope,
 } = require("../mcp/lib/scope.js");
@@ -142,17 +143,25 @@ test("roam matches an IDN target armed in its Unicode form (normalized to punyco
 
 // ── P1 #2: roamed redirects must not carry the target's credentials ──────────────────────────────────
 
-test("safeFetch strips Cookie + Authorization (case-insensitive) and keeps other headers", () => {
+test("cross-site redirect headers: allowlist keeps only safe headers, drops ALL credential headers", () => {
   const out = stripCredentialHeaders({
     Cookie: "sid=secret",
     authorization: "Bearer a",
     AUTHORIZATION: "Bearer b",
+    "Proxy-Authorization": "Basic z",
+    "X-Api-Key": "k", // custom auth header — must NOT slip through a Cookie/Authorization-only denylist
+    "X-Auth-Token": "t",
     "User-Agent": "bob",
     Accept: "application/json",
   });
+  // dropped: every credential-bearing header, including custom + proxy
   assert.equal(out.Cookie, undefined);
   assert.equal(out.authorization, undefined);
   assert.equal(out.AUTHORIZATION, undefined);
+  assert.equal(out["Proxy-Authorization"], undefined);
+  assert.equal(out["X-Api-Key"], undefined);
+  assert.equal(out["X-Auth-Token"], undefined);
+  // kept: only the safe, non-credential allowlist
   assert.equal(out["User-Agent"], "bob");
   assert.equal(out.Accept, "application/json");
 });
@@ -170,6 +179,40 @@ test("redirect cred-strip decision: a roamed cross-site host is not first-party 
   assert.equal(isFirstPartyHost("evil.example.org", "vu.nl"), false); // roamed → strip
   assert.equal(isFirstPartyHost("api.vu.nl", "vu.nl"), true);         // first-party subdomain → keep
   assert.equal(isFirstPartyHost("vu.nl", "vu.nl"), true);            // same host → keep
+});
+
+test("CRITICAL: roam's public-host check is lab-BLIND — an attested internal host is rejected", () => {
+  // Round-2 CRITICAL: assertHttpScopeDomain(host) honors a lab attestation, so without ignoreLabAttestation
+  // a concurrent BOB_LAB_TARGET would reclassify an internal host as roamable → LAN/loopback SSRF.
+  const prevAck = process.env[LAB_TARGET_ACK_ENV];
+  const prevHost = process.env[LAB_TARGET_HOST_ENV];
+  process.env[LAB_TARGET_ACK_ENV] = LAB_TARGET_ACK_TOKEN;
+  process.env[LAB_TARGET_HOST_ENV] = "192.168.1.53";
+  try {
+    // With the attestation, the internal host IS accepted by the normal check...
+    assert.equal(
+      assertHttpScopeDomain("192.168.1.53", { labAuthorization: { private_targets: true } }),
+      "192.168.1.53",
+    );
+    // ...but the lab-BLIND form the roam gate uses rejects it regardless of the attestation.
+    assert.throws(
+      () => assertHttpScopeDomain("192.168.1.53", { ignoreLabAttestation: true }),
+      /not a public DNS domain/,
+    );
+  } finally {
+    if (prevAck === undefined) delete process.env[LAB_TARGET_ACK_ENV];
+    else process.env[LAB_TARGET_ACK_ENV] = prevAck;
+    if (prevHost === undefined) delete process.env[LAB_TARGET_HOST_ENV];
+    else process.env[LAB_TARGET_HOST_ENV] = prevHost;
+  }
+});
+
+test("the roam decision carries enforce_internal_block (fetch/driver then resolves + blocks internal IPs)", () => {
+  withRoamEnv(TARGET, () => {
+    const result = validateHttpScanScope(CROSS_HOST_URL, TARGET);
+    assert.equal(result.reason, "operator_armed_roam");
+    assert.equal(result.enforce_internal_block, true);
+  });
 });
 
 test("roamAuthorizedForTarget unit: empty/whitespace/mismatch false; exact (trim/case) true", () => {

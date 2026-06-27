@@ -36,17 +36,18 @@ function makeScopeBlockedError(message) {
   return error;
 }
 
-// On a cross-SITE redirect (the next host is not first-party to the scoped target — e.g. a host reached
-// via operator-armed roam), drop target-bound credentials so the original site's Cookie/Authorization are
-// never replayed to a different site. Standard browser behaviour; load-bearing now that roam can let a
-// redirect cross hosts (Codex P1). A same-site redirect (a first-party subdomain) keeps its headers.
+const SAFE_REDIRECT_HEADERS = new Set(["user-agent", "accept", "accept-language", "accept-encoding"]);
+
+// On a cross-SITE or protocol-DOWNGRADE redirect (a roamed host, or https→http), reduce request headers to
+// a minimal non-credential ALLOWLIST so NO target-bound credential — Cookie, Authorization,
+// Proxy-Authorization, or a custom auth header (X-Api-Key, X-Auth-Token, …) the caller/auth_profile set —
+// is replayed to the new origin. An allowlist, not a Cookie/Authorization denylist, so an arbitrary custom
+// auth header can't slip through (round-2: a Cookie/Authorization-only strip was insufficient).
 function stripCredentialHeaders(headers) {
   if (!headers || typeof headers !== "object") return headers;
   const cleaned = {};
   for (const [name, value] of Object.entries(headers)) {
-    const lower = String(name).toLowerCase();
-    if (lower === "authorization" || lower === "cookie") continue;
-    cleaned[name] = value;
+    if (SAFE_REDIRECT_HEADERS.has(String(name).toLowerCase())) cleaned[name] = value;
   }
   return cleaned;
 }
@@ -147,13 +148,17 @@ async function resolveSafeAddress(hostname, options = {}) {
 }
 
 async function assertSafeResolvedRequestUrl(url, targetDomain, options = {}) {
-  assertSafeRequestUrl(url, targetDomain, options);
-  if (!shouldBlockInternalHosts(options)) {
+  const scopeDecision = assertSafeRequestUrl(url, targetDomain, options);
+  // A roamed (operator_armed_roam) request ALWAYS resolves and blocks internal IPs, even when the caller
+  // disabled blockInternalHosts (the browser navigate path does) — so a public name that RESOLVES to an
+  // internal/metadata IP cannot become an SSRF via roam (DNS rebinding). (Round-2 CRITICAL.)
+  const enforceInternalBlock = !!(scopeDecision && scopeDecision.enforce_internal_block);
+  if (!enforceInternalBlock && !shouldBlockInternalHosts(options)) {
     return;
   }
 
   const parsed = new URL(url);
-  await resolveSafeAddress(parsed.hostname, options);
+  await resolveSafeAddress(parsed.hostname, { ...options, blockInternalHosts: true });
 }
 
 function makeTimeoutError(timeoutMs) {
@@ -357,16 +362,23 @@ async function safeFetch(url, options = {}) {
   let redirects = 0;
 
   while (true) {
-    assertSafeRequestUrl(currentUrl, targetDomain, { blockInternalHosts });
+    const scopeDecision = assertSafeRequestUrl(currentUrl, targetDomain, { blockInternalHosts });
+    // A roamed hop ALWAYS resolves + blocks internal IPs, even if the caller disabled blockInternalHosts —
+    // a public name that resolves to an internal IP cannot become a roam SSRF (DNS rebinding). (CRITICAL.)
+    const hopBlockInternal = blockInternalHosts || !!(scopeDecision && scopeDecision.enforce_internal_block);
     const response = await requestOnce(currentUrl, {
       ...options,
       headers: currentHeaders,
-      blockInternalHosts,
+      blockInternalHosts: hopBlockInternal,
       method: currentMethod,
       body: currentBody,
       redirected: redirects > 0,
       redirectCount: redirects,
     });
+    // Carry THIS hop's scope reason on the response so the caller can audit the FINAL hop — in particular a
+    // first-party request that REDIRECTS into a roamed host audits operator_armed_roam, not the initial
+    // first-party decision (round-2 CodeRabbit/Codex). The returned response is the final hop's.
+    response.scopeReason = scopeDecision && scopeDecision.reason ? scopeDecision.reason : null;
 
     if (!followRedirects || !isRedirectStatus(response.status)) {
       return response;
@@ -382,14 +394,25 @@ async function safeFetch(url, options = {}) {
 
     const nextUrl = new URL(location, currentUrl).toString();
     assertSafeRequestUrl(nextUrl, targetDomain, { blockInternalHosts });
-    // Cross-SITE redirect (a roamed host that is not first-party to the scoped target): strip target-bound
-    // credentials before the next hop so the original site's Cookie/Authorization never reach it.
-    if (targetDomain) {
-      let nextHost = "";
-      try { nextHost = new URL(nextUrl).hostname; } catch { nextHost = ""; }
-      if (nextHost && !isFirstPartyHost(nextHost, targetDomain)) {
-        currentHeaders = stripCredentialHeaders(currentHeaders);
-      }
+    // Reduce headers to the safe allowlist + drop the body on a CROSS-SITE (roamed) or protocol-DOWNGRADE
+    // (https→http) redirect, so the target's credentials and request body are never replayed to a different
+    // origin — including a 307/308 that would otherwise preserve them. A same-site, same-scheme redirect
+    // keeps them. (Round-2: custom auth headers, proxy creds, body, and downgrade — not just Cookie/Auth.)
+    let crossOrigin = false;
+    try {
+      const from = new URL(currentUrl);
+      const to = new URL(nextUrl);
+      const crossSite = targetDomain
+        ? !isFirstPartyHost(to.hostname, targetDomain)
+        : to.host !== from.host;
+      const downgrade = from.protocol === "https:" && to.protocol === "http:";
+      crossOrigin = crossSite || downgrade;
+    } catch {
+      crossOrigin = true;
+    }
+    if (crossOrigin) {
+      currentHeaders = stripCredentialHeaders(currentHeaders);
+      currentBody = undefined;
     }
     redirects += 1;
     const normalized = normalizeRedirectMethod(response.status, currentMethod, currentBody);
