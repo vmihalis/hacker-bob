@@ -1146,6 +1146,11 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
     // session (no symmetric key on disk) instead of throwing STATE_CONFLICT into this
     // live read-time re-verification path.
     const verifier = runRows.length > 0 ? resolveRowVerifierSafely(domain) : null;
+    // Track whether the ONLY surface-bound, MAC-valid exploit_run row(s) are out-of-band
+    // callbacks. Such a row re-verified fine but is not a self-contained binding, so the
+    // finding must fall THROUGH to the finding-differential verified_pass requirement —
+    // NOT be treated as a post-freeze tamper (reverification_failed). oobOnly signals that.
+    let sawValidOobRow = false;
     for (const ref of frozenExploitRunRefs) {
       const row = runRows.find((candidate) => (
         offensiveRunRowSatisfiesEvidence(candidate, ref, domain, verifier)
@@ -1155,10 +1160,23 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
       // record-time strict equality so a row produced for surface B cannot back surface A).
       const rowSurfaceId = typeof row.surface_id === "string" ? row.surface_id.trim() : "";
       if (rowSurfaceId !== "" && rowSurfaceId === frozenSurfaceId) {
+        // An out-of-band-interaction row (a received external callback) is NOT a
+        // self-contained executed binding: the callback's causation by THIS injection is
+        // not proven by the single positive row (no pre-injection control, intermediary
+        // attribution open — the OOB collector stamps no "no pre-injection hit" control).
+        // It must earn a finding-differential verified_pass binding the positive callback
+        // AND a blocked_by_defense control on the same surface that stayed silent, rather
+        // than self-skip. oracle_kind is a MAC-covered sibling, so this read is
+        // non-forgeable. Any OTHER exploit_run row (a tool that directly observed the safe
+        // exploit) remains a self-contained binding and skips as before.
+        if (row.oracle_kind === "out_of_band_interaction") {
+          sawValidOobRow = true;
+          continue;
+        }
         return { skip: true, asserted };
       }
     }
-    return { skip: false, asserted };
+    return { skip: false, asserted, oobOnly: sawValidOobRow };
   } catch {
     // Unreadable freeze / rotated offensive-runs / absent key => the executed binding is not
     // re-derivable. Fail closed (do not skip).
@@ -1297,15 +1315,19 @@ function findingDifferentialGapForStandaloneReportableFindings(domain, { reporta
     if (claim.exploit_outcome && claim.exploit_outcome.outcome === "exploited_safely") {
       const reverify = exploitRunSkipReverifies(domain, findingId, claim);
       if (reverify.skip) continue;
-      if (reverify.asserted) {
+      if (reverify.asserted && !reverify.oobOnly) {
         // The LIVE claim asserts exploited_safely (so the structural skip would have
         // fired) but the frozen-class + re-MAC re-verification no longer holds. Surface
         // a legible failure instead of silently falling through.
         missing.push({ finding_id: findingId, reason: "exploit_run_skip_reverification_failed" });
         continue;
       }
-      // else: the live claim asserts exploited_safely but has no exploit_run ref at all;
-      // fall through to the residual standalone arm exactly as before.
+      // else: either the live claim asserts exploited_safely with no exploit_run ref at
+      // all, OR the only re-verified exploit_run row is an out-of-band callback (oobOnly)
+      // — a received callback is not a self-contained binding. Both fall THROUGH to the
+      // residual standalone arm, where the OOB finding must earn a finding-differential
+      // verified_pass (a positive callback flipping against a blocked_by_defense control)
+      // rather than report on a single uncontrolled callback.
     }
 
     // RESIDUAL standalone class: require a verified_pass bound to this finding_id.

@@ -595,6 +595,12 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       stdoutContent,
       stderrContent,
       relationBooleans,
+      // Stamp the oracle kind into the MAC-covered row. A received callback does not
+      // prove THIS injection caused it (no pre-injection control; intermediary
+      // attribution is open), so the read-time exploit-run skip refuses to treat this
+      // single-arm row as a self-contained executed binding — it must earn a
+      // finding-differential verified_pass against a blocked_by_defense control.
+      oracleKind: ORACLE_KIND_VALUES[0],
     });
     appendOobTokenRecordHardened(domain, {
       kind: "consume",
