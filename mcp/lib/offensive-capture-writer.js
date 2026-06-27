@@ -62,6 +62,15 @@ const OFFENSIVE_ROW_OUTCOMES = Object.freeze(new Set([
   "exploited_safely", "blocked_by_defense", "blocked_by_infra",
 ]));
 
+// The closed set of oracle kinds a producer may stamp into a row (MAC-covered sibling). An
+// out-of-band-interaction row is one whose evidence is an external callback, gated specially
+// at read time (the exploit_run skip refuses to treat it as a self-contained binding). Like
+// offensiveOutcome, this is a CONTROLLED field validated against a frozen set so an arbitrary
+// string can never become a signed oracle_kind.
+const OFFENSIVE_ROW_ORACLE_KINDS = Object.freeze(new Set([
+  "out_of_band_interaction",
+]));
+
 // run_id is a single clean [A-Za-z0-9-] segment so sha256OffensiveCaptureSecure
 // (claim-freeze.js) accepts it as a direct child leaf of offensive-runs/.
 function newRunId(prefix) {
@@ -250,6 +259,15 @@ function buildAndSignOffensiveRow(domain, {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `offensiveOutcome must be one of [${[...OFFENSIVE_ROW_OUTCOMES].join(", ")}]: ${offensiveOutcome}`,
+    );
+  }
+  // oracleKind is a CONTROLLED, MAC-covered sibling: null (no oracle marker) or a member of
+  // the frozen set. Validate it like offensiveOutcome so an arbitrary string can never be
+  // signed into oracle_kind (the read-time gate keys on it).
+  if (oracleKind != null && !OFFENSIVE_ROW_ORACLE_KINDS.has(oracleKind)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `oracleKind must be null or one of [${[...OFFENSIVE_ROW_ORACLE_KINDS].join(", ")}]: ${oracleKind}`,
     );
   }
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a

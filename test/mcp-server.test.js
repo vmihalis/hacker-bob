@@ -3574,6 +3574,23 @@ test("completion-depth gate clears a complete cross-stack offensive surface boun
   assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
 })));
 
+test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (corrupt claims.jsonl) — never silently disables", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { claimsJsonlPath } = require("../mcp/lib/paths.js");
+    seedCompleteBareFinding(domain);
+    // A single malformed claims.jsonl line makes findingPayloadsFromClaims (called inside
+    // buildWaveHandoffsDocument, the sole enumerator of complete surfaces) throw. The gate
+    // must BLOCK with a legible reason, NOT return { missing: [] } (which would clear every
+    // complete surface — the masquerade it exists to close).
+    fs.appendFileSync(claimsJsonlPath(domain), "{ this is not valid json\n");
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+  }));
+});
+
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";

@@ -1151,15 +1151,21 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
     // finding must fall THROUGH to the finding-differential verified_pass requirement —
     // NOT be treated as a post-freeze tamper (reverification_failed). oobOnly signals that.
     let sawValidOobRow = false;
+    // oobOnly may be asserted ONLY when EVERY frozen exploit_run ref re-verified to a
+    // surface-bound row AND each such row was an OOB callback. A ref that fails to resolve
+    // (missing / tampered / bound to a different surface) ALONGSIDE an OOB ref is a PARTIAL
+    // post-freeze tamper, not a clean OOB-only finding — it must surface the loud
+    // exploit_run_skip_reverification_failed signal, never be masked by oobOnly:true.
+    let everyRefResolvedToOob = true;
     for (const ref of frozenExploitRunRefs) {
       const row = runRows.find((candidate) => (
         offensiveRunRowSatisfiesEvidence(candidate, ref, domain, verifier)
       ));
-      if (!row) continue;
       // The MAC-covered surface_id must equal the frozen claim's single surface (mirror the
       // record-time strict equality so a row produced for surface B cannot back surface A).
-      const rowSurfaceId = typeof row.surface_id === "string" ? row.surface_id.trim() : "";
-      if (rowSurfaceId !== "" && rowSurfaceId === frozenSurfaceId) {
+      const rowSurfaceId = row && typeof row.surface_id === "string" ? row.surface_id.trim() : "";
+      const matchesSurface = !!row && rowSurfaceId !== "" && rowSurfaceId === frozenSurfaceId;
+      if (matchesSurface && row.oracle_kind === "out_of_band_interaction") {
         // An out-of-band-interaction row (a received external callback) is NOT a
         // self-contained executed binding: the callback's causation by THIS injection is
         // not proven by the single positive row (no pre-injection control, intermediary
@@ -1167,16 +1173,20 @@ function exploitRunSkipReverifies(domain, findingId, liveClaim) {
         // It must earn a finding-differential verified_pass binding the positive callback
         // AND a blocked_by_defense control on the same surface that stayed silent, rather
         // than self-skip. oracle_kind is a MAC-covered sibling, so this read is
-        // non-forgeable. Any OTHER exploit_run row (a tool that directly observed the safe
-        // exploit) remains a self-contained binding and skips as before.
-        if (row.oracle_kind === "out_of_band_interaction") {
-          sawValidOobRow = true;
-          continue;
-        }
+        // non-forgeable.
+        sawValidOobRow = true;
+        continue;
+      }
+      if (matchesSurface) {
+        // Any OTHER exploit_run row (a tool that directly observed the safe exploit) remains
+        // a self-contained binding and skips as before.
         return { skip: true, asserted };
       }
+      // The ref did not re-verify to a surface-bound row — this finding is not a clean
+      // OOB-only finding; do not let an OOB sibling mask the tamper.
+      everyRefResolvedToOob = false;
     }
-    return { skip: false, asserted, oobOnly: sawValidOobRow };
+    return { skip: false, asserted, oobOnly: sawValidOobRow && everyRefResolvedToOob };
   } catch {
     // Unreadable freeze / rotated offensive-runs / absent key => the executed binding is not
     // re-derivable. Fail closed (do not skip).
@@ -1772,11 +1782,30 @@ function readCandidateClaims(targetDomain) {
 // non-empty missing[].
 function completionDepthGapForCompleteSurfaces(domain) {
   const { buildWaveHandoffsDocument, listWaveAssignmentNumbers } = require("./wave-handoff-store.js");
-  let doc;
+  // The handoff doc is the SOLE enumerator of which surfaces are 'complete'. Separate the two
+  // reads so their failure modes stay distinct (a single fail-open catch over both was the
+  // brutalist's HIGH finding — it disabled the whole gate on any throw):
+  //   - No enumerable wave assignments (no session / no waves) → nothing here is 'complete',
+  //     proceed with a vacuous gate. buildWaveHandoffsDocument reads claims at the TOP, so it
+  //     must NOT be called when there are no waves to gate (a corrupt-claims session with no
+  //     waves still has nothing marked complete).
+  //   - Wave assignments EXIST but the handoff doc is UNREADABLE (corrupt JSONL line, torn
+  //     write, transient FS error) → we cannot determine which surfaces are 'complete'. Fail
+  //     CLOSED: returning { missing: [] } would silently disable the gate so EVERY complete
+  //     surface clears (the masquerade this gate closes) and dead-code the inner fail-closed
+  //     arms below. Mirrors the evaluation-time finalize gate that hard-fails on this.
+  let waveNumbers;
   try {
-    doc = buildWaveHandoffsDocument(domain, listWaveAssignmentNumbers(domain));
+    waveNumbers = listWaveAssignmentNumbers(domain);
   } catch {
     return { missing: [] };
+  }
+  if (!Array.isArray(waveNumbers) || waveNumbers.length === 0) return { missing: [] };
+  let doc;
+  try {
+    doc = buildWaveHandoffsDocument(domain, waveNumbers);
+  } catch {
+    return { missing: [{ surface_id: null, finding_id: null, reason: "completion_state_unreadable" }] };
   }
   const completeHandoffs = (doc && Array.isArray(doc.handoffs) ? doc.handoffs : [])
     .filter((handoff) => handoff && handoff.surface_status === "complete" && handoff.surface_id);
