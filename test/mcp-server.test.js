@@ -3612,6 +3612,38 @@ test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (cor
   }));
 });
 
+test("completion-depth gate FAILS CLOSED when listWaveAssignmentNumbers THROWS (populated session dir unreadable) — distinct from the legitimate empty", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const waveHandoffStore = require("../mcp/lib/wave-handoff-store.js");
+    seedCompleteBareFinding(domain);
+    // listWaveAssignmentNumbers returns [] for a missing session dir (no throw); it THROWS only
+    // when an EXISTING session dir cannot be enumerated (readdir FS error / dir replaced). That
+    // is the "cannot tell whether complete surfaces are hidden behind it" state and must BLOCK,
+    // not silently clear every complete surface. Simulate the readdir throw deterministically.
+    const original = waveHandoffStore.listWaveAssignmentNumbers;
+    waveHandoffStore.listWaveAssignmentNumbers = () => { throw new Error("EACCES: readdir failed"); };
+    try {
+      const gap = completionDepthGapForCompleteSurfaces(domain);
+      assert.equal(gap.missing.length, 1);
+      assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+    } finally {
+      waveHandoffStore.listWaveAssignmentNumbers = original;
+    }
+  }));
+});
+
+test("completion-depth gate is VACUOUS (missing empty) for a no-waves session — listWaveAssignmentNumbers returns [], never throws", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    // No session / no wave-assignment files: the legitimate empty enumeration is RETURNED (not a
+    // throw), so the gate proceeds vacuously — the throw→fail-closed change must NOT block this.
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+  }));
+});
+
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "example.com";

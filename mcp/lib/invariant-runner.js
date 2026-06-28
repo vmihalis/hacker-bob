@@ -1021,8 +1021,14 @@ async function runInvariantForFinding({
     // bytecode at the SAME address+fork_block via eth_getCode on the trusted fork endpoints.
     // The agent controls the executed target but NOT the runner's eth_getCode against the
     // real chain, so a fake-deployed or vm.etch'd target yields a mismatch the cross-stack
-    // verifier refuses. Single-surface runs emit no binding (these stay null). Fail closed:
-    // any parse/RPC failure leaves target_onchain_code_sha256 null → the verifier refuses.
+    // verifier refuses. Single-surface runs emit no binding (these stay null). The lookup uses
+    // ethGetCodeAgreed (quorum across endpoints, "0x" non-archival misses ignored), so a single
+    // bad endpoint cannot mint a WRONG on-chain hash that would falsely refuse a genuine target;
+    // when the lookup is unavailable (all endpoints failed/timed-out, or real-code responders
+    // disagree) target_onchain_code_sha256 stays null. The verifier distinguishes that null
+    // (on-chain lookup UNAVAILABLE → a re-runnable, NOT a forgery) from a present-but-mismatched
+    // hash (the fake/etch case). A re-run reuses the same run_hash (the target siblings are
+    // outside run_hash), so a resolved row supersedes an unavailable one in the dedup ledger.
     const tbResult = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding : null;
     const tbError = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding_error : null;
     if (!tbError && tbResult && typeof tbResult.address === "string" && typeof tbResult.code_sha256 === "string") {
@@ -1030,14 +1036,10 @@ async function runInvariantForFinding({
       targetCodeSha256 = tbResult.code_sha256.toLowerCase();
       if (chain_id != null && fork_block != null && Array.isArray(fork_urls) && fork_urls.length > 0) {
         try {
-          const { ethGetCode } = require("./evm-client.js");
-          const resp = await ethGetCode({ chainId: chain_id, address: targetAddress, block: fork_block, endpoints: fork_urls });
-          const onchainCode = resp && typeof resp.result === "string"
-            ? resp.result
-            : (typeof resp === "string" ? resp : null);
-          if (typeof onchainCode === "string") {
-            const hex = onchainCode.replace(/^0x/, "");
-            targetOnchainCodeSha256 = `0x${crypto.createHash("sha256").update(Buffer.from(hex, "hex")).digest("hex")}`;
+          const { ethGetCodeAgreed } = require("./evm-client.js");
+          const resp = await ethGetCodeAgreed({ chainId: chain_id, address: targetAddress, block: fork_block, endpoints: fork_urls });
+          if (resp && resp.status === "resolved" && typeof resp.code === "string" && resp.code.length > 0) {
+            targetOnchainCodeSha256 = `0x${crypto.createHash("sha256").update(Buffer.from(resp.code, "hex")).digest("hex")}`;
           }
         } catch {
           targetOnchainCodeSha256 = null;
@@ -1139,12 +1141,15 @@ async function runInvariantForFinding({
     // The CONSUMED-ARTIFACT BINDING. sha256 of the bytes this invariant run ACTUALLY
     // consumed (injected as BOB_CONSUMED_ARTIFACT). On a violated arm with a verified
     // cause this is the bound bytes' hash; on the control arm (no cause, empty env) it is
-    // null. Like cause_run_id/container_isolated this is a top-level SIBLING OUTSIDE
-    // computeInvariantRunHash (so the positive and control stay the SAME test —
-    // execution_context_hash and run_hash are undisturbed; the artifact PRESENCE is the
-    // controlled variable alongside tree_ref) but INSIDE the row_mac (the signer covers
-    // the whole record minus row_mac), so an agent cannot forge which bytes a violated
-    // arm consumed. The O-B verifier binds this to sha256 of the named cause's stored bytes.
+    // null. UNLIKE cause_run_id/container_isolated/target_* (true top-level siblings OUTSIDE
+    // the content hash), consumed_artifact_hash IS bound INTO run_hash alongside tree_ref —
+    // so the cross-stack control and decoy arms, both HELD with an identical foundry_result,
+    // are DISTINCT persistable rows the dedup-by-run_hash ledger keeps separate. It is
+    // EXCLUDED only from execution_context_hash, so the positive/control/decoy arms stay the
+    // SAME test (the artifact PRESENCE is the controlled variable, like tree_ref). run_hash is
+    // in turn covered by the row_mac (the signer covers the whole record minus row_mac), so an
+    // agent cannot forge which bytes a violated arm consumed. The O-B verifier binds this to
+    // sha256 of the named cause's stored bytes.
     consumed_artifact_hash: consumedArtifactHash,
     // CROSS-STACK TARGET BINDING siblings — top-level, OUTSIDE run_hash (so run_hash stays
     // byte-stable and pre-binding rows hash identically) but INSIDE the row_mac. The

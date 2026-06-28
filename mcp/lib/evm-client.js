@@ -150,6 +150,73 @@ async function ethGetCode({ chainId, address, block = "latest", endpoints }) {
   });
 }
 
+// Security-grade runtime-bytecode lookup for the cross-stack target binding. Unlike
+// rpcRequest's first-endpoint-wins, this probes MULTIPLE endpoints and only trusts a code
+// value the real-code responders AGREE on, so a single non-archival endpoint that returns
+// "0x" for a historical fork_block (or a stale/compromised endpoint) cannot produce a wrong
+// hash that would FALSELY refuse a genuine target. An empty "0x" response is treated as a
+// NON-answer (a real audited contract has code at fork_block; "0x" means that endpoint could
+// not serve the historical state), so a mixed archival/non-archival ladder still resolves
+// from the archival nodes. Transient failures are retried.
+//
+// Returns { status: "resolved", code, corroboration } when >=1 endpoint returned non-empty
+// code and all such responders agree; { status: "unavailable", reason } when no endpoint
+// returned code (all failed/timed-out/"0x") or the real-code responders DISAGREE. NEVER
+// throws for an availability failure — the caller records the run as target-unverified
+// (re-runnable) instead of a permanent forgery refusal. This NEVER returns a value an agent
+// can steer: the agent controls neither the trusted endpoint ladder nor the real chain state.
+// Pure quorum decision over a round of per-endpoint eth_getCode results (each a raw result
+// string, or a non-string for an endpoint that failed). Normalizes to lowercased 0x-stripped
+// hex, DROPS empty "0x" (a non-archival "no code at block" miss is not a trustworthy answer),
+// and decides: resolved (>=1 real-code responder and all agree), endpoint_disagreement (real-
+// code responders disagree — do not trust any single value), or no_code_responses (none
+// returned code — retryable). Extracted pure so the agreement logic is unit-testable without
+// network. The agent steers none of these inputs (trusted ladder, real chain state).
+function decideAgreedBytecode(results) {
+  const codes = [];
+  for (const r of Array.isArray(results) ? results : []) {
+    if (typeof r !== "string") continue;
+    const normalized = r.toLowerCase().replace(/^0x/, "");
+    if (normalized.length > 0) codes.push(normalized);
+  }
+  if (codes.length === 0) return { status: "unavailable", reason: "no_code_responses" };
+  if (new Set(codes).size === 1) return { status: "resolved", code: codes[0], corroboration: codes.length };
+  return { status: "unavailable", reason: "endpoint_disagreement" };
+}
+
+async function ethGetCodeAgreed({ chainId, address, block = "latest", endpoints, maxEndpoints = 3, attempts = 2 }) {
+  if (!isAddress(address)) throw new Error(`address must be a 20-byte hex address, received: ${address}`);
+  const rawEndpointList = Array.isArray(endpoints) && endpoints.length > 0
+    ? endpoints
+    : resolveEvmRpcEndpoints(chainId);
+  let endpointList = [];
+  try {
+    ({ endpoints: endpointList } = await filterResolvedPublicRpcEndpoints(rawEndpointList));
+  } catch {
+    return { status: "unavailable", reason: "endpoint_resolution_failed" };
+  }
+  const probe = endpointList.slice(0, Math.max(1, maxEndpoints));
+  if (probe.length === 0) return { status: "unavailable", reason: "no_public_endpoints" };
+  const blockTag = normalizeBlockTag(block);
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    const results = [];
+    for (const endpoint of probe) {
+      try {
+        results.push(await rpcRequestOnce(endpoint, "eth_getCode", [address, blockTag], {
+          maxResponseBytes: 1024 * 1024,
+        }));
+      } catch {
+        results.push(null); // a transient endpoint miss does not decide the lookup
+      }
+    }
+    const decided = decideAgreedBytecode(results);
+    // resolved or a definitive ladder DISAGREEMENT both return now; only an all-failed/empty
+    // round (no_code_responses) retries, covering a transient all-endpoint blip.
+    if (decided.status === "resolved" || decided.reason === "endpoint_disagreement") return decided;
+  }
+  return { status: "unavailable", reason: "all_endpoints_failed" };
+}
+
 async function ethBlockNumber({ chainId, endpoints }) {
   const { result } = await rpcRequest({
     chainId,
@@ -166,9 +233,11 @@ module.exports = {
   HEX_BYTES_RE,
   STORAGE_SLOT_RE,
   DEFAULT_MAX_RESULT_BYTES,
+  decideAgreedBytecode,
   ethBlockNumber,
   ethCall,
   ethGetCode,
+  ethGetCodeAgreed,
   ethGetStorageAt,
   isAddress,
   isHexBytes,

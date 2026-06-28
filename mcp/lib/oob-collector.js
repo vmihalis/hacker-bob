@@ -520,16 +520,30 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   const matched = normalizeInteractions(parsed).filter((i) => i.token === binding.token);
 
   if (expect === "silence") {
-    // CONTROL ARM (decoy-silent). The agent declares a token it did NOT inject into the
-    // target. A REACHABLE sink (the fetch above succeeded) with NO interaction for this
-    // token is an affirmative silent control: it signs a blocked_by_defense row so
-    // finding-differential can FLIP it against the injected-and-fired positive on the same
-    // surface — closing the "the sink fires for ANY token / ambient noise" false positive.
-    // (It does NOT resolve the INTERMEDIARY-ATTRIBUTION residual — an intermediary in the
-    // target's request path fires only for the injected token — so that caveat is unchanged.)
-    // A decoy that DID interact is refused as a control: either the agent injected it, or
-    // the sink fires for a non-injected token (which would itself refute positive
-    // specificity) — never signed as a silent control.
+    // CONTROL ARM (decoy-silent). A server-side-minted token the agent did NOT inject into the
+    // target. A REACHABLE sink (the fetch above succeeded) with NO interaction for this token is
+    // an affirmative silent control: it signs a blocked_by_defense row so finding-differential
+    // can FLIP it against the injected-and-fired positive on the same surface.
+    //
+    // SCOPE — what this control DOES prove: the sink does not FABRICATE or receive AMBIENT
+    // interactions for a server-side-minted token that never entered the target, so the
+    // positive's interaction is attributable to the agent's injection, not to background noise
+    // at the sink (other scanners, the sink's own probes, a token-independent beacon).
+    //
+    // ACKNOWLEDGED RESIDUALS — what a NEVER-INJECTED decoy cannot probe, so this control does
+    // NOT close them: (1) PROMISCUITY — a sink/intermediary that fires for ANY *injected* token
+    // would need an EXPOSED-but-silent decoy to rule out, which a never-injected decoy is not;
+    // (2) INTERMEDIARY-ATTRIBUTION — an intermediary in the target's request path that fires
+    // only for the injected token. Both are bounded the same way the positive arm's standalone
+    // OOB evidence is: the verified flip rests on a GENUINE server-side callback (which the
+    // agent cannot fabricate — the sink is MCP-controlled), with this control closing only the
+    // ambient/fabricated-noise class. The blocked_by_defense outcome is the safe-variant the
+    // finding-differential flip contract requires; it names the silent-control disposition, not
+    // a proof that a defense blocked an injected token.
+    //
+    // A decoy that DID interact is refused as a control: either the agent injected it, or the
+    // sink fired for a non-injected token (which would itself refute positive specificity) —
+    // never signed as a silent control.
     if (matched.length > 0) {
       return notConfirmed("blocked_by_design", "decoy_interaction_observed");
     }

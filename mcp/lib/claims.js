@@ -1795,23 +1795,28 @@ function readCandidateClaims(targetDomain) {
 // non-empty missing[].
 function completionDepthGapForCompleteSurfaces(domain) {
   const { buildWaveHandoffsDocument, listWaveAssignmentNumbers } = require("./wave-handoff-store.js");
-  // The handoff doc is the SOLE enumerator of which surfaces are 'complete'. Separate the two
-  // reads so their failure modes stay distinct (a single fail-open catch over both was the
-  // brutalist's HIGH finding — it disabled the whole gate on any throw):
-  //   - No enumerable wave assignments (no session / no waves) → nothing here is 'complete',
-  //     proceed with a vacuous gate. buildWaveHandoffsDocument reads claims at the TOP, so it
-  //     must NOT be called when there are no waves to gate (a corrupt-claims session with no
-  //     waves still has nothing marked complete).
-  //   - Wave assignments EXIST but the handoff doc is UNREADABLE (corrupt JSONL line, torn
-  //     write, transient FS error) → we cannot determine which surfaces are 'complete'. Fail
-  //     CLOSED: returning { missing: [] } would silently disable the gate so EVERY complete
-  //     surface clears (the masquerade this gate closes) and dead-code the inner fail-closed
-  //     arms below. Mirrors the evaluation-time finalize gate that hard-fails on this.
+  // The handoff doc is the SOLE enumerator of which surfaces are 'complete'. Both reads that can
+  // throw fail CLOSED (a single fail-open catch over both was the brutalist's HIGH finding — it
+  // disabled the whole gate on any throw); the two are SEPARATE only so their distinct ERROR
+  // states stay distinct, never to fail one of them open:
+  //   - listWaveAssignmentNumbers RETURNS [] for a missing session dir / no waves (it does not
+  //     throw): nothing is 'complete', so the gate is vacuous. buildWaveHandoffsDocument reads
+  //     claims at the TOP, so it must NOT be called when there are no waves to gate (a
+  //     corrupt-claims session with no waves still has nothing marked complete).
+  //   - listWaveAssignmentNumbers THROWS only when an EXISTING session dir cannot be enumerated
+  //     (readdir FS error / the dir was replaced) — we cannot tell whether complete surfaces are
+  //     hidden behind it, so fail CLOSED (NOT the legitimate-empty case, which is the returned []
+  //     above). A readdir failure on a populated session must not silently disable the gate.
+  //   - Wave assignments EXIST but the handoff doc is UNREADABLE (corrupt JSONL line, torn write,
+  //     transient FS error) → we cannot determine which surfaces are 'complete'. Fail CLOSED too:
+  //     returning { missing: [] } would silently disable the gate so EVERY complete surface clears
+  //     (the masquerade this gate closes) and dead-code the inner fail-closed arms below. Mirrors
+  //     the evaluation-time finalize gate that hard-fails on this.
   let waveNumbers;
   try {
     waveNumbers = listWaveAssignmentNumbers(domain);
   } catch {
-    return { missing: [] };
+    return { missing: [{ surface_id: null, finding_id: null, reason: "completion_state_unreadable" }] };
   }
   if (!Array.isArray(waveNumbers) || waveNumbers.length === 0) return { missing: [] };
   let doc;

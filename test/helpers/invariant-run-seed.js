@@ -73,6 +73,11 @@ function seedInvariantRunRow(domain, {
   targetAddress = undefined,
   targetCodeSha256 = undefined,
   targetOnchainCodeSha256 = undefined,
+  // Force the on-chain cross-check field null while KEEPING the executed binding
+  // (target_address + target_code_sha256) present — the "lookup UNAVAILABLE" state the
+  // producer records when the runner's eth_getCode quorum could not resolve. Distinct from
+  // crossStackTargetBound:false (which clears all three = a pre-binding migration row).
+  targetOnchainUnavailable = false,
 } = {}) {
   const foundryResult = outcome === "test_failed"
     ? { tests: [{ success: false }] }
@@ -121,8 +126,9 @@ function seedInvariantRunRow(domain, {
     : (crossStackTargetBound ? SEED_TARGET_ADDRESS : null);
   const tbCode = typeof targetCodeSha256 === "string" ? targetCodeSha256
     : (crossStackTargetBound ? SEED_TARGET_CODE_SHA256 : null);
-  const tbOnchain = typeof targetOnchainCodeSha256 === "string" ? targetOnchainCodeSha256
-    : (crossStackTargetBound ? SEED_TARGET_CODE_SHA256 : null);
+  const tbOnchain = targetOnchainUnavailable ? null
+    : (typeof targetOnchainCodeSha256 === "string" ? targetOnchainCodeSha256
+      : (crossStackTargetBound ? SEED_TARGET_CODE_SHA256 : null));
   row.target_address = typeof tbAddr === "string" ? tbAddr.toLowerCase() : null;
   row.target_code_sha256 = typeof tbCode === "string" ? tbCode.toLowerCase() : null;
   row.target_onchain_code_sha256 = typeof tbOnchain === "string" ? tbOnchain.toLowerCase() : null;

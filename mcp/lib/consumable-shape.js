@@ -193,10 +193,23 @@ function mintShapeMatchedDecoyBytes(causeBytes) {
 // as the cause JWT (a structure-checking gate sees an identical three-segment shape; only
 // the content differs). The signature segment is the length-tunable part: base64url chars
 // are one byte each and a longer/shorter signature keeps the valid 3-segment JWT shape.
+//
+// The header segment is REUSED from the cause VERBATIM (its real alg/typ), never a fixed
+// HS256 header. The JWT header carries the signature algorithm; a content-blind gate that
+// branches on it (e.g. "only accept RS256") would HOLD the decoy on an alg TELL rather than
+// on credential validation — and a decoy that holds for a shape reason proves nothing about
+// content-validation, defeating the decoy-relevance arm. The header is structural metadata,
+// not the captured secret (which lives in the signature/claims that ARE randomized), so
+// reusing it is safe and removes the tell: cause and decoy now differ only in credential
+// content. The fixed HS256 header survives only as a fallback for a non-3-segment input,
+// which classifyConsumableShape (cls === "jwt") already excludes.
 function mintJwtShapedDecoy(causeText) {
   const targetLen = Buffer.byteLength(causeText, "utf8");
   const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const HEADER = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const causeSegments = causeText.split(".");
+  const HEADER = causeSegments.length === 3 && causeSegments[0]
+    ? causeSegments[0]
+    : b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   // A minimal randomized payload (real-shaped claims, random values). Keep it small so the
   // signature segment carries the length slack.
   const PAYLOAD = b64url(JSON.stringify({ sub: crypto.randomBytes(6).toString("hex"), iat: 1 }));

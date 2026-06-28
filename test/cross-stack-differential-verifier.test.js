@@ -257,6 +257,9 @@ function seedCrossStackTriple(domain, {
   // fake-deployed / vm.etch'd target — the executed bytecode != the on-chain bytecode).
   positiveTargetBound = true,
   positiveTargetCodeSha256 = undefined,
+  // The executed binding is present but the runner's on-chain cross-check was UNAVAILABLE
+  // (target_onchain_code_sha256 null) — a transient/retryable lookup failure, NOT a forgery.
+  positiveTargetOnchainUnavailable = false,
 } = {}) {
   const causeSurfaceId = causeOver.surface_id !== undefined ? causeOver.surface_id : WEB_SURFACE;
   // Route the cause surface so the verifier's stack-family check resolves it (HIGH-1).
@@ -276,6 +279,7 @@ function seedCrossStackTriple(domain, {
     templateId: CONSUME_TEMPLATE_ID, containerIsolated,
     crossStackTargetBound: positiveTargetBound,
     ...(positiveTargetCodeSha256 !== undefined ? { targetCodeSha256: positiveTargetCodeSha256 } : {}),
+    ...(positiveTargetOnchainUnavailable ? { targetOnchainUnavailable: true } : {}),
     causeRunId,
     // The violated arm CONSUMED the cause's captured bytes -> consumed_artifact_hash binds.
     consumedArtifactHash: cause.consumed_artifact_hash,
@@ -444,6 +448,27 @@ test("TARGET BINDING: a pre-binding cross-stack row (no target binding) is REFUS
     const out = await runBindPath(domain, crossStackLeaf(triple));
     assert.equal(out.result, "refuted");
     assert.match(out.leaves[0].reason, /missing cross-stack target binding|row minted before target binding is REFUSED/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
+test("TARGET BINDING: an UNAVAILABLE on-chain lookup (executed binding present, on-chain null) is REFUSED but flagged RE-RUNNABLE, not a forgery", () => withTempHome(() => {
+  const domain = "xstack-target-unavailable.example.com";
+  // The executed binding emitted (target_address + target_code_sha256 present), but the runner's
+  // quorum eth_getCode could not resolve the on-chain bytecode (all endpoints failed/timed-out or
+  // disagreed) -> target_onchain_code_sha256 null. This is a transient/operational state, NOT a
+  // fake target: the refusal reason must say RE-RUN (a healthy ladder re-run mints a resolved row
+  // at the same run_hash), and it must NOT read as a fake/etch forgery.
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveTargetOnchainUnavailable: true,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /on-chain target bytecode lookup was UNAVAILABLE|RE-RUN the invariant/i);
+    assert.doesNotMatch(out.leaves[0].reason, /fake-deployed or vm\.etch/i);
     assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
   })();
 }));

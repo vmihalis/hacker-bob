@@ -67,6 +67,7 @@
   "test/invariant-runner.test.js",
   "test/foundry-runner-match-path-anchor.test.js",
   "test/consumable-shape.test.js",
+  "test/evm-client-agreed-bytecode.test.js",
   "test/route-extractor.test.js",
   "test/symbol-surface-index.test.js",
   "test/frontier-fabric.test.js",

@@ -840,9 +840,20 @@ function adjudicateCrossStackFlip(positiveLeg, controlLeg, causeLeg, decoyArmLeg
   // arms; a row minted BEFORE this binding (no target fields) is REFUSED (fail-closed
   // migration), never accepted-with-warning.
   for (const [armName, row] of [["positive", p], ["control", c], ["decoy", d]]) {
-    if (typeof row.target_address !== "string" || typeof row.target_code_sha256 !== "string"
-      || typeof row.target_onchain_code_sha256 !== "string") {
-      return refuse(`${armName} arm missing cross-stack target binding (target_address / target_code_sha256 / target_onchain_code_sha256) — a cross-stack invariant must bind its EVM target to the audited on-chain bytecode; a row minted before target binding is REFUSED`);
+    const executedBound = typeof row.target_address === "string" && typeof row.target_code_sha256 === "string";
+    if (!executedBound) {
+      // address+code absent: the row predates target binding entirely (pre-binding migration).
+      return refuse(`${armName} arm missing cross-stack target binding (target_address / target_code_sha256) — a cross-stack invariant must bind its EVM target to the audited on-chain bytecode; a row minted before target binding is REFUSED`);
+    }
+    if (typeof row.target_onchain_code_sha256 !== "string") {
+      // Executed binding present but the runner's on-chain cross-check was UNAVAILABLE (all
+      // trusted endpoints failed/timed-out, or the real-code responders disagreed). This is a
+      // transient/operational state, NOT proof of a fake target. Refuse (the row does not bind),
+      // but signal it is RE-RUNNABLE: re-running the invariant when the RPC ladder is healthy
+      // mints a resolved row that supersedes this one at the SAME run_hash (the target siblings
+      // are outside run_hash). Distinguishing this from a mismatch is what stops a transient RPC
+      // blip from masquerading as a forgery and permanently blocking grading.
+      return refuse(`${armName} arm: on-chain target bytecode lookup was UNAVAILABLE (target_onchain_code_sha256 null) — the runner could not cross-check the executed target against the chain at fork_block (transient RPC failure or endpoint disagreement). This is NOT a forgery; RE-RUN the invariant when the trusted RPC ladder is healthy to re-attempt the target cross-check.`);
     }
     if (row.target_code_sha256 !== row.target_onchain_code_sha256) {
       return refuse(`${armName} arm: executed target bytecode sha256 (${row.target_code_sha256}) does not equal the on-chain bytecode at fork_block (${row.target_onchain_code_sha256}) — a fake-deployed or vm.etch'd target is REFUSED`);
