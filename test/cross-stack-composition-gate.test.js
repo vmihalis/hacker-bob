@@ -48,9 +48,10 @@ const {
   normalizeEvidenceReferenceShape,
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
+const compositionLiveVerifier = require("../mcp/lib/composition-live-verifier.js");
 const {
   verifyCompositionPath,
-} = require("../mcp/lib/composition-live-verifier.js");
+} = compositionLiveVerifier;
 const {
   offensiveRunsJsonlPath,
   offensiveRunsDir,
@@ -484,6 +485,34 @@ test("GRADE: a reportable cross-stack finding with a composition_path ref bound 
   const { missing } = gap(domain, "F-1");
   assert.deepEqual(missing, [], "a bound cross-stack verified_pass arms the finding");
 })()));
+
+test("GRADE: a member path_hash with EMPTY bound surface_refs FAILS CLOSED (no membership-only fallback)", () => withTempHome(() => {
+  // The producer guarantees a cross-stack verified_pass always carries surface_refs
+  // (adjudicateCrossStackFlip gates verified_pass on a non-null cause surfaceRef), so an
+  // empty-refs member can only arise from a corrupted/legacy summary or a producer
+  // regression. Inject exactly that via the read-time summary and assert the gate refuses
+  // it rather than falling back to membership alone — the HIGH-2 reconciliation must not be
+  // silently skipped. Stub the read-time summary the gate consults (re-required per call).
+  const domain = "xstack-grade-emptyrefs.example.com";
+  const memberHash = hex("a");
+  seedCrossStackClaim(domain, "F-1", {
+    explicitSurfaces: [{ id: "surface:web-a", kind: "web" }, { id: "surface:evm-b", kind: "smart_contract" }],
+    compositionPathHash: memberHash,
+  });
+  const original = compositionLiveVerifier.readCompositionVerifiedSummary;
+  compositionLiveVerifier.readCompositionVerifiedSummary = () => ({
+    verified_cross_stack_path_hashes: [memberHash],
+    // member, but NO surface_refs entry for it (empty union) — the anomaly.
+    verified_cross_stack_path_surface_refs: { [memberHash]: [] },
+  });
+  try {
+    const { missing } = gap(domain, "F-1");
+    assert.equal(missing.length, 1);
+    assert.equal(missing[0].reason, "cross_stack_path_surface_refs_absent");
+  } finally {
+    compositionLiveVerifier.readCompositionVerifiedSummary = original;
+  }
+}));
 
 test("GRADE: a single-stack finding even with a composition_path ref but cited & bound is fine; without a ref it is left to the finding-differential gate (no cross-stack gap)", () => withTempHome(() => {
   const domain = "xstack-grade-singlestack.example.com";

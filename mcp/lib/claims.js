@@ -1518,9 +1518,22 @@ function crossStackPathGapForReportableFindings(domain, { reportableFindingIds, 
         if (boundFinding === findingId) { reconciled = true; break; }
       }
     }
-    // Only enforce reconciliation when we actually resolved bound surface_refs; an empty
-    // set (a legacy row that did not carry surface_refs) falls back to membership alone.
-    if (boundSurfaceRefs.length > 0 && !reconciled) {
+    // FAIL CLOSED on absent surface_refs. A cross-stack verified_pass ALWAYS carries
+    // bound surface_refs: adjudicateCrossStackFlip gates verified_pass on a PROVABLE
+    // finding-scope, which requires a non-null cause surfaceRef ("offensive:<id>") that
+    // is always pushed into surface_refs — so a cross-stack member hash with an empty
+    // surface_refs union cannot arise from the producer. An empty set here is therefore
+    // an anomaly (a corrupted/legacy summary or a future producer regression), never a
+    // benign legacy row. Refuse it rather than fall back to membership alone — matching
+    // the D1comp completion-depth credit, which gives no credit on empty surface_refs.
+    // Membership-without-reconciliation would let a verified_pass minted for
+    // finding/surfaces X arm a cross-stack gate on a DIFFERENT finding Y that merely
+    // declares X's path_hash (the HIGH-2 reuse the reconciliation closes).
+    if (boundSurfaceRefs.length === 0) {
+      missing.push({ finding_id: findingId, reason: "cross_stack_path_surface_refs_absent" });
+      continue;
+    }
+    if (!reconciled) {
       missing.push({ finding_id: findingId, reason: "cross_stack_path_surface_mismatch" });
       continue;
     }

@@ -2213,6 +2213,12 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.scope_required, false);
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.sensitive_output, false);
   assert.deepEqual(TOOL_MANIFEST.bob_read_surface_leads.session_artifacts_written, []);
+  // bob_read_assignment_brief records a best-effort `running` marker into agent-runs.jsonl
+  // (the universal first surface-scoped tool call), so it DECLARES that MCP-owned ledger
+  // even though it stays mutating:false — the declaration is what makes the
+  // canShadowMissingSession guard refuse to shadow this read past a missing session.
+  assert.equal(TOOL_MANIFEST.bob_read_assignment_brief.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bob_read_assignment_brief.session_artifacts_written, ["agent-runs.jsonl"]);
   assert.deepEqual(TOOL_MANIFEST.bob_promote_surface_leads.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.global_preapproval, false);
@@ -2841,6 +2847,21 @@ test("central session authority shadow mode is bounded to missing read-only sess
       assert.equal(writeRow.authority.authority_result, "blocked");
       assert.equal(writeRow.authority.authority_error_code, "no_session");
       assert.equal(writeRow.authority.authority_shadowed, false);
+
+      // bob_read_assignment_brief is classed initialized_session_read (shadow-eligible by
+      // class) but DECLARES agent-runs.jsonl in session_artifacts_written, so
+      // canShadowMissingSession refuses to shadow it past a MISSING session: it gets the
+      // loud no_session block (authority_shadowed:false), never a soft shadow_blocked that
+      // would let its best-effort ledger-write side-effect run against an absent session.
+      const briefRead = await executeTool("bob_read_assignment_brief", {
+        target_domain: "shadow-missing.example.com",
+        wave: "w1",
+        agent: "a1",
+      });
+      assert.equal(briefRead.ok, false);
+      assert.equal(briefRead.error.code, "STATE_CONFLICT");
+      assert.equal(briefRead.error.details.authority.authority_error_code, "no_session");
+      assert.equal(briefRead.error.details.authority.authority_shadowed, false);
     });
   });
 });
