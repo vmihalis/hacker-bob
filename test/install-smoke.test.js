@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { getAdapter } = require("../adapters/index.js");
+const { installProject } = require("../scripts/install.js");
 const update = require("../mcp/lib/update-check.js");
 
 const ROOT = path.join(__dirname, "..");
@@ -13,6 +14,38 @@ const PACKAGE_VERSION = require("../package.json").version;
 const CODEX_ADAPTER = getAdapter("codex");
 const KIMI_ADAPTER = getAdapter("kimi");
 const GENERIC_MCP_ADAPTER = getAdapter("generic-mcp");
+
+test("PRE-FLIGHT atomicity: a stale bounty_* permission with no canonical twin aborts BEFORE any file is copied", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-preflight-"));
+  const workspace = path.join(tempRoot, "workspace");
+  fs.mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+  // An operator's existing settings pinning a REMOVED bounty_* tool (no bob_* twin). The legacy
+  // permission migration THROWS during the settings merge — which runs AFTER the runtime/agents/
+  // hooks are copied. The pre-flight must catch it BEFORE the first mutation, leaving the target
+  // untouched (no half-upgraded project).
+  const settingsPath = path.join(workspace, ".claude", "settings.json");
+  const original = `${JSON.stringify({
+    permissions: { allow: ["mcp__hacker-bob__bounty_report_written", "Read"] },
+    customSetting: true,
+  }, null, 2)}\n`;
+  fs.writeFileSync(settingsPath, original, "utf8");
+  try {
+    assert.throws(
+      () => installProject(workspace, { adapter: "claude", sourceRoot: ROOT, onAdapterResolution: () => {} }),
+      /stale MCP permission|no canonical replacement|bounty_\* tool alias/i,
+    );
+    // ATOMICITY: nothing Bob-owned was created — the doomed install never touched the target.
+    assert.ok(!fs.existsSync(path.join(workspace, "mcp", "server.js")), "no MCP runtime copied");
+    assert.ok(!fs.existsSync(path.join(workspace, ".hacker-bob")), "no .hacker-bob resources");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "bob")), "no .claude/bob metadata");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills")), "no skills copied");
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "agents")), "no agents copied");
+    // The operator's settings.json is left EXACTLY as it was (not migrated/overwritten).
+    assert.equal(fs.readFileSync(settingsPath, "utf8"), original);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("installer copies a require-able complete MCP runtime", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-install-"));

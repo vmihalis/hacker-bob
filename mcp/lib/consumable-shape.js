@@ -14,7 +14,13 @@ const crypto = require("crypto");
 //
 // The encoding classes, in order of derivation (most-specific first):
 //   jwt    — three base64url segments separated by dots (header.payload.signature).
-//   json   — the UTF-8 decode JSON.parses (the IDOR producer's canonicalJson cause).
+//   json   — the UTF-8 decode JSON.parses to an OBJECT or ARRAY (the IDOR producer's
+//            canonicalJson cause). A scalar (number/bool/null/string) is NOT 'json' here:
+//            randomizeJsonLeaves can only build a same-shape decoy for a structure, so the
+//            mint side raw-floors a scalar; classifying it 'json' would make the verify side
+//            expect a 'json' decoy the mint never produces — the mint/verify divergence that
+//            silently barred a scalar-token cause from EVER producing a verified_pass. A
+//            scalar falls through to the byte-pattern classes so both sides agree.
 //   hex    — even-length, all [0-9a-fA-F].
 //   base64 — length % 4 === 0, all [A-Za-z0-9+/] with up to two trailing '='.
 //   raw    — none of the above (the byte-length parity check is the binding).
@@ -24,6 +30,9 @@ const crypto = require("crypto");
 const JWT_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const HEX_RE = /^[0-9a-fA-F]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+// base64 alphabet chars OUTSIDE the hex alphabet [0-9a-fA-F] — used to guarantee a base64
+// decoy never re-classifies as 'hex' (hex is checked first and is a subset of base64).
+const NON_HEX_BASE64_CHARS = "GHIJKLMNOPQRSTUVWXYZghijklmnopqrstuvwxyz+/";
 
 // Classify the SHAPE of a Buffer of consumable bytes into one of the encoding classes
 // above. Pure + deterministic: the same bytes always classify to the same class on both
@@ -40,8 +49,11 @@ function classifyConsumableShape(bytes) {
   if (text != null && JWT_RE.test(text)) return "jwt";
   if (text != null) {
     try {
-      JSON.parse(text);
-      return "json";
+      const parsed = JSON.parse(text);
+      // Only STRUCTURED JSON (object/array) is the 'json' shape — a scalar has no leaves to
+      // randomize, so the mint side raw-floors it and the verify side must agree by NOT calling
+      // it 'json'. Fall through to the byte-pattern classes for scalars.
+      if (parsed !== null && typeof parsed === "object") return "json";
     } catch {
       // not JSON — fall through to the byte-pattern classes.
     }
@@ -182,6 +194,18 @@ function mintShapeMatchedDecoyBytes(causeBytes) {
     let b64 = crypto.randomBytes(rawLen).toString("base64");
     if (b64.length < text.length) b64 = b64.padEnd(text.length, "A");
     b64 = b64.slice(0, text.length);
+    // classifyConsumableShape checks hex BEFORE base64 and the hex alphabet [0-9a-fA-F] is a
+    // SUBSET of base64's, so a base64 string that is coincidentally all-hex (likely for a short
+    // cause) would re-classify as 'hex' — a mint/verify divergence against the base64 cause (a
+    // cause that classified base64 always has a non-hex char, else it would have classified hex
+    // itself). Force one guaranteed-non-hex base64 char so the decoy always re-classifies base64.
+    if (HEX_RE.test(b64) && b64.length > 0) {
+      const arr = b64.split("");
+      arr[crypto.randomBytes(1)[0] % arr.length] = NON_HEX_BASE64_CHARS[
+        crypto.randomBytes(1)[0] % NON_HEX_BASE64_CHARS.length
+      ];
+      b64 = arr.join("");
+    }
     return Buffer.from(b64, "utf8");
   }
   // raw — same byte length, random bytes.

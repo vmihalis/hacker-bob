@@ -40,7 +40,8 @@
 // must be the SAME invariant test (violated vs held), and the web exploit is the bound
 // CAUSE, never an arm.
 //
-// THE DEFENSE (the non-forgeability spine, every leg preserved):
+// THE DEFENSE (the non-forgeability legs — NECESSARY, and sufficient only UNDER AN OUT-OF-UID
+// SIGNER; see the SANDBOX BOUNDARY note at the end for the same-uid precondition):
 //   BIND-DON'T-RE-EXECUTE   — every leg resolves to an already-executed MAC-signed row;
 //                             agent prose is never trusted.
 //   SAME-TEST EFFECT FLIP   — positive and control are the SAME invariant test on the SAME
@@ -83,6 +84,18 @@
 //                             and the flip + causal link are RE-ADJUDICATED from signed
 //                             source bytes; the path_hash enters verified_path_hashes[]
 //                             only when ok.
+//
+// SANDBOX BOUNDARY (the precondition under which the legs above hold — NOT itself enforced
+// here). STRICT MAC and container_isolated:true are necessary but NOT sufficient on a SAME-UID
+// box: an agent running as the signer uid can read the 0600 signer key and self-sign both a
+// row MAC and container_isolated:true, so this verifier — which can only re-derive from rows it
+// must ASSUME were signed out-of-uid — cannot by itself guarantee non-forgeability there. The
+// load-bearing boundary is the LIVE signer-key probe in the verdict sandbox gate
+// (sandbox-isolation-gate.js evaluateVerdictSandboxGate) plus the grade gate, which refuse to
+// trust an SC/cross-stack reportable whose backing rows are not provably out-of-uid-signed. On
+// a same-uid box the legs here are a defense-in-depth layer beneath that probe, not a standalone
+// guarantee; closing the same-uid residual fully requires operator-OS isolation + attestation
+// (an out-of-uid signer), which is an operator deployment concern, not an in-repo guarantee.
 
 const {
   hashCanonicalJson,

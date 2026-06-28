@@ -352,6 +352,18 @@ function installProject(projectDir, options = {}) {
   logResolution(adapterResolution);
 
   const existingAdapters = installedAdapterIds(targetAbs);
+
+  // PRE-FLIGHT (atomicity). If the Claude adapter will merge .claude/settings.json, validate
+  // that every legacy bounty_* permission migrates to a live canonical bob_* twin BEFORE any
+  // file is copied. The settings merge runs AFTER the runtime/agent/hook copies, so a stale-
+  // permission throw there would abort mid-install and leave a half-upgraded project. Failing
+  // here — before the first mutation — keeps a doomed upgrade from touching the target at all.
+  if (adapterIds.includes("claude")) {
+    const { assertLegacyToolPermissionsMigratable } = require("./merge-claude-config.js");
+    const existingClaudeSettings = readJsonIfExists(path.join(targetAbs, ".claude", "settings.json"), {});
+    assertLegacyToolPermissionsMigratable(existingClaudeSettings);
+  }
+
   fs.mkdirSync(bobResourceDir, { recursive: true });
 
   const copiedResources = {};

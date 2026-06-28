@@ -80,18 +80,20 @@ const {
 const {
   validateToolArguments,
 } = require("../mcp/lib/tool-validation.js");
-
-// The audited cross-stack consuming template id — every cross-stack invariant arm must run
-// it (the only template whose body binds a captured artifact as the on-chain auth arg).
-const CONSUME_TEMPLATE_ID = "INV-CROSS-STACK-AUTH-REPLAY-001";
-
-// The random decoy bytes (distinct CONTENT from the real cause's CONSUMED_BYTES, but SAME
-// SHAPE — same byte length, same raw encoding class — so the HIGH-2 shape-parity binding
-// passes: a gate can only reject the decoy by validating content, not length/shape). A gate
-// that validates the SPECIFIC credential bytes REJECTS these -> the decoy arm HOLDS.
-const DECOY_BYTES = Buffer.from("random-decoy-bytes:0xc0ffeeAABB", "utf8");
-const DECOY_HASH = crypto.createHash("sha256").update(DECOY_BYTES).digest("hex");
-const DECOY_RUN_ID = "web-decoy-1";
+// Single source of truth for the cross-stack decoy fixtures, shared with the four sibling
+// suites (cross-stack-consumed-binding / -producer-consume-endtoend / -composition-gate /
+// sandbox-isolation-composition-path). Imported here so the constants never drift between
+// suites. NOTE: this suite keeps its OWN seedDecoyRefs (below) rather than the helper's — the
+// local one threads crossStackTargetBound:true onto the decoy arm so its verified_pass triples
+// clear the target-binding gate, which the helper's seedDecoyRefs (used by sibling suites only
+// in earlier-refusing paths) does not set. Unifying that is a behavioral change to the helper,
+// out of scope for the constant de-dup.
+const {
+  CONSUME_TEMPLATE_ID,
+  DECOY_BYTES,
+  DECOY_HASH,
+  DECOY_RUN_ID,
+} = require("./helpers/cross-stack-decoy.js");
 
 // The genuine consumable bytes the stack-A web attack captures and the EVM violation
 // consumes. sha256(CONSUMED_BYTES) is what binds the cause offensive row's
@@ -607,7 +609,7 @@ test("F1: a non-demonstrating cause (a blocked web run) is REFUSED", () => withT
   })();
 }));
 
-test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same test, same outcome) is refused as a non-discriminating control", () => withTempHome(() => {
+test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same test, same outcome → IDENTICAL run_hash → the SAME executed row) is refused by the distinct-executed-rows guard", () => withTempHome(() => {
   const domain = "xstack-noflip.example.com";
   const cause = appendWebRow(domain, buildSignedWebRow(domain, { run_id: CAUSE_RUN_ID, offensive_outcome: "exploited_safely", command_hash: hex("1") }));
   const positive = seedInvariantRunRow(domain, {
@@ -616,8 +618,11 @@ test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same tes
     causeRunId: CAUSE_RUN_ID,
   });
   // The "control" is VIOLATED on the SAME tree (same test, same outcome) — it does not flip.
-  // Because the artifact presence is OUTSIDE run_hash, a same-tree same-outcome control has
-  // the IDENTICAL run_hash as the positive, so it is refused as a non-discriminating control.
+  // Because the artifact presence is OUTSIDE run_hash, a same-tree same-outcome control has the
+  // IDENTICAL run_hash as the positive, i.e. it IS the same executed row — caught by the
+  // distinct-executed-rows guard (the control collapses into the positive). The regex pins to
+  // THAT guard's exact phrasing, not a union with the unrelated single-run-self-flip path, so a
+  // regression in the distinct-rows guard cannot pass green by tripping a different refusal.
   const controlViolated = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
     templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
@@ -633,7 +638,7 @@ test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same tes
       ...decoyRefs,
     });
     assert.equal(out.result, "refuted");
-    assert.match(out.leaves[0].reason, /run_hash is identical|non-discriminating control|DIFFERENT executed rows|single run/i);
+    assert.match(out.leaves[0].reason, /positive, control and decoy must be DIFFERENT executed rows/i);
     assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
   })();
 }));

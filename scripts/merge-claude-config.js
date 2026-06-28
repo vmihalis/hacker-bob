@@ -105,6 +105,46 @@ function rewriteLegacyToolNamePermission(value) {
   );
 }
 
+// PRE-FLIGHT (install atomicity). Collect every legacy bounty_* permission in the operator's
+// existing settings that has NO canonical bob_* twin — exactly the set
+// rewriteLegacyToolNamePermission would THROW on during the settings merge. Returns [] when all
+// migrate cleanly. The merge runs AFTER the installer has copied the runtime/agents/hooks, so a
+// throw there leaves a half-upgraded project; the installer calls assertLegacyToolPermissions-
+// Migratable BEFORE its first file mutation so a doomed upgrade never touches the target.
+function unmigratableLegacyToolPermissions(existing) {
+  const allow = existing && existing.permissions && Array.isArray(existing.permissions.allow)
+    ? existing.permissions.allow
+    : [];
+  const stale = [];
+  for (const permission of allow) {
+    if (typeof permission !== "string") continue;
+    const afterServerKey = rewriteLegacyPermissionString(permission);
+    const match = HACKER_BOB_BOUNTY_PERMISSION_PATTERN.exec(afterServerKey);
+    if (!match) continue;
+    const canonicalName = `${CANONICAL_TOOL_NAME_PREFIX}${match[1]}`;
+    if (!CANONICAL_TOOL_NAMES.has(canonicalName)) {
+      stale.push({ permission, canonical_name: canonicalName });
+    }
+  }
+  return stale;
+}
+
+function assertLegacyToolPermissionsMigratable(existing) {
+  const stale = unmigratableLegacyToolPermissions(existing);
+  if (stale.length === 0) return;
+  const lines = stale
+    .map(({ permission, canonical_name }) => `  - '${permission}' has no canonical replacement named '${canonical_name}'`)
+    .join("\n");
+  throw new Error(
+    `.claude/settings.json pins ${stale.length} stale MCP permission(s) from the removed ` +
+    `bounty_* tool alias layer (dropped in v2.1.0) with no canonical bob_* twin:\n${lines}\n` +
+    `Edit .claude/settings.json permissions.allow and remove them (e.g. report-written is now ` +
+    `covered by mcp__hacker-bob__bob_finalize_report; transition-phase by ` +
+    `mcp__hacker-bob__bob_advance_session), then re-run the installer. Validated PRE-INSTALL, so ` +
+    `no files have been modified yet.`,
+  );
+}
+
 function migrateLegacyMcp(existing) {
   if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
     return { value: existing, migrated: false };
@@ -467,6 +507,8 @@ module.exports = {
   LEGACY_TOOL_NAME_PREFIX,
   STALE_GLOBAL_MCP_PERMISSIONS,
   STALE_HOOK_SCRIPT_NAMES,
+  assertLegacyToolPermissionsMigratable,
+  unmigratableLegacyToolPermissions,
   hookScriptName,
   mergeMcp,
   mergeHookEntries,

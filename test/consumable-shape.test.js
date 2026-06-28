@@ -48,6 +48,28 @@ for (const [name, cause] of CAUSES) {
   });
 }
 
+test("a scalar-JSON cause is NOT classified 'json' and mint/verify AGREE on its shape (closes the scalar divergence)", () => {
+  // classifyConsumableShape used to return 'json' for scalars, but the mint side raw-floors a
+  // scalar (randomizeJsonLeaves needs a structure), so the verify side re-classified the decoy
+  // as 'raw' and refused on the class mismatch — a scalar-token cause could NEVER produce a
+  // cross-stack verified_pass. Scalars now fall through the byte-pattern cascade consistently,
+  // so mint and verify agree and the decoy is bindable.
+  for (const scalar of ["123", "true", "false", "null", "3.14159", "\"x\""]) {
+    const cause = Buffer.from(scalar, "utf8");
+    const causeClass = classifyConsumableShape(cause);
+    assert.notEqual(causeClass, "json", `${scalar}: a scalar must not classify as 'json'`);
+    for (let i = 0; i < 30; i += 1) {
+      const decoy = mintShapeMatchedDecoyBytes(cause);
+      assert.equal(decoy.length, cause.length, `${scalar}: byte-length parity`);
+      assert.equal(
+        classifyConsumableShape(decoy), causeClass,
+        `${scalar}: decoy must re-classify to the SAME class as the cause (mint/verify agree)`,
+      );
+      assert.notEqual(Buffer.compare(decoy, cause), 0, `${scalar}: decoy content differs from the cause`);
+    }
+  }
+});
+
 test("a JWT decoy REUSES the cause's real header (no fixed-HS256 alg tell)", () => {
   // A content-blind gate that branches on the JWT header algorithm must not be able to HOLD
   // the decoy on the alg alone — the decoy's header must match the cause's, so cause and decoy
