@@ -652,6 +652,14 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   // agent's own curl, not the target — withhold the signed row. Useless for DNS
   // (source = resolver), so DNS hits are never withheld on this basis.
   let sourceDistinct = true;
+  // source_attribution_established: the sink interaction is PROVABLY target-caused, not an agent
+  // self-hit. TRUE only for an HTTP callback whose source IP is VERIFIED distinct from the
+  // configured session egress IP. DNS (the source is the target's recursive resolver, so it is
+  // self-hittable AND unattributable) and HTTP when no session-egress IP is configured (source
+  // distinctness is unverifiable, so an agent could self-request http://<oob-host>/<token>) both
+  // leave it FALSE — the finding-differential gate then caps the finding to a lead, never a clean
+  // verified_pass. MAC-covered, so an agent cannot flip it through tool args.
+  let attributionEstablished = false;
   if (httpHit && config.selfEgressIp && typeof httpHit.source_ip === "string") {
     // Normalize IPv4-mapped IPv6 (a Node server on :: reports IPv4 clients as
     // "::ffff:203.0.113.99") so the documented plain-IPv4 config still matches.
@@ -661,6 +669,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       return notConfirmed("blocked_by_design", "self_hit_suspected");
     }
     sourceDistinct = !sameEgress;
+    attributionEstablished = true;
   }
 
   // CAPTURE: Bob's OWN observation ONLY — token + constant host + protocol + ts +
@@ -679,6 +688,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     protocol,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
   });
   // Defense in depth: even the bounded capture + the bound target must carry no PII
@@ -698,6 +708,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     token_match_exact: true,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
     // NOTE: we do NOT stamp a "no pre-injection hit" control — no pre-injection
     // poll is performed, so asserting it in the signed MAC would claim an

@@ -518,12 +518,15 @@ test("expect=silence: a decoy that DID interact is refused as a control (never s
 test("the injected-and-fired positive + the decoy-silent control flip to a verified_pass via finding-differential", () => withTempHome(async () => {
   const domain = "oob-flip.example.test";
   setupSession(domain);
-  // POSITIVE — a real token, injected into the surface, fires.
-  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  // POSITIVE — a real token injected into the surface fires via HTTP, and the configured session
+  // egress IP (CONFIG_SELF) PROVES the callback's source is distinct from the agent (not a
+  // self-hit) -> source_attribution_established. hitSource's default source IP (198.51.100.23)
+  // differs from SELF_IP (203.0.113.99), so attribution is established.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG_SELF });
   const t1 = tokenFor(domain, m1.token_handle);
   const pos = await oobPoll(
     { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
-    { config: CONFIG, interaction_source: hitSource(t1) },
+    { config: CONFIG_SELF, interaction_source: hitSource(t1) },
   );
   assert.equal(pos.offensive_outcome, "exploited_safely");
   // CONTROL — a decoy token, never injected, stays silent.
@@ -577,5 +580,38 @@ test("ATTRIBUTION: a DNS-only OOB positive does NOT earn a verified_pass via the
     control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
   });
   assert.notEqual(verdict.result, "verified_pass");
-  assert.match(verdict.reason, /DNS-only|attribution-weak|recursive resolver/i);
+  assert.match(verdict.reason, /UNESTABLISHED|not provably target-caused|attribution|recursive resolver/i);
+}));
+
+test("ATTRIBUTION: an HTTP OOB positive with NO configured session-egress IP does NOT earn a verified_pass (self-hit gap)", () => withTempHome(async () => {
+  const domain = "oob-http-noegress.example.test";
+  setupSession(domain);
+  // POSITIVE — an HTTP callback, but BOB_OOB_SELF_EGRESS_IP is UNSET (CONFIG, not CONFIG_SELF).
+  // Without a configured egress IP the runner cannot prove the source is distinct from the agent,
+  // so the agent could have self-requested http://<oob-host>/<token> from its own network, never
+  // touching the target. source_attribution_established is therefore false.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG, interaction_source: hitSource(t1) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The flip is structurally genuine but attribution is UNESTABLISHED (no egress IP to prove the
+  // source) — the verifier returns INCONCLUSIVE, not verified_pass.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.notEqual(verdict.result, "verified_pass");
+  assert.match(verdict.reason, /UNESTABLISHED|no configured session-egress|attribution/i);
 }));
