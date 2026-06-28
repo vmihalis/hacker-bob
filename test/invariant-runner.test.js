@@ -338,6 +338,49 @@ test("dry_run returns a report without writing the test file or persisting", asy
   }
 });
 
+// SECURITY: the cross-stack target binding's on-chain cross-check MUST query the operator-
+// pinned TRUSTED RPC ladder, never the AGENT-supplied fork_urls. The agent controls the fork
+// (and thus the executed target's bytecode), so resolving the "independent" on-chain value
+// through the same agent endpoints would let the agent serve a fake bytecode matching its fake
+// target — a forged verified_pass. This locks that agent fork_urls never reach the cross-check.
+test("cross-stack target cross-check uses the TRUSTED ladder, NOT agent-supplied fork_urls (forgery fix)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const evmClient = require("../mcp/lib/evm-client.js");
+  const originalAgreed = evmClient.ethGetCodeAgreed;
+  let agreedArgs = null;
+  evmClient.ethGetCodeAgreed = async (args) => { agreedArgs = args; return { status: "unavailable", reason: "stubbed" }; };
+  const stubFoundry = async () => ({
+    tests: [{ name: "testX", success: false }],
+    // The pinned template's emitted binding (address + sha256 of the executed target bytecode).
+    target_binding: { address: `0x${"ab".repeat(20)}`, code_sha256: `0x${"cd".repeat(32)}` },
+  });
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-xstack-trust",
+      chain_id: 1,
+      fork_block: 21000000,
+      // The AGENT supplies these. They drive the FORK, but must NOT reach the on-chain cross-check.
+      fork_urls: ["https://attacker-controlled.example/rpc"],
+    });
+    assert.ok(agreedArgs, "the on-chain cross-check ran");
+    assert.equal(agreedArgs.chainId, 1);
+    assert.equal(agreedArgs.block, 21000000);
+    // THE FIX: agent fork_urls are NOT passed as endpoints — ethGetCodeAgreed resolves the
+    // operator-pinned trusted ladder itself. A regression that re-passes fork_urls fails here.
+    assert.equal(agreedArgs.endpoints, undefined, "agent fork_urls must NOT reach the on-chain cross-check");
+  } finally {
+    evmClient.ethGetCodeAgreed = originalAgreed;
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
 // The persisted test_passed here is the per-run PRIMITIVE (MINT), not a verified
 // verdict (CONFIRM). A verified FV finding requires the differential flip via
 // verifyInvariantDifferential; this test only asserts the run is recorded.

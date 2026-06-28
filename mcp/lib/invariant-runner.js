@@ -1018,26 +1018,33 @@ async function runInvariantForFinding({
     // "BOB_TARGET_BIND:<address>:<sha256(target.code)>" line (foundry-runner parses it into
     // foundry_result.target_binding; a setUp-injected second line sets target_binding_error
     // → refused). Cross-check the executed runtime-bytecode sha256 against the REAL on-chain
-    // bytecode at the SAME address+fork_block via eth_getCode on the trusted fork endpoints.
-    // The agent controls the executed target but NOT the runner's eth_getCode against the
-    // real chain, so a fake-deployed or vm.etch'd target yields a mismatch the cross-stack
-    // verifier refuses. Single-surface runs emit no binding (these stay null). The lookup uses
-    // ethGetCodeAgreed (quorum across endpoints, "0x" non-archival misses ignored), so a single
-    // bad endpoint cannot mint a WRONG on-chain hash that would falsely refuse a genuine target;
-    // when the lookup is unavailable (all endpoints failed/timed-out, or real-code responders
-    // disagree) target_onchain_code_sha256 stays null. The verifier distinguishes that null
-    // (on-chain lookup UNAVAILABLE → a re-runnable, NOT a forgery) from a present-but-mismatched
-    // hash (the fake/etch case). A re-run reuses the same run_hash (the target siblings are
-    // outside run_hash), so a resolved row supersedes an unavailable one in the dedup ledger.
+    // bytecode at the SAME address+fork_block.
+    //
+    // The cross-check MUST query the operator-pinned TRUSTED RPC ladder (resolveEvmRpcEndpoints
+    // → BOB_EVM_RPCS_<chainId> / the code-pinned DEFAULT_PUBLIC_RPC_LADDER), NEVER the agent-
+    // supplied fork_urls. The agent controls the FORK — and therefore the executed target's
+    // bytecode (its setUp can deploy a MaliciousTarget) — so resolving the "independent" on-chain
+    // value through the SAME agent endpoints would let the agent serve a fake bytecode that
+    // MATCHES its fake target, forging the verified_pass. Because the trusted ladder is not agent
+    // input, a fake-deployed / vm.etch'd target yields a mismatch the cross-stack verifier refuses.
+    // ethGetCodeAgreed requires a CORROBORATION QUORUM (>= 2 agreeing trusted responders by
+    // default) and ignores "0x" non-archival misses, so neither a single agent endpoint nor a
+    // single compromised trusted endpoint can decide the hash. An unconfigured/insufficient ladder
+    // yields "unavailable" → target_onchain_code_sha256 null → the verifier refuses (re-runnable,
+    // NOT a forgery), distinct from a present-but-mismatched hash (the fake/etch case). Single-
+    // surface runs emit no binding (these stay null). A re-run reuses the same run_hash (the target
+    // siblings are outside run_hash), so a resolved row supersedes an unavailable one in the ledger.
     const tbResult = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding : null;
     const tbError = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding_error : null;
     if (!tbError && tbResult && typeof tbResult.address === "string" && typeof tbResult.code_sha256 === "string") {
       targetAddress = tbResult.address.toLowerCase();
       targetCodeSha256 = tbResult.code_sha256.toLowerCase();
-      if (chain_id != null && fork_block != null && Array.isArray(fork_urls) && fork_urls.length > 0) {
+      if (chain_id != null && fork_block != null) {
         try {
           const { ethGetCodeAgreed } = require("./evm-client.js");
-          const resp = await ethGetCodeAgreed({ chainId: chain_id, address: targetAddress, block: fork_block, endpoints: fork_urls });
+          // No `endpoints` argument: ethGetCodeAgreed resolves the operator-pinned trusted ladder
+          // itself (resolveEvmRpcEndpoints), so the agent-supplied fork_urls never reach this lookup.
+          const resp = await ethGetCodeAgreed({ chainId: chain_id, address: targetAddress, block: fork_block });
           if (resp && resp.status === "resolved" && typeof resp.code === "string" && resp.code.length > 0) {
             targetOnchainCodeSha256 = `0x${crypto.createHash("sha256").update(Buffer.from(resp.code, "hex")).digest("hex")}`;
           }
