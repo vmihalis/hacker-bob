@@ -226,6 +226,27 @@ function adjudicateFindingDifferential({ surfaceId, positiveRow, controlRow }) {
     };
   }
 
+  // ATTRIBUTION GATE (OOB DNS-only). A DNS-only OOB positive is self-hittable and
+  // unattributable: the DNS query reaches the sink from the target's RECURSIVE RESOLVER, not the
+  // target host, so the agent can self-resolve the token and the sink cannot tell that apart from
+  // a target-caused lookup. oob-collector records that as the MAC-covered dns_only_attribution_weak
+  // boolean on the positive row. The decoy-silent flip here proves token-SPECIFICITY (the sink
+  // fired for the injected token, not a random decoy) but NOT target-CAUSATION, so a DNS-only OOB
+  // must not earn a clean reportable verified_pass on this flip alone — it is attribution-limited
+  // and stays a lead. INCONCLUSIVE (not refuted): the flip is real, just insufficient; an HTTP OOB
+  // hit whose source IP is distinct from the session egress (oob-collector already withholds an
+  // HTTP self-hit) re-confirms it. The gate fires for OOB positives only — a non-OOB positive
+  // never carries the field (undefined !== true), so IDOR/XSS/etc. differentials are unaffected.
+  // Re-adjudicated at read time, so a verified row minted before this gate is dropped on re-read.
+  if (positiveRow.dns_only_attribution_weak === true) {
+    return {
+      result: RESULT_INCONCLUSIVE,
+      reason: "OOB positive is DNS-only (attribution-weak): a DNS callback arrives from the target's recursive resolver, not the host, so it cannot be attributed to the target and is self-hittable. The decoy-silent flip proves token-specificity, not target-causation — re-confirm with an HTTP OOB hit whose source IP is distinct from the session egress.",
+      positiveHash,
+      controlHash,
+    };
+  }
+
   // Genuine flip: positive demonstrates the issue, control is blocked, on the SAME
   // surface, with distinct executed identities.
   return {

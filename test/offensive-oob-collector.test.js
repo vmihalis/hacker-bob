@@ -544,3 +544,38 @@ test("the injected-and-fired positive + the decoy-silent control flip to a verif
   });
   assert.equal(verdict.result, "verified_pass");
 }));
+
+test("ATTRIBUTION: a DNS-only OOB positive does NOT earn a verified_pass via the decoy-silent flip (attribution-limited, stays a lead)", () => withTempHome(async () => {
+  const domain = "oob-dns-flip.example.test";
+  setupSession(domain);
+  // POSITIVE — a DNS-only hit: the callback arrives from the target's recursive resolver, not the
+  // host, so it is self-hittable (the agent can resolve the token itself) and unattributable.
+  // oob-collector flags dns_only_attribution_weak:true on the MAC-signed positive row.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG, interaction_source: hitSource(t1, { protocol: "dns", source_ip: undefined }) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  // CONTROL — the free, always-constructible decoy-silent control.
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The flip is structurally genuine (positive exploited, control blocked, distinct rows, same
+  // surface), but the DNS-only positive is ATTRIBUTION-LIMITED: the flip proves token-specificity,
+  // not target-causation. The verifier returns INCONCLUSIVE (no verified_pass) — the finding stays
+  // a lead until corroborated by an HTTP OOB hit with a source IP distinct from the session egress.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.notEqual(verdict.result, "verified_pass");
+  assert.match(verdict.reason, /DNS-only|attribution-weak|recursive resolver/i);
+}));
