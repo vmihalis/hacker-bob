@@ -853,6 +853,18 @@ function adjudicateCrossStackFlip(positiveLeg, controlLeg, causeLeg, decoyArmLeg
   // arms; a row minted BEFORE this binding (no target fields) is REFUSED (fail-closed
   // migration), never accepted-with-warning.
   for (const [armName, row] of [["positive", p], ["control", c], ["decoy", d]]) {
+    // SEALED HARNESS (closes the cheatcode forgery). A genuine cross-stack invariant arm executes
+    // the RUNNER-OWNED sealed Foundry project — a runner-generated test with an inlined Vm (no agent
+    // forge-std on the build path), a pinned setUp, and a pinned foundry.toml — so the agent
+    // contributes only DATA and cannot vm.mockCall/vm.store the real target, nor ship a rigged
+    // forge-std, to manufacture the differential against the real bytecode. The runner stamps the
+    // MAC-covered sealed_harness:true ONLY on that path. A row whose sealed_harness is not true ran
+    // in an AGENT-AUTHORED harness and is REFUSED (fail-closed; a pre-sealed row carries no marker
+    // and is refused the same way). This precedes the bytecode-binding checks below: bytecode
+    // equality alone does not stop cheatcode/build-environment forgery on the REAL contract.
+    if (row.sealed_harness !== true) {
+      return refuse(`${armName} arm did not run in the runner-owned SEALED harness (sealed_harness !== true) — a cross-stack invariant in an agent-authored harness can vm.mockCall/vm.store the real target or ship a rigged forge-std to forge the differential; REFUSED. Re-run the cross-stack invariant under the sealed path.`);
+    }
     const executedBound = typeof row.target_address === "string" && typeof row.target_code_sha256 === "string";
     if (!executedBound) {
       // address+code absent: the row predates target binding entirely (pre-binding migration).

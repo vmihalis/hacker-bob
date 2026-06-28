@@ -262,6 +262,10 @@ function seedCrossStackTriple(domain, {
   // The executed binding is present but the runner's on-chain cross-check was UNAVAILABLE
   // (target_onchain_code_sha256 null) — a transient/retryable lookup failure, NOT a forgery.
   positiveTargetOnchainUnavailable = false,
+  // positiveSealedHarness:false marks the positive arm as having run in an AGENT-AUTHORED harness
+  // (sealed_harness:false) — the cheatcode-forgery refusal. Default (undefined) follows
+  // crossStackTargetBound, so a genuine seeded arm is sealed.
+  positiveSealedHarness = undefined,
 } = {}) {
   const causeSurfaceId = causeOver.surface_id !== undefined ? causeOver.surface_id : WEB_SURFACE;
   // Route the cause surface so the verifier's stack-family check resolves it (HIGH-1).
@@ -282,6 +286,7 @@ function seedCrossStackTriple(domain, {
     crossStackTargetBound: positiveTargetBound,
     ...(positiveTargetCodeSha256 !== undefined ? { targetCodeSha256: positiveTargetCodeSha256 } : {}),
     ...(positiveTargetOnchainUnavailable ? { targetOnchainUnavailable: true } : {}),
+    ...(positiveSealedHarness !== undefined ? { sealedHarness: positiveSealedHarness } : {}),
     causeRunId,
     // The violated arm CONSUMED the cause's captured bytes -> consumed_artifact_hash binds.
     consumedArtifactHash: cause.consumed_artifact_hash,
@@ -445,6 +450,9 @@ test("TARGET BINDING: a pre-binding cross-stack row (no target binding) is REFUS
     findingId: "F-1",
     causeOver: { container_isolated: true },
     positiveTargetBound: false,
+    // Keep this arm SEALED so it reaches the TARGET-binding check (the focus of this test); the
+    // separate SEALED HARNESS test covers the sealed_harness gate that otherwise precedes it.
+    positiveSealedHarness: true,
   });
   return (async () => {
     const out = await runBindPath(domain, crossStackLeaf(triple));
@@ -471,6 +479,25 @@ test("TARGET BINDING: an UNAVAILABLE on-chain lookup (executed binding present, 
     assert.equal(out.result, "refuted");
     assert.match(out.leaves[0].reason, /on-chain target bytecode lookup was UNAVAILABLE|RE-RUN the invariant/i);
     assert.doesNotMatch(out.leaves[0].reason, /fake-deployed or vm\.etch/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
+test("SEALED HARNESS: a cross-stack arm that ran in an AGENT-AUTHORED harness (sealed_harness !== true) is REFUSED (closes the cheatcode forgery)", () => withTempHome(() => {
+  const domain = "xstack-unsealed.example.com";
+  // The positive arm carries a valid bytecode binding (real target), but ran in an agent-authored
+  // harness whose setUp could vm.mockCall/vm.store the real target keyed on the captured bytes, or
+  // ship a rigged forge-std. sealed_harness:false -> the verifier refuses before the bytecode gate
+  // (bytecode equality alone does not stop cheatcode/build-environment forgery on the real contract).
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveSealedHarness: false,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /did not run in the runner-owned SEALED harness|sealed_harness/i);
     assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
   })();
 }));

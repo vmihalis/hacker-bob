@@ -78,6 +78,11 @@ function seedInvariantRunRow(domain, {
   // producer records when the runner's eth_getCode quorum could not resolve. Distinct from
   // crossStackTargetBound:false (which clears all three = a pre-binding migration row).
   targetOnchainUnavailable = false,
+  // SEALED-HARNESS marker. A genuine cross-stack run executes the runner-owned SEALED Foundry
+  // project (no agent-authored Solidity / forge-std), so the row carries sealed_harness:true and
+  // the verifier requires it on every arm. Defaults to follow crossStackTargetBound (a genuine
+  // cross-stack seed is sealed); an explicit false exercises the non-sealed refusal.
+  sealedHarness = undefined,
 } = {}) {
   const foundryResult = outcome === "test_failed"
     ? { tests: [{ success: false }] }
@@ -132,6 +137,9 @@ function seedInvariantRunRow(domain, {
   row.target_address = typeof tbAddr === "string" ? tbAddr.toLowerCase() : null;
   row.target_code_sha256 = typeof tbCode === "string" ? tbCode.toLowerCase() : null;
   row.target_onchain_code_sha256 = typeof tbOnchain === "string" ? tbOnchain.toLowerCase() : null;
+  // SEALED-HARNESS sibling (outside run_hash, inside row_mac). Defaults to crossStackTargetBound
+  // so a genuine cross-stack seed is sealed; an explicit false exercises the non-sealed refusal.
+  row.sealed_harness = sealedHarness === undefined ? (crossStackTargetBound === true) : (sealedHarness === true);
   if (sign) {
     ensureHandoffKeypair(domain);
     signRowWithMac(INVARIANT_RUN_MAC_CONTEXT, row, readHandoffSigningPrivateKey(domain));
