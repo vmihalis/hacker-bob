@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  CANONICAL_PACKAGE_MAX_BYTES,
   DISALLOWED_PACKED_FILE_PATTERNS,
   DISALLOWED_PACKED_TEXT_PATTERNS,
   EXCLUDED_CANONICAL_PACKAGE_FILES,
@@ -203,17 +204,15 @@ function checkCanonicalPack(rootPackage) {
   // (offensive-nuclei-producer.js + bob-nuclei-scan.js + the runner detection
   // channel), which took the lean tarball past 3.2 MB. Mirrors the
   // test/package.test.js ceiling (keep the two in lockstep).
-  // Raised to 3.6 MB in core when the full offensive arsenal merged on top of core's
-  // belief/OSS-repro superset (~3.42 MB lean tarball). Lockstep with test/package.test.js.
-  // Raised to 3.7 MB for the open-vocabulary mechanism registry + finding-differential
-  // verifier/ledger and the cross-role fan-out tool surface (recon-angle + per-finding
-  // verification staging) plus their regenerated agent/skill/settings surfaces.
-  // Raised to 3.9 MB for the offensive-sandbox isolation arc (attestation + verdict gate +
-  // sc-container-exec + ed25519/keyed-ledger MAC + the seven SC container runners + launcher).
-  if (canonical.size < 3900000) {
-    pass(`canonical pack size ${canonical.size} bytes is under 3.9 MB`);
+  // The 921 KB docs/hacker-bob-social.png (a web/marketing asset never read by the installed
+  // runtime) is excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES). The ceiling is a single
+  // source of truth (CANONICAL_PACKAGE_MAX_BYTES in scripts/lib/package-policy.js) shared with
+  // test/package.test.js so the two cannot drift; it is calibrated to core's full offensive +
+  // sandbox-isolation surface, a larger lean tarball than the public line.
+  if (canonical.size < CANONICAL_PACKAGE_MAX_BYTES) {
+    pass(`canonical pack size ${canonical.size} bytes is under the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   } else {
-    fail(`canonical pack size ${canonical.size} bytes exceeds 3.9 MB`);
+    fail(`canonical pack size ${canonical.size} bytes exceeds the ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`);
   }
 
   let foundDisallowed = false;
