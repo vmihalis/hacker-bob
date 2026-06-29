@@ -602,6 +602,32 @@ function writeGradeVerdict(args) {
       },
     );
   }
+  // Completion-depth gate. Sibling of the three report-side proof gates above, but it
+  // guards a different invariant: a surface marked surface_status:complete (exhausted)
+  // must bind to REAL work — a re-derived executed differential for one of its findings,
+  // OR documented honest exhaustion (a coverage row / substantive bypass_attempt) — not
+  // finding EXISTENCE alone. The report gates make a REPORTED finding real; this makes a
+  // CLAIMED-EXHAUSTED surface real, closing the surface-completion masquerade (false
+  // exhaustion feeding coverage_closure + the report's "surface tested" prose). Grade is
+  // the right home: post-verification, the verifier-owned verified rows exist; an
+  // evaluation-time gate would deadlock (evaluators cannot mint verified rows). Fail
+  // closed — applies to ALL complete surfaces, not only the reportable set.
+  const { completionDepthGapForCompleteSurfaces } = require("./claims.js");
+  const completionGap = completionDepthGapForCompleteSurfaces(domain);
+  if (completionGap.missing.length > 0) {
+    const detail = completionGap.missing
+      .map((entry) => `${entry.surface_id} (${entry.reason})`)
+      .join(", ");
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Surfaces marked complete must bind to an executed differential or documented exhaustion before grading: ${detail}.`,
+      { code: "missing_completion_depth", missing: completionGap.missing },
+      {
+        remediation:
+          "For each named surface: run the relevant bob_verify_* for one of its findings (the executed differential is verifier-owned, minted downstream), OR log concrete coverage rows / a substantive bypass_attempt for it, OR reconcile the surface to surface_status: partial (complete_surface_finding_not_executed = a recorded finding was never executed into a differential; complete_surface_no_evidence = complete with no finding, coverage, or bypass at all).",
+      },
+    );
+  }
   const findings = normalizedFindings.map((finding) => {
     const recordedSeverity = finalSeverities.get(finding.finding_id);
     if (!recordedSeverity) return finding;

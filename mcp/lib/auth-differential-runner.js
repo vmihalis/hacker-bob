@@ -1,5 +1,15 @@
 "use strict";
 
+// Auth-differential is a LEAD sweep: divergences are frontier OBSERVATIONS, never signed
+// findings. Function-level / privilege-escalation authorization is endpoint-specific policy
+// with no synthetic-control equivalent to the IDOR canary (a producer-minted object whose
+// cross-tenant leak is cryptographically provable), so a divergence CANNOT be auto-signed
+// without agent-supplied policy judgment — which false-positives on legitimate tiered access
+// (an endpoint intentionally serving role-scoped fields produces the same divergence as a
+// breach). Object-id IDOR is the one mechanically-confirmable class and is signed by
+// bob_http_idor_confirm. Confirm a suspected BFLA via a targeted manual flip, not an
+// auto-producer over these observations.
+
 const fs = require("fs");
 const {
   computeResponseSignature,

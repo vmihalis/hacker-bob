@@ -42,5 +42,14 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
-  session_artifacts_written: [],
+  // The brief read records a best-effort idempotent `running` marker into the
+  // MCP-owned agent-runs.jsonl ledger (the universal first surface-scoped tool
+  // call — see assignment-brief.js readAssignmentBrief). That write is declared
+  // here so the session-authority kernel's canShadowMissingSession guard
+  // (which lets an initialized_session_read tool shadow a MISSING session only
+  // when it declares no session artifacts) refuses to shadow this tool — a
+  // missing session gets the loud no_session block, never a silent ledger write.
+  // mutating stays false: the marker is non-contractual and swallowed on error,
+  // so the brief must still read in degraded-unacked enforce posture.
+  session_artifacts_written: ["agent-runs.jsonl"],
 });

@@ -5,9 +5,11 @@ const assert = require("node:assert/strict");
 
 const {
   CANONICAL_PERMISSION_PREFIX,
+  assertLegacyToolPermissionsMigratable,
   mergeSettings,
   migrateLegacySettings,
   rewriteLegacyToolNamePermission,
+  unmigratableLegacyToolPermissions,
 } = require("../scripts/merge-claude-config.js");
 const {
   defaultClaudeSettings,
@@ -78,6 +80,55 @@ test("rewriteLegacyToolNamePermission fails loud on a removed bounty_* tool with
       `${removed} must fail loud (no canonical twin to migrate to)`,
     );
   }
+});
+
+test("PRE-FLIGHT: unmigratableLegacyToolPermissions collects every stale permission, [] when all migrate", () => {
+  // A clean v1.x settings (every suffix has a live twin) → nothing stale.
+  assert.deepEqual(unmigratableLegacyToolPermissions(buildV1HackerBobSettings()), []);
+  // Mixed: two removed-tool pins (no twin) alongside migratable + unrelated permissions.
+  const mixed = {
+    permissions: {
+      allow: [
+        "mcp__hacker-bob__bounty_init_session", // migratable
+        "mcp__hacker-bob__bounty_report_written", // removed, no twin
+        "Read",
+        "mcp__hacker-bob__bounty_transition_phase", // removed, no twin
+        "mcp__hacker-bob__bob_http_scan", // already canonical
+      ],
+    },
+  };
+  const stale = unmigratableLegacyToolPermissions(mixed);
+  assert.deepEqual(
+    stale.map((s) => s.permission).sort(),
+    ["mcp__hacker-bob__bounty_report_written", "mcp__hacker-bob__bounty_transition_phase"],
+  );
+  // Empty / shapeless settings never throw and report nothing stale.
+  assert.deepEqual(unmigratableLegacyToolPermissions({}), []);
+  assert.deepEqual(unmigratableLegacyToolPermissions(null), []);
+});
+
+test("PRE-FLIGHT: assertLegacyToolPermissionsMigratable throws ONE comprehensive error naming every stale pin", () => {
+  const settings = {
+    permissions: {
+      allow: ["mcp__hacker-bob__bounty_report_written", "mcp__hacker-bob__bounty_transition_phase"],
+    },
+  };
+  assert.throws(
+    () => assertLegacyToolPermissionsMigratable(settings),
+    (err) => {
+      assert.ok(err instanceof Error);
+      // names BOTH stale pins in one error
+      assert.ok(err.message.includes("mcp__hacker-bob__bounty_report_written"));
+      assert.ok(err.message.includes("mcp__hacker-bob__bounty_transition_phase"));
+      assert.match(err.message, /2 stale MCP permission/);
+      assert.match(err.message, /bob_finalize_report|bob_advance_session/);
+      // makes the atomicity guarantee explicit
+      assert.match(err.message, /no files have been modified yet/i);
+      return true;
+    },
+  );
+  // A clean settings validates silently (no throw).
+  assert.doesNotThrow(() => assertLegacyToolPermissionsMigratable(buildV1HackerBobSettings()));
 });
 
 test("rewriteLegacyToolNamePermission is idempotent on canonical and unrelated permissions", () => {

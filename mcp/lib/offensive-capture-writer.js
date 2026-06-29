@@ -43,7 +43,7 @@ const {
 const RESERVED_ROW_KEYS = new Set([
   "version", "target_domain", "run_id", "tool_id", "target", "offensive_outcome",
   "dry_run", "timed_out", "command_hash", "exit_code", "stdout_hash", "stderr_hash",
-  "demonstrated_severity", "surface_id", "consumed_artifact_hash", "is_decoy", "row_mac",
+  "demonstrated_severity", "surface_id", "consumed_artifact_hash", "is_decoy", "oracle_kind", "row_mac",
 ]);
 
 // The frozen set of offensive_outcome values a producer may sign. A signed row is
@@ -60,6 +60,15 @@ const RESERVED_ROW_KEYS = new Set([
 // never a signable outcome here. Anything outside this set is fail-closed rejected.
 const OFFENSIVE_ROW_OUTCOMES = Object.freeze(new Set([
   "exploited_safely", "blocked_by_defense", "blocked_by_infra",
+]));
+
+// The closed set of oracle kinds a producer may stamp into a row (MAC-covered sibling). An
+// out-of-band-interaction row is one whose evidence is an external callback, gated specially
+// at read time (the exploit_run skip refuses to treat it as a self-contained binding). Like
+// offensiveOutcome, this is a CONTROLLED field validated against a frozen set so an arbitrary
+// string can never become a signed oracle_kind.
+const OFFENSIVE_ROW_ORACLE_KINDS = Object.freeze(new Set([
+  "out_of_band_interaction",
 ]));
 
 // run_id is a single clean [A-Za-z0-9-] segment so sha256OffensiveCaptureSecure
@@ -231,6 +240,14 @@ function buildAndSignOffensiveRow(domain, {
   // never a positive cause leg (offensiveOutcome must be blocked_by_defense — it
   // captured nothing real), so OFFENSIVE_LEDGER_ENTRY.demonstrates is false for it.
   isDecoy = false,
+  // The ORACLE-KIND marker — a writer-controlled MAC-covered sibling identifying HOW
+  // the safe exploit was observed. "out_of_band_interaction" marks a row whose evidence
+  // is an external callback: the callback's CAUSATION by this injection is not proven by
+  // the row alone (no pre-injection control; intermediary attribution is open), so such a
+  // row is NOT a self-contained executed binding and must NOT self-skip the
+  // finding-differential flip gate. null for a self-contained direct observation (IDOR,
+  // reflected XSS) where the producer row itself is the executed binding.
+  oracleKind = null,
 }) {
   // The offensive_outcome is a CONTROLLED, registry-bounded field. The positive
   // demonstrates the issue (exploited_safely); a negative control leg signs the
@@ -242,6 +259,15 @@ function buildAndSignOffensiveRow(domain, {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `offensiveOutcome must be one of [${[...OFFENSIVE_ROW_OUTCOMES].join(", ")}]: ${offensiveOutcome}`,
+    );
+  }
+  // oracleKind is a CONTROLLED, MAC-covered sibling: null (no oracle marker) or a member of
+  // the frozen set. Validate it like offensiveOutcome so an arbitrary string can never be
+  // signed into oracle_kind (the read-time gate keys on it).
+  if (oracleKind != null && !OFFENSIVE_ROW_ORACLE_KINDS.has(oracleKind)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `oracleKind must be null or one of [${[...OFFENSIVE_ROW_ORACLE_KINDS].join(", ")}]: ${oracleKind}`,
     );
   }
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a
@@ -396,6 +422,11 @@ function buildAndSignOffensiveRow(domain, {
     // adjudicator requires the decoy arm to HOLD, structurally forcing the gate to
     // validate the SPECIFIC credential bytes rather than any-non-empty.
     ...(isDecoy === true ? { is_decoy: true } : {}),
+    // The oracle-kind sibling — written ONLY when the producer marks the observation
+    // method (so a self-contained producer row keeps its exact existing shape). It is
+    // MAC-covered and in RESERVED_ROW_KEYS, so relationBooleans can never set/strip it;
+    // a read-time gate keys on it to refuse self-skip for non-causal callback evidence.
+    ...(typeof oracleKind === "string" && oracleKind ? { oracle_kind: oracleKind } : {}),
     ...relationBooleans,
   };
 

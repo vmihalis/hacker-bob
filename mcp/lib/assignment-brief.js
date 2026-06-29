@@ -1355,10 +1355,12 @@ function readAssignmentBrief(args) {
   // depending on any adapter wiring a SubagentStart hook. surface_id comes from
   // the resolved on-disk assignment, never from an agent-asserted field, so the
   // start cannot be forged or mis-attributed; the call is idempotent
-  // (first-transition-only). bob_read_assignment_brief stays read-only
-  // (mutating:false) — this is a non-contractual observability side-effect, like
-  // tool telemetry, and a ledger write must never break brief composition, so it
-  // is best-effort.
+  // (first-transition-only). bob_read_assignment_brief stays mutating:false (the
+  // marker is best-effort and must never break brief composition, so a ledger
+  // write fault is swallowed), but it DECLARES agent-runs.jsonl in
+  // session_artifacts_written so the authority kernel's canShadowMissingSession
+  // guard refuses to shadow this read past a MISSING session — the declared
+  // session-artifact write is honest, not silent.
   try {
     markAgentRunStartedIdempotent({
       targetDomain: domain,

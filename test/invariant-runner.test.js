@@ -338,6 +338,130 @@ test("dry_run returns a report without writing the test file or persisting", asy
   }
 });
 
+// SECURITY: the cross-stack target binding's on-chain cross-check MUST query the operator-
+// pinned TRUSTED RPC ladder, never the AGENT-supplied fork_urls. The agent controls the fork
+// (and thus the executed target's bytecode), so resolving the "independent" on-chain value
+// through the same agent endpoints would let the agent serve a fake bytecode matching its fake
+// target — a forged verified_pass. This locks that agent fork_urls never reach the cross-check.
+test("cross-stack target cross-check uses the TRUSTED ladder, NOT agent-supplied fork_urls (forgery fix)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const evmClient = require("../mcp/lib/evm-client.js");
+  const originalAgreed = evmClient.ethGetCodeAgreed;
+  let agreedArgs = null;
+  evmClient.ethGetCodeAgreed = async (args) => { agreedArgs = args; return { status: "unavailable", reason: "stubbed" }; };
+  const stubFoundry = async () => ({
+    tests: [{ name: "testX", success: false }],
+    // The pinned template's emitted binding (address + sha256 of the executed target bytecode).
+    target_binding: { address: `0x${"ab".repeat(20)}`, code_sha256: `0x${"cd".repeat(32)}` },
+  });
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-xstack-trust",
+      chain_id: 1,
+      fork_block: 21000000,
+      // The AGENT supplies these. They drive the FORK, but must NOT reach the on-chain cross-check.
+      fork_urls: ["https://attacker-controlled.example/rpc"],
+    });
+    assert.ok(agreedArgs, "the on-chain cross-check ran");
+    assert.equal(agreedArgs.chainId, 1);
+    assert.equal(agreedArgs.block, 21000000);
+    // THE FIX: agent fork_urls are NOT passed as endpoints — ethGetCodeAgreed resolves the
+    // operator-pinned trusted ladder itself. A regression that re-passes fork_urls fails here.
+    assert.equal(agreedArgs.endpoints, undefined, "agent fork_urls must NOT reach the on-chain cross-check");
+  } finally {
+    evmClient.ethGetCodeAgreed = originalAgreed;
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+// SEALED ROUTING — the cross-stack template executes the RUNNER-OWNED sealed Foundry project, not
+// the agent harness, so no agent Solidity / forge-std / setUp is on the execution path (closes the
+// cheatcode forgery). The runner stamps the MAC-covered sealed_harness:true that the verifier requires.
+test("SEALED ROUTING: a cross-stack invariant run executes the runner-owned SEALED project (NOT the agent harness) and stamps sealed_harness:true", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness(); // the agent harness — MUST be ignored for a sealed cross-stack run
+  let foundryCall = null;
+  let sealedSrc = null;
+  const stubFoundry = async (args) => {
+    foundryCall = args;
+    // Capture the source DURING the run (the runner removes the sealed temp project afterward).
+    try { sealedSrc = fs.readFileSync(args.match_path, "utf8"); } catch {}
+    return { tests: [{ name: "t", success: false }] };
+  };
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: { finding_id: "F-1", finding_hash: "h1", title: "web auth replay on-chain", vulnerability_class: "signature_validation" },
+      template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+      slot_values: { target_address: `0x${"ab".repeat(20)}`, gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-sealed-1",
+      chain_id: 1,
+      fork_block: 21000000,
+      fork_urls: ["https://attacker-controlled.example/rpc"], // drives the fork; the SOURCE is runner-owned
+    });
+    assert.ok(foundryCall, "foundry_run was invoked");
+    assert.notEqual(foundryCall.harness_path, harness, "the agent harness_path is NOT used for a sealed run");
+    assert.match(foundryCall.harness_path, /\.bob-sealed-xstack-/, "forge ran the runner-owned sealed project");
+    // The FORK uses the operator-pinned trusted ladder, NOT the agent fork_urls — otherwise an
+    // attacker RPC could serve real bytecode but fake storage to forge the flip.
+    assert.ok(
+      Array.isArray(foundryCall.fork_urls) && !foundryCall.fork_urls.includes("https://attacker-controlled.example/rpc"),
+      "the agent fork_urls are NOT used for the sealed fork",
+    );
+    assert.ok(
+      foundryCall.fork_urls.some((u) => /publicnode|llamarpc|1rpc|ankr/.test(u)),
+      "the sealed fork uses the operator-pinned trusted ladder",
+    );
+    assert.ok(sealedSrc, "the sealed test file existed during the run");
+    assert.ok(!/import\s+["']forge-std/.test(sealedSrc), "no forge-std on the build path");
+    assert.match(sealedSrc, /interface IBobVm/, "inlined Vm (self-contained)");
+    assert.match(sealedSrc, /target\.execute\(7, capturedAuth\)/, "gated call built from the DATA slots");
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.runs.length, 1);
+    assert.equal(corpus.runs[0].sealed_harness, true, "the row carries the MAC-covered sealed_harness marker");
+    // The runner removed the sealed temp project after the run (single-use).
+    assert.ok(!fs.existsSync(path.dirname(path.dirname(foundryCall.match_path))), "sealed project cleaned up");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("SEALED ROUTING: a cross-stack run with a malformed DATA slot is REFUSED (no Solidity injection, never runs)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  let ran = false;
+  try {
+    await assert.rejects(
+      () => runInvariantForFinding({
+        target_domain: domain,
+        finding: { finding_id: "F-1", finding_hash: "h1", title: "x", vulnerability_class: "signature_validation" },
+        template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+        // target_address is a Solidity expression, not a 20-byte address — the generator refuses it.
+        slot_values: { target_address: "address(this)", gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+        harness_path: harness,
+        foundry_run: async () => { ran = true; return { tests: [{ success: false }] }; },
+        run_id: "inv-sealed-bad",
+        chain_id: 1, fork_block: 1, fork_urls: ["https://x.example/rpc"],
+      }),
+      /target_address must be a 20-byte/,
+    );
+    assert.equal(ran, false, "forge never ran on a malformed slot");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
 // The persisted test_passed here is the per-run PRIMITIVE (MINT), not a verified
 // verdict (CONFIRM). A verified FV finding requires the differential flip via
 // verifyInvariantDifferential; this test only asserts the run is recorded.

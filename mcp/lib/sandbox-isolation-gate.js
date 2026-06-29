@@ -304,7 +304,7 @@ function readFinalVerificationByFinding(domain) {
 // Verdict-LEVEL (CONSTRAINT 1): reads claims once + the two verified summaries once;
 // never per-row MAC re-derivation. Called ONLY when the reportable set is non-empty
 // (the caller early-returns before touching claims otherwise).
-function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = false } = {}) {
+function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = false, compositionSummary = null } = {}) {
   const backed = new Set();
   if (!(reportableIds instanceof Set) || reportableIds.size === 0) return backed;
 
@@ -359,8 +359,12 @@ function findingsBackedByKeyedLedger(domain, reportableIds, { ledgerPresent = fa
   // repo_command_run). Read once (verdict-LEVEL).
   let verifiedCompositionPathHashes = new Set();
   try {
-    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
-    const summary = readCompositionVerifiedSummary(domain);
+    // Reuse the caller-precomputed read-time summary when threaded (the gate computes it ONCE
+    // per evaluation and shares it across this gate and scBackingUnIsolatedFindingIds, each of
+    // which would otherwise re-resolve every bind leaf). Falls back to a fresh re-derivation
+    // when called standalone — same authoritative read, never a cached/stale one.
+    const summary = compositionSummary
+      || require("./composition-live-verifier.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_path_hashes)) {
       verifiedCompositionPathHashes = new Set(summary.verified_path_hashes);
     }
@@ -481,7 +485,7 @@ function resolveSurfaceKind(domain, surfaceId) {
 // findingsBackedByKeyedLedger) + one frontier-events read for SC-scoping; never per-row
 // MAC re-derivation (CONSTRAINT 6 untouched — container_isolated is a recorded MAC-covered
 // field, re-resolved from the positive row).
-function scBackingUnIsolatedFindingIds(domain, findingIds) {
+function scBackingUnIsolatedFindingIds(domain, findingIds, { compositionSummary = null } = {}) {
   const unIsolated = new Set();
   if (!(findingIds instanceof Set) || findingIds.size === 0) return unIsolated;
   let invariantVerified = {};
@@ -508,8 +512,11 @@ function scBackingUnIsolatedFindingIds(domain, findingIds) {
   let crossStackContainerIsolated = {};
   let claims = [];
   try {
-    const { readCompositionVerifiedSummary } = require("./composition-live-verifier.js");
-    const summary = readCompositionVerifiedSummary(domain);
+    // Reuse the caller-precomputed read-time summary when threaded (shared with
+    // findingsBackedByKeyedLedger in one gate evaluation); fall back to a fresh re-derivation
+    // when called standalone — same authoritative read, never a cached/stale one.
+    const summary = compositionSummary
+      || require("./composition-live-verifier.js").readCompositionVerifiedSummary(domain);
     if (Array.isArray(summary.verified_cross_stack_path_hashes)) {
       crossStackVerifiedHashes = new Set(summary.verified_cross_stack_path_hashes);
     }
@@ -643,7 +650,23 @@ function evaluateVerdictSandboxGate(domain, env = process.env, platform = proces
   // findingsBackedByKeyedLedger reads claims/summaries/freeze ONCE, only when the
   // reportable set is non-empty (it early-returns an empty set otherwise, so a clean
   // session never touches claims).
-  const backed = findingsBackedByKeyedLedger(domain, reportable, { ledgerPresent: ledger.present });
+  //
+  // Compute the read-time cross-stack summary ONCE for this evaluation and share it across
+  // BOTH consulting gates (here + scBackingUnIsolatedFindingIds). Each compute re-resolves
+  // every bind leaf's refs and re-hashes cause/decoy bytes (O(rows × refs)), so a single
+  // synchronous pass should derive it once, not per gate. Sharing one instance within this
+  // pass is sound — no ledger is written mid-gate, so a re-derivation would return the same
+  // result. Guarded on reportable.size>0 (the exact condition under which the gates read it),
+  // so a clean/empty session still skips the derivation entirely.
+  let compositionSummary = null;
+  if (reportable.size > 0) {
+    try {
+      compositionSummary = require("./composition-live-verifier.js").readCompositionVerifiedSummary(domain);
+    } catch {
+      compositionSummary = null;
+    }
+  }
+  const backed = findingsBackedByKeyedLedger(domain, reportable, { ledgerPresent: ledger.present, compositionSummary });
   const gatedIds = new Set([...reportable].filter((id) => backed.has(id)));
 
   // Inert: no reportable medium+ finding, OR none of the reportable findings is
@@ -695,7 +718,7 @@ function evaluateVerdictSandboxGate(domain, env = process.env, platform = proces
   // surfaces (HTTP differential findings unaffected — belt-and-suspenders to the seam
   // refuse, which once all seven runners thread targetDomain prevents the unsafe run
   // entirely on an isolated box).
-  const scUnIsolated = scBackingUnIsolatedFindingIds(domain, gatedIds);
+  const scUnIsolated = scBackingUnIsolatedFindingIds(domain, gatedIds, { compositionSummary });
   const scBackingNotContainerized = scUnIsolated.size > 0;
 
   // Isolated AND no laundering-risk row AND every SC backing row is containerized

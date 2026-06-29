@@ -135,23 +135,21 @@ const TEMPLATES = Object.freeze([
     id: "INV-CROSS-STACK-AUTH-REPLAY-001",
     vulnerability_class: "signature_validation",
     name: "Web-captured authorization payload accepted on-chain",
-    description: "Asserts that a privileged on-chain effect reverts when invoked with an authorization payload (a forged identity / signed relayer message / session-bound token) captured off-chain by a web-stack attack and consumed as BOB_CONSUMED_ARTIFACT. The invariant HOLDS when the contract rejects the captured payload and is VIOLATED only when the gate accepts it and the effect lands. The control arm runs artifact-absent (empty BOB_CONSUMED_ARTIFACT) over the SAME path with a benign empty authorization and the gate holds, so the flip is contingent on the web-captured bytes being CONSUMED, not on the tree.",
-    parameter_slots: ["target_contract", "gated_function", "victim_object"],
-    foundry_test_template: [
-      "function testCapturedAuthPayloadRejected() public {",
-      "    // The off-chain (web) attack's captured authorization payload, delivered as",
-      "    // BOB_CONSUMED_ARTIFACT. Empty on the artifact-absent control arm (the controlled",
-      "    // variable); the well-formed-but-forged bytes on the positive arm.",
-      "    bytes memory capturedAuth = bobConsumedArtifact();",
-      "    // Invoke the gated effect on the victim object USING the web-captured payload as the",
-      "    // on-chain authorization argument. The invariant is that this REVERTS (an off-chain-",
-      "    // captured payload is not valid on-chain auth). The contract's own gate decides the",
-      "    // outcome; the test does not branch on whether capturedAuth is present.",
-      "    vm.prank(makeAddr(\"crossStackAttacker\"));",
-      "    vm.expectRevert();",
-      "    {TARGET_CONTRACT}.{GATED_FUNCTION}({VICTIM_OBJECT}, capturedAuth);",
-      "}",
-    ].join("\n"),
+    description: "Asserts that a privileged on-chain call REVERTS when invoked with an authorization payload (a forged identity / signed relayer message / session-bound token) captured off-chain by a web-stack attack and consumed as BOB_CONSUMED_ARTIFACT. The invariant HOLDS when the contract REJECTS the captured payload and is VIOLATED only when the gate ACCEPTS it (the call does not revert). SCOPE: this demonstrates an AUTH-ACCEPTANCE differential — the on-chain gate accepted an off-chain-captured payload as valid authorization — NOT that an arbitrary downstream privileged effect landed; the call's post-state impact is not asserted here, so severity must follow the demonstrated acceptance, not a claimed impact. The control arm runs artifact-absent (empty BOB_CONSUMED_ARTIFACT) over the SAME path with a benign empty authorization and the gate holds, so the flip is contingent on the web-captured bytes being CONSUMED, not on the tree.",
+    // SEALED. This template does NOT run an agent-authored harness. The runner generates the WHOLE
+    // Foundry project from these DATA slots via mcp/lib/sealed-cross-stack-harness.js — a
+    // self-contained test with an INLINED Vm (no agent forge-std on the build path), a pinned setUp
+    // binding the target by address, and a pinned foundry.toml — so an agent setUp cannot
+    // vm.mockCall/vm.store the real target, nor a rigged forge-std subvert vm/expectRevert, to forge
+    // the differential against the real bytecode. The slots are DATA the generator validates and
+    // interpolates as LITERALS (an address, a function name, a victim type + literal value), never
+    // Solidity names an agent harness would define. The pinned BOB_TARGET_BIND emission + the
+    // trusted-ladder eth_getCode cross-check still run inside the sealed test (defense in depth).
+    sealed: true,
+    parameter_slots: ["target_address", "gated_function", "victim_type", "victim_value"],
+    // A marker only — the sealed generator owns the actual source; fillSlots returns this unchanged
+    // for a sealed template (no {SLOT} substitution, no agent text ever reaches a Solidity body).
+    foundry_test_template: "// SEALED cross-stack template — runner-generated (sealed-cross-stack-harness.js)",
   }),
 ]);
 
@@ -474,6 +472,10 @@ function validateSlotValues(template, values) {
 
 function fillSlots(template, values) {
   const body = template.foundry_test_template;
+  // SEALED templates are never agent-substituted: the runner generates the whole project from DATA
+  // slots via the sealed-cross-stack-harness generator (which validates them strictly), so there is
+  // no {SLOT} substitution here and no agent text reaches a Solidity body. Return the marker as-is.
+  if (template.sealed === true) return body;
   if (!isPlainObject(values)) return body;
   // Validate FIRST and throw on any violation — the corpus module is the single
   // substitution chokepoint, so validating here covers every caller (suggest-for-

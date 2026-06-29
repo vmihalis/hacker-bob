@@ -78,6 +78,11 @@ const SUPPORTED_LEDGERS = Object.freeze(new Set([SUPPORTED_LEDGER_OFFENSIVE_RUNS
 const POSITIVE_OUTCOME = "exploited_safely";
 const CONTROL_BLOCKED_OUTCOMES = Object.freeze(new Set(["blocked_by_defense"]));
 
+// The MAC-covered oracle_kind stamped on an out-of-band (OOB) offensive row (oob-collector
+// ORACLE_KIND_VALUES[0] / offensive-capture-writer OFFENSIVE_ROW_ORACLE_KINDS). The OOB
+// attribution gate below keys on it so it caps ONLY OOB positives, never a non-OOB differential.
+const OOB_ORACLE_KIND = "out_of_band_interaction";
+
 // Hash the parts of an offensive row that constitute its executed identity, so two
 // rows that are byte-identical in their proof material (same target/command/outcome/
 // captures) collapse to the same row_hash and a hash-identical control is REFUSED.
@@ -221,6 +226,28 @@ function adjudicateFindingDifferential({ surfaceId, positiveRow, controlRow }) {
     return {
       result: RESULT_REFUTED,
       reason: `control row is not a blocked safe-variant (offensive_outcome=${controlRow.offensive_outcome}); the control must be blocked on the same surface to flip`,
+      positiveHash,
+      controlHash,
+    };
+  }
+
+  // ATTRIBUTION GATE (OOB). An OOB positive earns a clean reportable verified_pass ONLY when the
+  // sink interaction is PROVABLY target-caused: an HTTP callback whose source IP is VERIFIED
+  // distinct from the configured session egress (oob-collector sets the MAC-covered
+  // source_attribution_established:true only then). Everything else is attribution-UNESTABLISHED
+  // and caps to a lead: a DNS callback (source = the target's recursive resolver, so it is
+  // self-hittable — the agent can self-resolve the token), an HTTP callback when no session-egress
+  // IP is configured (source distinctness is unverifiable, so the agent could self-request the OOB
+  // URL), and a legacy/buggy OOB row missing the field (undefined !== true → fail-closed). The
+  // decoy-silent flip proves token-SPECIFICITY (the sink fired for the injected token, not a random
+  // decoy) but NOT target-CAUSATION, so an unestablished OOB stays INCONCLUSIVE (not refuted — the
+  // flip is real, just insufficient). The gate is keyed on the MAC-covered oracle_kind, so it fires
+  // for OOB positives ONLY — a non-OOB positive (IDOR/XSS/repro/...) has no oracle_kind and is
+  // unaffected. Re-adjudicated at read time, so a verified row minted before this gate is dropped.
+  if (positiveRow.oracle_kind === OOB_ORACLE_KIND && positiveRow.source_attribution_established !== true) {
+    return {
+      result: RESULT_INCONCLUSIVE,
+      reason: "OOB positive attribution is UNESTABLISHED: the sink interaction is not provably target-caused (a DNS callback from the target's recursive resolver, an HTTP callback with no configured session-egress IP to prove source distinctness, or a row predating attribution). The decoy-silent flip proves token-specificity, not target-causation — re-confirm with an HTTP OOB hit whose source IP is distinct from the configured session egress (set BOB_OOB_SELF_EGRESS_IP).",
       positiveHash,
       controlHash,
     };

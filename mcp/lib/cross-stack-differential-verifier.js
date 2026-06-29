@@ -40,7 +40,8 @@
 // must be the SAME invariant test (violated vs held), and the web exploit is the bound
 // CAUSE, never an arm.
 //
-// THE DEFENSE (the non-forgeability spine, every leg preserved):
+// THE DEFENSE (the non-forgeability legs — NECESSARY, and sufficient only UNDER AN OUT-OF-UID
+// SIGNER; see the SANDBOX BOUNDARY note at the end for the same-uid precondition):
 //   BIND-DON'T-RE-EXECUTE   — every leg resolves to an already-executed MAC-signed row;
 //                             agent prose is never trusted.
 //   SAME-TEST EFFECT FLIP   — positive and control are the SAME invariant test on the SAME
@@ -83,6 +84,18 @@
 //                             and the flip + causal link are RE-ADJUDICATED from signed
 //                             source bytes; the path_hash enters verified_path_hashes[]
 //                             only when ok.
+//
+// SANDBOX BOUNDARY (the precondition under which the legs above hold — NOT itself enforced
+// here). STRICT MAC and container_isolated:true are necessary but NOT sufficient on a SAME-UID
+// box: an agent running as the signer uid can read the 0600 signer key and self-sign both a
+// row MAC and container_isolated:true, so this verifier — which can only re-derive from rows it
+// must ASSUME were signed out-of-uid — cannot by itself guarantee non-forgeability there. The
+// load-bearing boundary is the LIVE signer-key probe in the verdict sandbox gate
+// (sandbox-isolation-gate.js evaluateVerdictSandboxGate) plus the grade gate, which refuse to
+// trust an SC/cross-stack reportable whose backing rows are not provably out-of-uid-signed. On
+// a same-uid box the legs here are a defense-in-depth layer beneath that probe, not a standalone
+// guarantee; closing the same-uid residual fully requires operator-OS isolation + attestation
+// (an out-of-uid signer), which is an operator deployment concern, not an in-repo guarantee.
 
 const {
   hashCanonicalJson,
@@ -825,6 +838,57 @@ function adjudicateCrossStackFlip(positiveLeg, controlLeg, causeLeg, decoyArmLeg
   }
   if ((p.tree_ref || null) !== (d.tree_ref || null) || p.checkout_kind !== d.checkout_kind) {
     return refuse("the decoy arm must reference the SAME tree/checkout as the positive run (the consumed bytes, not the tree, are the controlled variable)");
+  }
+
+  // CROSS-STACK TARGET BINDING — the executed EVM "effect" must run against the REAL audited
+  // on-chain contract, not an agent-deployed/vm.etch'd target. Without this, an agent who
+  // writes the harness setUp deploys a MaliciousTarget that reverts iff bytes != capturedAuth
+  // and satisfies positive=VIOLATED/control=HELD/decoy=HELD legitimately, minting a forged
+  // verified_pass. Each arm carries (outside run_hash, inside row_mac): target_code_sha256
+  // (the executed runtime-bytecode sha256 the PINNED template emitted, exactly once) and
+  // target_onchain_code_sha256 (sha256 of eth_getCode at the SAME address+fork_block, fetched
+  // by the runner over the trusted fork endpoints — the agent controls the executed value but
+  // NOT the on-chain one). They MUST be equal: a fake-deployed or vm.etch'd target has a
+  // different runtime bytecode than the chain carried at fork_block. REQUIRED on all three
+  // arms; a row minted BEFORE this binding (no target fields) is REFUSED (fail-closed
+  // migration), never accepted-with-warning.
+  for (const [armName, row] of [["positive", p], ["control", c], ["decoy", d]]) {
+    // SEALED HARNESS (closes the cheatcode forgery). A genuine cross-stack invariant arm executes
+    // the RUNNER-OWNED sealed Foundry project — a runner-generated test with an inlined Vm (no agent
+    // forge-std on the build path), a pinned setUp, and a pinned foundry.toml — so the agent
+    // contributes only DATA and cannot vm.mockCall/vm.store the real target, nor ship a rigged
+    // forge-std, to manufacture the differential against the real bytecode. The runner stamps the
+    // MAC-covered sealed_harness:true ONLY on that path. A row whose sealed_harness is not true ran
+    // in an AGENT-AUTHORED harness and is REFUSED (fail-closed; a pre-sealed row carries no marker
+    // and is refused the same way). This precedes the bytecode-binding checks below: bytecode
+    // equality alone does not stop cheatcode/build-environment forgery on the REAL contract.
+    if (row.sealed_harness !== true) {
+      return refuse(`${armName} arm did not run in the runner-owned SEALED harness (sealed_harness !== true) — a cross-stack invariant in an agent-authored harness can vm.mockCall/vm.store the real target or ship a rigged forge-std to forge the differential; REFUSED. Re-run the cross-stack invariant under the sealed path.`);
+    }
+    const executedBound = typeof row.target_address === "string" && typeof row.target_code_sha256 === "string";
+    if (!executedBound) {
+      // address+code absent: the row predates target binding entirely (pre-binding migration).
+      return refuse(`${armName} arm missing cross-stack target binding (target_address / target_code_sha256) — a cross-stack invariant must bind its EVM target to the audited on-chain bytecode; a row minted before target binding is REFUSED`);
+    }
+    if (typeof row.target_onchain_code_sha256 !== "string") {
+      // Executed binding present but the runner's on-chain cross-check was UNAVAILABLE (all
+      // trusted endpoints failed/timed-out, or the real-code responders disagreed). This is a
+      // transient/operational state, NOT proof of a fake target. Refuse (the row does not bind),
+      // but signal it is RE-RUNNABLE: re-running the invariant when the RPC ladder is healthy
+      // mints a resolved row that supersedes this one at the SAME run_hash (the target siblings
+      // are outside run_hash). Distinguishing this from a mismatch is what stops a transient RPC
+      // blip from masquerading as a forgery and permanently blocking grading.
+      return refuse(`${armName} arm: on-chain target bytecode lookup was UNAVAILABLE (target_onchain_code_sha256 null) — the runner could not cross-check the executed target against the chain at fork_block (transient RPC failure or endpoint disagreement). This is NOT a forgery; RE-RUN the invariant when the trusted RPC ladder is healthy to re-attempt the target cross-check.`);
+    }
+    if (row.target_code_sha256 !== row.target_onchain_code_sha256) {
+      return refuse(`${armName} arm: executed target bytecode sha256 (${row.target_code_sha256}) does not equal the on-chain bytecode at fork_block (${row.target_onchain_code_sha256}) — a fake-deployed or vm.etch'd target is REFUSED`);
+    }
+  }
+  if (p.target_address !== c.target_address || p.target_address !== d.target_address) {
+    return refuse("cross-stack arms must reference the SAME target address (the same test on the same tree)");
+  }
+  if (p.target_onchain_code_sha256 !== c.target_onchain_code_sha256 || p.target_onchain_code_sha256 !== d.target_onchain_code_sha256) {
+    return refuse("cross-stack arms must execute against the SAME on-chain target bytecode (an intermediate upgrade/swap between arms is REFUSED)");
   }
 
   // Distinct executed identity (the non-forgeability spine). The arms share a tree but flip

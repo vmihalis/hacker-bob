@@ -2213,6 +2213,12 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.scope_required, false);
   assert.equal(TOOL_MANIFEST.bob_read_surface_leads.sensitive_output, false);
   assert.deepEqual(TOOL_MANIFEST.bob_read_surface_leads.session_artifacts_written, []);
+  // bob_read_assignment_brief records a best-effort `running` marker into agent-runs.jsonl
+  // (the universal first surface-scoped tool call), so it DECLARES that MCP-owned ledger
+  // even though it stays mutating:false — the declaration is what makes the
+  // canShadowMissingSession guard refuse to shadow this read past a missing session.
+  assert.equal(TOOL_MANIFEST.bob_read_assignment_brief.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bob_read_assignment_brief.session_artifacts_written, ["agent-runs.jsonl"]);
   assert.deepEqual(TOOL_MANIFEST.bob_promote_surface_leads.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.mutating, true);
   assert.equal(TOOL_MANIFEST.bob_promote_surface_leads.global_preapproval, false);
@@ -2841,6 +2847,21 @@ test("central session authority shadow mode is bounded to missing read-only sess
       assert.equal(writeRow.authority.authority_result, "blocked");
       assert.equal(writeRow.authority.authority_error_code, "no_session");
       assert.equal(writeRow.authority.authority_shadowed, false);
+
+      // bob_read_assignment_brief is classed initialized_session_read (shadow-eligible by
+      // class) but DECLARES agent-runs.jsonl in session_artifacts_written, so
+      // canShadowMissingSession refuses to shadow it past a MISSING session: it gets the
+      // loud no_session block (authority_shadowed:false), never a soft shadow_blocked that
+      // would let its best-effort ledger-write side-effect run against an absent session.
+      const briefRead = await executeTool("bob_read_assignment_brief", {
+        target_domain: "shadow-missing.example.com",
+        wave: "w1",
+        agent: "a1",
+      });
+      assert.equal(briefRead.ok, false);
+      assert.equal(briefRead.error.code, "STATE_CONFLICT");
+      assert.equal(briefRead.error.details.authority.authority_error_code, "no_session");
+      assert.equal(briefRead.error.details.authority.authority_shadowed, false);
     });
   });
 });
@@ -3357,6 +3378,270 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
   } finally {
     fs.rmSync(telemetryRoot, { recursive: true, force: true });
   }
+});
+
+// Completion-depth gate (claims.js completionDepthGapForCompleteSurfaces). A surface
+// marked surface_status:complete must bind to REAL work — a re-derived executed
+// differential for one of its findings, OR documented exhaustion (a coverage row /
+// substantive bypass) — not finding EXISTENCE alone. The grade door fails closed.
+function seedCompleteBareFinding(domain) {
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain,
+    wave_number: 1,
+    assignments: [{ agent: "a1", surface_id: "surface-a" }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain,
+    title: "IDOR on export",
+    severity: "high",
+    cwe: "CWE-639",
+    endpoint: "/api/export",
+    description: "Cross-account export is possible.",
+    proof_of_concept: "poc",
+    response_evidence: "evidence",
+    impact: "PII disclosure.",
+    validated: true,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+    surface_status: "complete",
+    handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete",
+    content: "# Handoff\n\nbody",
+  }));
+  return started;
+}
+
+test("completion-depth gate fires on a complete surface whose only basis is an unexecuted finding; a coverage row clears it", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+
+    const before = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(before.missing.length, 1);
+    assert.equal(before.missing[0].surface_id, "surface-a");
+    assert.equal(before.missing[0].finding_id, "F-1");
+    assert.equal(before.missing[0].reason, "complete_surface_finding_not_executed");
+
+    // Documented honest exhaustion (a coverage row) is an accepted basis.
+    JSON.parse(logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{ endpoint: "/api/export", method: "GET", bug_class: "idor", status: "tested", evidence_summary: "probed cross-account export" }],
+    }));
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate clears a complete surface when its finding carries a re-derived executed differential", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    seedCompleteBareFinding(domain);
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 1);
+
+    // A genuine finding-differential verified_pass (MAC-signed source rows) is the
+    // executed arm — no coverage row needed.
+    seedFindingDifferentialArm(domain, "F-1", "surface-a");
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("completion-depth gate is forgery-closed: a hand-written verified_pass whose source rows do not MAC-resolve does not clear the surface", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { findingDifferentialVerifiedJsonlPath } = require("../mcp/lib/paths.js");
+    const { appendJsonlLine } = require("../mcp/lib/storage.js");
+    seedCompleteBareFinding(domain);
+
+    // Hand-write a bare verified_pass for F-1 citing source rows that resolve to nothing.
+    // readFindingDifferentialVerifiedSummary re-derives from the MAC-covered source rows,
+    // so this forged line is excluded — the surface stays unbacked.
+    appendJsonlLine(findingDifferentialVerifiedJsonlPath(domain), {
+      version: 1,
+      target_domain: domain,
+      finding_id: "F-1",
+      result: "verified_pass",
+      reason: "forged",
+      surface_id: "surface-a",
+      source: "offensive_runs",
+      positive_run_id: "F-1-pos",
+      positive_row_hash: "d".repeat(64),
+      control_run_id: "F-1-ctl",
+      control_row_hash: "e".repeat(64),
+    });
+
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].surface_id, "surface-a");
+    assert.equal(gap.missing[0].reason, "complete_surface_finding_not_executed");
+  }));
+});
+
+// D1comp: a cross-stack composition verified_pass is PATH-keyed, never in verified_by_finding,
+// so the completion gate must credit the offensive CAUSE surface of a re-verified cross-stack
+// flip via verified_cross_stack_path_surface_refs (re-derived at read time from MAC-resolved
+// bind leaves). Mints a REAL bound cross-stack verified_pass whose offensive cause is surfaceId.
+async function seedCrossStackComposition(domain, surfaceId, findingId) {
+  const crypto = require("node:crypto");
+  const { signOffensiveRunRow } = require("../mcp/lib/offensive-row-mac.js");
+  const { canonicalizeExploitTarget, appendCandidateClaim } = require("../mcp/lib/claims.js");
+  const { verifyCompositionPath } = require("../mcp/lib/composition-live-verifier.js");
+  const { offensiveRunsJsonlPath, offensiveRunsDir, surfaceRoutesPath, sessionDir } = require("../mcp/lib/paths.js");
+  const { ensureHandoffSigningKey } = require("../mcp/lib/handoff-signing-key.js");
+  const { seedInvariantRunRow: seedInvariantRunRowRaw } = require("./helpers/invariant-run-seed.js");
+  const { CONSUME_TEMPLATE_ID, DECOY_HASH, DECOY_RUN_ID, appendDecoyCapture } = require("./helpers/cross-stack-decoy.js");
+  const seedInvariantRunRow = (d, opts) => seedInvariantRunRowRaw(d, { templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, ...opts });
+
+  const causeRunId = `${findingId}-web-cause`;
+  const consumedBytes = Buffer.from("forged-relay-payload:0xdeadbeef", "utf8");
+  const consumedHash = crypto.createHash("sha256").update(consumedBytes).digest("hex");
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  fs.writeFileSync(surfaceRoutesPath(domain), JSON.stringify({ version: 1, route_version: 1, routes: [
+    { surface_id: surfaceId, surface_type: "web", capability_pack: "web", capability_pack_version: 1, evaluator_agent: "evaluator-agent", brief_profile: "web" },
+    { surface_id: "surface:evm-b", surface_type: "smart_contract", capability_pack: "smart_contract_evm", capability_pack_version: 1, evaluator_agent: "evaluator-evm-agent", brief_profile: "smart_contract_evm" },
+  ] }));
+  const row = {
+    version: 1, target_domain: domain, run_id: causeRunId, tool_id: "bob_http_idor_confirm",
+    target: canonicalizeExploitTarget(`https://${domain}/api/billing/1`),
+    offensive_outcome: "exploited_safely", dry_run: false, timed_out: false,
+    command_hash: "1".repeat(64), exit_code: 0, stdout_hash: "b".repeat(64), stderr_hash: "c".repeat(64),
+    demonstrated_severity: "high", surface_id: surfaceId, consumed_artifact_hash: consumedHash, container_isolated: true,
+  };
+  signOffensiveRunRow(row, ensureHandoffSigningKey(domain));
+  fs.mkdirSync(path.dirname(offensiveRunsJsonlPath(domain)), { recursive: true });
+  fs.appendFileSync(offensiveRunsJsonlPath(domain), `${JSON.stringify(row)}\n`);
+  fs.mkdirSync(offensiveRunsDir(domain), { recursive: true });
+  fs.writeFileSync(path.join(offensiveRunsDir(domain), `${causeRunId}.consumed`), consumedBytes);
+  appendCandidateClaim({
+    target_domain: domain, title: `cross-stack finding ${findingId}`,
+    summary: "web cause scoped to the effect finding for the fail-closed finding-scope gate",
+    severity: "high", status: "candidate", surface_ids: [surfaceId], payload: { finding: { id: findingId } },
+  });
+  const evmPositive = seedInvariantRunRow(domain, { findingId, outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true, causeRunId, consumedArtifactHash: consumedHash });
+  const evmControl = seedInvariantRunRow(domain, { findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true });
+  appendDecoyCapture(domain);
+  const decoyArm = seedInvariantRunRow(domain, {
+    findingId, outcome: "test_passed", treeRef: evmPositive.tree_ref, checkoutKind: evmPositive.checkout_kind,
+    contractName: evmPositive.contract_name, functionName: evmPositive.function_name,
+    executionContextHash: evmPositive.execution_context_hash, slotValues: evmPositive.slot_values,
+    sign: true, causeRunId: DECOY_RUN_ID, consumedArtifactHash: DECOY_HASH,
+  });
+  const res = await verifyCompositionPath(
+    {
+      target_domain: domain, base_url: `https://${domain}`,
+      path: [{
+        edge_type: "web_seeds_evm_state_corruption",
+        positive_run_ref: { ledger: "invariant_runs", row_id: evmPositive.run_hash },
+        control_run_ref: { ledger: "invariant_runs", row_id: evmControl.run_hash },
+        cause_run_ref: { ledger: "offensive_runs", row_id: causeRunId },
+        decoy_run_ref: { ledger: "invariant_runs", row_id: decoyArm.run_hash },
+        decoy_cause_run_ref: { ledger: "offensive_runs", row_id: DECOY_RUN_ID },
+      }],
+    },
+    { httpScanFn: () => { throw new Error("bind path must not fetch"); } },
+  );
+  assert.equal(res.result, "verified_pass");
+}
+
+test("completion-depth gate clears a complete cross-stack offensive surface bound to a re-verified composition verified_pass (no coverage)", () => withTempHome(() => withIsolatedSigner(async () => {
+  const domain = "example.com";
+  const SURFACE = "surface:web-a";
+  const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+  seedAttackSurfaces(domain, [{ id: SURFACE, hosts: [`https://${domain}`], priority: "HIGH" }]);
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "AUTH" }));
+  JSON.parse(transitionPhase({ target_domain: domain, to_phase: "EVALUATE", auth_status: "authenticated" }));
+  const started = JSON.parse(startWave({
+    target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: SURFACE }],
+  }));
+  JSON.parse(recordFinding({
+    target_domain: domain, title: "web cause for cross-stack", severity: "high", cwe: "CWE-639",
+    endpoint: "/api/billing/1", description: "Web cause feeding an EVM state corruption.",
+    proof_of_concept: "poc", response_evidence: "evidence", impact: "PII.", validated: true,
+    wave: "w1", agent: "a1", surface_id: SURFACE,
+  }));
+  JSON.parse(writeWaveHandoff({
+    target_domain: domain, wave: "w1", agent: "a1", surface_id: SURFACE,
+    surface_status: "complete", handoff_token: started.assignments[0].handoff_token,
+    summary: "surface complete", content: "# Handoff\n\nbody",
+  }));
+
+  // RED — complete, recorded finding never executed, no coverage, no composition.
+  const before = completionDepthGapForCompleteSurfaces(domain);
+  assert.equal(before.missing.length, 1);
+  assert.equal(before.missing[0].surface_id, SURFACE);
+
+  // A genuine bound cross-stack composition verified_pass whose offensive CAUSE is SURFACE
+  // (a distinct finding from the handoff's F-1; the gate credits the SURFACE, not the finding).
+  await seedCrossStackComposition(domain, SURFACE, "F-2");
+
+  // GREEN — credited via offensive:surface:web-a in verified_cross_stack_path_surface_refs.
+  assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+})));
+
+test("completion-depth gate FAILS CLOSED when the handoff doc is unreadable (corrupt claims.jsonl) — never silently disables", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const { claimsJsonlPath } = require("../mcp/lib/paths.js");
+    seedCompleteBareFinding(domain);
+    // A single malformed claims.jsonl line makes findingPayloadsFromClaims (called inside
+    // buildWaveHandoffsDocument, the sole enumerator of complete surfaces) throw. The gate
+    // must BLOCK with a legible reason, NOT return { missing: [] } (which would clear every
+    // complete surface — the masquerade it exists to close).
+    fs.appendFileSync(claimsJsonlPath(domain), "{ this is not valid json\n");
+    const gap = completionDepthGapForCompleteSurfaces(domain);
+    assert.equal(gap.missing.length, 1);
+    assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+  }));
+});
+
+test("completion-depth gate FAILS CLOSED when listWaveAssignmentNumbers THROWS (populated session dir unreadable) — distinct from the legitimate empty", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    const waveHandoffStore = require("../mcp/lib/wave-handoff-store.js");
+    seedCompleteBareFinding(domain);
+    // listWaveAssignmentNumbers returns [] for a missing session dir (no throw); it THROWS only
+    // when an EXISTING session dir cannot be enumerated (readdir FS error / dir replaced). That
+    // is the "cannot tell whether complete surfaces are hidden behind it" state and must BLOCK,
+    // not silently clear every complete surface. Simulate the readdir throw deterministically.
+    const original = waveHandoffStore.listWaveAssignmentNumbers;
+    waveHandoffStore.listWaveAssignmentNumbers = () => { throw new Error("EACCES: readdir failed"); };
+    try {
+      const gap = completionDepthGapForCompleteSurfaces(domain);
+      assert.equal(gap.missing.length, 1);
+      assert.equal(gap.missing[0].reason, "completion_state_unreadable");
+    } finally {
+      waveHandoffStore.listWaveAssignmentNumbers = original;
+    }
+  }));
+});
+
+test("completion-depth gate is VACUOUS (missing empty) for a no-waves session — listWaveAssignmentNumbers returns [], never throws", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "example.com";
+    const { completionDepthGapForCompleteSurfaces } = require("../mcp/lib/claims.js");
+    // No session / no wave-assignment files: the legitimate empty enumeration is RETURNED (not a
+    // throw), so the gate proceeds vacuously — the throw→fail-closed change must NOT block this.
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, []);
+  }));
 });
 
 test("pipeline analytics records metadata-only events for a complete synthetic run", () => {

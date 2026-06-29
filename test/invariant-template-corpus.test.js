@@ -117,41 +117,48 @@ test("template ids are unique", () => {
   }
 });
 
-test("the CONSUMING template reads the artifact (wires bobConsumedArtifact) and is indexed under signature_validation", () => {
-  // The consuming corpus template makes the cross-stack same-tree artifact-presence
-  // differential satisfiable: its VIOLATE is contingent on reading + using the web-captured
-  // artifact. It must (1) be indexed under signature_validation, (2) reference the helper
-  // bobConsumedArtifact() (the consume), and (3) feed the captured bytes into the gated call.
+test("the CONSUMING (cross-stack) template is SEALED: indexed under signature_validation, declares DATA slots, body is a runner-generated marker (no agent substitution)", () => {
+  // The cross-stack consume now runs the RUNNER-OWNED sealed Foundry project (no agent
+  // harness/forge-std/setUp), so the corpus template is a sealed marker that declares the DATA
+  // slots the generator consumes — never an agent-substitutable Solidity body.
   const sigClass = getTemplatesForClass("signature_validation");
   const consuming = sigClass.find((t) => t.id === "INV-CROSS-STACK-AUTH-REPLAY-001");
   assert.ok(consuming, "the consuming template is indexed under signature_validation");
   assert.equal(consuming.vulnerability_class, "signature_validation");
-  assert.match(consuming.foundry_test_template, /bobConsumedArtifact\(\)/, "the template READS the consumed artifact (no longer a dead helper)");
-  assert.match(consuming.foundry_test_template, /vm\.expectRevert\(\)/, "the invariant is that the gated call REVERTS (HOLD), violated only when accepted");
-  // The captured bytes are passed INTO the gated function (used contract-semantically),
-  // not branched-on (which would be a tautology).
-  assert.match(consuming.foundry_test_template, /\{GATED_FUNCTION\}\(\{VICTIM_OBJECT\}, capturedAuth\)/);
-  assert.ok(consuming.parameter_slots.includes("target_contract"));
-  assert.ok(consuming.parameter_slots.includes("gated_function"));
-  assert.ok(consuming.parameter_slots.includes("victim_object"));
+  assert.equal(consuming.sealed, true, "the cross-stack template is sealed (runner-owned harness)");
+  assert.match(consuming.foundry_test_template, /SEALED cross-stack template/, "the body is a marker, not an agent Solidity body");
+  assert.ok(
+    !/bobConsumedArtifact|GATED_FUNCTION|VICTIM_OBJECT|expectRevert/.test(consuming.foundry_test_template),
+    "no agent-substitutable Solidity in the sealed template body",
+  );
+  // DATA slots (an address, a function name, a victim type + literal value), NOT Solidity names an
+  // agent harness would define.
+  assert.deepEqual(consuming.parameter_slots, ["target_address", "gated_function", "victim_type", "victim_value"]);
 });
 
-test("the CONSUMING template's generated source wires the consume helper through buildTestSource (the helper is live, not dead)", () => {
-  const consuming = getTemplatesForClass("signature_validation").find((t) => t.id === "INV-CROSS-STACK-AUTH-REPLAY-001");
-  // suggestInvariantsForFinding fills the slots; the generated foundry_test body then sits
-  // inside buildTestSource, which exposes bobConsumedArtifact(). Both halves must align: the
-  // template calls bobConsumedArtifact() and the scaffold DEFINES it.
+test("a SEALED template is not agent-substituted (fillSlots returns the marker); the sealed GENERATOR wires the consume helper + gated call from DATA slots", () => {
   const filled = suggestInvariantsForFinding(
     { vulnerability_class: "signature_validation" },
-    { slot_values: { target_contract: "Vault", gated_function: "execute", victim_object: "victimId" } },
+    { slot_values: { target_address: `0x${"ab".repeat(20)}`, gated_function: "execute", victim_type: "uint256", victim_value: "7" } },
   ).suggestions.find((s) => s.template_id === "INV-CROSS-STACK-AUTH-REPLAY-001");
   assert.ok(filled, "the consuming template is suggested for signature_validation findings");
-  assert.match(filled.foundry_test, /Vault\.execute\(victimId, capturedAuth\)/, "slots fill into the gated call (the captured bytes are the auth arg)");
-  assert.match(filled.foundry_test, /bobConsumedArtifact\(\)/, "the filled test still consumes the artifact");
-  const scaffold = buildTestSource({ contractName: "BobInvariantTest_consume", functionBody: filled.foundry_test });
-  assert.match(scaffold, /function bobConsumedArtifact\(\) internal view returns \(bytes memory\)/, "the scaffold DEFINES the helper the template CALLS (live, not dead)");
-  assert.match(scaffold, /Vault\.execute\(victimId, capturedAuth\)/, "the gated call survives into the full generated source");
-  void consuming;
+  // fillSlots does NOT substitute into a sealed template — the marker passes through verbatim, so
+  // no agent slot value ever reaches a Solidity body via the corpus.
+  assert.match(filled.foundry_test, /SEALED cross-stack template/);
+  assert.ok(!/execute|capturedAuth|0xab/.test(filled.foundry_test), "no agent slot value substituted into the sealed marker");
+  // The live consume helper + the gated call are produced by the SEALED GENERATOR from the DATA
+  // slots (covered fully in sealed-cross-stack-harness.test.js); confirm the wiring aligns here.
+  const sealed = require("../mcp/lib/sealed-cross-stack-harness.js").buildSealedTestSource({
+    contractName: "BobInvariantTest_consume",
+    testFunctionName: "testBobInvariant_consume",
+    targetAddress: `0x${"ab".repeat(20)}`,
+    gatedFunction: "execute",
+    victimType: "uint256",
+    victimValue: "7",
+  });
+  assert.match(sealed, /function bobConsumedArtifact\(\) internal view returns \(bytes memory\)/, "the sealed generator DEFINES the consume helper");
+  assert.match(sealed, /target\.execute\(7, capturedAuth\)/, "the gated call uses the victim literal + captured bytes");
+  assert.match(sealed, /vm\.expectRevert\(\)/, "the invariant is that the gated call REVERTS (HOLD)");
 });
 
 test("object_authorization mechanism template is closed, bounded, and maps to catalog CWE", () => {

@@ -80,18 +80,20 @@ const {
 const {
   validateToolArguments,
 } = require("../mcp/lib/tool-validation.js");
-
-// The audited cross-stack consuming template id — every cross-stack invariant arm must run
-// it (the only template whose body binds a captured artifact as the on-chain auth arg).
-const CONSUME_TEMPLATE_ID = "INV-CROSS-STACK-AUTH-REPLAY-001";
-
-// The random decoy bytes (distinct CONTENT from the real cause's CONSUMED_BYTES, but SAME
-// SHAPE — same byte length, same raw encoding class — so the HIGH-2 shape-parity binding
-// passes: a gate can only reject the decoy by validating content, not length/shape). A gate
-// that validates the SPECIFIC credential bytes REJECTS these -> the decoy arm HOLDS.
-const DECOY_BYTES = Buffer.from("random-decoy-bytes:0xc0ffeeAABB", "utf8");
-const DECOY_HASH = crypto.createHash("sha256").update(DECOY_BYTES).digest("hex");
-const DECOY_RUN_ID = "web-decoy-1";
+// Single source of truth for the cross-stack decoy fixtures, shared with the four sibling
+// suites (cross-stack-consumed-binding / -producer-consume-endtoend / -composition-gate /
+// sandbox-isolation-composition-path). Imported here so the constants never drift between
+// suites. NOTE: this suite keeps its OWN seedDecoyRefs (below) rather than the helper's — the
+// local one threads crossStackTargetBound:true onto the decoy arm so its verified_pass triples
+// clear the target-binding gate, which the helper's seedDecoyRefs (used by sibling suites only
+// in earlier-refusing paths) does not set. Unifying that is a behavioral change to the helper,
+// out of scope for the constant de-dup.
+const {
+  CONSUME_TEMPLATE_ID,
+  DECOY_BYTES,
+  DECOY_HASH,
+  DECOY_RUN_ID,
+} = require("./helpers/cross-stack-decoy.js");
 
 // The genuine consumable bytes the stack-A web attack captures and the EVM violation
 // consumes. sha256(CONSUMED_BYTES) is what binds the cause offensive row's
@@ -251,6 +253,19 @@ function seedCrossStackTriple(domain, {
   // A tautological-gate test sets the decoy arm to test_failed (the decoy VIOLATES).
   decoyArmOutcome = "test_passed",
   decoyHash = DECOY_HASH,
+  // Cross-stack target-binding overrides on the POSITIVE arm (default: a valid matching
+  // binding). positiveTargetBound:false omits the binding (a pre-binding row, migration
+  // refusal); positiveTargetCodeSha256 sets a value that differs from the on-chain hash (a
+  // fake-deployed / vm.etch'd target — the executed bytecode != the on-chain bytecode).
+  positiveTargetBound = true,
+  positiveTargetCodeSha256 = undefined,
+  // The executed binding is present but the runner's on-chain cross-check was UNAVAILABLE
+  // (target_onchain_code_sha256 null) — a transient/retryable lookup failure, NOT a forgery.
+  positiveTargetOnchainUnavailable = false,
+  // positiveSealedHarness:false marks the positive arm as having run in an AGENT-AUTHORED harness
+  // (sealed_harness:false) — the cheatcode-forgery refusal. Default (undefined) follows
+  // crossStackTargetBound, so a genuine seeded arm is sealed.
+  positiveSealedHarness = undefined,
 } = {}) {
   const causeSurfaceId = causeOver.surface_id !== undefined ? causeOver.surface_id : WEB_SURFACE;
   // Route the cause surface so the verifier's stack-family check resolves it (HIGH-1).
@@ -268,13 +283,17 @@ function seedCrossStackTriple(domain, {
   const positive = seedInvariantRunRow(domain, {
     findingId, outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
     templateId: CONSUME_TEMPLATE_ID, containerIsolated,
+    crossStackTargetBound: positiveTargetBound,
+    ...(positiveTargetCodeSha256 !== undefined ? { targetCodeSha256: positiveTargetCodeSha256 } : {}),
+    ...(positiveTargetOnchainUnavailable ? { targetOnchainUnavailable: true } : {}),
+    ...(positiveSealedHarness !== undefined ? { sealedHarness: positiveSealedHarness } : {}),
     causeRunId,
     // The violated arm CONSUMED the cause's captured bytes -> consumed_artifact_hash binds.
     consumedArtifactHash: cause.consumed_artifact_hash,
   });
   const control = seedInvariantRunRow(domain, {
     findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated, crossStackTargetBound: true,
     // The control is the SAME test on the SAME tree, artifact-absent -> consumed_artifact_hash
     // null. The artifact presence is the controlled variable, not the tree.
   });
@@ -283,7 +302,7 @@ function seedCrossStackTriple(domain, {
   // decoy bytes (distinct from the real cause bytes).
   const decoy = seedInvariantRunRow(domain, {
     findingId, outcome: decoyArmOutcome, treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated, crossStackTargetBound: true,
     causeRunId: DECOY_RUN_ID,
     consumedArtifactHash: decoyHash,
   });
@@ -298,7 +317,7 @@ function seedDecoyRefs(domain, { findingId = "F-1", containerIsolated = true } =
   writeConsumedLeaf(domain, DECOY_RUN_ID, DECOY_BYTES);
   const decoy = seedInvariantRunRow(domain, {
     findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated, crossStackTargetBound: true,
     causeRunId: DECOY_RUN_ID, consumedArtifactHash: DECOY_HASH,
   });
   return {
@@ -403,6 +422,86 @@ test("a CORRECT cross-stack CAUSE/EFFECT flip (violated+held SAME test SAME tree
   })();
 }));
 
+// ── Cross-stack TARGET-BINDING refusals (the EVM effect must run the audited contract) ──
+
+test("TARGET BINDING: a fake-deployed / vm.etch'd target (executed bytecode sha256 != on-chain) is REFUSED", () => withTempHome(() => {
+  const domain = "xstack-target-etch.example.com";
+  // The agent authors a harness whose setUp deploys a MaliciousTarget: the pinned template
+  // emits address(target).code's sha256 = the FAKE bytecode, but the runner's eth_getCode at
+  // the same address/fork_block returns the REAL on-chain bytecode (the default). They differ.
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveTargetCodeSha256: `0x${"ff".repeat(32)}`,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /executed target bytecode sha256.*does not equal the on-chain bytecode|fake-deployed or vm\.etch/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
+test("TARGET BINDING: a pre-binding cross-stack row (no target binding) is REFUSED (fail-closed migration)", () => withTempHome(() => {
+  const domain = "xstack-target-missing.example.com";
+  // A row minted before target binding carries null target_* fields. The cross-stack verifier
+  // requires the binding on every arm and refuses, never accept-with-warning.
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveTargetBound: false,
+    // Keep this arm SEALED so it reaches the TARGET-binding check (the focus of this test); the
+    // separate SEALED HARNESS test covers the sealed_harness gate that otherwise precedes it.
+    positiveSealedHarness: true,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /missing cross-stack target binding|row minted before target binding is REFUSED/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
+test("TARGET BINDING: an UNAVAILABLE on-chain lookup (executed binding present, on-chain null) is REFUSED but flagged RE-RUNNABLE, not a forgery", () => withTempHome(() => {
+  const domain = "xstack-target-unavailable.example.com";
+  // The executed binding emitted (target_address + target_code_sha256 present), but the runner's
+  // quorum eth_getCode could not resolve the on-chain bytecode (all endpoints failed/timed-out or
+  // disagreed) -> target_onchain_code_sha256 null. This is a transient/operational state, NOT a
+  // fake target: the refusal reason must say RE-RUN (a healthy ladder re-run mints a resolved row
+  // at the same run_hash), and it must NOT read as a fake/etch forgery.
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveTargetOnchainUnavailable: true,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /on-chain target bytecode lookup was UNAVAILABLE|RE-RUN the invariant/i);
+    assert.doesNotMatch(out.leaves[0].reason, /fake-deployed or vm\.etch/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
+test("SEALED HARNESS: a cross-stack arm that ran in an AGENT-AUTHORED harness (sealed_harness !== true) is REFUSED (closes the cheatcode forgery)", () => withTempHome(() => {
+  const domain = "xstack-unsealed.example.com";
+  // The positive arm carries a valid bytecode binding (real target), but ran in an agent-authored
+  // harness whose setUp could vm.mockCall/vm.store the real target keyed on the captured bytes, or
+  // ship a rigged forge-std. sealed_harness:false -> the verifier refuses before the bytecode gate
+  // (bytecode equality alone does not stop cheatcode/build-environment forgery on the real contract).
+  const triple = seedCrossStackTriple(domain, {
+    findingId: "F-1",
+    causeOver: { container_isolated: true },
+    positiveSealedHarness: false,
+  });
+  return (async () => {
+    const out = await runBindPath(domain, crossStackLeaf(triple));
+    assert.equal(out.result, "refuted");
+    assert.match(out.leaves[0].reason, /did not run in the runner-owned SEALED harness|sealed_harness/i);
+    assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
+  })();
+}));
+
 // ── F1 forgery refusals ──────────────────────────────────────────────────────
 
 test("F1: the OLD forgeable shape (web exploited POSITIVE + EVM held CONTROL, no cause-link) is REFUSED — flip arms must both be invariant_runs", () => withTempHome(() => {
@@ -487,12 +586,12 @@ test("F1: a violated arm that does NOT name the bound cause (broken causal link)
   // The violated arm names a DIFFERENT cause id than the one bound in the leaf.
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: "some-other-cause",
   });
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   void cause;
@@ -515,12 +614,12 @@ test("F1: a non-demonstrating cause (a blocked web run) is REFUSED", () => withT
   appendWebRow(domain, buildSignedWebRow(domain, { run_id: CAUSE_RUN_ID, offensive_outcome: "blocked_by_defense", command_hash: hex("1") }));
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID,
   });
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   return (async () => {
@@ -537,20 +636,23 @@ test("F1: a non-demonstrating cause (a blocked web run) is REFUSED", () => withT
   })();
 }));
 
-test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same test, same outcome) is refused as a non-discriminating control", () => withTempHome(() => {
+test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same test, same outcome → IDENTICAL run_hash → the SAME executed row) is refused by the distinct-executed-rows guard", () => withTempHome(() => {
   const domain = "xstack-noflip.example.com";
   const cause = appendWebRow(domain, buildSignedWebRow(domain, { run_id: CAUSE_RUN_ID, offensive_outcome: "exploited_safely", command_hash: hex("1") }));
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID,
   });
   // The "control" is VIOLATED on the SAME tree (same test, same outcome) — it does not flip.
-  // Because the artifact presence is OUTSIDE run_hash, a same-tree same-outcome control has
-  // the IDENTICAL run_hash as the positive, so it is refused as a non-discriminating control.
+  // Because the artifact presence is OUTSIDE run_hash, a same-tree same-outcome control has the
+  // IDENTICAL run_hash as the positive, i.e. it IS the same executed row — caught by the
+  // distinct-executed-rows guard (the control collapses into the positive). The regex pins to
+  // THAT guard's exact phrasing, not a union with the unrelated single-run-self-flip path, so a
+  // regression in the distinct-rows guard cannot pass green by tripping a different refusal.
   const controlViolated = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   void cause;
@@ -563,7 +665,7 @@ test("F1: a NON-FLIPPING control (control VIOLATED on the same tree — same tes
       ...decoyRefs,
     });
     assert.equal(out.result, "refuted");
-    assert.match(out.leaves[0].reason, /run_hash is identical|non-discriminating control|DIFFERENT executed rows|single run/i);
+    assert.match(out.leaves[0].reason, /positive, control and decoy must be DIFFERENT executed rows/i);
     assert.equal(readCompositionVerifiedSummary(domain).verified_pass_count, 0);
   })();
 }));
@@ -574,14 +676,14 @@ test("F1: a NON-DEMONSTRATING positive (the effect arm HELD instead of violated)
   // Positive HELD (not violated) — on the target tree, naming the cause.
   const positiveHeld = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID,
   });
   // A distinct (violated) same-test, same-tree control so the flip check is reached: the
   // positive-not-violated refusal must fire, not the same-tree guard.
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   void cause;
@@ -610,13 +712,13 @@ test("a TREE-ONLY flip (positive target / control fixed, NO artifact differentia
   if (cause.consumed_artifact_hash === CONSUMED_HASH) writeConsumedLeaf(domain, CAUSE_RUN_ID, CONSUMED_BYTES);
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID, consumedArtifactHash: cause.consumed_artifact_hash,
   });
   // The control is on a DIFFERENT tree (the OLD cross-stack shape) — the tree is the variable.
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   return (async () => {
@@ -642,12 +744,12 @@ test("F2: an UNSIGNED invariant arm is REFUSED at the strict-MAC bind (accept-wi
   // agent could have planted before invariant-runs.jsonl was audit-graded.
   const positiveUnsigned = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: false,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID,
   });
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   return (async () => {
@@ -669,12 +771,12 @@ test("a MAC-TAMPERED invariant positive (covered field mutated, stale mac kept) 
   appendWebRow(domain, buildSignedWebRow(domain, { run_id: CAUSE_RUN_ID, offensive_outcome: "exploited_safely", command_hash: hex("1") }));
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID,
   });
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "fixed", checkoutKind: "upstream_fix", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyRefs = seedDecoyRefs(domain);
   // Mutate a MAC-covered field on the positive row on disk while keeping the stale mac.
@@ -925,19 +1027,19 @@ function seedShapeMismatchDecoy(domain, { findingId = "F-1", decoyBytes } = {}) 
   writeConsumedLeaf(domain, CAUSE_RUN_ID, CONSUMED_BYTES);
   const positive = seedInvariantRunRow(domain, {
     findingId, outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: CAUSE_RUN_ID, consumedArtifactHash: cause.consumed_artifact_hash,
   });
   const control = seedInvariantRunRow(domain, {
     findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   // WRONG-SHAPE decoy capture: distinct random bytes of a DIFFERENT length than the cause.
   const decoyCapture = appendWebRow(domain, buildSignedDecoyRow(domain, { consumed_artifact_hash: decoyHash }));
   writeConsumedLeaf(domain, DECOY_RUN_ID, decoyBytes);
   const decoy = seedInvariantRunRow(domain, {
     findingId, outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
     causeRunId: DECOY_RUN_ID, consumedArtifactHash: decoyHash,
   });
   return { cause, positive, control, decoy, decoyCapture };
@@ -974,17 +1076,17 @@ test("HIGH-2: a shape-DISTINGUISHING gate now FAILS — with a SHAPE-MATCHED dec
   writeConsumedLeaf(domain, CAUSE_RUN_ID, causeJson);
   const positive = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_failed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, causeRunId: CAUSE_RUN_ID, consumedArtifactHash: causeHash,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, causeRunId: CAUSE_RUN_ID, consumedArtifactHash: causeHash,
   });
   const control = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true,
   });
   const decoyCapture = appendWebRow(domain, buildSignedDecoyRow(domain, { consumed_artifact_hash: decoyHash }));
   writeConsumedLeaf(domain, DECOY_RUN_ID, decoyRaw);
   const decoy = seedInvariantRunRow(domain, {
     findingId: "F-1", outcome: "test_passed", treeRef: "target", checkoutKind: "tree", sign: true,
-    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, causeRunId: DECOY_RUN_ID, consumedArtifactHash: decoyHash,
+    templateId: CONSUME_TEMPLATE_ID, containerIsolated: true, crossStackTargetBound: true, causeRunId: DECOY_RUN_ID, consumedArtifactHash: decoyHash,
   });
   return (async () => {
     const out = await runBindPath(domain, crossStackLeaf({ cause, positive, control, decoy, decoyCapture }));

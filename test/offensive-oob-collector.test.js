@@ -44,6 +44,7 @@ const {
 const { signOffensiveRunRow, verifyOffensiveRunRowMac } = require("../mcp/lib/offensive-row-mac.js");
 const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
 const { resolveOffensiveRowVerifier } = require("../mcp/lib/handoff-signing-key.js");
+const { verifyFindingDifferential } = require("../mcp/lib/finding-differential-verifier.js");
 const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
@@ -470,4 +471,147 @@ test("negative gate: a row stamped target == the OOB host is unbacked (proves th
     threw = e;
   }
   assert.ok(threw, "a claim citing an OOB-host-targeted row must be unbacked (out of scope)");
+}));
+
+// ───────────────────────── decoy-silent control arm (expect=silence) ────────
+// A single OOB callback is not a self-contained binding (the exploit_run skip refuses it).
+// The control arm lets an OOB finding EARN a finding-differential verified_pass: an injected
+// token that fired (positive) flipped against a decoy token confirmed silent (control).
+
+test("expect=silence: a decoy silent against a reachable sink signs a blocked_by_defense control", () => withTempHome(async () => {
+  const domain = "oob-control.example.test";
+  setupSession(domain);
+  const mintRes = await oobMint(mintArgs(domain), { config: CONFIG });
+  const res = await oobPoll(
+    { target_domain: domain, token_handle: mintRes.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(res.control, true);
+  assert.equal(res.confirmed, false);
+  assert.equal(res.offensive_outcome, "blocked_by_defense");
+  assert.equal(res.row_written, true);
+  assert.equal(res.oracle_kind, "out_of_band_interaction");
+  const ctl = readOffensiveRunRecords(domain).find((r) => r.run_id === res.run_id);
+  assert.ok(ctl, "control row persisted");
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  assert.equal(ctl.oracle_kind, "out_of_band_interaction");
+  assert.equal(ctl.surface_id, SURFACE_ID);
+  // MAC validity + downstream consumability are proven by the end-to-end flip test below
+  // (verifyFindingDifferential resolves this row through its MAC-verifying executed-row gate).
+}));
+
+test("expect=silence: a decoy that DID interact is refused as a control (never signed)", () => withTempHome(async () => {
+  const domain = "oob-control-fired.example.test";
+  setupSession(domain);
+  const mintRes = await oobMint(mintArgs(domain), { config: CONFIG });
+  const token = tokenFor(domain, mintRes.token_handle);
+  const res = await oobPoll(
+    { target_domain: domain, token_handle: mintRes.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: hitSource(token) },
+  );
+  assert.equal(res.confirmed, false);
+  assert.equal(res.reason, "decoy_interaction_observed");
+  assert.equal(res.row_written, false);
+  assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+}));
+
+test("the injected-and-fired positive + the decoy-silent control flip to a verified_pass via finding-differential", () => withTempHome(async () => {
+  const domain = "oob-flip.example.test";
+  setupSession(domain);
+  // POSITIVE — a real token injected into the surface fires via HTTP, and the configured session
+  // egress IP (CONFIG_SELF) PROVES the callback's source is distinct from the agent (not a
+  // self-hit) -> source_attribution_established. hitSource's default source IP (198.51.100.23)
+  // differs from SELF_IP (203.0.113.99), so attribution is established.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG_SELF });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG_SELF, interaction_source: hitSource(t1) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  // CONTROL — a decoy token, never injected, stays silent.
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The FLIP — the existing mechanism-agnostic finding-differential verifier mints a
+  // verified_pass: positive exploited, control blocked, same surface, distinct hash.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.equal(verdict.result, "verified_pass");
+}));
+
+test("ATTRIBUTION: a DNS-only OOB positive does NOT earn a verified_pass via the decoy-silent flip (attribution-limited, stays a lead)", () => withTempHome(async () => {
+  const domain = "oob-dns-flip.example.test";
+  setupSession(domain);
+  // POSITIVE — a DNS-only hit: the callback arrives from the target's recursive resolver, not the
+  // host, so it is self-hittable (the agent can resolve the token itself) and unattributable.
+  // oob-collector flags dns_only_attribution_weak:true on the MAC-signed positive row.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG, interaction_source: hitSource(t1, { protocol: "dns", source_ip: undefined }) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  // CONTROL — the free, always-constructible decoy-silent control.
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The flip is structurally genuine (positive exploited, control blocked, distinct rows, same
+  // surface), but the DNS-only positive is ATTRIBUTION-LIMITED: the flip proves token-specificity,
+  // not target-causation. The verifier returns INCONCLUSIVE (no verified_pass) — the finding stays
+  // a lead until corroborated by an HTTP OOB hit with a source IP distinct from the session egress.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.notEqual(verdict.result, "verified_pass");
+  assert.match(verdict.reason, /UNESTABLISHED|not provably target-caused|attribution|recursive resolver/i);
+}));
+
+test("ATTRIBUTION: an HTTP OOB positive with NO configured session-egress IP does NOT earn a verified_pass (self-hit gap)", () => withTempHome(async () => {
+  const domain = "oob-http-noegress.example.test";
+  setupSession(domain);
+  // POSITIVE — an HTTP callback, but BOB_OOB_SELF_EGRESS_IP is UNSET (CONFIG, not CONFIG_SELF).
+  // Without a configured egress IP the runner cannot prove the source is distinct from the agent,
+  // so the agent could have self-requested http://<oob-host>/<token> from its own network, never
+  // touching the target. source_attribution_established is therefore false.
+  const m1 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const t1 = tokenFor(domain, m1.token_handle);
+  const pos = await oobPoll(
+    { target_domain: domain, token_handle: m1.token_handle, expect: "interaction" },
+    { config: CONFIG, interaction_source: hitSource(t1) },
+  );
+  assert.equal(pos.offensive_outcome, "exploited_safely");
+  const m2 = await oobMint(mintArgs(domain), { config: CONFIG });
+  const ctl = await oobPoll(
+    { target_domain: domain, token_handle: m2.token_handle, expect: "silence" },
+    { config: CONFIG, interaction_source: emptySource() },
+  );
+  assert.equal(ctl.offensive_outcome, "blocked_by_defense");
+  // The flip is structurally genuine but attribution is UNESTABLISHED (no egress IP to prove the
+  // source) — the verifier returns INCONCLUSIVE, not verified_pass.
+  const verdict = verifyFindingDifferential({
+    target_domain: domain,
+    finding_id: "F-1",
+    surface_id: SURFACE_ID,
+    positive_run_ref: { ledger: "offensive_runs", row_id: pos.run_id },
+    control_run_ref: { ledger: "offensive_runs", row_id: ctl.run_id },
+  });
+  assert.notEqual(verdict.result, "verified_pass");
+  assert.match(verdict.reason, /UNESTABLISHED|no configured session-egress|attribution/i);
 }));

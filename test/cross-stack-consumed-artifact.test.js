@@ -91,10 +91,14 @@ const CROSS_STACK_FINDING = Object.freeze({
   vulnerability_class: "signature_validation",
   description: "web-captured authorization payload consumed on-chain",
 });
+// DATA slots for the SEALED cross-stack template: an address, a function name, and a victim
+// type + literal value — the sealed generator interpolates these as literals (never agent
+// Solidity names). The consume path (BOB_CONSUMED_ARTIFACT) is independent of the sealed routing.
 const CROSS_STACK_SLOTS = Object.freeze({
-  target_contract: "Relay",
+  target_address: `0x${"ab".repeat(20)}`,
   gated_function: "execute",
-  victim_object: "victimObj",
+  victim_type: "uint256",
+  victim_value: "7",
 });
 
 // Mint a signed offensive row that captures a CONSUMABLE artifact. Mirrors the IDOR

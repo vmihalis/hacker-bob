@@ -730,9 +730,16 @@ function invariantFoundryResultHash(foundryResult) {
   // must hash identically before and after this change. The marker's integrity is
   // instead carried by the row_mac (it covers the whole record minus row_mac) and is
   // consulted by the verdict gate, never by the content hash.
+  // target_binding/target_binding_error are EXCLUDED for the same reason: they are a
+  // cross-stack target attestation (the executed target's address + runtime-bytecode sha256,
+  // parsed from the pinned template's emitted log), carried OUTSIDE run_hash so run_hash stays
+  // byte-stable and every pre-existing fixture hashes identically. Their integrity rides in the
+  // row_mac via the target_* record siblings, and the cross-stack verifier consults those.
   if (typeof foundryResult === "object" && !Array.isArray(foundryResult)
-    && Object.prototype.hasOwnProperty.call(foundryResult, "container_isolated")) {
-    const { container_isolated, ...withoutMarker } = foundryResult;
+    && (Object.prototype.hasOwnProperty.call(foundryResult, "container_isolated")
+      || Object.prototype.hasOwnProperty.call(foundryResult, "target_binding")
+      || Object.prototype.hasOwnProperty.call(foundryResult, "target_binding_error"))) {
+    const { container_isolated, target_binding, target_binding_error, ...withoutMarker } = foundryResult;
     return hashCanonicalJson(withoutMarker);
   }
   return hashCanonicalJson(foundryResult);
@@ -850,8 +857,27 @@ async function runInvariantForFinding({
   if (match_test && match_test !== function_name) {
     throw new Error(`match_test overrides are unsupported for generated invariants; expected ${function_name}`);
   }
-  const renamedBody = renameTestFunction(chosen.foundry_test, function_name);
-  const source = buildTestSource({ contractName: contract_name, functionBody: renamedBody });
+  // SEALED cross-stack path: the runner generates the WHOLE Foundry project from DATA slots — no
+  // agent harness / forge-std / setUp on the execution path — closing the cheatcode forgery (an
+  // agent setUp that vm.mockCall/vm.store's the real target, or a rigged forge-std). Other templates
+  // keep the agent-harness path unchanged. buildSealedTestSource VALIDATES the slots (throws on a
+  // bad/missing address/identifier/typed-literal), so an agent slot can never be Solidity injection.
+  const isSealedCrossStack = chosen.template_id === CROSS_STACK_CONSUME_TEMPLATE_ID;
+  const sealedSlots = isPlainObject(slot_values) ? slot_values : {};
+  let source;
+  if (isSealedCrossStack) {
+    source = require("./sealed-cross-stack-harness.js").buildSealedTestSource({
+      contractName: contract_name,
+      testFunctionName: function_name,
+      targetAddress: sealedSlots.target_address,
+      gatedFunction: sealedSlots.gated_function,
+      victimType: sealedSlots.victim_type,
+      victimValue: sealedSlots.victim_value,
+    });
+  } else {
+    const renamedBody = renameTestFunction(chosen.foundry_test, function_name);
+    source = buildTestSource({ contractName: contract_name, functionBody: renamedBody });
+  }
   // PIN the exact emitted test bytes into the run identity. generated_source_hash is
   // bound into computeInvariantRunHash (and so into the row_mac via run_hash), so the
   // signed row commits to the precise source the runner emitted. An agent who later
@@ -947,31 +973,81 @@ async function runInvariantForFinding({
   let outcome = "dry_run";
   let runHash = null;
   let invariantRunsRetention = null;
+  // Cross-stack target binding (siblings, outside run_hash, inside row_mac). Null on
+  // single-surface / dry runs; set on a cross-stack run that emitted the pinned binding.
+  let targetAddress = null;
+  let targetCodeSha256 = null;
+  let targetOnchainCodeSha256 = null;
+  // SEALED-HARNESS marker — true once the runner-owned sealed project actually RAN (the cross-stack
+  // verifier requires sealed_harness === true on every arm). sealedProjectParent is the runner temp
+  // dir to clean up after the run.
+  let sealedHarnessRan = false;
+  let sealedProjectParent = null;
   if (dry_run !== true) {
-    const bobDir = ensureHarnessTestDir(harness_path);
-    writtenPath = writeInvariantSourceFile(bobDir, `${contract_name}.t.sol`, source);
-    foundryRawResult = await foundry_run({
-      target_domain: domain,
-      harness_path,
-      match_test: match_test || function_name,
-      match_contract: match_contract || contract_name,
-      // HIGH-1: pin forge to the EXACT generated file + anchor the match filters to the full
-      // identifier. A shadow .t.sol whose contract/test name CONTAINS the generated name is
-      // never selected, so a dishonest agent cannot have foundry run attacker-authored
-      // Solidity under the signed row's generated_source_hash. match_path is the absolute
-      // written path; anchor_match wraps match_test/match_contract in ^...$.
-      match_path: writtenPath,
-      anchor_match: true,
-      chain_id,
-      fork_block,
-      fork_urls,
-      extra_args,
-      timeout_ms,
-      // The cross-stack consumable bytes injected into the foundry subprocess as
-      // BOB_CONSUMED_ARTIFACT. null/absent on the control arm -> empty env (the corpus
-      // template's vm.envOr default), so the artifact PRESENCE is the controlled variable.
-      consumed_artifact: consumedArtifactBytes,
-    });
+    let runHarnessPath;
+    // The fork endpoints actually used. Non-sealed runs keep the agent's fork_urls; a SEALED
+    // cross-stack run forks from the operator-pinned TRUSTED ladder instead (see below).
+    let forkUrlsForRun = fork_urls;
+    if (isSealedCrossStack) {
+      // Provision the runner-owned SEALED project under $HOME (foundry-runner requires the harness
+      // under home) and run forge against IT — the agent's harness_path is NOT used for a sealed
+      // cross-stack run, so no agent Solidity / forge-std / setUp is ever on the execution path.
+      sealedProjectParent = fs.mkdtempSync(path.join(os.homedir(), ".bob-sealed-xstack-"));
+      const sealed = require("./sealed-cross-stack-harness.js").writeSealedCrossStackProject(sealedProjectParent, {
+        contractName: contract_name,
+        testFunctionName: function_name,
+        targetAddress: sealedSlots.target_address,
+        gatedFunction: sealedSlots.gated_function,
+        victimType: sealedSlots.victim_type,
+        victimValue: sealedSlots.victim_value,
+      });
+      writtenPath = sealed.testPath;
+      runHarnessPath = sealed.projectDir;
+      // The FORK ITSELF must use the operator-pinned TRUSTED ladder, NOT the agent's fork_urls.
+      // Otherwise an attacker RPC can serve the REAL target bytecode (so the eth_getCode cross-check
+      // below still matches) while FALSIFYING storage / proxy-implementation state, forging the
+      // flip against fake fork state. resolveEvmRpcEndpoints reads BOB_EVM_RPCS_<chainId> / the
+      // code-pinned default ladder — never agent input. An unconfigured / non-archival ladder makes
+      // the fork fail -> fail-closed (no cross-stack verification until a trusted archival RPC exists).
+      // No valid chain_id -> NO trusted endpoints (the fork fails / fail-closed), NEVER agent fork_urls.
+      forkUrlsForRun = (Number.isInteger(chain_id) && chain_id > 0)
+        ? require("./evm-rpc-pool.js").resolveEvmRpcEndpoints(chain_id)
+        : [];
+      sealedHarnessRan = true;
+    } else {
+      const bobDir = ensureHarnessTestDir(harness_path);
+      writtenPath = writeInvariantSourceFile(bobDir, `${contract_name}.t.sol`, source);
+      runHarnessPath = harness_path;
+    }
+    try {
+      foundryRawResult = await foundry_run({
+        target_domain: domain,
+        harness_path: runHarnessPath,
+        match_test: match_test || function_name,
+        match_contract: match_contract || contract_name,
+        // HIGH-1: pin forge to the EXACT generated file + anchor the match filters to the full
+        // identifier. A shadow .t.sol whose contract/test name CONTAINS the generated name is
+        // never selected, so a dishonest agent cannot have foundry run attacker-authored
+        // Solidity under the signed row's generated_source_hash. match_path is the absolute
+        // written path; anchor_match wraps match_test/match_contract in ^...$.
+        match_path: writtenPath,
+        anchor_match: true,
+        chain_id,
+        fork_block,
+        fork_urls: forkUrlsForRun,
+        extra_args,
+        timeout_ms,
+        // The cross-stack consumable bytes injected into the foundry subprocess as
+        // BOB_CONSUMED_ARTIFACT. null/absent on the control arm -> empty env (the corpus
+        // template's vm.envOr default), so the artifact PRESENCE is the controlled variable.
+        consumed_artifact: consumedArtifactBytes,
+      });
+    } finally {
+      // The sealed project is single-use; remove it whether the run succeeded or threw.
+      if (sealedProjectParent) {
+        try { fs.rmSync(sealedProjectParent, { recursive: true, force: true }); } catch {}
+      }
+    }
     if (typeof foundryRawResult === "string") {
       try {
         foundryRawResult = JSON.parse(foundryRawResult);
@@ -993,7 +1069,10 @@ async function runInvariantForFinding({
     const identityBind = bindExecutedTestIdentity({
       foundryResult: foundryRawResult,
       writtenPath,
-      harnessPath: harness_path,
+      // The harness the run ACTUALLY executed under — the sealed project for a sealed cross-stack
+      // run, the agent harness otherwise. Using harness_path here would mark every sealed run
+      // identity_unbound (its executed file lives under the sealed project, not the agent harness).
+      harnessPath: runHarnessPath,
       contractName: contract_name,
       functionName: function_name,
     });
@@ -1001,6 +1080,45 @@ async function runInvariantForFinding({
       outcome = "identity_unbound";
       consumedArtifactHash = null;
       consumedArtifactBytes = null;
+    }
+    // CROSS-STACK TARGET BINDING. The pinned template emits exactly one
+    // "BOB_TARGET_BIND:<address>:<sha256(target.code)>" line (foundry-runner parses it into
+    // foundry_result.target_binding; a setUp-injected second line sets target_binding_error
+    // → refused). Cross-check the executed runtime-bytecode sha256 against the REAL on-chain
+    // bytecode at the SAME address+fork_block.
+    //
+    // The cross-check MUST query the operator-pinned TRUSTED RPC ladder (resolveEvmRpcEndpoints
+    // → BOB_EVM_RPCS_<chainId> / the code-pinned DEFAULT_PUBLIC_RPC_LADDER), NEVER the agent-
+    // supplied fork_urls. The agent controls the FORK — and therefore the executed target's
+    // bytecode (its setUp can deploy a MaliciousTarget) — so resolving the "independent" on-chain
+    // value through the SAME agent endpoints would let the agent serve a fake bytecode that
+    // MATCHES its fake target, forging the verified_pass. Because the trusted ladder is not agent
+    // input, a fake-deployed / vm.etch'd target yields a mismatch the cross-stack verifier refuses.
+    // ethGetCodeAgreed requires a CORROBORATION QUORUM (>= 2 agreeing trusted responders by
+    // default) and ignores "0x" non-archival misses, so neither a single agent endpoint nor a
+    // single compromised trusted endpoint can decide the hash. An unconfigured/insufficient ladder
+    // yields "unavailable" → target_onchain_code_sha256 null → the verifier refuses (re-runnable,
+    // NOT a forgery), distinct from a present-but-mismatched hash (the fake/etch case). Single-
+    // surface runs emit no binding (these stay null). A re-run reuses the same run_hash (the target
+    // siblings are outside run_hash), so a resolved row supersedes an unavailable one in the ledger.
+    const tbResult = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding : null;
+    const tbError = isPlainObject(foundryRawResult) ? foundryRawResult.target_binding_error : null;
+    if (!tbError && tbResult && typeof tbResult.address === "string" && typeof tbResult.code_sha256 === "string") {
+      targetAddress = tbResult.address.toLowerCase();
+      targetCodeSha256 = tbResult.code_sha256.toLowerCase();
+      if (chain_id != null && fork_block != null) {
+        try {
+          const { ethGetCodeAgreed } = require("./evm-client.js");
+          // No `endpoints` argument: ethGetCodeAgreed resolves the operator-pinned trusted ladder
+          // itself (resolveEvmRpcEndpoints), so the agent-supplied fork_urls never reach this lookup.
+          const resp = await ethGetCodeAgreed({ chainId: chain_id, address: targetAddress, block: fork_block });
+          if (resp && resp.status === "resolved" && typeof resp.code === "string" && resp.code.length > 0) {
+            targetOnchainCodeSha256 = `0x${crypto.createHash("sha256").update(Buffer.from(resp.code, "hex")).digest("hex")}`;
+          }
+        } catch {
+          targetOnchainCodeSha256 = null;
+        }
+      }
     }
     runHash = computeInvariantRunHash({
       finding_id: findingId,
@@ -1097,13 +1215,31 @@ async function runInvariantForFinding({
     // The CONSUMED-ARTIFACT BINDING. sha256 of the bytes this invariant run ACTUALLY
     // consumed (injected as BOB_CONSUMED_ARTIFACT). On a violated arm with a verified
     // cause this is the bound bytes' hash; on the control arm (no cause, empty env) it is
-    // null. Like cause_run_id/container_isolated this is a top-level SIBLING OUTSIDE
-    // computeInvariantRunHash (so the positive and control stay the SAME test —
-    // execution_context_hash and run_hash are undisturbed; the artifact PRESENCE is the
-    // controlled variable alongside tree_ref) but INSIDE the row_mac (the signer covers
-    // the whole record minus row_mac), so an agent cannot forge which bytes a violated
-    // arm consumed. The O-B verifier binds this to sha256 of the named cause's stored bytes.
+    // null. UNLIKE cause_run_id/container_isolated/target_* (true top-level siblings OUTSIDE
+    // the content hash), consumed_artifact_hash IS bound INTO run_hash alongside tree_ref —
+    // so the cross-stack control and decoy arms, both HELD with an identical foundry_result,
+    // are DISTINCT persistable rows the dedup-by-run_hash ledger keeps separate. It is
+    // EXCLUDED only from execution_context_hash, so the positive/control/decoy arms stay the
+    // SAME test (the artifact PRESENCE is the controlled variable, like tree_ref). run_hash is
+    // in turn covered by the row_mac (the signer covers the whole record minus row_mac), so an
+    // agent cannot forge which bytes a violated arm consumed. The O-B verifier binds this to
+    // sha256 of the named cause's stored bytes.
     consumed_artifact_hash: consumedArtifactHash,
+    // CROSS-STACK TARGET BINDING siblings — top-level, OUTSIDE run_hash (so run_hash stays
+    // byte-stable and pre-binding rows hash identically) but INSIDE the row_mac. The
+    // cross-stack verifier requires all three and refuses unless target_code_sha256 (the
+    // executed runtime-bytecode hash the pinned template emitted) equals
+    // target_onchain_code_sha256 (eth_getCode at the same address+fork_block). The agent
+    // controls target_code_sha256 via its target but NOT target_onchain_code_sha256.
+    target_address: targetAddress,
+    target_code_sha256: targetCodeSha256,
+    target_onchain_code_sha256: targetOnchainCodeSha256,
+    // SEALED-HARNESS marker — top-level sibling OUTSIDE run_hash (the sealed source already differs,
+    // so generated_source_hash distinguishes it) but INSIDE the row_mac, so an agent cannot flip it.
+    // True ONLY when the runner executed the runner-owned sealed Foundry project. The cross-stack
+    // verifier requires sealed_harness === true on every arm; a non-sealed (agent-harness) cross-
+    // stack run leaves it false and is refused (closes the cheatcode forgery).
+    sealed_harness: sealedHarnessRan,
   };
   if (dry_run !== true) {
     await withInvariantSessionWriteLock(domain, () => {

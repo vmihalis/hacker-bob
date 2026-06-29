@@ -183,6 +183,16 @@ function normalizeOracleKind(value) {
   return assertEnumValue(assertRequiredText(value, "oracle_kind"), ORACLE_KIND_VALUES, "oracle_kind");
 }
 
+// poll arm selector. "interaction" (default) requires a matching callback and signs the
+// exploited_safely positive; "silence" is the negative control — a DECOY token the agent
+// did NOT inject, confirmed silent against a reachable sink, signed blocked_by_defense so
+// finding-differential can FLIP the pair. It is an arm selector, never a target input.
+const EXPECT_VALUES = Object.freeze(["interaction", "silence"]);
+function normalizeExpect(value) {
+  if (value == null) return "interaction";
+  return assertEnumValue(assertRequiredText(value, "expect"), EXPECT_VALUES, "expect");
+}
+
 // prefix + 128 bits of hex = a DNS-label-safe ([a-z0-9], <= 63 chars), high-entropy
 // nonce. No metacharacters, never an action verb — the only thing the sink ever
 // keys on.
@@ -484,6 +494,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   assertNoForbiddenInputs(args, POLL_TOOL_ID, OOB_FORBIDDEN_EXTRAS);
   const domain = assertRequiredText(args.target_domain, "target_domain");
   const tokenHandle = assertRequiredText(args.token_handle, "token_handle");
+  const expect = normalizeExpect(args.expect);
 
   if (!config.configured) {
     return notConfirmed("blocked_by_infra", config.reason || "oob_sink_not_configured", { available: false });
@@ -507,6 +518,124 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
 
   // Exact-token match ONLY. Stray / non-minted interactions are dropped → no row.
   const matched = normalizeInteractions(parsed).filter((i) => i.token === binding.token);
+
+  if (expect === "silence") {
+    // CONTROL ARM (decoy-silent). A server-side-minted token the agent did NOT inject into the
+    // target. A REACHABLE sink (the fetch above succeeded) with NO interaction for this token is
+    // an affirmative silent control: it signs a blocked_by_defense row so finding-differential
+    // can FLIP it against the injected-and-fired positive on the same surface.
+    //
+    // SCOPE — what this control DOES prove: the sink does not FABRICATE or receive AMBIENT
+    // interactions for a server-side-minted token that never entered the target, so the
+    // positive's interaction is attributable to the agent's injection, not to background noise
+    // at the sink (other scanners, the sink's own probes, a token-independent beacon).
+    //
+    // ACKNOWLEDGED RESIDUALS — what a NEVER-INJECTED decoy cannot probe, so this control does
+    // NOT close them: (1) PROMISCUITY — a sink/intermediary that fires for ANY *injected* token
+    // would need an EXPOSED-but-silent decoy to rule out, which a never-injected decoy is not;
+    // (2) INTERMEDIARY-ATTRIBUTION — an intermediary in the target's request path that fires
+    // only for the injected token. Both are bounded the same way the positive arm's standalone
+    // OOB evidence is: the verified flip rests on a GENUINE server-side callback (which the
+    // agent cannot fabricate — the sink is MCP-controlled), with this control closing only the
+    // ambient/fabricated-noise class. The blocked_by_defense outcome is the safe-variant the
+    // finding-differential flip contract requires; it names the silent-control disposition, not
+    // a proof that a defense blocked an injected token.
+    //
+    // A decoy that DID interact is refused as a control: either the agent injected it, or the
+    // sink fired for a non-injected token (which would itself refute positive specificity) —
+    // never signed as a silent control.
+    if (matched.length > 0) {
+      return notConfirmed("blocked_by_design", "decoy_interaction_observed");
+    }
+    const controlStdout = canonicalJson({
+      token: binding.token,
+      oob_host: config.host,
+      decoy_silent: true,
+      bound_surface_id: binding.surface_id,
+    });
+    const controlStderr = canonicalJson({
+      interaction_count: 0,
+      token_match: "none",
+      sink_reachable: true,
+    });
+    if (
+      sensitiveShapesPresent(binding.canonical_target) ||
+      sensitiveShapesPresent(controlStdout) ||
+      sensitiveShapesPresent(controlStderr)
+    ) {
+      return notConfirmed("blocked_operator_pii", "capture_contains_sensitive_value");
+    }
+    const controlRelation = {
+      oob_host_is_constant: true,
+      token_minted_server_side: true,
+      interaction_observed: false,
+      decoy_silent_against_reachable_sink: true,
+      source_is_remote: true,
+    };
+    const controlResult = withSessionLock(domain, () => {
+      const reread = resolveBinding(domain, tokenHandle);
+      if (reread.consume && typeof reread.consume.run_id === "string") {
+        return { idempotent: true, run_id: reread.consume.run_id };
+      }
+      const row = buildAndSignOffensiveRow(domain, {
+        runIdPrefix: "oobctl",
+        toolId: POLL_TOOL_ID,
+        method: binding.method || "GET",
+        canonicalTarget: binding.canonical_target,
+        surfaceId: binding.surface_id,
+        identityTag: "unauth-oob-control",
+        stdoutContent: controlStdout,
+        stderrContent: controlStderr,
+        relationBooleans: controlRelation,
+        // A denial, never a positive cause leg. blocked_by_defense is the affirmative
+        // safe-variant the finding-differential flip contract requires for a control.
+        offensiveOutcome: "blocked_by_defense",
+        oracleKind: ORACLE_KIND_VALUES[0],
+      });
+      appendOobTokenRecordHardened(domain, {
+        kind: "consume",
+        token_handle: tokenHandle,
+        run_id: row.run_id,
+        consumed_at: clock(),
+      });
+      return { idempotent: false, row };
+    });
+    if (controlResult.idempotent) {
+      return {
+        confirmed: false,
+        control: true,
+        idempotent: true,
+        row_written: false,
+        target_domain: domain,
+        surface_id: binding.surface_id,
+        oracle_kind: ORACLE_KIND_VALUES[0],
+        offensive_outcome: "blocked_by_defense",
+        run_id: controlResult.run_id,
+        note: "token already consumed; returning the previously-signed control run_id (no second row)",
+      };
+    }
+    const controlRow = controlResult.row;
+    return {
+      confirmed: false,
+      control: true,
+      idempotent: false,
+      row_written: true,
+      target_domain: domain,
+      surface_id: binding.surface_id,
+      oracle_kind: ORACLE_KIND_VALUES[0],
+      offensive_outcome: "blocked_by_defense",
+      run_id: controlRow.run_id,
+      tool_id: controlRow.tool_id,
+      target: controlRow.target,
+      command_hash: controlRow.command_hash,
+      stdout_hash: controlRow.stdout_hash,
+      stderr_hash: controlRow.stderr_hash,
+      exit_code: controlRow.exit_code,
+      demonstrated_severity: controlRow.demonstrated_severity,
+      note: "silent decoy control signed (blocked_by_defense); pair it with the injected-and-fired positive via bob_verify_finding_differential",
+    };
+  }
+
   if (matched.length === 0) {
     return notConfirmed("blocked_by_infra", "no_matching_interaction");
   }
@@ -523,6 +652,14 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
   // agent's own curl, not the target — withhold the signed row. Useless for DNS
   // (source = resolver), so DNS hits are never withheld on this basis.
   let sourceDistinct = true;
+  // source_attribution_established: the sink interaction is PROVABLY target-caused, not an agent
+  // self-hit. TRUE only for an HTTP callback whose source IP is VERIFIED distinct from the
+  // configured session egress IP. DNS (the source is the target's recursive resolver, so it is
+  // self-hittable AND unattributable) and HTTP when no session-egress IP is configured (source
+  // distinctness is unverifiable, so an agent could self-request http://<oob-host>/<token>) both
+  // leave it FALSE — the finding-differential gate then caps the finding to a lead, never a clean
+  // verified_pass. MAC-covered, so an agent cannot flip it through tool args.
+  let attributionEstablished = false;
   if (httpHit && config.selfEgressIp && typeof httpHit.source_ip === "string") {
     // Normalize IPv4-mapped IPv6 (a Node server on :: reports IPv4 clients as
     // "::ffff:203.0.113.99") so the documented plain-IPv4 config still matches.
@@ -532,6 +669,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       return notConfirmed("blocked_by_design", "self_hit_suspected");
     }
     sourceDistinct = !sameEgress;
+    attributionEstablished = true;
   }
 
   // CAPTURE: Bob's OWN observation ONLY — token + constant host + protocol + ts +
@@ -550,6 +688,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     protocol,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
   });
   // Defense in depth: even the bounded capture + the bound target must carry no PII
@@ -569,6 +708,7 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
     token_match_exact: true,
     source_is_remote: true,
     source_distinct_from_session_egress: sourceDistinct,
+    source_attribution_established: attributionEstablished,
     dns_only_attribution_weak: dnsOnly,
     // NOTE: we do NOT stamp a "no pre-injection hit" control — no pre-injection
     // poll is performed, so asserting it in the signed MAC would claim an
@@ -595,6 +735,12 @@ async function oobPoll(args, { config = OOB_CONFIG, interaction_source = null, c
       stdoutContent,
       stderrContent,
       relationBooleans,
+      // Stamp the oracle kind into the MAC-covered row. A received callback does not
+      // prove THIS injection caused it (no pre-injection control; intermediary
+      // attribution is open), so the read-time exploit-run skip refuses to treat this
+      // single-arm row as a self-contained executed binding — it must earn a
+      // finding-differential verified_pass against a blocked_by_defense control.
+      oracleKind: ORACLE_KIND_VALUES[0],
     });
     appendOobTokenRecordHardened(domain, {
       kind: "consume",
