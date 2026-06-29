@@ -22,7 +22,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_evm_storage_read",
-  aliases: ["bounty_evm_storage_read"],
   description: "Read a storage slot at a contract address (eth_getStorageAt) through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Used to inspect implementation slots, role mappings, paused flags, and other state that isn't exposed through ABI getters.",
   inputSchema: {
     "type": "object",

@@ -50,10 +50,10 @@ session JSON or JSONL files.
    back through `bob_read_grade_verdict`. Severity must match the verified
    impact recorded in the verification rounds.
 6. `REPORT` — call `bob_advance_session(target_domain, to_state: "REPORT")`,
-   compose `report.md`, and finalize the report through the report tool
-   (`bounty_report_written` during the deprecation window). The runtime binds
-   the report to the frozen claim batch, the final verification, the evidence
-   pack hash, and the grade verdict.
+   compose `report.md` with `bob_compose_report`, and finalize through
+   `bob_finalize_report`. The runtime binds the report to the frozen claim
+   batch, the final verification, the evidence pack hash, and the grade
+   verdict.
 
 For session-bound tools, treat `target_domain` as a session selector, not proof
 of authorization. The MCP runtime binds calls to initialized session state and

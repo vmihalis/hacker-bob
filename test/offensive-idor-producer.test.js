@@ -46,7 +46,7 @@ const {
   readOffensiveRunRecords,
   canonicalizeExploitTarget,
 } = require("../mcp/lib/claims.js");
-const { projectExploitRunObservedRef } = require("../mcp/lib/claim-freeze.js");
+const { projectExploitRunObservedRef, readOffensiveCaptureBytesSecure } = require("../mcp/lib/claim-freeze.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -367,6 +367,31 @@ test("AC-6 positive: a sound cross-tenant read mints EXACTLY ONE signed medium r
   // capture file on disk re-hashes to the row's stdout_hash (freeze re-hash path)
   const observed = projectExploitRunObservedRef(domain, { kind: "exploit_run", run_id: row.run_id });
   assert.equal(observed.stdout_hash, row.stdout_hash);
+
+  // CROSS-STACK CONSUMABLE CAPTURE (the wired producer): the cross-tenant body P2 is
+  // captured as the .consumed leaf, its re-hashed hash binds consumed_artifact_hash on
+  // the signed row AND is surfaced in the return. For a fully-proven IDOR fire the
+  // cross-tenant body IS the human-facing stdout proof, so consumed_artifact_hash ==
+  // stdout_hash (both re-hash the SAME canonical p2BodyForCapture bytes).
+  assert.match(result.consumed_artifact_hash, /^[0-9a-f]{64}$/, "the producer surfaces consumed_artifact_hash");
+  assert.equal(result.consumed_artifact_hash, row.consumed_artifact_hash, "return field matches the signed row");
+  assert.equal(row.consumed_artifact_hash, row.stdout_hash, "the cross-tenant body is BOTH the stdout proof and the consumable");
+  const consumedLeaf = path.join(offensiveRunsDir(domain), `${row.run_id}.consumed`);
+  assert.ok(fs.existsSync(consumedLeaf), "the .consumed capture leaf is written to the MCP-owned store");
+  const fetchedConsumed = readOffensiveCaptureBytesSecure(domain, row.run_id, "consumed");
+  assert.ok(fetchedConsumed, "the .consumed leaf is fetchable by run_id");
+  assert.equal(fetchedConsumed.sha256, row.consumed_artifact_hash, "on-disk consumable bytes re-hash to the MAC-covered hash");
+  // The captured bytes ARE the tool's actual canonical cross-tenant body (the genuine,
+  // non-agent-supplied probe output), byte-identical to the captured stdout proof.
+  const fetchedStdout = readOffensiveCaptureBytesSecure(domain, row.run_id, "stdout");
+  assert.ok(fetchedConsumed.bytes.equals(fetchedStdout.bytes), "the consumable IS the captured cross-tenant body bytes");
+  // The hash is MAC-covered on the offensive row: flipping it invalidates the row_mac.
+  const tamperedConsumed = { ...row, consumed_artifact_hash: "0".repeat(64) };
+  assert.equal(
+    rowMacVerifies(domain, tamperedConsumed),
+    false,
+    "flipping consumed_artifact_hash invalidates the offensive row_mac (the consumable hash is MAC-covered)",
+  );
 }));
 
 // PR-PROV end-to-end: arm the three identities through the REAL production stamp path

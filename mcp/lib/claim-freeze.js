@@ -598,6 +598,73 @@ function sha256OffensiveCaptureSecure(domain, runId) {
   }
 }
 
+// Securely read the RAW BYTES of an offensive capture leaf by run_id under the
+// IDENTICAL realpath + O_NOFOLLOW + nlink + size-cap discipline as
+// sha256OffensiveCaptureSecure — the only difference is it returns the Buffer (and
+// the recomputed sha256) instead of the digest alone, because the cross-stack consume
+// path must INJECT the bytes, not just hash them. The caller re-hashes the returned
+// bytes against the named offensive row's MAC-covered consumed_artifact_hash/stdout_hash
+// to confirm it fetched the bytes that run actually captured; a missing/suspicious leaf
+// returns null and the consume path fails closed (no injection). suffix is restricted to
+// the two known capture leaves so a run_id can never be aimed at a sibling artifact.
+const OFFENSIVE_CAPTURE_SUFFIXES = Object.freeze(new Set(["stdout", "consumed"]));
+
+function readOffensiveCaptureBytesSecure(domain, runId, suffix = "stdout") {
+  if (!OFFENSIVE_CAPTURE_SUFFIXES.has(suffix)) return null;
+  // run_id segment discipline — identical to sha256OffensiveCaptureSecure: reject any
+  // separator/NUL or "."/".." segment that could normalize back inside offensive-runs/
+  // and alias a DIFFERENT capture file before the `dirname === runsDir` guard.
+  if (typeof runId !== "string" || !runId) return null;
+  if (
+    runId.includes("/") || runId.includes("\\") || runId.includes("\0") ||
+    runId === "." || runId === ".."
+  ) {
+    return null;
+  }
+  const runsDir = path.resolve(offensiveRunsDir(domain));
+  const leaf = path.resolve(path.join(runsDir, `${runId}.${suffix}`));
+  if (path.dirname(leaf) !== runsDir) return null;
+  let realDir;
+  let expectedDir;
+  try {
+    const realRoot = fs.realpathSync(sessionsRoot());
+    expectedDir = path.join(realRoot, assertSafeDomain(domain), "offensive-runs");
+    realDir = fs.realpathSync(runsDir);
+  } catch {
+    return null;
+  }
+  if (realDir !== expectedDir) return null;
+  const realLeaf = path.join(realDir, path.basename(leaf));
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  if (!noFollow) {
+    let lst;
+    try {
+      lst = fs.lstatSync(realLeaf);
+    } catch {
+      return null;
+    }
+    if (lst.isSymbolicLink()) return null;
+  }
+  let fd = null;
+  try {
+    fd = fs.openSync(realLeaf, fs.constants.O_RDONLY | noFollow);
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1) return null;
+    if (DEFAULT_ARTIFACT_READ_MAX_BYTES != null && stats.size > DEFAULT_ARTIFACT_READ_MAX_BYTES) {
+      return null;
+    }
+    const bytes = fs.readFileSync(fd);
+    const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    return { bytes, sha256 };
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
 // Project an `exploit_run` observed ref by securely recomputing the sha256 of the
 // on-disk stdout capture file at `offensive-runs/<run_id>.stdout`. Mirrors
 // projectRepoCommandRunObservedRef: the frozen ref's `stdout_hash` is the
@@ -658,6 +725,7 @@ module.exports = {
   projectRepoCommandRunObservedRef,
   projectRepoFileObservedRef,
   readCurrentClaimFreeze,
+  readOffensiveCaptureBytesSecure,
   sha256File,
   verificationSnapshotFromClaimFreeze,
 };

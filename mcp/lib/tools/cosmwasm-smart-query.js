@@ -49,7 +49,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_cosmwasm_smart_query",
-  aliases: ["bounty_cosmwasm_smart_query"],
   description: "Read-only CosmWasm smart query GET /cosmwasm/wasm/v1/contract/{address}/smart/{base64-msg} through the DNS-pinned direct public HTTPS REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet REST has no default endpoint and endpoint_used is redacted. Evaluators and verifiers use this to inspect contract-defined query entrypoints (admin, balance, config, owner, etc.) at current state without re-running the harness. Verifiers query the same balance / authority / nonce slots before and after a fresh-fork run to confirm the bug actually moved value rather than a runtime panic / view-only.",
   inputSchema: {
     "type": "object",

@@ -282,16 +282,13 @@ test("lifecycle tool is registered and orchestrator-only", () => {
 // SECTION 3 — Tool registry hygiene
 // =============================================================================
 
-test("every primary tool name is registered with the canonical bob_ prefix", () => {
-  // Two pre-existing deprecation-shim modules (transition_phase, report_written)
-  // ship under their legacy names because they predate cycle P.1; cycle D.1
-  // deletes them. They are the only allowed exceptions.
-  const allowedLegacy = new Set(["bounty_transition_phase", "bounty_report_written"]);
+test("every tool name is registered with the canonical bob_ prefix", () => {
+  // The v2.1.0 break removed the bounty_* alias layer, so every registered tool
+  // is its own canonical bob_* primary with no exceptions.
   for (const tool of TOOLS) {
-    if (allowedLegacy.has(tool.name)) continue;
     assert.ok(
       tool.name.startsWith("bob_"),
-      `tool ${tool.name} must use the bob_ prefix (only documented legacy shims may keep bounty_)`,
+      `tool ${tool.name} must use the bob_ prefix`,
     );
   }
 });
@@ -329,8 +326,8 @@ test("orchestrator-only mutators never appear in the globally pre-approved permi
 test("checked-in settings, generated settings, and registry agree on global preapproval", () => {
   // Two contracts here:
   //   1. defaultGlobalMcpPermissions() and the registry both yield exactly the
-  //      `global_preapproval: true` set (minus aliases). This is the
-  //      install-time global pre-approval contract.
+  //      `global_preapproval: true` set. This is the install-time global
+  //      pre-approval contract.
   //   2. The checked-in source-tree .claude/settings.json reflects the canonical
   //      merge (defaultClaudeSettings().permissions.allow ∪
   //      permissionsForAllTools(), stale-filtered) — the same output the
@@ -345,7 +342,7 @@ test("checked-in settings, generated settings, and registry agree on global prea
   const generatedAllowed = new Set(defaultGlobalMcpPermissions());
   const expectedAllowed = new Set();
   for (const [name, meta] of Object.entries(TOOL_MANIFEST)) {
-    if (meta.global_preapproval && !meta.alias_of) expectedAllowed.add(permissionForToolName(name));
+    if (meta.global_preapproval) expectedAllowed.add(permissionForToolName(name));
   }
   assert.deepEqual([...generatedAllowed].sort(), [...expectedAllowed].sort());
 });
@@ -618,56 +615,35 @@ test("Kimi reporter spawn uses structured report composition", () => {
 });
 
 // =============================================================================
-// SECTION 5 — Structural invariance (the P.4 guarantee)
+// SECTION 5 — Structural invariance
 // =============================================================================
 
 test("STRUCTURAL INVARIANCE: changing a tool's description does not break the suite", () => {
-  // Cycle P.4's load-bearing promise. We pick a representative tool, swap its
-  // exported `description` field on a deep clone, and re-run the structural
-  // primitives against the clone. Nothing structural changes.
+  // The contract: structural reference checks key off the registry shape
+  // (primary name, role bundles, artifacts), never description text. We pick a
+  // representative tool and assert the structural primitives against it.
   const sampleName = "bob_record_candidate_claim";
   const meta = TOOL_MANIFEST[sampleName];
   assert.ok(meta, "sample tool must exist");
 
-  const originalAliases = aliasNamesForTool(sampleName);
   const originalRoleBundles = [...meta.role_bundles];
   const originalArtifacts = [...meta.session_artifacts_written];
 
-  // Simulate a description rename by capturing a snapshot of structural data,
-  // then asserting we did not depend on any description text.
   const structuralSnapshot = {
     primary: primaryToolName(sampleName),
-    aliases: originalAliases,
     role_bundles: originalRoleBundles,
     mutating: meta.mutating,
     writes_claims: originalArtifacts.includes("claims.jsonl"),
   };
   assert.equal(structuralSnapshot.primary, sampleName);
-  assert.ok(structuralSnapshot.aliases.length >= 1);
   assert.ok(structuralSnapshot.role_bundles.includes("evaluator-shared"));
   assert.ok(structuralSnapshot.mutating);
   assert.ok(structuralSnapshot.writes_claims);
 
-  // Now prove the inverse: if the registry were to surface a new alias for
-  // this tool, every alias-aware helper would already accept it without code
-  // edits in this test file.
-  const acceptedNames = [structuralSnapshot.primary, ...structuralSnapshot.aliases];
-  for (const name of acceptedNames) {
-    assert.equal(primaryToolName(name), structuralSnapshot.primary);
-  }
-});
-
-test("STRUCTURAL INVARIANCE: alias-aware reference checks accept any registered alias", () => {
-  // Synthesize a document that references each known alias of a sample tool.
-  // The structural assertion helper must accept all of them. This is the
-  // contract that lets cycle P.1/P.3 alias-shims continue to pass tests.
-  const sampleName = "bob_http_scan";
-  const aliases = aliasNamesForTool(sampleName);
-  assert.ok(aliases.length >= 1, "sample tool must carry at least one alias");
-  for (const name of [sampleName, ...aliases]) {
-    const synthetic = `prose mentions ${name} once.`;
-    assertToolReferenced(synthetic, sampleName, `synthetic doc mentioning ${name} must satisfy the structural reference check`);
-  }
+  // Every registered tool is its own primary; the helper resolves its name to
+  // itself with no aliases in play.
+  assert.equal(primaryToolName(sampleName), structuralSnapshot.primary);
+  assert.deepEqual(aliasNamesForTool(sampleName), []);
 });
 
 // =============================================================================

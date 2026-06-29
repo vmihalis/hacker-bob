@@ -11,7 +11,6 @@ function readHttpAudit(args) {
 
 module.exports = Object.freeze({
   name: "bob_read_http_audit",
-  aliases: ["bounty_read_http_audit"],
   description:
     "Read a capped HTTP request audit summary from session-owned http-audit.jsonl, optionally filtered to one attack surface.",
   inputSchema: {

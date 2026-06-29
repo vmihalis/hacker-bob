@@ -1,9 +1,7 @@
 "use strict";
 
-// Cycle C.7 of the frontier-topology realization hypergraph. Concentrates the
-// four-hash binding logic that ReportSnapshot finalization depends on into a
-// single helper so both bob_finalize_report (the new primary tool) and the
-// legacy bounty_report_written shim can dual-write the same hash-bound
+// Concentrates the four-hash binding logic that ReportSnapshot finalization
+// depends on into a single helper so bob_finalize_report appends a hash-bound
 // snapshot. The four upstream hashes are:
 //
 //   1. claim_freeze_hash       — from readCurrentClaimFreeze (Cycle C.3+C.4 chain).
@@ -156,9 +154,8 @@ function loadFinalVerificationDocument(domain) {
       { missing_artifact: "verification round (final)" },
     );
   }
-  // Only V2 final rounds carry the final_verification_hash field. C.7 requires
-  // a freeze-bound V2 final round; a V1 round is allowed during the
-  // deprecation window for legacy tests but the finalize path refuses it.
+  // Only V2 final rounds carry the final_verification_hash field. Finalization
+  // requires a freeze-bound V2 final round and refuses a V1 round.
   const hash = document && typeof document.final_verification_hash === "string"
     ? document.final_verification_hash
     : null;
@@ -397,9 +394,7 @@ function resolveReportFinalizationHashes(targetDomain) {
 }
 
 // Same as resolveReportFinalizationHashes but never throws: returns null when
-// any upstream hash cannot be resolved. Used by the legacy report_written
-// shim so its dual-write path stays best-effort and never regresses the
-// existing pipeline-event emission.
+// any upstream hash cannot be resolved.
 function tryResolveReportFinalizationHashes(targetDomain) {
   try {
     return resolveReportFinalizationHashes(targetDomain);

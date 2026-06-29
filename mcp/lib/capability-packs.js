@@ -37,6 +37,14 @@ const DEFAULT_REPLAY_SAFETY = Object.freeze({
 
 const SC_DIRECT_EGRESS_SUMMARY = "SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default.";
 
+// The objective + bar the orchestrator states when it dispatches an SC
+// evaluator — the same posture the role prompt carries, single-sourced here so
+// the spawn-dispatch line opens with WHY (break an invariant; a flipped control
+// is the bar) before the causal tool chain that follows describes HOW. The
+// trailing chain is the prerequisite ordering (fetch -> trust map -> scaffold
+// -> run) plus the recording contract, not a procedure to walk in lockstep.
+const SC_OBJECTIVE_LEAD = "Objective: break an invariant or demonstrate attacker-reachable impact on this surface; a surface closes only when an executed differential whose negative control flips is recorded, or with an honest partial/blocked. The tool chain below is the causal prerequisite order, not a checklist:";
+
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
   capability_pack_version: 1,
@@ -133,7 +141,7 @@ const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-evm",
     evaluator_name_prefix: "evaluator-evm",
     chain_id_description: "the EVM chain id (e.g., 1, 137, 10, 42161)",
-    workflow_summary: `bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> bob_halmos_run to symbolically explore the invariant a single concrete fork run cannot exhaust -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_evm_fetch_source -> read sources via Read -> bob_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bob_foundry_run with chain_id and pinned fork_block -> bob_halmos_run to symbolically explore the invariant a single concrete fork run cannot exhaust -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "forge",
     blocked_harness_kind_options: "foundry_fork or rpc_endpoint",
   }),
@@ -171,7 +179,7 @@ const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-svm",
     evaluator_name_prefix: "evaluator-svm",
     chain_id_description: "the Solana cluster",
-    workflow_summary: `bob_svm_fetch_program (confirm upgrade authority) -> bob_svm_fetch_account (read multisig + state accounts) -> scaffold an Anchor test under harness_path/tests/ via Write -> bob_anchor_run with cluster and optional pinned fork_slot -> record bypass_attempts[] entries citing the actual harness path + test description in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_svm_fetch_program (confirm upgrade authority) -> bob_svm_fetch_account (read multisig + state accounts) -> scaffold an Anchor test under harness_path/tests/ via Write -> bob_anchor_run with cluster and optional pinned fork_slot -> record bypass_attempts[] entries citing the actual harness path + test description in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "anchor",
     blocked_harness_kind_options: "anchor_fork or rpc_endpoint",
   }),
@@ -215,7 +223,7 @@ const SMART_CONTRACT_APTOS_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-move",
     evaluator_name_prefix: "evaluator-aptos",
     chain_id_description: "the network name (mainnet/testnet/devnet)",
-    workflow_summary: `bob_aptos_fetch_module (enumerate exposed_functions, structs, friends) -> bob_aptos_fetch_resource (read capability tokens, ownership records, treasury balances) -> scaffold an \`aptos move test\` harness under harness_path/sources/ via Write -> bob_aptos_run with network and optional pinned fork_version -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_aptos_fetch_module (enumerate exposed_functions, structs, friends) -> bob_aptos_fetch_resource (read capability tokens, ownership records, treasury balances) -> scaffold an \`aptos move test\` harness under harness_path/sources/ via Write -> bob_aptos_run with network and optional pinned fork_version -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "aptos",
     blocked_harness_kind_options: "aptos_fork or rpc_endpoint",
   }),
@@ -251,7 +259,7 @@ const SMART_CONTRACT_SUI_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-move",
     evaluator_name_prefix: "evaluator-sui",
     chain_id_description: "the network name (mainnet/testnet/devnet/localnet)",
-    workflow_summary: `bob_sui_fetch_package (enumerate entry functions and friend relationships) -> bob_sui_fetch_object (inspect Owner=Immutable/Shared/AddressOwner/ObjectOwner, Move type, capability fields) -> scaffold a \`sui move test\` harness under harness_path/sources/ via Write -> bob_sui_run with network and optional pinned fork_checkpoint -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_sui_fetch_package (enumerate entry functions and friend relationships) -> bob_sui_fetch_object (inspect Owner=Immutable/Shared/AddressOwner/ObjectOwner, Move type, capability fields) -> scaffold a \`sui move test\` harness under harness_path/sources/ via Write -> bob_sui_run with network and optional pinned fork_checkpoint -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "sui",
     blocked_harness_kind_options: "sui_fork or rpc_endpoint",
   }),
@@ -291,7 +299,7 @@ const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-substrate",
     evaluator_name_prefix: "evaluator-substrate",
     chain_id_description: "the network name (polkadot/kusama/astar/shiden/rococo/westend/localnet)",
-    workflow_summary: `bob_substrate_fetch_runtime (confirm chain identity + spec_version) -> bob_substrate_fetch_storage (read pallet_contracts.ContractInfoOf for code_hash and admin) -> scaffold an ink! \`cargo test\` harness under harness_path/ via Write (uses #[ink::test] for unit or #[ink_e2e::test] for E2E) -> bob_substrate_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_substrate_fetch_runtime (confirm chain identity + spec_version) -> bob_substrate_fetch_storage (read pallet_contracts.ContractInfoOf for code_hash and admin) -> scaffold an ink! \`cargo test\` harness under harness_path/ via Write (uses #[ink::test] for unit or #[ink_e2e::test] for E2E) -> bob_substrate_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "cargo or substrate-contracts-node",
     blocked_harness_kind_options: "substrate_fork or rpc_endpoint",
   }),
@@ -330,7 +338,7 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
     role_id: "evaluator-cosmwasm",
     evaluator_name_prefix: "evaluator-cosmwasm",
     chain_id_description: "the network name (osmosis/juno/neutron/archway/sei/stargaze/terra/kava/localnet)",
-    workflow_summary: `bob_cosmwasm_fetch_contract (confirm contract exists, capture code_id + admin) -> bob_cosmwasm_smart_query (inspect public Config / Owner / Balance entrypoints) -> scaffold a cw-multi-test integration test under harness_path/tests/ via Write -> bob_cosmwasm_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
+    workflow_summary: `${SC_OBJECTIVE_LEAD} bob_cosmwasm_fetch_contract (confirm contract exists, capture code_id + admin) -> bob_cosmwasm_smart_query (inspect public Config / Owner / Balance entrypoints) -> scaffold a cw-multi-test integration test under harness_path/tests/ via Write -> bob_cosmwasm_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. ${SC_DIRECT_EGRESS_SUMMARY}`,
     cli_dependency: "cargo",
     blocked_harness_kind_options: "cosmwasm_fork or rpc_endpoint",
   }),

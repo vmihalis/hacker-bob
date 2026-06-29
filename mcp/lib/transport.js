@@ -252,22 +252,10 @@ function createStdioServer({
   }
 
   function start() {
-    // Cycle P.2 / Risk R6: copy-preserve any legacy `~/bounty-agent-sessions/`
-    // domain directories into the canonical `~/hacker-bob-sessions/` on
-    // startup. The shim is idempotent and the legacy root is never deleted by
-    // this call; explicit purge is reserved for the v2.1.0
-    // `--purge-legacy-session-root` flag.
-    try {
-      require("./session-root-migration.js").migrateLegacySessionRoot();
-    } catch (_) {
-      // Migration failure must never prevent the MCP server from starting.
-      // Sessions still resolve through `paths.sessionsRoot()`.
-    }
     stdin.on("data", handleChunk);
-    // Surface the canonical session root in the startup banner so operators
-    // see the new `~/hacker-bob-sessions/` path; the legacy
-    // `~/bounty-agent-sessions/` remains readable until v2.1.0.
-    stderr.write("hacker-bob MCP server running (stdio); sessions: ~/hacker-bob-sessions/ (legacy: ~/bounty-agent-sessions/ read-fallback)\n");
+    // Surface the canonical session root in the startup banner. Sessions
+    // resolve only from `~/hacker-bob-sessions/`.
+    stderr.write("hacker-bob MCP server running (stdio); sessions: ~/hacker-bob-sessions/\n");
   }
 
   return {

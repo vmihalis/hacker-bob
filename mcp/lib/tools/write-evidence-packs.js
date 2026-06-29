@@ -10,7 +10,6 @@ const { wrapWriteTool } = require("./_write-base.js");
 module.exports = wrapWriteTool({
   name: "bob_write_evidence_packs",
   writes_audit_graded: true,
-  aliases: ["bounty_write_evidence_packs"],
   description:
     "Write bounded evidence packs for every final reportable finding to authoritative JSON plus a markdown mirror.",
   inputSchema: {

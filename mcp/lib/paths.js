@@ -37,20 +37,12 @@ function labAuthorizationPath(domain) {
   return path.join(sessionDir(domain), "lab-authorization.json");
 }
 
-// Canonical session root. Cycle P.2 of the frontier-topology realization
-// hypergraph moves the session root from `~/bounty-agent-sessions` to
-// `~/hacker-bob-sessions`. Per Risk R6, the legacy root is *preserved*: it is
-// still resolvable as a read-fallback (so sessions created before the
-// migration remain readable), and the migration shim copies — never moves —
-// legacy session directories into the canonical location. The destructive
-// purge is gated behind the explicit `--purge-legacy-session-root` flag and
-// is reserved for v2.1.0.
+// Canonical session root. All session reads and writes resolve here. The
+// pre-v2.0 `~/bounty-agent-sessions` root is no longer auto-resolved or
+// auto-copied; operators clean up a leftover legacy root with
+// `hacker-bob install --purge-legacy-session-root`.
 function sessionsRoot() {
   return path.join(os.homedir(), "hacker-bob-sessions");
-}
-
-function legacySessionsRoot() {
-  return path.join(os.homedir(), "bounty-agent-sessions");
 }
 
 const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
@@ -651,6 +643,15 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // so an FV verified_pass cannot be hand-forged; the proof-bundle invariant gate
   // grades on it (a bare single-run pass no longer mints verified).
   "invariant-verified.jsonl",
+  // The RAW executed invariant-runs ledger (forge/halmos outcomes). Audit-graded so a
+  // same-uid agent cannot append an UNSIGNED invariant row past the best-effort hook to
+  // launder a cross-stack verified_pass: the cross-stack bind STRICTLY MAC-asserts every
+  // invariant arm it consumes, and audit-grading closes the residual unsigned-append path
+  // the hook only best-effort covers. Written ONLY by bob_run_invariant_for_finding (not a
+  // wrapWriteTool composer), so it is NOT in AUDIT_GRADED_WRITER_TOOLS — the strict MAC at
+  // the bind is the primary non-forgeability guarantee; the audit-grade move makes
+  // isAuditGradedPath true so the negative-grep / composer whitelist also cover it.
+  "invariant-runs.jsonl",
   // Web-standalone finding-differential verified_pass ledger. MCP-write-only so a
   // standalone-class verdict cannot be hand-forged; the grade-time gate for
   // residual reportable findings (auth-bypass/IDOR/SSRF/business-logic/info-
@@ -785,7 +786,9 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   // is blocked) but NOT audit-graded — it carries leads that re-verify on reuse,
   // never a hash-bound verdict the grader reads.
   "mechanism-candidates.jsonl",
-  "invariant-runs.jsonl",
+  // invariant-runs.jsonl is NOW in AUDIT_GRADED_BASENAMES (see above): a same-uid agent
+  // appending an unsigned invariant row could otherwise launder a cross-stack
+  // verified_pass. The two sets are asserted DISJOINT, so it lives in exactly one.
   "schema-contracts.jsonl",
   "doc-delta-results.json",
   "auth-differential-results.json",
@@ -956,18 +959,11 @@ const AUDIT_GRADED_WRITER_TOOLS = Object.freeze([
   "bob_write_proof_bundle",
 ]);
 
-// Y-P13 (T4) — alias→canonical. Six audit-graded writers ship a `bounty_*`
-// alias; a caller identity arriving under an alias normalizes to its canonical
-// name before the whitelist membership check, so an alias-dispatch is not
-// falsely denied. (amend/compose/chain-rollup/finalize have no alias.)
-const AUDIT_GRADED_WRITER_ALIASES = Object.freeze({
-  bounty_write_verification_round: "bob_write_verification_round",
-  bounty_write_evidence_packs: "bob_write_evidence_packs",
-  bounty_write_grade_verdict: "bob_write_grade_verdict",
-  bounty_write_wave_handoff: "bob_write_wave_handoff",
-  bounty_write_chain_attempt: "bob_write_chain_attempt",
-  bounty_write_proof_bundle: "bob_write_proof_bundle",
-});
+// Y-P13 (T4) — caller-identity → canonical writer-name normalization. Every
+// audit-graded writer dispatches under its canonical `bob_*` name; the map is
+// the seam for any future caller-identity aliasing, kept empty now that the
+// `bounty_*` tool surface is removed so normalization is the identity.
+const AUDIT_GRADED_WRITER_ALIASES = Object.freeze({});
 
 function canonicalWriterName(toolName) {
   if (toolName == null) return null;
@@ -1044,7 +1040,6 @@ const INVENTORY_PROBE_DOMAIN = "example.com";
 const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   "sessionDir",
   "sessionsRoot",
-  "legacySessionsRoot",
   "telemetryDir",
   "telemetryToolInvocationsJsonlPath",
   "isAuditGradedPath",
@@ -1181,7 +1176,6 @@ module.exports = {
   invariantVerifiedJsonlPath,
   findingDifferentialVerifiedJsonlPath,
   isAuditGradedPath,
-  legacySessionsRoot,
   reportAmendmentsJsonlPath,
   reportSnapshotsJsonlPath,
   schedulerDecisionsJsonlPath,

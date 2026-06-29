@@ -19,7 +19,6 @@ function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_init_session",
-  aliases: ["bounty_init_session"],
   description:
     "Initialize a new session state.json for a target domain.",
   inputSchema: {
@@ -37,7 +36,7 @@ module.exports = Object.freeze({
       "target_kind": {
         "type": "string",
         "enum": ["web", "repo"],
-        "description": "Defaults to web. Repo sessions should normally use bounty_init_repo_session."
+        "description": "Defaults to web. Repo sessions should normally use bob_init_repo_session."
       },
       "repo": {
         "type": "object",

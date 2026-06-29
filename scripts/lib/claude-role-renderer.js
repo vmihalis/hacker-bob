@@ -13,6 +13,7 @@ const {
   substituteCapabilityPackVerifierTable,
   substituteClaudeEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -35,7 +36,7 @@ const { parseSkillText } = require("./skill-parser.js");
 // `scripts/check-skill-protocol-coherence.js` consumes the resulting
 // rendered SKILL.md and asserts the structural-containment predicate.
 const REGISTERED_TOOL_NAMES = new Set(
-  TOOL_REGISTRY.filter((tool) => !tool.alias_of).map((tool) => tool.name),
+  TOOL_REGISTRY.map((tool) => tool.name),
 );
 
 function injectSchemaRefDirectives(document, { filePath = "<orchestrator-render>" } = {}) {
@@ -551,6 +552,7 @@ function renderClaudePromptBody(roleId, body, { root = DEFAULT_ROOT } = {}) {
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteClaudeEvaluatorPackCatalogue(document);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
   if (roleId === "orchestrator") {
     document += renderCapabilityPlaybookAppendix({ root });
   }

@@ -6,7 +6,6 @@ const { wrapWriteTool } = require("./_write-base.js");
 module.exports = wrapWriteTool({
   name: "bob_write_verification_round",
   writes_audit_graded: true,
-  aliases: ["bounty_write_verification_round"],
   description:
     "Write one verifier round to authoritative JSON plus a markdown mirror. Pass `results` for a single-shot batch round. Omit `results` (with the same v2 round + attempt + snapshot binding) to commit the per-finding partials staged via bob_stage_verification_round_partial: the server unions the staged partials and runs the identical finalize, so the committed round is byte-identical to a single-shot write over the same union.",
   inputSchema: {

@@ -83,7 +83,6 @@ function registerMechanismTemplateHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_register_mechanism_template",
-  aliases: ["bounty_register_mechanism_template"],
   description:
     "Register advisory tier-3 candidate mechanism templates into the per-session mechanism-candidates.jsonl registry (the open-vocab layer over the frozen corpus). Accepts normalizer knowledge batches (cwe_catalog / audit_finding / schema_contract), the authorization-differential family lift (include_authz_family), and/or pre-normalized candidate records. Idempotent by candidate dedup key. A registered candidate is advisory only: it ranks/seeds attention and RESOLVES only via an executed differential — it never mints a verdict, closure, or claim, and stays distinguishable from a confirmed corpus template (tier:3, candidate:true, claim_authority:false).",
   inputSchema: {

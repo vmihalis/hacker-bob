@@ -36,11 +36,9 @@ function mcpPermissionForTool(toolName) {
 }
 
 function permissionsForAllTools() {
-  // Aliases (Cycle P.1) are not surfaced as permissions; the primary bob_*
-  // entry covers both names because the registry routes aliases to the same
-  // handler.
+  // Every registered tool is its own canonical bob_* primary, so every entry
+  // in TOOLS surfaces one permission line.
   return TOOLS
-    .filter((tool) => !TOOL_MANIFEST[tool.name].alias_of)
     .map((tool) => mcpPermissionForTool(tool.name));
 }
 
@@ -69,15 +67,13 @@ function isOrchestratorOnlyMutator(toolName) {
 }
 
 function defaultGlobalMcpPermissions() {
-  // Aliases (Cycle P.1 deprecation entries) inherit global_preapproval from
-  // their primary but must not be re-emitted as a separate permission line.
-  // Generated settings carry the canonical bob_* entry; calls through a
-  // bounty_* alias still resolve through the registry alias mapping.
+  // Every registered tool is its own canonical bob_* primary; emit a
+  // global-preapproval permission line for each one whose manifest opts in.
   return TOOLS
     .map((tool) => tool.name)
     .filter((toolName) => {
       const meta = TOOL_MANIFEST[toolName];
-      return meta.global_preapproval === true && !meta.alias_of;
+      return meta.global_preapproval === true;
     })
     .map(mcpPermissionForTool);
 }

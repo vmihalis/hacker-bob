@@ -11,7 +11,6 @@ function suggestInvariantsHandler(args) {
 
 module.exports = Object.freeze({
   name: "bob_suggest_invariants",
-  aliases: ["bounty_suggest_invariants"],
   description:
     "Suggest Foundry invariant test templates for a given finding's vulnerability_class. Pass a parsed audit finding (from bob_query_audit_reports). Optionally pass slot_values to fill template parameter slots (target_contract, vulnerable_function, etc.). Returns one suggestion per template in the corpus for that class with the parameter slots either filled or listed under unfilled_slots.",
   inputSchema: {

@@ -5,7 +5,6 @@ const { REPLAY_CONTEXT_SCHEMA } = require("./replay-context-schema.js");
 
 module.exports = Object.freeze({
   name: "bob_http_scan",
-  aliases: ["bounty_http_scan"],
   description:
     "Make an HTTP request and auto-analyze for security issues. Returns status, headers, body, plus detected tech stack, leaked secrets, misconfigs, and endpoints.",
   inputSchema: {

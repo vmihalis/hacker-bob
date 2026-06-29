@@ -11,6 +11,7 @@ const {
 const {
   substituteCapabilityPackVerifierTable,
   substituteHandoffFieldLimits,
+  substituteEvaluatorReframePosture,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -209,8 +210,10 @@ function kimiRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       "",
       `### ${roleId}`,
       `BEGIN ${roleId} CONTRACT`,
-      substituteHandoffFieldLimits(
-        substituteCapabilityPackVerifierTable(applyKimiHostText(roleBody(roleId, { root })).trimEnd()),
+      substituteEvaluatorReframePosture(
+        substituteHandoffFieldLimits(
+          substituteCapabilityPackVerifierTable(applyKimiHostText(roleBody(roleId, { root })).trimEnd()),
+        ),
       ),
       `END ${roleId} CONTRACT`,
     );
@@ -258,6 +261,7 @@ function renderKimiPromptBody(roleId, body, options = {}) {
   document = replaceLaunchTemplates(document);
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteHandoffFieldLimits(document);
+  document = substituteEvaluatorReframePosture(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${kimiOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${kimiRoleContractAppendix(options)}\n`;

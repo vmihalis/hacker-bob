@@ -30,13 +30,20 @@ const {
 const {
   canonicalJson,
 } = require("./verification-contracts.js");
+const {
+  mintShapeMatchedDecoyBytes,
+} = require("./consumable-shape.js");
 
 // The proof-contract fields buildAndSignOffensiveRow controls; relationBooleans
-// may never override any of these before the row is signed.
+// may never override any of these before the row is signed. consumed_artifact_hash
+// is the cross-stack consumable-artifact binding: sha256 of the BYTES the on-chain
+// side will consume (a leaked credential/identifier/calldata blob). It is a top-level
+// MAC-covered SIBLING outside command_hash/run identity, and nullable — a web-only
+// finding that produces no on-chain-consumable artifact signs consumed_artifact_hash:null.
 const RESERVED_ROW_KEYS = new Set([
   "version", "target_domain", "run_id", "tool_id", "target", "offensive_outcome",
   "dry_run", "timed_out", "command_hash", "exit_code", "stdout_hash", "stderr_hash",
-  "demonstrated_severity", "surface_id", "row_mac",
+  "demonstrated_severity", "surface_id", "consumed_artifact_hash", "is_decoy", "row_mac",
 ]);
 
 // The frozen set of offensive_outcome values a producer may sign. A signed row is
@@ -194,9 +201,9 @@ function appendSignedRowHardened(domain, row) {
   }
 }
 
-// Build + sign + persist the offensive row. Captures FIRST, recompute the THREE
-// hashes from on-disk bytes, build the 14-field row, sign LAST, atomic append.
-// Returns the persisted row (signed).
+// Build + sign + persist the offensive row. Captures FIRST, recompute the on-disk
+// content hashes (stdout/stderr, plus the consumable-artifact leaf when supplied),
+// build the row, sign LAST, atomic append. Returns the persisted row (signed).
 //
 // CONCURRENCY CONTRACT: the run_id single-use guard (read-then-append) is only
 // race-safe under the per-session lock, so the caller MUST invoke this inside
@@ -212,9 +219,18 @@ function buildAndSignOffensiveRow(domain, {
   identityTag,
   stdoutContent,
   stderrContent,
+  consumedArtifactContent = null,
   relationBooleans = {},
   demonstratedSeverityOverride,
   offensiveOutcome = "exploited_safely",
+  // The DECOY marker (cross-stack artifact-relevance closer). A decoy capture is a
+  // real signed offensive row whose consumed bytes are random (NOT the real cause),
+  // used as the third adjudication arm: a gate that validates the SPECIFIC credential
+  // bytes must HOLD on the decoy. is_decoy is a writer-controlled MAC-covered sibling
+  // (in RESERVED_ROW_KEYS so relationBooleans can never set/strip it). A decoy is
+  // never a positive cause leg (offensiveOutcome must be blocked_by_defense — it
+  // captured nothing real), so OFFENSIVE_LEDGER_ENTRY.demonstrates is false for it.
+  isDecoy = false,
 }) {
   // The offensive_outcome is a CONTROLLED, registry-bounded field. The positive
   // demonstrates the issue (exploited_safely); a negative control leg signs the
@@ -237,6 +253,20 @@ function buildAndSignOffensiveRow(domain, {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `runIdPrefix must be a lowercase [a-z][a-z0-9]* token: ${runIdPrefix}`,
+    );
+  }
+  // The consumable artifact is the BYTES the on-chain side will consume. It is
+  // OPTIONAL: a web-only finding produces none (consumed_artifact_hash:null). When
+  // present it must be a string/Buffer so it can be written to a capture leaf and
+  // hashed FROM THE ON-DISK BYTES (identical capture-first discipline to stdout).
+  if (
+    consumedArtifactContent != null
+    && typeof consumedArtifactContent !== "string"
+    && !Buffer.isBuffer(consumedArtifactContent)
+  ) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `consumedArtifactContent must be a string or Buffer when present, got ${typeof consumedArtifactContent}`,
     );
   }
   // demonstrated_severity is DERIVED from the per-tool registry, NEVER accepted from
@@ -316,8 +346,20 @@ function buildAndSignOffensiveRow(domain, {
   const stdoutHash = writeCaptureAndHash(captureDir, runId, "stdout", stdoutBytes);
   const stderrHash = writeCaptureAndHash(captureDir, runId, "stderr", stderrBytes);
   const commandHash = commandHashOf(method, canonicalTarget, identityTag);
+  // The CROSS-STACK CONSUMABLE artifact: the exact bytes the on-chain side fetches
+  // and consumes. Written to its own MCP-owned capture leaf (offensive-runs/<run_id>.
+  // consumed) under the same exclusive-create + O_NOFOLLOW + nlink discipline, then
+  // hashed FROM THE ON-DISK BYTES so consumed_artifact_hash recomputes byte-identically
+  // at the EVM-side fetch. null when no consumable artifact was captured (web-only).
+  let consumedArtifactHash = null;
+  if (consumedArtifactContent != null) {
+    const consumedBytes = Buffer.isBuffer(consumedArtifactContent)
+      ? consumedArtifactContent
+      : Buffer.from(consumedArtifactContent, "utf8");
+    consumedArtifactHash = writeCaptureAndHash(captureDir, runId, "consumed", consumedBytes);
+  }
 
-  // STEP 3 — build the 14-field row + optional MAC-covered relation booleans
+  // STEP 3 — build the row + optional MAC-covered relation booleans
   // (honest self-documentation, NOT a soundness control). demonstrated_severity
   // is HARDCODED from the producer ceiling, never agent-supplied/content-derived.
   // offensive_outcome is the registry-bounded executed observation (positive or the
@@ -340,6 +382,20 @@ function buildAndSignOffensiveRow(domain, {
     stderr_hash: stderrHash,
     demonstrated_severity: demonstratedSeverity,
     surface_id: surfaceId,
+    // The cross-stack consumable-artifact binding. A top-level SIBLING field OUTSIDE
+    // command_hash/run identity (so capturing a derived artifact never perturbs run
+    // identity) but INSIDE the row_mac (signRowViaIsolatedSignerOrLocal covers the
+    // whole row minus row_mac), so an agent cannot swap the bytes for a run_id it did
+    // not execute without invalidating the MAC. null for a web-only finding.
+    consumed_artifact_hash: consumedArtifactHash,
+    // The DECOY marker — a writer-controlled MAC-covered sibling, written ONLY for a
+    // decoy row (so a non-decoy producer row keeps its exact existing shape). A decoy
+    // carries is_decoy:true and RANDOM consumed bytes (provably NOT the real cause: a
+    // distinct run_id, a distinct consumed_artifact_hash, a blocked_by_defense outcome
+    // that demonstrates() rejects), used as the third adjudication arm. The cross-stack
+    // adjudicator requires the decoy arm to HOLD, structurally forcing the gate to
+    // validate the SPECIFIC credential bytes rather than any-non-empty.
+    ...(isDecoy === true ? { is_decoy: true } : {}),
     ...relationBooleans,
   };
 
@@ -359,11 +415,126 @@ function buildAndSignOffensiveRow(domain, {
   return row;
 }
 
-// Only the high-level build+sign+append entry point is public. The low-level
+// Mint a DECOY capture — a real, MAC-signed offensive-runs row whose consumed bytes
+// are cryptographically RANDOM (provably NOT the real cause). It is the third
+// adjudication arm for the cross-stack flip: a gate that validates the SPECIFIC
+// credential bytes accepts the real cause (positive -> VIOLATE) but REJECTS the random
+// decoy (decoy -> HOLD); a tautological / any-non-empty gate accepts the decoy too
+// (decoy -> VIOLATE, no flip) -> REFUSED. So a verified_pass structurally requires the
+// artifact to be the REAL causal input, not merely "something present".
+//
+// SEMANTIC FAITHFULNESS (the hard part): the decoy must be indistinguishable-as-a-shape
+// from the real cause so the ONLY thing that flips its outcome is the gate validating
+// the byte CONTENT. The cross-stack mint path (fromCauseRunId) derives the decoy shape
+// FROM THE CAUSE: it reads the named cause's SIGNED .consumed bytes (re-hashed against the
+// cause row's MAC-covered consumed_artifact_hash so a forged/unsigned cause is refused
+// before any decoy mint) and generates RANDOM content of the SAME byte length AND SAME
+// encoding class (raw/hex/base64/json/jwt; for structured shapes the same grammar with
+// randomized leaf/secret-bearing fields). A gate can no longer distinguish the decoy from
+// the cause by length OR shape — rejecting it REQUIRES validating the byte content. The
+// decoy injects through the identical .consumed-leaf + hex-env path the real cause uses and
+// differs from the cause EXCLUSIVELY in being random content that is not the captured
+// credential. The generic byteLength path stays for non-cross-stack/test use.
+//
+// It is minted EXACTLY like a real capture (buildAndSignOffensiveRow's capture-first /
+// sign-last discipline) but with offensiveOutcome:"blocked_by_defense" (a decoy
+// captured nothing real, so it can never stand in as the cause leg) and is_decoy:true
+// (a MAC-covered sibling an agent cannot strip/flip). MUST be called inside
+// withSessionLock(domain) like buildAndSignOffensiveRow.
+function mintDecoyCapture(domain, {
+  toolId,
+  method,
+  canonicalTarget,
+  surfaceId,
+  identityTag,
+  byteLength = 32,
+  runIdPrefix = "decoy",
+  // CROSS-STACK shape-derivation: when set, the decoy bytes are minted FROM the named
+  // cause's stored consumable (same length + encoding class, random content), and byteLength
+  // is ignored. Fails closed (throws) if the cause's bytes are missing or no longer hash to
+  // the cause row's MAC-covered consumed_artifact_hash — a decoy is never minted off an
+  // unverified cause shape.
+  fromCauseRunId = null,
+}) {
+  let decoyBytes;
+  if (typeof fromCauseRunId === "string" && fromCauseRunId.trim()) {
+    decoyBytes = deriveShapeMatchedDecoyFromCause(domain, fromCauseRunId.trim());
+  } else {
+    const len = Number.isInteger(byteLength) && byteLength > 0 ? byteLength : 32;
+    decoyBytes = crypto.randomBytes(len);
+  }
+  return buildAndSignOffensiveRow(domain, {
+    runIdPrefix,
+    toolId,
+    method,
+    canonicalTarget,
+    surfaceId,
+    identityTag,
+    stdoutContent: "",
+    stderrContent: "",
+    // RANDOM consumed bytes — provably not the real cause. On the cross-stack path these
+    // are SHAPE-MATCHED to the cause (same length + encoding class, random content).
+    consumedArtifactContent: decoyBytes,
+    // A decoy is a denial, never a positive cause leg (demonstrates() is false).
+    offensiveOutcome: "blocked_by_defense",
+    isDecoy: true,
+  });
+}
+
+// Read the named cause's SIGNED .consumed bytes (re-hashed against the cause row's MAC-
+// covered consumed_artifact_hash) and mint a SHAPE-MATCHED random decoy: same byte length,
+// same encoding class, random content. Fails closed (throws) on a missing/unsigned/forged
+// cause or absent capture bytes — a decoy must never be minted off an unverified cause
+// shape (a wrong-shape decoy is exactly the HIGH-2 forgery this path closes). A post-gen
+// distinctness assertion guarantees the decoy content is not the cause content.
+function deriveShapeMatchedDecoyFromCause(domain, causeRunId) {
+  // eslint-disable-next-line global-require
+  const { readOffensiveRunRecords: readRows } = require("./claims.js");
+  // eslint-disable-next-line global-require
+  const { assertRowMac } = require("./offensive-row-mac.js");
+  // eslint-disable-next-line global-require
+  const { resolveRowVerifierSafely } = require("./handoff-signing-key.js");
+  // eslint-disable-next-line global-require
+  const { readOffensiveCaptureBytesSecure } = require("./claim-freeze.js");
+  const rows = readRows(domain);
+  const causeRow = rows.find((r) => r && r.run_id === causeRunId) || null;
+  if (causeRow == null) {
+    throw new Error(`cross-stack decoy mint: cause run ${causeRunId} not found in offensive-runs`);
+  }
+  // STRICT MAC: the cause shape must come from a genuinely signed row, never an unsigned
+  // legacy/forged row a same-uid actor could have appended.
+  assertRowMac(OFFENSIVE_ROW_MAC_CONTEXT, causeRow, resolveRowVerifierSafely(domain));
+  const causeHash = typeof causeRow.consumed_artifact_hash === "string"
+    && /^[0-9a-f]{64}$/.test(causeRow.consumed_artifact_hash)
+    ? causeRow.consumed_artifact_hash
+    : null;
+  if (causeHash == null) {
+    throw new Error(`cross-stack decoy mint: cause run ${causeRunId} captured no consumable artifact (consumed_artifact_hash null)`);
+  }
+  const fetched = readOffensiveCaptureBytesSecure(domain, causeRunId, "consumed");
+  if (fetched == null || fetched.sha256 !== causeHash) {
+    throw new Error(`cross-stack decoy mint: cause run ${causeRunId} stored bytes do not hash to its MAC-covered consumed_artifact_hash`);
+  }
+  let decoyBytes = mintShapeMatchedDecoyBytes(fetched.bytes);
+  // The decoy MUST differ from the cause (random content). Re-roll on the astronomically-
+  // unlikely collision so the verifier's distinctness leg can never trip on a genuine mint.
+  let attempts = 0;
+  while (Buffer.compare(decoyBytes, fetched.bytes) === 0 && attempts < 4) {
+    decoyBytes = mintShapeMatchedDecoyBytes(fetched.bytes);
+    attempts += 1;
+  }
+  if (Buffer.compare(decoyBytes, fetched.bytes) === 0) {
+    throw new Error("cross-stack decoy mint: could not generate decoy content distinct from the cause");
+  }
+  return decoyBytes;
+}
+
+// Only the high-level build+sign+append entry points are public. The low-level
 // capture/hash/append helpers stay module-internal so a producer mints a signed
 // offensive-runs row ONLY through the disciplined build path — and a row is still
 // not a finding until a candidate claim cites it through the record-time proof
 // gate + per-tool demonstrated-severity ceiling + #111 surface binding.
 module.exports = {
   buildAndSignOffensiveRow,
+  mintDecoyCapture,
 };

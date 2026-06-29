@@ -27,6 +27,14 @@ const {
 } = require("../mcp/lib/handoff-signing-key.js");
 const { withSessionLock } = require("../mcp/lib/storage.js");
 const { verifyRowWithMac, OFFENSIVE_ROW_MAC_CONTEXT } = require("../mcp/lib/offensive-row-mac.js");
+const { offensiveRunsDir } = require("../mcp/lib/paths.js");
+const { classifyConsumableShape } = require("../mcp/lib/consumable-shape.js");
+
+// Read a minted row's .consumed capture bytes off disk (the leaf the cross-stack consume
+// path injects + the verifier shape-binds).
+function readConsumedLeaf(domain, runId) {
+  return fs.readFileSync(path.join(offensiveRunsDir(domain), `${runId}.consumed`));
+}
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -59,15 +67,16 @@ function buildArgs(over = {}) {
   };
 }
 
-test("offensive-capture-writer exports ONLY the high-level build+sign entry", () => {
+test("offensive-capture-writer exports ONLY the high-level build+sign and decoy-mint entries", () => {
   assert.equal(typeof writer.buildAndSignOffensiveRow, "function");
+  assert.equal(typeof writer.mintDecoyCapture, "function");
   for (const internal of [
     "newRunId", "commandHashOf", "resolveCaptureDirSecure",
     "writeCaptureAndHash", "appendSignedRowHardened", "sha256OfFileFd",
   ]) {
     assert.equal(writer[internal], undefined, `${internal} must stay module-internal`);
   }
-  assert.deepEqual(Object.keys(writer), ["buildAndSignOffensiveRow"]);
+  assert.deepEqual(Object.keys(writer).sort(), ["buildAndSignOffensiveRow", "mintDecoyCapture"]);
 });
 
 test("buildAndSignOffensiveRow rejects a runIdPrefix that is not a clean lowercase token (path-traversal guard)", () => {
@@ -171,6 +180,85 @@ test("buildAndSignOffensiveRow mints a v2 ed25519 row_mac that verifies with the
 
     // The combined bundle the verify sites use (public + symmetric) accepts it via scheme dispatch.
     assert.equal(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, row, resolveOffensiveRowVerifier(domain)), true);
+  });
+});
+
+// ── HIGH-2: the cross-stack decoy is minted INTERNALLY from the cause (shape parity) ──────
+//
+// mintDecoyCapture({ fromCauseRunId }) reads the named cause's SIGNED .consumed bytes and
+// generates RANDOM content of the SAME byte length AND SAME encoding class. The generic
+// mintDecoyCapture(byteLength) path is preserved for non-cross-stack/test use.
+
+test("HIGH-2: cross-stack mintDecoyCapture derives the decoy SHAPE from the cause (same byte length + encoding class, different content)", () => {
+  withTempHome(() => {
+    const domain = "xstack-decoy-mint.example.test";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    // A realistic structured (JSON) cause credential — the IDOR producer's canonicalJson shape.
+    const causeJson = JSON.stringify({ token: "AAAAAAAAAAAAAAAAAAAAAAAA", sub: "user-7", role: "admin", n: 42 });
+    const causeBytes = Buffer.from(causeJson, "utf8");
+    const cause = withSessionLock(domain, () => writer.buildAndSignOffensiveRow(domain, buildArgs({
+      runIdPrefix: "cause",
+      offensiveOutcome: "exploited_safely",
+      consumedArtifactContent: causeBytes,
+    })));
+    const decoy = withSessionLock(domain, () => writer.mintDecoyCapture(domain, {
+      toolId: "bob_http_idor_confirm",
+      method: "GET",
+      canonicalTarget: "https://app.example.test/api/x",
+      surfaceId: "surface:x",
+      identityTag: "decoy",
+      fromCauseRunId: cause.run_id,
+    }));
+
+    const causeLeaf = readConsumedLeaf(domain, cause.run_id);
+    const decoyLeaf = readConsumedLeaf(domain, decoy.run_id);
+
+    // SHAPE PARITY: same byte length, same encoding class.
+    assert.equal(decoyLeaf.length, causeLeaf.length, "decoy is the SAME byte length as the cause");
+    assert.equal(classifyConsumableShape(causeLeaf), "json", "the cause is JSON-shaped");
+    assert.equal(classifyConsumableShape(decoyLeaf), "json", "the decoy is the SAME encoding class (json)");
+
+    // DIFFERENT CONTENT: the decoy is random, never the cause re-labeled.
+    assert.notEqual(Buffer.compare(decoyLeaf, causeLeaf), 0, "decoy content differs from the cause");
+    assert.equal(decoy.is_decoy, true);
+    assert.equal(decoy.offensive_outcome, "blocked_by_defense");
+  });
+});
+
+test("HIGH-2: cross-stack mintDecoyCapture FAILS CLOSED when the cause is missing/unsigned (no decoy off an unverified cause shape)", () => {
+  withTempHome(() => {
+    const domain = "xstack-decoy-failclosed.example.test";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    assert.throws(
+      () => withSessionLock(domain, () => writer.mintDecoyCapture(domain, {
+        toolId: "bob_http_idor_confirm",
+        method: "GET",
+        canonicalTarget: "https://app.example.test/api/x",
+        surfaceId: "surface:x",
+        identityTag: "decoy",
+        fromCauseRunId: "no-such-cause-run",
+      })),
+      /cause run .* not found/,
+      "minting a decoy off a non-existent cause fails closed",
+    );
+  });
+});
+
+test("HIGH-2: the GENERIC mintDecoyCapture(byteLength) path is preserved for non-cross-stack/test use", () => {
+  withTempHome(() => {
+    const domain = "generic-decoy.example.test";
+    initSession({ target_domain: domain, target_url: `https://${domain}/` });
+    const decoy = withSessionLock(domain, () => writer.mintDecoyCapture(domain, {
+      toolId: "bob_http_idor_confirm",
+      method: "GET",
+      canonicalTarget: "https://app.example.test/api/x",
+      surfaceId: "surface:x",
+      identityTag: "decoy",
+      byteLength: 48,
+    }));
+    const leaf = readConsumedLeaf(domain, decoy.run_id);
+    assert.equal(leaf.length, 48, "generic byteLength path mints the requested length");
+    assert.equal(decoy.is_decoy, true);
   });
 });
 

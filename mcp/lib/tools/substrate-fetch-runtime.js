@@ -35,7 +35,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_substrate_fetch_runtime",
-  aliases: ["bounty_substrate_fetch_runtime"],
   description: "Read-only state_getRuntimeVersion + system_chain + chain_getHeader against the DNS-pinned direct public HTTPS substrate JSON-RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet RPC has no default endpoint and endpoint_used is redacted. Returns spec_name, spec_version, transaction_version, the runtime API list, the chain identity string, and the current head block number. Verifiers use this as a sanity check before re-running a fresh-fork harness — a runtime upgrade since the evaluator recorded the bug means the verifier may be looking at a different runtime API than the harness was written against.",
   inputSchema: {
     "type": "object",

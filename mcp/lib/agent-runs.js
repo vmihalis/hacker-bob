@@ -243,6 +243,57 @@ function markAgentRunRunning({
   });
 }
 
+// Universal MCP-side start-recording. Transition a wave assignment's run from
+// `assigned` to `running` the first time a real subagent tool call reaches the
+// server (the natural universal entry is bob_read_assignment_brief — every
+// evaluator reads its brief first), so the merge gate observes a real `running`
+// lifecycle WITHOUT depending on any adapter wiring a SubagentStart hook. The
+// SubagentStart hook stays as the early-recording optimization (it marks
+// `running` at spawn, before the first tool call); this is the universal
+// backstop that fires on every adapter.
+//
+// Idempotent / first-transition-only: a `running` row is appended ONLY when the
+// latest row for this run is absent or still `assigned`. A re-call, or a run
+// already `running`/`completed`/`failed`/`abandoned`/`settled`, is a no-op. The
+// read-then-append is intentionally not wrapped in an outer lock: the worst case
+// is a duplicate `running` row (e.g. the start hook and this path both firing),
+// which the latest-row reader collapses and which a later dated `settled`/`failed`
+// row supersedes — so correctness does not depend on exactly-once.
+//
+// Non-forgeable + correctly attributed: the start is recorded from the FACT of
+// the server-side tool call, and keyed by (target_domain, wave, agent, surface_id)
+// where surface_id is resolved by the caller from the on-disk assignment, never
+// from an agent-asserted field. The `agent` label disambiguates a surface that a
+// wave assigns to more than one agent.
+function markAgentRunStartedIdempotent({
+  targetDomain,
+  wave,
+  agent,
+  surfaceId,
+  taskId = null,
+  now = new Date(),
+} = {}) {
+  const domain = assertSafeDomain(targetDomain);
+  let latest = null;
+  try {
+    latest = latestAgentRunForWaveAgent(domain, { wave, agent, surfaceId });
+  } catch {
+    latest = null;
+  }
+  const status = latest ? latest.status : null;
+  if (status !== null && status !== "assigned") {
+    return null;
+  }
+  return markAgentRunRunning({
+    targetDomain: domain,
+    wave,
+    agent,
+    surfaceId,
+    taskId,
+    now,
+  });
+}
+
 // Append a non-settled terminal row (failed / abandoned). Used by the
 // SubagentStop hook when the agent stopped without writing a valid handoff —
 // the merge gate keeps the gate closed until either a settled or an explicit
@@ -357,6 +408,7 @@ module.exports = {
   latestAgentRunByTaskAndAgent,
   latestAgentRunForWaveAgent,
   markAgentRunRunning,
+  markAgentRunStartedIdempotent,
   markAgentRunTerminal,
   normalizeAgentRun,
   readAgentRuns,

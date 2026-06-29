@@ -4,7 +4,6 @@ const { importStaticArtifact } = require("../static-artifacts.js");
 
 module.exports = Object.freeze({
   name: "bob_import_static_artifact",
-  aliases: ["bounty_import_static_artifact"],
   description:
     "Import a token contract source artifact into session-owned static-imports for later safe static scanning. Accepts content only; filesystem path imports are rejected. Stored content is redacted and capped.",
   inputSchema: {

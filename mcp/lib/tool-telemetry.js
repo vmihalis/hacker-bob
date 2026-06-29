@@ -24,9 +24,6 @@ const {
   normalizeAuthorityTelemetry,
   validateSessionAuthorityState,
 } = require("./session-authority.js");
-const {
-  migrateLegacyTelemetryAgentRunsFile,
-} = require("./telemetry-migration.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
 const TOOL_INVOCATION_TELEMETRY_VERSION = 1;
@@ -81,7 +78,6 @@ function toolTelemetryPath(env = process.env) {
 }
 
 function toolInvocationTelemetryPath(env = process.env) {
-  migrateLegacyTelemetryAgentRunsFile({ env });
   return telemetryToolInvocationsJsonlPath(env);
 }
 
@@ -318,9 +314,11 @@ function redactUrlsInText(text) {
 }
 
 function redactSessionPaths(text) {
-  // Cycle P.2: redact both the canonical `hacker-bob-sessions` root and the
-  // legacy `bounty-agent-sessions` root so telemetry never leaks home-prefixed
-  // session paths during the v2.0/v2.1 coexistence window.
+  // Redact both the canonical `hacker-bob-sessions` root and the pre-v2.0
+  // `bounty-agent-sessions` root so telemetry never leaks home-prefixed
+  // session paths. The legacy alternation is retained even though the runtime
+  // no longer resolves that root, since older transcripts and error strings
+  // can still contain legacy paths that must be redacted.
   return text.replace(
     /(?:~|\/[^\s"'<>)]*)\/(?:hacker-bob-sessions|bounty-agent-sessions)\/[^\s"'<>)]*/g,
     "[session-path]",

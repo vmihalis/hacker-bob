@@ -4,7 +4,6 @@ const { readEvidencePacks } = require("../evidence.js");
 
 module.exports = Object.freeze({
   name: "bob_read_evidence_packs",
-  aliases: ["bounty_read_evidence_packs"],
   description:
     "Read and validate the evidence packs document for final reportable findings.",
   inputSchema: {

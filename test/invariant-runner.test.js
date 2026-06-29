@@ -1740,3 +1740,149 @@ test("classifyHalmosViolation: ok is a single-run primitive, not a verified verd
     cleanupDomain(domain);
   }
 });
+
+// ── HIGH-1: executed-test identity binding (shadow-test poison) ──────────────────────────
+//
+// A REAL forge --json envelope carries per-test rows with string `suite` ("<path>:<Contract>")
+// and `test` ("<fn-sig>()") fields (summarizeForgeJson). The runner pins --match-path to the
+// generated file and anchors the filters; THIS bind is the result-side line: EVERY executed
+// row must map to the generated <writtenPath>:<contract>::<fn>, and EXACTLY one must run. A
+// shadow contract/test that slips through is refused (outcome:"identity_unbound").
+
+function richForgeResult({ suite, test, status = "Fail", containerIsolated = true }) {
+  return {
+    ok: status === "Pass",
+    summary: { total: 1, passed: status === "Pass" ? 1 : 0, failed: status === "Pass" ? 0 : 1 },
+    tests: [{ suite, test, status }],
+    container_isolated: containerIsolated,
+    command: ["forge", "test", "--json"],
+    fork_attempts: [],
+  };
+}
+
+// A foundry_run stub returning the GENUINE rich envelope: it reads the generated identity
+// off the args the runner threads in (match_path/match_contract/match_test), so the executed
+// identity is exactly the generated contract::function@path.
+function genuineRichFoundry(status = "Fail") {
+  return async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    return richForgeResult({ suite: `${rel}:${args.match_contract}`, test: `${args.match_test}()`, status });
+  };
+}
+
+test("HIGH-1: a GENUINE rich forge envelope binds — the executed identity maps to the generated contract::function@path (outcome NOT identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: genuineRichFoundry("Fail"),
+    });
+    assert.equal(result.outcome, "test_failed");
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.runs[0].outcome, "test_failed");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a SHADOW contract whose name CONTAINS the generated name is REFUSED (outcome=identity_unbound, can never be violated)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const shadowFoundry = async (args) => {
+    // forge ran an EVIL contract at a DIFFERENT path whose name is a SUPERSTRING of the
+    // generated one — exactly the poison an unanchored --match-contract would let through.
+    return richForgeResult({ suite: `test/Evil.t.sol:Evil${args.match_contract}`, test: `${args.match_test}()`, status: "Fail" });
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: shadowFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "a shadow contract's executed identity does not bind");
+    assert.notEqual(result.outcome, "test_failed");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a run where MORE THAN ONE test executed (a shadow function also matched) is REFUSED (outcome=identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const extraFoundry = async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    const suite = `${rel}:${args.match_contract}`;
+    return {
+      ok: false,
+      summary: { total: 2, passed: 0, failed: 2 },
+      tests: [
+        { suite, test: `${args.match_test}()`, status: "Fail" },
+        { suite, test: "testShadowExtra()", status: "Fail" },
+      ],
+      container_isolated: true,
+      command: ["forge", "test", "--json"],
+      fork_attempts: [],
+    };
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: extraFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "more than the generated test ran -> unbound");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: a SHADOW function (correct contract, wrong function) is REFUSED (outcome=identity_unbound)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  const wrongFnFoundry = async (args) => {
+    const rel = path.relative(fs.realpathSync(args.harness_path), args.match_path);
+    return richForgeResult({ suite: `${rel}:${args.match_contract}`, test: "testNotTheGeneratedFunction()", status: "Fail" });
+  };
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: wrongFnFoundry,
+    });
+    assert.equal(result.outcome, "identity_unbound", "the executed function is not the generated one -> unbound");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("HIGH-1: the SIMPLIFIED forge shape (no suite/test identity fields) is SKIPPED — legacy/test fixtures stay green", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  try {
+    const result = await runInvariantForFinding({
+      target_domain: domain,
+      finding: SAMPLE_REENTRANCY_FINDING,
+      slot_values: { target_contract: "Pool", vulnerable_function: "withdraw", withdraw_amount: "1 ether" },
+      harness_path: harness,
+      foundry_run: async () => ({ tests: [{ success: false }] }),
+    });
+    assert.equal(result.outcome, "test_failed", "no identity fields -> strict bind not applicable -> normal classification");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});

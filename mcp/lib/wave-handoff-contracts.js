@@ -520,6 +520,36 @@ function assertBlockedPrereqConsistency(surfaceStatus, blockedPrereqs) {
   }
 }
 
+// A bypass_attempt counts as SUBSTANCE only when it carries a finding-bearing
+// outcome WITH a write-validated finding_id, or when it documents the mechanism
+// it exercised (cited condition >= 8, attempt_summary >= 60 — 2x the schema
+// existence floors of 4/30). An outcome label alone is not substance: a bare
+// partial_evidence claim (no finding_id, no described mechanism) is the cheapest
+// low-effort attestation and must not pass. A stronger semantic check (condition
+// must appear in the surface's trust_assumptions[*].bypass_conditions) is a
+// follow-up; length is a floor, not a guarantee.
+const SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS = 8;
+const SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS = 60;
+
+function bypassAttemptHasSubstance(attempt) {
+  const hasFindingId = typeof attempt.finding_id === "string" && attempt.finding_id.trim() !== "";
+  if (hasFindingId && (attempt.outcome === "partial_evidence" || attempt.outcome === "finding_recorded")) {
+    return true;
+  }
+  const condition = typeof attempt.condition === "string" ? attempt.condition.trim() : "";
+  const summary = typeof attempt.attempt_summary === "string" ? attempt.attempt_summary.trim() : "";
+  return (
+    condition.length >= SUBSTANTIVE_BYPASS_CONDITION_MIN_CHARS
+    && summary.length >= SUBSTANTIVE_BYPASS_SUMMARY_MIN_CHARS
+  );
+}
+
+// The smart_contract completion-depth gate. Fires at WRITE (bob_write_wave_handoff
+// via wave-assignment-store) and at MERGE (validateWaveHandoffPayload) — the same
+// write+merge double-enforcement points the existence rule already used — so a
+// thin attestation is refused before it is ever persisted, never reaching a
+// finalize-retry or requeue loop. A complete SC surface closes only on a recorded
+// finding OR a SUBSTANTIVE bypass_attempt.
 function assertSmartContractCompletionEvidence({
   surfaceType,
   surfaceStatus,
@@ -529,10 +559,10 @@ function assertSmartContractCompletionEvidence({
   if (surfaceType !== "smart_contract") return;
   if (surfaceStatus !== "complete") return;
   if (findingCount > 0) return;
-  if (bypassAttempts.length > 0) return;
+  if (bypassAttempts.some(bypassAttemptHasSubstance)) return;
   throw new ToolError(
     ERROR_CODES.INVALID_ARGUMENTS,
-    "smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks: record at least one finding for this surface, or supply at least one bypass_attempts entry citing a trust_assumptions[*].bypass_conditions condition that was tested. Set surface_status to 'partial' if no attempt was made.",
+    "smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks: record a finding for this surface, or supply a bypass_attempts entry that cites a real trust_assumptions[*].bypass_conditions condition AND documents the exercised mechanism (or carries a partial_evidence/finding_recorded finding_id). Set surface_status to 'partial' if no real attempt was made.",
   );
 }
 

@@ -78,7 +78,6 @@ const TOOL_MODULES = Object.freeze([
   require("./set-operator-note.js"),
   require("./clear-operator-note.js"),
   require("./clear-terminal-block.js"),
-  require("./report-written.js"),
   require("./finalize-report.js"),
   require("./compose-report.js"),
   require("./amend-report.js"),

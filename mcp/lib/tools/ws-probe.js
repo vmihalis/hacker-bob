@@ -4,7 +4,6 @@ const { wsProbe } = require("../ws-probe.js");
 
 module.exports = Object.freeze({
   name: "bob_ws_probe",
-  aliases: [],
   description:
     "Probe a WebSocket endpoint for security issues. Modes: json_rpc_enumerate (discover enabled/disabled JSON-RPC methods including admin/debug); cswsh_probe (test Cross-Site WebSocket Hijacking by connecting with a foreign Origin); subscription_probe (send subscribe messages and collect responses); raw (send raw frames and collect responses). Scope-gated and audit-logged.",
   inputSchema: {

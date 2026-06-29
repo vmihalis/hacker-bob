@@ -15,6 +15,7 @@ const {
 } = require("./validation.js");
 const {
   suggestInvariantsForFinding,
+  CROSS_STACK_CONSUME_TEMPLATE_ID,
 } = require("./invariant-template-corpus.js");
 const {
   DEFAULT_ARTIFACT_READ_MAX_BYTES,
@@ -32,13 +33,21 @@ const { hashCanonicalJson } = require("./verification-contracts.js");
 // This does NOT close F3 — the private key is still 0600 at the agent uid, so a same-uid
 // actor can mint a valid row_mac; F2 collapses INTO F3. The genuine close is Cycle C.
 const {
+  assertRowMac,
   assertRowMacOrLegacy,
   INVARIANT_RUN_MAC_CONTEXT,
+  OFFENSIVE_ROW_MAC_CONTEXT,
 } = require("./offensive-row-mac.js");
 const {
   signRowViaIsolatedSignerOrLocal,
   resolveRowVerifierSafely,
 } = require("./handoff-signing-key.js");
+const {
+  readOffensiveCaptureBytesSecure,
+} = require("./claim-freeze.js");
+const {
+  readOffensiveRunRecords,
+} = require("./claims.js");
 // REFUTING-ARM (universal): an FV finding is CONFIRMED only by an executed
 // two-sided differential whose negative arm FLIPS — never by a single passing
 // run. We reuse the OSS repro gate's verdict vocabulary AND its branch order so a
@@ -434,6 +443,25 @@ function buildTestSource({ contractName, functionBody }) {
     "        // when the template references concrete contracts.",
     "    }",
     "",
+    // CROSS-STACK CONSUME (corpus-injected, NOT agent-authored). The bytes the stack-A
+    // attack captured are delivered as the hex-encoded BOB_CONSUMED_ARTIFACT subprocess
+    // env var. vm.envOr returns the empty default when ABSENT, so the control arm (empty
+    // env) and any old template that never calls this read the empty value — backward
+    // compatible. A template that consumes the artifact feeds these bytes into the
+    // violated call; the empty-env control is the discriminator that proves the artifact
+    // MATTERED (the flip), never an asserted format. vm.parseBytes decodes the env's hex.
+    ...indentLines([
+      "function bobConsumedArtifact() internal view returns (bytes memory) {",
+      "    string memory hexStr = vm.envOr(\"BOB_CONSUMED_ARTIFACT\", string(\"\"));",
+      "    if (bytes(hexStr).length == 0) return bytes(\"\");",
+      "    return vm.parseBytes(string.concat(\"0x\", hexStr));",
+      "}",
+      "",
+      "function bobHasConsumedArtifact() internal view returns (bool) {",
+      "    return bobConsumedArtifact().length > 0;",
+      "}",
+    ].join("\n"), 4).split("\n"),
+    "",
     indentLines(functionBody, 4),
     "}",
     "",
@@ -611,6 +639,86 @@ function classifyFoundryOutcome(rawResult) {
   return "unknown";
 }
 
+// EXECUTED-TEST IDENTITY BINDING (HIGH-1). generated_source_hash pins what was WRITTEN;
+// it cannot prove WHICH test forge actually RAN. The shadow-test poison: a dishonest agent
+// adds a harness .t.sol whose contract name CONTAINS the generated name; an unanchored
+// --match-contract selects the EVIL contract too, and the signed row carries our
+// generated_source_hash for OUR template while foundry_result is produced by attacker
+// Solidity. The --match-path pin + anchored filters (foundry-runner) make forge select
+// exactly the generated file; THIS function binds the EXECUTED rows to the generated
+// identity as a second, result-side line: EVERY executed test must map to
+// <writtenPath>:<contract_name>::<function_name>, and the set must be EXACTLY that one test.
+//
+// Returns { bound, reason }. bound:true means every executed row binds AND exactly one ran.
+// bound:false means refuse (mismatch / empty / extra tests). When the result lacks real
+// identity fields (the simplified harness shape `{ tests: [{ success: true }] }`), this is
+// NOT a real forge envelope; bindForge returns { applicable:false } and the caller skips the
+// strict bind (the production adapter always yields the rich shape, so the real path always
+// binds). The strict bind is REQUIRED whenever identity fields exist (the production path).
+function bindExecutedTestIdentity({ foundryResult, writtenPath, harnessPath, contractName, functionName }) {
+  if (!isPlainObject(foundryResult) || !Array.isArray(foundryResult.tests)) {
+    return { applicable: false };
+  }
+  const tests = foundryResult.tests;
+  // A REAL forge envelope's rows carry string `suite` (path:Contract) AND `test` (fn-sig)
+  // fields (summarizeForgeJson). The simplified test-harness shape carries neither — detect
+  // it and skip the strict bind so existing fixtures stay green.
+  const hasIdentityFields = tests.length > 0 && tests.every(
+    (t) => t && typeof t.suite === "string" && typeof t.test === "string",
+  );
+  if (!hasIdentityFields) {
+    return { applicable: false };
+  }
+  // Relativize the generated file against the resolved harness root, mirroring forge's
+  // project-relative suite paths. Compare on the trailing path segment so an absolute or a
+  // project-relative suite path both reconcile.
+  let relWritten = null;
+  try {
+    const realHarness = fs.realpathSync(harnessPath);
+    relWritten = path.relative(realHarness, writtenPath);
+  } catch {
+    relWritten = null;
+  }
+  const expectedSuffix = `test/bob-invariants/${contractName}.t.sol:${contractName}`;
+  let bound = 0;
+  for (const t of tests) {
+    // suite = "<relative-or-absolute-path>:<ContractName>". Split on the LAST ':' (a POSIX
+    // path segment cannot contain ':' on the platforms in scope, and a Solidity contract
+    // name cannot either), so the tail is the contract and the head is the path.
+    const lastColon = t.suite.lastIndexOf(":");
+    if (lastColon < 0) {
+      return { bound: false, reason: `executed-test identity: suite '${t.suite}' has no path:Contract shape (cannot bind to the generated test)` };
+    }
+    const suitePath = t.suite.slice(0, lastColon);
+    const suiteContract = t.suite.slice(lastColon + 1);
+    if (suiteContract !== contractName) {
+      return { bound: false, reason: `executed-test identity: forge ran contract '${suiteContract}', not the generated '${contractName}' (a shadow contract matched) — refusing the row` };
+    }
+    // The suite path must be (or resolve to) the generated file. Accept an exact suffix
+    // match against the canonical project-relative path, OR a realpath reconciliation to
+    // writtenPath (forge emits project-relative; the runner holds the absolute writtenPath).
+    const suitePathMatches = t.suite.endsWith(`/${expectedSuffix}`)
+      || t.suite === expectedSuffix
+      || (relWritten != null && (suitePath === relWritten || suitePath.endsWith(`/${relWritten}`)))
+      || suitePath === writtenPath;
+    if (!suitePathMatches) {
+      return { bound: false, reason: `executed-test identity: forge ran a test at '${suitePath}', not the generated file '${expectedSuffix}' — refusing the row` };
+    }
+    // test = "<fn-sig>()". Strip the argument list and compare to the generated function.
+    const fn = t.test.replace(/\(.*$/, "");
+    if (fn !== functionName) {
+      return { bound: false, reason: `executed-test identity: forge ran function '${fn}', not the generated '${functionName}' — refusing the row` };
+    }
+    bound += 1;
+  }
+  // EXACTLY the generated test must have run — not zero (a silently-empty match) and not
+  // more than one (a shadow function/contract that also matched).
+  if (bound !== 1) {
+    return { bound: false, reason: `executed-test identity: expected EXACTLY the generated test to run, but ${bound} bound test rows executed — refusing the row` };
+  }
+  return { bound: true };
+}
+
 function invariantFoundryResultHash(foundryResult) {
   if (foundryResult == null) return hashCanonicalJson(null);
   // container_isolated is a containerization MARKER (was this forge run isolated in
@@ -643,6 +751,8 @@ function computeInvariantRunHash({
   dry_run,
   tree_ref,
   checkout_kind,
+  generated_source_hash,
+  consumed_artifact_hash,
 }) {
   return hashCanonicalJson({
     finding_id: parseFindingId(finding_id, "finding_id"),
@@ -662,6 +772,24 @@ function computeInvariantRunHash({
     // to share execution_context_hash (same test) and differ only here (the tree).
     tree_ref: tree_ref || null,
     checkout_kind: checkout_kind || null,
+    // consumed_artifact_hash names WHICH bytes (the real cause / a random decoy / none)
+    // this run injected as BOB_CONSUMED_ARTIFACT. It is bound into run_hash (so the cross-
+    // stack control and decoy arms — both HELD with identical foundry_result — are DISTINCT
+    // persistable rows that the dedup-by-run_hash ledger keeps separate) but, like tree_ref,
+    // EXCLUDED from execution_context_hash so the arms stay the SAME test. A single-surface
+    // run leaves it null (the runner only sets it for a cross-stack cause), so single-surface
+    // run_hashes are unchanged.
+    consumed_artifact_hash: consumed_artifact_hash || null,
+    // generated_source_hash PINS the exact emitted test bytes (buildTestSource's
+    // full output, including the renamed function body) into the content hash, so
+    // the test SOURCE is signed via the row_mac that covers run_hash. An agent who
+    // shadows/overrides the test body in the harness directory, or who injects
+    // through a slot, changes the emitted source -> changes this hash -> changes
+    // run_hash -> the row no longer matches the membership the agent claimed, and
+    // the read-time re-derivation refuses on mismatch. Nullable so a row predating
+    // the field (which carries no generated_source_hash) hashes as before; a NEW
+    // row always carries it.
+    generated_source_hash: generated_source_hash || null,
   });
 }
 
@@ -683,6 +811,7 @@ async function runInvariantForFinding({
   dry_run,
   tree_ref,
   checkout_kind,
+  cause_run_id,
 }) {
   const domain = assertSafeDomain(target_domain);
   if (!isPlainObject(finding)) {
@@ -723,6 +852,11 @@ async function runInvariantForFinding({
   }
   const renamedBody = renameTestFunction(chosen.foundry_test, function_name);
   const source = buildTestSource({ contractName: contract_name, functionBody: renamedBody });
+  // PIN the exact emitted test bytes into the run identity. generated_source_hash is
+  // bound into computeInvariantRunHash (and so into the row_mac via run_hash), so the
+  // signed row commits to the precise source the runner emitted. An agent who later
+  // shadows/overrides the test body in the harness cannot match this hash.
+  const generatedSourceHash = crypto.createHash("sha256").update(source, "utf8").digest("hex");
   const executionContext = {
     chain_id: chain_id || null,
     fork_block: fork_block == null ? null : fork_block,
@@ -738,6 +872,76 @@ async function runInvariantForFinding({
   // same test identity and differs only in the tree.
   const treeRef = typeof tree_ref === "string" && tree_ref.trim() ? tree_ref.trim() : null;
   const checkoutKind = typeof checkout_kind === "string" && checkout_kind.trim() ? checkout_kind.trim() : null;
+  const causeRunId = typeof cause_run_id === "string" && cause_run_id.trim() ? cause_run_id.trim() : null;
+  // CROSS-STACK CONSUME: when a violated arm names a cause_run_id, FETCH that offensive
+  // run's captured consumable bytes and INJECT them into the foundry subprocess as
+  // BOB_CONSUMED_ARTIFACT. The control arm names no cause -> empty env (the controlled
+  // variable). The fetch is non-forgeable: the named offensive row's row_mac is STRICTLY
+  // verified (assertRowMac — an unsigned/forged row is refused, NOT waved through as
+  // legacy) and the on-disk bytes are re-hashed and asserted EQUAL to that row's
+  // MAC-covered consumed_artifact_hash (the dedicated .consumed leaf). A missing/
+  // mismatched/forged capture for a run_id the agent did not execute fails closed: the
+  // arm runs cause-free (no injection), which the O-B verifier refuses.
+  // consumedArtifactHash records sha256 of the bytes ACTUALLY injected — the binding the
+  // invariant row carries as a MAC-covered sibling.
+  //
+  // CANONICAL .consumed LEAF (fail-closed): the .consumed leaf is the SOLE canonical
+  // consumable. There is NO stdout_hash fallback — a cause that captured no dedicated
+  // consumable (consumed_artifact_hash null) does NOT have its raw HTTP stdout body
+  // injected as a free consumable; the cross-stack consume path is simply UNAVAILABLE and
+  // the arm runs cause-free. This keeps the runner and the O-B adjudicator (which binds
+  // only the .consumed leaf via causeLeg.consumedArtifactHash) in agreement about what a
+  // "consumable" is, and forecloses the stdout-as-free-consumable path.
+  let consumedArtifactBytes = null;
+  let consumedArtifactHash = null;
+  if (dry_run !== true && causeRunId != null) {
+    // The consume-bind path (feeding a web-captured artifact into the gated call as
+    // the on-chain authorization argument) is reachable ONLY for the audited cross-
+    // stack consuming template, whose body is fixed corpus text. An arbitrary corpus
+    // template (whose body is agent-influenced via slots) may never bind a cause —
+    // forbid it so an agent cannot point a slot-controlled template at a captured
+    // cause to manufacture a flip.
+    if (chosen.template_id !== CROSS_STACK_CONSUME_TEMPLATE_ID) {
+      throw new Error(
+        `cross-stack consume (cause_run_id binding) is only permitted for template ${CROSS_STACK_CONSUME_TEMPLATE_ID}; got ${chosen.template_id}`,
+      );
+    }
+    const causeRows = readOffensiveRunRecords(domain);
+    const causeRow = causeRows.find((r) => r && r.run_id === causeRunId) || null;
+    if (causeRow != null) {
+      // STRICT MAC: a cross-stack consume must bind to a REAL signature, never an
+      // unsigned legacy row (which a same-uid actor could have appended). A present-but-
+      // invalid MAC throws; we treat any throw as "no verified cause" and run cause-free.
+      let rowVerified = false;
+      try {
+        assertRowMac(OFFENSIVE_ROW_MAC_CONTEXT, causeRow, resolveRowVerifierSafely(domain));
+        rowVerified = true;
+      } catch {
+        rowVerified = false;
+      }
+      if (rowVerified) {
+        // The dedicated .consumed leaf is the SOLE canonical consumable (fail-closed): a
+        // cause with consumed_artifact_hash null captured NO consumable, so the consume
+        // path is unavailable and the arm runs cause-free. A raw HTTP stdout body is NOT a
+        // free consumable — there is no stdout_hash fallback.
+        const boundConsumedHash = typeof causeRow.consumed_artifact_hash === "string"
+          && /^[0-9a-f]{64}$/.test(causeRow.consumed_artifact_hash)
+          ? causeRow.consumed_artifact_hash
+          : null;
+        if (boundConsumedHash != null) {
+          const fetched = readOffensiveCaptureBytesSecure(domain, causeRunId, "consumed");
+          // Bind the fetched bytes to the MAC-covered hash on the row: only inject when the
+          // on-disk bytes re-hash to EXACTLY what the signed row pins. This is what makes a
+          // forged stored-bytes for a non-executed run_id rejected — the bytes would not
+          // match the (signed, non-forgeable) hash, so they are never injected.
+          if (fetched != null && fetched.sha256 === boundConsumedHash) {
+            consumedArtifactBytes = fetched.bytes;
+            consumedArtifactHash = fetched.sha256;
+          }
+        }
+      }
+    }
+  }
   let writtenPath = null;
   let foundryRawResult = null;
   let outcome = "dry_run";
@@ -751,11 +955,22 @@ async function runInvariantForFinding({
       harness_path,
       match_test: match_test || function_name,
       match_contract: match_contract || contract_name,
+      // HIGH-1: pin forge to the EXACT generated file + anchor the match filters to the full
+      // identifier. A shadow .t.sol whose contract/test name CONTAINS the generated name is
+      // never selected, so a dishonest agent cannot have foundry run attacker-authored
+      // Solidity under the signed row's generated_source_hash. match_path is the absolute
+      // written path; anchor_match wraps match_test/match_contract in ^...$.
+      match_path: writtenPath,
+      anchor_match: true,
       chain_id,
       fork_block,
       fork_urls,
       extra_args,
       timeout_ms,
+      // The cross-stack consumable bytes injected into the foundry subprocess as
+      // BOB_CONSUMED_ARTIFACT. null/absent on the control arm -> empty env (the corpus
+      // template's vm.envOr default), so the artifact PRESENCE is the controlled variable.
+      consumed_artifact: consumedArtifactBytes,
     });
     if (typeof foundryRawResult === "string") {
       try {
@@ -765,6 +980,28 @@ async function runInvariantForFinding({
       }
     }
     outcome = classifyFoundryOutcome(foundryRawResult);
+    // EXECUTED-TEST IDENTITY BINDING (HIGH-1). Bind the EXECUTED foundry rows to the
+    // generated contract::function@path. The --match-path pin + anchored filters already
+    // make forge select the generated file; this is the result-side line that REFUSES a row
+    // whose executed identity is not the generated one (a shadow contract/test that slipped
+    // through, or a silently-empty/extra-test run). On a non-binding REAL envelope the run is
+    // marked outcome:"identity_unbound" (classifyFoundryViolation -> "degraded", which can
+    // never satisfy INVARIANT_POSITIVE_DISPOSITION="violated", so it can never back a
+    // verified_pass) and the cross-stack consumed-artifact injection is nulled (an unbound
+    // run never carries a usable cause binding). The simplified test-harness shape (no
+    // identity fields) is skipped — the production adapter always yields the rich shape.
+    const identityBind = bindExecutedTestIdentity({
+      foundryResult: foundryRawResult,
+      writtenPath,
+      harnessPath: harness_path,
+      contractName: contract_name,
+      functionName: function_name,
+    });
+    if (identityBind.applicable !== false && identityBind.bound !== true) {
+      outcome = "identity_unbound";
+      consumedArtifactHash = null;
+      consumedArtifactBytes = null;
+    }
     runHash = computeInvariantRunHash({
       finding_id: findingId,
       finding_hash: finding.finding_hash,
@@ -778,6 +1015,8 @@ async function runInvariantForFinding({
       dry_run: false,
       tree_ref: treeRef,
       checkout_kind: checkoutKind,
+      generated_source_hash: generatedSourceHash,
+      consumed_artifact_hash: consumedArtifactHash,
     });
   } else {
     runHash = computeInvariantRunHash({
@@ -793,6 +1032,8 @@ async function runInvariantForFinding({
       dry_run: true,
       tree_ref: treeRef,
       checkout_kind: checkoutKind,
+      generated_source_hash: generatedSourceHash,
+      consumed_artifact_hash: consumedArtifactHash,
     });
   }
   const record = {
@@ -810,6 +1051,11 @@ async function runInvariantForFinding({
     execution_context_hash: executionContextHash,
     tree_ref: treeRef,
     checkout_kind: checkoutKind,
+    // The pinned source hash — part of the run identity (computeInvariantRunHash
+    // binds it, the row_mac covers run_hash). readInvariantRunRowForVerification
+    // re-derives computeInvariantRunHash from this stored value, so a row whose
+    // generated_source_hash was stripped or altered fails the content-hash re-check.
+    generated_source_hash: generatedSourceHash,
     chain_id: chain_id || null,
     fork_block: fork_block == null ? null : fork_block,
     fork_url_count: Array.isArray(fork_urls) ? fork_urls.length : 0,
@@ -838,6 +1084,26 @@ async function runInvariantForFinding({
       && !Array.isArray(foundryRawResult) && foundryRawResult.container_isolated === true
       ? true
       : false,
+    // The CROSS-STACK CAUSAL LINK. A violated (positive) arm whose effect was
+    // produced by a stack-A offensive run names that run's run_id here; a held
+    // (control) arm runs on the cause-free tree and legitimately omits it (null).
+    // Like container_isolated this is a top-level SIBLING OUTSIDE computeInvariantRunHash
+    // (so the positive and control stay the SAME test — execution_context_hash and
+    // run_hash binding are undisturbed) but INSIDE the row_mac (the signer covers the
+    // whole record minus row_mac), so an agent cannot re-point a violated arm at a
+    // different cause without invalidating its MAC. The cross-stack adjudicator refuses
+    // any flip whose violated arm does not name the bound cause run.
+    cause_run_id: causeRunId,
+    // The CONSUMED-ARTIFACT BINDING. sha256 of the bytes this invariant run ACTUALLY
+    // consumed (injected as BOB_CONSUMED_ARTIFACT). On a violated arm with a verified
+    // cause this is the bound bytes' hash; on the control arm (no cause, empty env) it is
+    // null. Like cause_run_id/container_isolated this is a top-level SIBLING OUTSIDE
+    // computeInvariantRunHash (so the positive and control stay the SAME test —
+    // execution_context_hash and run_hash are undisturbed; the artifact PRESENCE is the
+    // controlled variable alongside tree_ref) but INSIDE the row_mac (the signer covers
+    // the whole record minus row_mac), so an agent cannot forge which bytes a violated
+    // arm consumed. The O-B verifier binds this to sha256 of the named cause's stored bytes.
+    consumed_artifact_hash: consumedArtifactHash,
   };
   if (dry_run !== true) {
     await withInvariantSessionWriteLock(domain, () => {
@@ -1313,6 +1579,12 @@ module.exports = {
   classifyFoundryViolation,
   classifyHalmosViolation,
   adjudicateInvariantDifferential,
+  // Exposed for the cross-stack differential bind path (cross-stack-differential-verifier.js):
+  // it resolves an invariant-runs row by run_hash, re-derives computeInvariantRunHash, and
+  // asserts the keyed INVARIANT_RUN_MAC_CONTEXT MAC — the SAME read-time integrity boundary
+  // verifyInvariantDifferential uses, so an SC/EVM executed row is bindable as a MAC-verified
+  // executed row the same way an offensive-runs row is (no new key, no new MAC).
+  readInvariantRunRowForVerification,
   verifyInvariantDifferential,
   reverifyInvariantVerifiedRecord,
   readInvariantVerifiedSummary,

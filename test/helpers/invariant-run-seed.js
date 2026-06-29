@@ -47,6 +47,17 @@ function seedInvariantRunRow(domain, {
   // run_hash stays byte-stable) but INSIDE the row_mac. Passing undefined omits the
   // field (a legacy row predating the field); a boolean writes it explicitly.
   containerIsolated = undefined,
+  // The CROSS-STACK causal link: the offensive run_id whose state a VIOLATED arm
+  // executed against. Like container_isolated it is a sibling OUTSIDE computeInvariantRunHash
+  // (run_hash byte-stable) but INSIDE the row_mac. undefined/null omits it (a held
+  // control / non-cross-stack run); a string names the bound cause.
+  causeRunId = undefined,
+  // The CONSUMED-ARTIFACT binding (O-A): sha256 of the bytes a VIOLATED arm actually
+  // consumed (injected as BOB_CONSUMED_ARTIFACT). Like cause_run_id it is a sibling OUTSIDE
+  // computeInvariantRunHash (run_hash byte-stable) but INSIDE the row_mac. The producer
+  // always writes it (null when the arm ran cause-free), so mirror that: undefined/null
+  // writes null (a cause-free control), a 64-hex string binds the consumed bytes' hash.
+  consumedArtifactHash = undefined,
 } = {}) {
   const foundryResult = outcome === "test_failed"
     ? { tests: [{ success: false }] }
@@ -67,13 +78,25 @@ function seedInvariantRunRow(domain, {
     foundry_result: foundryResult,
     dry_run: false,
   };
-  // run_hash is computed BEFORE container_isolated is added, mirroring the producer:
-  // the field is a sibling outside computeInvariantRunHash, so adding it leaves
-  // run_hash byte-stable.
+  // The producer always writes consumed_artifact_hash (null when the arm ran cause-free);
+  // mirror that. A 64-hex string binds the consumed bytes' hash on a violated/decoy arm.
+  // It is bound INTO computeInvariantRunHash (so the cross-stack control and decoy arms,
+  // both HELD with identical foundry_result, are DISTINCT rows), so it must be set BEFORE
+  // run_hash is computed, mirroring the producer (which computes run_hash with the consumed
+  // hash threaded in).
+  row.consumed_artifact_hash = typeof consumedArtifactHash === "string"
+    && /^[0-9a-f]{64}$/i.test(consumedArtifactHash.trim())
+    ? consumedArtifactHash.trim().toLowerCase()
+    : null;
+  // run_hash is computed BEFORE container_isolated/cause_run_id are added (those stay
+  // siblings outside computeInvariantRunHash), so adding them leaves run_hash byte-stable.
   row.run_hash = computeInvariantRunHash(row);
   if (containerIsolated !== undefined) {
     row.container_isolated = containerIsolated === true;
   }
+  // The producer always writes cause_run_id (null when absent); mirror that so a seeded
+  // row is byte-identical to a producer row. A string names the bound cross-stack cause.
+  row.cause_run_id = typeof causeRunId === "string" && causeRunId.trim() ? causeRunId.trim() : null;
   if (sign) {
     ensureHandoffKeypair(domain);
     signRowWithMac(INVARIANT_RUN_MAC_CONTEXT, row, readHandoffSigningPrivateKey(domain));

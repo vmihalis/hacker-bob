@@ -179,7 +179,6 @@ const {
   initSession,
   readSessionState,
   advanceSession,
-  reportWritten,
   setOperatorNote,
   readStateSummary,
 } = require("../mcp/lib/session-state.js");
@@ -481,7 +480,6 @@ const EXPECTED_TOOL_NAMES = [
   "bob_set_operator_note",
   "bob_clear_operator_note",
   "bob_clear_terminal_block",
-  "bounty_report_written",
   "bob_finalize_report",
   "bob_compose_report",
   "bob_amend_report",
@@ -1002,11 +1000,9 @@ function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
-// Test compat shim. Cycle D.1 retired the bounty_transition_phase tool and
-// its handler; tests that drove the legacy phase machine via direct
-// transitionPhase(...) calls now route through bob_advance_session. The
-// legacy phase-to-lifecycle mapping is the same one the registry alias
-// uses (see mcp/lib/tools/advance-session.js arg_adapter). When the target
+// Test compat shim. The lifecycle FSM speaks a six-state enum; tests that
+// drove fixtures forward with the older eight-phase names route those names
+// through bob_advance_session via this local mapping. When the target
 // lifecycle state equals the current one (e.g., legacy AUTH -> EVALUATE both
 // collapse to OPEN_FRONTIER), the helper returns a synthetic success
 // envelope instead of calling advanceSession so existing legacy chains keep
@@ -1505,6 +1501,25 @@ function seedTechniqueAttempt(domain, {
   }));
 }
 
+// Seed a completion-status technique attempt for every attempt_log_required
+// (web/OSS) surface assigned in the wave, mirroring an evaluator that logged its
+// attempt before finalizing. The branch-uniform merge gate requires this for a
+// non-settled handoff to be honored on any acceptance branch; SC surfaces
+// (attempt_log_required=false) and missing/invalid handoffs are unaffected.
+function seedWaveTechniqueAttempts(domain, waveNumber) {
+  const info = loadWaveAssignments(domain, waveNumber);
+  for (const assignment of info.assignments) {
+    if (!assignment.context_budget || assignment.context_budget.attempt_log_required !== true) {
+      continue;
+    }
+    seedTechniqueAttempt(domain, {
+      wave: info.wave,
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+    });
+  }
+}
+
 function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
@@ -1941,19 +1956,18 @@ test("mcp server public exports remain stable", () => {
 });
 
 test("MCP tool registry and dispatch cases stay in sync", async () => {
-  // Cycle P.1: TOOLS publishes only primary names. TOOL_REGISTRY carries both
-  // primaries and bounty_* deprecation aliases for handler routing; aliases
-  // are registry-only entries (alias_of set) that share their primary's
-  // metadata. EXPECTED_TOOL_NAMES enumerates the primary surface.
+  // Every registered tool is its own canonical bob_* primary: TOOLS,
+  // TOOL_REGISTRY, and EXPECTED_TOOL_NAMES are the same surface in the same
+  // order. The v2.1.0 break removed the bounty_* alias layer, so there are no
+  // registry-only alias entries.
   const toolNames = TOOLS.map((tool) => tool.name);
-  const primaryRegistryNames = TOOL_REGISTRY
-    .filter((tool) => !tool.alias_of)
-    .map((tool) => tool.name);
+  const registryNames = TOOL_REGISTRY.map((tool) => tool.name);
   assert.deepEqual(toolNames, EXPECTED_TOOL_NAMES);
-  assert.deepEqual(primaryRegistryNames, EXPECTED_TOOL_NAMES);
+  assert.deepEqual(registryNames, EXPECTED_TOOL_NAMES);
   assert.deepEqual(TOOL_MODULES.map((tool) => defineTool(tool).name), EXPECTED_TOOL_NAMES);
   assert.deepEqual([...toolNames].sort(), [...new Set(toolNames)].sort(), "tool names must be unique");
-  assert.ok(toolNames.every((name) => name.startsWith("bounty_") || name.startsWith("bob_")));
+  assert.ok(toolNames.every((name) => name.startsWith("bob_")), "every tool name is bob_-prefixed");
+  assert.ok(!toolNames.some((name) => name.startsWith("bounty_")), "no bounty_* tool survives the v2.1.0 break");
   assert.ok(!toolNames.includes("bob_auth_manual"));
   assert.ok(!toolNames.includes("bob_read_handoff"));
   assert.equal(
@@ -1961,37 +1975,17 @@ test("MCP tool registry and dispatch cases stay in sync", async () => {
     "^SA-[1-9][0-9]*$",
   );
 
-  // Every primary that declares aliases must have a corresponding registry
-  // entry for each alias. Aliases must point back to a registered primary.
-  // Aliases may be plain strings or descriptor objects with .name; both
-  // shapes are materialized by buildToolRegistry into top-level alias
-  // entries with tool.alias_of pointing at the primary.
-  const allRegistryNames = new Set(TOOL_REGISTRY.map((tool) => tool.name));
+  // Dispatch surfaces exactly the registered primaries; no module declares an
+  // alias array any more.
   for (const tool of TOOL_REGISTRY) {
-    if (tool.alias_of) {
-      assert.ok(allRegistryNames.has(tool.alias_of), `alias ${tool.name} points to unknown primary ${tool.alias_of}`);
-    } else if (Array.isArray(tool.aliases)) {
-      for (const alias of tool.aliases) {
-        const aliasName = typeof alias === "string" ? alias : alias.name;
-        assert.ok(allRegistryNames.has(aliasName), `${tool.name} declares missing alias ${aliasName}`);
-      }
-    }
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "alias_of"), `${tool.name} must not carry alias_of`);
+    assert.ok(!Object.prototype.hasOwnProperty.call(tool, "aliases"), `${tool.name} must not carry an aliases array`);
   }
-
-  // Dispatch resolves both primary and alias names so existing clients that
-  // still call bounty_* can route through the same handler.
-  const dispatchNames = Object.keys(TOOL_HANDLERS);
-  const dispatchPrimaryNames = dispatchNames.filter((name) => {
-    const tool = TOOL_REGISTRY.find((entry) => entry.name === name);
-    return tool && !tool.alias_of;
-  });
-  assert.deepEqual(dispatchPrimaryNames, toolNames);
+  assert.deepEqual(Object.keys(TOOL_HANDLERS), toolNames);
   assert.deepEqual(Object.keys(TOOL_MANIFEST), toolNames);
   for (const tool of TOOL_REGISTRY) {
     assert.equal(TOOL_HANDLERS[tool.name], tool.handler);
-    if (!tool.alias_of) {
-      assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
-    }
+    assert.equal(TOOLS.find((item) => item.name === tool.name).inputSchema, tool.inputSchema);
   }
   await withTempHome(async () => {
     assert.deepEqual(await executeTool("__unknown_tool__", {}), {
@@ -2152,8 +2146,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.role_bundles, ["evidence"]);
   assert.deepEqual(TOOL_MANIFEST.bob_write_evidence_packs.session_artifacts_written, ["evidence-packs.json", "evidence-packs.md", "verification-manifest.json"]);
   assert.deepEqual(TOOL_MANIFEST.bob_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
-  // bob_advance_session replaces the legacy bounty_transition_phase tool;
-  // the registry alias is exercised by the dispatch tests below.
+  // bob_advance_session is the sole lifecycle-FSM tool.
   assert.deepEqual(TOOL_MANIFEST.bob_advance_session.session_artifacts_written, [
     "session-nucleus.json",
     "session-events.jsonl",
@@ -4867,12 +4860,11 @@ test("bob_write_chain_attempt rejects malformed references and invalid outcomes"
   });
 });
 
-// Cycle D.1 deleted the bounty_transition_phase / transitionPhase tests
-// because the legacy phase FSM and its gating helpers no longer exist; the
-// replacement coverage lives in bob_advance_session and lifecycle-gates
-// tests. The bounty_transition_phase tool name survives as a registry alias
-// that arg-adapts onto bob_advance_session; its dispatch and deprecation
-// telemetry are exercised by the registry/dispatch tests.
+// The legacy eight-phase FSM and its standalone tool no longer exist; lifecycle
+// coverage lives in bob_advance_session and the lifecycle-gates tests. The
+// transitionPhase(...) helper above is a local test shim that maps the older
+// phase names onto bob_advance_session so existing fixtures keep driving
+// forward.
 
 test("session lock busy blocks mutating tools and stale locks are recoverable", () => {
   withTempHome(() => {
@@ -5371,6 +5363,7 @@ test("bob_apply_wave_merge returns pending without mutating state when handoffs 
       content: "# A1",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const before = fs.readFileSync(statePath(domain), "utf8");
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5603,6 +5596,7 @@ test("bob_apply_wave_merge adds surface_status: complete surfaces to state.explo
       summary: "Surface tested; one endpoint marked requeue while triaging others, then closed.",
       content: "# A1",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -5674,6 +5668,7 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       "[2026-01-01T00:00:01Z] OUT-OF-SCOPE (http_scan): api.other.example (url: https://api.other.example/admin)",
     ].join("\n"));
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -5710,7 +5705,6 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -6029,6 +6023,7 @@ test("deep wave merge records handoff surface leads but leaves automatic promoti
         score: 78,
       }],
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6153,6 +6148,7 @@ test("bob_apply_wave_merge requeues unfinished coverage without treating tested 
       });
     }
 
+    seedWaveTechniqueAttempts(domain, 1);
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
       wave_number: 1,
@@ -6228,6 +6224,7 @@ test("bob_apply_wave_merge force-merges missing and invalid handoffs and compute
       summary: "A3 partial.",
       content: "# A3",
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const result = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -6308,6 +6305,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     let fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
@@ -6329,6 +6327,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
@@ -6365,6 +6364,7 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6383,6 +6383,7 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
         { kind: "auth_missing", identifier_hint: "attacker", reason: "marker repeated" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
@@ -6411,6 +6412,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker profile required" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6431,6 +6433,7 @@ test("bob_apply_wave_merge DOES promote auth_missing when an unrelated handle wa
         { kind: "auth_missing", identifier_hint: "attacker", reason: "attacker still missing" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].identifier_hint, "attacker");
@@ -6458,6 +6461,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "balance gate requires funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6475,6 +6479,7 @@ test("bob_apply_wave_merge promotes funded_wallet_missing on 2-wave recurrence (
         { kind: "funded_wallet_missing", identifier_hint: "sepolia.funded", reason: "still no funded wallet" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 1);
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "funded_wallet_missing");
@@ -6627,6 +6632,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "no profile" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 1);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
 
     setStatePendingWave(domain, 2);
@@ -6644,6 +6650,7 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
         { kind: "auth_missing", identifier_hint: "attacker", reason: "still none" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 2);
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
 
     const eventsResult = readPipelineEvents(domain);
@@ -6653,33 +6660,6 @@ test("bob_apply_wave_merge emits a surface_terminally_blocked event per (surface
     assert.equal(events[0].kind, "auth_missing");
     assert.equal(events[0].identifier_hint, "attacker");
     assert.equal(events[0].wave_number, 2);
-  });
-});
-
-test("bounty_report_written emits report_written when report.md is present", () => {
-  withTempHome(() => {
-    const domain = "report-event.example.com";
-    const dir = sessionDir(domain);
-    fs.mkdirSync(dir, { recursive: true });
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    fs.writeFileSync(path.join(dir, "report.md"), "# Report\n\nNo findings.\n");
-
-    const result = JSON.parse(reportWritten({ target_domain: domain }));
-    assert.equal(result.report_written, true);
-    assert.ok(result.size_bytes > 0);
-
-    const eventsResult = readPipelineEvents(domain);
-    const events = eventsResult.events.filter((e) => e.type === "report_written");
-    assert.equal(events.length, 1);
-    assert.ok(events[0].counts.report_size_bytes > 0);
-  });
-});
-
-test("bounty_report_written rejects when report.md is absent", () => {
-  withTempHome(() => {
-    const domain = "no-report.example.com";
-    seedSessionState(domain, { phase: "REPORT", evaluation_wave: 1 });
-    assert.throws(() => reportWritten({ target_domain: domain }), /report\.md is not present/);
   });
 });
 
@@ -6771,6 +6751,7 @@ test("bob_clear_terminal_block lets a re-blocked surface start fresh recurrence 
         { kind: "auth_missing", identifier_hint: "attacker", reason: "blocker reappeared" },
       ],
     });
+    seedWaveTechniqueAttempts(domain, 3);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 3, force_merge: false }));
     // After the clear, history is RETAINED but the loop detector ignores
     // entries from waves <= cleared_at_wave (which was 2). Wave 3's
@@ -7331,7 +7312,7 @@ test("bob_write_wave_handoff rejects smart_contract complete without findings or
       surface_status: "complete",
       summary: "Audit confirms fixed; nothing to test.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7362,6 +7343,76 @@ test("bob_write_wave_handoff accepts smart_contract complete with bypass_attempt
     assert.equal(payload.bypass_attempts.length, 1);
     assert.equal(payload.bypass_attempts[0].condition, "admin_eoa_compromise");
     assert.equal(payload.bypass_attempts[0].outcome, "no_finding");
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a thin bypass_attempt", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // Clears the write existence floor (condition >= 4, summary >= 30) but not
+    // the substance floor (summary < 60): a thin attestation. Rejected at WRITE,
+    // so the artifact never persists to feed a finalize-retry or requeue loop.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Audit says fixed; admin-gated.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "admin_role_gate", attempt_summary: "Role-gated function; we did not attempt a bypass.", outcome: "no_finding" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff rejects smart_contract complete on a bare partial_evidence claim", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence OUTCOME LABEL is not substance without a finding_id or a
+    // documented mechanism. The cheapest laundering path, refused at write.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the oracle path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle", attempt_summary: "Partial evidence captured but inconclusive.", outcome: "partial_evidence" },
+      ],
+    }), /cannot be marked 'complete' without substantive evidence/);
+  });
+});
+
+test("bob_write_wave_handoff accepts smart_contract partial_evidence that documents the mechanism", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // A partial_evidence attempt clearing the substance floor (condition >= 8,
+    // mechanism >= 60) is admissible.
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Partial lead on the price oracle staleness path.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "oracle_staleness", attempt_summary: "Forge fork test pushes a stale Chainlink round; the consumer accepts it but the downstream guard reverts before value moves. Inconclusive.", outcome: "partial_evidence" },
+      ],
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.bypass_attempts[0].outcome, "partial_evidence");
   });
 });
 
@@ -7462,7 +7513,7 @@ test("smart_contract gate ignores agent-mutated attack_surface.json (assignment 
       surface_status: "complete",
       summary: "Tampered with attack_surface.json; expected to bypass gate.",
       content: "# Handoff\n",
-    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+    }), /smart_contract surfaces cannot be marked 'complete' without substantive evidence of attempted invariant breaks/);
   });
 });
 
@@ -7503,12 +7554,14 @@ test("merge re-derives smart_contract surface_type even when stored handoff cach
   });
 });
 
-test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_attempts are substantive", () => {
+test("merge admits a substantive smart_contract complete in the dual-write fallback regime", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
     seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    // No finalize call -> the AgentRun row stays `assigned` -> merge runs in the
+    // file-presence fallback regime. Substantive attempts clear the depth bar.
     writeWaveHandoff({
       target_domain: domain,
       wave: "w1",
@@ -7523,34 +7576,8 @@ test("merge does not emit sc_complete_with_zero_evidence when no_finding bypass_
       ],
     });
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.deepEqual(merged.suspicion_flags, []);
-  });
-});
-
-test("merge emits sc_complete_with_zero_evidence suspicion flag when bypass_attempts are low-effort attestations", () => {
-  withTempHome(() => {
-    const domain = "example.com";
-    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
-    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1 });
-    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
-    writeWaveHandoff({
-      target_domain: domain,
-      wave: "w1",
-      agent: "a1",
-      surface_id: "surface-a",
-      surface_status: "complete",
-      summary: "Audit confirms fixed.",
-      content: "# Handoff\n",
-      bypass_attempts: [
-        // Clears the schema floors (condition >= 4, attempt_summary >= 30) but
-        // cites no real condition and documents no exercised mechanism.
-        { condition: "gate", attempt_summary: "role-gated so we did not test it.", outcome: "no_finding" },
-      ],
-    });
-    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
-    assert.equal(merged.suspicion_flags.length, 1);
-    assert.equal(merged.suspicion_flags[0].flag, "sc_complete_with_zero_evidence");
-    assert.equal(merged.suspicion_flags[0].surface_id, "surface-a");
+    assert.ok(merged.completed_surface_ids.includes("surface-a"));
+    assert.ok(!merged.missing_surface_ids.includes("surface-a"));
   });
 });
 
@@ -7708,6 +7735,7 @@ test("tokenized wave handoffs require the correct token and report verified prov
     assert.equal(handoffs.data.handoffs[0].summary, "Tested the assigned surface.");
     assert.deepEqual(handoffs.data.handoffs[0].chain_notes, ["No chainable primitive found."]);
 
+    seedWaveTechniqueAttempts(domain, 1);
     const merged = await executeTool("bob_apply_wave_merge", {
       target_domain: domain,
       wave_number: 1,
@@ -9029,6 +9057,7 @@ test("bob_wave_handoff_status reports complete when all assigned handoffs exist"
       content: "# A2",
     });
 
+    seedWaveTechniqueAttempts(domain, 1);
     const status = JSON.parse(waveHandoffStatus({ target_domain: domain, wave_number: 1 }));
 
     assert.deepEqual(status, {
@@ -9083,6 +9112,7 @@ test("markdown-only handoffs do not satisfy readiness or advance merges", () => 
       summary: "Structured handoff summary.",
       content: "# structured handoff",
     });
+    seedWaveTechniqueAttempts(domain, 1);
 
     const merged = JSON.parse(applyWaveMerge({
       target_domain: domain,
@@ -9176,6 +9206,7 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       waf_blocked_endpoints: ["/admin", " /reports "],
       lead_surface_ids: ["surface-c", "surface-d"],
     });
+    seedWaveTechniqueAttempts(domain, 2);
 
     const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 2 }));
 
@@ -9200,7 +9231,6 @@ test("bob_merge_wave_handoffs merges valid handoffs and dedupes optional arrays"
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: ["a1", "a2"],
       },
@@ -9252,7 +9282,6 @@ test("bob_merge_wave_handoffs requeues missing and invalid assigned handoffs whi
       bypass_attempts_grouped: [],
       // Advisory unconsumed-pivot surfacing: empty on a normal (non-nested) run.
       unconsumed_pivots: [],
-      suspicion_flags: [],
       provenance: {
         verified_agents: [],
       },

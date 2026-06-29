@@ -246,6 +246,31 @@ function assertRowMacOrLegacy(context, row, verifier, { macField = DEFAULT_MAC_F
   return { legacy: false };
 }
 
+// assertRowMac — the STRICT twin of assertRowMacOrLegacy. An UNSIGNED row (no MAC
+// envelope) is REJECTED here, never accepted-with-warning. This is the gate the
+// cross-stack bind sites use: a row feeding a NON-FORGEABLE verified_pass must carry
+// a REAL signature, because invariant-runs.jsonl was for a window only best-effort
+// hook-blocked (not audit-graded), so a same-uid agent could append an unsigned row
+// that assertRowMacOrLegacy would wave through as {legacy:true}. assertRowMacOrLegacy
+// keeps its accept-with-warning compat at the general FV READ sites; the cross-stack
+// bind demands this strict variant on top of the content-hash re-derivation. A
+// present-but-invalid MAC throws exactly as the lenient twin does.
+function assertRowMac(context, row, verifier, { macField = DEFAULT_MAC_FIELD } = {}) {
+  if (row == null || typeof row !== "object" || Array.isArray(row) || row[macField] == null) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `${macField} is required: an unsigned row cannot back a cross-stack verified_pass (sign the row under ${context})`,
+    );
+  }
+  if (!verifyRowWithMac(context, row, verifier, { macField })) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `${macField} present but does not verify under ${context} (forged/tampered/cross-context row)`,
+    );
+  }
+  return { legacy: false };
+}
+
 // --- compat facades (RETAINED): the 27 test files and any in-flight producer that
 // pass a raw symmetric Buffer keep working. sign delegates to the v1 hmac path so it
 // still mints a v1-verifiable row; verify delegates to verifyRowWithMac with an hmac
@@ -277,6 +302,7 @@ module.exports = {
   signRowWithMac,
   verifyRowWithMac,
   assertRowMacOrLegacy,
+  assertRowMac,
   computeOffensiveRowMacDigest,
   signOffensiveRunRow,
   verifyOffensiveRunRowMac,

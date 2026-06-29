@@ -169,6 +169,10 @@ function assertSignedBlockedControl(domain, result) {
   const row = rows[0];
   assert.equal(row.offensive_outcome, "blocked_by_defense");
   assert.equal(row.surface_id, SURFACE_ID, "the control binds the finding surface");
+  // The negative-control leg captures NO consumable: it must be artifact-free
+  // (consumed_artifact_hash null) so a cross-stack EVM control arm bound to it runs
+  // cause-free. Only the POSITIVE (exploited_safely) leg captures the cross-tenant body.
+  assert.equal(row.consumed_artifact_hash, null, "the blocked control row captures no consumable (artifact-free)");
   assert.equal(row.exit_code, 0, "a server-denied response is a completed execution");
   assert.equal(row.dry_run, false);
   assert.equal(row.timed_out, false);

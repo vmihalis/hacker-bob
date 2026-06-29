@@ -40,7 +40,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_evm_call",
-  aliases: ["bounty_evm_call"],
   description: "Read-only EVM eth_call against a contract through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Used by EVM evaluators to read on-chain state (role membership, configuration, oracle prices) before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",

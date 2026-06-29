@@ -52,7 +52,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_sui_fetch_package",
-  aliases: ["bounty_sui_fetch_package"],
   description: "Read-only Sui sui_getNormalizedMoveModulesByPackage through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; localnet RPC has no default endpoint and endpoint_used is redacted. Returns a per-module ABI summary (friends, structs, exposed functions) for the package, plus the latest checkpoint sequence the read is anchored against. Used by Sui evaluators to enumerate entry functions, capability types, and friend relationships before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",

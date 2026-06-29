@@ -120,7 +120,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_evm_role_table",
-  aliases: ["bounty_evm_role_table"],
   description: "Bulk role-membership check for an EVM contract through the DNS-pinned direct public HTTPS RPC policy. Calls hasRole(bytes32,address) for each (role_hash, account) pair and optionally wards(address) for Maker/Sky-style auth. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default. Bounded fan-out (≤25 accounts × ≤25 role_hashes) to keep RPC budget predictable. Used to map the trust boundary before declaring a role-gated function out of scope.",
   inputSchema: {
     "type": "object",

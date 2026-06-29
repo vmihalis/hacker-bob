@@ -23,6 +23,7 @@ const {
 const recordCandidateClaimTool = require("../mcp/lib/tools/record-candidate-claim.js");
 const {
   sessionDir,
+  techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
 const {
@@ -75,6 +76,27 @@ function writeAssignments(domain, waveNumber, assignments) {
     assignments: persistedAssignments,
   }, null, 2)}\n`);
   ensureHandoffSigningKey(domain);
+}
+
+// Web/OSS surfaces carry attempt_log_required, so the merge gate requires a
+// completion-status technique attempt for the surface. These fixtures write
+// assignments directly (no attack_surface.json to route a real
+// bob_log_technique_attempt through), so seed the technique-attempts.jsonl
+// record the merge-side check reads. It keys on target_domain + surface_id,
+// independent of wave/agent.
+function seedTechniqueAttempt(domain, surfaceId) {
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  const record = {
+    version: 1,
+    ts: new Date().toISOString(),
+    target_domain: domain,
+    surface_id: surfaceId,
+    pack_id: "generic-rest-api",
+    status: "attempted",
+    outcome: "no_finding",
+    evidence: `probed authz on ${surfaceId}; no issue observed`,
+  };
+  fs.appendFileSync(techniqueAttemptsJsonlPath(domain), `${JSON.stringify(record)}\n`);
 }
 
 function writeHandoff(domain, wave, agent, surfaceId, fields = {}) {
@@ -139,6 +161,8 @@ test("mergeWaveHandoffs persists a snapshot containing partial_surface_ids", () 
     writeHandoff(domain, "w1", "a2", "surface-partial-1", {
       surface_status: "partial",
     });
+    seedTechniqueAttempt(domain, "surface-complete-1");
+    seedTechniqueAttempt(domain, "surface-partial-1");
 
     const result = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
     assert.deepEqual(result.partial_surface_ids, ["surface-partial-1"]);
@@ -248,6 +272,10 @@ test("buildWaveReadiness accepts a handoff whose bypass_attempts cites a recorde
         finding_id: recorded.finding_id,
       }],
     });
+    // A recorded finding does not satisfy the merge-side technique-attempt
+    // requirement (it reads technique-attempts.jsonl, not findings); seed the
+    // attempt so this finding-citing handoff is accepted on its own merits.
+    seedTechniqueAttempt(domain, "surface-finder-1");
 
     const readiness = buildWaveReadiness(loadWaveArtifacts(domain, 1), { domain });
     assert.deepEqual(readiness.invalid_agents, [], "finding-citing handoff must not be marked invalid");

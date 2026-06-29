@@ -47,7 +47,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_aptos_fetch_resource",
-  aliases: ["bounty_aptos_fetch_resource"],
   description: "Read-only Aptos REST GET /accounts/{address}/resource/{resource_type} through the DNS-pinned direct public HTTPS REST fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Returns the deserialized Move resource value plus the ledger_version the read was anchored at. Used by Aptos evaluators to inspect on-chain capability tokens, ownership records, treasury balances, and module config before constructing impact hypotheses.",
   inputSchema: {
     "type": "object",

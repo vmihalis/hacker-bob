@@ -215,7 +215,6 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   bob_resolve_body: "initialized_session_read",
-  bounty_report_written: "initialized_session_mutation",
   bob_route_surfaces: "initialized_session_mutation",
   bob_run_auth_differential: "scoped_http_network",
   bob_run_doc_delta: "scoped_http_network",
@@ -331,32 +330,6 @@ function classForTool(toolName) {
   if (Object.prototype.hasOwnProperty.call(EXPLICIT_AUTHORITY_CLASS_BY_TOOL, toolName)) {
     return EXPLICIT_AUTHORITY_CLASS_BY_TOOL[toolName];
   }
-  // Cycle P.1: deprecation aliases inherit their primary's authority class.
-  // The class map is keyed on the canonical bob_* name only; bounty_* aliases
-  // resolve through the registry's primaryToolName indirection so we don't
-  // double-list every entry.
-  try {
-    // Lazy-require to avoid a load-order cycle (tool-registry imports
-    // capability-packs, which on some test paths transitively loads this
-    // module before the registry has finished initializing).
-    const registry = require("./tool-registry.js");
-    if (!registry || typeof registry.primaryToolName !== "function") {
-      // Registry module is mid-construction and has not yet attached the
-      // primaryToolName export. Throw so the surrounding catch falls through
-      // to the null return; dispatch will surface a STATE_CONFLICT instead
-      // of crashing with an opaque TypeError.
-      throw new Error(
-        "tool-registry.primaryToolName unavailable during load-order cycle",
-      );
-    }
-    const primary = registry.primaryToolName(toolName);
-    if (primary && primary !== toolName) {
-      return EXPLICIT_AUTHORITY_CLASS_BY_TOOL[primary] || null;
-    }
-  } catch {
-    // If the registry is mid-construction, fall through and report missing
-    // class; the dispatch path will surface the resulting STATE_CONFLICT.
-  }
   return null;
 }
 
@@ -450,16 +423,7 @@ function baseRuleForTool(tool, args) {
     return null;
   }
   if (defaultClass === "mode_dependent_session") {
-    // Resolve aliases to their primary so mode rules keyed on canonical names
-    // still apply when a deprecated bounty_* name is invoked.
-    let resolvedName = tool.name;
-    try {
-      const { primaryToolName } = require("./tool-registry.js");
-      resolvedName = primaryToolName(tool.name) || tool.name;
-    } catch {
-      // Fall back to alias name if registry not yet initialized.
-    }
-    return modeRule(resolvedName, args);
+    return modeRule(tool.name, args);
   }
   if (defaultClass === "bootstrap_session") {
     return {

@@ -6,6 +6,8 @@ const path = require("path");
 const {
   installProject,
   printInstallSummary,
+  printPurgeLegacySessionRootReport,
+  purgeLegacySessionRoot,
 } = require("../scripts/install.js");
 const {
   doctorProject,
@@ -19,8 +21,8 @@ const update = require("../mcp/lib/update-check.js");
 
 function usageText() {
   return `Usage:
-  hacker-bob install <project-dir> [--adapter claude|codex|generic-mcp|kimi|all]
-  hacker-bob update <project-dir> [--adapter claude|codex|generic-mcp|kimi|all]
+  hacker-bob install <project-dir> [--adapter claude|codex|generic-mcp|kimi|all] [--purge-legacy-session-root [--include-legacy-telemetry] [--yes]]
+  hacker-bob update <project-dir> [--adapter claude|codex|generic-mcp|kimi|all] [--purge-legacy-session-root [--include-legacy-telemetry] [--yes]]
   hacker-bob check-update <project-dir> [--json]
   hacker-bob doctor <project-dir> [--adapter claude|codex|generic-mcp|kimi|all] [--json]
   hacker-bob uninstall <project-dir> [--adapter claude|codex|generic-mcp|kimi|all] [--dry-run] [--yes] [--json]
@@ -34,7 +36,10 @@ The selected adapter and reason are logged to stderr; pass --adapter to override
 Use --adapter codex, --adapter generic-mcp, --adapter kimi, or --adapter all for other host surfaces.
 Global npm install only adds this CLI to PATH; it does not install Bob into every project.
 Uninstall defaults to dry-run; pass --yes to remove Bob-managed files and config entries.
-Dashboard is a local read-only view over ~/bounty-agent-sessions; use --repo-only for OSS mode.`;
+--purge-legacy-session-root removes a leftover pre-v2.0 ~/bounty-agent-sessions root after the
+install/update completes; it is dry-run unless --yes is passed, never touches the canonical
+~/hacker-bob-sessions, and only removes ~/bounty-agent-telemetry when --include-legacy-telemetry is also passed.
+Dashboard is a local read-only view over ~/hacker-bob-sessions; use --repo-only for OSS mode.`;
 }
 
 function usage(stream = process.stderr) {
@@ -94,6 +99,15 @@ async function main(argv) {
       } else {
         console.log("Update complete. Restart the selected host adapter before continuing.");
       }
+    }
+    if (parsed.flags.has("--purge-legacy-session-root")) {
+      console.log("");
+      const report = purgeLegacySessionRoot({
+        dryRun: !parsed.flags.has("--yes"),
+        confirmed: parsed.flags.has("--yes"),
+        includeTelemetry: parsed.flags.has("--include-legacy-telemetry"),
+      });
+      printPurgeLegacySessionRootReport(report);
     }
     return;
   }

@@ -3,8 +3,9 @@
 // T4 / Y-P13 — in-process audit-graded predicate + whitelist closure.
 //
 // Scope (honest): this asserts the IN-PROCESS predicate's behavior, the
-// whitelist's FLAG↔WHITELIST closure, alias normalization, and the GROUND-TRUTH
-// writer closure. It does NOT claim to fence the harness Write tool — that tool
+// whitelist's FLAG↔WHITELIST closure, writer-name normalization, and the
+// GROUND-TRUTH writer closure. It does NOT claim to fence the harness Write
+// tool — that tool
 // is intercepted only by the PreToolUse hook (.claude/hooks/session-write-guard.sh),
 // which T3 already renders from paths.js WRITE_GUARD_TABLES (hook↔paths
 // agreement is enforced by `npm run check:write-guard-tables`). The in-process
@@ -82,7 +83,7 @@ test("non-whitelisted MCP tool is treated like a null caller (fail-closed)", () 
   );
 });
 
-// ---- CLASS 2: every whitelisted composer is allowed, by canonical AND alias.
+// ---- CLASS 2: every whitelisted composer is allowed under its canonical name.
 
 test("all 10 whitelisted composers may write report.md (allowed identity)", () => {
   const target = path.join(sessionDir(DOMAIN), "report.md");
@@ -95,29 +96,23 @@ test("all 10 whitelisted composers may write report.md (allowed identity)", () =
   }
 });
 
-test("a caller arriving under its bounty_* alias is normalized and allowed", () => {
-  const target = path.join(sessionDir(DOMAIN), "report.md");
-  for (const [alias, canonical] of Object.entries(AUDIT_GRADED_WRITER_ALIASES)) {
-    assert.equal(canonicalWriterName(alias), canonical);
-    assert.equal(
-      assertAgentWriteAllowed(target, DOMAIN, alias),
-      path.resolve(target),
-      `alias ${alias} must resolve to ${canonical} and be allowed`,
-    );
+test("writer-name normalization is the identity now that the alias layer is removed", () => {
+  // The v2.1.0 break removed the bounty_* alias layer, so the writer-name map
+  // is empty and canonicalWriterName resolves every name to itself.
+  assert.deepEqual(AUDIT_GRADED_WRITER_ALIASES, {});
+  for (const toolName of AUDIT_GRADED_WRITER_TOOLS) {
+    assert.equal(canonicalWriterName(toolName), toolName);
   }
 });
 
-test("alias map matches the writers' declared aliases (no alias drift)", () => {
-  // Independently re-derive aliases from the writer module specs and assert
-  // every declared bounty_* alias of a whitelisted writer is in the map.
+test("no whitelisted writer module declares a tool alias", () => {
+  // The alias layer is gone: no writer module may carry an aliases array.
   for (const mod of LOADED) {
     if (!AUDIT_GRADED_WRITER_TOOLS.includes(mod.name)) continue;
-    for (const alias of mod.aliases || []) {
-      assert.equal(
-        AUDIT_GRADED_WRITER_ALIASES[alias], mod.name,
-        `${alias} (declared by ${mod.name}) must be in AUDIT_GRADED_WRITER_ALIASES`,
-      );
-    }
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(mod, "aliases"),
+      `${mod.name} must not declare a tool aliases array`,
+    );
   }
 });
 

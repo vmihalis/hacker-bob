@@ -16,6 +16,7 @@ const {
 const {
   liveDeadEndsJsonlPath,
   sessionDir,
+  techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
 const {
@@ -81,6 +82,27 @@ function writeAssignments(
   if (ensureSigningKey) {
     ensureHandoffSigningKey(domain);
   }
+}
+
+// Web/OSS surfaces carry attempt_log_required, so the merge gate requires a
+// completion-status technique attempt for the surface. These fixtures write
+// assignments directly (no attack_surface.json to route through
+// bob_log_technique_attempt), so seed the technique-attempts.jsonl record the
+// merge-side check reads. It keys on target_domain + surface_id, independent of
+// wave/agent, so an omitted wave/agent matches any run on the surface.
+function seedTechniqueAttempt(domain, surfaceId) {
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  const record = {
+    version: 1,
+    ts: new Date().toISOString(),
+    target_domain: domain,
+    surface_id: surfaceId,
+    pack_id: "generic-rest-api",
+    status: "attempted",
+    outcome: "no_finding",
+    evidence: `probed authz on ${surfaceId}; no issue observed`,
+  };
+  fs.appendFileSync(techniqueAttemptsJsonlPath(domain), `${JSON.stringify(record)}\n`);
 }
 
 function assignmentForHandoff(domain, waveNumber, agent) {
@@ -189,6 +211,7 @@ test("wave handoff store merge reads live dead-end logs through the shared path 
     const domain = "example.com";
     writeAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-a" }]);
     writeHandoff(domain, "w2", "a1", "surface-a", { dead_ends: ["/handoff"] });
+    seedTechniqueAttempt(domain, "surface-a");
     writeFileAtomic(liveDeadEndsJsonlPath(domain, "w2", "a1"), [
       JSON.stringify({ surface_id: "surface-a", dead_ends: ["/live", "/handoff"], waf_blocked_endpoints: ["/waf"] }),
       "{bad json",

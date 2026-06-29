@@ -1370,6 +1370,19 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     identityTag: "B-as-A",
     stdoutContent: p2BodyForCapture,
     stderrContent: diagnosticBundle,
+    // CROSS-STACK CONSUMABLE — the cross-tenant identity/authorization payload A
+    // obtained by reading B's PRIVATE object. P2 is the record an authenticated
+    // B-scoped principal owns, obtained by A across the tenant boundary; by this
+    // point it has passed every mint gate (B's canary witness, synthetic+canary-only
+    // PII/secret tripwires, B-scope-private, anon/third-tenant denied), so it is the
+    // genuine "credential/token/identity an on-chain contract TRUSTS" archetype. The
+    // SAME bytes are both the human-facing stdout proof AND the on-chain-consumable
+    // artifact: buildAndSignOffensiveRow writes them to the MCP-owned <run_id>.consumed
+    // leaf and binds the re-hashed consumed_artifact_hash as a MAC-covered sibling.
+    // The bytes are the tool's ACTUAL probe output (canonical-normalized in-process,
+    // never agent-supplied), so the binding is non-forgeable. The signedBlocked control
+    // leg leaves this null (artifact-free) so its EVM control arm runs cause-free.
+    consumedArtifactContent: p2BodyForCapture,
     relationBooleans,
     // A soft-gated fire (any confidence signal) caps the signed row at LOW: the unproven
     // cross-tenant attribution must be claim-visible, and severity is the only field the
@@ -1395,6 +1408,13 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     stderr_hash: row.stderr_hash,
     exit_code: row.exit_code,
     demonstrated_severity: row.demonstrated_severity,
+    // The MAC-covered cross-stack consumable-artifact binding (sha256 of the captured
+    // cross-tenant body, re-hashed from the on-disk .consumed leaf). Surfaced for
+    // evaluator visibility/corroboration ONLY — the agent copies run_id (not this hash)
+    // into the violated invariant arm's cause_run_id, and the invariant runner re-fetches
+    // and re-hashes the .consumed leaf itself, so the hash is never agent-supplied. Hash
+    // only (the raw bytes never leave the tool), matching the existing masked-output discipline.
+    consumed_artifact_hash: row.consumed_artifact_hash,
     // Non-blocking provability signals (#13/#14): EMPTY on a fully-proven fire, populated
     // when tenant attribution is weaker. Hash-bound via stderr_hash (diagnosticBundle) and
     // surfaced here so the evaluator/grader can corroborate or discount the attribution.

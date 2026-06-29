@@ -243,6 +243,16 @@ function truncateString(value, maxChars) {
   return value.slice(0, maxChars) + `…[truncated, total ${value.length} chars]`;
 }
 
+// Anchor a runner-generated match identifier so forge matches it EXACTLY (full string),
+// not as a substring. Used ONLY for the internally-generated invariant path (anchorMatch),
+// so a shadow contract/test whose name merely CONTAINS the generated name is not selected.
+// The identifiers are derived from [A-Za-z0-9_]-only template names so they are regex-
+// literal-safe; escape defensively before anchoring.
+function anchorMatchExpr(value) {
+  const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^${escaped}$`;
+}
+
 async function runFoundryTest({
   workdir,
   matchTest,
@@ -253,8 +263,28 @@ async function runFoundryTest({
   extraArgs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
   targetDomain = null,
+  consumedArtifact = null,
+  // INTERNAL invariant path (HIGH-1): the EXACT generated test file forge must run, and a
+  // flag to ANCHOR matchTest/matchContract to the full identifier. matchPath pins forge's
+  // --match-path to this one file so a same-named shadow .t.sol elsewhere is never selected;
+  // anchorMatch wraps matchTest/matchContract in ^...$. The standalone bob_foundry_run tool
+  // leaves both unset (its caller-supplied match strings stay unanchored, no --match-path),
+  // so single-surface use is unregressed. matchPath is a runner-controlled parameter, never
+  // routed through the extra_args allowlist (which still rejects an agent --match-path).
+  matchPath = null,
+  anchorMatch = false,
 } = {}) {
   const resolvedWorkdir = assertHarnessPath(workdir);
+  // The cross-stack consumable artifact, delivered to the corpus-generated test as
+  // the BOB_CONSUMED_ARTIFACT subprocess env var. The bytes are hex-encoded so a forge
+  // env string round-trips arbitrary binary unchanged (vm.envOr returns the empty
+  // default when absent, so old templates and the control arm — empty env — are
+  // unaffected). Only ever populated on a violated arm with a verified cause; the
+  // egress policy passes it through (SC_CONTROLLED_SUBPROCESS_ENV_KEYS) but would never
+  // confuse it with an RPC/secret var.
+  const consumedArtifactEnv = Buffer.isBuffer(consumedArtifact) && consumedArtifact.length > 0
+    ? { BOB_CONSUMED_ARTIFACT: consumedArtifact.toString("hex") }
+    : {};
   if (!matchTest && !matchContract) {
     throw new Error("at least one of match_test or match_contract is required (forge test must be filtered)");
   }
@@ -277,8 +307,18 @@ async function runFoundryTest({
   if (matchContract && typeof matchContract !== "string") throw new Error("match_contract must be a string");
 
   const baseArgs = ["test", "--json"];
-  if (matchTest) baseArgs.push("--match-test", matchTest);
-  if (matchContract) baseArgs.push("--match-contract", matchContract);
+  // INVARIANT path: pin forge to the EXACT generated file so a shadow .t.sol whose contract
+  // name merely CONTAINS the generated name is never compiled-as-target. matchPath is the
+  // absolute generated file under the resolved harness root; forge's --match-path is a glob
+  // over project paths, and the absolute path that lives under the project root selects
+  // exactly that one file unambiguously.
+  if (typeof matchPath === "string" && matchPath.trim()) {
+    baseArgs.push("--match-path", matchPath.trim());
+  }
+  const effectiveMatchTest = anchorMatch && matchTest ? anchorMatchExpr(matchTest) : matchTest;
+  const effectiveMatchContract = anchorMatch && matchContract ? anchorMatchExpr(matchContract) : matchContract;
+  if (effectiveMatchTest) baseArgs.push("--match-test", effectiveMatchTest);
+  if (effectiveMatchContract) baseArgs.push("--match-contract", effectiveMatchContract);
   if (forkBlock != null) baseArgs.push("--fork-block-number", String(forkBlock));
   // Allowlist extra_args. Reject anything not in the allowlist (no --ffi, no
   // --rpc-url, no --match-path, no -- pass-through). A flag value (e.g. "8" for
@@ -318,14 +358,14 @@ async function runFoundryTest({
     }
     // No chain_id supplied — run a local-only test (covers chain-independent
     // fixtures and pure-fuzz harnesses).
-    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
+    const result = await spawnForge(baseArgs, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: consumedArtifactEnv, targetDomain });
     return finalizeRun({ result, args: baseArgs, forkAttempts: [], forkBlock, fork_used: null, rpcPolicyRejections });
   }
 
   let lastResult = null;
   for (const url of candidateForkUrls) {
     const args = [...baseArgs, "--fork-url", url];
-    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: {}, targetDomain });
+    const result = await spawnForge(args, { workdir: resolvedWorkdir, timeoutMs: cappedTimeout, env: consumedArtifactEnv, targetDomain });
     lastResult = result;
     forkAttempts.push({
       endpoint: redactRpcEndpoint(url),

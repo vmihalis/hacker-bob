@@ -164,7 +164,6 @@ async function handler(args) {
 
 module.exports = Object.freeze({
   name: "bob_svm_fetch_program",
-  aliases: ["bounty_svm_fetch_program"],
   description: "Fetch a Solana upgradeable program's metadata through the DNS-pinned direct public HTTPS RPC fallback ladder. DNS-private/private endpoints and egress_profile proxy routing are unsupported by default; endpoint_used is redacted. Returns deployed slot, upgrade authority (or frozen), and the BPFLoaderUpgradeable account_kind. Useful to confirm program upgrade authority and immutability before constructing impact hypotheses involving program upgrades, frozen invariants, or governance-controlled deploys.",
   inputSchema: {
     "type": "object",

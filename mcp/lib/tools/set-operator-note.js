@@ -4,7 +4,6 @@ const { setOperatorNote } = require("../session-state.js");
 
 module.exports = Object.freeze({
   name: "bob_set_operator_note",
-  aliases: ["bounty_set_operator_note"],
   description:
     "Set a compact non-secret operator note on session state. Use only for bounded human instructions needed across resume turns; rejects secret-looking values.",
   inputSchema: {

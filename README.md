@@ -377,7 +377,7 @@ Detailed guides:
 
 ## Data And Security Model
 
-Bob stores local run state, telemetry, and evidence under `~/hacker-bob-sessions`. Legacy `~/bounty-agent-sessions/` is migrated to `~/hacker-bob-sessions/` on first use; preserved until v2.1.0 (`--purge-legacy-session-root`). Bob copies — never moves — any legacy domain directories into the canonical root on first session access, so the legacy directory remains readable as a fallback for sessions created before the v2.0 rename. Treat both directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
+Bob stores local run state, telemetry, and evidence under `~/hacker-bob-sessions`, the canonical session root that all reads and writes resolve to. The pre-v2.0 `~/bounty-agent-sessions/` root is no longer auto-resolved or auto-copied; remove a leftover legacy root with `hacker-bob install --purge-legacy-session-root` (dry-run by default, `--yes` to delete). Treat both directories as sensitive. They can contain target names, request metadata, notes, credentials metadata, and report evidence from authorized testing.
 
 During a evaluate, Bob may make outbound HTTP requests, run local surface-discovery tools, import HTTP or static artifacts, and use host-side reasoning over the collected context. Optional third-party services and dependencies, such as browser automation dependencies, CAPTCHA solving, public-intel sources, or external surface-discovery tools, are used only when you configure the relevant dependencies or credentials.
 
