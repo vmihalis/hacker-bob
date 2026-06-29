@@ -381,6 +381,77 @@ test("cross-stack target cross-check uses the TRUSTED ladder, NOT agent-supplied
   }
 });
 
+// SEALED ROUTING — the cross-stack template executes the RUNNER-OWNED sealed Foundry project, not
+// the agent harness, so no agent Solidity / forge-std / setUp is on the execution path (closes the
+// cheatcode forgery). The runner stamps the MAC-covered sealed_harness:true that the verifier requires.
+test("SEALED ROUTING: a cross-stack invariant run executes the runner-owned SEALED project (NOT the agent harness) and stamps sealed_harness:true", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness(); // the agent harness — MUST be ignored for a sealed cross-stack run
+  let foundryCall = null;
+  let sealedSrc = null;
+  const stubFoundry = async (args) => {
+    foundryCall = args;
+    // Capture the source DURING the run (the runner removes the sealed temp project afterward).
+    try { sealedSrc = fs.readFileSync(args.match_path, "utf8"); } catch {}
+    return { tests: [{ name: "t", success: false }] };
+  };
+  try {
+    await runInvariantForFinding({
+      target_domain: domain,
+      finding: { finding_id: "F-1", finding_hash: "h1", title: "web auth replay on-chain", vulnerability_class: "signature_validation" },
+      template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+      slot_values: { target_address: `0x${"ab".repeat(20)}`, gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+      harness_path: harness,
+      foundry_run: stubFoundry,
+      run_id: "inv-sealed-1",
+      chain_id: 1,
+      fork_block: 21000000,
+      fork_urls: ["https://attacker-controlled.example/rpc"], // drives the fork; the SOURCE is runner-owned
+    });
+    assert.ok(foundryCall, "foundry_run was invoked");
+    assert.notEqual(foundryCall.harness_path, harness, "the agent harness_path is NOT used for a sealed run");
+    assert.match(foundryCall.harness_path, /\.bob-sealed-xstack-/, "forge ran the runner-owned sealed project");
+    assert.ok(sealedSrc, "the sealed test file existed during the run");
+    assert.ok(!/import\s+["']forge-std/.test(sealedSrc), "no forge-std on the build path");
+    assert.match(sealedSrc, /interface IBobVm/, "inlined Vm (self-contained)");
+    assert.match(sealedSrc, /target\.execute\(7, capturedAuth\)/, "gated call built from the DATA slots");
+    const corpus = readInvariantRuns({ target_domain: domain });
+    assert.equal(corpus.runs.length, 1);
+    assert.equal(corpus.runs[0].sealed_harness, true, "the row carries the MAC-covered sealed_harness marker");
+    // The runner removed the sealed temp project after the run (single-use).
+    assert.ok(!fs.existsSync(path.dirname(path.dirname(foundryCall.match_path))), "sealed project cleaned up");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
+test("SEALED ROUTING: a cross-stack run with a malformed DATA slot is REFUSED (no Solidity injection, never runs)", async () => {
+  const domain = uniqueDomain();
+  const harness = makeHarness();
+  let ran = false;
+  try {
+    await assert.rejects(
+      () => runInvariantForFinding({
+        target_domain: domain,
+        finding: { finding_id: "F-1", finding_hash: "h1", title: "x", vulnerability_class: "signature_validation" },
+        template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
+        // target_address is a Solidity expression, not a 20-byte address — the generator refuses it.
+        slot_values: { target_address: "address(this)", gated_function: "execute", victim_type: "uint256", victim_value: "7" },
+        harness_path: harness,
+        foundry_run: async () => { ran = true; return { tests: [{ success: false }] }; },
+        run_id: "inv-sealed-bad",
+        chain_id: 1, fork_block: 1, fork_urls: ["https://x.example/rpc"],
+      }),
+      /target_address must be a 20-byte/,
+    );
+    assert.equal(ran, false, "forge never ran on a malformed slot");
+  } finally {
+    cleanupDomain(domain);
+    cleanupHarness(harness);
+  }
+});
+
 // The persisted test_passed here is the per-run PRIMITIVE (MINT), not a verified
 // verdict (CONFIRM). A verified FV finding requires the differential flip via
 // verifyInvariantDifferential; this test only asserts the run is recorded.

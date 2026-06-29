@@ -857,8 +857,27 @@ async function runInvariantForFinding({
   if (match_test && match_test !== function_name) {
     throw new Error(`match_test overrides are unsupported for generated invariants; expected ${function_name}`);
   }
-  const renamedBody = renameTestFunction(chosen.foundry_test, function_name);
-  const source = buildTestSource({ contractName: contract_name, functionBody: renamedBody });
+  // SEALED cross-stack path: the runner generates the WHOLE Foundry project from DATA slots — no
+  // agent harness / forge-std / setUp on the execution path — closing the cheatcode forgery (an
+  // agent setUp that vm.mockCall/vm.store's the real target, or a rigged forge-std). Other templates
+  // keep the agent-harness path unchanged. buildSealedTestSource VALIDATES the slots (throws on a
+  // bad/missing address/identifier/typed-literal), so an agent slot can never be Solidity injection.
+  const isSealedCrossStack = chosen.template_id === CROSS_STACK_CONSUME_TEMPLATE_ID;
+  const sealedSlots = isPlainObject(slot_values) ? slot_values : {};
+  let source;
+  if (isSealedCrossStack) {
+    source = require("./sealed-cross-stack-harness.js").buildSealedTestSource({
+      contractName: contract_name,
+      testFunctionName: function_name,
+      targetAddress: sealedSlots.target_address,
+      gatedFunction: sealedSlots.gated_function,
+      victimType: sealedSlots.victim_type,
+      victimValue: sealedSlots.victim_value,
+    });
+  } else {
+    const renamedBody = renameTestFunction(chosen.foundry_test, function_name);
+    source = buildTestSource({ contractName: contract_name, functionBody: renamedBody });
+  }
   // PIN the exact emitted test bytes into the run identity. generated_source_hash is
   // bound into computeInvariantRunHash (and so into the row_mac via run_hash), so the
   // signed row commits to the precise source the runner emitted. An agent who later
@@ -959,31 +978,63 @@ async function runInvariantForFinding({
   let targetAddress = null;
   let targetCodeSha256 = null;
   let targetOnchainCodeSha256 = null;
+  // SEALED-HARNESS marker — true once the runner-owned sealed project actually RAN (the cross-stack
+  // verifier requires sealed_harness === true on every arm). sealedProjectParent is the runner temp
+  // dir to clean up after the run.
+  let sealedHarnessRan = false;
+  let sealedProjectParent = null;
   if (dry_run !== true) {
-    const bobDir = ensureHarnessTestDir(harness_path);
-    writtenPath = writeInvariantSourceFile(bobDir, `${contract_name}.t.sol`, source);
-    foundryRawResult = await foundry_run({
-      target_domain: domain,
-      harness_path,
-      match_test: match_test || function_name,
-      match_contract: match_contract || contract_name,
-      // HIGH-1: pin forge to the EXACT generated file + anchor the match filters to the full
-      // identifier. A shadow .t.sol whose contract/test name CONTAINS the generated name is
-      // never selected, so a dishonest agent cannot have foundry run attacker-authored
-      // Solidity under the signed row's generated_source_hash. match_path is the absolute
-      // written path; anchor_match wraps match_test/match_contract in ^...$.
-      match_path: writtenPath,
-      anchor_match: true,
-      chain_id,
-      fork_block,
-      fork_urls,
-      extra_args,
-      timeout_ms,
-      // The cross-stack consumable bytes injected into the foundry subprocess as
-      // BOB_CONSUMED_ARTIFACT. null/absent on the control arm -> empty env (the corpus
-      // template's vm.envOr default), so the artifact PRESENCE is the controlled variable.
-      consumed_artifact: consumedArtifactBytes,
-    });
+    let runHarnessPath;
+    if (isSealedCrossStack) {
+      // Provision the runner-owned SEALED project under $HOME (foundry-runner requires the harness
+      // under home) and run forge against IT — the agent's harness_path is NOT used for a sealed
+      // cross-stack run, so no agent Solidity / forge-std / setUp is ever on the execution path.
+      sealedProjectParent = fs.mkdtempSync(path.join(os.homedir(), ".bob-sealed-xstack-"));
+      const sealed = require("./sealed-cross-stack-harness.js").writeSealedCrossStackProject(sealedProjectParent, {
+        contractName: contract_name,
+        testFunctionName: function_name,
+        targetAddress: sealedSlots.target_address,
+        gatedFunction: sealedSlots.gated_function,
+        victimType: sealedSlots.victim_type,
+        victimValue: sealedSlots.victim_value,
+      });
+      writtenPath = sealed.testPath;
+      runHarnessPath = sealed.projectDir;
+      sealedHarnessRan = true;
+    } else {
+      const bobDir = ensureHarnessTestDir(harness_path);
+      writtenPath = writeInvariantSourceFile(bobDir, `${contract_name}.t.sol`, source);
+      runHarnessPath = harness_path;
+    }
+    try {
+      foundryRawResult = await foundry_run({
+        target_domain: domain,
+        harness_path: runHarnessPath,
+        match_test: match_test || function_name,
+        match_contract: match_contract || contract_name,
+        // HIGH-1: pin forge to the EXACT generated file + anchor the match filters to the full
+        // identifier. A shadow .t.sol whose contract/test name CONTAINS the generated name is
+        // never selected, so a dishonest agent cannot have foundry run attacker-authored
+        // Solidity under the signed row's generated_source_hash. match_path is the absolute
+        // written path; anchor_match wraps match_test/match_contract in ^...$.
+        match_path: writtenPath,
+        anchor_match: true,
+        chain_id,
+        fork_block,
+        fork_urls,
+        extra_args,
+        timeout_ms,
+        // The cross-stack consumable bytes injected into the foundry subprocess as
+        // BOB_CONSUMED_ARTIFACT. null/absent on the control arm -> empty env (the corpus
+        // template's vm.envOr default), so the artifact PRESENCE is the controlled variable.
+        consumed_artifact: consumedArtifactBytes,
+      });
+    } finally {
+      // The sealed project is single-use; remove it whether the run succeeded or threw.
+      if (sealedProjectParent) {
+        try { fs.rmSync(sealedProjectParent, { recursive: true, force: true }); } catch {}
+      }
+    }
     if (typeof foundryRawResult === "string") {
       try {
         foundryRawResult = JSON.parse(foundryRawResult);
@@ -1167,6 +1218,12 @@ async function runInvariantForFinding({
     target_address: targetAddress,
     target_code_sha256: targetCodeSha256,
     target_onchain_code_sha256: targetOnchainCodeSha256,
+    // SEALED-HARNESS marker — top-level sibling OUTSIDE run_hash (the sealed source already differs,
+    // so generated_source_hash distinguishes it) but INSIDE the row_mac, so an agent cannot flip it.
+    // True ONLY when the runner executed the runner-owned sealed Foundry project. The cross-stack
+    // verifier requires sealed_harness === true on every arm; a non-sealed (agent-harness) cross-
+    // stack run leaves it false and is refused (closes the cheatcode forgery).
+    sealed_harness: sealedHarnessRan,
   };
   if (dry_run !== true) {
     await withInvariantSessionWriteLock(domain, () => {

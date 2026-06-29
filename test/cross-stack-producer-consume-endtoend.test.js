@@ -457,7 +457,7 @@ test("RESIDUAL 2: a stdout-only cause (no .consumed leaf) is NOT a free consumab
       target_domain: domain,
       finding: { finding_id: "F-1", finding_hash: "h", title: "t", vulnerability_class: "signature_validation", description: "d" },
       template_id: "INV-CROSS-STACK-AUTH-REPLAY-001",
-      slot_values: { target_contract: "Relay", gated_function: "execute", victim_object: "victimObj" },
+      slot_values: { target_address: `0x${"ab".repeat(20)}`, gated_function: "execute", victim_type: "uint256", victim_value: "7" },
       harness_path: harness,
       foundry_run: stubFoundry,
       run_id: "inv-stdout-cause",
