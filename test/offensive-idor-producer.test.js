@@ -27,7 +27,15 @@ const {
   tenantDiscriminator,
   piiScan,
   profileHasProvenance,
+  liveProvision,
+  createObject,
+  idorProvisionAuthorizedFor,
+  pathHasConcreteParentInstance,
+  IDOR_PROVISION_ENV,
 } = require("../mcp/lib/offensive-idor-producer.js");
+const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
+const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
+const idorDescriptor = require("../mcp/lib/tools/bob-http-idor-confirm.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { writeAuthFile, resolveAuthJsonPath, authStore } = require("../mcp/lib/auth.js");
@@ -441,16 +449,96 @@ test("AC-6 positive is canary-FIELD, not whole-body: per-viewer variance does NO
 
 // ───────────────────────── AC-2 (provenance + cardinality) ──────────────────────────
 
-test("AC-2 cardinality: a multi-endpoint surface refuses to confirm", () => withTempHome(async () => {
-  const domain = "idor-multi-endpoint.example.test";
-  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
-  seedRoutedSurface(domain, SURFACE_ID, endpointFor(domain), {
-    endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`],
-  });
-  seedSyntheticProfiles(domain);
-  ensureHandoffSigningKey(domain);
-  await assert.rejects(() => run(domain), /single-endpoint/);
+test("AC-2 cardinality: multiple recorded FORMS of the same item route (concrete instances) FIRE — not ambiguous", () => withTempHome(async () => {
+  // /api/accounts/<id> and /api/accounts/other are two concrete instances of the SAME route
+  // /api/accounts/{id} (discovery records a route pattern + sampled instances). path_template has a
+  // single trailing {id}, so every match shares the literal collection — they are one resource, not
+  // distinct targets. The producer binds the route and fires. (The lab's real IDOR surface is exactly
+  // this shape: ["/api/users/:id", "/api/users/1"].)
+  const domain = "idor-multi-form.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/other`] });
+  const result = await run(domain);
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  assert.equal(readOffensiveRunRecords(domain).length, 1);
+}));
+
+test("AC-2 cardinality: a multi-endpoint single-host surface (collection + item) FIRES, bound to the matched item endpoint", () => withTempHome(async () => {
+  // Real discovery bundles BOTH the collection (/api/accounts) and the item (/api/accounts/{id}) route
+  // under one surface — the case the first live orchestrated run hit ("non-fire on endpoint_count=3").
+  // path_template matches ONLY the item endpoint (the collection has fewer segments) → exactly one match,
+  // same single host → the producer binds to the item endpoint and fires (no longer rejected on count).
+  const domain = "idor-multi-endpoint-fires.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts`] });
+  const result = await run(domain);
+
+  assert.equal(result.confirmed, true, JSON.stringify(result));
+  assert.equal(result.row_written, true);
+  assert.equal(result.demonstrated_severity, "medium");
+  const rows = readOffensiveRunRecords(domain);
+  assert.equal(rows.length, 1);
+  // row.target is pinned to the path_template-MATCHED item endpoint, never the collection.
+  assert.equal(rows[0].target, canonicalizeExploitTarget(endpointFor(domain)));
+}));
+
+test("AC-2 (Codex P1): a surface aggregating UNRELATED endpoints (different collection) refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // path_template binds /api/accounts/{id}, but the surface ALSO records /api/users/<id> — a DIFFERENT
+  // resource (collection /api/users vs /api/accounts). The downstream proof gate binds a row to a
+  // finding by surface_id ONLY, so allowing this would let an accounts IDOR proof back a users finding.
+  // The relaxed gate requires every endpoint under path_template's collection, so it refuses.
+  const domain = "idor-aggregate-unrelated.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/users/${OBJ_B}`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|intra-surface laundering/);
   assert.equal(fs.existsSync(offensiveRunsJsonlPath(domain)), false);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (Codex P1): a SUB-RESOURCE under the same collection refuses to confirm — no intra-surface laundering", () => withTempHome(async () => {
+  // /api/accounts/<id>/settings is a DIFFERENT (often higher-sensitivity) resource than /api/accounts/{id};
+  // a prefix-only collection check would wrongly admit it. An IDOR proof on the item must not be able to
+  // back a settings finding under the shared surface_id — so the sub-resource fails closed.
+  const domain = "idor-subresource.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `${endpointFor(domain)}/settings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
+}));
+
+test("AC-2 (Codex P1): a QUERY-ROUTED sibling endpoint refuses to confirm", () => withTempHome(async () => {
+  // /api/accounts?type=invoice selects different data than its bare path and would make the derived
+  // create-collection POST target ambiguous; v1 confirms only clean path-routed endpoints.
+  const domain = "idor-query-routed.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts?type=invoice`] });
+  await assert.rejects(() => run(domain), /query-routed/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0);
+}));
+
+test("AC-2 (Codex %2F): an ENCODED-SEPARATOR final segment is NOT an item form — refuses, no row", () => withTempHome(async () => {
+  // /api/accounts/foo%2Fsettings has the item-route SHAPE (3 segments, /api/accounts prefix) but its final
+  // segment is route-smuggling: %2F decodes to a "/", reaching a sub-resource. capturedIdSegmentIsSafe
+  // rejects %2F everywhere else (it is how pathTemplateMatchesEndpoint vets the baseline), so it must NOT
+  // classify as a clean item form here either. Without that guard it lands in `items` and escapes the
+  // others/isCollection reject; with it, it falls through and the surface is refused. No row is signed.
+  const domain = "idor-encoded-sep.example.test";
+  setupSession(domain, { endpoints: [endpointFor(domain), `https://${domain}/api/accounts/foo%2Fsettings`] });
+  await assert.rejects(() => run(domain), /aggregates a different resource|neither path_template's item route nor its collection/);
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "no offensive row is signed on reject");
+}));
+
+test("AC-2 (brutalist agy/glm): boundEntry is order-INDEPENDENT — a query sibling rejects in EITHER endpoint order", () => withTempHome(async () => {
+  // A clean concrete item form (/api/accounts/obj-b-200) plus a query-bearing concrete item form
+  // (/api/accounts/other?type=x) of the SAME route. The bind prefers the clean (query-free) match, so the
+  // clean form ALWAYS binds and the query form is ALWAYS a non-bound query-routed sibling → the SAME hard
+  // reject regardless of endpoints[] order. Before the fix, items.find()||items[0] made the outcome depend
+  // on order (query form first → soft block; clean form first → throw) for identical surface content.
+  for (const [domain, endpoints] of [
+    ["idor-order-a.example.test", [`https://idor-order-a.example.test/api/accounts/${OBJ_B}`, "https://idor-order-a.example.test/api/accounts/other?type=x"]],
+    ["idor-order-b.example.test", ["https://idor-order-b.example.test/api/accounts/other?type=x", `https://idor-order-b.example.test/api/accounts/${OBJ_B}`]],
+  ]) {
+    setupSession(domain, { endpoints });
+    await assert.rejects(() => run(domain), /query-routed/, `${domain}: query sibling must reject regardless of endpoint order`);
+    assert.equal(readOffensiveRunRecords(domain).length, 0, `${domain}: no offensive row is signed`);
+  }
 }));
 
 test("AC-2 cardinality: a multi-HOST single-endpoint surface refuses to confirm", () => withTempHome(async () => {
@@ -2184,3 +2272,1289 @@ test("round-trip: a claim citing the row under a DIFFERENT surface is rejected (
   assert.ok(caught, "surface mismatch must be rejected");
   assert.equal(caught.details.code, "exploit_proof_row_surface_mismatch");
 }));
+
+// ── PR-D live self-provisioning (the operator-armed write arm) ───────────────────
+// A STATEFUL mock: the producer MINTS its own 256-bit canaries, so the mock must echo each
+// create's canary back through that object's reads. POST /api/accounts (the derived create
+// endpoint) assigns OBJ_A/B/C in creation order + records {canary, owner}; GET /api/accounts/{id}
+// applies the broken "A may read O_B" access (selective, not universal) reflecting the object's
+// minted canary at leaf `note`. This drives the FULL live arm (create→readback→P0-P8→mint).
+function liveArmFetchFn({ field = "note" } = {}) {
+  const created = []; // creation order: [{ id, canary, owner }]
+  const postedBodies = []; // the parsed JSON body of every create POST (for asserting fields are sent)
+  const ids = [OBJ_A, OBJ_B, OBJ_C];
+  let posts = 0;
+  const fn = async ({ url, method, headers, body }) => {
+    const u = new URL(url);
+    const auth = headers && headers.Authorization ? String(headers.Authorization) : "";
+    const who = auth.includes("eyJatoken") ? "A" : auth.includes("eyJbtoken") ? "B" : auth.includes("eyJctoken") ? "C" : null;
+    if (String(method || "GET").toUpperCase() === "POST" && u.pathname === "/api/accounts") {
+      posts += 1;
+      const parsed = JSON.parse(body || "{}");
+      postedBodies.push(parsed);
+      // ENFORCE the declared canary_field: the canary MUST arrive in `field` — a regression that ignores
+      // canary_field and writes the canary elsewhere yields NO canary here, so the oracle never fires.
+      const v = parsed[field];
+      const canary = typeof v === "string" && /^[0-9a-f]{64}$/.test(v) ? v : undefined;
+      const id = ids[created.length] || `obj-extra-${created.length}`;
+      created.push({ id, canary, owner: who });
+      return jsonResponse(201, { id, owner: who, [field]: canary }); // server-minted id captured by id_field
+    }
+    // Match the EXACT bound account route (not endsWith) — a target-binding regression that read a
+    // different path ending in the id must NOT pass (CR).
+    const obj = created.find((o) => u.pathname === `/api/accounts/${o.id}`);
+    if (!obj) return challenge(404);
+    if (!who) return challenge(401);                                   // anon → deny (P4/P8)
+    const allowed = obj.owner === who || (obj.owner === "B" && who === "A"); // broken: A reads O_B (the IDOR)
+    if (!allowed) return challenge(403);                               // C→O_B, B→O_A (true deny)
+    // canary at the SAME leaf `field` in readback + P1 + P2; per-viewer variance keeps P0 stable while P1≠P2.
+    return jsonResponse(200, { id: obj.id, kind: "account", owner_scope: `tenant-${obj.owner}`, viewer_id: `viewer-${who}`, [field]: obj.canary });
+  };
+  fn.postCount = () => posts;
+  fn.postedBodies = () => postedBodies;
+  return fn;
+}
+
+test("PR-D idorProvisionAuthorizedFor: target-BOUND (=== domain), rejects bare flag / mismatch / unset", () => {
+  const saved = process.env[IDOR_PROVISION_ENV];
+  try {
+    process.env[IDOR_PROVISION_ENV] = "idor-live.example.test";
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), true);
+    assert.equal(idorProvisionAuthorizedFor("other.example.test"), false, "must not arm a DIFFERENT target");
+    process.env[IDOR_PROVISION_ENV] = "1";
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), false, "a bare 1 must not arm");
+    delete process.env[IDOR_PROVISION_ENV];
+    assert.equal(idorProvisionAuthorizedFor("idor-live.example.test"), false, "unset → inert");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+});
+
+test("PR-D: UNARMED live arm (no provision, env not set) stays INERT → blocked_by_design", () => withTempHome(async () => {
+  const domain = "idor-unarmed.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  delete process.env[IDOR_PROVISION_ENV];
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, false);
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "object_not_self_provisioned");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "unarmed → no row");
+    assert.equal(mock.postCount(), 0, "unarmed → ZERO create POSTs (no live write before the block)");
+  } finally {
+    if (saved !== undefined) process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D: armed create inputs carrying PII / SECRET / ENCODED values are refused BEFORE any write → blocked_operator_pii", () => withTempHome(async () => {
+  const domain = "idor-createbody-pii.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    // The production gate screens EVERY written byte (body + canary_field name) with layered decoding for
+    // BOTH piiScan AND secretShapesIn. Each case must block BEFORE any create POST.
+    const cases = [
+      { label: "raw email PII", args: { create_body: { contact: "leaked-victim@example.test" } } },
+      { label: "percent-encoded email PII", args: { create_body: { contact: "victim%40example.test" } } },
+      { label: "AWS secret shape", args: { create_body: { backup: "AKIAIOSFODNN7EXAMPLE" } } },
+      { label: "PII in the canary_field NAME", args: { canary_field: "note_for_leaked-victim@example.test" } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_operator_pii", c.label);
+      assert.equal(result.reason, "create_inputs_contain_sensitive_value", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs before the screen blocks`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D: PII in a fixed path segment flows into the derived createUrl and is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-createurl-pii.example.test";
+  // Record a surface whose endpoint carries an EMAIL in a FIXED path segment, so the AC-2-bound
+  // path_template derives a createUrl that embeds it. The pre-write screen must catch the URL bytes too.
+  // An email (not an SSN/numeric id) is used so this test exercises the write-byte PII screen in ISOLATION:
+  // an id-shaped PII segment (123-45-6789) would also trip the orthogonal #5 nested-container guard first
+  // (both block the write — no PII is ever submitted — but this test asserts the PII reason specifically).
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/u/attacker@corp.test/notes/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/u/attacker@corp.test/notes/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_operator_pii");
+    assert.equal(result.reason, "create_inputs_contain_sensitive_value");
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs when the derived createUrl carries PII");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D liveProvision: creates O_A/O_B/O_C IN ORDER, captures server ids + distinct canaries, reads B back", () => withTempHome(async () => {
+  const domain = "idor-liveprovision.example.test";
+  setupSession(domain);
+  // Use a NON-default canary field end-to-end: if liveProvision ignored canaryField and wrote to "note",
+  // the mock (which only accepts the canary at `secret_note`) would capture no canary → readback empty.
+  const mock = liveArmFetchFn({ field: "secret_note" });
+  const idHeaders = (tag) => ({ headers: { Authorization: `Bearer eyJ${tag}token` } });
+  const provision = await liveProvision({
+    idA: idHeaders("a"), idB: idHeaders("b"), idC: idHeaders("c"),
+    createUrl: `https://${domain}/api/accounts`,
+    canaryField: "secret_note", idField: "id", createBody: {},
+    pathTemplate: PATH_TEMPLATE, origin: `https://${domain}`,
+    probeBase: { fetchFn: mock, method: "GET", domain, surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() },
+  });
+  assert.equal(provision.object_a, OBJ_A);
+  assert.equal(provision.object_b, OBJ_B);
+  assert.equal(provision.object_c, OBJ_C);
+  for (const c of [provision.canary_a, provision.canary_b, provision.canary_c]) assert.match(c, /^[0-9a-f]{64}$/);
+  assert.equal(new Set([provision.canary_a, provision.canary_b, provision.canary_c]).size, 3, "canaries pairwise-distinct");
+  assert.equal(mock.postCount(), 3, "exactly three creates");
+  // owner readback of B carries B's minted canary at the DECLARED leaf `secret_note` (path is an array).
+  assert.deepEqual(discoverCanaryFieldPath(provision.owner_readback_b, provision.canary_b), ["secret_note"]);
+}));
+
+test("PR-D live arm (armed, no provision): full create→readback→P0-P8→signed MEDIUM mint", () => withTempHome(async () => {
+  const domain = "idor-livearm.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.row_written, true);
+    assert.equal(result.offensive_outcome, "exploited_safely");
+    assert.equal(result.demonstrated_severity, "medium", "synthetic objects → HARD medium");
+    assert.equal(mock.postCount(), 3, "the live arm created exactly three objects (A/B/C)");
+    const rows = readOffensiveRunRecords(domain);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].demonstrated_severity, "medium");
+    assert.equal(rows[0].row_mac.version, 2, "producer-minted rows are the v2 ed25519 envelope");
+    assert.ok(verifyRowWithMac(OFFENSIVE_ROW_MAC_CONTEXT, rows[0], resolveOffensiveRowVerifier(domain)), "minted row is MAC-signed");
+    // masked rail: the signed row carries NONE of the three identity mailboxes NOR their auth-token markers.
+    const rowText = fs.readFileSync(offensiveRunsJsonlPath(domain), "utf8");
+    for (const leak of ["eval_a@example.test", "eval_b@example.test", "eval_c@example.test", "eyJatoken", "eyJbtoken", "eyJctoken"]) {
+      assert.ok(!rowText.includes(leak), `signed row must not leak identity secret: ${leak}`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 3: write-surface hardening (Codex P1/P2) ───────────────────
+
+test("PR-D r3 (Codex P1): armed HEAD is rejected GET-only BEFORE any live provisioning (no write)", () => withTempHome(async () => {
+  const domain = "idor-head.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), method: "HEAD", canary_field: "note" }, { fetch_fn: mock }),
+      /requires method GET/,
+      "armed HEAD must be rejected before provisioning",
+    );
+    assert.equal(mock.postCount(), 0, "HEAD → ZERO create POSTs (body-less probes can never mint, so nothing is written)");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P1): an action-shaped derived create collection (/api/transfer) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-action-path.example.test";
+  // The read template /api/transfer/{id} passes assertReadOnlyPath (transfer is an allowed action-NOUN
+  // for a GET-by-id), but the DERIVED collection POST /api/transfer would execute a transfer.
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/transfer/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/transfer/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+      "an action-shaped create collection must be refused",
+    );
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs to a state-changing endpoint");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P2): createObject captures a string / safe-int id but REJECTS an unsafe-int (rounded) id", () => withTempHome(async () => {
+  const domain = "idor-numeric-id.example.test";
+  setupSession(domain);
+  const mkFetch = (idValue) => async ({ body }) => jsonResponse(201, { id: idValue, owner: "A", note: JSON.parse(body || "{}").note });
+  const probeBase = (fetchFn) => ({ fetchFn, method: "GET", domain, surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() });
+  const call = (idValue) => createObject({
+    createUrl: `https://${domain}/api/accounts`, headers: {}, canaryField: "note",
+    canary: "a".repeat(64), idField: "id", createBody: {}, probeBase: probeBase(mkFetch(idValue)),
+  });
+  assert.equal((await call("acc_42")).id, "acc_42", "string id captured");
+  assert.equal((await call(42)).id, 42, "safe-int id captured");
+  // 2^53 (9007199254740992) is NOT a safe integer — a 64-bit id here was already rounded by JSON.parse,
+  // so it must read as "no id captured" rather than address a different resource in the readback.
+  assert.equal((await call(9007199254740992)).id, undefined, "unsafe-int id rejected (no capture)");
+}));
+
+test("PR-D r3 (Codex P2): an oversized create_body is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-bigbody.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), canary_field: "note", create_body: { blob: "x".repeat(9000) } },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "create_body_too_large");
+    assert.equal(mock.postCount(), 0, "an oversized create_body is never POSTed to the target");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r3 (Codex P2): prototype-pollution field names (__proto__/constructor/prototype) are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-proto.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "canary_field __proto__", args: { canary_field: "__proto__" } },
+      { label: "id_field constructor", args: { canary_field: "note", id_field: "constructor" } },
+      { label: "canary_field prototype", args: { canary_field: "prototype" } },
+      // JSON.parse defines `__proto__` as an OWN key, so a create_body parsed from JSON carries it here.
+      { label: "create_body __proto__ key", args: { canary_field: "note", create_body: JSON.parse('{"__proto__":{"polluted":true}}') } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "reserved_field_name", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 4: deeper create-contract subversion (Codex / CodeRabbit P2) ───────────────
+
+test("PR-D r4: a camelCase action collection (/api/transferFunds) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-camel.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/transferFunds/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/transferFunds/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+    );
+    assert.equal(mock.postCount(), 0, "camelCase action endpoint → ZERO POSTs");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: a commerce collection (/api/orders) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-orders.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orders/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    await assert.rejects(
+      idorConfirm({ ...baseArgs(domain), path_template: "/api/orders/{id}", canary_field: "note" }, { fetch_fn: mock }),
+      /action-shaped segment/,
+    );
+    assert.equal(mock.postCount(), 0, "/api/orders create → ZERO POSTs");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: a root-level derived create endpoint (/{id} → POST /) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-root.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), path_template: "/{id}", canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "blocked_by_design");
+    assert.equal(result.reason, "create_collection_is_root");
+    assert.equal(mock.postCount(), 0, "POST to site root is never sent");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r4: create-contract subversion via canary_field / create_body is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-contract.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // canary_field that masquerades as the tenant/owner scope the oracle reads as private proof.
+      { label: "canary_field owner_scope", args: { canary_field: "owner_scope" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field tenant_id", args: { canary_field: "tenant_id" }, reason: "canary_field_overlaps_scope_key" },
+      // client-supplied server-minted id (upsert-on-create would use an attacker-chosen object id).
+      { label: "client-supplied id", args: { canary_field: "note", create_body: { id: "known-object-42" } }, reason: "create_body_client_supplied_id" },
+      { label: "client-supplied id (custom id_field)", args: { canary_field: "note", id_field: "account_id", create_body: { account_id: "victim-7" } }, reason: "create_body_client_supplied_id" },
+      // nested prototype-pollution shape (top-level check alone would miss it).
+      { label: "nested __proto__", args: { canary_field: "note", create_body: JSON.parse('{"nested":{"__proto__":{"polluted":true}}}') }, reason: "reserved_field_name" },
+      // body-level method / action dispatch.
+      { label: "_method override", args: { canary_field: "note", create_body: { _method: "DELETE" } }, reason: "create_body_action_override" },
+      { label: "action dispatch", args: { canary_field: "note", create_body: { action: "run" } }, reason: "create_body_action_override" },
+      // oversized canary_field NAME (the cap must include the field name, not just createBody).
+      { label: "oversized canary_field name", args: { canary_field: `note_${"x".repeat(9000)}` }, reason: "create_body_too_large" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 5: canary/id alias, matrix suffix, create_body schema (Codex / CodeRabbit) ──
+
+test("PR-D r5 (Codex/CR): canary_field aliasing id_field is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-canary-id-alias.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // default id_field is "id", so canary_field:"id" puts the minted canary in the object-id slot.
+      { label: "canary_field id (default id_field)", args: { canary_field: "id" } },
+      { label: "canary_field === custom id_field", args: { canary_field: "account_id", id_field: "account_id" } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "canary_field_aliases_id_field", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs (canary never written into the id slot)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r5 (Codex P1): assertCreateCollectionShapeSafe blocks camelCase / matrix-suffix / commerce, allows resource nouns", () => {
+  const blocked = ["/api/transferFunds", "/api/refundOrder", "/api/transfer;v=1", "/api/transfer%3bv=1", "/api/orders", "/api/transfer", "/api/withdraw"];
+  const allowed = ["/api/accounts", "/api/notes", "/api/users", "/api/documents", "/api/profiles"];
+  for (const p of blocked) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /action-shaped segment/, `expected BLOCK: ${p}`);
+  }
+  for (const p of allowed) {
+    assert.doesNotThrow(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), `expected ALLOW: ${p}`);
+  }
+});
+
+test("PR-D r5 (Codex): create_body schema accepts arbitrary synthetic fields (additionalProperties)", () => {
+  // The descriptor's create_body must NOT be a closed object, or the documented synthetic skeleton is
+  // unusable on APIs that require non-canary create fields (the handler screens content at runtime).
+  assert.equal(idorDescriptor.inputSchema.properties.create_body.additionalProperties, true);
+  const args = {
+    target_domain: "d", surface_id: "s", oracle_kind: "differential_response",
+    path_template: "/api/x/{id}", method: "GET",
+    identity_a_profile: "a", identity_b_profile: "b", identity_c_profile: "c",
+    canary_field: "note", create_body: { name: "synthetic", title: "t", count: 3 },
+  };
+  assert.doesNotThrow(() => validateAgainstSchema(args, idorDescriptor.inputSchema, []));
+});
+
+test("PR-D r5: an armed run with a synthetic non-canary create_body field still mints a signed MEDIUM", () => withTempHome(async () => {
+  const domain = "idor-synthetic-body.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { name: "synthetic", title: "t" } }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.demonstrated_severity, "medium");
+    assert.equal(mock.postCount(), 3, "synthetic body field flows through; canary still overrides note");
+    // The synthetic fields must ACTUALLY be in each POST body (would still pass postCount if dropped, CR).
+    const bodies = mock.postedBodies();
+    assert.equal(bodies.length, 3);
+    for (const b of bodies) {
+      assert.equal(b.name, "synthetic", "create_body.name reached the target");
+      assert.equal(b.title, "t", "create_body.title reached the target");
+      assert.match(b.note, /^[0-9a-f]{64}$/, "canary still overrides canary_field");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 6: alias / normalization bypasses of the create-contract guards (Codex P1) ──
+
+test("PR-D r6 (Codex P1): canary_field / create_body alias bypasses are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-aliases.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // #3 canary_field aliasing a scope discriminator via camelCase/kebab normalization.
+      { label: "canary_field tenantId (camelCase scope)", args: { canary_field: "tenantId" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field org-id (kebab scope)", args: { canary_field: "org-id" }, reason: "canary_field_overlaps_scope_key" },
+      { label: "canary_field OwnerScope (Pascal scope)", args: { canary_field: "OwnerScope" }, reason: "canary_field_overlaps_scope_key" },
+      // #2 client-id ALIAS in create_body (beyond the exact id_field), incl. nested.
+      { label: "create_body object_id", args: { canary_field: "note", create_body: { object_id: "known-object" } }, reason: "create_body_client_supplied_id" },
+      { label: "create_body resourceId (camelCase)", args: { canary_field: "note", create_body: { resourceId: "x" } }, reason: "create_body_client_supplied_id" },
+      { label: "create_body nested id", args: { canary_field: "note", create_body: { data: { id: "x" } } }, reason: "create_body_client_supplied_id" },
+      // #4 owning-scope key in create_body → scope drift during the write (incl. alias + nested envelope).
+      { label: "create_body tenant_id", args: { canary_field: "note", create_body: { tenant_id: "victim-org" } }, reason: "create_body_scope_field" },
+      { label: "create_body workspaceId (camelCase)", args: { canary_field: "note", create_body: { workspaceId: "victim-ws" } }, reason: "create_body_scope_field" },
+      { label: "create_body nested org_id envelope", args: { canary_field: "note", create_body: { meta: { org_id: "victim" } } }, reason: "create_body_scope_field" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), ...c.args }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 8: canary_field id-alias, create_body URL values, audit preflight (Codex P1) ──
+
+test("PR-D r8 (Codex P1): canary_field that ALIASES the id field (uuid/object_id/case) is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-canary-idalias.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["uuid", "object_id", "resourceId", "ID", "guid"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "canary_field_aliases_id_field", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs (canary never lands in the id slot)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r8 (Codex P1): a URL-valued create_body field is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-url-body.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "avatar_url http", create_body: { avatar_url: "http://169.254.169.254/latest/meta-data/" } },
+      { label: "callback_url https", create_body: { callback_url: "https://attacker.example/hook" } },
+      { label: "protocol-relative", create_body: { ref: "//internal.svc/x" } },
+      { label: "nested webhook url", create_body: { config: { webhook: "http://internal:8080/" } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.offensive_outcome, "blocked_by_design", c.label);
+      assert.equal(result.reason, "create_body_url_value", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs (no SSRF/callback URL sent)`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r8 (Codex P1): createObject pre-flights the audit — an unauditable create POST never fires", () => withTempHome(async () => {
+  const domain = "idor-preflight-audit.example.test";
+  setupSession(domain);
+  let posted = false;
+  const fetchFn = async () => { posted = true; return jsonResponse(201, { id: OBJ_A, note: "x" }); };
+  // probeBase.domain falsy forces auditConfirmRequest -> false (the audit can't be recorded), standing in
+  // for an unwritable http-audit.jsonl. The preflight must abort BEFORE the POST, so fetchFn is never called.
+  await assert.rejects(
+    createObject({
+      createUrl: `https://${domain}/api/accounts`, headers: {}, canaryField: "note",
+      canary: "a".repeat(64), idField: "id", createBody: {},
+      probeBase: { fetchFn, method: "GET", domain: "", surfaceId: SURFACE_ID, egressProfile: "default", blockInternalHosts: false, agent: null, startedAt: Date.now() },
+    }),
+    /audit preflight write failed/,
+  );
+  assert.equal(posted, false, "the mutating POST must NOT fire when the audit cannot be recorded");
+}));
+
+// ── PR-D review round 9: array URLs, GraphQL ops, malformed-escape paths, raw-readback PII (Codex) ──
+
+test("PR-D r9 (Codex P1): a URL inside a create_body ARRAY is refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-arr-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "url in top-level array", create_body: { callbacks: ["http://169.254.169.254/latest/meta-data/"] } },
+      { label: "url in nested array", create_body: { config: { hooks: ["https://attacker.example/h"] } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_url_value", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r9 (Codex P1): a GraphQL mutation operation in create_body is refused; a benign 'mutation' word is not", () => withTempHome(async () => {
+  const domain = "idor-graphql.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ['mutation { deleteUser(id: 1) }', 'mutation Evil($x:ID!){ x }', 'subscription { onData }']) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", op);
+      assert.equal(mock.postCount(), 0, `${op}: ZERO create POSTs`);
+    }
+    // A benign value that merely contains the word "mutation" (no operation shape) must NOT be blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { notes: "mutation rate: 0.5 per cycle" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15 (Codex P1): assertCreateCollectionShapeSafe fails closed on ANY residual percent-escape", () => {
+  // A malformed escape (%zz/%gg/%25) survives the valid-triplet decode and is NOT a token delimiter, so a
+  // recovered action verb behind it (transfer%3b…%zz) — AND a benign noun merely carrying one (accounts%zz)
+  // — must fail closed as unresolved-encoding rather than POST blind to a path a router may decode
+  // differently. Stricter than round-14 (which recovered the verb and allowed a malformed escape on a benign
+  // noun); Codex r15 asked to fail closed on any residual `%`.
+  for (const p of ["/api/transfer%3bv=%zz", "/api/transfer%2faction%zz", "/api/refund%3bzz=%gg", "/api/accounts%zz", "/api/notes%25"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /percent-encoding/, `expected BLOCK: ${p}`);
+  }
+  // A fully-resolved action verb (no residual %) still blocks as action-shaped; a clean resource collection passes.
+  assert.throws(() => assertCreateCollectionShapeSafe("https://h/api/transfer", "t"), /action-shaped segment/);
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts", "t"));
+});
+
+test("PR-D r9 (Codex P2): foreign PII present only in RAW readback bytes (parsed-clean) is caught by #24", () => withTempHome(async () => {
+  const domain = "idor-rawpii.example.test";
+  setupSession(domain);
+  // Parsed readback is clean (canary at the discovered leaf, no PII), but the RAW bytes carry a foreign
+  // email in a shadowed duplicate key that JSON.parse drops — the parsed-only scan would miss it.
+  const provision = {
+    ...soundProvision(),
+    owner_readback_b_raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"contact":"victim-foreign@evil.test","contact":"clean"}`,
+  };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "shared_object_store");
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "raw-readback PII must sign NO offensive row (CR)");
+}));
+
+// ── PR-D review round 10: owner-id fields, truncated/encoded/secret readback, embedded-id template ──
+
+test("PR-D r10 (Codex P1): owner-ASSIGNMENT fields in create_body are refused BEFORE any write", () => withTempHome(async () => {
+  const domain = "idor-owner-fields.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "user_id", create_body: { user_id: "victim-1" } },
+      { label: "owner_id", create_body: { owner_id: "victim-2" } },
+      { label: "created_by camelCase", create_body: { createdBy: "victim-3" } },
+      { label: "nested team_id", create_body: { meta: { team_id: "victim-team" } } },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_owner_field", c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r10 (Codex P2): a truncated owner readback fails closed (no canary trust, no mint)", () => withTempHome(async () => {
+  const domain = "idor-trunc-readback.example.test";
+  setupSession(domain);
+  const provision = { ...soundProvision(), owner_readback_b_truncated: true };
+  const result = await run(domain, { provision });
+  assert.equal(result.confirmed, false, JSON.stringify(result));
+  assert.equal(result.reason, "owner_readback_truncated");
+  assert.equal(readOffensiveRunRecords(domain).length, 0, "truncated readback must sign no row");
+}));
+
+test("PR-D r10 (Codex P2): encoded PII / secret shapes in the RAW readback are caught by #24", () => withTempHome(async () => {
+  const domain = "idor-raw-encoded-secret.example.test";
+  setupSession(domain);
+  const cases = [
+    { label: "percent-encoded foreign email", raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"dup":"victim%40corp.test","dup":"clean"}` },
+    { label: "AWS secret shape", raw: `{"details":{"secret":{"token":"${CANARY_B}"}},"dup":"AKIAIOSFODNN7EXAMPLE","dup":"clean"}` },
+  ];
+  for (const c of cases) {
+    const provision = { ...soundProvision(), owner_readback_b_raw: c.raw };
+    const result = await run(domain, { provision });
+    assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+    assert.equal(result.reason, "shared_object_store", c.label);
+    assert.equal(readOffensiveRunRecords(domain).length, 0, `${c.label}: encoded/secret readback must sign no row (CR)`);
+  }
+}));
+
+test("PR-D r10 (Codex P1): an embedded-id template (/api/account-{id}) fails closed, no off-route POST", () => withTempHome(async () => {
+  let n = 0;
+  for (const path_template of ["/api/account-{id}", "/api/v1/accounts.{id}"]) {
+    const domain = `idor-embedded-id-${n++}.example.test`;
+    const endpoint = `https://${domain}${path_template.replace("{id}", OBJ_B)}`;
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+    seedRoutedSurface(domain, SURFACE_ID, endpoint);
+    seedSyntheticProfiles(domain, {});
+    ensureHandoffSigningKey(domain);
+    const saved = process.env[IDOR_PROVISION_ENV];
+    process.env[IDOR_PROVISION_ENV] = domain;
+    try {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), path_template, canary_field: "note" }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${path_template}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_collection_not_id_terminated", path_template);
+      assert.equal(mock.postCount(), 0, `${path_template}: ZERO create POSTs (no off-route collection)`);
+    } finally {
+      if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+    }
+  }
+}));
+
+test("PR-D r10 (Codex P1): a non-slash HTTP scheme value in create_body is refused", () => withTempHome(async () => {
+  const domain = "idor-nonslash-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http:169.254.169.254/latest", "http:/169.254.169.254/x", "https:internal.svc/x"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { avatar_url: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r10 (Codex P1): a GraphQL operation using ignored tokens (comma / # comment) is refused", () => withTempHome(async () => {
+  const domain = "idor-graphql-ignored.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["mutation,{ deleteUser(id:1) }", "mutation #wipe\n { deleteUser }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", JSON.stringify(op));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 11: class-closing variants — bare scope/owner, URL authorities, GraphQL directives ──
+
+test("PR-D r11 (Codex P1): BARE scope/owner relationship fields in create_body are refused (base-noun)", () => withTempHome(async () => {
+  const domain = "idor-bare-rel.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "bare tenant", create_body: { tenant: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare org", create_body: { org: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare workspace", create_body: { workspace: "victim" }, reason: "create_body_scope_field" },
+      { label: "bare user", create_body: { user: "real-user" }, reason: "create_body_owner_field" },
+      { label: "bare team", create_body: { team: "real-team" }, reason: "create_body_owner_field" },
+      { label: "created_by_id", create_body: { created_by_id: "real-user" }, reason: "create_body_owner_field" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // A benign content field that merely ends in a stripped suffix must NOT be over-blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { created_at: "2026-01-01", title: "synthetic" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): URL values with bracketed / userinfo authorities are refused (parse-based)", () => withTempHome(async () => {
+  const domain = "idor-url-auth.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http:[::1]/meta", "http:@169.254.169.254/latest", "https://[::ffff:169.254.169.254]/x"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${v}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): a GraphQL operation with DIRECTIVES is refused (keyword + selection set)", () => withTempHome(async () => {
+  const domain = "idor-gql-directive.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["mutation @custom { deleteUser }", "mutation Named @auth(x:1) { wipe }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", JSON.stringify(op));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r11 (Codex P1): assertCreateCollectionShapeSafe splits a decoded backslash separator (%5C)", () => {
+  for (const p of ["/api/%5Ctransfer", "/api/%5crefund", "/api/transfer%5cv1"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h${p}`, "t"), /action-shaped segment/, `expected BLOCK: ${p}`);
+  }
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts%5cx", "t"), "a backslash on a benign noun still passes");
+});
+
+// ── PR-D review round 12: closure consistency — encoded values, plurals, override/canary norm, dotted keys ──
+
+test("PR-D r12 (Codex P1): an ENCODED URL value in create_body is refused", () => withTempHome(async () => {
+  const domain = "idor-encoded-url.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["http%3a%2f%2f169.254.169.254/latest", "http%3A%2F%2Fattacker.example/h"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { callback: v } }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${v}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r12 (Codex P1): a BARE scope canary_field (tenant/org/workspace) is refused", () => withTempHome(async () => {
+  const domain = "idor-canary-bare-scope.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["tenant", "org", "workspace", "tenantIds"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "canary_field_overlaps_scope_key", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r12 (Codex P1): plural / override / dotted create_body keys are refused", () => withTempHome(async () => {
+  const domain = "idor-r12-keys.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      // plural relationship fields (#150)
+      { label: "tenant_ids", create_body: { tenant_ids: ["victim"] }, reason: "create_body_scope_field" },
+      { label: "user_ids", create_body: { user_ids: ["victim"] }, reason: "create_body_owner_field" },
+      { label: "teamIds", create_body: { teamIds: ["victim"] }, reason: "create_body_owner_field" },
+      // method-override aliases, normalized (#218)
+      { label: "method_override", create_body: { method_override: "DELETE" }, reason: "create_body_action_override" },
+      { label: "methodOverride", create_body: { methodOverride: "DELETE" }, reason: "create_body_action_override" },
+      // dotted / bracketed prototype-pollution keys (#217)
+      { label: "dotted constructor.prototype", create_body: JSON.parse('{"constructor.prototype.polluted":true}'), reason: "reserved_field_name" },
+      { label: "bracketed __proto__", create_body: JSON.parse('{"__proto__[polluted]":true}'), reason: "reserved_field_name" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 13: dotted canary_field, uuid/guid/uid scope+owner+id suffixes ──
+
+test("PR-D r13 (Codex P1): a dotted/bracketed reserved canary_field is refused", () => withTempHome(async () => {
+  const domain = "idor-dotted-canary.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const cf of ["constructor.prototype.polluted", "__proto__[polluted]"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${cf}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, "reserved_field_name", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r13 (Codex P1): uuid/guid/uid-suffixed scope+owner fields and bare uid are refused", () => withTempHome(async () => {
+  const domain = "idor-uuid-suffix.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const cases = [
+      { label: "tenant_uuid", create_body: { tenant_uuid: "victim" }, reason: "create_body_scope_field" },
+      { label: "workspaceGuid", create_body: { workspaceGuid: "victim" }, reason: "create_body_scope_field" },
+      { label: "owner_uid", create_body: { owner_uid: "victim" }, reason: "create_body_owner_field" },
+      { label: "bare uid (id alias)", create_body: { uid: "known-object" }, reason: "create_body_client_supplied_id" },
+    ];
+    for (const c of cases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // canary_field "uid" aliases the id slot.
+    const mock = liveArmFetchFn();
+    const r = await idorConfirm({ ...baseArgs(domain), canary_field: "uid" }, { fetch_fn: mock });
+    assert.equal(r.reason, "canary_field_aliases_id_field");
+    assert.equal(mock.postCount(), 0);
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+// ── PR-D review round 14: tokenized scope/owner, scheme-agnostic URL, query-routed + deep-encoding paths ──
+
+test("PR-D r14 (brutalist/Codex P1): prefixed/composite/slug scope+owner fields & owner canary_field are refused", () => withTempHome(async () => {
+  const domain = "idor-tokenized.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const bodyCases = [
+      { label: "prefixed victim_tenant_id", create_body: { victim_tenant_id: "v" }, reason: "create_body_scope_field" },
+      { label: "composite owner_user_id", create_body: { owner_user_id: "v" }, reason: "create_body_owner_field" },
+      { label: "tenant_slug", create_body: { tenant_slug: "v" }, reason: "create_body_scope_field" },
+      { label: "workspaceKey", create_body: { workspaceKey: "v" }, reason: "create_body_scope_field" },
+      { label: "org_code", create_body: { org_code: "v" }, reason: "create_body_scope_field" },
+    ];
+    for (const c of bodyCases) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: c.create_body }, { fetch_fn: mock });
+      assert.equal(result.confirmed, false, `${c.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.reason, c.reason, c.label);
+      assert.equal(mock.postCount(), 0, `${c.label}: ZERO create POSTs`);
+    }
+    // owner-named canary_field → canary would land in an ownership slot.
+    for (const cf of ["user_id", "owner_id", "createdBy"]) {
+      const mock = liveArmFetchFn();
+      const r = await idorConfirm({ ...baseArgs(domain), canary_field: cf }, { fetch_fn: mock });
+      assert.equal(r.reason, "canary_field_overlaps_owner_field", cf);
+      assert.equal(mock.postCount(), 0, `${cf}: ZERO create POSTs`);
+    }
+    // benign timestamp / content fields must NOT be over-blocked → mints.
+    const mock = liveArmFetchFn();
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { created_at: "2026-01-01", updated_at: "2026-01-02", title: "synthetic" } }, { fetch_fn: mock });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (brutalist/Codex P1): non-HTTP URI scheme create_body values are refused (scheme-agnostic)", () => withTempHome(async () => {
+  const domain = "idor-uri-schemes.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const v of ["redis://internal:6379", "mongodb://internal/db", "ssh://internal", "jdbc:mysql://internal/db"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { conn: v } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_url_value", v);
+      assert.equal(mock.postCount(), 0, `${v}: ZERO create POSTs`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (Codex P1): a query-routed recorded endpoint is refused before any create", () => withTempHome(async () => {
+  const domain = "idor-query-routed.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/items/${OBJ_B}?type=invoice`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), path_template: "/api/items/{id}", canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, false, JSON.stringify(result));
+    assert.equal(result.reason, "create_collection_query_routed_endpoint");
+    assert.equal(mock.postCount(), 0, "no create derived from a query-routed endpoint");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r14 (brutalist): a deeply-nested percent-encoding cannot hide the action verb", () => {
+  // 13 nested %25 layers in front of a `;`-encoded matrix suffix on `transfer`: the bumped decode depth
+  // resolves the encoding and the verb still surfaces (action-shaped); a residual triplet beyond the decode
+  // budget is separately fail-closed as unresolved-encoding. Either way the create POST is refused.
+  const deep = `https://h/api/transfer%${"25".repeat(13)}3bv=1`;
+  assert.throws(() => assertCreateCollectionShapeSafe(deep, "t"), /action-shaped|unresolved-encoding/);
+});
+
+// ───────────────────────────── round-15 review (brutalist + Codex P1) ─────────────────────────────
+
+test("PR-D r15 (Codex P1): deep id-alias create_body keys (id.uuid / uid[value]) are refused", () => withTempHome(async () => {
+  const domain = "idor-r15-idalias.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    // A dotted/bracketed deep-setter id alias collapses to a non-alias whole-name (id.uuid -> "iduuid"),
+    // so it must be split + matched per segment exactly like keyHasReservedSegment does for proto keys.
+    for (const body of [{ "id.uuid": "x" }, { "uid[value]": "x" }, { "objectId.guid": "x" }]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: body }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_client_supplied_id", JSON.stringify(body));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+    // canary_field as a deep id-alias path is also refused (mirrored check).
+    const mock = liveArmFetchFn();
+    const r = await idorConfirm({ ...baseArgs(domain), canary_field: "id.uuid" }, { fetch_fn: mock });
+    assert.equal(r.reason, "canary_field_aliases_id_field", JSON.stringify(r));
+    assert.equal(mock.postCount(), 0);
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15 (Codex P1): privilege-bearing create_body / canary_field is refused; benign field still mints", () => withTempHome(async () => {
+  const domain = "idor-r15-priv.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    // Unambiguous privilege fields (no owner token like "user", which would be caught as owner_field first —
+    // both block the write, but this test asserts the privilege reason specifically).
+    for (const body of [{ is_admin: true }, { roles: ["admin"] }, { permissions: ["x"] }, { granted_scopes: "a" }, { is_superuser: true }]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: body }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_privilege_field", JSON.stringify(body));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+    const mock = liveArmFetchFn();
+    const r = await idorConfirm({ ...baseArgs(domain), canary_field: "role" }, { fetch_fn: mock });
+    assert.equal(r.reason, "canary_field_overlaps_privilege_field", JSON.stringify(r));
+    assert.equal(mock.postCount(), 0);
+    // A benign non-privilege field still mints a signed MEDIUM (the selector is not over-broad).
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { title: "x" } }, { fetch_fn: liveArmFetchFn() });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+    assert.equal(ok.demonstrated_severity, "medium");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15 (brutalist): a GraphQL QUERY operation (not just mutation) in create_body is refused", () => withTempHome(async () => {
+  const domain = "idor-r15-gqlquery.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["query { users { id email } }", "query Me { me { id } }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", op);
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15 (brutalist): a derived /graphql collection + expanded action verbs block the create", () => {
+  // graphql ∈ WRITE_ACTION_VERBS — a derived POST /graphql is an arbitrary-operation surface, not a create.
+  assert.throws(() => assertCreateCollectionShapeSafe("https://h/graphql", "t"), /action-shaped segment/);
+  assert.throws(() => assertCreateCollectionShapeSafe("https://h/api/graphql", "t"), /action-shaped segment/);
+  // The brutalist/Codex-named missing action-noun class is now denied (singular + plural).
+  for (const v of ["redeem", "invite", "notify", "subscribe", "fulfill", "dispatch", "escalate", "webhook", "password", "broadcast", "renew", "upgrade", "provision", "claim", "issue"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h/api/${v}`, "t"), /action-shaped segment/, v);
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h/api/${v}s`, "t"), /action-shaped segment/, `${v}s`);
+  }
+  // benign resource collections still pass
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/notes", "t"));
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/accounts", "t"));
+});
+
+test("PR-D r15 (brutalist): a create response echoing FOREIGN PII fails closed before the next write", () => withTempHome(async () => {
+  const domain = "idor-r15-respii.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    // The FIRST create POST fires (we can only screen the RESPONSE after it returns), its 201 echoes a
+    // foreign email, and assertCreateRespClean fails closed before B/C are created → exactly 1 POST.
+    let posts = 0;
+    const mock = async ({ url, method, body }) => {
+      const u = new URL(url);
+      if (String(method || "GET").toUpperCase() === "POST" && u.pathname === "/api/accounts") {
+        posts += 1;
+        const parsed = JSON.parse(body || "{}");
+        return jsonResponse(201, { id: "obj-x", owner: "A", note: parsed.note, contact: "foreign-victim@othercorp.test" });
+      }
+      return challenge(404);
+    };
+    mock.postCount = () => posts;
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.reason, "create_response_contains_foreign_data", JSON.stringify(result));
+    assert.equal(mock.postCount(), 1, "B/C creates must NOT fire after A's response is found contaminated");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "a contaminated create response must sign NO offensive row (CR)");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15 (brutalist): a derived create nested in a real container (proj-123) is refused", () => withTempHome(async () => {
+  const domain = "idor-r15-nested.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orgs/acme/projects/proj-123/accounts/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/orgs/acme/projects/proj-123/accounts/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.reason, "create_collection_nested_in_real_container", JSON.stringify(result));
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs into a real fixed container");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r15/r16: pathHasConcreteParentInstance flags id-bearing parents (incl. encoded + single-digit), allows route words", () => {
+  assert.equal(pathHasConcreteParentInstance("/api/orgs/acme/projects/proj-123/accounts"), true);
+  assert.equal(pathHasConcreteParentInstance("/api/users/42/notes"), true);
+  assert.equal(pathHasConcreteParentInstance("/api/t/550e8400-e29b-41d4-a716-446655440000/notes"), true);
+  // r16 (Codex P1): single-digit separated id portion (org-1, 7_widgets) is an instance.
+  assert.equal(pathHasConcreteParentInstance("/api/orgs/org-1/accounts"), true, "single-digit id-bearing parent");
+  assert.equal(pathHasConcreteParentInstance("/api/7_widgets/items"), true, "leading single-digit id-bearing parent");
+  // r16 (brutalist / Codex P1): an ENCODED concrete parent must decode before the check (parser-consistent
+  // with the action-verb guard), and a residual percent-escape fails closed.
+  assert.equal(pathHasConcreteParentInstance("/api/users/%34%32/notes"), true, "encoded numeric parent (%34%32 -> 42)");
+  assert.equal(pathHasConcreteParentInstance("/api/projects/proj%2d123/accounts"), true, "encoded slug-id parent (proj%2d123 -> proj-123)");
+  assert.equal(pathHasConcreteParentInstance("/api/users/%zz/notes"), true, "residual percent-escape parent fails closed");
+  // allowed: route words / version tags (no separated id portion)
+  assert.equal(pathHasConcreteParentInstance("/api/notes"), false);
+  assert.equal(pathHasConcreteParentInstance("/api/v1/notes"), false, "a version tag is not an instance");
+  assert.equal(pathHasConcreteParentInstance("/api/oauth2/tokens"), false, "an acronym-with-digit route word is not an instance");
+});
+
+// ───────────────────────────── round-16 review (brutalist + Codex P1 + CodeRabbit) ─────────────────────────────
+
+test("PR-D r16 (brutalist): anonymous GraphQL query shorthand ({ viewer { email } }) is refused; benign JSON-object string mints", () => withTempHome(async () => {
+  const domain = "idor-r16-gqlanon.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const op of ["{ viewer { email } }", "{ users { id email } }", "{ me { id } }"]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { query: op } }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_graphql_operation", op);
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+    // A brace-wrapped value that IS valid JSON (quoted keys + colons) is NOT a GraphQL document → mints.
+    const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { meta: '{"k":"v"}' } }, { fetch_fn: liveArmFetchFn() });
+    assert.equal(ok.confirmed, true, JSON.stringify(ok));
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r16 (Codex P1): credential-NAMED create_body / canary_field is refused; secret_note still mints", () => withTempHome(async () => {
+  const domain = "idor-r16-cred.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    // Value matches NO token-shape regex, but the credential NAME must fail closed.
+    for (const body of [{ password: "weak" }, { api_key: "local-test" }, { client_secret: "x" }, { access_token: "x" }, { authorization: "Basic x" }, { db_password: "x" }]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: body }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_credential_field", JSON.stringify(body));
+      assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    }
+    // canary_field that is a credential name is refused — and must NOT POST before rejecting (CR r16).
+    const mock = liveArmFetchFn();
+    const r = await idorConfirm({ ...baseArgs(domain), canary_field: "password" }, { fetch_fn: mock });
+    assert.equal(r.reason, "canary_field_overlaps_credential_field", JSON.stringify(r));
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs");
+    // A benign field merely CONTAINING "secret"/"token" as a sub-word (secret_note / csrf_token) still mints.
+    for (const f of ["secret_note", "csrf_token"]) {
+      const ok = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: { [f]: "x" } }, { fetch_fn: liveArmFetchFn() });
+      assert.equal(ok.confirmed, true, `${f} must not be a false-positive: ${JSON.stringify(ok)}`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r16 (Codex P1): company_id is a tenant scope selector", () => withTempHome(async () => {
+  const domain = "idor-r16-company.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    for (const body of [{ company_id: "victim-co" }, { companyId: "victim-co" }, { enterprise_id: "x" }]) {
+      const mock = liveArmFetchFn();
+      const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note", create_body: body }, { fetch_fn: mock });
+      assert.equal(result.reason, "create_body_scope_field", JSON.stringify(body));
+      assert.equal(mock.postCount(), 0);
+    }
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r16 (Codex P1): a single-digit id-bearing parent container (org-1) is refused end-to-end", () => withTempHome(async () => {
+  const domain = "idor-r16-singledigit.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orgs/org-1/accounts/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/orgs/org-1/accounts/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.reason, "create_collection_nested_in_real_container", JSON.stringify(result));
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs into a real fixed container");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r16 (Codex P1): a TRUNCATED create response fails closed before using the captured id", () => withTempHome(async () => {
+  const domain = "idor-r16-trunc.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    let posts = 0;
+    const mock = async ({ url, method, body }) => {
+      const u = new URL(url);
+      if (String(method || "GET").toUpperCase() === "POST" && u.pathname === "/api/accounts") {
+        posts += 1;
+        const parsed = JSON.parse(body || "{}");
+        return { ...jsonResponse(201, { id: "obj-x", owner: "A", note: parsed.note }), bodyTruncated: true };
+      }
+      return challenge(404);
+    };
+    mock.postCount = () => posts;
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.reason, "create_response_truncated", JSON.stringify(result));
+    assert.equal(mock.postCount(), 1, "B/C creates must NOT fire after A's response is found truncated");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "a truncated create response must sign NO offensive row");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r16 (brutalist/Codex): expanded workflow verbs block the derived create", () => {
+  for (const v of ["verify", "confirm", "accept", "decline", "complete", "release", "promote", "demote", "resend", "deliver", "merge"]) {
+    assert.throws(() => assertCreateCollectionShapeSafe(`https://h/api/${v}`, "t"), /action-shaped segment/, v);
+  }
+  assert.doesNotThrow(() => assertCreateCollectionShapeSafe("https://h/api/notes", "t"));
+});
