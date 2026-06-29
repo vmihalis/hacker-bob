@@ -985,6 +985,9 @@ async function runInvariantForFinding({
   let sealedProjectParent = null;
   if (dry_run !== true) {
     let runHarnessPath;
+    // The fork endpoints actually used. Non-sealed runs keep the agent's fork_urls; a SEALED
+    // cross-stack run forks from the operator-pinned TRUSTED ladder instead (see below).
+    let forkUrlsForRun = fork_urls;
     if (isSealedCrossStack) {
       // Provision the runner-owned SEALED project under $HOME (foundry-runner requires the harness
       // under home) and run forge against IT — the agent's harness_path is NOT used for a sealed
@@ -1000,6 +1003,16 @@ async function runInvariantForFinding({
       });
       writtenPath = sealed.testPath;
       runHarnessPath = sealed.projectDir;
+      // The FORK ITSELF must use the operator-pinned TRUSTED ladder, NOT the agent's fork_urls.
+      // Otherwise an attacker RPC can serve the REAL target bytecode (so the eth_getCode cross-check
+      // below still matches) while FALSIFYING storage / proxy-implementation state, forging the
+      // flip against fake fork state. resolveEvmRpcEndpoints reads BOB_EVM_RPCS_<chainId> / the
+      // code-pinned default ladder — never agent input. An unconfigured / non-archival ladder makes
+      // the fork fail -> fail-closed (no cross-stack verification until a trusted archival RPC exists).
+      // No valid chain_id -> NO trusted endpoints (the fork fails / fail-closed), NEVER agent fork_urls.
+      forkUrlsForRun = (Number.isInteger(chain_id) && chain_id > 0)
+        ? require("./evm-rpc-pool.js").resolveEvmRpcEndpoints(chain_id)
+        : [];
       sealedHarnessRan = true;
     } else {
       const bobDir = ensureHarnessTestDir(harness_path);
@@ -1021,7 +1034,7 @@ async function runInvariantForFinding({
         anchor_match: true,
         chain_id,
         fork_block,
-        fork_urls,
+        fork_urls: forkUrlsForRun,
         extra_args,
         timeout_ms,
         // The cross-stack consumable bytes injected into the foundry subprocess as
@@ -1056,7 +1069,10 @@ async function runInvariantForFinding({
     const identityBind = bindExecutedTestIdentity({
       foundryResult: foundryRawResult,
       writtenPath,
-      harnessPath: harness_path,
+      // The harness the run ACTUALLY executed under — the sealed project for a sealed cross-stack
+      // run, the agent harness otherwise. Using harness_path here would mark every sealed run
+      // identity_unbound (its executed file lives under the sealed project, not the agent harness).
+      harnessPath: runHarnessPath,
       contractName: contract_name,
       functionName: function_name,
     });

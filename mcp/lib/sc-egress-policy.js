@@ -75,10 +75,18 @@ function redactRpcEndpointArgs(args) {
   ));
 }
 
+// Foundry config-DISCOVERY-REDIRECT env. FOUNDRY_CONFIG points config discovery at an arbitrary
+// alternate foundry.toml and FOUNDRY_PROFILE selects a non-default profile — either can override the
+// runner-pinned project foundry.toml (e.g. the sealed cross-stack project's ffi-off / pinned-solc
+// config). Strip both from every SC subprocess so the on-disk project config is authoritative.
+// (Bounded defense-in-depth: an agent cannot set the MCP process env — this hardens the same-uid /
+// operator-env residual. Other FOUNDRY_* are config VALUES, not redirects, and are left alone.)
+const SC_FOUNDRY_CONFIG_REDIRECT_ENV_RE = /^(FOUNDRY_CONFIG|FOUNDRY_PROFILE)$/;
 function shouldStripInheritedSmartContractEnvKey(key) {
   return SC_PROXY_ENV_KEYS.includes(key)
     || SC_SECRET_ENV_KEY_RE.test(key)
-    || SC_RPC_ENV_KEY_RE.test(key);
+    || SC_RPC_ENV_KEY_RE.test(key)
+    || SC_FOUNDRY_CONFIG_REDIRECT_ENV_RE.test(key);
 }
 
 function shouldStripControlledSmartContractEnvKey(key) {

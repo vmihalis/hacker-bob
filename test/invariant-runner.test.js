@@ -411,6 +411,16 @@ test("SEALED ROUTING: a cross-stack invariant run executes the runner-owned SEAL
     assert.ok(foundryCall, "foundry_run was invoked");
     assert.notEqual(foundryCall.harness_path, harness, "the agent harness_path is NOT used for a sealed run");
     assert.match(foundryCall.harness_path, /\.bob-sealed-xstack-/, "forge ran the runner-owned sealed project");
+    // The FORK uses the operator-pinned trusted ladder, NOT the agent fork_urls — otherwise an
+    // attacker RPC could serve real bytecode but fake storage to forge the flip.
+    assert.ok(
+      Array.isArray(foundryCall.fork_urls) && !foundryCall.fork_urls.includes("https://attacker-controlled.example/rpc"),
+      "the agent fork_urls are NOT used for the sealed fork",
+    );
+    assert.ok(
+      foundryCall.fork_urls.some((u) => /publicnode|llamarpc|1rpc|ankr/.test(u)),
+      "the sealed fork uses the operator-pinned trusted ladder",
+    );
     assert.ok(sealedSrc, "the sealed test file existed during the run");
     assert.ok(!/import\s+["']forge-std/.test(sealedSrc), "no forge-std on the build path");
     assert.match(sealedSrc, /interface IBobVm/, "inlined Vm (self-contained)");
