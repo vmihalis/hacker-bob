@@ -52,7 +52,9 @@ Treat these as high-priority findings when introduced by a PR:
 - Session state, verification, grading, wave handoff, or report-generation
   mutations that break the server-enforced v2 lifecycle
   (`SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE -> REPORT`)
-  defined by `mcp/lib/lifecycle-gates.js` `LIFECYCLE_STATE_VALUES`.
+  defined by `LIFECYCLE_STATE_VALUES` (exported from
+  `mcp/lib/governance-contracts.js`; imported by `mcp/lib/lifecycle-gates.js`
+  for transition validation).
 - Packaging or release changes that omit required runtime files, include private
   local artifacts, break adapter installs, or make published packages drift from
   generated sources.

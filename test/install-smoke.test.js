@@ -257,7 +257,7 @@ test("installer copies a require-able complete MCP runtime", () => {
         "const installedRequire = require('module').createRequire(process.argv[1]);",
         "installedRequire('psl');",
         "installedRequire('proxy-agent');",
-        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 183) process.exit(2);",
+        "if (!Array.isArray(server.TOOLS) || server.TOOLS.length !== 186) process.exit(2);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_stage_verification_round_partial')) process.exit(53);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_plan_recon_angles')) process.exit(52);",
         "if (!server.TOOLS.some((tool) => tool.name === 'bob_register_mechanism_template')) process.exit(51);",

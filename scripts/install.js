@@ -636,6 +636,8 @@ function printInstallSummary(summary) {
     console.log(`Done. Restart Codex in ${summary.targetAbs}, then run: $bob-evaluate target.com`);
   } else if (summary.adapters.length === 1 && summary.adapters[0] === "generic-mcp") {
     console.log(`Done. Connect your MCP host to ${path.join(summary.targetAbs, "mcp", "server.js")} and read .hacker-bob/generic-mcp/hacker-bob.md.`);
+  } else if (summary.adapters.length === 1 && summary.adapters[0] === "kimi") {
+    console.log(`Done. Launch Kimi from ${summary.targetAbs} with: kimi --mcp-config-file .kimi/mcp.json  (Kimi does not auto-discover .kimi/mcp.json, so this flag is mandatory), then run: /skill:bob-evaluate target.com`);
   } else {
     console.log(`Done. Restart the selected host CLIs in ${summary.targetAbs} before continuing.`);
   }

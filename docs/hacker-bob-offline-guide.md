@@ -236,7 +236,7 @@ Here you run:
 ```bash
 npm test
 node scripts/generate-agent-tools.js --check
-node scripts/generate-bountyagent-skill.js --check
+node scripts/generate-hacker-bob-skill.js --check
 ```
 
 ## Installed Project
@@ -2317,7 +2317,7 @@ rg --files
 ## Find Tool Definitions
 
 ```bash
-rg "name: \"bounty_" mcp/lib/tools
+rg "name: \"bob_" mcp/lib/tools
 ```
 
 ## See Tool Registry Summary
@@ -2351,7 +2351,7 @@ npm test
 
 ```bash
 node scripts/generate-agent-tools.js --check
-node scripts/generate-bountyagent-skill.js --check
+node scripts/generate-hacker-bob-skill.js --check
 ```
 
 ## Inspect Installed-Style MCP Server

@@ -33,6 +33,7 @@ allowed-tools:
   - mcp__hacker-bob__bob_read_grade_verdict
   - mcp__hacker-bob__bob_init_session
   - mcp__hacker-bob__bob_init_repo_session
+  - mcp__hacker-bob__bob_init_contract_session
   - mcp__hacker-bob__bob_repo_inventory
   - mcp__hacker-bob__bob_repo_prepare_env
   - mcp__hacker-bob__bob_import_harness
@@ -102,6 +103,8 @@ allowed-tools:
   - mcp__hacker-bob__bob_prepare_node
   - mcp__hacker-bob__bob_finalize_node
   - mcp__hacker-bob__bob_schedule_graph_nodes
+  - mcp__hacker-bob__bob_materialize_producer_floor
+  - mcp__hacker-bob__bob_schedule_seed_producers
   - mcp__hacker-bob__bob_materialize_frontier
   - mcp__hacker-bob__bob_read_queue_policy
   - mcp__hacker-bob__bob_set_queue_policy
