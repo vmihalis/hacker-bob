@@ -7,6 +7,9 @@ const {
   withSessionLock,
 } = require("../storage.js");
 const {
+  CLAMP_CEILING,
+  loadQueuePolicy,
+  mergeInitOwnedPolicyFields,
   normalizeQueuePolicy,
   writeQueuePolicy,
 } = require("../queue-policy.js");
@@ -17,8 +20,22 @@ function handler(args) {
   if (typeof policyInput !== "object" || Array.isArray(policyInput)) {
     throw new Error("policy must be an object");
   }
-  const normalized = normalizeQueuePolicy(policyInput);
-  const persisted = withSessionLock(domain, () => writeQueuePolicy(domain, normalized));
+  // Validate the operator-supplied override eagerly so a malformed policy fails
+  // before the session lock is taken.
+  normalizeQueuePolicy(policyInput);
+  // bob_set_queue_policy is a PARTIAL update: every omitted field full-overwrites
+  // back to its default. That clobbers the init-owned governor fields (OD4
+  // linked_contract_depth + the OD1 seed caps) a session front door
+  // (bob_init_contract_session) persisted, because normalizeQueuePolicy resets an
+  // omitted governor to DEFAULT_QUEUE_POLICY. Read-modify-write those governors
+  // against the persisted policy under the lock so the operator's depth/seed
+  // override is durable across later partial updates; all other fields keep their
+  // full-overwrite semantics.
+  const persisted = withSessionLock(domain, () => {
+    const existing = loadQueuePolicy(domain);
+    const merged = mergeInitOwnedPolicyFields(policyInput, existing);
+    return writeQueuePolicy(domain, merged);
+  });
   return JSON.stringify({
     version: 1,
     target_domain: domain,
@@ -33,7 +50,9 @@ module.exports = Object.freeze({
     "~/hacker-bob-sessions/<domain>/queue-policy.json. The policy is normalized via " +
     "normalizeQueuePolicy and consumed by the wave planner and scheduler. Carries " +
     "max_parallel_tasks, priority_order, stale_after_ms, close_blocked_on_freeze, " +
-    "and the wave targets/budgets/lens.",
+    "the wave targets/budgets/lens, and the init-owned OD governors " +
+    "(linked_contract_depth plus the OD1 seed caps seed_producer_per_pass_cap, " +
+    "per_expander_linked_address_cap, max_total_seed_producers).",
   inputSchema: {
     type: "object",
     properties: {
@@ -43,7 +62,10 @@ module.exports = Object.freeze({
       policy: {
         type: "object",
         description:
-          "Partial or full QueuePolicy. Unspecified fields fall back to DEFAULT_QUEUE_POLICY.",
+          "Partial or full QueuePolicy. Unspecified fields fall back to DEFAULT_QUEUE_POLICY, " +
+          "except the init-owned OD governors (linked_contract_depth and the OD1 seed caps), " +
+          "which a partial update read-modify-writes against the persisted policy so an " +
+          "init-time override survives an omission.",
         properties: {
           max_parallel_tasks: { type: "integer" },
           priority_order: {
@@ -120,6 +142,19 @@ module.exports = Object.freeze({
               required: ["surface_id", "attestation_token"],
             },
           },
+          // OD1 seed-producer governors + OD4 linked-contract depth governor.
+          // These are the init-owned, MCP-enforced fan-out bounds normalizeQueuePolicy
+          // rebuilds and mergeInitOwnedPolicyFields read-modify-writes; declaring them
+          // here (additionalProperties defaults false) makes the operator-update path
+          // reachable instead of rejecting the field at the tool boundary. Bounds are
+          // the AUTHORITATIVE normalizeQueuePolicy clamps: the seed caps are positive
+          // integers <= CLAMP_CEILING; linked_contract_depth allows 0 (no recursion)
+          // up to 32. An out-of-bounds value fails closed at the schema boundary and
+          // again in the normalizer.
+          seed_producer_per_pass_cap: { type: "integer", minimum: 1, maximum: CLAMP_CEILING },
+          per_expander_linked_address_cap: { type: "integer", minimum: 1, maximum: CLAMP_CEILING },
+          max_total_seed_producers: { type: "integer", minimum: 1, maximum: CLAMP_CEILING },
+          linked_contract_depth: { type: "integer", minimum: 0, maximum: 32 },
         },
       },
     },

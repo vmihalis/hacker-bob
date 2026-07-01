@@ -4,6 +4,7 @@ const fs = require("fs");
 const {
   assertBoolean,
   assertEnumValue,
+  assertInteger,
   assertNonEmptyString,
 } = require("./validation.js");
 const {
@@ -16,6 +17,11 @@ const {
 const {
   TARGET_CLASS_VALUES,
 } = require("./target-classes.js");
+const {
+  DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
+  DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
+} = require("./constants.js");
 
 const TASK_PRIORITY_VALUES = Object.freeze(["critical", "high", "medium", "low"]);
 const QUEUE_STATUS_VALUES = Object.freeze(["queued", "assigned", "running", "blocked", "closed", "dismissed"]);
@@ -156,6 +162,26 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   // exists (mode 0600 enforced); when the file is absent the token
   // must still be a non-empty string and is recorded for audit.
   partial_surface_advance_acknowledgements: [],
+  // OD1 seed-producer governors. The per-pass cap and the per-expander
+  // linked-address cap are the LOAD-BEARING, MCP-enforced, NON-null fan-out
+  // bounds: they cap how many seed producers a single pass may mint and how many
+  // linked addresses one expander may follow, so they are the primary throttle on
+  // the cell-floor materializer's seed expansion. The 1024 max_total_seed_producers
+  // is an OD1 lifetime BACKSTOP only — a last-resort cumulative ceiling, never the
+  // primary throttle. These fields are DECLARED here for sibling nodes to consume;
+  // this node does not wire them into any producer.
+  max_total_seed_producers: DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
+  seed_producer_per_pass_cap: DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  per_expander_linked_address_cap: DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
+  // OD4 linked-contract recursion depth governor. Bounds how deep the emergent
+  // sc_address_expander recursion descends a contract lineage: a producer_key
+  // whose proposed depth exceeds this value is NOT proposed and is REPORTED as a
+  // linked_contract_depth_capped gap (RANK != BOUND — named by contract, never a
+  // silent drop), so the cap is non-blocking. depth 0 = no recursion is
+  // representable. The literal 3 mirrors the seed-side default in
+  // init-contract-session.js (duplicated rather than shared because constants.js
+  // is outside this field's wiring scope).
+  linked_contract_depth: 3,
 });
 
 const FRICTION_KIND_VALUES = Object.freeze(["tool_absent", "tool_inadequate"]);
@@ -484,6 +510,35 @@ function normalizeQueuePolicy(input = {}) {
         : normalizePositiveInteger(input.max_total_spawned_agents, "max_total_spawned_agents", { max: 4096 }),
     partial_surface_advance_acknowledgements:
       normalizePartialSurfaceAcknowledgements(input.partial_surface_advance_acknowledgements),
+    // OD1 seed-producer governors. The per-pass + per-expander linked-address
+    // caps use the NON-clearable `== null ? default` idiom (no explicit-null ->
+    // null branch), so an explicit null falls back to the default and they can
+    // never be cleared to null — they are the real MCP-enforced fan-out bounds.
+    // The lifetime total is the same shape but is only a backstop, never the
+    // primary throttle. All three MUST be rebuilt here: normalize does not spread
+    // DEFAULT_QUEUE_POLICY, so a default-only field would be silently dropped.
+    max_total_seed_producers:
+      input.max_total_seed_producers == null
+        ? DEFAULT_QUEUE_POLICY.max_total_seed_producers
+        : normalizePositiveInteger(input.max_total_seed_producers, "max_total_seed_producers", { max: CLAMP_CEILING }),
+    seed_producer_per_pass_cap:
+      input.seed_producer_per_pass_cap == null
+        ? DEFAULT_QUEUE_POLICY.seed_producer_per_pass_cap
+        : normalizePositiveInteger(input.seed_producer_per_pass_cap, "seed_producer_per_pass_cap", { max: CLAMP_CEILING }),
+    per_expander_linked_address_cap:
+      input.per_expander_linked_address_cap == null
+        ? DEFAULT_QUEUE_POLICY.per_expander_linked_address_cap
+        : normalizePositiveInteger(input.per_expander_linked_address_cap, "per_expander_linked_address_cap", { max: CLAMP_CEILING }),
+    // OD4 depth governor. Rebuilt here alongside the OD1 seed governors so a
+    // default-only field is not silently dropped (normalize does not spread
+    // DEFAULT_QUEUE_POLICY). assertInteger (not normalizePositiveInteger) is used
+    // directly because depth 0 = no recursion must be representable; the field is
+    // NON-clearable (an explicit null falls back to the default and it can never
+    // resolve to null), exactly like the OD1 seed governors above.
+    linked_contract_depth:
+      input.linked_contract_depth == null
+        ? DEFAULT_QUEUE_POLICY.linked_contract_depth
+        : assertInteger(input.linked_contract_depth, "linked_contract_depth", { min: 0, max: 32 }),
   };
   policy.priority_order = Array.from(new Set(policy.priority_order));
   // The auto-fill safety governor — RANK != BOUND. Lifting WIDTH (wave size,
@@ -528,6 +583,44 @@ function normalizeQueuePolicy(input = {}) {
     throw new Error("deep_wave_max must be >= deep_wave_target");
   }
   return policy;
+}
+
+// Governor fields a session FRONT DOOR (bob_init_contract_session) persists into
+// the queue policy and that a later PARTIAL bob_set_queue_policy must NOT reset to
+// DEFAULT_QUEUE_POLICY. normalizeQueuePolicy rebuilds the whole policy from its
+// input, so a set_queue_policy call that OMITS one of these governors falls back
+// to the default and silently drops the operator's persisted override (the OD4
+// depth and the OD1 seed caps are the MCP-enforced, non-clearable fan-out bounds —
+// a reset to default is a coverage/depth regression, not a no-op). The
+// set_queue_policy handler read-modify-writes these against the persisted policy.
+const INIT_OWNED_POLICY_FIELDS = Object.freeze([
+  "linked_contract_depth",
+  "max_total_seed_producers",
+  "seed_producer_per_pass_cap",
+  "per_expander_linked_address_cap",
+]);
+
+// Read-modify-write the INIT_OWNED_POLICY_FIELDS: each governor ABSENT from the
+// set_queue_policy `input` inherits its value from the normalized `existing`
+// policy, so a partial update preserves the operator's init-time override. A
+// governor PRESENT in the input (any value, including an explicit null that
+// normalizeQueuePolicy resolves back to the default) is left untouched, so the
+// operator can still deliberately update or reset it. Every OTHER policy field is
+// unaffected and keeps its full-overwrite (omitted -> default) semantics.
+function mergeInitOwnedPolicyFields(input, existing) {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("policy must be an object");
+  }
+  if (existing == null || typeof existing !== "object" || Array.isArray(existing)) {
+    return { ...input };
+  }
+  const merged = { ...input };
+  for (const field of INIT_OWNED_POLICY_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(input, field) && existing[field] != null) {
+      merged[field] = existing[field];
+    }
+  }
+  return merged;
 }
 
 function compareQueuedTasks(a, b, policy = DEFAULT_QUEUE_POLICY) {
@@ -577,6 +670,7 @@ module.exports = {
   CLAMP_CEILING,
   CONSERVATIVE_WIDTH_BASELINE,
   DEFAULT_NESTING_SPAWN_BUDGET,
+  INIT_OWNED_POLICY_FIELDS,
   LEAN_PROFILE,
   MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
@@ -586,6 +680,7 @@ module.exports = {
   TASK_PRIORITY_VALUES,
   compareQueuedTasks,
   loadQueuePolicy,
+  mergeInitOwnedPolicyFields,
   normalizeFrictionScanner,
   normalizeFrictionScanners,
   normalizePartialSurfaceAcknowledgement,

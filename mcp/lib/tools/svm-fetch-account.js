@@ -70,7 +70,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "cluster", "pubkey"]
   },
   handler,
-  role_bundles: ["evaluator-svm", "verifier", "evidence"],
+  role_bundles: ["evaluator-svm", "verifier", "evidence", "sc-recon"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

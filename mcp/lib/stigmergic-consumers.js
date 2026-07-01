@@ -315,6 +315,37 @@ const STIGMERGIC_CONSUMERS = Object.freeze([
     rationale:
       "model-info reads consume inspectable calibrated factor metadata as advisory calibration evidence, never claim, grade, or dispatch authority",
   }),
+  Object.freeze({
+    // The producer-floor materializer reads the PRODUCER_PACKS recon DAG and
+    // emits the producer_proposed deposits the scheduler dispatches as the next
+    // recon layer. Aggregate (dispatch-granular) consumer paired with the
+    // aggregate recon-DAG dispatch producer.
+    consumer_id: "recon_producer_floor_dispatch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/materialize-producer-floor.js",
+      token_or_regex: "PRODUCER_PACKS",
+    }),
+    producer_id: "recon_producer_dag_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "producer-floor materializer reads the PRODUCER_PACKS DAG and emits producer_proposed events the scheduler dispatches as the next recon layer",
+  }),
+  Object.freeze({
+    // The producer-floor materializer's SC recursion planner reads the live
+    // smart_contract surface inventory and emits the per-instance
+    // sc_address_expander proposals the scheduler dispatches as the next
+    // chain-expansion layer. Aggregate (dispatch-granular) consumer paired
+    // with the aggregate SC-expander dispatch producer.
+    consumer_id: "sc_expander_floor_dispatch_reader",
+    source_location: Object.freeze({
+      file: "mcp/lib/tools/materialize-producer-floor.js",
+      token_or_regex: "planScExpanderRecursion",
+    }),
+    producer_id: "sc_expander_recursion_dispatch_signals",
+    decision_boundary: "scheduler_selection",
+    rationale:
+      "sc-expander floor reader consumes the per-instance sc_address_expander proposals the recursion planner emits and dispatches the next chain-expansion layer",
+  }),
 ]);
 
 const CONSUMER_IDS = Object.freeze(

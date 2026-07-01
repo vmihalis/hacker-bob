@@ -51,6 +51,7 @@ const {
   OSS_ROOTCAUSE_FAMILIES,
   suggestFamiliesForSurface,
 } = require("./oss-rootcause-family-corpus.js");
+const { isStdlibRepoRef } = require("./oss-repo-ref-denylist.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 const { loadQueuePolicy } = require("./queue-policy.js");
 const { safeAppendPipelineEventDirect } = require("./pipeline-events.js");
@@ -79,6 +80,8 @@ const KNOWN_INTERNAL_LEAD_SOURCES = new Set([
   "bob_http_scan",
   "bob_extract_routes",
   "bob_route_surfaces",
+  "sc_address_expander",
+  "sc-recon-expander",
 ]);
 
 function isExternalProducerLead(lead) {
@@ -90,6 +93,25 @@ function isExternalProducerLead(lead) {
   if (!sourceTool) return false;
   if (sourceTool.startsWith("external_")) return true;
   return !KNOWN_INTERNAL_LEAD_SOURCES.has(sourceTool);
+}
+
+// OD2 — classify an oss_repo_ref lead the SC-address expander discovered.
+// RANK != BOUND: every ref is discovered:true (denylisted or not) so nothing
+// is silently dropped; promote:false is universal (the operator owns the scope
+// decision on third-party code, matching the sc-recon-expander contract); the
+// well-known-library denylist gates only auto_run_eligible — a stdlib ref is
+// reported but not auto-run, a non-stdlib ref is auto-run eligible.
+function classifyOssRepoRefLead(githubRef) {
+  const ref = typeof githubRef === "string" ? githubRef.trim() : "";
+  const stdlib = isStdlibRepoRef(ref);
+  return {
+    github_ref: ref,
+    surface_type: "oss_repo_ref",
+    discovered: true,
+    stdlib,
+    promote: false,
+    auto_run_eligible: !stdlib,
+  };
 }
 
 // Fix #134 — emit a soft observation.recorded warning for each
@@ -149,19 +171,67 @@ function warnExternalProducerMissingRationale(domain, normalizedLeads) {
   }
 }
 
+// Y-D21 / derive a contract-address identity key for
+// smart_contract surfaces so a surface_id keys on the on-chain identity
+// (chain_family, chain_id, contract_address.toLowerCase()) rather than the
+// human title. Returns a `${chain_family}:${chain_id}:${address}` string
+// (address lowercased; family/chain_id trimmed) when the lead is a
+// smart_contract carrying chain_family + chain_id + a contract address
+// (an explicit contract_address field, or the first endpoints[] entry in
+// the canonical 'family:chainId:address' form whose family/chainId match the
+// lead's own chain_family/chain_id). Returns null otherwise so the caller
+// falls back to the existing key/title/host/endpoint identity.
+function smartContractSurfaceKey(lead) {
+  if ((lead.surface_type || "").trim() !== "smart_contract") return null;
+  const chainFamily = typeof lead.chain_family === "string" ? lead.chain_family.trim() : "";
+  if (!chainFamily) return null;
+  const chainId = lead.chain_id == null ? "" : String(lead.chain_id).trim();
+  if (!chainId) return null;
+  let address = null;
+  if (typeof lead.contract_address === "string" && lead.contract_address.trim()) {
+    address = lead.contract_address.trim();
+  } else if (Array.isArray(lead.endpoints)) {
+    for (const endpoint of lead.endpoints) {
+      if (typeof endpoint !== "string") continue;
+      const parts = endpoint.split(":");
+      if (parts.length < 3) continue;
+      const candidate = parts.slice(2).join(":").trim();
+      if (!candidate) continue;
+      // Guard against mis-parsing an unrelated endpoint (e.g. a web URL):
+      // the 'family:chainId:...' prefix must match the lead's own identity.
+      if (parts[0].trim().toLowerCase() !== chainFamily.toLowerCase()) continue;
+      if (parts[1].trim() !== chainId) continue;
+      address = candidate;
+      break;
+    }
+  }
+  if (!address) return null;
+  return `${chainFamily}:${chainId}:${address.toLowerCase()}`;
+}
+
 function uniqueSurfaceId(lead) {
-  // The surface_id is a deterministic function of the lead's identity
-  // (key/title/host/endpoint), so re-promoting the same lead across waves
-  // yields the same id — the materializer folds the repeated surface.observed
-  // by id onto one surface — rather than a parallel duplicate. The id width
-  // (128 bits) keeps an identity collision (which would silently fold two
-  // distinct surfaces into one) operationally negligible.
-  const identity = {
-    key: lead.key || lead.id || null,
-    title: lead.title || null,
-    host: (lead.hosts && lead.hosts[0]) || null,
-    endpoint: (lead.endpoints && lead.endpoints[0]) || null,
-  };
+  // The surface_id is a deterministic function of the lead's identity, so
+  // re-promoting the same lead across waves yields the same id — the
+  // materializer folds the repeated surface.observed by id onto one surface —
+  // rather than a parallel duplicate. The id width (128 bits) keeps an
+  // identity collision (which would silently fold two distinct surfaces into
+  // one) operationally negligible.
+  //
+  // For smart_contract surfaces the identity keys on the on-chain identity
+  // (chain_family, chain_id, contract_address.toLowerCase()) instead of the
+  // human title, so two distinct contracts that share a title do NOT fold and
+  // the same contract folds across its lead and resolved-surface forms
+  // (different titles/hosts/endpoints/keys). Web/repo surfaces keep the
+  // key/title/host/endpoint identity unchanged.
+  const scKey = smartContractSurfaceKey(lead);
+  const identity = scKey != null
+    ? { contract: scKey }
+    : {
+      key: lead.key || lead.id || null,
+      title: lead.title || null,
+      host: (lead.hosts && lead.hosts[0]) || null,
+      endpoint: (lead.endpoints && lead.endpoints[0]) || null,
+    };
   return `lead-${hashCanonicalJson(identity).slice(0, 32)}`;
 }
 
@@ -709,5 +779,6 @@ module.exports = {
   recordSurfaceLeads,
   recordStaticAnalysisLeads,
   recordSurfaceLeadsForWaveHandoff,
+  classifyOssRepoRefLead,
   _internals: { uniqueSurfaceId },
 };

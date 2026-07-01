@@ -63,7 +63,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "network", "address"]
   },
   handler,
-  role_bundles: ["evaluator-cosmwasm", "verifier", "evidence"],
+  role_bundles: ["evaluator-cosmwasm", "verifier", "evidence", "sc-recon"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

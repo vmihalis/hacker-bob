@@ -5,9 +5,13 @@
 // reserves this module as the place where future cycles (F.3, C.3, C.7)
 // hang real prerequisite checks on per-transition gate hooks.
 //
-// Today the gates are intentionally minimal: every transition listed in
-// ALLOWED_TRANSITIONS returns an empty blocker list. The hook architecture
-// must exist so later cycles can extend it without rewriting the surface.
+// The gates hang real prerequisite checks on per-transition hooks. SETUP ->
+// OPEN_FRONTIER requires at least one routed seed surface (seed_surfaces_present);
+// OPEN_FRONTIER -> CLAIM_FREEZE drains chain work, coverage cells, recon
+// producers, and partial surfaces; the VERIFY/GRADE gates enforce verification
+// and evidence completeness. A transition with no registered gate returns an
+// empty blocker list. The hook architecture stays open so later checks extend
+// it without rewriting the surface.
 //
 // Decision D3 from the hypergraph is honored verbatim: OPEN_FRONTIER ⇄
 // CLAIM_FREEZE is bidirectional, and REPORT → OPEN_FRONTIER is allowed so
@@ -47,6 +51,7 @@ const ALLOWED_TRANSITIONS = Object.freeze({
 // The gate consults requireVerificationCompleteForGrade and surfaces blocked
 // entries that mirror the legacy "VERIFY -> GRADE blocked" message.
 const TRANSITION_GATES = Object.freeze({
+  "SETUP->OPEN_FRONTIER": gateSetupToOpenFrontier,
   "VERIFY->GRADE": gateVerifyToGrade,
   "GRADE->REPORT": gateGradeToReport,
   "OPEN_FRONTIER->CLAIM_FREEZE": gateOpenFrontierToClaimFreeze,
@@ -320,6 +325,58 @@ function gateClaimFreezeToVerify(context) {
   return blockers;
 }
 
+// SETUP -> OPEN_FRONTIER seed gate. A frontier with zero routed seed surfaces
+// has nothing to schedule, so SETUP is not complete. Consumes the
+// seed_surfaces_present precondition (mcp/lib/scheduler-preconditions.js) — the
+// single source of truth for routed-seed counting; the gate never re-implements
+// route counting, keeping the closed-enum precondition authoritative and the
+// @precondition coherence check satisfied. Producer-agnostic: a seed surface
+// from ANY producer (web recon, repo inventory, or the contract-seeding funnel)
+// satisfies it. A reported_gap (a transient/setup error — e.g. a fresh session
+// with no surface input materialized yet) PASSES: a setup error must never read
+// as "no surfaces exist", so only a bare satisfied:false (a successful route
+// build that genuinely yields zero routes) pushes a blocker. The gate runs
+// inside advanceSession's withSessionLock and the precondition's forced
+// materializeFrontier(write:true) re-enters the same reentrant session lock, so
+// the in-lock call cannot deadlock. Fails closed: a precondition throw blocks.
+function gateSetupToOpenFrontier(context) {
+  const blockers = [];
+  let evaluation;
+  try {
+    evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "seed_surfaces_present",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `SETUP -> OPEN_FRONTIER precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  // PASS on a genuine routed seed surface (satisfied) OR a reported gap (a
+  // transient/setup error mapped non-terminal by the precondition).
+  if (evaluation.satisfied === true || evaluation.reported_gap === true) {
+    return blockers;
+  }
+  // BLOCK only on a bare satisfied:false — route building succeeded and the
+  // frontier genuinely carries zero routed seed surfaces.
+  blockers.push({
+    code: "seed_surfaces_absent",
+    blocked_by: "seed_surfaces_absent",
+    seed_surface_count: Number.isInteger(evaluation.seed_surface_count) ? evaluation.seed_surface_count : 0,
+    message:
+      "SETUP -> OPEN_FRONTIER blocked: zero routed seed surfaces - the frontier has nothing to schedule",
+    remediation:
+      "seed the frontier from a root producer before advancing: run seed mapping / "
+      + "bob_materialize_producer_floor for a web or repo target, OR initialize the contracts axis via "
+      + "bob_init_contract_session (which seeds one smart_contract surface per bound contract), then retry the transition",
+  });
+  return blockers;
+}
+
 // Y.10 (Y-P12) — partial-surface runtime gate. Refuses
 // OPEN_FRONTIER -> CLAIM_FREEZE while the latest merged wave-handoff has
 // any surface in `surface_status: "partial"` AND the operator has not
@@ -401,6 +458,46 @@ function gateOpenFrontierToClaimFreeze(context) {
         "dispatch the coverage-cell floor to closure (bob_materialize_cell_floor "
         + "then the bob_schedule_graph_nodes loop) so every reachable cell is "
         + "covered by a verified probe, then retry the transition",
+    });
+  }
+
+  // Recon-producer floor teeth: a materialized producer floor must reach its
+  // fixpoint (no READY non-advisory producer) before CLAIM_FREEZE. Self-
+  // activating — vacuously satisfied when no producer node was materialized, so
+  // recon-angle-only / legacy / surface-only runs are unaffected. RANK != BOUND:
+  // reported producer_gaps[] do not block; only a ready producer does.
+  // Accumulated into blockers[] like the chain-work / cell-closure gates above.
+  let seedProducers;
+  try {
+    seedProducers = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "seed_producers_drained",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (!seedProducers.satisfied) {
+    const readyProducerIds = Array.isArray(seedProducers.ready_producer_ids)
+      ? seedProducers.ready_producer_ids
+      : [];
+    blockers.push({
+      code: "seed_producers_undrained",
+      blocked_by: "seed_producers_undrained",
+      ready_count: seedProducers.ready_count,
+      ready_producer_ids: readyProducerIds,
+      message:
+        "OPEN_FRONTIER -> CLAIM_FREEZE blocked: "
+        + `${seedProducers.ready_count} recon producer(s) remain ready and undrained`
+        + (readyProducerIds.length > 0 ? ` (${readyProducerIds.join(", ")})` : ""),
+      remediation:
+        "dispatch the recon-producer floor to fixpoint via bob_materialize_producer_floor "
+        + "then the bob_schedule_seed_producers loop, then retry the transition",
     });
   }
 

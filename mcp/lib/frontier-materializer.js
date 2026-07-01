@@ -89,6 +89,23 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
   "contract_address",
   "file_path",
   "language",
+  // OD3 verified-source provenance marker threaded by finalize-node's producer
+  // surface emission (emitProducerObservedSurfaces). Without it here the
+  // materialized surface loses provenance and readScExpanderSurfaces reads "",
+  // silently disabling the OD3 same-chain-linked-contract gate on the persisted
+  // path.
+  "provenance",
+];
+
+// Integer scalar fields carried by surface.observed payloads. depth is the OD4
+// linked-contract recursion depth threaded monotonically by finalize-node's
+// producer surface emission (= producing-run depth + 1). It must round-trip as a
+// NUMBER — SURFACE_SCALAR_TEXT_FIELDS would trim it to a string and
+// readScExpanderSurfaces (Number.isInteger check) would then fall back to the
+// depth-1 default, so proposed_depth never reaches the linked_contract_depth cap
+// and OD4 depth-capping never fires on the persisted path.
+const SURFACE_SCALAR_INTEGER_FIELDS = [
+  "depth",
 ];
 
 const SURFACE_BOOLEAN_FIELDS = [
@@ -142,6 +159,25 @@ function applySurfaceFields(surface, event) {
     if (typeof payload[field] === "string" && payload[field].trim()) {
       surface[field] = payload[field].trim();
     }
+  }
+  for (const field of SURFACE_SCALAR_INTEGER_FIELDS) {
+    // Preserve as an integer NUMBER. JSON round-trips depth as a number, but a
+    // producer that stamped a numeric string is coerced back to an integer here
+    // so the materialized surface never carries a string depth downstream.
+    let incoming;
+    if (Number.isInteger(payload[field])) {
+      incoming = payload[field];
+    } else if (typeof payload[field] === "string" && /^-?\d+$/.test(payload[field].trim())) {
+      incoming = parseInt(payload[field].trim(), 10);
+    } else {
+      continue;
+    }
+    // depth is MONOTONIC: it is server-stamped as producing-run depth + 1, so a
+    // later event for the same surface must never LOWER a recorded depth. A
+    // missing prior value is the root lower bound (1). On the normal
+    // monotone-increasing path Math.max returns the incoming value unchanged.
+    const existing = Number.isInteger(surface[field]) ? surface[field] : 1;
+    surface[field] = Math.max(existing, incoming);
   }
   for (const field of SURFACE_BOOLEAN_FIELDS) {
     if (typeof payload[field] === "boolean") {

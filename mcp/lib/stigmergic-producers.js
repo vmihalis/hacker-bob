@@ -224,6 +224,37 @@ const STIGMERGIC_PRODUCERS = Object.freeze([
       "belief_model_info_reader",
     ]),
   }),
+  Object.freeze({
+    // Recon producer-DAG dispatch deposits. bob_materialize_producer_floor
+    // sweeps the whole PRODUCER_PACKS recon DAG and deposits one
+    // producer_proposed event per producer; the dispatch reader folds those
+    // deposits into the next scheduler layer. Aggregate (dispatch-granular)
+    // producer covering the recon DAG, mirroring the cell-floor dispatch
+    // signal — not one entry per web producer.
+    producer_id: "recon_producer_dag_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_producer_floor producer_proposed events over the PRODUCER_PACKS recon DAG",
+    trace_shape_ref: "mcp/lib/producer-packs.js#PRODUCER_PACKS",
+    registered_consumers: Object.freeze([
+      "recon_producer_floor_dispatch_reader",
+    ]),
+  }),
+  Object.freeze({
+    // SC-plane expander dispatch deposits. bob_materialize_producer_floor
+    // sweeps the live smart_contract surface inventory and deposits one
+    // sc_address_expander proposal per instance; the floor dispatch reader
+    // folds those deposits into the next chain-expansion layer. Aggregate
+    // (dispatch-granular) producer covering the recursion — not one entry per
+    // minted contract — mirroring the recon-DAG dispatch signal.
+    producer_id: "sc_expander_recursion_dispatch_signals",
+    mcp_tool_or_artifact:
+      "bob_materialize_producer_floor sc_expander_instances[] proposals over the live smart_contract surface inventory",
+    trace_shape_ref:
+      "mcp/lib/producer-packs.js#SC_ADDRESS_EXPANDER_PRODUCER_PACK",
+    registered_consumers: Object.freeze([
+      "sc_expander_floor_dispatch_reader",
+    ]),
+  }),
 ]);
 
 const PRODUCER_IDS = Object.freeze(

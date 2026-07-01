@@ -4,6 +4,7 @@ const {
   CAPABILITY_PACKS,
   smartContractCapabilityPacks,
 } = require("./capability-packs.js");
+const { PRODUCER_PACKS } = require("./producer-packs.js");
 const writeWaveHandoffTool = require("./tools/write-wave-handoff.js");
 
 // Render a markdown reference table of every pack's verifier dispatch.
@@ -225,6 +226,41 @@ function substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelFor) {
 }
 
 // ----------------------------------------------------------------------
+// Recon-producer catalogue rendering
+// ----------------------------------------------------------------------
+//
+// Structural twin of the evaluator pack catalogue: the orchestrator SETUP prose
+// documents the deterministic recon-producer floor, and this renders the
+// PRODUCER_PACKS DAG (`mcp/lib/producer-packs.js`) as a compact one-line-per-
+// producer catalogue. Host-agnostic (one render function feeds all three
+// adapters). Adding a producer pack auto-extends the catalogue at next
+// regeneration; no renderer edit is needed.
+
+const PRODUCER_CATALOGUE_PLACEHOLDER = "{{PRODUCER_CATALOGUE}}";
+
+function renderProducerCatalogue() {
+  const lines = Object.values(PRODUCER_PACKS).map((pack) => {
+    const trigger = pack.trigger || {};
+    const consumes = Array.isArray(trigger.consumes) && trigger.consumes.length > 0
+      ? trigger.consumes.join(", ")
+      : "—";
+    const produces = Array.isArray(pack.produces) && pack.produces.length > 0
+      ? pack.produces.join(", ")
+      : "—";
+    return `- \`${pack.producer_id}\` (${pack.recon_profile.angle} angle, ${trigger.kind}/${trigger.target_class}): consumes ${consumes}; produces ${produces}.`;
+  });
+  return [
+    "Recon-producer floor (source of truth `mcp/lib/producer-packs.js`; lookup by `producer_id`):",
+    ...lines,
+  ].join("\n");
+}
+
+function substituteProducerCatalogue(document) {
+  if (!document.includes(PRODUCER_CATALOGUE_PLACEHOLDER)) return document;
+  return document.split(PRODUCER_CATALOGUE_PLACEHOLDER).join(renderProducerCatalogue());
+}
+
+// ----------------------------------------------------------------------
 // bob_write_wave_handoff field-limit rendering
 // ----------------------------------------------------------------------
 //
@@ -309,14 +345,17 @@ module.exports = {
   HANDOFF_FIELD_LIMITS_PLACEHOLDER,
   EVALUATOR_PACK_CATALOGUE_PLACEHOLDER,
   EVALUATOR_REFRAME_POSTURE_PLACEHOLDER,
+  PRODUCER_CATALOGUE_PLACEHOLDER,
   renderCapabilityPackVerifierTable,
   renderClaudeEvaluatorPackCatalogue,
   renderCodexEvaluatorPackCatalogue,
   renderHandoffFieldLimits,
   renderEvaluatorReframePosture,
+  renderProducerCatalogue,
   substituteCapabilityPackVerifierTable,
   substituteClaudeEvaluatorPackCatalogue,
   substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 };
