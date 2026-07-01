@@ -274,6 +274,47 @@ test("two contracts sharing an 8-hex address prefix derive DISTINCT target_domai
   });
 });
 
+test("the companion path and the contracts-axis init path derive the SAME chain_authority_hash (uppercase family folds identically)", () => {
+  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
+  const initTool = require("../mcp/lib/tools/init-contract-session.js");
+
+  const contract = {
+    chain_family: "evm",
+    chain_id: "1",
+    address: "0x0000000000000000000000000000000000000001",
+  };
+  // deriveContractSession is the contracts-axis normal form the persisted
+  // chain_authority_hash is written from.
+  const initHash = initTool.deriveContractSession([contract]).authorityHash;
+  assert.notEqual(initHash, chainAuthorityHash([]), "sanity: non-empty set != empty-set hash");
+
+  // The companion path with an UPPERCASE family must fold to the identical hash,
+  // not the empty-set hash the old CAIP-string-through-classifyTargetToken path
+  // produced (which chain_scope_blocked every in-scope companion contract).
+  const companion = prepareContractCompanion([{ ...contract, chain_family: "EVM" }]);
+  assert.equal(companion.chain_authority_hash, initHash);
+  assert.notEqual(companion.chain_authority_hash, chainAuthorityHash([]));
+  // The CAIP-10 projection lowercases the family so the runtime tuple matches.
+  assert.deepEqual(
+    companion.target_contracts,
+    ["evm:1:0x0000000000000000000000000000000000000001"],
+  );
+});
+
+test("the companion path rejects a chain_id containing a colon (fail-closed, same as init)", () => {
+  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  assert.throws(
+    () => prepareContractCompanion([{
+      chain_family: "evm",
+      chain_id: "1:2",
+      address: "0x0000000000000000000000000000000000000001",
+    }]),
+    /chain_id must not contain ':'/,
+    "companion path must colon-guard chain_id like the init path",
+  );
+});
+
 test("bob_init_contract_session fails closed on an unknown chain_family", async () => {
   await withTempHome(async () => {
     const env = await executeTool("bob_init_contract_session", {

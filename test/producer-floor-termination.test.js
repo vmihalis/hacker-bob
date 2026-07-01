@@ -139,6 +139,19 @@ function strikeRows(domain, key, status) {
   ));
 }
 
+// Every producer_run row for one producer_key across all statuses — the raw
+// ledger-growth witness. The stale-dispatch reconciler must NOT persist a
+// per-floor-pass tick row, so a within-grace producer contributes a BOUNDED number
+// of these regardless of how many floor passes observe it.
+function producerRunRows(domain, key) {
+  return readFrontierEvents(domain).filter((event) => (
+    event.kind === "observation.recorded"
+    && event.payload
+    && event.payload.observation_kind === "producer_run"
+    && event.payload.producer_key === key
+  ));
+}
+
 test("three structural strikes auto-block; the blocked producer joins the terminal run set", () => {
   withTempHome(() => {
     assert.equal(STUCK_PRODUCER_DISPATCH_THRESHOLD, 3,
@@ -667,18 +680,70 @@ test("a healthy in-flight producer is NOT auto-blocked by repeated floor calls w
       const r = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
       assert.deepEqual(r.struck, [], "a within-grace healthy producer is never struck");
       assert.deepEqual(r.auto_blocked, [], "and never auto-blocked");
-      assert.deepEqual(r.ticked, [key], "it accrues only a non-striking grace tick");
+      assert.deepEqual(r.ticked, [key], "the pending producer is REPORTED every pass (off its live graph node)");
     }
     assert.equal(producerStrikeTally(domain, key), 0,
       "no structural strike ever accrued from repeated floor calls alone");
     assert.equal(producerRunSet(domain).has(key), false,
       "the healthy in-flight producer is never driven terminal by floor passes");
+    assert.equal(producerRunRows(domain, key).length, 0,
+      "a within-grace pending observation persists NO producer_run row — the pending state rides the graph node, not a ledger row per pass");
 
     // The same node, aged past the grace window, DOES converge — proving the clock
     // is wall-clock non-progress and not an unconditional pass through.
     const staleNow = Date.parse(dispatchedTs) + STALE_DISPATCH_GRACE_MS + 1000;
     const s = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs: staleNow });
     assert.deepEqual(s.struck, [key], "once aged past the grace window the same node strikes");
+  });
+});
+
+test("N within-grace floor passes append a BOUNDED number of producer_run rows (not one per pass); a genuinely-stuck node still converges to blocked", () => {
+  withTempHome(() => {
+    // The regression: the stale-dispatch reconciler wrote one transient tick row per
+    // floor pass for an in-flight producer, so N floor passes across the 15-minute
+    // grace window grew frontier-events.jsonl by ~N rows and trended to the refuse
+    // ceiling. The pending state already rides the node's live graph transition, so a
+    // within-grace pass must persist ZERO producer_run rows.
+    const domain = "stale-dispatch-bounded-rows.example.com";
+    const key = "web_urls";
+    const dispatchedTs = "2026-06-01T00:00:00.000Z";
+    const nodes = [{
+      node_id: "TG-producer-inflight", kind: "producer", state: "dispatched", ts_last: dispatchedTs,
+    }];
+    const map = new Map([["TG-producer-inflight", key]]);
+    // Every pass observes the same now, one second past dispatch — deep inside the
+    // grace window no matter how many passes run.
+    const nowMs = Date.parse(dispatchedTs) + 1000;
+
+    const N = 40;
+    for (let pass = 0; pass < N; pass += 1) {
+      const r = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
+      assert.deepEqual(r.struck, [], "a within-grace healthy producer never strikes");
+      assert.deepEqual(r.ticked, [key], "the pending producer is REPORTED each pass");
+    }
+
+    assert.equal(producerRunRows(domain, key).length, 0,
+      `${N} within-grace floor passes persist ZERO producer_run rows — BOUNDED, never one per pass`);
+    assert.equal(producerStrikeTally(domain, key), 0, "no strike accrued from within-grace passes");
+    assert.equal(producerRunSet(domain).has(key), false, "the in-flight producer is not driven terminal");
+
+    // The SAME node aged past the grace window still converges to a terminal
+    // auto-block in a bounded number of strikes — the fix suppresses only the
+    // redundant within-grace ticks, never the genuine non-progress strike path.
+    const staleNow = Date.parse(dispatchedTs) + STALE_DISPATCH_GRACE_MS + 60_000;
+    let blocked = false;
+    for (let pass = 0; pass < STUCK_PRODUCER_DISPATCH_THRESHOLD; pass += 1) {
+      const s = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs: staleNow });
+      assert.deepEqual(s.ticked, [], "a past-grace node strikes, never ticks");
+      if (s.auto_blocked.length) blocked = true;
+    }
+    assert.equal(blocked, true, "a genuinely stuck dispatched producer still converges to a terminal auto-block");
+    assert.equal(producerRunSet(domain).has(key), true, "the blocked stale producer joins the terminal run set");
+    assert.equal(strikeRows(domain, key, "blocked").length, 1, "exactly one terminal blocked row");
+    // Total ledger growth for this key is bounded by the strike threshold + the one
+    // block row — NEVER proportional to the N within-grace floor passes.
+    assert.equal(producerRunRows(domain, key).length, STUCK_PRODUCER_DISPATCH_THRESHOLD + 1,
+      "the whole lifecycle persists exactly threshold strikes + one block row — bounded, independent of N");
   });
 });
 

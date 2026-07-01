@@ -1122,6 +1122,28 @@ const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
 // is blocked and surfaces as a reported scope gap. The gate reads the bound set
 // only through sessionChainContext and tests membership only through
 // isChainTupleInAuthority — no parallel normalization, no state writes.
+//
+// KNOWN LIMITATION — scoped verified source-fetch is DEPTH-1 by design (an
+// intentional, documented residual, not an accident). Two deferrals compound:
+//   1. This gate passes provenanced:false (see the isChainTupleInAuthority call
+//      below): the OD3 same-chain relaxation stays OFF until provenance
+//      detection is wired, so even a same-(chain_family,chain_id) contract at a
+//      DIFFERENT address is SCOPE_BLOCKED, not admitted.
+//   2. The sc-recon-expander resolves proxies/facets/role-holders/linked
+//      addresses at depth>1, but those discovered contracts are NOT written
+//      back into the session's target_contracts[] (the expander writes scratch
+//      / produced_surfaces[] only; binding target_contracts is a later init
+//      node's job). Because this gate admits ONLY exact members of the bound
+//      set, bob_evm_fetch_source is scope_blocked for every transitively-
+//      discovered (depth>1) address.
+// Net: scoped/verified source-fetch reaches only the depth-1 contracts an
+// operator bound at init. This holds until the deferred provenance-detection
+// node lands (which will both flip OD3 to provenanced and feed discovered
+// addresses back into the bound set). Discovery of the deeper contract graph is
+// NOT blocked — it still proceeds through the ungated probe tools
+// (bob_evm_call / bob_evm_storage_read / bob_evm_role_table, the
+// global_preapproval trio noted above); only the scoped verified source-fetch
+// is depth-1-bounded.
 function authorizeChainScope(tool, rule, args) {
   const toTuple = tool && CHAIN_SCOPE_TUPLE_BY_TOOL[tool.name];
   if (!toTuple) return null;

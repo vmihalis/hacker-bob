@@ -44,11 +44,17 @@
 // `parseRpcFlag` parses the VALUE of a `--rpc` flag ("family:chainId=url")
 // into {chain_family, chain_id, url}. It reuses the same `CHAIN_FAMILY_VALUES`
 // family validation as `classifyTargetToken` (never re-copying the list) and
-// is public-HTTPS-only: any non-`https:` (or unparseable) url is refused by
-// NAME, never returned as a parsed object. It is intentionally NOT wired into
-// session/init here — that plumbing is deferred to a later wave —
-// and it preserves the module's "no fs/network/clock/process-env I/O" purity
-// contract (URL parsing is pure and side-effect-free).
+// validates the url SCHEME ONLY: any non-`https:` (or unparseable) url is
+// refused by NAME. It does NOT validate the destination HOST — a `https:` url
+// pointing at loopback (127.0.0.1), link-local cloud metadata (169.254.169.254),
+// or an RFC1918 host parses and is returned. This is a scheme check, NOT an
+// SSRF/egress gate. It is intentionally NOT wired into session/init here — that
+// plumbing is deferred to a later wave — and any future caller that wires this
+// into egress MUST additionally run the private-host/SSRF DNS preflight
+// (sc-egress-policy.filterResolvedPublicRpcEndpoints) before dialing, exactly
+// as the live SC RPC clients already do. It preserves the module's "no
+// fs/network/clock/process-env I/O" purity contract (URL parsing is pure and
+// side-effect-free).
 
 const { CHAIN_FAMILY_VALUES } = require("./constants.js");
 
@@ -131,10 +137,16 @@ function classifyTargetToken(token) {
 // classifyTargetToken's caller-contract / fail-closed-by-NAME posture:
 //   - a malformed CALL (non-string/empty arg) THROWS (programming error);
 //   - well-formed-but-rejected CONTENT returns {refuse:true, reason:<named>}.
-// Public-HTTPS-only: only `https:` urls are accepted; http/ws/wss/file/any
+// HTTPS-SCHEME-only: only `https:` urls are accepted; http/ws/wss/file/any
 // other scheme and unparseable urls are refused (protocol gate mirrors
 // sc-egress-policy.js isHttpsUrl, implemented INLINE to preserve this
 // module's "no fs/network/clock/process-env I/O" + dependency-light posture).
+// This validates the SCHEME, NOT the destination host: `https://127.0.0.1`,
+// `https://169.254.169.254` (cloud metadata), and RFC1918 hosts all PASS here.
+// It is therefore NOT an SSRF/egress gate. Any caller that wires this into
+// egress MUST additionally run the private-host DNS preflight
+// (sc-egress-policy.filterResolvedPublicRpcEndpoints) before dialing — as the
+// live SC RPC clients do — this function must never be the sole egress gate.
 // Family validation REUSES the imported CHAIN_FAMILY_VALUES (never re-copied).
 function parseRpcFlag(arg) {
   if (typeof arg !== "string" || arg.length === 0) {
@@ -166,9 +178,12 @@ function parseRpcFlag(arg) {
     return { refuse: true, reason: "unrecognized_chain_family: " + family };
   }
 
-  // Public-HTTPS-only egress gate. Parse with the WHATWG URL constructor and
-  // require the https: protocol; anything else (http/ws/wss/file/unparseable)
-  // is refused by NAME, never returned as a parsed object.
+  // HTTPS-SCHEME gate only (NOT an egress/SSRF gate). Parse with the WHATWG URL
+  // constructor and require the https: protocol; anything else (http/ws/wss/
+  // file/unparseable) is refused by NAME. The destination HOST is deliberately
+  // NOT checked here — private/loopback/link-local https hosts pass; the
+  // private-host DNS preflight (filterResolvedPublicRpcEndpoints) is the egress
+  // gate and remains the caller's responsibility before any dial.
   let parsed;
   try {
     parsed = new URL(url);

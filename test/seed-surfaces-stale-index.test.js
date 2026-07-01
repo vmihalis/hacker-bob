@@ -27,6 +27,9 @@ const {
   evaluateSchedulerPrecondition,
 } = require("../mcp/lib/scheduler-preconditions.js");
 const {
+  evaluateLifecycleTransition,
+} = require("../mcp/lib/lifecycle-gates.js");
+const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
 const {
@@ -166,6 +169,79 @@ test("seed_surfaces_present returns a bare satisfied=false ONLY when route build
     assert.equal(result.satisfied, false);
     assert.equal(result.seed_surface_count, 0);
     assert.equal(result.reported_gap, undefined, "a genuine zero-route build is not a reported gap");
+  });
+});
+
+test("seed_surfaces_present maps a corrupt-surface-input THROW to a BLOCKING materialization error, not a reported gap", () => {
+  withTempHome((home) => {
+    const domain = "corrupt-surface-input.example.com";
+    ensureSessionDir(domain);
+    // No surface-index.json and an empty frontier event log: the forced
+    // materializeFrontier(write:true) writes an empty index, then route building
+    // falls through to the legacy attack_surface.json — which is CORRUPT — so
+    // buildSurfaceRoutesDocument throws "Malformed attack surface JSON: <path>".
+    // That is a materialization ERROR (the input exists but cannot be read), NOT a
+    // not-yet-seeded frontier.
+    assert.equal(fs.existsSync(surfaceIndexPath(domain)), false);
+    writeFileAtomic(attackSurfacePath(domain), "{ this is not valid json");
+
+    const result = evaluateSchedulerPrecondition("seed_surfaces_present", { target_domain: domain });
+
+    // Distinct from the race_deadlock-2 reported gap: this must NOT read as a
+    // non-terminal gap that the SETUP gate silently passes.
+    assert.equal(result.satisfied, false);
+    assert.equal(result.reported_gap, undefined, "a corrupt input is not a not-yet-seeded reported gap");
+    assert.equal(result.materialization_error, true);
+    assert.equal(result.error_code, "seed_surfaces_materialization_error");
+    assert.equal(typeof result.reason, "string");
+    assert.match(result.reason, /Malformed attack surface JSON/);
+    // seed_surface_count is omitted — it is NOT a genuine zero-route count.
+    assert.equal(result.seed_surface_count, undefined);
+    // The reason redacts absolute paths to a basename: no local session/home leak.
+    assert.ok(!result.reason.includes(home), "absolute session/home path must not leak");
+    assert.ok(result.reason.includes("attack_surface.json"), "redacted to the basename");
+  });
+});
+
+test("SETUP -> OPEN_FRONTIER PASSES a not-yet-materialized frontier (reported_gap) but BLOCKS a corrupt one", () => {
+  withTempHome(() => {
+    // (a) A fresh session whose surface input is not seeded yet: the precondition
+    // reports a non-terminal gap, so the SETUP gate advances (RANK != BOUND).
+    const unseeded = "unseeded-setup.example.com";
+    ensureSessionDir(unseeded);
+    assert.equal(fs.existsSync(surfaceIndexPath(unseeded)), false);
+    assert.equal(fs.existsSync(attackSurfacePath(unseeded)), false);
+
+    const gapTransition = evaluateLifecycleTransition({
+      from_state: "SETUP",
+      to_state: "OPEN_FRONTIER",
+      target_domain: unseeded,
+    });
+    assert.deepEqual(
+      gapTransition.blockers,
+      [],
+      "a not-yet-materialized frontier must not block SETUP -> OPEN_FRONTIER",
+    );
+
+    // (b) A session whose surface input EXISTS but is corrupt: materialization
+    // errors, so the SETUP gate BLOCKS with the distinct materialization-error
+    // code instead of silently advancing into OPEN_FRONTIER on broken state.
+    const corrupt = "corrupt-setup.example.com";
+    ensureSessionDir(corrupt);
+    writeFileAtomic(attackSurfacePath(corrupt), "{ this is not valid json");
+
+    const errorTransition = evaluateLifecycleTransition({
+      from_state: "SETUP",
+      to_state: "OPEN_FRONTIER",
+      target_domain: corrupt,
+    });
+    assert.equal(errorTransition.blockers.length, 1, "the corrupt frontier must block");
+    const blocker = errorTransition.blockers[0];
+    assert.equal(blocker.code, "seed_surfaces_materialization_error");
+    assert.equal(blocker.blocked_by, "seed_surfaces_materialization_error");
+    assert.notEqual(blocker.code, "seed_surfaces_absent", "a corrupt input is not a zero-route frontier");
+    assert.match(blocker.message, /materialization errored/);
+    assert.match(blocker.reason, /Malformed attack surface JSON/);
   });
 });
 

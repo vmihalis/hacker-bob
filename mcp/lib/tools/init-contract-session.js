@@ -20,7 +20,6 @@
 
 const fs = require("fs");
 const { ERROR_CODES, ToolError } = require("../envelope.js");
-const { CHAIN_FAMILY_VALUES } = require("../constants.js");
 const {
   assertBoolean,
   assertEnumValue,
@@ -36,7 +35,7 @@ const { appendFrontierEvent } = require("../frontier-events.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const { ensureHandoffSigningKey, ensureHandoffKeypair } = require("../handoff-signing-key.js");
 const { bindAndSeedContracts, caip10Endpoint } = require("../contract-target.js");
-const { chainAuthorityHash } = require("../chain-authority.js");
+const { chainAuthorityHash, normalizeContractTupleStrict } = require("../chain-authority.js");
 const { writeQueuePolicy } = require("../queue-policy.js");
 
 // Per-family address shape validators — reuse the canonical sources rather than
@@ -140,68 +139,31 @@ function normalizeContracts(rawContracts) {
   const seen = new Set();
   const normalized = [];
   for (let i = 0; i < rawContracts.length; i += 1) {
-    const raw = rawContracts[i];
-    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    // Shared bind-time normal form (chain-authority.normalizeContractTupleStrict):
+    // object shape, chain_family trim+lowercase + CHAIN_FAMILY_VALUES membership
+    // (Y-D21 fail-closed), chain_id non-empty + colon-guarded, address non-empty.
+    // Identical to the url/repo companion path (contract-target), so the SAME
+    // contract set hashes to the SAME chain_authority_hash on both axes and the
+    // persisted CAIP-10 tuple never desyncs from authority.
+    const tuple = normalizeContractTupleStrict(rawContracts[i], i);
+    // Init-only ADD: per-family address SHAPE validation (operator-declared
+    // scope, offline, shape-not-code — see isValidContractAddressShape). The
+    // companion path leaves shape enforcement to downstream, so it stays here.
+    if (!isValidContractAddressShape(tuple.chain_family, tuple.address)) {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} must be a plain object`,
-        { index: i },
+        `contract binding at index ${i} carries an address that is not a valid ${tuple.chain_family} address shape`,
+        { index: i, chain_family: tuple.chain_family },
       );
     }
-    // Y-D21 fail-closed: a dropped/unknown chain_family is rejected here (and
-    // again at the append funnel). Trim+lowercase mirrors the funnel's
-    // normalizeChainToken so casing is accepted consistently with the gate.
-    const chainFamily = typeof raw.chain_family === "string" ? raw.chain_family.trim().toLowerCase() : "";
-    if (!CHAIN_FAMILY_VALUES.includes(chainFamily)) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} must carry a chain_family in ${CHAIN_FAMILY_VALUES.join(", ")} `
-          + `(Y-D21 fail-closed); got ${JSON.stringify(raw.chain_family)}`,
-        { index: i },
-      );
-    }
-    const chainId = raw.chain_id == null ? "" : String(raw.chain_id).trim();
-    if (!chainId) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} must carry a non-empty chain_id`,
-        { index: i },
-      );
-    }
-    // Colon guard (fail-closed charset check): target_contracts persist as the
-    // CAIP-10 string '<family>:<chainId>:<address>' and re-parse by splitting on
-    // ':' (chain_id = parts[1], address = parts.slice(2).join(':')). A chain_id
-    // that itself contains ':' (e.g. '1:2' -> 'evm:1:2:0xADDR') would shift the
-    // re-parse to chain_id='1', address='2:0xADDR', so the bound contract's
-    // runtime tuple no longer matches authority (chain_scope_blocked on an
-    // in-scope contract) AND prepareContractCompanion vs deriveContractSession
-    // hashes diverge. ':' is reserved for the CAIP-10 projection — reject it.
-    if (chainId.includes(":")) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} chain_id must not contain ':' (reserved CAIP-10 separator)`,
-        { index: i },
-      );
-    }
-    const address = typeof raw.address === "string" ? raw.address.trim() : "";
-    if (!address) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} must carry a non-empty address`,
-        { index: i },
-      );
-    }
-    if (!isValidContractAddressShape(chainFamily, address)) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `contract binding at index ${i} carries an address that is not a valid ${chainFamily} address shape`,
-        { index: i, chain_family: chainFamily },
-      );
-    }
-    const endpoint = caip10Endpoint({ chainFamily, chainId, address });
+    const endpoint = caip10Endpoint({
+      chainFamily: tuple.chain_family,
+      chainId: tuple.chain_id,
+      address: tuple.address,
+    });
     if (seen.has(endpoint)) continue;
     seen.add(endpoint);
-    normalized.push({ chain_family: chainFamily, chain_id: chainId, address });
+    normalized.push(tuple);
   }
   return normalized;
 }

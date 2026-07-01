@@ -98,9 +98,10 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
 ];
 
 // Integer scalar fields carried by surface.observed payloads. depth is the OD4
-// linked-contract recursion depth threaded monotonically by finalize-node's
-// producer surface emission (= producing-run depth + 1). It must round-trip as a
-// NUMBER — SURFACE_SCALAR_TEXT_FIELDS would trim it to a string and
+// linked-contract recursion depth stamped by finalize-node's producer surface
+// emission (= producing-run depth + 1) and folded as the SHORTEST-PATH distance
+// from any root (Math.min over re-observations, see applySurfaceFields). It must
+// round-trip as a NUMBER — SURFACE_SCALAR_TEXT_FIELDS would trim it to a string and
 // readScExpanderSurfaces (Number.isInteger check) would then fall back to the
 // depth-1 default, so proposed_depth never reaches the linked_contract_depth cap
 // and OD4 depth-capping never fires on the persisted path.
@@ -172,18 +173,25 @@ function applySurfaceFields(surface, event) {
     } else {
       continue;
     }
-    // depth is MONOTONIC: it is server-stamped as producing-run depth + 1, so a
-    // later event for the same surface must never LOWER a recorded depth. A
-    // missing prior value is the root lower bound (1). On the normal
-    // monotone-increasing path Math.max returns the incoming value unchanged.
-    //
-    // OD4 intent (deliberate, NOT a bug): never explore past the cap on ANY
-    // discovered path (monotonic depth). A contract first seen deep stays capped
-    // even if later reached via a shallower path — this is the intended
-    // under-exploration bound (a hard termination guarantee is favoured over
-    // re-opening a surface at a lower depth), not premature termination to fix.
-    const existing = Number.isInteger(surface[field]) ? surface[field] : 1;
-    surface[field] = Math.max(existing, incoming);
+    // depth is a SHORTEST-PATH distance: the fewest hops from ANY root to this
+    // surface. When the same on-chain identity is reached by more than one path,
+    // the recorded depth folds to the SMALLEST (Math.min), so a contract that is
+    // 1 hop from a root but happened to be recorded first via a 3-hop path is
+    // still expanded as depth 1 and its linked children stay under the recursion
+    // cap. The cap bounds recursion regardless of fold direction — Math.min
+    // terminates exactly as hard as Math.max, because proposed_depth still grows
+    // by 1 per hop and is capped either way. Math.max bought NO extra termination
+    // safety; it only systematically UNDER-explored, silently pruning surfaces
+    // reachable within N hops of a root (a missed surface is a missed finding).
+    // "Explore everything within N hops of any root" is the correct bug-finding
+    // semantic (rank-don't-bound: the cap is the only bound). The FIRST
+    // observation of a surface has no prior depth to fold against, so it records
+    // the incoming depth verbatim; only a re-observation takes the min.
+    if (Number.isInteger(surface[field])) {
+      surface[field] = Math.min(surface[field], incoming);
+    } else {
+      surface[field] = incoming;
+    }
   }
   for (const field of SURFACE_BOOLEAN_FIELDS) {
     if (typeof payload[field] === "boolean") {

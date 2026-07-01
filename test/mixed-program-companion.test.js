@@ -17,6 +17,7 @@ const path = require("path");
 const { executeTool } = require("../mcp/lib/dispatch.js");
 const { statePath } = require("../mcp/lib/paths.js");
 const { readJsonFile } = require("../mcp/lib/storage.js");
+const { chainAuthorityHash } = require("../mcp/lib/chain-authority.js");
 
 const ADDR_IN = "0x0000000000000000000000000000000000000001";
 const ADDR_OUT = "0x0000000000000000000000000000000000000002";
@@ -111,6 +112,89 @@ test("an in-authority chain tuple on the mixed session is admitted past the gate
       env.ok === true || (env.error && env.error.code !== "SCOPE_BLOCKED"),
       `expected admit past the gate, got ${JSON.stringify(env)}`,
     );
+  });
+});
+
+test("an UPPERCASE-family companion binding folds to the SAME chain_authority_hash as the lowercased init tuple (not the empty-set hash)", () => {
+  const { prepareContractCompanion } = require("../mcp/lib/contract-target.js");
+  // The contracts-axis normal form (tuple objects, family lowercased) is the
+  // authoritative target hash for this single contract.
+  const initHash = chainAuthorityHash([{ chain_family: "evm", chain_id: "1", address: ADDR_IN }]);
+  const emptyHash = chainAuthorityHash([]);
+  assert.notEqual(initHash, emptyHash, "sanity: a non-empty set must not hash to the empty-set hash");
+
+  // Same contract on the COMPANION path but with an uppercase chain_family
+  // (the schema enum guards the dispatch surface, so this exercises the shared
+  // normalizer at its module boundary). Before the shared normalizer, the
+  // companion hashed CAIP-10 strings through the case-sensitive
+  // classifyTargetToken, so 'EVM:1:0x..' dropped and the hash collapsed to the
+  // empty-set hash -> every in-scope contract was chain_scope_blocked. It must
+  // now fold to the identical init-path hash and lowercase the CAIP projection.
+  const companion = prepareContractCompanion([{ chain_family: "EVM", chain_id: "1", address: ADDR_IN }]);
+  assert.equal(companion.chain_authority_hash, initHash,
+    `companion hash must equal the init-path hash, got ${companion.chain_authority_hash}`);
+  assert.notEqual(companion.chain_authority_hash, emptyHash,
+    "companion hash must not be the empty-set hash");
+  assert.deepEqual(companion.target_contracts, [CAIP_IN]);
+});
+
+test("the companion chain_authority_hash matches the contracts-axis init hash and binds a usable in-scope tuple", async () => {
+  await withTempHome(async () => {
+    // The dispatch-reachable proof: a companion contract must derive the SAME
+    // chain_authority_hash the contracts-axis init path derives for that set...
+    const initHash = chainAuthorityHash([{ chain_family: "evm", chain_id: "1", address: ADDR_IN }]);
+    const env = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
+    });
+    assert.equal(env.ok, true, `expected ok:true, got ${JSON.stringify(env)}`);
+    assert.equal(env.data.chain_authority_hash, initHash,
+      `companion hash must equal the init-path hash, got ${env.data.chain_authority_hash}`);
+    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
+    assert.equal(persisted.chain_authority_hash, initHash);
+
+    // ...so the in-scope bound tuple is ADMITTED past the chain-scope gate while
+    // an out-of-set tuple is still SCOPE_BLOCKED.
+    const bound = await executeTool("bob_evm_fetch_source", {
+      target_domain: "example.com",
+      chain_id: 1,
+      address: ADDR_IN,
+    });
+    assert.ok(
+      bound.ok === true || (bound.error && bound.error.code !== "SCOPE_BLOCKED"),
+      `bound in-scope contract must be admitted past the gate, got ${JSON.stringify(bound)}`,
+    );
+    const outOfSet = await executeTool("bob_evm_fetch_source", {
+      target_domain: "example.com",
+      chain_id: 1,
+      address: ADDR_OUT,
+    });
+    assert.equal(outOfSet.ok, false, `expected ok:false, got ${JSON.stringify(outOfSet)}`);
+    assert.equal(outOfSet.error.details.authority.authority_block_reason, "chain_scope_blocked");
+  });
+});
+
+test("a companion contract whose chain_id contains a colon is rejected fail-closed (no session)", async () => {
+  await withTempHome(async (home) => {
+    // The companion is validated BEFORE the primary web session is created, so a
+    // colon chain_id (which would desync the CAIP-10 re-parse) fails closed with
+    // NO session at all — same guard the contracts-axis init path enforces.
+    const env = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{ chain_family: "evm", chain_id: "1:2", address: ADDR_IN }],
+    });
+    assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
+
+    const sessionsRoot = path.join(home, "hacker-bob-sessions");
+    let entries = [];
+    try {
+      entries = fs.readdirSync(sessionsRoot);
+    } catch {
+      entries = [];
+    }
+    assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
   });
 });
 

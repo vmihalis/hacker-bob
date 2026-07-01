@@ -303,12 +303,13 @@ test("OD4 depth cap fires THROUGH materialization: a depth-2 surface at cap does
   });
 });
 
-// A surface's materialized depth is MONOTONIC: server-stamped depth only grows
-// (producing-run depth + 1), so a later, SHALLOWER surface.observed for the same
-// on-chain identity must never lower the recorded depth. Without the guard the
-// last write would win and a stale shallow re-observation could pull a depth-3
-// contract back to depth 2, un-capping recursion the deeper stamp had settled.
-test("a later shallower surface.observed does NOT lower a recorded depth (monotonic depth)", () => {
+// A surface's materialized depth is a SHORTEST-PATH distance: the fewest hops from
+// ANY root. When the same on-chain identity is re-observed at a SHALLOWER depth,
+// the recorded depth folds DOWN to the shorter path (Math.min). This is the
+// opposite of last-write-wins AND the opposite of the prior monotone-max fold: a
+// contract reached by any path within the cap must be fully explored, so a shallow
+// re-observation LOWERS a deeper recorded depth rather than being discarded.
+test("a later shallower surface.observed LOWERS the recorded depth to the shortest path", () => {
   withTempHome(() => {
     const rootAddress = "0xaaa4000000000000000000000000000000000000";
     const linkedAddress = "0xbbb5000000000000000000000000000000000000";
@@ -325,16 +326,17 @@ test("a later shallower surface.observed does NOT lower a recorded depth (monoto
     const scSurfaces = producerFloorTool.readScExpanderSurfaces(domain);
     const linked = scSurfaces.find((s) => s.address === linkedAddress.toLowerCase());
     assert.ok(linked, "the materialized+projected linked surface is visible");
-    assert.equal(linked.depth, 3,
-      "the deeper stamp wins: the later shallower write does not lower the recorded depth");
+    assert.equal(linked.depth, 2,
+      "the shallower stamp wins: the shorter path folds the recorded depth down to 2");
     assert.equal(Number.isInteger(linked.depth), true, "depth stays a NUMBER");
   });
 });
 
-// The normal monotone-INCREASING path is byte-identical to last-write-wins: an
-// increasing re-stamp still lands the higher depth, so the guard only bites the
-// shallow-regression case above.
-test("a later deeper surface.observed still raises the recorded depth (monotone-up unchanged)", () => {
+// The shortest path is stable against a LATER, DEEPER re-observation: once a
+// surface is recorded at its fewest hops, a subsequent longer path never raises it
+// (Math.min keeps the smaller). The first observation records its depth verbatim;
+// only a re-observation folds, so the deeper re-stamp is inert here.
+test("a later deeper surface.observed does NOT raise the recorded depth (shortest path stays)", () => {
   withTempHome(() => {
     const rootAddress = "0xaaa6000000000000000000000000000000000000";
     const linkedAddress = "0xbbb7000000000000000000000000000000000000";
@@ -350,6 +352,51 @@ test("a later deeper surface.observed still raises the recorded depth (monotone-
     const scSurfaces = producerFloorTool.readScExpanderSurfaces(domain);
     const linked = scSurfaces.find((s) => s.address === linkedAddress.toLowerCase());
     assert.ok(linked, "the materialized+projected linked surface is visible");
-    assert.equal(linked.depth, 3, "the later deeper stamp raises the recorded depth to 3");
+    assert.equal(linked.depth, 2, "the later deeper stamp does not raise the depth-2 shortest path");
+  });
+});
+
+// SHORTEST-PATH expansion end-to-end: a contract first RECORDED via a long
+// (depth-3) path but later REACHED by a short (depth-1) path folds to depth 1
+// (Math.min), so it sits within N hops of a root and its linked children ARE
+// expanded — an sc-expander instance is proposed, NOT withheld by the OD4 depth
+// cap. Under the prior monotone-max fold it pinned at depth 3 -> proposed_depth 4 >
+// cap 2 -> the whole linked subtree was silently pruned (a missed surface is a
+// missed finding). This is the coverage-regression case the fold reversal fixes.
+test("a contract recorded deep then reached at depth 1 folds to depth 1 and its children ARE expanded (not capped)", () => {
+  withTempHome(() => {
+    const rootAddress = "0xaaa8000000000000000000000000000000000000";
+    const linkedAddress = "0xbbb9000000000000000000000000000000000000";
+    // linked_contract_depth = 2: a depth-1 source proposes a depth-2 expander (<=
+    // cap, expanded); a depth-3 source proposes a depth-4 expander (> cap, capped).
+    const init = JSON.parse(initContractSessionTool.handler({
+      contracts: [{ chain_family: "evm", chain_id: "1", address: rootAddress }],
+      linked_contract_depth: 2,
+    }));
+    const domain = init.target_domain;
+
+    // Same on-chain identity: recorded DEEP (3) first, then REACHED SHALLOW (1).
+    emitScSurface(domain, { address: linkedAddress, depth: 3, provenance: "verified_source" });
+    emitScSurface(domain, { address: linkedAddress, depth: 1, provenance: "verified_source" });
+    materializeFrontier(domain, { write: true });
+
+    const scSurfaces = producerFloorTool.readScExpanderSurfaces(domain);
+    const linked = scSurfaces.find((s) => s.address === linkedAddress.toLowerCase());
+    assert.ok(linked, "the materialized+projected linked surface is visible");
+    assert.equal(linked.depth, 1,
+      "the shorter depth-1 path folds the recorded depth down from 3 to 1 (Math.min)");
+
+    const { plan } = producerFloorTool.buildProducerFloorPlan(domain);
+    const childKey = `sc_address_expander:evm:1:${linkedAddress.toLowerCase()}`;
+    assert.equal(
+      plan.sc_expander_instances.filter((i) => i.producer_key === childKey).length,
+      1,
+      "the depth-1-folded contract IS expanded: exactly one sc-expander instance is proposed");
+    const proposed = plan.sc_expander_instances.find((i) => i.producer_key === childKey);
+    assert.equal(proposed.depth, 2, "proposed_depth = folded depth 1 + 1 = 2, within the cap");
+    const depthGaps = plan.sc_recursion_gaps.filter(
+      (g) => g.kind === "linked_contract_depth_capped" && g.address === linkedAddress.toLowerCase());
+    assert.deepEqual(depthGaps, [],
+      "the folded-shallow contract is NOT depth-capped: no linked_contract_depth_capped gap");
   });
 });

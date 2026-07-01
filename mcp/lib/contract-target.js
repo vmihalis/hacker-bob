@@ -20,44 +20,19 @@ const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 const { validateNoSensitiveMaterial } = require("./sensitive-material.js");
 const { ToolError, ERROR_CODES } = require("./envelope.js");
-const { chainAuthorityHash } = require("./chain-authority.js");
+const { chainAuthorityHash, normalizeContractTupleStrict } = require("./chain-authority.js");
 
-// Pure, trim/stringify discipline mirrors lead-promotion.smartContractSurfaceKey
-// (lead-promotion.js:164-186): trim chain_family, stringify+trim chain_id, trim
-// address. chain_family is NOT lowercased/normalized here — membership
-// enforcement is left to the Y-D21 funnel so this module never re-validates it.
+// Normalize ONE raw {chain_family, chain_id, address} binding into the internal
+// camelCase shape the seeding + CAIP-10 helpers consume. Delegates to the single
+// shared bind-time normalizer (chain-authority.normalizeContractTupleStrict) so
+// this companion path enforces the SAME normal form as the contracts-axis init
+// path: chain_family folded to lowercase + CHAIN_FAMILY_VALUES-checked (Y-D21),
+// chain_id colon-guarded, address trimmed. This shared normal form is why a
+// companion contract set hashes to the same chain_authority_hash as the
+// contracts-axis init path (no case-sensitive drift, no colon re-parse desync).
 function normalizeContractBinding(raw, index) {
-  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `contract binding at index ${index} must be a plain object`,
-      { index },
-    );
-  }
-  const chainFamily = typeof raw.chain_family === "string" ? raw.chain_family.trim() : "";
-  if (!chainFamily) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `contract binding at index ${index} must carry a non-empty chain_family`,
-      { index },
-    );
-  }
-  const chainId = raw.chain_id == null ? "" : String(raw.chain_id).trim();
-  if (!chainId) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `contract binding at index ${index} must carry a non-empty chain_id`,
-      { index },
-    );
-  }
-  const address = typeof raw.address === "string" ? raw.address.trim() : "";
-  if (!address) {
-    throw new ToolError(
-      ERROR_CODES.INVALID_ARGUMENTS,
-      `contract binding at index ${index} must carry a non-empty address`,
-      { index },
-    );
-  }
+  const { chain_family: chainFamily, chain_id: chainId, address } =
+    normalizeContractTupleStrict(raw, index);
   return { chainFamily, chainId, address };
 }
 
@@ -139,14 +114,19 @@ function bindAndSeedContracts(state, contracts) {
 
 // Companion-axis prep for an O-P6 MIXED program (a url|repo PRIMARY axis with an
 // OPTIONAL contracts companion). Normalizes the raw {chain_family, chain_id,
-// address} bindings through the same trim/stringify discipline as the seeding
-// path, projects each to its CAIP-10 endpoint (the only shape target_contracts
-// round-trips through normalizeStringArray), and derives the order-independent
-// chain_authority_hash from those endpoints. The returned `contracts` is the
-// caller's raw array, handed straight to bindAndSeedContracts so the Y-D21
-// funnel stays the SOLE chain-family authority (this helper performs no
-// chain-family membership check of its own). Fails CLOSED (ToolError) on an
-// empty array or a malformed binding, BEFORE any session state is written.
+// address} bindings ONCE through the single shared strict normalizer, then
+// derives BOTH the CAIP-10 projection (the only shape target_contracts round-
+// trips through normalizeStringArray) AND the order-independent
+// chain_authority_hash from those SAME normalized tuple OBJECTS. The hash is
+// never computed from CAIP-10 strings routed through the case-sensitive
+// classifyTargetToken, so an uppercase family folds to the SAME hash the
+// contracts-axis init path derives instead of dropping to the empty-set hash
+// (which chain_scope_blocked every in-scope companion contract). The returned
+// `contracts` is the caller's raw array, handed to bindAndSeedContracts which
+// re-applies the identical normalizer, so the seeded surfaces and the persisted
+// target_contracts share one on-chain identity. Fails CLOSED (ToolError) on an
+// empty array or a malformed binding (unknown/uppercase-invalid family, colon
+// chain_id, empty field), BEFORE any session state is written.
 function prepareContractCompanion(rawContracts) {
   if (!Array.isArray(rawContracts) || rawContracts.length === 0) {
     throw new ToolError(
@@ -154,11 +134,16 @@ function prepareContractCompanion(rawContracts) {
       "contracts companion must be a non-empty array of {chain_family, chain_id, address} bindings",
     );
   }
-  const targetContracts = rawContracts.map((raw, index) => caip10Endpoint(normalizeContractBinding(raw, index)));
+  const normalized = rawContracts.map((raw, index) => normalizeContractTupleStrict(raw, index));
+  const targetContracts = normalized.map((tuple) => caip10Endpoint({
+    chainFamily: tuple.chain_family,
+    chainId: tuple.chain_id,
+    address: tuple.address,
+  }));
   return {
     contracts: rawContracts,
     target_contracts: targetContracts,
-    chain_authority_hash: chainAuthorityHash(targetContracts),
+    chain_authority_hash: chainAuthorityHash(normalized),
   };
 }
 

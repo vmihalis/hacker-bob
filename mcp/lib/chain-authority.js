@@ -20,6 +20,12 @@ const { hashCanonicalJson } = require("./verification-contracts.js");
 // parser; it is already load-time-asserted against CHAIN_FAMILY_VALUES, so this
 // module never redefines or hardcodes the chain-family vocabulary.
 const { classifyTargetToken } = require("./target-intake.js");
+// CHAIN_FAMILY_VALUES (constants.js) is the single known-chain-family authority,
+// the same set the Y-D21 append funnel checks; ToolError/ERROR_CODES (envelope.js)
+// are the canonical fail-closed error carriers. Both are pure, I/O-free modules,
+// so the strict bind-time normalizer keeps this module's dependency-light posture.
+const { CHAIN_FAMILY_VALUES } = require("./constants.js");
+const { ERROR_CODES, ToolError } = require("./envelope.js");
 
 // Mirror of the chain-family token normalizer (lowercase, trim, collapse runs of
 // whitespace/dashes to a single underscore). The canonical-but-unexported source
@@ -30,6 +36,69 @@ function normalizeChainToken(value) {
   if (value == null) return null;
   const normalized = String(value).trim().toLowerCase().replace(/[\s-]+/g, "_");
   return normalized || null;
+}
+
+// Strict, fail-closed canonical normalization of ONE raw {chain_family, chain_id,
+// address} binding into a canonical tuple. This is the SINGLE bind-time normal
+// form shared by every axis that persists an in-scope contract set: the
+// contracts-axis init path (init-contract-session.normalizeContracts) and the
+// url/repo companion path (contract-target.normalizeContractBinding). Both derive
+// chain_authority_hash from the tuples this returns, so the SAME contract set
+// hashes to the SAME chain_authority_hash on every path, and an uppercase-family
+// or colon-in-chain_id binding is folded/rejected identically instead of silently
+// dropping to the empty-set hash through the case-sensitive CAIP-10 string parser.
+//
+// Unlike normalizeOneTuple (lenient — returns null so the query-time membership
+// path can rank garbage away), this THROWS: a bind-time malformation is an
+// operator scope error, not a tuple to drop. chain_family is folded through the
+// same normalizeChainToken rule and checked against CHAIN_FAMILY_VALUES (Y-D21);
+// chain_id is trimmed, required non-empty, and colon-guarded because it round-
+// trips through the CAIP-10 '<family>:<chainId>:<address>' projection; address is
+// trimmed (case PRESERVED — SS58/base58 addresses are case-sensitive) and
+// required. When `index` is an integer the errors carry it for per-entry context.
+function normalizeContractTupleStrict(raw, index) {
+  const where = Number.isInteger(index) ? ` at index ${index}` : "";
+  const at = Number.isInteger(index) ? { index } : {};
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} must be a plain object`,
+      at,
+    );
+  }
+  const chainFamily = normalizeChainToken(raw.chain_family);
+  if (!chainFamily || !CHAIN_FAMILY_VALUES.includes(chainFamily)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} must carry a chain_family in ${CHAIN_FAMILY_VALUES.join(", ")} `
+        + `(Y-D21 fail-closed); got ${JSON.stringify(raw.chain_family)}`,
+      { ...at, chain_family: raw.chain_family == null ? null : raw.chain_family },
+    );
+  }
+  const chainId = raw.chain_id == null ? "" : String(raw.chain_id).trim();
+  if (!chainId) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} must carry a non-empty chain_id`,
+      at,
+    );
+  }
+  if (chainId.includes(":")) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} chain_id must not contain ':' (reserved CAIP-10 separator)`,
+      at,
+    );
+  }
+  const address = typeof raw.address === "string" ? raw.address.trim() : "";
+  if (!address) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} must carry a non-empty address`,
+      at,
+    );
+  }
+  return { chain_family: chainFamily, chain_id: chainId, address };
 }
 
 // Normalize one contracts entry into a canonical {chain_family, chain_id,
@@ -163,4 +232,7 @@ module.exports = {
   // Exported so a later pre-handler gate can reuse the exact normalization the
   // hashing and membership paths share, instead of re-deriving it.
   normalizeOneTuple,
+  // The single fail-closed bind-time normalizer both the contracts-axis init path
+  // and the url/repo companion path call, so one contract set yields one hash.
+  normalizeContractTupleStrict,
 };

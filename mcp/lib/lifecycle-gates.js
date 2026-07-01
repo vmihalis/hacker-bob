@@ -332,13 +332,17 @@ function gateClaimFreezeToVerify(context) {
 // route counting, keeping the closed-enum precondition authoritative and the
 // @precondition coherence check satisfied. Producer-agnostic: a seed surface
 // from ANY producer (web recon, repo inventory, or the contract-seeding funnel)
-// satisfies it. A reported_gap (a transient/setup error — e.g. a fresh session
-// with no surface input materialized yet) PASSES: a setup error must never read
-// as "no surfaces exist", so only a bare satisfied:false (a successful route
-// build that genuinely yields zero routes) pushes a blocker. The gate runs
-// inside advanceSession's withSessionLock and the precondition's forced
-// materializeFrontier(write:true) re-enters the same reentrant session lock, so
-// the in-lock call cannot deadlock. Fails closed: a precondition throw blocks.
+// satisfies it. A reported_gap (a fresh session with no surface input
+// materialized yet) PASSES: a not-yet-seeded frontier must never read as "no
+// surfaces exist". A materialization_error (corrupt surface state, a read-cap
+// breach, or a disk/lock failure surfaced by the precondition) BLOCKS with its
+// own code — the surface input exists but could not be read/routed, so advancing
+// would carry broken/empty state into OPEN_FRONTIER. A bare satisfied:false (a
+// successful route build that genuinely yields zero routes) blocks as
+// seed_surfaces_absent. The gate runs inside advanceSession's withSessionLock and
+// the precondition's forced materializeFrontier(write:true) re-enters the same
+// reentrant session lock, so the in-lock call cannot deadlock. Fails closed: a
+// precondition throw AND a materialization error both block.
 function gateSetupToOpenFrontier(context) {
   const blockers = [];
   let evaluation;
@@ -357,8 +361,30 @@ function gateSetupToOpenFrontier(context) {
     return blockers;
   }
   // PASS on a genuine routed seed surface (satisfied) OR a reported gap (a
-  // transient/setup error mapped non-terminal by the precondition).
+  // legitimately not-yet-materialized frontier — surface input has not been
+  // seeded yet). RANK != BOUND: a not-yet-seeded frontier is non-terminal, never
+  // a confirmed-empty "no surfaces exist".
   if (evaluation.satisfied === true || evaluation.reported_gap === true) {
+    return blockers;
+  }
+  // BLOCK on a materialization ERROR — corrupt surface-index.json /
+  // attack_surface.json, a read-cap breach, or a disk/lock failure surfaced by the
+  // precondition. Distinct from a not-yet-seeded frontier: the surface input
+  // EXISTS but could not be materialized/routed, so advancing into OPEN_FRONTIER
+  // would carry broken/half-written state forward. Fail closed.
+  if (evaluation.materialization_error === true) {
+    blockers.push({
+      code: "seed_surfaces_materialization_error",
+      blocked_by: "seed_surfaces_materialization_error",
+      reason: typeof evaluation.reason === "string" ? evaluation.reason : null,
+      message:
+        "SETUP -> OPEN_FRONTIER blocked: seed-surface materialization errored"
+        + `${typeof evaluation.reason === "string" ? ` (${evaluation.reason})` : ""}`
+        + " - the surface state is corrupt or unreadable, not merely unseeded",
+      remediation:
+        "repair the corrupt surface artifact (surface-index.json / attack_surface.json) or clear the "
+        + "transient disk/lock failure, then retry the transition; do not advance on broken surface state",
+    });
     return blockers;
   }
   // BLOCK only on a bare satisfied:false — route building succeeded and the

@@ -16,7 +16,12 @@ const { assertNonEmptyString } = require("../validation.js");
 const { currentSurfaces } = require("../frontier-projections.js");
 const { appendFrontierEvent, readFrontierEvents } = require("../frontier-events.js");
 const { PRODUCER_PACKS, isProducerReady } = require("../producer-packs.js");
-const { producerRunSet, recordProducerRun } = require("../producer-run-ledger.js");
+const {
+  producerRunSet,
+  recordProducerRun,
+  buildProducerRunLedgerCache,
+  isProducerRunLedgerCache,
+} = require("../producer-run-ledger.js");
 const { materializeTaskGraph, producerNodeId } = require("../task-graph-materializer.js");
 const { loadQueuePolicy, CLAMP_CEILING } = require("../queue-policy.js");
 const { statePath } = require("../paths.js");
@@ -49,15 +54,19 @@ const ORPHAN_STRIKE_REASON = "orphan_executed_unreconciled";
 // (bob_schedule_seed_producers) is a SEPARATE tool with no guaranteed
 // interleaving, so a per-floor-pass strike would auto-block a healthy in-flight
 // producer after a handful of rapid floor calls even while its worker is still
-// progressing. A node whose last transition is within STALE_DISPATCH_GRACE_MS
-// emits a non-striking transient tick; a node aged past the window (or carrying no
-// observable timestamp) emits a STRUCTURAL strike feeding the SAME strike tally,
-// so a genuinely non-progressing producer still auto-blocks at
-// STUCK_PRODUCER_DISPATCH_THRESHOLD and the floor moves on. producer_run reconcile
-// rows carry no node_id, so they never touch ts_last — the clock advances only on
-// a real node transition, never on reconcile activity.
+// progressing. A node whose last transition is within STALE_DISPATCH_GRACE_MS is
+// still legitimately in-flight — its PENDING state already rides its live graph
+// transition, so a within-grace observation is REPORTED but persists NO
+// producer_run row (persisting one transient tick per floor pass across the
+// 15-minute grace window would grow the append-only ledger unboundedly, one
+// row/pass, toward the refuse ceiling). Only a node aged past the window (or
+// carrying no observable timestamp) writes a row: a STRUCTURAL strike feeding the
+// strike tally, so a genuinely non-progressing producer still auto-blocks at
+// STUCK_PRODUCER_DISPATCH_THRESHOLD (a bounded ≤ threshold rows) and the floor
+// moves on. producer_run reconcile rows carry no node_id, so they never touch
+// ts_last — the clock advances only on a real node transition, never on reconcile
+// activity.
 const STALE_DISPATCH_GRACE_MS = 15 * 60 * 1000;
-const STALE_DISPATCH_TICK_REASON = "stale_dispatch_pending";
 const STALE_DISPATCH_STRIKE_REASON = "stale_dispatch_unreconciled";
 // The node states that have not yet reached 'executed' — a producer in either is
 // not making progress toward a terminal producer_run and is reconciled here.
@@ -441,17 +450,19 @@ function nodeProgressMs(node) {
 }
 
 // Pure planner: classify every producer node stuck in a pre-executed state
-// (proposed | dispatched) whose producer_key carries NO terminal producer_run
-// row as either a non-striking transient tick (its most recent transition is
-// within graceMs of nowMs — the producer is still legitimately mid-dispatch) or a
-// structural strike (aged past the grace window, or carrying no observable
-// timestamp — no forward progress). The clock is WALL-CLOCK node age, never a
-// floor-pass count, so a healthy in-flight producer is never struck by repeated
-// floor calls, while a genuinely non-progressing one still accrues one strike per
-// past-grace pass and converges to a terminal auto-block. Deterministic and
-// side-effect-free; dedups by producer_key. A node that has reached 'executed'
-// (handled by the orphan-executed reconciler), any terminal node, or any node
-// whose key is already terminal, is never ticked or struck here.
+// (proposed | dispatched) whose producer_key carries NO terminal producer_run row
+// as either a within-grace tick (its most recent transition is within graceMs of
+// nowMs — the producer is still legitimately mid-dispatch) or a structural strike
+// (aged past the grace window, or carrying no observable timestamp — no forward
+// progress). The clock is WALL-CLOCK node age, never a floor-pass count, so a
+// healthy in-flight producer is never struck by repeated floor calls, while a
+// genuinely non-progressing one still accrues one strike per past-grace pass and
+// converges to a terminal auto-block. The executor REPORTS ticks (the pending
+// state rides the node's live graph transition) but persists only strikes, so
+// within-grace passes add no ledger rows. Deterministic and side-effect-free;
+// dedups by producer_key. A node that has reached 'executed' (handled by the
+// orphan-executed reconciler), any terminal node, or any node whose key is already
+// terminal, is never ticked or struck here.
 function planStaleDispatchReconcile({
   producerNodes,
   nodeIdToProducerKey,
@@ -543,17 +554,19 @@ function countReconcileRowsByKey(domain, reasons) {
 // (the same scan the seed-producer scheduler uses). The third structural strike
 // auto-writes a single terminal blocked row, after which the key is terminal and
 // both the floor and the reconciler skip it — bounded.
-function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, terminalRunSet } = {}) {
+function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, terminalRunSet, ledgerCache } = {}) {
   let producerNodes = nodes;
   let map = nodeIdToProducerKey;
   if (!Array.isArray(producerNodes) || !(map instanceof Map)) {
     ({ producerNodes, nodeIdToProducerKey: map } = buildLiveProducerReconcileInputs(domain));
   }
 
-  // Reuse a threaded terminal set when the handler already read one this pass; the
-  // orphan and stale reconcilers key on disjoint node states, so one shared read
-  // is faithful for both. Direct callers (tests) omit it and it is read live.
-  const runSet = terminalRunSet instanceof Set ? terminalRunSet : producerRunSet(domain);
+  // Reuse a threaded ledger cache when the handler already built one this pass; the
+  // orphan and stale reconcilers key on disjoint node states, so one shared cache
+  // is faithful for both. Direct callers (tests) omit it and it is built live. The
+  // cache's terminal-key set doubles as the terminalRunSet when none was threaded.
+  const cache = isProducerRunLedgerCache(ledgerCache) ? ledgerCache : buildProducerRunLedgerCache(domain);
+  const runSet = terminalRunSet instanceof Set ? terminalRunSet : cache.terminalKeys;
   const orphanCountsByKey = countReconcileRowsByKey(domain, [ORPHAN_TICK_REASON, ORPHAN_STRIKE_REASON]);
 
   const plan = planOrphanReconcile({
@@ -568,6 +581,9 @@ function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, 
   const struck = [];
   const autoBlocked = [];
   for (const tick of plan.ticks) {
+    // The orphan tick is count-gated (planOrphanReconcile emits at most K-1 ticks
+    // per key before switching to strikes), so this transient row stays bounded; it
+    // never touches the strike tally, so it needs no ledger cache.
     recordProducerRun(domain, {
       producer_key: tick.producer_key,
       status: "failed_retryable",
@@ -582,7 +598,7 @@ function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, 
       status: "failed_retryable",
       failure_class: "structural",
       reason: ORPHAN_STRIKE_REASON,
-    });
+    }, cache);
     struck.push(strike.producer_key);
     if (result && result.auto_blocked) autoBlocked.push(strike.producer_key);
   }
@@ -591,18 +607,28 @@ function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, 
 
 // Impure executor: reconcile every stale-dispatch producer node (stuck
 // 'proposed'/'dispatched' with no terminal producer_run row) against the
-// producer_run ledger. Mirrors reconcileOrphanExecutedProducers' recordProducerRun
-// strike path, but classifies tick vs strike on the WALL-CLOCK age of the node's
-// last transition (nowMs - node.ts_last vs STALE_DISPATCH_GRACE_MS) instead of a
-// floor-pass count — a healthy in-flight producer whose worker is progressing is
-// never struck by repeated floor calls. The structural strikes still feed the SAME
-// strike tally, so a producer aged past the grace window without progress
-// auto-blocks at STUCK_PRODUCER_DISPATCH_THRESHOLD and the floor stops re-proposing
-// it — the drain precondition then converges. nowMs/graceMs are injectable for
-// deterministic tests; live calls read Date.now() and the constant.
+// producer_run ledger. Classifies tick vs strike on the WALL-CLOCK age of the
+// node's last transition (nowMs - node.ts_last vs STALE_DISPATCH_GRACE_MS) instead
+// of a floor-pass count — a healthy in-flight producer whose worker is progressing
+// is never struck by repeated floor calls.
+//
+// A within-grace producer is still legitimately in-flight; its PENDING state is
+// already carried by its live graph transition, so a grace observation is REPORTED
+// in `ticked` but persists NO producer_run row. Persisting one transient tick per
+// floor pass across the 15-minute grace window is precisely what grew the
+// append-only ledger one-row-per-pass toward the refuse ceiling; the wall-clock
+// strike path never counts ticks, so no ledger row is needed to observe 'still
+// pending'. Only a node aged past the grace window (or with no timestamp) writes a
+// row — a STRUCTURAL strike feeding the SAME strike tally — so a producer with no
+// forward progress auto-blocks at STUCK_PRODUCER_DISPATCH_THRESHOLD (a bounded ≤
+// threshold rows) and the floor stops re-proposing it; the drain precondition then
+// converges. A threaded ledgerCache carries the strike tally + terminal set in
+// memory so the strike loop never re-scans the whole event log per write.
+// nowMs/graceMs are injectable for deterministic tests; live calls read Date.now()
+// and the constant.
 function reconcileStaleDispatchProducers(
   domain,
-  { nodes, nodeIdToProducerKey, terminalRunSet, nowMs, graceMs } = {},
+  { nodes, nodeIdToProducerKey, terminalRunSet, ledgerCache, nowMs, graceMs } = {},
 ) {
   let producerNodes = nodes;
   let map = nodeIdToProducerKey;
@@ -610,7 +636,8 @@ function reconcileStaleDispatchProducers(
     ({ producerNodes, nodeIdToProducerKey: map } = buildLiveProducerReconcileInputs(domain));
   }
 
-  const runSet = terminalRunSet instanceof Set ? terminalRunSet : producerRunSet(domain);
+  const cache = isProducerRunLedgerCache(ledgerCache) ? ledgerCache : buildProducerRunLedgerCache(domain);
+  const runSet = terminalRunSet instanceof Set ? terminalRunSet : cache.terminalKeys;
 
   const plan = planStaleDispatchReconcile({
     producerNodes,
@@ -620,25 +647,18 @@ function reconcileStaleDispatchProducers(
     graceMs,
   });
 
-  const ticked = [];
+  // Within-grace producers are REPORTED (their pending state rides the live graph
+  // node), never persisted — no transient tick row is written.
+  const ticked = plan.ticks.map((tick) => tick.producer_key);
   const struck = [];
   const autoBlocked = [];
-  for (const tick of plan.ticks) {
-    recordProducerRun(domain, {
-      producer_key: tick.producer_key,
-      status: "failed_retryable",
-      failure_class: "transient",
-      reason: STALE_DISPATCH_TICK_REASON,
-    });
-    ticked.push(tick.producer_key);
-  }
   for (const strike of plan.strikes) {
     const result = recordProducerRun(domain, {
       producer_key: strike.producer_key,
       status: "failed_retryable",
       failure_class: "structural",
       reason: STALE_DISPATCH_STRIKE_REASON,
-    });
+    }, cache);
     struck.push(strike.producer_key);
     if (result && result.auto_blocked) autoBlocked.push(strike.producer_key);
   }
@@ -872,16 +892,18 @@ function handler(args) {
     }
   }
 
-  // One terminal producer_run set + one graph read threaded through BOTH
-  // reconcilers. They key on disjoint node states (executed vs proposed/dispatched)
-  // and producerNodeId folds at most one node per key, so the two never touch the
-  // same producer_key — the shared snapshot is faithful for both and avoids a
-  // per-stage re-fold of the frontier log.
-  const terminalRunSet = producerRunSet(domain);
+  // One producer_run ledger snapshot (strike tally + terminal-key set) + one graph
+  // read threaded through BOTH reconcilers. They key on disjoint node states
+  // (executed vs proposed/dispatched) and producerNodeId folds at most one node per
+  // key, so the two never touch the same producer_key — the shared cache is faithful
+  // for both, avoids a per-stage re-fold of the frontier log, and lets each strike's
+  // auto-block decision read the tally from memory instead of re-scanning per write.
+  const ledgerCache = buildProducerRunLedgerCache(domain);
   const reconcileOpts = {
     nodes: reconcileInputs.producerNodes,
     nodeIdToProducerKey: reconcileInputs.nodeIdToProducerKey,
-    terminalRunSet,
+    terminalRunSet: ledgerCache.terminalKeys,
+    ledgerCache,
   };
 
   // Reconcile executed-orphan producer nodes. A node stuck 'executed' with no

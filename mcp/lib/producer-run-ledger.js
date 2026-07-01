@@ -127,6 +127,39 @@ function readProducerRunRows(domain) {
   ));
 }
 
+// ─── In-memory strike/terminal cache (thread through a reconcile loop) ───────
+
+// One-pass in-memory snapshot of the producer_run ledger: the STRUCTURAL-strike
+// tally per producer_key and the terminal (produced|blocked) key set. A reconcile
+// loop that records many strikes builds this ONCE up front and threads it into
+// recordProducerRun, which then mutates it as it appends instead of re-reading and
+// re-parsing the whole event log per write (the auto-block decision otherwise costs
+// two full-log scans per structural strike). The snapshot mirrors exactly what
+// producerStrikeTally + producerRunSet recompute live; recordProducerRun falls back
+// to those live reads whenever no cache is threaded (direct callers, tests).
+function buildProducerRunLedgerCache(domain) {
+  const strikeTallyByKey = new Map();
+  const terminalKeys = new Set();
+  for (const event of readProducerRunRows(domain)) {
+    const payload = event.payload;
+    const key = typeof payload.producer_key === "string" ? payload.producer_key : "";
+    if (!key) continue;
+    if (TERMINAL_PRODUCER_RUN_STATUSES.includes(payload.status)) {
+      terminalKeys.add(key);
+    } else if (payload.status === "failed_retryable" && payload.failure_class === "structural") {
+      strikeTallyByKey.set(key, (strikeTallyByKey.get(key) || 0) + 1);
+    }
+  }
+  return { strikeTallyByKey, terminalKeys };
+}
+
+function isProducerRunLedgerCache(cache) {
+  return !!(cache
+    && typeof cache === "object"
+    && cache.strikeTallyByKey instanceof Map
+    && cache.terminalKeys instanceof Set);
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 // Record one producer dispatch disposition. Writes exactly one
@@ -135,8 +168,12 @@ function readProducerRunRows(domain) {
 // row (idempotent against an already-terminal producer_key). Fail-loud on
 // invalid input via the shared validation helpers — failure_class is REQUIRED
 // (no silent default) for a failed_retryable so strikes are never inflated or
-// hidden by a missing field.
-function recordProducerRun(domain, options = {}) {
+// hidden by a missing field. An optional ledgerCache (buildProducerRunLedgerCache)
+// carries the strike tally + terminal set in memory so a reconcile loop computes
+// the auto-block decision without re-scanning the whole event log per write; it is
+// mutated to reflect each appended row and, when absent, the tally/terminal reads
+// fall back to the live projections.
+function recordProducerRun(domain, options = {}, ledgerCache = null) {
   if (options == null || typeof options !== "object" || Array.isArray(options)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -161,18 +198,31 @@ function recordProducerRun(domain, options = {}) {
   });
 
   // Auto-block on stuck dispatch. Only a structural strike can trip the
-  // threshold; recompute the tally against the post-append ledger (so the
-  // just-written strike is counted) and append a single terminal blocked row
-  // when the producer is at/over threshold and not already terminal.
+  // threshold; account the just-written strike (so it is counted) and append a
+  // single terminal blocked row when the producer is at/over threshold and not
+  // already terminal. With a threaded ledgerCache the tally + terminal set live in
+  // memory (mutated to reflect this append); without one they recompute against the
+  // post-append ledger — either path counts the just-written strike identically.
   let autoBlocked = null;
   if (status === "failed_retryable" && failureClass === "structural") {
-    const tally = producerStrikeTally(domain, producerKey);
-    if (tally >= STUCK_PRODUCER_DISPATCH_THRESHOLD && !producerRunSet(domain).has(producerKey)) {
+    let tally;
+    let alreadyTerminal;
+    if (isProducerRunLedgerCache(ledgerCache)) {
+      const next = (ledgerCache.strikeTallyByKey.get(producerKey) || 0) + 1;
+      ledgerCache.strikeTallyByKey.set(producerKey, next);
+      tally = next;
+      alreadyTerminal = ledgerCache.terminalKeys.has(producerKey);
+    } else {
+      tally = producerStrikeTally(domain, producerKey);
+      alreadyTerminal = producerRunSet(domain).has(producerKey);
+    }
+    if (tally >= STUCK_PRODUCER_DISPATCH_THRESHOLD && !alreadyTerminal) {
       autoBlocked = appendProducerRunRow(domain, {
         producer_key: producerKey,
         status: "blocked",
         block_reason: STUCK_PRODUCER_DISPATCH_BLOCK_REASON,
       });
+      if (isProducerRunLedgerCache(ledgerCache)) ledgerCache.terminalKeys.add(producerKey);
     }
   }
 
@@ -259,4 +309,6 @@ module.exports = {
   recordProducerTerminalBlock,
   producerRunSet,
   producerStrikeTally,
+  buildProducerRunLedgerCache,
+  isProducerRunLedgerCache,
 };

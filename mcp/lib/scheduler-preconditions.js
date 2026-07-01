@@ -19,6 +19,27 @@ const {
   getLatestMergedWavePartialSurfaceIds,
 } = require("./wave-handoff-store.js");
 
+// Classifies a throw from the seed_surfaces_present materialize/route pipeline.
+// Returns true ONLY for the expected "surface input is not present yet" signals:
+// a fresh SETUP session whose producers have not materialized any surface. Those
+// are legitimately non-terminal (reported_gap -> the SETUP gate passes). Every
+// OTHER throw — corrupt surface-index.json / attack_surface.json (a JSON.parse
+// SyntaxError or a "Malformed ... JSON" wrap), a read-cap breach, a disk or lock
+// failure — is a materialization ERROR: the surface input exists but could not be
+// read/routed, so the seed gate must BLOCK rather than read it as "no surfaces".
+function isSeedInputNotYetMaterialized(error) {
+  if (!error) return false;
+  // A missing expected file (surface-index.json / attack_surface.json) surfaces
+  // as ENOENT: the input has not been seeded yet.
+  if (error.code === "ENOENT") return true;
+  const message = typeof error.message === "string" ? error.message : "";
+  // buildSurfaceRoutesDocument's canonical "no surface input has been seeded yet"
+  // throw (currentSurfaces returned source: "missing"). NOT the "Malformed attack
+  // surface JSON:" wrap, which is a corruption error and must NOT match here.
+  if (/^Missing attack surface JSON:/.test(message)) return true;
+  return false;
+}
+
 const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "partial_surfaces_drained",
   "chain_work_terminal",
@@ -227,15 +248,20 @@ const PRECONDITION_CHECKS = Object.freeze({
   // already-held lock at a gate), and buildSurfaceRoutesDocument then derives
   // the routed seed surfaces; satisfied when at least one route exists.
   //
-  // A materialize OR route THROW (e.g. a fresh session that has neither
-  // surface-index.json nor attack_surface.json, where buildSurfaceRoutesDocument
-  // throws "Missing attack surface JSON: <path>") is a REPORTED gap, not a
-  // confirmed-empty frontier: map it to {satisfied:false, reported_gap:true,
-  // reason} so a downstream gate never reads a transient/setup error as "no
-  // surfaces exist". The only permitted bare satisfied:false is a successful
-  // route build whose routes array is genuinely empty. The reason string has
-  // any absolute filesystem path redacted to a basename so it never leaks the
-  // local session/home path.
+  // A throw is triaged by its cause. An "input not seeded yet" throw (a fresh
+  // session that has neither surface-index.json nor attack_surface.json, where
+  // buildSurfaceRoutesDocument throws "Missing attack surface JSON: <path>", or an
+  // ENOENT on an expected file) is a REPORTED gap, not a confirmed-empty frontier:
+  // map it to {satisfied:false, reported_gap:true, reason} so a downstream gate
+  // never reads a not-yet-materialized frontier as "no surfaces exist". An
+  // UNEXPECTED throw — corrupt surface-index.json / attack_surface.json, a read-cap
+  // breach, a disk or lock failure — is a materialization ERROR: the input exists
+  // but could not be read/routed, so it maps to {satisfied:false,
+  // materialization_error:true, error_code:"seed_surfaces_materialization_error",
+  // reason} and the SETUP gate BLOCKS rather than advancing on broken state. The
+  // only permitted bare satisfied:false is a successful route build whose routes
+  // array is genuinely empty. The reason string has any absolute filesystem path
+  // redacted to a basename so it never leaks the local session/home path.
   seed_surfaces_present(context) {
     const targetDomain = context && context.target_domain;
     if (typeof targetDomain !== "string" || targetDomain.length === 0) {
@@ -251,7 +277,15 @@ const PRECONDITION_CHECKS = Object.freeze({
       const path = require("path");
       const rawReason = error && error.message ? error.message : String(error);
       const reason = rawReason.replace(/\/[^\s]+/g, (match) => path.basename(match));
-      return { satisfied: false, reported_gap: true, reason };
+      if (isSeedInputNotYetMaterialized(error)) {
+        return { satisfied: false, reported_gap: true, reason };
+      }
+      return {
+        satisfied: false,
+        materialization_error: true,
+        error_code: "seed_surfaces_materialization_error",
+        reason,
+      };
     }
   },
 });

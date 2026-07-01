@@ -319,5 +319,6 @@
   "test/oss-repo-ref-gate.test.js",
   "test/sc-expander-provenance.test.js",
   "test/sc-recon-expander-prompt.test.js",
-  "test/pure-sc-front-door.test.js"
+  "test/pure-sc-front-door.test.js",
+  "test/parse-rpc-flag-scheme-only.test.js"
 ]
