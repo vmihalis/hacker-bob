@@ -1076,19 +1076,31 @@ function validateSessionAuthorityState(targetDomain, {
 // tool's contract/object/account argument. Tools absent from this table are
 // never chain-scope-gated.
 //
-// The three EVM tools whose authority class is global_preapproval
-// (bob_evm_call / bob_evm_storage_read / bob_evm_role_table) carry no
-// target_domain under their additionalProperties:false schemas, so the gate is
-// a structural no-op for them: with no session handle authorizeChainScope falls
-// through (it cannot resolve a bound authority). Real enforcement runs through
-// the target_domain-bearing fetch tools. substrate fetch tools are intentionally
-// excluded: a runtime/storage_key read carries no contract-address argument, so
-// it cannot form a tuple and must not be blocked.
+// This table lists ONLY the target_domain-bearing, session-bound chain FETCH
+// tools (authority class smart_contract_contextual). The gate binds a tuple to
+// a bound authority solely through the caller's target_domain
+// (sessionChainContext(args.target_domain)); a tool that cannot carry a
+// target_domain cannot be resolved to a session here and so cannot be gated.
+//
+// The three global_preapproval EVM read/call tools — bob_evm_call,
+// bob_evm_storage_read, bob_evm_role_table — are deliberately NOT listed. Their
+// input schemas admit no target_domain (additionalProperties defaults closed in
+// tool-validation.validateObject, so a target_domain argument is rejected
+// before authority even runs), and this authority layer has no cwd/ambient
+// active-session resolver that could recover the caller's bound session without
+// that argument: sessions are keyed by target_domain slug in a persistent,
+// manually-purged shared home root, so enumerating them cannot identify THE
+// caller's session and a stale contract session would silently block unrelated
+// global recon. Those three therefore remain globally preapproved (recon-open),
+// exactly as they were before the chain-scope gate existed. This is a KNOWN,
+// first-class residual scope gap: for a bounded contract session the gate
+// cannot stop these three tools from reading an arbitrary same-chain contract.
+// Closing it requires a session handle these tools do not carry (schema-level
+// target_domain plus session binding), not a change in this table. substrate
+// fetch tools are likewise excluded: a runtime/storage_key read carries no
+// contract-address argument, so it cannot form a tuple and must not be blocked.
 const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
-  bob_evm_call: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.to }),
   bob_evm_fetch_source: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.address }),
-  bob_evm_storage_read: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.address }),
-  bob_evm_role_table: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.contract }),
   bob_sui_fetch_object: (args) => ({ chain_family: "sui", chain_id: args.network, address: args.object_id }),
   bob_sui_fetch_package: (args) => ({ chain_family: "sui", chain_id: args.network, address: args.package_id }),
   bob_aptos_fetch_module: (args) => ({ chain_family: "aptos", chain_id: args.network, address: args.address }),
@@ -1113,6 +1125,9 @@ const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
 function authorizeChainScope(tool, rule, args) {
   const toTuple = tool && CHAIN_SCOPE_TUPLE_BY_TOOL[tool.name];
   if (!toTuple) return null;
+  // Every listed tool requires target_domain in its schema, so this is a
+  // defensive guard: with no session handle the gate cannot resolve a bound
+  // authority and must fall through to the existing class dispatch.
   if (!targetDomainPresent(args)) return null;
 
   let ctx;

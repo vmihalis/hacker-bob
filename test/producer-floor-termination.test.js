@@ -49,10 +49,12 @@ const {
   reconcileStaleDispatchProducers,
   planOrphanReconcile,
   planProducerFloor,
+  handler: materializeProducerFloor,
   ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
-  STALE_DISPATCH_RECONCILE_PASS_THRESHOLD,
+  STALE_DISPATCH_GRACE_MS,
 } = require("../mcp/lib/tools/materialize-producer-floor.js");
 const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
+const { statePath } = require("../mcp/lib/paths.js");
 const { checkLegH } = require("../scripts/check-producer-coherence.js");
 
 // Drive a producer node to `dispatched` with a known prep_token — the same path
@@ -605,60 +607,142 @@ test("the strike-tally legs stay retryable: a single structural strike does NOT 
   });
 });
 
-test("a stuck proposed/dispatched producer converges to blocked via the stale-dispatch reconciler", () => {
+test("a genuinely non-progressing dispatched producer converges to blocked via the stale-dispatch reconciler", () => {
   withTempHome(() => {
-    const T = STALE_DISPATCH_RECONCILE_PASS_THRESHOLD;
-    assert.ok(Number.isInteger(T) && T >= 1, "the stale-dispatch grace threshold is a positive integer");
+    assert.ok(Number.isInteger(STALE_DISPATCH_GRACE_MS) && STALE_DISPATCH_GRACE_MS > 0,
+      "the stale-dispatch grace window is a positive wall-clock duration");
     const domain = "stale-dispatch.example.com";
     const key = "web_urls";
 
     // A 'dispatched' producer node whose worker never returned an executed
-    // transition: no terminal producer_run row, stuck pre-executed.
-    const nodes = [{ node_id: "TG-producer-stuck", kind: "producer", state: "dispatched" }];
+    // transition: no terminal producer_run row, and its last transition (ts_last)
+    // is far in the past — genuine non-progress, not merely repeated floor calls.
+    const dispatchedTs = "2026-06-01T00:00:00.000Z";
+    const nodes = [{
+      node_id: "TG-producer-stuck", kind: "producer", state: "dispatched", ts_last: dispatchedTs,
+    }];
     const map = new Map([["TG-producer-stuck", key]]);
+    // Wall-clock is well past the grace window, so every pass strikes; the
+    // STUCK_PRODUCER_DISPATCH_THRESHOLD-th strike auto-blocks.
+    const nowMs = Date.parse(dispatchedTs) + STALE_DISPATCH_GRACE_MS + 60_000;
 
-    // Grace ticks for the first (T-1) passes, then structural strikes; the
-    // STUCK_PRODUCER_DISPATCH_THRESHOLD-th strike auto-blocks. Total passes to a
-    // terminal block = (T-1) grace + the strike threshold.
-    const passesToBlock = (T - 1) + STUCK_PRODUCER_DISPATCH_THRESHOLD;
     let blocked = false;
-    for (let pass = 0; pass < passesToBlock; pass += 1) {
-      const r = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map });
+    for (let pass = 0; pass < STUCK_PRODUCER_DISPATCH_THRESHOLD; pass += 1) {
+      const r = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
+      assert.deepEqual(r.ticked, [], "a past-grace node strikes, never ticks");
       if (r.auto_blocked.length) blocked = true;
     }
 
-    assert.equal(blocked, true, "a perpetually-stuck dispatched producer eventually auto-blocks");
+    assert.equal(blocked, true, "a genuinely stuck dispatched producer converges to a terminal auto-block");
     assert.equal(producerRunSet(domain).has(key), true,
       "the blocked stale producer joins the terminal run set");
     assert.equal(strikeRows(domain, key, "blocked").length, 1, "exactly one terminal blocked row");
 
     // Bounded: a terminal key is never ticked or struck again.
-    const after = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map });
+    const after = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
     assert.deepEqual(after.ticked, [], "a terminal key is never ticked again");
     assert.deepEqual(after.struck, [], "a terminal key is never struck again");
   });
 });
 
-test("the stale-dispatch reconciler grants grace before any strike, and skips executed/terminal nodes", () => {
+test("a healthy in-flight producer is NOT auto-blocked by repeated floor calls without dispatch", () => {
+  withTempHome(() => {
+    // The strike clock is wall-clock node age, NOT floor-pass count. A
+    // dispatched producer whose worker is progressing (its ts_last is recent) must
+    // survive an arbitrary number of rapid floor passes without a single strike,
+    // because dispatch (bob_schedule_seed_producers) is a separate tool that may
+    // not interleave with the floor at all.
+    const domain = "stale-dispatch-healthy.example.com";
+    const key = "web_urls";
+    const dispatchedTs = "2026-06-01T00:00:00.000Z";
+    const nodes = [{
+      node_id: "TG-producer-healthy", kind: "producer", state: "dispatched", ts_last: dispatchedTs,
+    }];
+    const map = new Map([["TG-producer-healthy", key]]);
+    // Every pass observes the same recent now, one second past dispatch — well
+    // inside the grace window no matter how many passes run.
+    const nowMs = Date.parse(dispatchedTs) + 1000;
+
+    for (let pass = 0; pass < STUCK_PRODUCER_DISPATCH_THRESHOLD + 5; pass += 1) {
+      const r = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
+      assert.deepEqual(r.struck, [], "a within-grace healthy producer is never struck");
+      assert.deepEqual(r.auto_blocked, [], "and never auto-blocked");
+      assert.deepEqual(r.ticked, [key], "it accrues only a non-striking grace tick");
+    }
+    assert.equal(producerStrikeTally(domain, key), 0,
+      "no structural strike ever accrued from repeated floor calls alone");
+    assert.equal(producerRunSet(domain).has(key), false,
+      "the healthy in-flight producer is never driven terminal by floor passes");
+
+    // The same node, aged past the grace window, DOES converge — proving the clock
+    // is wall-clock non-progress and not an unconditional pass through.
+    const staleNow = Date.parse(dispatchedTs) + STALE_DISPATCH_GRACE_MS + 1000;
+    const s = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs: staleNow });
+    assert.deepEqual(s.struck, [key], "once aged past the grace window the same node strikes");
+  });
+});
+
+test("the stale-dispatch reconciler grants grace within the window, and skips executed/terminal nodes", () => {
   withTempHome(() => {
     const domain = "stale-dispatch-grace.example.com";
     const key = "web_nuclei";
-    const nodes = [{ node_id: "TG-producer-fresh", kind: "producer", state: "proposed" }];
+    const proposedTs = "2026-06-01T00:00:00.000Z";
+    const nodes = [{
+      node_id: "TG-producer-fresh", kind: "producer", state: "proposed", ts_last: proposedTs,
+    }];
     const map = new Map([["TG-producer-fresh", key]]);
+    const nowMs = Date.parse(proposedTs) + 1000;
 
-    // The first pass is a non-striking grace tick — a producer still legitimately
-    // awaiting dispatch is never struck on sight.
-    const first = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map });
-    assert.deepEqual(first.ticked, [key], "the first encounter is a grace tick");
-    assert.deepEqual(first.struck, [], "no strike on the first pass");
+    // Inside the grace window: a non-striking grace tick — a producer still
+    // legitimately awaiting dispatch is never struck on sight.
+    const first = reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey: map, nowMs });
+    assert.deepEqual(first.ticked, [key], "a within-grace encounter is a grace tick");
+    assert.deepEqual(first.struck, [], "no strike within the grace window");
     assert.equal(producerStrikeTally(domain, key), 0, "grace ticks never strike");
 
-    // An 'executed' node belongs to the orphan-executed reconciler, not this one.
-    const executedNodes = [{ node_id: "TG-producer-exec", kind: "producer", state: "executed" }];
+    // An 'executed' node belongs to the orphan-executed reconciler, not this one —
+    // regardless of its age.
+    const executedNodes = [{ node_id: "TG-producer-exec", kind: "producer", state: "executed", ts_last: proposedTs }];
     const executedMap = new Map([["TG-producer-exec", "web_js_jwt"]]);
-    const exec = reconcileStaleDispatchProducers(domain, { nodes: executedNodes, nodeIdToProducerKey: executedMap });
+    const exec = reconcileStaleDispatchProducers(domain, {
+      nodes: executedNodes, nodeIdToProducerKey: executedMap, nowMs: Date.parse(proposedTs) + STALE_DISPATCH_GRACE_MS + 1000,
+    });
     assert.deepEqual(exec.ticked, [], "an executed node is not a stale-dispatch node");
     assert.deepEqual(exec.struck, [], "an executed node is left to the orphan-executed reconciler");
+  });
+});
+
+function seedWebSession(domain) {
+  const p = statePath(domain);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ target_url: `https://${domain}` }));
+}
+
+test("floor emission is idempotent: N passes with a pending producer append the proposed event ONCE", () => {
+  withTempHome(() => {
+    // plan.ready excludes only TERMINAL producers, so a proposed-but-unfinished
+    // root producer stays 'ready' every pass. The materializer already dedupes the
+    // NODE, but a naive re-append would grow frontier-events.jsonl by one row per
+    // pass. The floor must skip re-emitting a producer whose node already exists.
+    const domain = "idempotent-emit.example.com";
+    seedWebSession(domain);
+    const key = "web_host_family"; // the only ready root producer under the target seed
+
+    const PASSES = 5;
+    for (let pass = 0; pass < PASSES; pass += 1) {
+      const out = JSON.parse(materializeProducerFloor({ target_domain: domain }));
+      assert.equal(out.tier1_producers_emitted, pass === 0 ? 1 : 0,
+        `pass ${pass}: only the first pass emits the pending root producer, never a re-emit`);
+    }
+
+    const proposedRows = readFrontierEvents(domain).filter((event) => (
+      event.kind === "observation.recorded"
+      && event.payload
+      && event.payload.observation_kind === "producer_proposed"
+      && event.payload.producer_key === key
+    ));
+    assert.equal(proposedRows.length, 1,
+      `exactly one producer_proposed event for ${key} after ${PASSES} floor passes — not ${PASSES}`);
   });
 });
 

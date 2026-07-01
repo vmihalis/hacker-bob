@@ -176,6 +176,12 @@ function applySurfaceFields(surface, event) {
     // later event for the same surface must never LOWER a recorded depth. A
     // missing prior value is the root lower bound (1). On the normal
     // monotone-increasing path Math.max returns the incoming value unchanged.
+    //
+    // OD4 intent (deliberate, NOT a bug): never explore past the cap on ANY
+    // discovered path (monotonic depth). A contract first seen deep stays capped
+    // even if later reached via a shallower path — this is the intended
+    // under-exploration bound (a hard termination guarantee is favoured over
+    // re-opening a surface at a lower depth), not premature termination to fix.
     const existing = Number.isInteger(surface[field]) ? surface[field] : 1;
     surface[field] = Math.max(existing, incoming);
   }

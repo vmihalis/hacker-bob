@@ -15,6 +15,9 @@ const os = require("os");
 const path = require("path");
 
 const { executeTool } = require("../mcp/lib/dispatch.js");
+const { authorizeToolCall } = require("../mcp/lib/session-authority.js");
+const { getRegisteredTool } = require("../mcp/lib/tool-registry.js");
+const { validateToolArguments } = require("../mcp/lib/tool-validation.js");
 
 async function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -112,6 +115,114 @@ test("a web session (empty target_contracts) is untouched by the gate", async ()
         && env.error.details.authority.authority_block_reason,
       "chain_scope_blocked",
       `web session must not be chain-scope-blocked, got ${JSON.stringify(env)}`,
+    );
+  });
+});
+
+// ── Residual scope gap: the three global_preapproval EVM read/call tools ──────
+// bob_evm_call / bob_evm_storage_read / bob_evm_role_table are authority class
+// global_preapproval and their schemas carry no target_domain. The chain-scope
+// gate binds a tuple to a session ONLY through target_domain, and this layer has
+// no ambient active-session resolver, so these three are honestly excluded from
+// CHAIN_SCOPE_TUPLE_BY_TOOL and remain globally preapproved. These tests pin
+// that exclusion as a first-class, known gap (not a silent no-op) so a future
+// schema-level session handle is the only thing that can close it.
+
+const GLOBAL_PREAPPROVAL_CHAIN_TOOLS = [
+  {
+    name: "bob_evm_call",
+    args: {
+      chain_id: 1,
+      to: "0x0000000000000000000000000000000000000002",
+      data: "0x",
+    },
+  },
+  {
+    name: "bob_evm_storage_read",
+    args: {
+      chain_id: 1,
+      address: "0x0000000000000000000000000000000000000002",
+      slot: "0x0",
+    },
+  },
+  {
+    name: "bob_evm_role_table",
+    args: {
+      chain_id: 1,
+      contract: "0x0000000000000000000000000000000000000002",
+      accounts: ["0x0000000000000000000000000000000000000003"],
+    },
+  },
+];
+
+for (const { name, args } of GLOBAL_PREAPPROVAL_CHAIN_TOOLS) {
+  test(`${name} schema rejects target_domain (no session handle can reach the gate)`, () => {
+    // additionalProperties defaults closed, so a target_domain argument is
+    // rejected at validation before authority runs. This is WHY the gate cannot
+    // bind these tools to a bound contract session.
+    assert.throws(
+      () => validateToolArguments(name, { ...args, target_domain: "sc-evm-1-00000000" }),
+      /target_domain is not allowed/,
+      `${name} must reject target_domain`,
+    );
+  });
+
+  test(`${name} stays global preapproval even with a bound contract session (residual gap)`, async () => {
+    await withTempHome(async () => {
+      const boot = await executeTool("bob_init_contract_session", {
+        contracts: [{
+          chain_family: "evm",
+          chain_id: "1",
+          address: "0x0000000000000000000000000000000000000001",
+        }],
+      });
+      assert.equal(boot.ok, true, `expected ok:true, got ${JSON.stringify(boot)}`);
+
+      // A non-bound same-chain address (0x..02) is outside the bound authority
+      // (0x..01), yet the gate cannot see the session for these tools: the
+      // decision is global preapproval, never SCOPE_BLOCKED / chain_scope_blocked.
+      const tool = getRegisteredTool(name);
+      assert.ok(tool, `tool ${name} must be registered`);
+      const decision = authorizeToolCall(tool, args);
+      assert.equal(decision.authority_result, "allowed", `expected allowed, got ${JSON.stringify(decision)}`);
+      assert.equal(decision.authority_class, "global_preapproval", `expected global_preapproval, got ${JSON.stringify(decision)}`);
+      assert.notEqual(decision.authority_block_reason, "chain_scope_blocked");
+    });
+  });
+}
+
+test("a bound contract fetch tuple is still enforced at the authority layer (control)", async () => {
+  await withTempHome(async () => {
+    const boot = await executeTool("bob_init_contract_session", {
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1",
+        address: "0x0000000000000000000000000000000000000001",
+      }],
+    });
+    assert.equal(boot.ok, true, `expected ok:true, got ${JSON.stringify(boot)}`);
+    const domain = boot.data.target_domain;
+
+    const fetchSource = getRegisteredTool("bob_evm_fetch_source");
+    assert.ok(fetchSource, "bob_evm_fetch_source must be registered");
+
+    // Bound address is admitted past the gate.
+    const boundDecision = authorizeToolCall(fetchSource, {
+      target_domain: domain,
+      chain_id: 1,
+      address: "0x0000000000000000000000000000000000000001",
+    });
+    assert.equal(boundDecision.authority_result, "allowed", `bound tuple should be allowed, got ${JSON.stringify(boundDecision)}`);
+
+    // Non-bound same-chain address is SCOPE_BLOCKED by the chain-scope gate.
+    assert.throws(
+      () => authorizeToolCall(fetchSource, {
+        target_domain: domain,
+        chain_id: 1,
+        address: "0x0000000000000000000000000000000000000002",
+      }),
+      (error) => error && error.authority && error.authority.authority_block_reason === "chain_scope_blocked",
+      "non-bound tuple should be chain_scope_blocked",
     );
   });
 });

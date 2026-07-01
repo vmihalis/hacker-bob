@@ -17,6 +17,7 @@ const {
   readSpawnLedgerEntries,
   spawnLedgerTotal,
 } = require("../mcp/lib/spawn-ledger.js");
+const { withSessionLock } = require("../mcp/lib/storage.js");
 const paths = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
@@ -56,6 +57,36 @@ test("spawn-ledger: a malformed/partial line is skipped, never thrown", () => {
     const rows = readSpawnLedgerEntries(domain);
     assert.equal(rows.length, 1, "the valid row survives a torn tail line");
     assert.equal(spawnLedgerTotal(domain), 0);
+  });
+});
+
+test("spawn-ledger: the append takes the session lock — reentrant under a held lock, self-acquiring standalone", () => {
+  withTempHome(() => {
+    const domain = "ledger-lock.example.com";
+    // The wave scheduler appends while ALREADY inside withSessionLock, so the
+    // append must reuse that hold reentrantly rather than deadlocking on the lock
+    // file. Every other session write in this path takes the lock; the append now
+    // does too.
+    const row = withSessionLock(domain, () => appendSpawnLedgerEntry(domain, {
+      ts: "2026-06-21T00:00:00.000Z", wave: "w1", parent_agent: "a1",
+      surface_id: "surface:api", depth: 0, branching: 0,
+      root_count: 1, descendant_tree: 0, worst_case_tree: 1,
+    }));
+    assert.equal(row.surface_id, "surface:api", "the reentrant append returns the written row (no deadlock)");
+
+    // A standalone append (no outer hold) acquires the lock itself and also writes.
+    appendSpawnLedgerEntry(domain, {
+      ts: "2026-06-21T00:01:00.000Z", wave: "w1", parent_agent: "a2",
+      surface_id: "surface:admin", depth: 0, branching: 0,
+      root_count: 1, descendant_tree: 0, worst_case_tree: 1,
+    });
+
+    assert.deepEqual(
+      readSpawnLedgerEntries(domain).map((r) => r.surface_id),
+      ["surface:api", "surface:admin"],
+      "both the locked and the standalone reservations are durably appended in order",
+    );
+    assert.equal(spawnLedgerTotal(domain), 2, "both reserved lifetime slots count toward the governor");
   });
 });
 

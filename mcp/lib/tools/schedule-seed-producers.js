@@ -102,6 +102,28 @@ function selectExecutableProducers({ nodes, nodeIdToProducerKey, producerRunSet:
   return { selected, skipped, considered_count: candidates.length };
 }
 
+// Pure-read: rebuild the node_id -> producer_key map from the producer_proposed
+// frontier events. Read fresh each time it is called so a drift retry resolves
+// producer nodes against the current event stream, not a stale snapshot.
+function buildNodeIdToProducerKey(domain) {
+  const nodeIdToProducerKey = new Map();
+  for (const event of readFrontierEvents(domain)) {
+    if (!event || event.kind !== "observation.recorded") continue;
+    const payload = event.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
+    const obsKind = (typeof payload.observation_kind === "string" && payload.observation_kind.trim())
+      ? payload.observation_kind.trim()
+      : (typeof payload.kind === "string" ? payload.kind.trim() : "");
+    if (obsKind !== "producer_proposed") continue;
+    const producerKey = (typeof payload.producer_key === "string" && payload.producer_key)
+      ? payload.producer_key
+      : (typeof payload.producer_id === "string" ? payload.producer_id : null);
+    if (!producerKey) continue;
+    nodeIdToProducerKey.set(producerNodeId({ producerKey }), producerKey);
+  }
+  return nodeIdToProducerKey;
+}
+
 function handler(args) {
   const input = args || {};
   const domain = assertSafeDomain(assertNonEmptyString(input.target_domain, "target_domain"));
@@ -125,23 +147,11 @@ function handler(args) {
   let liveResult = materializeTaskGraph(domain, { write: false });
   let nodes = liveResult.document.nodes || [];
   let graphHash = liveResult.document.hashes ? liveResult.document.hashes.graph_hash : null;
-  const nodeIdToProducerKey = new Map();
-  for (const event of readFrontierEvents(domain)) {
-    if (!event || event.kind !== "observation.recorded") continue;
-    const payload = event.payload;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
-    const obsKind = (typeof payload.observation_kind === "string" && payload.observation_kind.trim())
-      ? payload.observation_kind.trim()
-      : (typeof payload.kind === "string" ? payload.kind.trim() : "");
-    if (obsKind !== "producer_proposed") continue;
-    const producerKey = (typeof payload.producer_key === "string" && payload.producer_key)
-      ? payload.producer_key
-      : (typeof payload.producer_id === "string" ? payload.producer_id : null);
-    if (!producerKey) continue;
-    nodeIdToProducerKey.set(producerNodeId({ producerKey }), producerKey);
-  }
+  let nodeIdToProducerKey = buildNodeIdToProducerKey(domain);
 
-  const runSet = producerRunSet(domain);
+  // The terminal producer_run set. Re-read on every drift retry (below) so a
+  // producer another process finalizes between now and a retry is filtered out.
+  let runSet = producerRunSet(domain);
 
   // Drift-gated shrink loop. Select at the current batch, then re-materialize
   // read-only and compare the graph_hash. Two successive synchronous reads with
@@ -165,11 +175,21 @@ function handler(args) {
     const remat = materializeTaskGraph(domain, { write: false });
     const nextHash = remat.document.hashes ? remat.document.hashes.graph_hash : null;
     if (nextHash === graphHash) break; // quiescent: successive reads agree
+    // Drift: the graph churned between two read-only materializes. Refresh the
+    // fresher nodes/hash AND re-read the terminal producer_run set + the
+    // node->producer_key map. Another process may have finalized a producer in
+    // that window; selecting against the STALE runSet would fail to filter it and
+    // could re-dispatch an already-terminal producer (double-dispatch, a
+    // monotonicity violation). Re-reading both is what keeps the shrunk-batch
+    // reselection honest against concurrent finalization.
+    nodes = remat.document.nodes || [];
+    graphHash = nextHash;
+    runSet = producerRunSet(domain);
+    nodeIdToProducerKey = buildNodeIdToProducerKey(domain);
     if (driftRetries >= retryBudget) {
       // Budget exhausted while the graph still drifts: re-select once against the
-      // freshest graph at the shrunk batch, then report the non-quiescent gap.
-      nodes = remat.document.nodes || [];
-      graphHash = nextHash;
+      // freshest graph + freshest terminal set at the shrunk batch, then report
+      // the non-quiescent gap.
       selection = selectExecutableProducers({
         nodes,
         nodeIdToProducerKey,
@@ -181,8 +201,6 @@ function handler(args) {
     }
     batch = nextDispatchBatch(batch);
     driftRetries += 1;
-    nodes = remat.document.nodes || [];
-    graphHash = nextHash;
   }
 
   // Dispatch each selected producer via the bob_prepare_node path. bob_prepare_node
@@ -202,6 +220,36 @@ function handler(args) {
           node_id: node.node_id,
           code: "prepare_node_unavailable",
           message: "bob_prepare_node is not registered in the MCP tool registry",
+        });
+        continue;
+      }
+      // Reserve one lifetime spawn-ledger slot BEFORE the bob_prepare_node state
+      // mutation. Ordering matters: if the reservation were written AFTER dispatch
+      // (and its failure swallowed), a prepared producer could exist with no
+      // ledger row and spawnLedgerTotal would UNDERCOUNT the max_total_spawned_agents
+      // gate. Reserving first — and SURFACING a ledger-write failure by routing the
+      // producer to failed[] without mutating node state — guarantees the gate can
+      // never miss a dispatched producer. appendSpawnLedgerEntry holds the session
+      // lock for the append. A refused-after-reserve producer over-counts by one
+      // slot, the conservative (never-over-spawn) direction for a budget gate.
+      try {
+        appendSpawnLedgerEntry(domain, {
+          ts: input.ts || new Date().toISOString(),
+          wave: "seed_producer",
+          parent_agent: input.actor || null,
+          surface_id: node.node_id,
+          depth: 0,
+          branching: 0,
+          kind: "seed_producer",
+          root_count: 1,
+          descendant_tree: 0,
+          worst_case_tree: 1,
+        });
+      } catch (err) {
+        failed.push({
+          node_id: node.node_id,
+          code: err && err.code ? err.code : "spawn_ledger_reservation_failed",
+          message: err && err.message ? err.message : String(err),
         });
         continue;
       }
@@ -226,29 +274,6 @@ function handler(args) {
           message: err && err.message ? err.message : String(err),
         });
       }
-    }
-  }
-
-  // Reserve one lifetime spawn-ledger slot per DISPATCHED producer so the
-  // seed-producer dispatch draws down the same cumulative budget as the wave +
-  // closure spawns. Best-effort: a ledger write failure never regresses the
-  // dispatch result.
-  for (const d of dispatched) {
-    try {
-      appendSpawnLedgerEntry(domain, {
-        ts: input.ts || new Date().toISOString(),
-        wave: "seed_producer",
-        parent_agent: input.actor || null,
-        surface_id: d.node_id,
-        depth: 0,
-        branching: 0,
-        kind: "seed_producer",
-        root_count: 1,
-        descendant_tree: 0,
-        worst_case_tree: 1,
-      });
-    } catch {
-      // best-effort reservation; never regress the dispatch.
     }
   }
 

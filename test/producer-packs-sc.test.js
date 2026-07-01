@@ -15,6 +15,7 @@ const {
   classifyScProducer,
 } = require("../mcp/lib/producer-packs.js");
 const { CHAIN_FAMILY_VALUES } = require("../mcp/lib/constants.js");
+const { planProducerFloor } = require("../mcp/lib/tools/materialize-producer-floor.js");
 const {
   checkLegB,
   checkLegC,
@@ -89,6 +90,44 @@ test("the only artifact kind a single producer both consumes and produces is sc_
     ["sc_surface"],
     "sc_surface is the single whitelisted identity self-edge across PRODUCER_PACKS",
   );
+});
+
+test("an svm (base58) address is NOT lowercased in the identity / producer_key, while evm hex IS case-folded", () => {
+  // svm base58 is case-SENSITIVE — lowercasing corrupts the pubkey (a dedup
+  // collision plus a wrong on-chain fetch). The per-instance identity tuple and
+  // producer_key must carry the address verbatim for svm, and consistently with
+  // readScExpanderSurfaces which never lowercases.
+  const svmAddress = "So11111111111111111111111111111111111111112"; // mixed-case base58
+  const svmPlan = planProducerFloor({
+    packs: PRODUCER_PACKS,
+    producerRunSet: new Set(["sc_chain_root"]),
+    availableArtifactKinds: ["chain_address_set", "sc_surface"],
+    scSurfaces: [{
+      chain_family: "svm", chain_id: "mainnet-beta", address: svmAddress, depth: 1, provenance: "seed",
+    }],
+    caps: {},
+  });
+  assert.equal(svmPlan.sc_expander_instances.length, 1, "the svm seed contract mints one instance");
+  const svmInstance = svmPlan.sc_expander_instances[0];
+  assert.equal(svmInstance.address, svmAddress, "the svm base58 address rides verbatim, never lowercased");
+  assert.notEqual(svmInstance.address, svmAddress.toLowerCase(),
+    "a lowercased svm pubkey would be a different (wrong) address");
+  assert.equal(svmInstance.producer_key, `sc_address_expander:svm:mainnet-beta:${svmAddress}`,
+    "the per-instance producer_key embeds the case-preserved svm identity");
+
+  // EVM hex is case-INSENSITIVE, so it IS folded to lowercase for stable dedup.
+  const evmMixed = "0xABCdef0000000000000000000000000000000001";
+  const evmPlan = planProducerFloor({
+    packs: PRODUCER_PACKS,
+    producerRunSet: new Set(["sc_chain_root"]),
+    availableArtifactKinds: ["chain_address_set", "sc_surface"],
+    scSurfaces: [{
+      chain_family: "evm", chain_id: "1", address: evmMixed, depth: 1, provenance: "seed",
+    }],
+    caps: {},
+  });
+  assert.equal(evmPlan.sc_expander_instances[0].address, evmMixed.toLowerCase(),
+    "evm hex is case-folded to lowercase (case-insensitive encoding)");
 });
 
 test("the chain_address_set consume is non-orphan and the producer graph stays acyclic with the SC packs present", () => {

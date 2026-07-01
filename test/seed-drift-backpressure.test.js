@@ -75,6 +75,167 @@ test("planDriftBackpressure: a graph that stabilizes within budget is quiescent 
   assert.equal(plan.finalBatch, 2, "8 halved twice ⇒ 2 (shrunk by the drift-retry count)");
 });
 
+// ── Concurrency seams ──────────────────────────────────────────────────────
+// The drift re-read and the reserve-before-dispatch ordering are handler-internal
+// and can only be observed by controlling the read-only materialize / producer_run
+// / dispatch dependencies. schedule-seed-producers.js destructures those at require
+// time, so we swap them in require.cache and re-require a FRESH copy of the handler
+// bound to the stubs, then restore. No production seam is added for the test.
+const TARGET = require.resolve("../mcp/lib/tools/schedule-seed-producers.js");
+const DEP_PATHS = {
+  materializer: require.resolve("../mcp/lib/task-graph-materializer.js"),
+  producerRun: require.resolve("../mcp/lib/producer-run-ledger.js"),
+  frontier: require.resolve("../mcp/lib/frontier-events.js"),
+  toolRegistry: require.resolve("../mcp/lib/tool-registry.js"),
+  spawnLedger: require.resolve("../mcp/lib/spawn-ledger.js"),
+};
+
+function stubModule(absPath, exports) {
+  require.cache[absPath] = { id: absPath, filename: absPath, loaded: true, exports, paths: [] };
+}
+
+function loadSeedHandlerWithStubs(stubs, fn) {
+  const savedTarget = require.cache[TARGET];
+  const savedDeps = {};
+  for (const p of Object.values(DEP_PATHS)) savedDeps[p] = require.cache[p];
+  delete require.cache[TARGET];
+  if (stubs.materializer) stubModule(DEP_PATHS.materializer, stubs.materializer);
+  if (stubs.producerRun) stubModule(DEP_PATHS.producerRun, stubs.producerRun);
+  if (stubs.frontier) stubModule(DEP_PATHS.frontier, stubs.frontier);
+  if (stubs.toolRegistry) stubModule(DEP_PATHS.toolRegistry, stubs.toolRegistry);
+  if (stubs.spawnLedger) stubModule(DEP_PATHS.spawnLedger, stubs.spawnLedger);
+  try {
+    return fn(require(TARGET));
+  } finally {
+    delete require.cache[TARGET];
+    if (savedTarget) require.cache[TARGET] = savedTarget;
+    for (const [p, entry] of Object.entries(savedDeps)) {
+      if (entry) require.cache[p] = entry;
+      else delete require.cache[p];
+    }
+  }
+}
+
+// producerNodeId maps a producer_key to its node id; the stubs mirror it as
+// `TG-producer-<key>` so the staged nodes and the producer_proposed events line up.
+function stubProducerNodeId({ producerKey }) {
+  return `TG-producer-${producerKey}`;
+}
+function stubProducerNodes(keys) {
+  return keys.map((key, i) => ({
+    node_id: `TG-producer-${key}`,
+    kind: "producer",
+    ts_first: `2026-01-01T00:00:0${i}.000Z`,
+  }));
+}
+function stubProposedEvents(keys) {
+  return keys.map((key) => ({
+    kind: "observation.recorded",
+    payload: { observation_kind: "producer_proposed", producer_key: key },
+  }));
+}
+
+test("drift re-read: a producer finalized concurrently during a drift retry is filtered by the RE-READ runSet — not double-dispatched", () => {
+  const keys = ["p_alpha", "p_bravo"];
+  const nodes = stubProducerNodes(keys);
+  // The graph_hash drifts once (H0 -> H1), then quiesces (H1 == H1). The stale
+  // initial runSet is empty; the SECOND producerRunSet read (only reached because
+  // the fix re-reads on drift) reports p_bravo as terminal — a concurrent finalize.
+  const matSeq = [
+    { document: { nodes, hashes: { graph_hash: "H0" } } },
+    { document: { nodes, hashes: { graph_hash: "H1" } } },
+    { document: { nodes, hashes: { graph_hash: "H1" } } },
+  ];
+  const runSetSeq = [new Set(), new Set(["p_bravo"])];
+  let matIdx = 0;
+  let producerRunSetCalls = 0;
+
+  loadSeedHandlerWithStubs({
+    materializer: { materializeTaskGraph: () => matSeq[matIdx++], producerNodeId: stubProducerNodeId },
+    producerRun: {
+      producerRunSet: () => {
+        const set = runSetSeq[Math.min(producerRunSetCalls, runSetSeq.length - 1)];
+        producerRunSetCalls += 1;
+        return set;
+      },
+    },
+    frontier: { readFrontierEvents: () => stubProposedEvents(keys) },
+  }, (mod) => {
+    const out = JSON.parse(mod.handler({
+      target_domain: "example.com",
+      dispatch: false,
+      capacity: 8,
+      retry_budget: 4,
+      policy: {},
+    }));
+
+    assert.equal(out.drift_retries, 1, "the graph drifted once before quiescing");
+    assert.equal(producerRunSetCalls, 2,
+      "producerRunSet is read AGAIN on drift — the stale terminal set is never trusted across a retry");
+    assert.deepEqual(out.selected_node_ids, ["TG-producer-p_alpha"],
+      "only the still-live producer is selected after the re-read");
+    assert.ok(!out.selected_node_ids.includes("TG-producer-p_bravo"),
+      "the concurrently-finalized producer is NOT re-selected — no double-dispatch, monotonicity holds");
+  });
+});
+
+test("dispatch order: the spawn-ledger reservation precedes the bob_prepare_node state mutation, and a ledger-write failure is SURFACED (not swallowed)", () => {
+  const keys = ["p_solo"];
+  const nodes = stubProducerNodes(keys);
+  // A stable hash (no drift): one initial materialize + one remat that agrees.
+  const stableMat = () => ({ document: { nodes, hashes: { graph_hash: "H0" } } });
+
+  function runScenario({ failReserve }) {
+    const callOrder = [];
+    let matIdx = 0;
+    return loadSeedHandlerWithStubs({
+      materializer: {
+        materializeTaskGraph: () => { matIdx += 1; return stableMat(); },
+        producerNodeId: stubProducerNodeId,
+      },
+      producerRun: { producerRunSet: () => new Set() },
+      frontier: { readFrontierEvents: () => stubProposedEvents(keys) },
+      toolRegistry: {
+        TOOL_HANDLERS: {
+          bob_prepare_node: (args) => {
+            callOrder.push(`dispatch:${args.node_id}`);
+            return JSON.stringify({ prep_token: "t", brief_hash: "b", graph_context_hash: "g", event_id: "e" });
+          },
+        },
+      },
+      spawnLedger: {
+        appendSpawnLedgerEntry: (_domain, entry) => {
+          callOrder.push(`reserve:${entry.surface_id}`);
+          if (failReserve) throw new Error("simulated ledger IO failure");
+          return entry;
+        },
+      },
+    }, (mod) => {
+      const out = JSON.parse(mod.handler({ target_domain: "example.com", capacity: 8, policy: {} }));
+      return { out, callOrder };
+    });
+  }
+
+  // Happy path: the reservation is written FIRST, then the dispatch mutates state.
+  const ok = runScenario({ failReserve: false });
+  assert.deepEqual(ok.callOrder, ["reserve:TG-producer-p_solo", "dispatch:TG-producer-p_solo"],
+    "the ledger reservation precedes/co-occurs with the dispatch — never a separate post-loop pass");
+  assert.deepEqual(ok.out.dispatched.map((d) => d.node_id), ["TG-producer-p_solo"]);
+  assert.deepEqual(ok.out.failed, [], "no failures on the happy path");
+
+  // Failure path: a ledger-write failure gates the dispatch — the producer lands in
+  // failed[] with the reservation error, bob_prepare_node is NEVER called, so no
+  // prepared producer can exist without a ledger record (the gate cannot undercount).
+  const bad = runScenario({ failReserve: true });
+  assert.deepEqual(bad.callOrder, ["reserve:TG-producer-p_solo"],
+    "the reservation is attempted BEFORE dispatch; its failure short-circuits — bob_prepare_node never runs");
+  assert.deepEqual(bad.out.dispatched, [], "a failed reservation dispatches nothing");
+  assert.equal(bad.out.failed.length, 1);
+  assert.equal(bad.out.failed[0].node_id, "TG-producer-p_solo");
+  assert.equal(bad.out.failed[0].code, "spawn_ledger_reservation_failed",
+    "the ledger-write failure is SURFACED in failed[], never swallowed");
+});
+
 test("handler smoke: over-cap producers are named in skipped and the no-drift path reports drift_retries 0", async () => {
   await withTempHome(async () => {
     const domain = "example.com";

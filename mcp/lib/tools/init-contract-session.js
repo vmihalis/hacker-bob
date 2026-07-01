@@ -53,6 +53,15 @@ const CHECKPOINT_MODE_VALUES = ["normal", "paranoid", "yolo"];
 // OD4 default depth for the linked-contract closure walk recorded on the seed.
 const DEFAULT_LINKED_CONTRACT_DEPTH = 3;
 
+// Shape-only validation, BY DESIGN (operator-declared scope): this checks the
+// per-family address FORMAT, not on-chain code presence. An EOA / empty account
+// that matches the shape binds as a smart_contract surface intentionally — the
+// contracts axis is an operator scoping decision, and a no-code address
+// terminalizes downstream (the sc-recon-expander does not expand a no-code
+// address), it does not silently become a live target. Deliberately NO network
+// preflight (getCode) here: init stays pure/offline and fail-closed on shape,
+// and a network round-trip at bind time would couple session creation to RPC
+// health. This is not an oversight.
 function isValidContractAddressShape(chainFamily, address) {
   switch (chainFamily) {
     case "evm":
@@ -88,12 +97,21 @@ function addressSlug(address) {
   return (safe || "addr").slice(0, 8);
 }
 
-// One contract => the on-chain identity slug; several => a stable digest of the
-// whole authority set (order-independent via chainAuthorityHash).
+// One contract => the on-chain identity slug PLUS a full-authority digest
+// suffix; several => a stable digest of the whole authority set. Both cases are
+// order-independent via chainAuthorityHash.
 function deriveContractTargetDomain(normalizedContracts, authorityHash) {
   if (normalizedContracts.length === 1) {
     const { chain_family: chainFamily, chain_id: chainId, address } = normalizedContracts[0];
-    return safeSlug(`sc-${chainFamily}-${chainId}-${addressSlug(address)}`);
+    // addressSlug truncates the address to 8 hex nibbles (32 bits), so the
+    // human-readable identity slug ALONE collides for two addresses that share
+    // their first 8 nibbles on the same family+chain_id (trivially craftable
+    // with vanity addresses). Append a short digest of the full authority set —
+    // the same disambiguation the multi-contract branch already uses — so
+    // distinct contracts derive distinct target_domains. Deterministic and
+    // fail-closed: without it, re-init throws STATE_CONFLICT or a chain tool
+    // reads chain_scope_blocked on the wrong-but-same-slug contract.
+    return safeSlug(`sc-${chainFamily}-${chainId}-${addressSlug(address)}-${String(authorityHash).slice(0, 8)}`);
   }
   return safeSlug(`contracts-${String(authorityHash).slice(0, 8)}`);
 }
@@ -147,6 +165,21 @@ function normalizeContracts(rawContracts) {
       throw new ToolError(
         ERROR_CODES.INVALID_ARGUMENTS,
         `contract binding at index ${i} must carry a non-empty chain_id`,
+        { index: i },
+      );
+    }
+    // Colon guard (fail-closed charset check): target_contracts persist as the
+    // CAIP-10 string '<family>:<chainId>:<address>' and re-parse by splitting on
+    // ':' (chain_id = parts[1], address = parts.slice(2).join(':')). A chain_id
+    // that itself contains ':' (e.g. '1:2' -> 'evm:1:2:0xADDR') would shift the
+    // re-parse to chain_id='1', address='2:0xADDR', so the bound contract's
+    // runtime tuple no longer matches authority (chain_scope_blocked on an
+    // in-scope contract) AND prepareContractCompanion vs deriveContractSession
+    // hashes diverge. ':' is reserved for the CAIP-10 projection — reject it.
+    if (chainId.includes(":")) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `contract binding at index ${i} chain_id must not contain ':' (reserved CAIP-10 separator)`,
         { index: i },
       );
     }

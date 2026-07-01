@@ -206,6 +206,74 @@ test("a partial bob_set_queue_policy preserves init-persisted OD1 seed-producer 
   });
 });
 
+test("bob_init_contract_session fails closed on a chain_id containing a colon", async () => {
+  await withTempHome(async (home) => {
+    // target_contracts round-trip through the CAIP-10 string
+    // '<family>:<chainId>:<address>' and re-parse by splitting on ':'
+    // (chain_id = parts[1], address = parts.slice(2).join(':')). A chain_id that
+    // itself carries ':' would shift the re-parse (chain_id -> '1',
+    // address -> '2:0x..'), desyncing the runtime tuple from authority.
+    // normalizeContracts rejects it fail-closed BEFORE any session is written.
+    const env = await executeTool("bob_init_contract_session", {
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1:2",
+        address: "0x0000000000000000000000000000000000000001",
+      }],
+    });
+    assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
+
+    const sessionsRoot = path.join(home, "hacker-bob-sessions");
+    let entries = [];
+    try {
+      entries = fs.readdirSync(sessionsRoot);
+    } catch {
+      entries = [];
+    }
+    assert.equal(entries.length, 0, `expected no session created, found ${JSON.stringify(entries)}`);
+  });
+});
+
+test("two contracts sharing an 8-hex address prefix derive DISTINCT target_domains", async () => {
+  await withTempHome(async () => {
+    // addressSlug truncates the address to 8 hex nibbles (32 bits). Two addresses
+    // sharing their first 8 nibbles on the same family+chain_id must still derive
+    // distinct target_domains via the full-authority digest suffix — otherwise
+    // the second init throws STATE_CONFLICT or a chain tool reads
+    // chain_scope_blocked on the wrong-but-same-slug contract.
+    const a = await executeTool("bob_init_contract_session", {
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1",
+        address: "0x1234567800000000000000000000000000000001",
+      }],
+    });
+    const b = await executeTool("bob_init_contract_session", {
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1",
+        address: "0x1234567800000000000000000000000000000002",
+      }],
+    });
+    assert.equal(a.ok, true, `expected ok:true, got ${JSON.stringify(a)}`);
+    assert.equal(b.ok, true, `expected ok:true, got ${JSON.stringify(b)}`);
+
+    // Both keep the human-readable on-chain identity prefix...
+    assert.ok(a.data.target_domain.startsWith("sc-evm-1-"), a.data.target_domain);
+    assert.ok(b.data.target_domain.startsWith("sc-evm-1-"), b.data.target_domain);
+    // ...but the digest suffix disambiguates the shared addr8 prefix.
+    assert.notEqual(
+      a.data.target_domain,
+      b.data.target_domain,
+      `distinct contracts sharing an 8-hex prefix must derive distinct target_domains, both got ${a.data.target_domain}`,
+    );
+
+    // Both sessions materialize independently on disk (no STATE_CONFLICT collapse).
+    assert.ok(fs.existsSync(statePath(a.data.target_domain)));
+    assert.ok(fs.existsSync(statePath(b.data.target_domain)));
+  });
+});
+
 test("bob_init_contract_session fails closed on an unknown chain_family", async () => {
   await withTempHome(async () => {
     const env = await executeTool("bob_init_contract_session", {

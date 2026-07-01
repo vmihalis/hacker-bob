@@ -161,6 +161,54 @@ test("no bare sc_address_expander is emitted when address-keyed instances exist 
   );
 });
 
+test("caps are CLAMPED, not merely defaulted: negative/zero/huge overrides never widen or freeze the sc-expander fan-out", () => {
+  // Four seed contracts on the same chain: enough to prove the per-pass fan-out
+  // cap actually binds. Each is a depth-1 seed (bound + provenanced) so provenance
+  // never suppresses them — only the caps decide how many instances mint.
+  const scSurfaces = [1, 2, 3, 4].map((n) => ({
+    chain_family: "evm",
+    chain_id: "1",
+    address: `0x${String(n).repeat(40)}`,
+    depth: 1,
+    provenance: "seed",
+  }));
+  const base = {
+    packs: PRODUCER_PACKS,
+    producerRunSet: new Set(["sc_chain_root"]),
+    availableArtifactKinds: ["chain_address_set", "sc_surface"],
+    scSurfaces,
+  };
+
+  // A negative per-pass cap must NOT pass through as a negative bound (which would
+  // defer everything and freeze the floor). Clamped up to the floor of 1 ⇒ exactly
+  // one instance mints and the other three are reported as a linked-address gap.
+  const negative = planProducerFloor({ ...base, caps: { seed_producer_per_pass_cap: -5 } });
+  assert.equal(negative.sc_expander_instances.length, 1,
+    "a negative per-pass cap clamps to the floor of 1, never a negative (freeze) bound");
+  assert.ok(
+    negative.sc_recursion_gaps.some((gap) => gap.kind === "sc_linked_address_capped"),
+    "the three deferred contracts are reported by name, never silently dropped",
+  );
+
+  // A zero depth cap disables recursion entirely (proposedDepth >= 2 > 0), and is
+  // an intentional operator setting — every source is depth-capped, none freezes.
+  const zeroDepth = planProducerFloor({ ...base, caps: { linked_contract_depth: 0 } });
+  assert.equal(zeroDepth.sc_expander_instances.length, 0,
+    "a zero depth cap is honored (recursion disabled), not treated as garbage");
+  assert.equal(
+    zeroDepth.sc_recursion_gaps.filter((gap) => gap.kind === "linked_contract_depth_capped").length,
+    4,
+    "all four depth-capped contracts are reported by name",
+  );
+
+  // An absurdly-large per-pass cap must be clamped to the CLAMP_CEILING, not
+  // trusted verbatim; with only four sources the clamp is not the binding limit,
+  // so all four mint — proving the huge value did not corrupt the bound.
+  const huge = planProducerFloor({ ...base, caps: { seed_producer_per_pass_cap: 10 ** 12 } });
+  assert.equal(huge.sc_expander_instances.length, 4,
+    "an absurdly-large per-pass cap is clamped but still admits every in-range source");
+});
+
 test("with no live SC surfaces the bare expander follows the any-of predicate, never suppressed", () => {
   // The chain_address_set seed alone bootstraps the depth-1 root expansion: the
   // any-of input mode makes the bare expander ready without waiting for the

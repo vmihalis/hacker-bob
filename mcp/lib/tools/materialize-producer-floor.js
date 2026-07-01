@@ -18,7 +18,7 @@ const { appendFrontierEvent, readFrontierEvents } = require("../frontier-events.
 const { PRODUCER_PACKS, isProducerReady } = require("../producer-packs.js");
 const { producerRunSet, recordProducerRun } = require("../producer-run-ledger.js");
 const { materializeTaskGraph, producerNodeId } = require("../task-graph-materializer.js");
-const { loadQueuePolicy } = require("../queue-policy.js");
+const { loadQueuePolicy, CLAMP_CEILING } = require("../queue-policy.js");
 const { statePath } = require("../paths.js");
 const { readJsonFile } = require("../storage.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
@@ -43,13 +43,20 @@ const ORPHAN_STRIKE_REASON = "orphan_executed_unreconciled";
 // Stale-dispatch reconciler bounds. A producer node stuck 'proposed' (never
 // scheduled) or 'dispatched' (a worker that never returned an executed
 // transition) makes no forward progress, so without a strike path the floor
-// re-proposes it forever and the drain precondition never converges. A
-// dispatched producer is legitimately mid-run for longer than a lost finalize,
-// so the grace window here is wider than the orphan-executed one: passes below
-// the threshold emit a non-striking transient tick and passes at/above it emit a
-// STRUCTURAL strike, feeding the SAME strike tally so the producer auto-blocks at
-// STUCK_PRODUCER_DISPATCH_THRESHOLD and the floor moves on.
-const STALE_DISPATCH_RECONCILE_PASS_THRESHOLD = 3;
+// re-proposes it forever and the drain precondition never converges. Non-progress
+// is judged by the WALL-CLOCK age of the node's most recent transition (ts_last),
+// NEVER by how many times the sibling floor tool ran: dispatch
+// (bob_schedule_seed_producers) is a SEPARATE tool with no guaranteed
+// interleaving, so a per-floor-pass strike would auto-block a healthy in-flight
+// producer after a handful of rapid floor calls even while its worker is still
+// progressing. A node whose last transition is within STALE_DISPATCH_GRACE_MS
+// emits a non-striking transient tick; a node aged past the window (or carrying no
+// observable timestamp) emits a STRUCTURAL strike feeding the SAME strike tally,
+// so a genuinely non-progressing producer still auto-blocks at
+// STUCK_PRODUCER_DISPATCH_THRESHOLD and the floor moves on. producer_run reconcile
+// rows carry no node_id, so they never touch ts_last — the clock advances only on
+// a real node transition, never on reconcile activity.
+const STALE_DISPATCH_GRACE_MS = 15 * 60 * 1000;
 const STALE_DISPATCH_TICK_REASON = "stale_dispatch_pending";
 const STALE_DISPATCH_STRIKE_REASON = "stale_dispatch_unreconciled";
 // The node states that have not yet reached 'executed' — a producer in either is
@@ -61,6 +68,27 @@ const STALE_DISPATCH_NODE_STATES = Object.freeze(["proposed", "dispatched"]);
 // dirs, so it is suppressed whenever address-keyed instances exist; the per-pass
 // instance keys embed the on-chain identity after this prefix.
 const SC_ADDRESS_EXPANDER_PRODUCER_ID = "sc_address_expander";
+
+// Case-folding an on-chain address is only safe where the address encoding is
+// case-INSENSITIVE: EVM hex and the hex Move families (aptos, sui). Solana (svm)
+// base58, Substrate SS58, and Cosmos bech32 are case-SENSITIVE — lowercasing them
+// corrupts the pubkey (a dedup collision plus a wrong on-chain fetch). Keyed on
+// chain_family so the identity tuple / per-instance producer_key / dedup sets stay
+// faithful, and consistent with readScExpanderSurfaces which never lowercases.
+const CASE_FOLD_SAFE_CHAIN_FAMILIES = Object.freeze(new Set(["evm", "aptos", "sui"]));
+
+// Clamp a caps knob into a sane [lo, hi] range. Number.isInteger ALONE lets a
+// negative, zero, or absurdly-large override through; the planner is a pure
+// function reachable from tests and future callers, so it clamps here rather than
+// trusting its sole live caller (buildProducerFloorPlan, which feeds normalized
+// policy caps) to pre-normalize. The count-cap ceiling matches queue-policy.js's
+// CLAMP_CEILING width governor; a non-integer falls back to the bounded default.
+function clampCap(value, { lo, hi, fallback }) {
+  if (!Number.isInteger(value)) return fallback;
+  if (value < lo) return lo;
+  if (value > hi) return hi;
+  return value;
+}
 
 // Pure planner: given the producer packs, the terminal producer_run set, and the
 // set of currently-available artifact kinds (root seeds UNION upstream-produced
@@ -179,15 +207,16 @@ function planScExpanderRecursion({ scSurfaces, runs, caps }) {
   }
   const runSet = runs instanceof Set ? runs : new Set(runs || []);
   const c = (caps && typeof caps === "object") ? caps : {};
-  // A missing count cap defaults to the bounded governor normalizeQueuePolicy
-  // would produce (the sole caller supplies normalized integers, so this fallback
-  // is a bounded safety floor, never unbounded); over-cap contracts are still
-  // REPORTED by name (RANK != BOUND). A missing depth cap mirrors the queue-policy
-  // default of 3 so the recursion still terminates.
-  const depthCap = Number.isInteger(c.linked_contract_depth) ? c.linked_contract_depth : 3;
-  const perPassCap = Number.isInteger(c.seed_producer_per_pass_cap) ? c.seed_producer_per_pass_cap : DEFAULT_SEED_PRODUCER_PER_PASS_CAP;
-  const perExpanderCap = Number.isInteger(c.per_expander_linked_address_cap) ? c.per_expander_linked_address_cap : DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP;
-  const lifetimeCeiling = Number.isInteger(c.max_total_seed_producers) ? c.max_total_seed_producers : DEFAULT_MAX_TOTAL_SEED_PRODUCERS;
+  // Every cap is CLAMPED, not merely defaulted: a Number.isInteger guard alone
+  // admits a negative, zero, or absurdly-large override, all of which corrupt the
+  // fan-out bound. A missing/non-integer cap falls back to the bounded governor
+  // normalizeQueuePolicy would produce; a present one is clamped into the same sane
+  // range queue-policy.js enforces (depth [0..32], counts [1..CLAMP_CEILING]).
+  // Over-cap contracts are still REPORTED by name (RANK != BOUND).
+  const depthCap = clampCap(c.linked_contract_depth, { lo: 0, hi: 32, fallback: 3 });
+  const perPassCap = clampCap(c.seed_producer_per_pass_cap, { lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_SEED_PRODUCER_PER_PASS_CAP });
+  const perExpanderCap = clampCap(c.per_expander_linked_address_cap, { lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP });
+  const lifetimeCeiling = clampCap(c.max_total_seed_producers, { lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_MAX_TOTAL_SEED_PRODUCERS });
 
   // Normalize each source surface to its on-chain identity tuple. A surface
   // missing any of (chain_family, chain_id, address) is not an expander source
@@ -200,7 +229,13 @@ function planScExpanderRecursion({ scSurfaces, runs, caps }) {
     const rawAddress = typeof s.address === "string"
       ? s.address
       : (typeof s.contract_address === "string" ? s.contract_address : "");
-    const address = rawAddress ? rawAddress.trim().toLowerCase() : "";
+    // Case-fold ONLY where the address encoding is case-insensitive (EVM hex, hex
+    // Move). svm base58 / substrate SS58 / cosmwasm bech32 are case-sensitive, so
+    // their addresses ride verbatim — lowercasing would corrupt the pubkey.
+    const trimmedAddress = rawAddress ? rawAddress.trim() : "";
+    const address = CASE_FOLD_SAFE_CHAIN_FAMILIES.has(chainFamily.toLowerCase())
+      ? trimmedAddress.toLowerCase()
+      : trimmedAddress;
     if (!chainFamily || !chainId || !address) continue;
     const depth = Number.isInteger(s.depth) ? s.depth : 1;
     const provenance = typeof s.provenance === "string" ? s.provenance.trim() : "";
@@ -391,11 +426,29 @@ function planOrphanReconcile({
   return { ticks, strikes };
 }
 
+// Parse a producer node's most-recent transition timestamp (ts_last, falling
+// back to ts_first) into epoch ms, or null when absent/unparseable. This is the
+// non-progress clock the stale-dispatch reconciler reads: it advances ONLY when
+// the node genuinely transitions, and producer_run reconcile rows carry no
+// node_id so they never touch it — the clock can never be inflated by the
+// reconciler's own writes.
+function nodeProgressMs(node) {
+  const raw = (node && typeof node.ts_last === "string" && node.ts_last)
+    ? node.ts_last
+    : (node && typeof node.ts_first === "string" ? node.ts_first : "");
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 // Pure planner: classify every producer node stuck in a pre-executed state
 // (proposed | dispatched) whose producer_key carries NO terminal producer_run
-// row as either a non-striking transient tick (its running stale index is below
-// passThreshold — grace for a producer still legitimately mid-dispatch) or a
-// structural strike (index at/above passThreshold). Deterministic and
+// row as either a non-striking transient tick (its most recent transition is
+// within graceMs of nowMs — the producer is still legitimately mid-dispatch) or a
+// structural strike (aged past the grace window, or carrying no observable
+// timestamp — no forward progress). The clock is WALL-CLOCK node age, never a
+// floor-pass count, so a healthy in-flight producer is never struck by repeated
+// floor calls, while a genuinely non-progressing one still accrues one strike per
+// past-grace pass and converges to a terminal auto-block. Deterministic and
 // side-effect-free; dedups by producer_key. A node that has reached 'executed'
 // (handled by the orphan-executed reconciler), any terminal node, or any node
 // whose key is already terminal, is never ticked or struck here.
@@ -403,15 +456,13 @@ function planStaleDispatchReconcile({
   producerNodes,
   nodeIdToProducerKey,
   terminalRunSet,
-  staleCountsByKey,
-  passThreshold,
+  nowMs,
+  graceMs,
 }) {
   const map = nodeIdToProducerKey instanceof Map ? nodeIdToProducerKey : new Map();
   const runs = terminalRunSet instanceof Set ? terminalRunSet : new Set(terminalRunSet || []);
-  const counts = staleCountsByKey instanceof Map ? staleCountsByKey : new Map();
-  const threshold = Number.isInteger(passThreshold) && passThreshold > 0
-    ? passThreshold
-    : STALE_DISPATCH_RECONCILE_PASS_THRESHOLD;
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const grace = Number.isFinite(graceMs) && graceMs >= 0 ? graceMs : STALE_DISPATCH_GRACE_MS;
   const ticks = [];
   const strikes = [];
   const seen = new Set();
@@ -423,11 +474,16 @@ function planStaleDispatchReconcile({
     if (runs.has(producerKey)) continue;
     if (seen.has(producerKey)) continue;
     seen.add(producerKey);
-    const thisPassIndex = (counts.get(producerKey) || 0) + 1;
-    if (thisPassIndex < threshold) {
-      ticks.push({ producer_key: producerKey, node_id: node.node_id });
-    } else {
+    // Non-progress evidence: the wall-clock age of the node's last transition.
+    // Within the grace window the producer is still legitimately mid-dispatch, no
+    // matter how many floor passes ran; past it (or with no timestamp to read) it
+    // has made no observable progress and strikes toward the auto-block threshold.
+    const lastProgressMs = nodeProgressMs(node);
+    const stale = lastProgressMs == null || (now - lastProgressMs) >= grace;
+    if (stale) {
       strikes.push({ producer_key: producerKey, node_id: node.node_id });
+    } else {
+      ticks.push({ producer_key: producerKey, node_id: node.node_id });
     }
   }
   return { ticks, strikes };
@@ -487,20 +543,23 @@ function countReconcileRowsByKey(domain, reasons) {
 // (the same scan the seed-producer scheduler uses). The third structural strike
 // auto-writes a single terminal blocked row, after which the key is terminal and
 // both the floor and the reconciler skip it — bounded.
-function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey } = {}) {
+function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey, terminalRunSet } = {}) {
   let producerNodes = nodes;
   let map = nodeIdToProducerKey;
   if (!Array.isArray(producerNodes) || !(map instanceof Map)) {
     ({ producerNodes, nodeIdToProducerKey: map } = buildLiveProducerReconcileInputs(domain));
   }
 
-  const terminalRunSet = producerRunSet(domain);
+  // Reuse a threaded terminal set when the handler already read one this pass; the
+  // orphan and stale reconcilers key on disjoint node states, so one shared read
+  // is faithful for both. Direct callers (tests) omit it and it is read live.
+  const runSet = terminalRunSet instanceof Set ? terminalRunSet : producerRunSet(domain);
   const orphanCountsByKey = countReconcileRowsByKey(domain, [ORPHAN_TICK_REASON, ORPHAN_STRIKE_REASON]);
 
   const plan = planOrphanReconcile({
     producerNodes,
     nodeIdToProducerKey: map,
-    terminalRunSet,
+    terminalRunSet: runSet,
     orphanCountsByKey,
     passThreshold: ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
   });
@@ -532,28 +591,33 @@ function reconcileOrphanExecutedProducers(domain, { nodes, nodeIdToProducerKey }
 
 // Impure executor: reconcile every stale-dispatch producer node (stuck
 // 'proposed'/'dispatched' with no terminal producer_run row) against the
-// producer_run ledger. Mirrors reconcileOrphanExecutedProducers exactly — same
-// recordProducerRun strike path, same shared live-state + count helpers — but
-// over the pre-executed node states with the wider stale-dispatch grace window.
-// The structural strikes feed the SAME strike tally, so a producer that never
-// progresses past dispatch auto-blocks at STUCK_PRODUCER_DISPATCH_THRESHOLD and
-// the floor stops re-proposing it — the drain precondition then converges.
-function reconcileStaleDispatchProducers(domain, { nodes, nodeIdToProducerKey } = {}) {
+// producer_run ledger. Mirrors reconcileOrphanExecutedProducers' recordProducerRun
+// strike path, but classifies tick vs strike on the WALL-CLOCK age of the node's
+// last transition (nowMs - node.ts_last vs STALE_DISPATCH_GRACE_MS) instead of a
+// floor-pass count — a healthy in-flight producer whose worker is progressing is
+// never struck by repeated floor calls. The structural strikes still feed the SAME
+// strike tally, so a producer aged past the grace window without progress
+// auto-blocks at STUCK_PRODUCER_DISPATCH_THRESHOLD and the floor stops re-proposing
+// it — the drain precondition then converges. nowMs/graceMs are injectable for
+// deterministic tests; live calls read Date.now() and the constant.
+function reconcileStaleDispatchProducers(
+  domain,
+  { nodes, nodeIdToProducerKey, terminalRunSet, nowMs, graceMs } = {},
+) {
   let producerNodes = nodes;
   let map = nodeIdToProducerKey;
   if (!Array.isArray(producerNodes) || !(map instanceof Map)) {
     ({ producerNodes, nodeIdToProducerKey: map } = buildLiveProducerReconcileInputs(domain));
   }
 
-  const terminalRunSet = producerRunSet(domain);
-  const staleCountsByKey = countReconcileRowsByKey(domain, [STALE_DISPATCH_TICK_REASON, STALE_DISPATCH_STRIKE_REASON]);
+  const runSet = terminalRunSet instanceof Set ? terminalRunSet : producerRunSet(domain);
 
   const plan = planStaleDispatchReconcile({
     producerNodes,
     nodeIdToProducerKey: map,
-    terminalRunSet,
-    staleCountsByKey,
-    passThreshold: STALE_DISPATCH_RECONCILE_PASS_THRESHOLD,
+    terminalRunSet: runSet,
+    nowMs,
+    graceMs,
   });
 
   const ticked = [];
@@ -670,6 +734,40 @@ function buildProducerFloorPlan(domain) {
   return { plan, policy, caps, runSet, scSurfaces, availableArtifactKinds };
 }
 
+function isLedgerPressureRefusal(err) {
+  return !!(err && err.code === "ledger_pressure_refusal");
+}
+
+// Fail-SOFT ledger-pressure envelope. materializeTaskGraph refuses (throws) once
+// the frontier log crosses LEDGER_PRESSURE_REFUSE_THRESHOLD; rather than let that
+// throw disable the whole floor, the handler returns this structured result so the
+// caller can see the refusal, rotate/split the session, and keep every other
+// surface running. The idempotent emission below is what keeps the ledger from
+// growing into this wall in the first place.
+function ledgerPressureResult(domain, err) {
+  const details = (err && err.details && typeof err.details === "object") ? err.details : {};
+  const num = (value) => (Number.isFinite(value) ? value : null);
+  return JSON.stringify({
+    version: 1,
+    target_domain: domain,
+    ledger_pressure_refusal: true,
+    tier1_producers_emitted: 0,
+    producer_floor_at_fixpoint: false,
+    producer_gaps: [],
+    uncovered_input_types: [],
+    sc_recursion_gaps: [],
+    orphan_executed_reconciled: { ticked: [], struck: [], auto_blocked: [] },
+    stale_dispatch_reconciled: { ticked: [], struck: [], auto_blocked: [] },
+    ledger_pressure: {
+      code: "ledger_pressure_refusal",
+      message: err && err.message ? String(err.message) : "ledger_pressure_refusal",
+      event_count: num(details.event_count),
+      refuse_threshold: num(details.refuse_threshold),
+      warn_threshold: num(details.warn_threshold),
+    },
+  });
+}
+
 function handler(args) {
   const domain = assertNonEmptyString((args || {}).target_domain, "target_domain");
   // Single-sourced with the seed_producers_drained precondition: buildProducerFloorPlan
@@ -682,12 +780,37 @@ function handler(args) {
   // the freeze precondition.
   const { plan } = buildProducerFloorPlan(domain);
 
+  // Read the live producer graph ONCE up front (fail SOFT on ledger pressure). It
+  // serves the idempotent-emission dedupe below AND, when nothing new is emitted,
+  // is reused by the reconcilers instead of re-materializing — one graph fold, not
+  // three.
+  let liveInputs;
+  try {
+    liveInputs = buildLiveProducerReconcileInputs(domain);
+  } catch (err) {
+    if (isLedgerPressureRefusal(err)) return ledgerPressureResult(domain, err);
+    throw err;
+  }
+  const existingProducerNodeIds = new Set();
+  for (const node of liveInputs.producerNodes) {
+    if (node && node.kind === PRODUCER_NODE_KIND && typeof node.node_id === "string") {
+      existingProducerNodeIds.add(node.node_id);
+    }
+  }
+
   // Fold each ready producer into a producer node by emitting a producer_proposed
   // observation.recorded event; the materializer's producer_proposed branch turns
   // it into a kind-'producer' node via producerNodeId. No contract is attached —
-  // contract wiring + dispatch is the seed-producer scheduler's job.
+  // contract wiring + dispatch is the seed-producer scheduler's job. IDEMPOTENT: a
+  // producer whose node already exists is skipped — the materializer already
+  // dedupes the NODE, but a re-append would grow the append-only event log by one
+  // row per floor pass for every non-terminal-but-proposed producer. plan.ready
+  // excludes only TERMINAL producers, so this dedupe (not the run ledger) is what
+  // stops a proposed-but-unfinished producer from re-emitting every pass.
   let tier1ProducersEmitted = 0;
+  let emittedAny = false;
   for (const pack of plan.ready) {
+    if (existingProducerNodeIds.has(producerNodeId({ producerKey: pack.producer_id }))) continue;
     appendFrontierEvent({
       target_domain: domain,
       kind: "observation.recorded",
@@ -698,6 +821,7 @@ function handler(args) {
       },
       actor: "orchestrator",
     });
+    emittedAny = true;
     // The Tier-1 fixpoint count excludes advisory producers; every current pack
     // is advisory:false, so this equals the total emitted today.
     if (pack.advisory !== true) tier1ProducersEmitted += 1;
@@ -706,8 +830,10 @@ function handler(args) {
   // Fold each bounded sc-expander instance into its own producer node. The
   // per-instance producer_key embeds the on-chain identity; the depth + chain
   // identity ride on the payload so finalize-node can recover them, mint the
-  // identity-keyed child surface, and record the instance terminal (dedup).
+  // identity-keyed child surface, and record the instance terminal (dedup). Same
+  // idempotent skip: an instance whose node already exists is not re-appended.
   for (const instance of plan.sc_expander_instances) {
+    if (existingProducerNodeIds.has(producerNodeId({ producerKey: instance.producer_key }))) continue;
     appendFrontierEvent({
       target_domain: domain,
       kind: "observation.recorded",
@@ -722,12 +848,23 @@ function handler(args) {
       },
       actor: "orchestrator",
     });
+    emittedAny = true;
   }
 
-  if (plan.ready.length > 0 || plan.sc_expander_instances.length > 0) {
-    // Materialize so the freshly-emitted producer nodes exist before a later
-    // scheduler pass reads them.
-    materializeTaskGraph(domain, { write: true });
+  // When nothing new was emitted the pre-emission graph read is still current and
+  // the reconcilers reuse it. When something was emitted, materialize (fail SOFT on
+  // ledger pressure) and re-read so the reconcilers see the freshly-proposed
+  // producer nodes — a freshly-proposed node carries a just-now ts_last and sits
+  // inside the stale-dispatch grace window, so it is never struck on sight.
+  let reconcileInputs = liveInputs;
+  if (emittedAny) {
+    try {
+      materializeTaskGraph(domain, { write: true });
+      reconcileInputs = buildLiveProducerReconcileInputs(domain);
+    } catch (err) {
+      if (isLedgerPressureRefusal(err)) return ledgerPressureResult(domain, err);
+      throw err;
+    }
     try {
       scheduleMaterialization(domain);
     } catch {
@@ -735,29 +872,38 @@ function handler(args) {
     }
   }
 
-  // Reconcile executed-orphan producer nodes against the freshest graph state
-  // (read AFTER the emission + materialize above, so a freshly-proposed producer
-  // sits in 'proposed' and is never reconciled). A node stuck 'executed' with no
+  // One terminal producer_run set + one graph read threaded through BOTH
+  // reconcilers. They key on disjoint node states (executed vs proposed/dispatched)
+  // and producerNodeId folds at most one node per key, so the two never touch the
+  // same producer_key — the shared snapshot is faithful for both and avoids a
+  // per-stage re-fold of the frontier log.
+  const terminalRunSet = producerRunSet(domain);
+  const reconcileOpts = {
+    nodes: reconcileInputs.producerNodes,
+    nodeIdToProducerKey: reconcileInputs.nodeIdToProducerKey,
+    terminalRunSet,
+  };
+
+  // Reconcile executed-orphan producer nodes. A node stuck 'executed' with no
   // terminal producer_run row lost its finalize across the turn barrier; the
-  // reconciler converts it to a strike so the floor re-proposes it and it
+  // reconciler grants a one-pass grace then converts it to a strike so it
   // auto-blocks at the threshold. Best-effort: never regress the floor emission.
   let orphanReconciled = { ticked: [], struck: [], auto_blocked: [] };
   try {
-    orphanReconciled = reconcileOrphanExecutedProducers(domain);
+    orphanReconciled = reconcileOrphanExecutedProducers(domain, reconcileOpts);
   } catch {
     orphanReconciled = { ticked: [], struck: [], auto_blocked: [] };
   }
 
-  // Reconcile stale-dispatch producer nodes against the same freshest graph
-  // state. A node stuck 'proposed' (never scheduled) or 'dispatched' (a worker
-  // that never returned executed) makes no progress; the reconciler grants the
-  // stale-dispatch grace window, then strikes it structurally so it auto-blocks
-  // at the threshold and the floor stops re-proposing it. A freshly-proposed
-  // producer accrues only the grace tick and clears the moment it advances or
-  // turns terminal. Best-effort: never regress the floor emission.
+  // Reconcile stale-dispatch producer nodes. A node stuck 'proposed' (never
+  // scheduled) or 'dispatched' (a worker that never returned executed) makes no
+  // progress; the reconciler ticks it while it is within the wall-clock grace
+  // window, then strikes it structurally once it ages past the window so it
+  // auto-blocks and the floor stops re-proposing it. A healthy in-flight producer
+  // whose ts_last is recent is never struck by repeated floor calls. Best-effort.
   let staleDispatchReconciled = { ticked: [], struck: [], auto_blocked: [] };
   try {
-    staleDispatchReconciled = reconcileStaleDispatchProducers(domain);
+    staleDispatchReconciled = reconcileStaleDispatchProducers(domain, reconcileOpts);
   } catch {
     staleDispatchReconciled = { ticked: [], struck: [], auto_blocked: [] };
   }
@@ -830,5 +976,5 @@ module.exports = Object.freeze({
   reconcileStaleDispatchProducers,
   readScExpanderSurfaces,
   ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
-  STALE_DISPATCH_RECONCILE_PASS_THRESHOLD,
+  STALE_DISPATCH_GRACE_MS,
 });
