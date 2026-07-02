@@ -39,6 +39,7 @@ const {
 const {
   assertSafeDomain,
 } = require("../paths.js");
+const { withSessionLock } = require("../storage.js");
 const {
   assertTaskGraphNodeId,
   appendNodeTransition,
@@ -510,6 +511,22 @@ function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDep
 }
 
 function handler(args) {
+  const input = args || {};
+  const domain = assertSafeDomain(
+    assertNonEmptyString(input.target_domain, "target_domain"),
+  );
+  // Serialize the whole finalize state machine under the session lock. It validates the
+  // prep_token, then appends durable node.transitioned + producer_run rows and emits
+  // server-minted surfaces — a read-then-append that, run concurrently for ONE node (an
+  // MCP retry / double dispatch), would let two finalizes both pass the token check and
+  // double-append the producer_run 'produced' row + surfaces. Mirrors the withSessionLock
+  // discipline of its bob_schedule_seed_producers / bob_materialize_producer_floor siblings;
+  // the lock is reentrant, so the nested materialize / appendFrontierEvent / recordProducerRun
+  // locks compose without deadlock.
+  return withSessionLock(domain, () => finalizeNodeLocked(args));
+}
+
+function finalizeNodeLocked(args) {
   const input = args || {};
   const domain = assertSafeDomain(
     assertNonEmptyString(input.target_domain, "target_domain"),

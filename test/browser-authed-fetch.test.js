@@ -207,10 +207,13 @@ test("set_auth_cookies marks the session credentialed (session-wide log suppress
   assert.match(DRIVER_SRC, /this\.credentialedSession = true;/);
 });
 
-test("authed_fetch rejects credential headers (auth must flow via set_auth_cookies, not the page world)", () => {
-  // round-7: the headers param lives in the page world (in-page fetch init), so a credential
-  // header could be read by a page-overridden fetch. Reject Authorization/Cookie/Proxy-Auth.
-  assert.match(DRIVER_SRC, /lower === "authorization" \|\| lower === "cookie" \|\| lower === "proxy-authorization"/);
+test("authed_fetch allowlists benign headers and rejects everything else (auth must flow via set_auth_cookies, not the page world)", () => {
+  // The headers param lives in the page world (in-page fetch init), so a credential header could
+  // be read by a page-overridden fetch. Fail-closed ALLOWLIST — only benign non-credential headers
+  // pass; ANY other (Authorization, Cookie, X-Api-Key, a bearer under a custom name) is rejected,
+  // closing the gap where a 3-name denylist let custom-header auth leak into the page world.
+  assert.match(DRIVER_SRC, /ALLOWED_AUTHED_FETCH_HEADERS/);
+  assert.match(DRIVER_SRC, /the \$\{hname\} header is not allowed/);
   assert.match(DRIVER_SRC, /use set_auth_cookies for credentials/);
 });
 

@@ -746,13 +746,21 @@ class BrowserDriver {
     // Credentials must flow via set_auth_cookies — the browser attaches cookies at the network
     // layer, invisible to page JS. The `headers` param, by contrast, is serialized into the
     // in-page fetch init and therefore lives in the page world, where a page-overridden fetch
-    // could read it. Reject credential headers so a producer cannot accidentally expose a
-    // bearer/cookie to a hostile target page.
+    // could read it. ALLOWLIST, fail-closed: only these benign, non-credential request headers
+    // may be set; ANY other header is rejected — a denylist of a few known credential names
+    // (authorization/cookie/proxy-authorization) silently let custom-header auth
+    // (X-Api-Key, X-Auth-Token, a bearer under any custom name) leak into the page world.
+    const ALLOWED_AUTHED_FETCH_HEADERS = new Set([
+      "content-type",
+      "accept",
+      "accept-language",
+      "content-language",
+    ]);
     for (const hname of Object.keys(headers)) {
-      const lower = hname.toLowerCase();
-      if (lower === "authorization" || lower === "cookie" || lower === "proxy-authorization") {
+      if (!ALLOWED_AUTHED_FETCH_HEADERS.has(hname.toLowerCase())) {
         throw new Error(
-          `authed_fetch: the ${hname} header is not allowed — use set_auth_cookies for credentials (the headers param is visible to the page world)`,
+          `authed_fetch: the ${hname} header is not allowed — only ${Array.from(ALLOWED_AUTHED_FETCH_HEADERS).join(", ")} may be set; `
+          + "use set_auth_cookies for credentials (the headers param is visible to the page world)",
         );
       }
     }

@@ -1145,7 +1145,10 @@ test("a 401 control with a LONE support email in free text IS still a clean deni
   const { driver } = makeDriver({ control });
   const result = await run(domain, { driver });
   assert.equal(result.confirmed, true, "a lone support email at 401 is a clean denial → the differential mints");
-  assert.equal(result.masked_oracle.demonstrated_severity ?? "medium", "medium");
+  assert.equal(result.demonstrated_severity, "medium",
+    "the authn-vs-anon differential alone mints the registry-stamped MEDIUM tier (no cross-tenant victim arm ran)");
+  assert.equal(result.cross_tenant_proven, false,
+    "with no victim arm the run is NOT elevated to cross-tenant HIGH");
 }));
 
 // ── round-12: nested-record PII, non-identifier bulk control PII ──
