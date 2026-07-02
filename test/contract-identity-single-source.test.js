@@ -67,3 +67,24 @@ test("every contract-identity producer agrees and preserves base58/SS58 case", (
     "evm family + address case-folded",
   );
 });
+
+test("producer-emitted SC surface_id uses the seed path's sc- slug builder (folds to one record)", () => {
+  // A seeded contract (contract-target.bindAndSeedContracts -> contractSurfaceId,
+  // an 'sc-' slug) and the same contract discovered by a producer (finalize-node
+  // emission) must share ONE surface_id, or the materializer folds them into two
+  // surface records. The producer emission must therefore use contractSurfaceId,
+  // NOT the CAIP-10 colon identity (contractIdentityKey), which never folds.
+  const finalizeSrc = read("mcp/lib/tools/finalize-node.js");
+  assert.ok(
+    /surfaceId = contractSurfaceId\(/.test(finalizeSrc),
+    "finalize-node must build the SC surface_id via contractSurfaceId (the seed-path sc- slug)",
+  );
+  assert.ok(
+    !/surfaceId = contractIdentityKey\(/.test(finalizeSrc),
+    "finalize-node must NOT set surface_id to the CAIP-10 colon identity (it never folds with the seed sc- slug)",
+  );
+  const { contractSurfaceId } = require("../mcp/lib/contract-target.js");
+  const id = contractSurfaceId({ chainFamily: "svm", chainId: "mainnet", address: "AbCdEf1234" });
+  assert.ok(id.startsWith("sc-"), "surface_id is the sc- slug form");
+  assert.ok(id.endsWith("AbCdEf1234"), "sc- slug preserves base58 case");
+});

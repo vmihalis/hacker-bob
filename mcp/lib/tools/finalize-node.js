@@ -65,7 +65,7 @@ const {
 const {
   PRODUCER_PACKS,
 } = require("../producer-packs.js");
-const { contractIdentityKey } = require("../chain-authority.js");
+const { contractSurfaceId, caip10Endpoint } = require("../contract-target.js");
 const {
   logCellCoverage,
 } = require("../coverage.js");
@@ -421,10 +421,12 @@ function readAttestedSurfaceField(row, field) {
 // depth (= the producing expander's OWN depth, which the floor already set to
 // source.depth + 1 and OD4-gated at that value — NOT incremented again here, or
 // each hop would advance depth by 2 and halve the effective linked_contract_depth
-// reach), and an OD3 verified-source provenance marker; its surface_id is the
-// single-sourced CAIP-10 identity key (chain-authority.contractIdentityKey — family
-// folded, address hex-fold / base58-SS58 preserved) so the materializer folds the
-// same contract onto ONE surface — it never mints twice / re-expands. A web surface
+// reach), and an OD3 verified-source provenance marker; its surface_id + endpoint
+// are built by the SAME shared builders as the seed path (contract-target
+// contractSurfaceId sc- slug + caip10Endpoint) so a seeded and a producer-discovered
+// instance of one contract fold onto ONE surface record — it never mints twice /
+// re-expands (producer-emit previously used the CAIP-10 colon form, which never
+// folded with the seed's sc- slug). A web surface
 // carries no chain identity and passes the gate. An intermediate producer (empty
 // emits_surface_types) emits nothing here.
 function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDepth, actor }) {
@@ -453,13 +455,14 @@ function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDep
       payload.depth = baseDepth;
       payload.provenance = "verified_source";
       if (chainFamily && chainId && contractAddress) {
-        // Single-sourced CAIP-10 identity (family folded, address hex-fold /
-        // base58-SS58 preserved) — never hand-roll the string here.
-        surfaceId = contractIdentityKey({
-          chain_family: chainFamily,
-          chain_id: chainId,
-          address: contractAddress,
-        });
+        // Use the SAME shared builders as the seed path (contract-target
+        // bindAndSeedContracts) so a seeded and a producer-discovered instance of
+        // one contract fold onto ONE surface record — surface_id is the sc- slug
+        // (contractSurfaceId), the endpoint is the CAIP-10 form (caip10Endpoint).
+        // Producer-emit previously used the CAIP-10 colon form for surface_id,
+        // which never folds with the seed's sc- slug. Never hand-roll either here.
+        surfaceId = contractSurfaceId({ chainFamily, chainId, address: contractAddress });
+        payload.endpoints = [caip10Endpoint({ chainFamily, chainId, address: contractAddress })];
       }
     }
     if (surfaceId) payload.surface_id = surfaceId;
