@@ -12,6 +12,7 @@ async function handler(args) {
     image_tag: args.image_tag,
     timeout_ms: args.timeout_ms,
     egress_profile: args.egress_profile,
+    platform: args.platform,
   });
   return JSON.stringify({
     version: 1,
@@ -66,6 +67,11 @@ module.exports = Object.freeze({
       egress_profile: {
         type: "string",
         description: "Optional egress profile name override for build-time proxy resolution. Defaults to the session's bound profile.",
+      },
+      platform: {
+        type: "string",
+        enum: ["native", "linux/amd64", "linux/arm64"],
+        description: "Container platform. 'native' (default) = host arch; 'linux/amd64' runs an x86_64 image (via emulation on Apple Silicon) so x86-only targets like Firedancer build/fuzz correctly — the emulated CPU here supports AVX2+AES-NI.",
       },
     },
     required: ["target_domain"],
