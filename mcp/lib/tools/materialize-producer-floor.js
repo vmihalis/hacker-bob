@@ -16,6 +16,7 @@ const { assertNonEmptyString } = require("../validation.js");
 const { currentSurfaces } = require("../frontier-projections.js");
 const { appendFrontierEvent, readFrontierEvents } = require("../frontier-events.js");
 const { PRODUCER_PACKS, isProducerReady } = require("../producer-packs.js");
+const { CASE_FOLD_SAFE_CHAIN_FAMILIES } = require("../chain-authority.js");
 const {
   producerRunSet,
   recordProducerRun,
@@ -84,7 +85,8 @@ const SC_ADDRESS_EXPANDER_PRODUCER_ID = "sc_address_expander";
 // corrupts the pubkey (a dedup collision plus a wrong on-chain fetch). Keyed on
 // chain_family so the identity tuple / per-instance producer_key / dedup sets stay
 // faithful, and consistent with readScExpanderSurfaces which never lowercases.
-const CASE_FOLD_SAFE_CHAIN_FAMILIES = Object.freeze(new Set(["evm", "aptos", "sui"]));
+// CASE_FOLD_SAFE_CHAIN_FAMILIES is imported from chain-authority.js (single-sourced),
+// so this planner and the authority normalizer key address case-folding identically.
 
 // Clamp a caps knob into a sane [lo, hi] range. Number.isInteger ALONE lets a
 // negative, zero, or absurdly-large override through; the planner is a pure

@@ -226,3 +226,35 @@ test("a bound contract fetch tuple is still enforced at the authority layer (con
     );
   });
 });
+
+test("normalizeOneTuple case-folds hex families but PRESERVES base58/SS58 identity (no scope fail-open)", () => {
+  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
+  // base58 (svm) is case-SENSITIVE: two addresses differing only in case are
+  // DISTINCT and must not collide; membership must stay fail-closed. The pre-fix
+  // unconditional lowercase collided them (a scope-membership fail-open).
+  const svmA = { chain_family: "svm", chain_id: "mainnet", address: "AbCdEf1234" };
+  const svmB = { chain_family: "svm", chain_id: "mainnet", address: "abcdef1234" };
+  assert.equal(normalizeOneTuple(svmA).address, "AbCdEf1234", "svm address case preserved");
+  assert.notEqual(
+    normalizeOneTuple(svmA).address,
+    normalizeOneTuple(svmB).address,
+    "distinct svm addresses must not collide under case-folding",
+  );
+  assert.equal(isChainTupleInAuthority(svmB, [svmA]), false, "svm membership fail-closed (no case collision)");
+  assert.equal(isChainTupleInAuthority(svmA, [svmA]), true, "svm exact tuple admitted");
+  // SS58 (substrate) is likewise case-sensitive.
+  assert.equal(
+    normalizeOneTuple({ chain_family: "substrate", chain_id: "polkadot", address: "5GrwvaEF" }).address,
+    "5GrwvaEF",
+    "substrate SS58 address case preserved",
+  );
+  // evm hex stays case-INSENSITIVE: checksummed and lowercased forms are one authority.
+  assert.equal(
+    isChainTupleInAuthority(
+      { chain_family: "evm", chain_id: "1", address: "0xABCDEF" },
+      [{ chain_family: "evm", chain_id: "1", address: "0xabcdef" }],
+    ),
+    true,
+    "evm case-insensitive membership preserved",
+  );
+});

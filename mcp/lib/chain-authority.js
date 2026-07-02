@@ -27,6 +27,15 @@ const { classifyTargetToken } = require("./target-intake.js");
 const { CHAIN_FAMILY_VALUES } = require("./constants.js");
 const { ERROR_CODES, ToolError } = require("./envelope.js");
 
+// Chain families whose address encoding is case-INSENSITIVE hex, so folding to
+// lowercase is safe and lets 0xABC and 0xabc collide. base58 (svm), SS58
+// (substrate), and bech32 (cosmwasm) are case-SENSITIVE / already-normalized —
+// lowercasing them corrupts identity, colliding two distinct addresses onto one
+// authority entry (membership fail-open) and desyncing the authority hash — so
+// their addresses are trimmed but case-PRESERVED. Single-sourced here (imported
+// by the producer floor) so address case-folding keys on families identically.
+const CASE_FOLD_SAFE_CHAIN_FAMILIES = Object.freeze(new Set(["evm", "aptos", "sui"]));
+
 // Mirror of the chain-family token normalizer (lowercase, trim, collapse runs of
 // whitespace/dashes to a single underscore). The canonical-but-unexported source
 // is normalizeChainToken in mcp/lib/frontier-events.js; importing it would
@@ -109,7 +118,9 @@ function normalizeContractTupleStrict(raw, index) {
 //   - Plain-object entries carrying chain_family/chain_id/address are used
 //     directly.
 //
-// address is trimmed and lowercased (case-folded so 0xABC and 0xabc collide);
+// address is trimmed and, for case-insensitive hex families (evm/aptos/sui),
+// lowercased so 0xABC and 0xabc collide; base58/SS58/bech32 addresses
+// (svm/substrate/cosmwasm) are case-PRESERVED (folding them corrupts identity);
 // chain_id is trimmed but case-PRESERVED (do not conflate distinct references);
 // chain_family is run through the normalizeChainToken rule.
 function normalizeOneTuple(entry) {
@@ -145,7 +156,14 @@ function normalizeOneTuple(entry) {
   }
 
   const normalizedChainId = String(chainId).trim();
-  const normalizedAddress = String(address).trim().toLowerCase();
+  const trimmedAddress = String(address).trim();
+  // Case-fold the address ONLY for case-insensitive hex families; PRESERVE case
+  // for base58/SS58/bech32 (svm/substrate/cosmwasm) — lowercasing them corrupts
+  // identity and can collide two distinct addresses onto one authority entry
+  // (membership fail-open) or desync the authority hash from the bind-time tuple.
+  const normalizedAddress = CASE_FOLD_SAFE_CHAIN_FAMILIES.has(normalizedFamily)
+    ? trimmedAddress.toLowerCase()
+    : trimmedAddress;
   if (normalizedChainId === "" || normalizedAddress === "") return null;
 
   return {
@@ -235,4 +253,7 @@ module.exports = {
   // The single fail-closed bind-time normalizer both the contracts-axis init path
   // and the url/repo companion path call, so one contract set yields one hash.
   normalizeContractTupleStrict,
+  // Single-sourced case-fold-safe (hex) family set; imported by the producer floor
+  // so address case-folding keys on chain_family identically everywhere.
+  CASE_FOLD_SAFE_CHAIN_FAMILIES,
 };
