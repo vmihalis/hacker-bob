@@ -35,6 +35,14 @@ const AGENT_TOOL_SPECS = Object.freeze({
     roleBundles: [],
     extras: ["Read", "mcp__hacker-bob__bob_route_surfaces"],
   },
+  // Smart-contract recon expander. Rendered via the role-id path so the tools
+  // line tracks mcpToolNamesForRole (the read/fetch-only sc-recon bundle) and
+  // carries no spawn primitive.
+  "sc-recon-expander.md": {
+    roleId: "sc-recon-expander",
+    roleBundles: ["sc-recon"],
+    extras: ["Bash", "Read", "Write", "Grep", "Glob"],
+  },
   "evaluator-agent.md": {
     roleBundles: ["evaluator-shared", "evaluator-web"],
     extras: ["Bash", "Read", "Grep", "Glob"],

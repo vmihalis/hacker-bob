@@ -89,6 +89,24 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
   "contract_address",
   "file_path",
   "language",
+  // OD3 verified-source provenance marker threaded by finalize-node's producer
+  // surface emission (emitProducerObservedSurfaces). Without it here the
+  // materialized surface loses provenance and readScExpanderSurfaces reads "",
+  // silently disabling the OD3 same-chain-linked-contract gate on the persisted
+  // path.
+  "provenance",
+];
+
+// Integer scalar fields carried by surface.observed payloads. depth is the OD4
+// linked-contract recursion depth stamped by finalize-node's producer surface
+// emission (= producing-run depth + 1) and folded as the SHORTEST-PATH distance
+// from any root (Math.min over re-observations, see applySurfaceFields). It must
+// round-trip as a NUMBER — SURFACE_SCALAR_TEXT_FIELDS would trim it to a string and
+// readScExpanderSurfaces (Number.isInteger check) would then fall back to the
+// depth-1 default, so proposed_depth never reaches the linked_contract_depth cap
+// and OD4 depth-capping never fires on the persisted path.
+const SURFACE_SCALAR_INTEGER_FIELDS = [
+  "depth",
 ];
 
 const SURFACE_BOOLEAN_FIELDS = [
@@ -141,6 +159,38 @@ function applySurfaceFields(surface, event) {
   for (const field of SURFACE_SCALAR_TEXT_FIELDS) {
     if (typeof payload[field] === "string" && payload[field].trim()) {
       surface[field] = payload[field].trim();
+    }
+  }
+  for (const field of SURFACE_SCALAR_INTEGER_FIELDS) {
+    // Preserve as an integer NUMBER. JSON round-trips depth as a number, but a
+    // producer that stamped a numeric string is coerced back to an integer here
+    // so the materialized surface never carries a string depth downstream.
+    let incoming;
+    if (Number.isInteger(payload[field])) {
+      incoming = payload[field];
+    } else if (typeof payload[field] === "string" && /^-?\d+$/.test(payload[field].trim())) {
+      incoming = parseInt(payload[field].trim(), 10);
+    } else {
+      continue;
+    }
+    // depth is a SHORTEST-PATH distance: the fewest hops from ANY root to this
+    // surface. When the same on-chain identity is reached by more than one path,
+    // the recorded depth folds to the SMALLEST (Math.min), so a contract that is
+    // 1 hop from a root but happened to be recorded first via a 3-hop path is
+    // still expanded as depth 1 and its linked children stay under the recursion
+    // cap. The cap bounds recursion regardless of fold direction — Math.min
+    // terminates exactly as hard as Math.max, because proposed_depth still grows
+    // by 1 per hop and is capped either way. Math.max bought NO extra termination
+    // safety; it only systematically UNDER-explored, silently pruning surfaces
+    // reachable within N hops of a root (a missed surface is a missed finding).
+    // "Explore everything within N hops of any root" is the correct bug-finding
+    // semantic (rank-don't-bound: the cap is the only bound). The FIRST
+    // observation of a surface has no prior depth to fold against, so it records
+    // the incoming depth verbatim; only a re-observation takes the min.
+    if (Number.isInteger(surface[field])) {
+      surface[field] = Math.min(surface[field], incoming);
+    } else {
+      surface[field] = incoming;
     }
   }
   for (const field of SURFACE_BOOLEAN_FIELDS) {

@@ -200,7 +200,7 @@ echo "Next:"
 if adapter_includes "claude"; then
   echo "  1. Fully restart Claude Code in $TARGET_ABS"
   echo "  2. Run /mcp"
-  echo "  3. Smoke test with bounty_http_scan using target_domain: \"example.com\" against https://example.com"
+  echo "  3. Smoke test with bob_http_scan using target_domain: \"example.com\" against https://example.com"
 elif adapter_includes "codex"; then
   echo "  1. Restart Codex in $TARGET_ABS"
   echo "  2. Confirm the hacker-bob plugin is available"

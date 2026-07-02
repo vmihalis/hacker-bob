@@ -14,6 +14,7 @@ const {
   substituteClaudeEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -265,6 +266,24 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     color: "blue",
     mcp_server: true,
     local_tools: Object.freeze(["Read"]),
+  }),
+  // Smart-contract recon expander — a scratch-only producer worker carrying the
+  // read/fetch-only sc-recon bundle. It resolves proxies/diamonds/role holders/
+  // linked addresses per chain and returns produced_surfaces[]; the server mints
+  // surfaces at finalize, so it holds no record/promote/finalize. Not
+  // spawn_capable, so no host Task primitive renders into its frontmatter.
+  "sc-recon-expander": Object.freeze({
+    role_id: "sc-recon-expander",
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "sc-recon-expander.md"),
+    name: "sc-recon-expander",
+    description: "Task-less smart-contract recon expander — resolves proxies/diamonds/roles/linked addresses per chain and returns produced_surfaces[]; writes scratch only, never holds record/promote/finalize",
+    model: "opus",
+    color: "cyan",
+    max_turns: 200,
+    background: true,
+    mcp_server: true,
+    local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
   }),
   evaluator: Object.freeze({
     role_id: "evaluator",
@@ -553,6 +572,7 @@ function renderClaudePromptBody(roleId, body, { root = DEFAULT_ROOT } = {}) {
   document = substituteClaudeEvaluatorPackCatalogue(document);
   document = substituteHandoffFieldLimits(document);
   document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document += renderCapabilityPlaybookAppendix({ root });
   }

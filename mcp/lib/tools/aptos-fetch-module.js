@@ -61,7 +61,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "network", "address", "module_name"]
   },
   handler,
-  role_bundles: ["evaluator-move", "verifier", "evidence"],
+  role_bundles: ["evaluator-move", "verifier", "evidence", "sc-recon"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

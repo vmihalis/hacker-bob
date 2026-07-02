@@ -189,6 +189,70 @@ function splitRpcEndpointEnv(raw) {
   return normalizeRpcEndpointList(values).endpoints;
 }
 
+// Session-bound RPC override selection. A session MAY carry an
+// `rpc_endpoints` array of operator-supplied {chain_family, chain_id, url}
+// entries (parsed from `--rpc` by target-intake.parseRpcFlag). This selector
+// projects that array onto a single (chain_family, chain_id) pool request and
+// returns the matching override URLs.
+//
+// Additive and fail-closed by construction:
+//   - The hard public-HTTPS-only rule is PRESERVED, not re-implemented: every
+//     matched url is re-run through normalizeRpcEndpointList (→ rpcUrlPolicyDecision),
+//     so a non-https url or a literal private/localnet host is REJECTED here even
+//     if it was somehow stored on the session (the stored shape is never trusted).
+//   - Absent / empty / non-array `rpc_endpoints`, or a missing selector key,
+//     yields {endpoints: [], rejected: []} — no override, so callers fall back to
+//     their existing env/default ladder. The fail-closed default is unchanged.
+//   - Matching is string-equality on trimmed chain_family and String()-coerced,
+//     trimmed chain_id (mirrors contract-target / chain-authority normalization),
+//     so a numeric `1` and the string `"1"` fold to one chain. Entries for other
+//     chains are simply not applicable (filtered, not "rejected").
+// The DNS-private layer is applied downstream by every SC client via
+// filterResolvedPublicRpcEndpoints; filterResolvedSessionRpcOverrides below
+// bundles that layer for callers that want the full DNS-aware gate inline.
+function normalizeSelectorChainId(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+function selectSessionRpcOverrides(rpcEndpoints, selector = {}) {
+  const family = selector && typeof selector.chain_family === "string"
+    ? selector.chain_family.trim()
+    : "";
+  const chainId = normalizeSelectorChainId(selector && selector.chain_id);
+  if (!family || !chainId || !Array.isArray(rpcEndpoints) || rpcEndpoints.length === 0) {
+    return { endpoints: [], rejected: [] };
+  }
+  const matched = [];
+  for (const entry of rpcEndpoints) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const entryFamily = typeof entry.chain_family === "string" ? entry.chain_family.trim() : "";
+    const entryChainId = normalizeSelectorChainId(entry.chain_id);
+    if (entryFamily !== family || entryChainId !== chainId) continue;
+    // Push the raw url unconditionally — normalizeRpcEndpointList is the single
+    // policy gate, so a non-string/non-https/private url is rejected (and
+    // redacted), never silently passed through.
+    matched.push(entry.url);
+  }
+  return normalizeRpcEndpointList(matched);
+}
+
+// DNS-aware variant: selects the session override URLs for a pool request and
+// then applies the SAME DNS-private gate every SC client uses, so the full
+// "reject non-https, private/localnet, DNS-private" rule is enforced inline.
+// Sync-policy rejections and DNS-layer rejections are merged into one redacted
+// `rejected` list; the fail-closed empty default is preserved end-to-end.
+async function filterResolvedSessionRpcOverrides(rpcEndpoints, selector = {}, { lookup, dnsTimeoutMs } = {}) {
+  const selected = selectSessionRpcOverrides(rpcEndpoints, selector);
+  if (selected.endpoints.length === 0) {
+    return { endpoints: [], rejected: selected.rejected };
+  }
+  const resolved = await filterResolvedPublicRpcEndpoints(selected.endpoints, { lookup, dnsTimeoutMs });
+  return {
+    endpoints: resolved.endpoints,
+    rejected: [...selected.rejected, ...resolved.rejected],
+  };
+}
+
 function dnsLookupAll(hostname, lookup = activeLookup(), timeoutMs = SC_EGRESS_POLICY.dns_lookup_timeout_ms) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -317,6 +381,7 @@ module.exports = {
   assertResolvedPublicRpcEndpoint,
   directSmartContractSubprocessEnv,
   filterResolvedPublicRpcEndpoints,
+  filterResolvedSessionRpcOverrides,
   isHttpsUrl,
   isPrivateHost,
   isPublicHttpsUrl,
@@ -325,6 +390,7 @@ module.exports = {
   redactRpcEndpointArgs,
   redactRpcEndpointText,
   rpcUrlPolicyDecision,
+  selectSessionRpcOverrides,
   setSmartContractRpcLookupForTesting,
   splitRpcEndpointEnv,
   summarizeRpcPolicyRejections,

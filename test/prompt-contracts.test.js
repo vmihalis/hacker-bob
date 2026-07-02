@@ -1027,111 +1027,18 @@ test("/bob-evaluate command loads the runner playbook directly and shares its re
 
 test("orchestrator skill stays bounded and reflects the lifecycle topology", () => {
   const lines = lineCount(".claude/skills/bob-evaluate-runner/SKILL.md");
-  // Cycle O.1 added bob_init_repo_session to the orchestrator bundle, which
-  // appends one line to the auto-generated allowed-tools block in SKILL.md.
-  // Cycle O.2 added bob_repo_inventory to the same bundle (+1 line).
-  // Cycle O.3 added bob_repo_prepare_env (+1 line).
-  // Cycle O.9 wired the orchestrator OSS branch + re-entry reconciliation
-  // contract; the role narrative grew by ~30 lines to cover argument parsing,
-  // target-axis branching, OSS lenses, the SETUP repo-mode sub-flow, and the
-  // explicit O-P8 contract. Cap bumped from 323 → 360.
-  // Plane X Cycle X.11 (Nike fix) added the cross-stack transition proposals
-  // stanza in OPEN_FRONTIER — names bob_propose_transition and the X-D3 closed
-  // transition_kind enum so the orchestrator proposes Transition nodes before
-  // dispatching Surface-node waves when ≥2 stack families share a target
-  // (+2 lines). Cap bumped 360 → 365.
-  // Plane Y Cycle Y.2 added bob_emit_runtime_drift to the orchestrator
-  // bundle (Y-D13 — the orchestrator-facing runtime drift telemetry entry).
-  // Auto-generated allowed-tools block gained one line. Cap bumped 365 → 366.
-  // Plane Y Cycle Y.3 added four MCP tools to the orchestrator bundle
-  // (bob_compose_report, bob_amend_report, bob_write_chain_rollup,
-  // bob_set_friction_scanners — Y-D15b / Y-D15c / D16). Auto-generated
-  // allowed-tools block gained four lines. REPORT-state prose rewritten to
-  // name the new tools (Y-P13 markdown-ownership). Cap bumped 366 → 372.
-  // Plane Y Cycle Y.8 (Y-D7c structural containment) auto-injects
-  // `<!-- @schema_ref: <tool> -->` markers into every STATE block that
-  // names a registered write tool. The REPORT block gains four markers
-  // (bob_compose_report, bob_write_chain_rollup, bob_amend_report,
-  // bob_write_wave_handoff) plus a blank-line separator. Cap bumped
-  // 372 → 380.
-  // Plane Y Cycle Y.11 (rev 4.1 Plane X hypergraph adoption) extended
-  // the OPEN_FRONTIER impact-correlation-drain block with one prose
-  // line routing the chain-builder through the graph apparatus
-  // (bob_propose_hypothesis / bob_propose_transition / bob_attach_contract
-  // / bob_append_chain_node / bob_query_chain_tree) and extended the
-  // REPORT block to name bob_query_chain_tree alongside the existing
-  // bob_write_chain_rollup. Cap bumped 380 → 382.
-  // Plane Y Cycle Y.12 (rev 4.1 defect 1 — producer-side surface-leads
-  // rationale) added the handoff-receipt handler paragraph to the
-  // OPEN_FRONTIER state, naming bob_record_surface_leads as the
-  // producer-side enforcement site and bob_promote_surface_leads as
-  // unchanged (closes the Y.9 stigmergy pair
-  // surface_discovery_ranked_leads ↔
-  // orchestrator_handoff_receipt_record_surface_leads). Cap bumped
-  // 382 → 383.
-  // Plane Y rev 4.1 completion closure — wired four dormant tools into
-  // orchestrator.md prose: bob_emit_runtime_drift (hook_denial Hard Rule
-  // + partial_advance_acknowledged + wrong_mode_tool_call drift
-  // signatures), bob_propose_friction_promotion + bob_scan_transcript_for_friction
-  // (post-merge wave-settlement instructions), bob_set_friction_scanners
-  // (Friction-Scanner Extension subsection between Optional Workflow
-  // Playbooks and STATE: OPEN_FRONTIER). Closes the leverage_audit
-  // gaps_present verdict. Cap bumped 383 → 387.
-  // C14 proof-carrying disclosure adds bob_write_proof_bundle to the
-  // orchestrator bundle (+1 generated allowed-tools line).
-  // IP7 SARIF ingest adds bob_ingest_sarif to the orchestrator bundle
-  // (+1 generated allowed-tools line) while keeping ingestion host-side and
-  // bounded.
-  // I10 adds bob_read_static_analysis_index to the orchestrator bundle
-  // (+1 generated allowed-tools line) for bounded static-index reads.
-  // The belief-model surface adds bob_elicit_belief to the orchestrator
-  // bundle (+1 generated allowed-tools line).
-  // The chain-work lifecycle gate adds the `chain_work_terminal` @precondition
-  // directive to the OPEN_FRONTIER state block so the scheduler-coherence check
-  // sees the runtime gate the prompt advertises (+1 directive line).
-  // The composition-experiment surface adds bob_run_path_composition_experiment
-  // and bob_read_composition_telemetry to the orchestrator bundle (+2 generated
-  // allowed-tools lines). The SC1 live verifier adds bob_verify_composition_path
-  // (+1 generated allowed-tools line). bob_import_harness (OSS harness acquisition)
-  // adds +1 generated allowed-tools line. bob_import_seed_corpus (grammar-arm seed
-  // import) adds +1 generated allowed-tools line. The native-fuzz grammar-arm SETUP
-  // stanza (per-target harness-contract perception + class-aware arm routing) adds +1.
-  // OE2+OE3 invariant-from-diff oracle SETUP stanza (known-fix/regression: read both
-  // trees, derive the fix's invariant, craft two minimal checkout_patch diffs whose
-  // violation triggers a real /src-framed ASAN fault — not a bare abort) adds +2
-  // (content line + blank separator). The bob_materialize_cell_floor producer
-  // adds one allowed-tools line; the OPEN_FRONTIER coverage-cell closure stanza
-  // (materialize the cell floor -> loop bob_schedule_graph_nodes -> finalize)
-  // adds its paragraph + separator.
-  // The @precondition: uncovered_reachable_cells directive (the cell-closure
-  // freeze gate) adds one rendered line.
-  // The OPEN_FRONTIER "Path-traced chain composition" stanza (F2 — after closure,
-  // read covered_paths and fan one chain-verifier per finding-backed path,
-  // confirm via bob_verify_composition_path) adds its paragraph + separator (+2).
-  // The CN Step B "Nested fan-out handoff reconciliation" stanza (default-off —
-  // propose discovered_pivots, cross-check spawned_children) adds its paragraph +
-  // separator (+2).
-  // The impact-correlation invariant corroboration sub-pass (smart_contract
-  // candidates: bob_suggest_invariants -> bob_run_invariant_for_finding ->
-  // bob_read_invariant_runs, annotate-not-gate) adds its paragraph + separator (+2).
-  // The open-vocabulary mechanism registry adds bob_register_mechanism_template
-  // to the orchestrator bundle (+1 generated allowed-tools line).
-  // The recon multi-modal sweep adds bob_plan_recon_angles to the orchestrator
-  // bundle (+1 generated allowed-tools line) and a SETUP recon-angle dispatch
-  // stanza (the plan call + the sequential/fanout branches + the host-agnostic
-  // angle-worker spawn + assembly merge) to the seed-mapping sub-flow. Cap
-  // bumped 413 -> 425.
-  // The VERIFY state defaults round dispatch to the orchestrator-mediated
-  // one-worker-per-finding path: each worker stages its finding via
-  // bob_stage_verification_round_partial (carrying a finding-scoped replay
-  // context that makes the round concurrent-safe for those leases) and the
-  // union is committed through an empty bob_write_verification_round
-  // invocation. The single-worker whole-round path is the explicit LEAN
-  // fallback (serialized across findings via the attempt_pack lease) for an
-  // operator/host whose live replays are non-idempotent or share a fixture.
-  // Splitting that stanza into the default paragraph + residual note + LEAN
-  // fallback paragraph adds one rendered line. Cap bumped 430 -> 431.
-  assert.ok(lines <= 431, `bob-evaluate-runner skill is ${lines} lines (cap 431)`);
+  // The ceiling tracks the rendered span of the orchestrator narrative: the six
+  // lifecycle states (SETUP -> OPEN_FRONTIER -> CLAIM_FREEZE -> VERIFY -> GRADE ->
+  // REPORT), the multi-axis target grammar (web / OSS repo / contract, with the
+  // O-P6 companion + --rpc binding), the repo-mode SETUP sub-flow, the
+  // recon-angle and recon-producer-floor dispatch stanzas (the rendered
+  // {{PRODUCER_CATALOGUE}} is one line per PRODUCER_PACKS entry plus its
+  // preamble), the cross-stack transition / coverage-cell-closure /
+  // path-traced-chain-composition stanzas, and the auto-generated allowed-tools
+  // block (one line per tool in the orchestrator role bundle). It is registry-
+  // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
+  // post-regen trimmed line count.
+  assert.ok(lines <= 451, `bob-evaluate-runner skill is ${lines} lines (cap 451)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1367,7 +1274,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // bounded read-only query over scrubbed static-analysis-index.jsonl rows;
   // budgets bump by +1 (SC 42→43, web 44→45).
   // bob_ws_probe adds WebSocket scope-gated probing to evaluator-web only,
-  // the final +1 on top of the offensive-tool grants below (web 53→54);
+  // the final +1 on top of the offensive-tool grants below (web 54→55);
   // SC budget unchanged.
   // PR3 adds bob_http_confirm to evaluator-web only. It is the trusted
   // read-only NEGATIVE-ONLY differential confirmer: it appends http-audit.jsonl
@@ -1413,7 +1320,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 54 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.spawn.profile === "web" ? 55 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

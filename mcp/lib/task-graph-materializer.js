@@ -53,7 +53,7 @@ const {
 // closed set of TaskGraph node kinds AND the kind discriminator persisted
 // in surface-index.json. The X.2 materializer alias TASK_GRAPH_NODE_KIND_VALUES
 // is preserved for back-compat re-export; both point at the same frozen array.
-const { SURFACE_KIND_VALUES } = require("./constants.js");
+const { SURFACE_KIND_VALUES, PRODUCER_NODE_KIND } = require("./constants.js");
 
 // Ledger-pressure thresholds. Public for tests + downstream cycles that may
 // surface them in summaries.
@@ -139,6 +139,22 @@ function cellNodeId({ cellKey, proposalId, eventId }) {
     return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(cellKey)}`;
   }
   return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(eventId)}`;
+}
+
+// Mint a TG- node id for a producer. A producer is a TaskGraph-only node
+// (kind "producer", outside SURFACE_KIND_VALUES) — never persisted as a surface.
+// Mirrors cellNodeId's hashing exactly: prefer the proposal_id verbatim, else a
+// shortHash of the producer_key, else a shortHash of the event id. The `producer-`
+// discriminator (distinct from S-/T-/H-/C-/cell-) keeps the producer sub-namespace
+// separate so node.transitioned kind-inference never mis-types it.
+function producerNodeId({ producerKey, proposalId, eventId }) {
+  if (typeof proposalId === "string" && proposalId.trim()) {
+    return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${proposalId.trim()}`;
+  }
+  if (typeof producerKey === "string" && producerKey.trim()) {
+    return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${shortHash(producerKey)}`;
+  }
+  return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${shortHash(eventId)}`;
 }
 
 function ensureNode(nodesById, nodeId, kind, ts) {
@@ -311,6 +327,30 @@ function foldEvent(event, { nodesById, edgesByKey }) {
           weight: 1,
           source_event_id: event.event_id,
         });
+      }
+      return;
+    }
+    // ─── Producer nodes ─────────────────────────────────────────
+    // A producer is a TaskGraph-only node (never persisted as a surface). The
+    // subtype discriminator is read observation_kind-first then kind-fallback,
+    // mirroring the canonical reader in frontier-projections.js, so the fold
+    // matches `producer_proposed` regardless of which field the emitter stamps.
+    const obsKind = (typeof payload.observation_kind === "string" && payload.observation_kind.trim())
+      ? payload.observation_kind.trim()
+      : (typeof payload.kind === "string" ? payload.kind.trim() : "");
+    if (obsKind === "producer_proposed") {
+      const nodeId = producerNodeId({
+        producerKey: payload.producer_key || payload.producer_id,
+        proposalId: payload.proposal_id,
+        eventId: event.event_id,
+      });
+      const node = ensureNode(nodesById, nodeId, PRODUCER_NODE_KIND, ts);
+      addSourceEvent(node, event.event_id);
+      // Optional explicit grounding: fold surface_refs[] only when it is an
+      // array of strings (defensive, mirrors the hypothesis branch). A producer
+      // adds NO bridge/claim/unblocks edges — dispatch wiring is a later node.
+      if (Array.isArray(payload.surface_refs)) {
+        for (const ref of payload.surface_refs) addSurfaceRef(node, ref);
       }
       return;
     }
@@ -689,6 +729,7 @@ module.exports = {
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,
+  producerNodeId,
   readTaskGraph,
   summarizeTaskGraph,
   surfaceNodeId,

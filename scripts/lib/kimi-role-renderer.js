@@ -12,6 +12,7 @@ const {
   substituteCapabilityPackVerifierTable,
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -44,6 +45,9 @@ const KIMI_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
   // per-chain evaluator contracts so the appendix groups all evaluator family
   // contracts together before the cross-cutting roles (mirrors Codex).
   "evaluator-spawn",
+  // Smart-contract recon expander — a scratch-only producer worker grouped with
+  // the evaluator/producer-family contracts (mirrors Codex).
+  "sc-recon-expander",
   ...KIMI_CROSS_CUTTING_ROLE_IDS.slice(4),
 ]);
 
@@ -262,6 +266,7 @@ function renderKimiPromptBody(roleId, body, options = {}) {
   document = substituteCapabilityPackVerifierTable(document);
   document = substituteHandoffFieldLimits(document);
   document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${kimiOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${kimiRoleContractAppendix(options)}\n`;

@@ -51,7 +51,7 @@ Maintainer workflow:
   `evaluation_wave`, `explored`, findings summaries, or phase state.
 - Markdown mirrors are human/debug artifacts. Chain evidence is MCP-owned in
   `chain-attempts.jsonl`; `report.md` remains the final human-facing
-  agent-written report.
+  agent-composed (via bob_compose_report) report.
 - Audit-graded session paths are MCP-rendered (Y-P13). `mcp/lib/paths.js`
   exports `AUDIT_GRADED_PATHS` (positive list — `report.md`, `chains.md`,
   `evidence-packs.md`, `grade.md`, verification-round mirrors, wave-handoff

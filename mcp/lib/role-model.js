@@ -55,6 +55,16 @@ const ROLE_DEFINITIONS = Object.freeze({
     mcp_role_bundles: Object.freeze(["deep-surface-discovery"]),
     mcp_tools: Object.freeze(["bob_read_session_nucleus", "bob_record_surface_leads"]),
   }),
+  // Smart-contract recon expander — a scratch-only producer worker that
+  // resolves proxies/diamonds/role holders/linked addresses per chain and
+  // returns produced_surfaces[]. Read/fetch-only (the sc-recon bundle); it
+  // never holds record/promote/finalize, so surface minting stays server-side
+  // at finalize. Not a spawner and not an evaluator family member.
+  "sc-recon-expander": Object.freeze({
+    id: "sc-recon-expander",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "sc-recon-expander.md"),
+    mcp_role_bundles: Object.freeze(["sc-recon"]),
+  }),
   "surface-router": Object.freeze({
     id: "surface-router",
     prompt_body: path.join(ROLE_PROMPT_DIR, "surface-router.md"),

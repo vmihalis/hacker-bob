@@ -291,6 +291,11 @@ function initSession(args) {
         operator_constraint_hash: hashCanonicalJson(sessionNucleus.operator_constraint),
       },
     });
+    // bob_init_session is the URL primary axis. It leaves the smart-contract
+    // axis fields at their builder defaults (target_contracts: [],
+    // chain_authority_hash: null); an empty target_contracts is not the
+    // contracts axis, so this stays a single-axis (url) session under the
+    // exactly-one-primary-axis normalization in normalizeSessionStateDocument.
     const state = buildInitialSessionState(sessionNucleus.target_domain, sessionNucleus.scope_policy.target_url, {
       deepMode,
       egressProfile,

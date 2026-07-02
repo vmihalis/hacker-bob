@@ -452,6 +452,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_read_grade_verdict",
   "bob_init_session",
   "bob_init_repo_session",
+  "bob_init_contract_session",
   "bob_repo_inventory",
   "bob_repo_prepare_env",
   "bob_repo_docker_run",
@@ -559,6 +560,8 @@ const EXPECTED_TOOL_NAMES = [
   "bob_prepare_node",
   "bob_finalize_node",
   "bob_schedule_graph_nodes",
+  "bob_materialize_producer_floor",
+  "bob_schedule_seed_producers",
   "bob_materialize_frontier",
   "bob_read_queue_policy",
   "bob_set_queue_policy",
@@ -11375,13 +11378,20 @@ test("svm-fetch-program parses BPFLoaderUpgradeable Program account discriminato
 });
 
 test("svm tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run SVM PoCs)", () => {
-  const tools = ["bob_svm_fetch_account", "bob_svm_fetch_program", "bob_anchor_run"];
-  for (const name of tools) {
+  // The read/fetch tools additionally carry the sc-recon bundle so the
+  // smart-contract recon expander can resolve programs/accounts; the run
+  // tool keeps the evaluator/verifier/evidence triple only.
+  const fetchTools = ["bob_svm_fetch_account", "bob_svm_fetch_program"];
+  for (const name of fetchTools) {
     const meta = TOOL_MANIFEST[name];
     assert.ok(meta, `${name} is in TOOL_MANIFEST`);
-    assert.deepEqual(meta.role_bundles, ["evaluator-svm", "verifier", "evidence"], `${name} exposes role_bundles=[evaluator-svm, verifier, evidence]`);
+    assert.deepEqual(meta.role_bundles, ["evaluator-svm", "verifier", "evidence", "sc-recon"], `${name} exposes role_bundles=[evaluator-svm, verifier, evidence, sc-recon]`);
     assert.equal(meta.network_access, true, `${name} declares network_access`);
   }
+  const anchorMeta = TOOL_MANIFEST.bob_anchor_run;
+  assert.ok(anchorMeta, "bob_anchor_run is in TOOL_MANIFEST");
+  assert.deepEqual(anchorMeta.role_bundles, ["evaluator-svm", "verifier", "evidence"], "bob_anchor_run exposes role_bundles=[evaluator-svm, verifier, evidence]");
+  assert.equal(anchorMeta.network_access, true, "bob_anchor_run declares network_access");
 });
 
 // ----------------------------------------------------------------------
@@ -12498,15 +12508,23 @@ test("sui runner classifies CLI usage errors as sui_dependency_missing", () => {
 });
 
 test("Move tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run Aptos/Sui PoCs)", () => {
-  const tools = [
+  // The read/fetch tools additionally carry the sc-recon bundle so the
+  // smart-contract recon expander can resolve modules/resources/packages/
+  // objects; the run tools keep the evaluator/verifier/evidence triple only.
+  const fetchTools = [
     "bob_aptos_fetch_resource",
     "bob_aptos_fetch_module",
-    "bob_aptos_run",
     "bob_sui_fetch_object",
     "bob_sui_fetch_package",
-    "bob_sui_run",
   ];
-  for (const name of tools) {
+  for (const name of fetchTools) {
+    const meta = TOOL_MANIFEST[name];
+    assert.ok(meta, `${name} is in TOOL_MANIFEST`);
+    assert.deepEqual(meta.role_bundles, ["evaluator-move", "verifier", "evidence", "sc-recon"], `${name} exposes role_bundles=[evaluator-move, verifier, evidence, sc-recon]`);
+    assert.equal(meta.network_access, true, `${name} declares network_access`);
+  }
+  const runTools = ["bob_aptos_run", "bob_sui_run"];
+  for (const name of runTools) {
     const meta = TOOL_MANIFEST[name];
     assert.ok(meta, `${name} is in TOOL_MANIFEST`);
     assert.deepEqual(meta.role_bundles, ["evaluator-move", "verifier", "evidence"], `${name} exposes role_bundles=[evaluator-move, verifier, evidence]`);

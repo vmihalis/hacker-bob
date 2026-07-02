@@ -19,6 +19,7 @@ const CROSS_CUTTING_ROLE_BUNDLES = Object.freeze([
   "orchestrator",
   "reporter",
   "router",
+  "sc-recon",
   "surface-discovery",
   "verifier",
 ]);

@@ -140,7 +140,7 @@ module.exports = Object.freeze({
     "required": ["chain_id", "contract", "accounts"]
   },
   handler,
-  role_bundles: ["evaluator-evm", "verifier", "evidence"],
+  role_bundles: ["evaluator-evm", "verifier", "evidence", "sc-recon"],
   mutating: false,
   global_preapproval: true,
   network_access: true,

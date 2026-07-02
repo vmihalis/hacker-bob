@@ -156,6 +156,57 @@ const REGISTRY = Object.freeze({
     ]),
   }),
 
+  // ── Chain-tool scope gate (PRD-3) ───────────────────────────────────────
+  // Bound solely through the enforced_by-substring mechanism (TAG_GRAMMAR is
+  // intentionally NOT widened): direction-b requires both the function literal
+  // and the `// PRD-3` anchor comment to live in session-authority.js, so
+  // removing the anchor fails check:invariant-registry.
+  "PRD-3": Object.freeze({
+    kind: "invariant",
+    class: "chain_authority_scope",
+    title:
+      "Chain-tool scope gate: when a session binds non-empty target_contracts[], "
+      + "a bob_* chain tool whose (chain_family, chain_id, address) is outside the "
+      + "bound authority (exact or OD3 same-chain provenanced) is SCOPE_BLOCKED "
+      + "pre-handler; an empty target_contracts[] session is a no-op.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/session-authority.js", symbol: "authorizeChainScope" }),
+      Object.freeze({ file: "mcp/lib/session-authority.js", symbol: "PRD-3" }), // tag anchor
+    ]),
+  }),
+
+  // ── Producer-run / producer-floor integrity (PRD-1, PRD-2) ──────────────
+  // Bound through the enforced_by-substring mechanism (TAG_GRAMMAR is NOT
+  // widened): direction-b requires both the function literal and the
+  // `// PRD-N` anchor comment to live in the enforcing file, so removing the
+  // anchor fails check:invariant-registry.
+  "PRD-1": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Producer-run strike-counter monotonicity: only a STRUCTURAL "
+      + "failed_retryable strikes; the structural strike tally is monotone "
+      + "non-decreasing over the append-only ledger, and the producer_key is "
+      + "auto-blocked exactly once at STUCK_PRODUCER_DISPATCH_THRESHOLD, "
+      + "idempotent against an already-terminal key.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/producer-run-ledger.js", symbol: "producerStrikeTally" }),
+      Object.freeze({ file: "mcp/lib/producer-run-ledger.js", symbol: "PRD-1" }), // tag anchor
+    ]),
+  }),
+  "PRD-2": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Producer floor RANK != BOUND: every not-ready derived producer is "
+      + "REPORTED at the producer_gap construction site, never dropped or "
+      + "truncated at construction.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "planProducerFloor" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-2" }), // tag anchor
+    ]),
+  }),
+
   // ── Frontier producer-boundary integrity (Y-D21) ────────────────────────
   // The append funnel is the cheapest fail-closed boundary every surface.observed
   // emitter flows through. Enforcing the smart_contract => chain_family pairing
