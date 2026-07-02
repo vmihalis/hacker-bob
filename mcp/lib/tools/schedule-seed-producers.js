@@ -17,6 +17,7 @@ const { materializeTaskGraph, producerNodeId } = require("../task-graph-material
 const { readFrontierEvents } = require("../frontier-events.js");
 const { producerRunSet } = require("../producer-run-ledger.js");
 const { appendSpawnLedgerEntry } = require("../spawn-ledger.js");
+const { withSessionLock } = require("../storage.js");
 const { PRODUCER_NODE_KIND } = require("../constants.js");
 
 // Bounded retry window for the drift backpressure. When independent producers
@@ -141,6 +142,13 @@ function handler(args) {
     ? input.retry_budget
     : SEED_DRIFT_RETRY_BUDGET;
 
+  // Serialize the whole select -> reserve -> dispatch sequence under the session
+  // lock. Without it, two concurrent bob_schedule_seed_producers invocations read the
+  // same graph, select the same producer nodes, and both reserve + dispatch (double-
+  // dispatch), and the drift-backpressure loop churns to batch 1 reporting false
+  // non-quiescence. The lock is reentrant, so the nested bob_prepare_node and
+  // appendSpawnLedgerEntry locks compose without deadlock.
+  const result = withSessionLock(domain, () => {
   // Materialize the producer nodes (read-only) and rebuild the node_id ->
   // producer_key map from the producer_proposed events so the selector can resolve
   // each producer node back to its pack key (and skip already-terminal producers).
@@ -306,7 +314,9 @@ function handler(args) {
       selection.skipped.map((node) => node.node_id),
     );
   }
-  return JSON.stringify(out);
+  return out;
+  });
+  return JSON.stringify(result);
 }
 
 module.exports = Object.freeze({

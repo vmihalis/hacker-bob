@@ -66,6 +66,7 @@ const {
   PRODUCER_PACKS,
 } = require("../producer-packs.js");
 const { contractSurfaceId, caip10Endpoint } = require("../contract-target.js");
+const { normalizeContractTupleStrict } = require("../chain-authority.js");
 const {
   logCellCoverage,
 } = require("../coverage.js");
@@ -444,26 +445,37 @@ function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDep
       const chainFamily = readAttestedSurfaceField(row, "chain_family");
       const chainId = readAttestedSurfaceField(row, "chain_id");
       const contractAddress = readAttestedSurfaceField(row, "contract_address");
-      if (chainFamily) payload.chain_family = chainFamily;
-      if (chainId) payload.chain_id = chainId;
-      if (contractAddress) payload.contract_address = contractAddress;
-      // The expander's own depth (proposedDepth = source.depth + 1, set by the
-      // producer floor and OD4-gated at that value) IS the depth of the surfaces it
-      // discovers — do NOT increment again here, or every hop advances depth by 2
-      // and the effective linked_contract_depth reach is halved.
+      // chain_id/contract_address here come from UNTRUSTED agent producer_output (a
+      // depth>1 contract's harvested links) and flow into the surface_id, the ledger,
+      // and the sc-recon scratch path contracts/<chain_id>/<address>/. Re-run the SAME
+      // strict normalizer the bind path uses (CHAIN_FAMILY_VALUES membership + ':' '/'
+      // '\' '..' traversal guards + case-fold): a producer smart_contract surface with
+      // a missing field or a hostile chain_id/address (e.g. '../../..') is REJECTED
+      // fail-closed here — no partial surface, no path escape — never persisted raw.
+      let norm;
+      try {
+        norm = normalizeContractTupleStrict({
+          chain_family: chainFamily,
+          chain_id: chainId,
+          address: contractAddress,
+        });
+      } catch {
+        continue;
+      }
+      payload.chain_family = norm.chain_family;
+      payload.chain_id = norm.chain_id;
+      payload.contract_address = norm.address;
+      // The expander's own depth (proposedDepth = source.depth + 1, set + OD4-gated by
+      // the floor) IS the depth of the surfaces it discovers — do NOT increment again
+      // or every hop advances depth by 2 and the linked_contract_depth reach is halved.
       const baseDepth = Number.isInteger(sourceDepth) ? sourceDepth : 1;
       payload.depth = baseDepth;
       payload.provenance = "verified_source";
-      if (chainFamily && chainId && contractAddress) {
-        // Use the SAME shared builders as the seed path (contract-target
-        // bindAndSeedContracts) so a seeded and a producer-discovered instance of
-        // one contract fold onto ONE surface record — surface_id is the sc- slug
-        // (contractSurfaceId), the endpoint is the CAIP-10 form (caip10Endpoint).
-        // Producer-emit previously used the CAIP-10 colon form for surface_id,
-        // which never folds with the seed's sc- slug. Never hand-roll either here.
-        surfaceId = contractSurfaceId({ chainFamily, chainId, address: contractAddress });
-        payload.endpoints = [caip10Endpoint({ chainFamily, chainId, address: contractAddress })];
-      }
+      // Single-sourced identity from the NORMALIZED tuple: surface_id is the sc- slug
+      // (contractSurfaceId, matching the seed path so one contract folds to one record)
+      // and the endpoint is the CAIP-10 form (caip10Endpoint). Never hand-roll either.
+      surfaceId = contractSurfaceId({ chainFamily: norm.chain_family, chainId: norm.chain_id, address: norm.address });
+      payload.endpoints = [caip10Endpoint({ chainFamily: norm.chain_family, chainId: norm.chain_id, address: norm.address })];
     }
     if (surfaceId) payload.surface_id = surfaceId;
     appendFrontierEvent({
