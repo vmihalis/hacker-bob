@@ -26,7 +26,7 @@ const {
 const { materializeTaskGraph, producerNodeId } = require("../task-graph-materializer.js");
 const { loadQueuePolicy, CLAMP_CEILING } = require("../queue-policy.js");
 const { statePath } = require("../paths.js");
-const { readJsonFile } = require("../storage.js");
+const { readJsonFile, withSessionLock } = require("../storage.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const {
   PRODUCER_NODE_KIND,
@@ -792,6 +792,15 @@ function ledgerPressureResult(domain, err) {
 
 function handler(args) {
   const domain = assertNonEmptyString((args || {}).target_domain, "target_domain");
+  // Serialize the whole read -> plan -> append -> reconcile sequence under the
+  // session lock. Without it two concurrent floor invocations read the SAME graph,
+  // identify the same un-proposed producers, and append DUPLICATE producer_proposed
+  // events; or one reads stale state just before a node finalizes and strikes a
+  // healthy active producer. The lock is reentrant, so the nested buildProducerFloorPlan
+  // reads plus the appendFrontierEvent / materializeTaskGraph / recordProducerRun locks
+  // compose without deadlock. Mirrors the seed-producer scheduler, which wraps its
+  // select -> reserve -> dispatch sequence identically.
+  return withSessionLock(domain, () => {
   // Single-sourced with the seed_producers_drained precondition: buildProducerFloorPlan
   // loads the queue policy, derives the OD1/OD4 caps, reads the live SC surface
   // inventory + the terminal producer_run set, assembles availableArtifactKinds, and
@@ -954,6 +963,7 @@ function handler(args) {
     // RANK != BOUND: stale-dispatch producers stuck pre-executed are reported the
     // same way, never silently abandoned. Empty when no stale-dispatch node exists.
     stale_dispatch_reconciled: staleDispatchReconciled,
+  });
   });
 }
 

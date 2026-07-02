@@ -35,32 +35,75 @@ function nextDispatchBatch(currentBatch) {
   return Math.max(1, Math.floor(n / 2));
 }
 
-// Pure: walk a sequence of successive read-only graph_hashes. While adjacent
-// hashes differ (drift) and the retry budget is not yet spent, shrink the batch
-// and count the retry; the first adjacent pair that agrees is quiescence. Returns
-// quiescent=false iff the hashes never stabilized within the budget. Deterministic
-// and side-effect-free.
-function planDriftBackpressure({ initialBatch, retryBudget, hashSequence }) {
-  const seq = Array.isArray(hashSequence) ? hashSequence : [];
-  const budget = Number.isInteger(retryBudget) && retryBudget >= 0
-    ? retryBudget
+// Drift-backpressure driver. Walks successive read-only graph_hashes; while
+// adjacent hashes differ (drift from concurrent producer landings) and the retry
+// budget is not yet spent, it shrinks the dispatch batch and counts the retry. The
+// first adjacent pair that agrees is quiescence. The handler drives it with live
+// callbacks (select against the current graph, readHash re-materializes read-only,
+// onDrift refreshes nodes/runSet/producer-key map); the drift/termination tests
+// drive it with a precomputed hashSequence and no callbacks. One control-flow
+// implementation, one set of tests — the production path and the pinned path are
+// the same code.
+//
+//   select(batch)  -> selection for the current batch (impure; may be omitted)
+//   readHash()     -> the next read-only graph_hash (impure)
+//   onDrift()      -> refresh derived state after a drift is observed (impure)
+//
+// Returns { finalBatch, driftRetries, quiescent, exhausted, selection }.
+// quiescent=false with exhausted=true iff the graph never stabilized within the
+// budget; the handler names the still-undispatched producers in that case.
+function planDriftBackpressure(opts) {
+  const o = opts || {};
+  const budget = Number.isInteger(o.retryBudget) && o.retryBudget >= 0
+    ? o.retryBudget
     : SEED_DRIFT_RETRY_BUDGET;
-  let batch = Number.isInteger(initialBatch) && initialBatch > 0 ? initialBatch : 1;
+  let batch = Number.isInteger(o.initialBatch) && o.initialBatch > 0 ? o.initialBatch : 1;
+
+  const noop = () => undefined;
+  const select = typeof o.select === "function" ? o.select : noop;
+  const onDrift = typeof o.onDrift === "function" ? o.onDrift : noop;
+
+  // Source of successive hashes: the live re-materialize (handler) or a precomputed
+  // sequence (tests). END marks a spent test sequence — the loop stops without
+  // asserting quiescence, so a sequence that runs out mid-drift stays non-quiescent.
+  const END = Symbol("hash_sequence_end");
+  let prevHash;
+  let readHash;
+  if (Array.isArray(o.hashSequence)) {
+    const seq = o.hashSequence;
+    prevHash = seq.length > 0 ? seq[0] : END;
+    let idx = 1;
+    readHash = () => (idx < seq.length ? seq[idx++] : END);
+  } else {
+    prevHash = o.initialHash;
+    readHash = typeof o.readHash === "function" ? o.readHash : () => prevHash;
+  }
+
   let driftRetries = 0;
-  // No adjacent pair observed ⇒ treat as quiescent (no drift to settle). A stable
-  // pair confirms quiescence; budget exhaustion mid-drift marks it non-quiescent.
+  // A stable adjacent pair confirms quiescence; budget exhaustion mid-drift marks it
+  // non-quiescent. No adjacent pair observed ⇒ treat as quiescent (no drift).
   let quiescent = true;
-  for (let i = 1; i < seq.length; i += 1) {
-    if (seq[i] === seq[i - 1]) {
-      quiescent = true;
+  let exhausted = false;
+  let selection;
+  for (;;) {
+    selection = select(batch);
+    const nextHash = readHash();
+    if (nextHash === END) break; // spent test sequence: keep the last-observed state
+    if (nextHash === prevHash) { quiescent = true; break; }
+    quiescent = false;
+    prevHash = nextHash;
+    onDrift();
+    if (driftRetries >= budget) {
+      // Budget spent while the graph still drifts: re-select once against the
+      // freshest state at the shrunk batch, then report the non-quiescent gap.
+      selection = select(batch);
+      exhausted = true;
       break;
     }
-    quiescent = false;
-    if (driftRetries >= budget) break;
     batch = nextDispatchBatch(batch);
     driftRetries += 1;
   }
-  return { finalBatch: batch, driftRetries, quiescent };
+  return { finalBatch: batch, driftRetries, quiescent, exhausted, selection };
 }
 
 // Pure: the REPORTED non-quiescent gap. RANK != BOUND — when the seed loop cannot
@@ -154,62 +197,50 @@ function handler(args) {
   // each producer node back to its pack key (and skip already-terminal producers).
   let liveResult = materializeTaskGraph(domain, { write: false });
   let nodes = liveResult.document.nodes || [];
-  let graphHash = liveResult.document.hashes ? liveResult.document.hashes.graph_hash : null;
+  const initialGraphHash = liveResult.document.hashes ? liveResult.document.hashes.graph_hash : null;
   let nodeIdToProducerKey = buildNodeIdToProducerKey(domain);
 
-  // The terminal producer_run set. Re-read on every drift retry (below) so a
-  // producer another process finalizes between now and a retry is filtered out.
+  // The terminal producer_run set. Re-read on every drift retry (via onDrift below)
+  // so a producer another process finalizes between now and a retry is filtered out.
   let runSet = producerRunSet(domain);
 
-  // Drift-gated shrink loop. Select at the current batch, then re-materialize
-  // read-only and compare the graph_hash. Two successive synchronous reads with
-  // the SAME hash (the normal/no-concurrency path) run the body exactly once and
-  // dispatch byte-identically to the single-pass scheduler. If the hashes differ
-  // (concurrent producer landings churned the graph) the batch is halved
+  // Drift-gated shrink loop, driven by planDriftBackpressure. select at the current
+  // batch, then re-materialize read-only and compare the graph_hash. Two successive
+  // synchronous reads with the SAME hash (the normal/no-concurrency path) run the
+  // body exactly once and dispatch byte-identically to the single-pass scheduler.
+  // On drift (concurrent producer landings churned the graph) the batch is halved
   // (backpressure) and the selection is recomputed against the fresher graph,
-  // bounded by retryBudget. Budget exhaustion mid-drift breaks the loop and is
-  // reported below — never a silent abandon.
-  let selection;
-  let driftRetries = 0;
-  let batch = cap;
-  let nonQuiescent = false;
-  for (;;) {
-    selection = selectExecutableProducers({
+  // bounded by retryBudget. Budget exhaustion mid-drift is reported below — never a
+  // silent abandon. onDrift re-reads the fresher nodes AND the terminal
+  // producer_run set + node->producer_key map: another process may have finalized a
+  // producer in the drift window, and selecting against the STALE runSet would fail
+  // to filter it and could re-dispatch an already-terminal producer (double-dispatch,
+  // a monotonicity violation).
+  let lastRemat = liveResult;
+  const plan = planDriftBackpressure({
+    initialBatch: cap,
+    retryBudget,
+    initialHash: initialGraphHash,
+    select: (currentBatch) => selectExecutableProducers({
       nodes,
       nodeIdToProducerKey,
       producerRunSet: runSet,
-      cap: batch,
-    });
-    const remat = materializeTaskGraph(domain, { write: false });
-    const nextHash = remat.document.hashes ? remat.document.hashes.graph_hash : null;
-    if (nextHash === graphHash) break; // quiescent: successive reads agree
-    // Drift: the graph churned between two read-only materializes. Refresh the
-    // fresher nodes/hash AND re-read the terminal producer_run set + the
-    // node->producer_key map. Another process may have finalized a producer in
-    // that window; selecting against the STALE runSet would fail to filter it and
-    // could re-dispatch an already-terminal producer (double-dispatch, a
-    // monotonicity violation). Re-reading both is what keeps the shrunk-batch
-    // reselection honest against concurrent finalization.
-    nodes = remat.document.nodes || [];
-    graphHash = nextHash;
-    runSet = producerRunSet(domain);
-    nodeIdToProducerKey = buildNodeIdToProducerKey(domain);
-    if (driftRetries >= retryBudget) {
-      // Budget exhausted while the graph still drifts: re-select once against the
-      // freshest graph + freshest terminal set at the shrunk batch, then report
-      // the non-quiescent gap.
-      selection = selectExecutableProducers({
-        nodes,
-        nodeIdToProducerKey,
-        producerRunSet: runSet,
-        cap: batch,
-      });
-      nonQuiescent = true;
-      break;
-    }
-    batch = nextDispatchBatch(batch);
-    driftRetries += 1;
-  }
+      cap: currentBatch,
+    }),
+    readHash: () => {
+      lastRemat = materializeTaskGraph(domain, { write: false });
+      return lastRemat.document.hashes ? lastRemat.document.hashes.graph_hash : null;
+    },
+    onDrift: () => {
+      nodes = lastRemat.document.nodes || [];
+      runSet = producerRunSet(domain);
+      nodeIdToProducerKey = buildNodeIdToProducerKey(domain);
+    },
+  });
+  const selection = plan.selection;
+  const driftRetries = plan.driftRetries;
+  const batch = plan.finalBatch;
+  const nonQuiescent = plan.exhausted;
 
   // Dispatch each selected producer via the bob_prepare_node path. bob_prepare_node
   // is the single dispatch-eligibility authority; a producer it refuses (e.g. an

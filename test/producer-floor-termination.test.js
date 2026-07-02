@@ -811,6 +811,73 @@ test("floor emission is idempotent: N passes with a pending producer append the 
   });
 });
 
+// Count producer_proposed events for one producer_key — the append the floor's
+// plan->append leg emits and the TOCTOU would DUPLICATE without the lock.
+function proposedRowCount(domain, key) {
+  return readFrontierEvents(domain).filter((event) => (
+    event.kind === "observation.recorded"
+    && event.payload
+    && event.payload.observation_kind === "producer_proposed"
+    && event.payload.producer_key === key
+  )).length;
+}
+
+test("the floor handler wraps its whole read -> plan -> append -> reconcile body in ONE withSessionLock (serialized, no unlocked TOCTOU)", () => {
+  withTempHome(() => {
+    // Regression: the floor read the graph, planned orphan/stale strikes + the
+    // producer_proposed emissions, and appended them OUTSIDE the session lock (the
+    // lock was taken only briefly inside each nested append). Two concurrent floor
+    // invocations could then read the SAME graph and DOUBLE-APPEND the same
+    // producer_proposed, or read stale state just before a node finalizes and strike
+    // a HEALTHY active producer. The fix wraps the whole body in withSessionLock,
+    // mirroring the seed-producer scheduler's select -> reserve -> dispatch wrap.
+    //
+    // Proven without threads by spying the handler's own withSessionLock: post-fix
+    // the handler calls it EXACTLY ONCE at the top and the producer_proposed append
+    // lands strictly inside that single hold; pre-fix the handler never calls
+    // withSessionLock itself (the append rode a nested per-write lock), so the spy is
+    // never entered. The nested appendFrontierEvent / materializeTaskGraph /
+    // recordProducerRun keep their own real (reentrant) lock, so the spy count is the
+    // handler's own wrap alone.
+    const domain = "floor-lock-wrap.example.com";
+    seedWebSession(domain);
+    const key = "web_host_family"; // the only ready root producer under the target seed
+
+    const storage = require("../mcp/lib/storage.js");
+    const realWithSessionLock = storage.withSessionLock;
+    let handlerLockCalls = 0;
+    let appendLandedInsideHold = false;
+    storage.withSessionLock = function spyWithSessionLock(lockDomain, callback) {
+      handlerLockCalls += 1;
+      const before = proposedRowCount(domain, key);
+      const result = realWithSessionLock(lockDomain, callback);
+      if (proposedRowCount(domain, key) > before) appendLandedInsideHold = true;
+      return result;
+    };
+
+    // Re-require the handler so its top-level destructure binds the spied
+    // withSessionLock (the already-loaded copy captured the real one at module load).
+    const handlerPath = require.resolve("../mcp/lib/tools/materialize-producer-floor.js");
+    delete require.cache[handlerPath];
+    let out;
+    try {
+      const freshHandler = require("../mcp/lib/tools/materialize-producer-floor.js").handler;
+      out = JSON.parse(freshHandler({ target_domain: domain }));
+    } finally {
+      storage.withSessionLock = realWithSessionLock;
+      delete require.cache[handlerPath];
+      require("../mcp/lib/tools/materialize-producer-floor.js");
+    }
+
+    assert.equal(out.tier1_producers_emitted, 1, "the ready root producer is emitted once");
+    assert.equal(handlerLockCalls, 1,
+      "the handler wraps its body in EXACTLY ONE withSessionLock — pre-fix it never called withSessionLock itself");
+    assert.equal(appendLandedInsideHold, true,
+      "the producer_proposed append lands strictly inside the handler's session-lock hold, not on an unlocked path");
+    assert.equal(proposedRowCount(domain, key), 1, "exactly one producer_proposed event was appended");
+  });
+});
+
 test("producer-coherence leg (h): real registry vacuously green; a synthetic fluctuating-key advisory is rejected", () => {
   // Every pack today is advisory:false, so leg (h) is vacuously green.
   assert.deepEqual(checkLegH(), [], "no advisory producer exists today ⇒ leg (h) is vacuously green");
