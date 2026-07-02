@@ -16,6 +16,7 @@
   "test/session-state-contracts.js",
   "test/init-contract-session-dispatch.test.js",
   "test/contract-session-orchestration.test.js",
+  "test/contract-identity-single-source.test.js",
   "test/mixed-program-companion.test.js",
   "test/repo-inventory.test.js",
   "test/reachability.test.js",

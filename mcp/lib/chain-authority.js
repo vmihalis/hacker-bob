@@ -61,6 +61,19 @@ function normalizeContractAddress(chainFamily, address) {
     : trimmed;
 }
 
+// THE single canonical CAIP-10 contract-identity string builder. Every site that
+// derives a '<family>:<chainId>:<address>' identity / dedup / surface key MUST call
+// this (caip10Endpoint, lead-promotion.smartContractSurfaceKey, finalize-node's
+// producer surface emission) so family + address casing can never disagree across
+// modules — the class of base58/SS58 scope fail-opens that recurred once per site
+// when each built the string by hand. Family folded via normalizeChainToken,
+// address via normalizeContractAddress (hex fold; base58/SS58/bech32 preserved).
+function contractIdentityKey({ chain_family, chain_id, address }) {
+  const family = normalizeChainToken(chain_family);
+  const id = String(chain_id == null ? "" : chain_id).trim();
+  return `${family}:${id}:${normalizeContractAddress(family, address)}`;
+}
+
 // Strict, fail-closed canonical normalization of ONE raw {chain_family, chain_id,
 // address} binding into a canonical tuple. This is the SINGLE bind-time normal
 // form shared by every axis that persists an in-scope contract set: the
@@ -269,4 +282,7 @@ module.exports = {
   // dedup key, and CAIP-10 endpoint routes through so casing never diverges.
   normalizeContractAddress,
   normalizeChainToken,
+  // THE single CAIP-10 identity-string builder — every family:chainId:address
+  // key is built here so no site can hand-roll a divergent casing again.
+  contractIdentityKey,
 };

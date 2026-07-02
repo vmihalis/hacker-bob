@@ -24,6 +24,7 @@ const {
   chainAuthorityHash,
   normalizeContractTupleStrict,
   normalizeContractAddress,
+  contractIdentityKey,
 } = require("./chain-authority.js");
 
 // Normalize ONE raw {chain_family, chain_id, address} binding into the internal
@@ -53,7 +54,7 @@ function contractSurfaceId({ chainFamily, chainId, address }) {
 // SAME shared family+address normalizers, so a seeded surface and any promoted lead
 // for one contract share one on-chain identity key (hex fold; base58/SS58 preserve).
 function caip10Endpoint({ chainFamily, chainId, address }) {
-  return `${chainFamily}:${chainId}:${normalizeContractAddress(chainFamily, address)}`;
+  return contractIdentityKey({ chain_family: chainFamily, chain_id: chainId, address });
 }
 
 // Seed one surface.observed per bound contract through the Y-D21 funnel. READ-ONLY

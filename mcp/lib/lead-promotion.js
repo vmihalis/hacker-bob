@@ -19,7 +19,7 @@ const {
 const { surfaceLeadsPath } = require("./paths.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
 const { withSessionLock } = require("./storage.js");
-const { normalizeChainToken, normalizeContractAddress } = require("./chain-authority.js");
+const { contractIdentityKey } = require("./chain-authority.js");
 const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 const {
@@ -209,11 +209,11 @@ function smartContractSurfaceKey(lead) {
     }
   }
   if (!address) return null;
-  // Route through the SAME shared normalizers as contract-target.caip10Endpoint so
-  // a seeded surface and a promoted lead for one contract yield one identity key:
-  // family folded to the canonical token, address case-folded ONLY for hex families
-  // (base58/SS58 preserved — the pre-fix unconditional lowercase desynced Solana).
-  return `${normalizeChainToken(chainFamily)}:${chainId}:${normalizeContractAddress(chainFamily, address)}`;
+  // Route through the SAME shared contractIdentityKey as caip10Endpoint + the
+  // finalize-node producer emission so a seeded surface and a promoted lead for one
+  // contract yield ONE identity key (family folded to the canonical token, address
+  // hex-folded / base58/SS58 preserved). No hand-rolled family:chain:address string.
+  return contractIdentityKey({ chain_family: chainFamily, chain_id: chainId, address });
 }
 
 function uniqueSurfaceId(lead) {

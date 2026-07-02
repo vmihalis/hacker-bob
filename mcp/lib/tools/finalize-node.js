@@ -65,6 +65,7 @@ const {
 const {
   PRODUCER_PACKS,
 } = require("../producer-packs.js");
+const { contractIdentityKey } = require("../chain-authority.js");
 const {
   logCellCoverage,
 } = require("../coverage.js");
@@ -417,11 +418,13 @@ function readAttestedSurfaceField(row, field) {
 // attested surface whose surface_type is one of the producer's
 // emits_surface_types. A smart_contract surface threads the attested chain_family
 // (Y-D21 append-time gate) PLUS the chain_id, contract_address, the OD4 recursion
-// depth (= producing-run depth + 1, threaded monotonically so the floor's depth
-// governor can stop a runaway lineage), and an OD3 verified-source provenance
-// marker; its surface_id is set to the on-chain identity key
-// (chain_family:chain_id:address.toLowerCase()) so the materializer folds the same
-// contract onto ONE surface — it never mints twice / re-expands. A web surface
+// depth (= the producing expander's OWN depth, which the floor already set to
+// source.depth + 1 and OD4-gated at that value — NOT incremented again here, or
+// each hop would advance depth by 2 and halve the effective linked_contract_depth
+// reach), and an OD3 verified-source provenance marker; its surface_id is the
+// single-sourced CAIP-10 identity key (chain-authority.contractIdentityKey — family
+// folded, address hex-fold / base58-SS58 preserved) so the materializer folds the
+// same contract onto ONE surface — it never mints twice / re-expands. A web surface
 // carries no chain identity and passes the gate. An intermediate producer (empty
 // emits_surface_types) emits nothing here.
 function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDepth, actor }) {
@@ -442,11 +445,21 @@ function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDep
       if (chainFamily) payload.chain_family = chainFamily;
       if (chainId) payload.chain_id = chainId;
       if (contractAddress) payload.contract_address = contractAddress;
-      const baseDepth = Number.isInteger(sourceDepth) ? sourceDepth : 0;
-      payload.depth = baseDepth + 1;
+      // The expander's own depth (proposedDepth = source.depth + 1, set by the
+      // producer floor and OD4-gated at that value) IS the depth of the surfaces it
+      // discovers — do NOT increment again here, or every hop advances depth by 2
+      // and the effective linked_contract_depth reach is halved.
+      const baseDepth = Number.isInteger(sourceDepth) ? sourceDepth : 1;
+      payload.depth = baseDepth;
       payload.provenance = "verified_source";
       if (chainFamily && chainId && contractAddress) {
-        surfaceId = `${chainFamily}:${chainId}:${contractAddress.toLowerCase()}`;
+        // Single-sourced CAIP-10 identity (family folded, address hex-fold /
+        // base58-SS58 preserved) — never hand-roll the string here.
+        surfaceId = contractIdentityKey({
+          chain_family: chainFamily,
+          chain_id: chainId,
+          address: contractAddress,
+        });
       }
     }
     if (surfaceId) payload.surface_id = surfaceId;
