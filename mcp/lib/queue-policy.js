@@ -585,42 +585,26 @@ function normalizeQueuePolicy(input = {}) {
   return policy;
 }
 
-// Governor fields a session FRONT DOOR (bob_init_contract_session) persists into
-// the queue policy and that a later PARTIAL bob_set_queue_policy must NOT reset to
-// DEFAULT_QUEUE_POLICY. normalizeQueuePolicy rebuilds the whole policy from its
-// input, so a set_queue_policy call that OMITS one of these governors falls back
-// to the default and silently drops the operator's persisted override (the OD4
-// depth and the OD1 seed caps are the MCP-enforced, non-clearable fan-out bounds —
-// a reset to default is a coverage/depth regression, not a no-op). The
-// set_queue_policy handler read-modify-writes these against the persisted policy.
-const INIT_OWNED_POLICY_FIELDS = Object.freeze([
-  "linked_contract_depth",
-  "max_total_seed_producers",
-  "seed_producer_per_pass_cap",
-  "per_expander_linked_address_cap",
-]);
-
-// Read-modify-write the INIT_OWNED_POLICY_FIELDS: each governor ABSENT from the
-// set_queue_policy `input` inherits its value from the normalized `existing`
-// policy, so a partial update preserves the operator's init-time override. A
-// governor PRESENT in the input (any value, including an explicit null that
-// normalizeQueuePolicy resolves back to the default) is left untouched, so the
-// operator can still deliberately update or reset it. Every OTHER policy field is
-// unaffected and keeps its full-overwrite (omitted -> default) semantics.
-function mergeInitOwnedPolicyFields(input, existing) {
+// PATCH semantics for bob_set_queue_policy: read-modify-write the WHOLE persisted
+// policy. normalizeQueuePolicy rebuilds a policy from its input, so writing the raw
+// operator override would reset EVERY field the operator omitted
+// (max_parallel_tasks, priority_order, stale_after_ms, close_blocked_on_freeze, the
+// wave targets/budgets/lens, and the init-owned OD governors) back to
+// DEFAULT_QUEUE_POLICY — a silent loss of the operator's persisted config. Start
+// from the normalized `existing` policy and overlay ONLY the operator-supplied
+// fields, so a one-field update preserves every OTHER field at its persisted value.
+// An operator resets a field by setting it explicitly (least-surprise: omission
+// keeps, explicit value overwrites). A field PRESENT in `input` with an explicit
+// null (e.g. LEAN_PROFILE clearing max_concurrent_evaluators) is overlaid and
+// normalizeQueuePolicy resolves it, so deliberate clears still work.
+function mergePersistedPolicyFields(input, existing) {
   if (input == null || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("policy must be an object");
   }
   if (existing == null || typeof existing !== "object" || Array.isArray(existing)) {
     return { ...input };
   }
-  const merged = { ...input };
-  for (const field of INIT_OWNED_POLICY_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(input, field) && existing[field] != null) {
-      merged[field] = existing[field];
-    }
-  }
-  return merged;
+  return { ...existing, ...input };
 }
 
 function compareQueuedTasks(a, b, policy = DEFAULT_QUEUE_POLICY) {
@@ -670,7 +654,6 @@ module.exports = {
   CLAMP_CEILING,
   CONSERVATIVE_WIDTH_BASELINE,
   DEFAULT_NESTING_SPAWN_BUDGET,
-  INIT_OWNED_POLICY_FIELDS,
   LEAN_PROFILE,
   MAX_COVERAGE_PROFILE,
   DEFAULT_QUEUE_POLICY,
@@ -680,7 +663,7 @@ module.exports = {
   TASK_PRIORITY_VALUES,
   compareQueuedTasks,
   loadQueuePolicy,
-  mergeInitOwnedPolicyFields,
+  mergePersistedPolicyFields,
   normalizeFrictionScanner,
   normalizeFrictionScanners,
   normalizePartialSurfaceAcknowledgement,

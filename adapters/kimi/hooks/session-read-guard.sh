@@ -1,5 +1,5 @@
 #!/bin/bash
-# Session read guard hook — PreToolUse on Bash and Read
+# Session read guard hook — PreToolUse on Bash, Read, and Grep
 # Blocks direct reads of sensitive or bulky Bob session artifacts.
 # Exit 0 = allow, Exit 2 = block
 
@@ -97,6 +97,11 @@ BLOCKED_DIRS = {
     "massread-evidence",
 }
 
+# The directory SEGMENTS a Grep `glob` must never target: the blocked sensitive
+# dirs plus the session-root basenames. A glob is a PATTERN (not a resolved path
+# that check_file could open), so it is screened by literal path segment.
+GLOB_PROTECTED_SEGMENTS = set(BLOCKED_DIRS) | {root.name for root in SESSIONS_ROOTS}
+
 BLOCKED_PATTERNS = [
     re.compile(r"^handoff-w[1-9][0-9]*-a[1-9][0-9]*\.(json|md)$"),
     re.compile(r"^wave-[1-9][0-9]*-assignments\.json$"),
@@ -153,6 +158,28 @@ def session_root_for(resolved):
         try:
             resolved.resolve(strict=False).relative_to(root.resolve(strict=False))
             return root
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+def search_root_reaches_session(resolved):
+    """Return the session-root basename when `resolved` is an ANCESTOR of (or
+    equal to) a session root, else None.
+
+    Grep (ripgrep) recurses: a content search rooted here descends DOWN into the
+    session tree, so it reaches every blocked dir (massread-evidence raw PII) and
+    every BLOCKED_EXACT secret regardless of the `glob`. This is the mirror of
+    session_root_for (which detects a root INSIDE a session); together they cover
+    the full overlap between a recursive search scope and the session tree."""
+    try:
+        base = resolved.resolve(strict=False)
+    except OSError:
+        return None
+    for root in SESSIONS_ROOTS:
+        try:
+            root.resolve(strict=False).relative_to(base)
+            return root.name
         except (ValueError, OSError):
             continue
     return None
@@ -221,6 +248,28 @@ def check_file(raw_path, *, block_session_dirs=False, base_dirs=None):
             return filename
         return None
 
+    return None
+
+
+def check_glob(glob_text):
+    """Screen a Grep `glob` PATTERN (never a resolved, openable path) for an
+    EXPLICIT protected segment. Split the glob into literal path segments and
+    block only when a segment EXACTLY equals a protected dir name or a
+    session-root basename (e.g. an `.../massread-evidence/**` or
+    `hacker-bob-sessions/**` glob).
+
+    Reachability of the session tree is enforced by the search-root checks
+    (search_root_reaches_session for an ANCESTOR root, block_session_dirs for a
+    root INSIDE a session); ripgrep never reads a file outside its search root,
+    so a glob cannot widen the scope. This screen therefore does NOT fnmatch the
+    protected NAMES against a wildcard segment — a benign developer `repo-*`
+    (which coincidentally matches `repo-runs`) or `*evidence*` (which matches
+    `massread-evidence`) targets no session dir and must pass."""
+    expanded = str(resolve_path(glob_text))
+    segments = [seg for seg in re.split(r"/+", expanded) if seg and seg not in (".", "..")]
+    for seg in segments:
+        if seg in GLOB_PROTECTED_SEGMENTS:
+            return seg
     return None
 
 
@@ -542,13 +591,41 @@ if "file_path" in tool_input:
         block(blocked)
     raise SystemExit(0)
 
-# Grep tool: its search root is `path` (a file or directory). A content search over a blocked dir
-# (e.g. massread-evidence/ raw-PII captures) exfiltrates the same data a Read would, so guard it too.
-grep_path = tool_input.get("path")
-if isinstance(grep_path, str) and grep_path:
-    blocked = check_file(grep_path, block_session_dirs=True)
+# Grep tool: guard its FULL effective search scope, fail-closed. A Grep call sets no
+# file_path/command, so a pattern/glob/path key marks it. Grep (ripgrep) recurses from a
+# single search root, so the scope overlaps the session tree in THREE ways, ALL screened:
+# (1) the search root is INSIDE/equal-to a session dir (explicit `path`, or NO `path` so
+# the root is the process cwd) — check_file(block_session_dirs); (2) the search root is an
+# ANCESTOR of a session root (e.g. a broad `$HOME` root), so the recursion descends INTO
+# the session tree — search_root_reaches_session; (3) a `glob` that literally names a
+# protected segment — check_glob. A content search over a blocked dir (massread-evidence/
+# raw-PII captures) exfiltrates the same data a Read would, so block if ANY overlap holds.
+if any(key in tool_input for key in ("pattern", "glob", "path")):
+    grep_path = tool_input.get("path")
+    if isinstance(grep_path, str) and grep_path:
+        search_root = grep_path
+    else:
+        # `path` ABSENT -> the search root is the process cwd.
+        search_root = os.getcwd()
+    # (1) root inside/equal-to a session dir, or naming a blocked artifact directly.
+    blocked = check_file(search_root, block_session_dirs=True)
     if blocked:
         block(blocked)
+    # (2) root is an ANCESTOR of a session root: a recursive Grep descends INTO the
+    # session tree (massread-evidence raw PII + every BLOCKED_EXACT secret) no matter
+    # what `glob` is set, so fail closed regardless of the glob. Closes the
+    # broad-ancestor-root fail-open (a `$HOME` root + a generic/absent glob).
+    reached = search_root_reaches_session(resolve_path(search_root))
+    if reached:
+        block(reached)
+    # (3) A glob is a PATTERN, not a resolved path: screen it for an EXPLICIT protected
+    # segment. Reachability is already enforced by (1)/(2) above (ripgrep never reads
+    # outside its root), so this only rejects a glob that literally names a session dir.
+    grep_glob = tool_input.get("glob")
+    if isinstance(grep_glob, str) and grep_glob:
+        blocked = check_glob(grep_glob)
+        if blocked:
+            block(blocked)
     raise SystemExit(0)
 
 command = tool_input.get("command", "")

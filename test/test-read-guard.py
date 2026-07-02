@@ -383,6 +383,62 @@ TESTS = [
      {"tool_input": {"path": "/tmp"}},
      0,
      None),
+
+    # --- Grep FULL-scope guard: path-absent default-root + glob targeting a protected dir ---
+    # (a) NO path (root defaults to cwd) + a glob into massread-evidence/** must be BLOCKED:
+    # check_file never sees the sensitive location, so the glob itself is screened.
+    ("Grep with NO path + glob into massread-evidence/** blocks",
+     {"tool_input": {"pattern": "ssn|token",
+                     "glob": f"{HOME}/hacker-bob-sessions/*/massread-evidence/**"}},
+     2,
+     "bob_read_session_summary"),
+    # (b) path set to a broad allowed root ($HOME) while the glob reaches into a session
+    # dir must be BLOCKED — the broad root passes check_file, the glob does not.
+    ("Grep with path=$HOME + glob into a session dir blocks",
+     {"tool_input": {"path": HOME,
+                     "glob": "hacker-bob-sessions/example.com/massread-evidence/*.json"}},
+     2,
+     "bob_read_session_summary"),
+    # (c) a benign Grep (normal repo dir + no protected glob) still PASSES.
+    ("Grep in a normal repo dir with a benign glob is allowed",
+     {"tool_input": {"pattern": "TODO",
+                     "path": f"{HOME}/Documents/project",
+                     "glob": "**/*.md"}},
+     0,
+     None),
+
+    # --- (Q-a) broad-ANCESTOR root fail-open: a recursive Grep rooted at an ancestor of
+    # the session root descends INTO massread-evidence/ + every BLOCKED_EXACT secret, so
+    # it must BLOCK even with a generic recursive glob or NO glob (was ALLOWED). ---
+    ("Grep with path=$HOME + generic glob **/*.json blocks (ancestor recursion)",
+     {"tool_input": {"pattern": "token", "path": HOME, "glob": "**/*.json"}},
+     2,
+     "bob_read_session_summary"),
+    ("Grep with path=$HOME + no glob blocks (ancestor recursion)",
+     {"tool_input": {"pattern": "token", "path": HOME}},
+     2,
+     "bob_read_session_summary"),
+    ("Grep with path=$HOME + catch-all glob **/* blocks (ancestor recursion)",
+     {"tool_input": {"pattern": "token", "path": HOME, "glob": "**/*"}},
+     2,
+     "bob_read_session_summary"),
+
+    # --- (Q-b) benign over-block regression: a normal-repo Grep whose glob coincidentally
+    # matches a protected NAME (repo-* ~ repo-runs, *evidence* ~ massread-evidence) targets
+    # NO session dir and cannot reach one from a non-ancestor root, so it must be ALLOWED
+    # (was BLOCKED by the fnmatch(protected, seg) over-block). ---
+    ("Grep in a normal repo dir with glob **/repo-* is allowed",
+     {"tool_input": {"pattern": "x",
+                     "path": f"{HOME}/Documents/hacker-bob",
+                     "glob": "**/repo-*"}},
+     0,
+     None),
+    ("Grep in a normal repo dir with glob **/*evidence* is allowed",
+     {"tool_input": {"pattern": "x",
+                     "path": f"{HOME}/Documents/project",
+                     "glob": "**/*evidence*"}},
+     0,
+     None),
 ]
 
 

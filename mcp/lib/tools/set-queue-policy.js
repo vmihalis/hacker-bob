@@ -9,7 +9,7 @@ const {
 const {
   CLAMP_CEILING,
   loadQueuePolicy,
-  mergeInitOwnedPolicyFields,
+  mergePersistedPolicyFields,
   normalizeQueuePolicy,
   writeQueuePolicy,
 } = require("../queue-policy.js");
@@ -20,20 +20,31 @@ function handler(args) {
   if (typeof policyInput !== "object" || Array.isArray(policyInput)) {
     throw new Error("policy must be an object");
   }
-  // Validate the operator-supplied override eagerly so a malformed policy fails
-  // before the session lock is taken.
-  normalizeQueuePolicy(policyInput);
-  // bob_set_queue_policy is a PARTIAL update: every omitted field full-overwrites
-  // back to its default. That clobbers the init-owned governor fields (OD4
-  // linked_contract_depth + the OD1 seed caps) a session front door
-  // (bob_init_contract_session) persisted, because normalizeQueuePolicy resets an
-  // omitted governor to DEFAULT_QUEUE_POLICY. Read-modify-write those governors
-  // against the persisted policy under the lock so the operator's depth/seed
-  // override is durable across later partial updates; all other fields keep their
-  // full-overwrite semantics.
+  // Validate the EFFECTIVE (merged) policy eagerly so a malformed policy fails
+  // before the session lock is taken. Validating the raw partial in isolation is
+  // WRONG for a PATCH: normalizeQueuePolicy fills every omitted field with its
+  // DEFAULT, so the cross-field wave guards (standard/deep wave_max >= wave_target)
+  // would see a default cross-guard partner instead of the persisted one and
+  // falsely reject a legitimate one-field wave-cap update — e.g. after LEAN_PROFILE
+  // persists standard_wave_target=4/standard_wave_max=6, a `{standard_wave_max: 5}`
+  // partial would trip against the default target 64. Validate the same MERGE the
+  // in-lock writeQueuePolicy normalizes so the pre-check accepts exactly what the
+  // authoritative write accepts. This is fail-fast only; the fail-closed gate is
+  // writeQueuePolicy inside the lock, which re-merges + re-normalizes under the lock
+  // (an out-of-bounds field still throws here AND there).
+  normalizeQueuePolicy(mergePersistedPolicyFields(policyInput, loadQueuePolicy(domain)));
+  // bob_set_queue_policy is a PARTIAL update (PATCH): read-modify-write the WHOLE
+  // persisted policy so a one-field update preserves every OTHER field. Without this
+  // the writer's normalizeQueuePolicy would rebuild the policy from the raw operator
+  // override and reset every omitted field (max_parallel_tasks, priority_order,
+  // stale_after_ms, close_blocked_on_freeze, the wave targets/budgets/lens, and the
+  // init-owned OD governors) back to DEFAULT_QUEUE_POLICY — a silent loss of the
+  // operator's config. Load the persisted policy under the lock, overlay ONLY the
+  // operator-supplied fields, and keep each unspecified field at its persisted
+  // value; an operator resets a field by setting it explicitly.
   const persisted = withSessionLock(domain, () => {
     const existing = loadQueuePolicy(domain);
-    const merged = mergeInitOwnedPolicyFields(policyInput, existing);
+    const merged = mergePersistedPolicyFields(policyInput, existing);
     return writeQueuePolicy(domain, merged);
   });
   return JSON.stringify({
@@ -46,13 +57,16 @@ function handler(args) {
 module.exports = Object.freeze({
   name: "bob_set_queue_policy",
   description:
-    "Persist an operator-supplied QueuePolicy override for a target_domain to " +
-    "~/hacker-bob-sessions/<domain>/queue-policy.json. The policy is normalized via " +
-    "normalizeQueuePolicy and consumed by the wave planner and scheduler. Carries " +
-    "max_parallel_tasks, priority_order, stale_after_ms, close_blocked_on_freeze, " +
-    "the wave targets/budgets/lens, and the init-owned OD governors " +
-    "(linked_contract_depth plus the OD1 seed caps seed_producer_per_pass_cap, " +
-    "per_expander_linked_address_cap, max_total_seed_producers).",
+    "Apply a PARTIAL (PATCH) QueuePolicy update for a target_domain, persisted to " +
+    "~/hacker-bob-sessions/<domain>/queue-policy.json. Read-modify-writes the WHOLE " +
+    "persisted policy: only the fields the operator supplies are changed, and every " +
+    "omitted field keeps its persisted value (reset a field to its default by setting " +
+    "it explicitly). The result is normalized via normalizeQueuePolicy and consumed by " +
+    "the wave planner and scheduler. Fields include max_parallel_tasks, priority_order, " +
+    "stale_after_ms, close_blocked_on_freeze, the wave targets/budgets/lens, and the " +
+    "init-owned OD governors (linked_contract_depth plus the OD1 seed caps " +
+    "seed_producer_per_pass_cap, per_expander_linked_address_cap, " +
+    "max_total_seed_producers).",
   inputSchema: {
     type: "object",
     properties: {
@@ -62,10 +76,11 @@ module.exports = Object.freeze({
       policy: {
         type: "object",
         description:
-          "Partial or full QueuePolicy. Unspecified fields fall back to DEFAULT_QUEUE_POLICY, " +
-          "except the init-owned OD governors (linked_contract_depth and the OD1 seed caps), " +
-          "which a partial update read-modify-writes against the persisted policy so an " +
-          "init-time override survives an omission.",
+          "Partial or full QueuePolicy. Only the fields present here are updated; every " +
+          "field the operator omits keeps its persisted value, because a partial update " +
+          "read-modify-writes the WHOLE persisted policy (custom wave targets/budgets/" +
+          "priority AND the init-owned OD governors all survive a one-field update). " +
+          "Reset a field to its default by setting it explicitly.",
         properties: {
           max_parallel_tasks: { type: "integer" },
           priority_order: {
@@ -144,7 +159,7 @@ module.exports = Object.freeze({
           },
           // OD1 seed-producer governors + OD4 linked-contract depth governor.
           // These are the init-owned, MCP-enforced fan-out bounds normalizeQueuePolicy
-          // rebuilds and mergeInitOwnedPolicyFields read-modify-writes; declaring them
+          // rebuilds and the partial-update merge read-modify-writes; declaring them
           // here (additionalProperties defaults false) makes the operator-update path
           // reachable instead of rejecting the field at the tool boundary. Bounds are
           // the AUTHORITATIVE normalizeQueuePolicy clamps: the seed caps are positive
