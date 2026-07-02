@@ -23,6 +23,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const childProcess = require("node:child_process");
 
 const {
   initRepoSession,
@@ -322,6 +323,35 @@ test("recommendedCommandsFor c emits a ThreadSanitizer arm alongside the libFuzz
   assert.ok(tsan.command[2].length <= 2048, "tsan recipe token must stay within docker-run limit");
 });
 
+test("recommendedCommandsFor c threads a harness_override into every native fuzz arm's builder invocation", () => {
+  const commands = recommendedCommandsFor("c", {
+    nativeFuzzShape: true,
+    harnessOverride: "src/app/fdctl/fuzz_fdctl_config.c",
+    seedCorpus: [{ rel_path: "fuzz/corpus", file_count: 2 }],
+  });
+  const lf = commands.find((c) => c.id === "fuzz_asan_ubsan");
+  const afl = commands.find((c) => c.id === "fuzz_cmplog");
+  const tsan = commands.find((c) => c.id === "fuzz_tsan");
+  // The override is passed inline as BOB_HARNESS=<quoted> before ENGINE=..., so the
+  // image-baked builder uses that TU verbatim (it fails closed if the file is absent).
+  assert.match(lf.command[2], /BOB_HARNESS='src\/app\/fdctl\/fuzz_fdctl_config\.c' ENGINE=libfuzzer \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.match(afl.command[2], /BOB_HARNESS='src\/app\/fdctl\/fuzz_fdctl_config\.c' ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  assert.match(tsan.command[2], /BOB_HARNESS='src\/app\/fdctl\/fuzz_fdctl_config\.c' ENGINE=tsan \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  for (const c of [lf, afl, tsan]) {
+    assert.ok(c.command[2].length <= 2048, `${c.id} recipe token must stay within docker-run limit`);
+  }
+});
+
+test("recommendedCommandsFor c omits the BOB_HARNESS prefix when no harness_override is given", () => {
+  const commands = recommendedCommandsFor("c", { nativeFuzzShape: true });
+  for (const id of ["fuzz_asan_ubsan", "fuzz_cmplog", "fuzz_tsan"]) {
+    const c = commands.find((x) => x.id === id);
+    // No override => recipe stays byte-identical to the un-threaded form, so the
+    // differential repro gate re-runs the same command array on both checkouts.
+    assert.doesNotMatch(c.command[2], /BOB_HARNESS=/, `${id} must stay override-free`);
+  }
+});
+
 test("recommendedCommandsFor c ignores unsafe seed corpus paths before shell emission", () => {
   const commands = recommendedCommandsFor("c", {
     nativeFuzzShape: true,
@@ -503,6 +533,10 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
     allowNetwork: true,
   });
   assert.doesNotMatch(withoutFuzz, /\blibclang-rt-18-dev\b/);
+  // git rides the default C image (needed by every native build's version/codegen
+  // steps), so it is present even without the fuzz shape; cbmc is fuzz-only.
+  assert.match(withoutFuzz, /\bgit\b/, "git must be in the default C image apt layer");
+  assert.doesNotMatch(withoutFuzz, /\bcbmc\b/, "cbmc must not appear in a non-fuzz C image");
 
   const withFuzz = buildDockerfileBob({
     language: "c",
@@ -523,6 +557,10 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
   }
   // The strong input-to-state engine must be baked into the session image.
   assert.ok(withFuzz.includes("afl++"), "afl++ must be in the native-fuzz apt layer");
+  // The bounded model checker (verification-adjacent arm) rides the fuzz extras.
+  assert.ok(withFuzz.includes("cbmc"), "cbmc must be in the native-fuzz apt layer");
+  // git is on the default C layer, so the fuzz image carries it too.
+  assert.match(withFuzz, /\bgit\b/, "native fuzz image must carry git");
   // afl-clang-fast's matching compiler-rt is installed by DERIVING its clang version
   // (so AFL_USE_ASAN can link), not hardcoded — tracks the engine across base images.
   assert.match(withFuzz, /afl-clang-fast --version[\s\S]*libclang-rt-\$AFLV-dev/);
@@ -544,6 +582,13 @@ test("buildDockerfileBob emits compiler-rt parser deps only when nativeFuzzShape
   const decoded = Buffer.from(m[1], "base64").toString("utf8");
   const onDisk = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
   assert.equal(decoded, onDisk, "baked builder must match mcp/lib/fuzz/bob-multitu-build.sh byte-for-byte");
+});
+
+test("git + cmake ride the default C image; cbmc rides the native-fuzz extras", () => {
+  assert.ok(C_DEFAULT_APT_PACKAGES.includes("git"), "git must be a default C package");
+  assert.ok(C_DEFAULT_APT_PACKAGES.includes("cmake"), "cmake must be a default C package");
+  assert.ok(!C_DEFAULT_APT_PACKAGES.includes("cbmc"), "cbmc is fuzz-only, not a default C package");
+  assert.ok(NATIVE_FUZZ_EXTRA_APT_PACKAGES.includes("cbmc"), "cbmc must be a native-fuzz extra");
 });
 
 test("the multi-TU builder script holds the instrumentation split + layered build invariants", () => {
@@ -575,6 +620,82 @@ test("the multi-TU builder script holds the instrumentation split + layered buil
   assert.doesNotMatch(sh, /ENGINE" = msan/);
   // compile-all fallback must skip TUs that define their own main().
   assert.ok(sh.includes("int[[:space:]]+main"), "compile-all must guard against TUs with their own main()");
+});
+
+test("the multi-TU builder honors a BOB_HARNESS override and fails closed on a bad one", () => {
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  // The override is read as an input (guarded for set -u), bypassing auto-selection.
+  assert.ok(sh.includes("${BOB_HARNESS:-}"), "builder must read BOB_HARNESS as an override input");
+  // Fail closed when the override names a non-existent file, listing the candidates.
+  assert.match(sh, /BOB_HARNESS_NOT_FOUND/);
+  assert.match(sh, /exit 4/);
+});
+
+test("the multi-TU builder ranks real libFuzzer harnesses (fuzz_* before app/config) and reports alternatives", () => {
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  // libFuzzer-named files rank ahead of unnamed ones ...
+  assert.match(sh, /fuzz_\*\|\*_fuzz\.\*\|\*_fuzzer\.\*/);
+  // ... and parser/txn topics ahead of app/config topics (do NOT blindly pick fuzz_fdctl_config).
+  assert.match(sh, /\*config\*\|\*fdctl\*/);
+  // RANK != BOUND: every discovered harness is echoed, best first.
+  assert.match(sh, /BOB_HARNESS_CANDIDATES/);
+});
+
+test("the multi-TU builder auto-selects a parser harness over an app-config one and honors overrides (behavioral)", () => {
+  const sh = fs.readFileSync(path.join(__dirname, "..", "mcp", "lib", "fuzz", "bob-multitu-build.sh"), "utf8");
+  // Extract only the harness-discovery block (no /work staging, no clang) and run it
+  // against a fixture tree so the ranking + override contract is exercised end-to-end.
+  const start = sh.indexOf("_is_harness()");
+  const endMarker = "case \"$HARNESS\" in *.c) HARNESS_C=1 ;; *) HARNESS_C=0 ;; esac";
+  const end = sh.indexOf(endMarker);
+  assert.ok(start >= 0 && end > start, "discovery block must be locatable in the builder");
+  const block = `set -eu\n${sh.slice(start, end + endMarker.length)}\n`;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bob-harness-sel-"));
+  try {
+    const runner = path.join(dir, "discover.sh");
+    fs.writeFileSync(runner, block, "utf8");
+    const repo = path.join(dir, "repo");
+    fs.mkdirSync(path.join(repo, "src", "app", "fdctl"), { recursive: true });
+    fs.mkdirSync(path.join(repo, "src", "ballet", "txn"), { recursive: true });
+    const harnessBody = "#include <stddef.h>\nint LLVMFuzzerTestOneInput(const unsigned char *d, size_t n){ return (int)(d == 0 || n == 0); }\n";
+    fs.writeFileSync(path.join(repo, "src", "app", "fdctl", "fuzz_fdctl_config.c"), harnessBody, "utf8");
+    fs.writeFileSync(path.join(repo, "src", "ballet", "txn", "fuzz_txn_parse.c"), harnessBody, "utf8");
+    fs.writeFileSync(path.join(repo, "src", "util.c"), "int helper(void){ return 1; }\n", "utf8");
+
+    // Auto-selection prefers the parser/txn harness, NOT fuzz_fdctl_config.
+    const auto = childProcess.execFileSync("sh", [runner], { cwd: repo, encoding: "utf8" });
+    assert.match(auto, /^BOB_HARNESS=\.\/src\/ballet\/txn\/fuzz_txn_parse\.c$/m);
+    // Alternatives reported (RANK != BOUND); fdctl_config is a candidate but ranked last.
+    assert.match(auto, /BOB_HARNESS_CANDIDATES:/);
+    assert.match(auto, /\.\/src\/app\/fdctl\/fuzz_fdctl_config\.c/);
+
+    // Explicit override wins verbatim.
+    const forced = childProcess.execFileSync("sh", [runner], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, BOB_HARNESS: "src/app/fdctl/fuzz_fdctl_config.c" },
+    });
+    assert.match(forced, /^BOB_HARNESS=\.\/src\/app\/fdctl\/fuzz_fdctl_config\.c$/m);
+
+    // A bad override fails closed (exit 4) and names the discovered candidates.
+    let threw = null;
+    try {
+      childProcess.execFileSync("sh", [runner], {
+        cwd: repo,
+        encoding: "utf8",
+        env: { ...process.env, BOB_HARNESS: "does/not/exist.c" },
+      });
+    } catch (err) {
+      threw = err;
+    }
+    assert.ok(threw, "bad BOB_HARNESS override must exit non-zero");
+    assert.equal(threw.status, 4, "bad override must fail closed with exit 4");
+    assert.match(String(threw.stderr), /BOB_HARNESS_NOT_FOUND: does\/not\/exist\.c/);
+    assert.match(String(threw.stderr), /fuzz_txn_parse\.c/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("parseFuzzStats returns bounded integer scalars for libFuzzer stdout", () => {
@@ -1091,6 +1212,44 @@ test("prepareRepoEnv reads native_fuzz_shape from repo-inventory.json and emits 
     assert.match(fuzzCommands[0].command[2], /-use_value_profile=1/);
     assert.match(fuzzCommands[1].command[2], /ENGINE=afl \/usr\/local\/bin\/bob-multitu-build\.sh/);
     assert.match(fuzzCommands[2].command[2], /ENGINE=tsan \/usr\/local\/bin\/bob-multitu-build\.sh/);
+  });
+});
+
+test("prepareRepoEnv threads a valid harness_override into every native fuzz arm", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(fuzz CXX)\n");
+    write(repoRoot, "fuzzing/native_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return size > 0 && data[0] == 0xff;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    const result = await prepareRepoEnv({
+      target_domain: init.target_domain,
+      harness_override: "src/waltz/quic/fuzz_quic.c",
+    });
+    assert.equal(result.language, "c");
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    const fuzzCommands = repoEnv.recommended_commands.filter((command) => command.role === "fuzz");
+    for (const command of fuzzCommands) {
+      assert.match(command.command[2], /BOB_HARNESS='src\/waltz\/quic\/fuzz_quic\.c' ENGINE=/);
+    }
+  });
+});
+
+test("prepareRepoEnv rejects an absolute or ..-escaping harness_override fail-closed", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "CMakeLists.txt", "cmake_minimum_required(VERSION 3.22)\nproject(fuzz CXX)\n");
+    write(repoRoot, "fuzzing/native_fuzzer.cc", "extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size){return size > 0;}\n");
+    const init = initRepoSession({ repo_path: repoRoot });
+    buildRepoInventory({ target_domain: init.target_domain });
+
+    for (const bad of ["/etc/passwd", "../escape.c", "  "]) {
+      await assert.rejects(
+        () => prepareRepoEnv({ target_domain: init.target_domain, harness_override: bad }),
+        /harness_override/,
+      );
+    }
   });
 });
 

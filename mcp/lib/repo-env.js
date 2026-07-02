@@ -153,6 +153,10 @@ const C_DEFAULT_APT_PACKAGES = Object.freeze([
   "clang-18",
   "gdb",
   "valgrind",
+  // git: version/codegen steps in make/cmake builds (git describe, submodule
+  // status) and any in-tree fetch of pinned sources need it; build-essential
+  // does not pull it in.
+  "git",
 ]);
 // Extra packages preloaded when O.2 detected NFS/XDR shape. Mirrors the
 // MVP carry-back: libtirpc/libnfs/libkrb5/libssl give parsers and DVN
@@ -185,6 +189,11 @@ const NATIVE_FUZZ_EXTRA_APT_PACKAGES = Object.freeze([
   // probes `command -v afl-clang-fast` and degrades to a no-op when absent, so the
   // libFuzzer+value_profile floor still runs on hosts where afl++ is unavailable.
   "afl++",
+  // cbmc: bounded model checker for the verification-adjacent arm (assertion /
+  // memory-safety reachability on the same C/C++ TUs the fuzz arms build). It is
+  // fuzz-only tooling, so it rides the native-fuzz extras rather than the default
+  // C image.
+  "cbmc",
 ]);
 
 const NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS = 240;
@@ -299,6 +308,16 @@ function normalizeRepoRelativePath(raw) {
   return normalized;
 }
 
+// Inline `BOB_HARNESS=<path> ` prefix for the image-baked builder invocation. When
+// an operator supplied harness_override (a repo-relative path already validated in
+// prepareRepoEnv), it is threaded through the recipe so the builder uses that TU
+// verbatim instead of its auto-selection; the builder fails closed if the path does
+// not exist. Empty string when no override, so a non-override recipe stays
+// byte-identical to before (and identical across the differential-repro checkouts).
+function harnessEnvPrefix(harnessOverride) {
+  return harnessOverride ? `BOB_HARNESS=${shellQuote(harnessOverride)} ` : "";
+}
+
 function firstSeedCorpus(seedCorpus) {
   if (!Array.isArray(seedCorpus)) return null;
   for (const entry of seedCorpus) {
@@ -329,7 +348,7 @@ const BOB_MULTITU_BUILD_SH = fs.readFileSync(
 const BOB_MULTITU_BUILD_SH_B64 = Buffer.from(BOB_MULTITU_BUILD_SH, "utf8").toString("base64");
 const BOB_MULTITU_BUILD_PATH = "/usr/local/bin/bob-multitu-build.sh";
 
-function cNativeFuzzRecipe(seedCorpusEntry) {
+function cNativeFuzzRecipe(seedCorpusEntry, harnessOverride = null) {
   const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
   const seedIsZip = seedCorpusEntry && seedCorpusEntry.has_zip === true;
   const seedShellPath = seedRel ? `./${seedRel}` : null;
@@ -359,7 +378,7 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
     // coverage instrumentation (fuzzer-no-link), and links the harness with the
     // libFuzzer driver -> /work/out/h. Multi-TU libraries now link; library coverage
     // is instrumented. Replaces the old single-TU `clang ... -o h -- "$HARNESS"`.
-    `ENGINE=libfuzzer ${BOB_MULTITU_BUILD_PATH}`,
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=libfuzzer ${BOB_MULTITU_BUILD_PATH}`,
     ...seedSetup,
     // Stage a session-imported grammar-generated seed corpus (the grammar arm) into the
     // libFuzzer corpus; additive to any discovered seeds, no-op when none mounted.
@@ -373,12 +392,12 @@ function cNativeFuzzRecipe(seedCorpusEntry) {
   ].join(" && ");
 }
 
-function boundedNativeFuzzRecipe(seedEntry) {
+function boundedNativeFuzzRecipe(seedEntry, harnessOverride = null) {
   let effectiveSeedEntry = seedEntry;
-  let recipe = cNativeFuzzRecipe(effectiveSeedEntry);
+  let recipe = cNativeFuzzRecipe(effectiveSeedEntry, harnessOverride);
   if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     effectiveSeedEntry = null;
-    recipe = cNativeFuzzRecipe(null);
+    recipe = cNativeFuzzRecipe(null, harnessOverride);
   }
   if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     throw new Error(`native fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
@@ -399,7 +418,7 @@ function boundedNativeFuzzRecipe(seedEntry) {
 // through the ASAN/libFuzzer-built h_afl binary so the banner is produced by the
 // gate-trusted path (sanitizer-report.js) and routes into the differential repro
 // gate exactly like a libFuzzer crash. No new crash parser is introduced.
-function aflCmplogRecipe(seedCorpusEntry) {
+function aflCmplogRecipe(seedCorpusEntry, harnessOverride = null) {
   const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
   const seedShellPath = seedRel ? `./${seedRel}` : null;
   const seedStage = seedRel
@@ -426,7 +445,7 @@ function aflCmplogRecipe(seedCorpusEntry) {
     // (AFL_USE_ASAN -> h_afl, AFL_LLVM_CMPLOG -> h_cmplog) and links the harness +
     // libAFLDriver.a against each. h_afl is the ASAN-instrumented fuzz/replay binary;
     // h_cmplog drives RedQueen input-to-state. Multi-TU libraries now link.
-    `ENGINE=afl ${BOB_MULTITU_BUILD_PATH}`,
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=afl ${BOB_MULTITU_BUILD_PATH}`,
     // If the builder produced no binaries (afl-clang-fast unavailable), no-op cleanly
     // — the libFuzzer+value_profile arm remains the floor. Self-contained if/fi so the
     // exit is scoped, never masking an upstream build failure.
@@ -448,12 +467,12 @@ function aflCmplogRecipe(seedCorpusEntry) {
   ].join(" && ");
 }
 
-function boundedAflCmplogRecipe(seedEntry) {
+function boundedAflCmplogRecipe(seedEntry, harnessOverride = null) {
   let effectiveSeedEntry = seedEntry;
-  let recipe = aflCmplogRecipe(effectiveSeedEntry);
+  let recipe = aflCmplogRecipe(effectiveSeedEntry, harnessOverride);
   if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     effectiveSeedEntry = null;
-    recipe = aflCmplogRecipe(null);
+    recipe = aflCmplogRecipe(null, harnessOverride);
   }
   if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     throw new Error(`afl cmplog base recipe (no-seed) exceeds token limit: ${recipe.length}`);
@@ -469,7 +488,7 @@ function boundedAflCmplogRecipe(seedEntry) {
 // is byte-identical across the vuln and upstream-fix trees so the gate's re-run stays
 // deterministic. The builder no-ops nothing here (TSan ships with clang-18), so this
 // arm always builds where the libFuzzer arm builds.
-function cTsanFuzzRecipe(seedCorpusEntry) {
+function cTsanFuzzRecipe(seedCorpusEntry, harnessOverride = null) {
   const seedRel = seedCorpusEntry && seedCorpusEntry.rel_path;
   const seedShellPath = seedRel ? `./${seedRel}` : null;
   const seedSetup = seedRel
@@ -487,19 +506,19 @@ function cTsanFuzzRecipe(seedCorpusEntry) {
     "cp -a --no-preserve=ownership /src/. /work/repo/",
     "if [ -d /harness ]; then for h in /harness/*.cc /harness/*.c; do if [ -e \"$h\" ]; then cp -- \"$h\" /work/repo/bob_imported_fuzzer.\"${h##*.}\"; fi; done; fi",
     "cd /work/repo",
-    `ENGINE=tsan ${BOB_MULTITU_BUILD_PATH}`,
+    `${harnessEnvPrefix(harnessOverride)}ENGINE=tsan ${BOB_MULTITU_BUILD_PATH}`,
     ...seedSetup,
     "if [ -d /seeds ]; then cp -a /seeds/. /work/out/corpus/ 2>/dev/null || true; fi",
     `/work/out/h_tsan -use_value_profile=1 -max_total_time=${NATIVE_FUZZ_MAX_TOTAL_TIME_SECONDS} /work/out/corpus`,
   ].join(" && ");
 }
 
-function boundedTsanFuzzRecipe(seedEntry) {
+function boundedTsanFuzzRecipe(seedEntry, harnessOverride = null) {
   let effectiveSeedEntry = seedEntry;
-  let recipe = cTsanFuzzRecipe(effectiveSeedEntry);
+  let recipe = cTsanFuzzRecipe(effectiveSeedEntry, harnessOverride);
   if (effectiveSeedEntry && recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     effectiveSeedEntry = null;
-    recipe = cTsanFuzzRecipe(null);
+    recipe = cTsanFuzzRecipe(null, harnessOverride);
   }
   if (recipe.length > REPO_DOCKER_RUN_MAX_TOKEN_LENGTH) {
     throw new Error(`tsan fuzz base recipe (no-seed) exceeds token limit: ${recipe.length}`);
@@ -509,7 +528,13 @@ function boundedTsanFuzzRecipe(seedEntry) {
 
 function recommendedCommandsFor(
   language,
-  { nfsXdrShape = false, seedCorpus = [], nativeFuzzShape = false, nativeFuzzOnly = false } = {},
+  {
+    nfsXdrShape = false,
+    seedCorpus = [],
+    nativeFuzzShape = false,
+    nativeFuzzOnly = false,
+    harnessOverride = null,
+  } = {},
 ) {
   if (language === "node") {
     return [
@@ -635,7 +660,7 @@ function recommendedCommandsFor(
     }
     const seedEntry = firstSeedCorpus(seedCorpus);
     if (nativeFuzzShape) {
-      const { seedEntry: effectiveSeedEntry, recipe } = boundedNativeFuzzRecipe(seedEntry);
+      const { seedEntry: effectiveSeedEntry, recipe } = boundedNativeFuzzRecipe(seedEntry, harnessOverride);
       const seedRel = effectiveSeedEntry && effectiveSeedEntry.rel_path;
       const fuzzCommand = {
         id: "fuzz_asan_ubsan",
@@ -650,7 +675,7 @@ function recommendedCommandsFor(
       // Emitted as a separate fuzz command (its own token budget and docker run);
       // the recipe self-probes afl-clang-fast and no-ops when afl++ is absent, so
       // hosts without the engine simply skip it while keeping the libFuzzer arm.
-      const { seedEntry: aflSeedEntry, recipe: aflRecipe } = boundedAflCmplogRecipe(seedEntry);
+      const { seedEntry: aflSeedEntry, recipe: aflRecipe } = boundedAflCmplogRecipe(seedEntry, harnessOverride);
       const aflSeedRel = aflSeedEntry && aflSeedEntry.rel_path;
       const aflCommand = {
         id: "fuzz_cmplog",
@@ -667,7 +692,7 @@ function recommendedCommandsFor(
       // identically to an ASAN crash. MSan is intentionally NOT an arm — it needs a
       // fully MSan-instrumented toolchain (instrumented libc++/deps), so it stays
       // parser-only: an externally MSan-built report still parses + adjudicates.
-      const { seedEntry: tsanSeedEntry, recipe: tsanRecipe } = boundedTsanFuzzRecipe(seedEntry);
+      const { seedEntry: tsanSeedEntry, recipe: tsanRecipe } = boundedTsanFuzzRecipe(seedEntry, harnessOverride);
       const tsanSeedRel = tsanSeedEntry && tsanSeedEntry.rel_path;
       const tsanCommand = {
         id: "fuzz_tsan",
@@ -1087,6 +1112,7 @@ async function prepareRepoEnv({
   egress_profile: egressProfileNameOverride = null,
   platform = null,
   runtime = null,
+  harness_override: harnessOverrideRaw = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
   const repoSession = readRepoSession(domain);
@@ -1115,6 +1141,32 @@ async function prepareRepoEnv({
     ? DEFAULT_DOCKER_BUILD_TIMEOUT_MS
     : assertInteger(timeoutMsOverride, "timeout_ms", { min: 1000, max: MAX_DOCKER_BUILD_TIMEOUT_MS });
 
+  // Optional harness override: a repo-relative path (validated against absolute /
+  // .. escape via normalizeRepoRelativePath, same guard as the seed corpus paths)
+  // that forces the image-baked builder to use that LLVMFuzzerTestOneInput TU
+  // verbatim instead of its auto-selection. The builder fails closed if the path
+  // does not exist in the staged tree.
+  let harnessOverride = null;
+  if (harnessOverrideRaw != null) {
+    const raw = assertNonEmptyString(harnessOverrideRaw, "harness_override");
+    const normalized = normalizeRepoRelativePath(raw);
+    if (!normalized) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "harness_override must be a repo-relative path (no absolute path, no .. escape)",
+        { repo_error_code: "harness_override_invalid" },
+      );
+    }
+    if (normalized.length > 512) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "harness_override path is too long",
+        { repo_error_code: "harness_override_too_long" },
+      );
+    }
+    harnessOverride = normalized;
+  }
+
   const detection = detectLanguageProfile(repoRoot);
   const nfsXdrShape = loadNfsXdrShape(domain);
   const seedCorpus = loadSeedCorpus(domain);
@@ -1130,6 +1182,7 @@ async function prepareRepoEnv({
     seedCorpus,
     nativeFuzzShape,
     nativeFuzzOnly,
+    harnessOverride,
   });
   for (const command of recommendedCommands) {
     assertEnumValue(command.role, RECOMMENDED_COMMAND_ROLES, `recommended_commands[${command.id}].role`);

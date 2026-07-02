@@ -30,17 +30,60 @@ cd /work/repo
 NOINT="-fno-sanitize=integer-divide-by-zero,float-divide-by-zero"
 INC="-I. -Iinclude -Isrc -Ilib"
 
-# 1. discover the harness TU: fuzzer-named sources first, then any source defining
-#    LLVMFuzzerTestOneInput (comments + string/char literals stripped before probing).
-HARNESS=$({ find . -type f \( -name '*_fuzzer.c' -o -name '*_fuzzer.cc' -o -name '*_fuzzer.cpp' -o -name '*_fuzzer.cxx' \) -print 2>/dev/null | sort
-            find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) -print 2>/dev/null | sort; } \
-  | awk '!seen[$0]++' \
-  | while IFS= read -r f; do
-      perl -0ne 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g; s/"(?:\\.|[^"\\])*"/""/gs; s/'"'"'(?:\\.|[^'"'"'\\])*'"'"'/'"'"''"'"'/gs; exit(/\b(?:extern\s+(?:"C"|""|'"'"'C'"'"'|'"'"''"'"')\s+)?(?:int|auto)\s+LLVMFuzzerTestOneInput\s*\([^;{}]*\)\s*(?:\{|try\b)/s ? 0 : 1)' -- "$f" \
-        && { printf '%s\n' "$f"; break; }
-    done)
+# 1. discover the harness TU.
+#    An explicit BOB_HARNESS override wins: it names the harness path verbatim,
+#    bypassing auto-selection. The named file MUST exist (fail closed, listing the
+#    auto-discovered candidates, when it does not) — a differential repro that
+#    silently fuzzed the wrong TU is worse than a hard stop.
+#    Auto-selection probes every source for LLVMFuzzerTestOneInput (comments +
+#    string/char literals stripped first), then RANKS the real harnesses
+#    deterministically: an operator-imported harness first, then libFuzzer-named
+#    files (fuzz_*, *_fuzz, *_fuzzer), then parser/txn/quic topics ahead of
+#    app/config topics (so a Firedancer tree selects a protocol harness, not
+#    fuzz_fdctl_config), with the path itself as the final alpha tiebreak. The
+#    ranking is purely name-derived, so it is identical on the vuln and upstream-fix
+#    checkouts the differential repro gate re-runs. RANK, not bound — every
+#    candidate is echoed (BOB_HARNESS_CANDIDATES) so a wrong pick stays overridable.
+_is_harness() {
+  perl -0ne 's{/\*.*?\*/}{}gs; s{//[^\n]*}{}g; s/"(?:\\.|[^"\\])*"/""/gs; s/'"'"'(?:\\.|[^'"'"'\\])*'"'"'/'"'"''"'"'/gs; exit(/\b(?:extern\s+(?:"C"|""|'"'"'C'"'"'|'"'"''"'"')\s+)?(?:int|auto)\s+LLVMFuzzerTestOneInput\s*\([^;{}]*\)\s*(?:\{|try\b)/s ? 0 : 1)' -- "$1"
+}
+_rank_key() {
+  _p="$1"; _b=$(basename "$_p" | tr 'A-Z' 'a-z')
+  case "$_b" in
+    bob_imported_fuzzer.*) printf '00\t%s\n' "$_p"; return ;;
+  esac
+  case "$_b" in
+    fuzz_*|*_fuzz.*|*_fuzzer.*) _tier=1 ;;
+    *fuzz*) _tier=2 ;;
+    *) _tier=3 ;;
+  esac
+  case "$_b" in
+    *pars*|*txn*|*transaction*|*quic*|*decode*|*deserial*|*proto*|*wire*|*packet*|*pkt*|*message*|*msg*|*tls*|*asn1*|*json*|*xml*|*http*|*header*|*record*|*block*|*bincode*) _topic=0 ;;
+    *config*|*fdctl*|*cli*|*cmdline*|*args*|*flag*|*topo*|*app*|*ctl*|*setup*) _topic=2 ;;
+    *) _topic=1 ;;
+  esac
+  printf '%s%s\t%s\n' "$_tier" "$_topic" "$_p"
+}
+CANDIDATES=$(find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) -print 2>/dev/null | sort \
+  | while IFS= read -r f; do _is_harness "$f" && printf '%s\n' "$f"; done || true)
+RANKED=$(printf '%s\n' "$CANDIDATES" | while IFS= read -r f; do [ -n "$f" ] && _rank_key "$f"; done | sort | cut -f2-)
+if [ -n "${BOB_HARNESS:-}" ]; then
+  HARNESS="$BOB_HARNESS"
+  case "$HARNESS" in ./*|/*) ;; *) HARNESS="./$HARNESS" ;; esac
+  if [ ! -f "$HARNESS" ]; then
+    echo "BOB_HARNESS_NOT_FOUND: $BOB_HARNESS" >&2
+    echo "auto-discovered LLVMFuzzerTestOneInput candidates (best first):" >&2
+    printf '%s\n' "$RANKED" | sed 's/^/  /' >&2
+    exit 4
+  fi
+else
+  # Discovered paths are already ./-rooted (find .); take the top-ranked candidate.
+  HARNESS=$(printf '%s\n' "$RANKED" | head -1)
+fi
 test -n "$HARNESS"
 echo "BOB_HARNESS=$HARNESS"
+echo "BOB_HARNESS_CANDIDATES:"
+printf '%s\n' "$RANKED" | sed 's/^/  /'
 case "$HARNESS" in *.c) HARNESS_C=1 ;; *) HARNESS_C=0 ;; esac
 
 # 2. build the LIBRARY archive with coverage instrumentation, project-build-system first.
