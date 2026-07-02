@@ -414,23 +414,18 @@ function readAttestedSurfaceField(row, field) {
   return null;
 }
 
-// OD3 provenance allowlist — the six PROVEN on-chain discovery methods the
-// sc-recon-expander attests per surface. The materialize-producer-floor OD3 gate
-// admits a same-chain linked contract into the recursion ONLY when its surface
-// carries a verified-source provenance marker; the server stamps that marker HERE,
-// and ONLY when the agent's attested provenance is one of these proven kinds. An
-// unproven attestation ("comment_only", or an absent/unknown value) leaves
-// payload.provenance ABSENT so the gate withholds the link as sc_unprovenanced_link.
-// Fail-closed: unrecognized values are treated as unproven, never stamped.
-const OD3_PROVEN_PROVENANCE_KINDS = Object.freeze([
-  "eip1967_proxy",
-  "beacon",
-  "diamond_facet",
-  "immutable",
-  "role_table",
-  "constructor_arg",
-]);
-const OD3_PROVEN_PROVENANCE_SET = new Set(OD3_PROVEN_PROVENANCE_KINDS);
+// OD3 provenance is DEPTH-1-SAFE. The server never stamps a verified-source
+// provenance marker from producer output: provenance is self-attested by the
+// sc-recon-expander, which runs in an untrusted container over untrusted on-chain
+// data, so trusting an agent's "eip1967_proxy"/etc. claim would let a compromised
+// or comment-manipulated agent force same-chain expansion of an arbitrary address
+// (a fail-open). Until the server independently RE-READS the EIP-1967 / beacon /
+// role slot on-chain to CONFIRM the edge from a bound contract, no producer surface
+// carries provenance — so the materialize-producer-floor OD3 gate withholds EVERY
+// discovered same-chain linked contract as a reported sc_unprovenanced_link gap
+// (RANK != BOUND — named, never silently dropped) and same-chain expansion stays
+// depth-1. Bound (in-authority) roots still expand; server-side verification is a
+// deferred increment.
 
 // emitProducerObservedSurfaces — the SERVER-minted surface emission for a
 // surface-producing producer. Emits one surface.observed frontier event per
@@ -491,17 +486,11 @@ function emitProducerObservedSurfaces({ domain, pack, run, producerId, sourceDep
       // or every hop advances depth by 2 and the linked_contract_depth reach is halved.
       const baseDepth = Number.isInteger(sourceDepth) ? sourceDepth : 1;
       payload.depth = baseDepth;
-      // OD3: thread the expander's ATTESTED per-surface provenance instead of a
-      // constant. Stamp the verified-source marker ONLY when the attested discovery
-      // method is one of the PROVEN on-chain kinds; otherwise leave payload.provenance
-      // ABSENT so materialize-producer-floor's OD3 gate withholds an unproven
-      // ("comment_only" / absent / unrecognized) same-chain link as
-      // sc_unprovenanced_link. A hard-stamped constant made EVERY producer-discovered
-      // surface look provenanced and auto-admitted attacker-directed same-chain pivots.
-      const attestedProvenance = readAttestedSurfaceField(row, "provenance");
-      if (attestedProvenance && OD3_PROVEN_PROVENANCE_SET.has(attestedProvenance)) {
-        payload.provenance = "verified_source";
-      }
+      // Depth-1-safe: the server does NOT stamp a verified-source provenance marker
+      // from untrusted producer output (see OD3 note above). payload.provenance stays
+      // ABSENT, so materialize-producer-floor's OD3 gate withholds this discovered
+      // same-chain link as a reported sc_unprovenanced_link gap rather than
+      // auto-expanding an unverified (agent-attested) edge.
       // Single-sourced identity from the NORMALIZED tuple: surface_id is the sc- slug
       // (contractSurfaceId, matching the seed path so one contract folds to one record)
       // and the endpoint is the CAIP-10 form (caip10Endpoint). Never hand-roll either.
@@ -1174,9 +1163,8 @@ module.exports = Object.freeze({
   sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
   ADJUDICATION_CHAIN_BY_SEVERITY,
-  // Inert extras (ignored by defineTool, like ADJUDICATION_CHAIN_BY_SEVERITY): the
-  // OD3 provenance stamp is unit-tested directly so the fail-closed proven-kind
-  // allowlist can never silently regress back to a hard-stamped constant.
+  // Inert extra (ignored by defineTool, like ADJUDICATION_CHAIN_BY_SEVERITY):
+  // emitProducerObservedSurfaces is exported so the depth-1-safe provenance stance
+  // (server never stamps verified_source from producer output) is unit-testable.
   emitProducerObservedSurfaces,
-  OD3_PROVEN_PROVENANCE_KINDS,
 });

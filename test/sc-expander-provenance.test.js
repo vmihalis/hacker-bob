@@ -20,10 +20,9 @@ const path = require("node:path");
 const producerFloorTool = require("../mcp/lib/tools/materialize-producer-floor.js");
 const { planProducerFloor } = producerFloorTool;
 const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
-const { appendFrontierEvent, readFrontierEvents } = require("../mcp/lib/frontier-events.js");
+const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { materializeFrontier } = require("../mcp/lib/frontier-materializer.js");
 const initContractSessionTool = require("../mcp/lib/tools/init-contract-session.js");
-const finalizeNodeTool = require("../mcp/lib/tools/finalize-node.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -269,108 +268,5 @@ test("provenance survives materialize+project and drives the OD3 gate", () => {
         (g) => g.kind === "sc_unprovenanced_link" && g.address === provenancedAddress.toLowerCase()).length,
       0,
       "the provenanced child yields NO sc_unprovenanced_link gap");
-  });
-});
-
-// THE FIX, at its source. The tests above hand the OD3 gate scSurfaces whose
-// provenance is already set. These drive the REAL server stamp
-// (finalize-node.js emitProducerObservedSurfaces): the expander attests a
-// per-surface provenance kind, and the server stamps the verified-source marker
-// ONLY for a PROVEN on-chain kind, leaving it ABSENT otherwise. The prior
-// hard-stamped constant made EVERY producer-discovered surface look provenanced,
-// which auto-admitted comment-only / attacker-directed same-chain pivots.
-test("emitProducerObservedSurfaces stamps verified_source ONLY for a PROVEN attested provenance kind, never a constant", () => {
-  withTempHome(() => {
-    const init = JSON.parse(initContractSessionTool.handler({
-      contracts: [{ chain_family: "evm", chain_id: "1", address: "0xaaa1000000000000000000000000000000000000" }],
-    }));
-    const domain = init.target_domain;
-    const provenAddr = "0x1111000000000000000000000000000000000000";
-    const commentAddr = "0x2222000000000000000000000000000000000000";
-    const absentAddr = "0x3333000000000000000000000000000000000000";
-
-    finalizeNodeTool.emitProducerObservedSurfaces({
-      domain,
-      pack: PRODUCER_PACKS.sc_address_expander,
-      run: {
-        surfaces_observed: [
-          { surface_type: "smart_contract", chain_family: "evm", chain_id: "1", contract_address: provenAddr, provenance: "immutable" },
-          { surface_type: "smart_contract", chain_family: "evm", chain_id: "1", contract_address: commentAddr, provenance: "comment_only" },
-          { surface_type: "smart_contract", chain_family: "evm", chain_id: "1", contract_address: absentAddr },
-        ],
-      },
-      producerId: "sc_address_expander:evm:1:0xparent",
-      sourceDepth: 2,
-    });
-
-    const emitted = readFrontierEvents(domain).filter(
-      (ev) => ev && ev.kind === "surface.observed"
-        && ev.payload && ev.payload.surface_type === "smart_contract");
-    const byAddr = (addr) => emitted.find((ev) => ev.payload.contract_address === addr.toLowerCase());
-    const proven = byAddr(provenAddr);
-    const comment = byAddr(commentAddr);
-    const absent = byAddr(absentAddr);
-
-    assert.ok(proven && comment && absent, "all three producer-discovered surfaces are emitted");
-    assert.equal(proven.payload.provenance, "verified_source",
-      "a PROVEN attested kind (immutable) is stamped verified_source");
-    assert.equal(comment.payload.provenance, undefined,
-      "a comment_only attestation is NOT stamped — payload.provenance is absent so OD3 withholds it");
-    assert.equal(absent.payload.provenance, undefined,
-      "a surface with no attested provenance is NOT stamped — no constant, so OD3 withholds it");
-  });
-});
-
-test("through the real server stamp: a PROVEN-attested same-chain child expands (OD3) while a comment_only-attested one is WITHHELD as sc_unprovenanced_link", () => {
-  withTempHome(() => {
-    const rootAddress = "0xaaa1000000000000000000000000000000000000";
-    const provenAddress = "0xccc3000000000000000000000000000000000000";
-    const commentAddress = "0xbbb2000000000000000000000000000000000000";
-    const init = JSON.parse(initContractSessionTool.handler({
-      contracts: [{ chain_family: "evm", chain_id: "1", address: rootAddress }],
-    }));
-    const domain = init.target_domain;
-
-    // Two same-chain (evm:1) depth-2 children at DIFFERENT addresses than the seed,
-    // emitted through the REAL server stamp: one attested with a PROVEN on-chain kind
-    // (diamond_facet), one attested comment_only.
-    finalizeNodeTool.emitProducerObservedSurfaces({
-      domain,
-      pack: PRODUCER_PACKS.sc_address_expander,
-      run: {
-        surfaces_observed: [
-          { surface_type: "smart_contract", chain_family: "evm", chain_id: "1", contract_address: provenAddress, provenance: "diamond_facet" },
-          { surface_type: "smart_contract", chain_family: "evm", chain_id: "1", contract_address: commentAddress, provenance: "comment_only" },
-        ],
-      },
-      producerId: "sc_address_expander:evm:1:root",
-      sourceDepth: 2,
-    });
-
-    materializeFrontier(domain, { write: true });
-
-    const { plan } = producerFloorTool.buildProducerFloorPlan(domain);
-    const provKey = `sc_address_expander:evm:1:${provenAddress.toLowerCase()}`;
-    const commentKey = `sc_address_expander:evm:1:${commentAddress.toLowerCase()}`;
-
-    assert.equal(
-      plan.sc_expander_instances.filter((i) => i.producer_key === provKey).length,
-      1,
-      "the PROVEN-attested (diamond_facet) same-chain child is admitted as an expander instance (OD3 passes)");
-    assert.equal(
-      plan.sc_recursion_gaps.filter((g) => g.kind === "sc_unprovenanced_link" && g.producer_key === provKey).length,
-      0,
-      "the proven child yields NO sc_unprovenanced_link gap");
-
-    assert.equal(
-      plan.sc_expander_instances.filter((i) => i.producer_key === commentKey).length,
-      0,
-      "the comment_only-attested same-chain child is NOT proposed — the server left its provenance absent");
-    const commentGaps = plan.sc_recursion_gaps.filter(
-      (g) => g.kind === "sc_unprovenanced_link" && g.producer_key === commentKey);
-    assert.equal(commentGaps.length, 1,
-      "the comment_only child is WITHHELD and reported as sc_unprovenanced_link (the fix: no hard-stamped constant)");
-    assert.equal(commentGaps[0].address, commentAddress.toLowerCase(),
-      "RANK != BOUND: the withheld comment-only contract is named");
   });
 });
