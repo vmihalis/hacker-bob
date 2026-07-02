@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "workspaces": [
     "packages/bob-diff-review"
   ],
@@ -51,6 +51,7 @@
     "docs/**/*.json",
     "docs/**/*.html",
     "docs/**/*.png",
+    "!docs/hacker-bob-social.png",
     "mcp/**/*",
     "!mcp/node_modules/**",
     "prompts/**/*",
@@ -85,13 +86,14 @@
     "check:skill-runtime-constraint-drift": "node scripts/check-skill-runtime-constraint-drift.js",
     "check:skill-scheduler-coherence": "node scripts/check-skill-scheduler-coherence.js",
     "check:stigmergy-coherence": "node scripts/check-stigmergy-coherence.js",
+    "check:producer-coherence": "node scripts/check-producer-coherence.js",
     "check:invariant-registry": "node scripts/check-invariant-registry.js",
     "check:no-phase-artifacts": "node scripts/check-no-phase-artifacts.js",
     "build:bob-diff-review": "npm run build --workspace @bobnetsec/bob-diff-review",
     "test:mcp": "npm run build:bob-diff-review && node scripts/run-mcp-tests.js",
     "measure:idor": "node scripts/measure-idor-oracle.js",
     "test:bob-diff-review": "npm run test --workspace @bobnetsec/bob-diff-review",
-    "test:prompts": "npm run check:agent-tools && npm run check:skill && npm run check:codex-skill && npm run check:kimi-skill && npm run check:settings && npm run check:write-guard-tables && npm run check:write-guard-mirror && npm run check:audit-graded-writers && npm run check:mcp-owned-basename-inventory && npm run check:skill-protocol-coherence && npm run check:skill-runtime-constraint-drift && npm run check:skill-scheduler-coherence && npm run check:stigmergy-coherence && npm run check:invariant-registry && npm run check:no-phase-artifacts && node --test test/prompt-contracts.test.js test/skill-protocol-coherence.test.js test/skill-runtime-constraint-drift.test.js test/skill-scheduler-coherence.test.js test/scheduler-preconditions-shape.test.js test/wave-handoff-store-merge-snapshot.test.js test/session-cap.test.js test/report-finalize-remediation.test.js test/stigmergic-consumers-shape.test.js test/stigmergy-coherence.test.js test/single-spawner-topology.test.js test/invariant-registry-orphan.test.js test/write-guard-tables-coherence.test.js test/no-phase-artifacts.test.js",
+    "test:prompts": "npm run check:agent-tools && npm run check:skill && npm run check:codex-skill && npm run check:kimi-skill && npm run check:settings && npm run check:write-guard-tables && npm run check:write-guard-mirror && npm run check:audit-graded-writers && npm run check:mcp-owned-basename-inventory && npm run check:skill-protocol-coherence && npm run check:skill-runtime-constraint-drift && npm run check:skill-scheduler-coherence && npm run check:stigmergy-coherence && npm run check:invariant-registry && npm run check:no-phase-artifacts && node --test test/prompt-contracts.test.js test/skill-protocol-coherence.test.js test/skill-runtime-constraint-drift.test.js test/skill-scheduler-coherence.test.js test/scheduler-preconditions-shape.test.js test/wave-handoff-store-merge-snapshot.test.js test/session-cap.test.js test/report-finalize-remediation.test.js test/stigmergic-consumers-shape.test.js test/stigmergy-coherence.test.js test/single-spawner-topology.test.js test/invariant-registry-orphan.test.js test/write-guard-tables-coherence.test.js test/no-phase-artifacts.test.js && npm run check:producer-coherence",
     "test:install": "node --test test/install-smoke.test.js test/installer-legacy-upgrade.test.js",
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",

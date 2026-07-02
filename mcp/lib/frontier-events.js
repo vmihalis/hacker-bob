@@ -51,6 +51,32 @@ const FRONTIER_EVENT_KINDS = Object.freeze([
   "node.transitioned",
 ]);
 
+// Producer observation subtypes. These are observation_kind VALUES that ride
+// INSIDE observation.recorded payloads — they are NOT new top-level
+// FRONTIER_EVENT_KINDS, so the frozen FRONTIER_EVENT_KINDS array above is
+// byte-unchanged (// X-P8: no new top-level kind; the producer subtypes are
+// observation.recorded payload discriminators only). They are SIBLINGS of the
+// OSS kinds (repo-target.js OSS_OBSERVATION_KIND_VALUES) and the capability
+// kinds (capability-observations.js CAPABILITY_OBSERVATION_KIND_VALUES), and
+// follow the T.5 jwt_observed precedent — all of which register at the same
+// observation.recorded dispatch point. Per OD6 there is intentionally NO
+// materialized-seed-artifact subtype, and the coverage floor is NOT wired
+// here; producer emission, projection/materializer folding, and floor logic
+// live in their own modules (separate nodes). The discriminator field is
+// payload.observation_kind — the field the projection reader prefers
+// (frontier-projections.js:256 reads payload.observation_kind first) — so
+// producers stamp these on observation_kind, but wiring those call-sites is a
+// separate node.
+const PRODUCER_OBSERVATION_SUBTYPES = Object.freeze([
+  "producer_proposed",
+  "producer_run",
+]);
+
+function isProducerObservationSubtype(value) {
+  return typeof value === "string"
+    && PRODUCER_OBSERVATION_SUBTYPES.includes(value);
+}
+
 function generatedFrontierEventId(fields) {
   return `FE-${hashCanonicalJson(fields).slice(0, 24)}`;
 }
@@ -162,9 +188,11 @@ module.exports = {
   FRONTIER_EVENTS_MAX_RECORDS,
   FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_VERSION,
+  PRODUCER_OBSERVATION_SUBTYPES,
   appendFrontierEvent,
   frontierEventContentHash,
   generatedFrontierEventId,
+  isProducerObservationSubtype,
   normalizeFrontierEvent,
   readFrontierEvents,
 };

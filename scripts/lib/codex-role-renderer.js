@@ -13,6 +13,7 @@ const {
   substituteCodexEvaluatorPackCatalogue,
   substituteHandoffFieldLimits,
   substituteEvaluatorReframePosture,
+  substituteProducerCatalogue,
 } = require("../../mcp/lib/capability-packs-rendering.js");
 const {
   renderCapabilityPlaybookAppendix,
@@ -43,6 +44,9 @@ const CODEX_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
   // after the per-chain evaluator contracts so the appendix groups all
   // evaluator family contracts together before the cross-cutting roles.
   "evaluator-spawn",
+  // Smart-contract recon expander — a scratch-only producer worker grouped with
+  // the evaluator/producer-family contracts (mirrors Kimi).
+  "sc-recon-expander",
   ...CODEX_CROSS_CUTTING_ROLE_IDS.slice(4),
 ]);
 
@@ -320,6 +324,7 @@ function renderCodexPromptBody(roleId, body, options = {}) {
   document = substituteCodexEvaluatorPackCatalogue(document, codexWorkerLabelForPack);
   document = substituteHandoffFieldLimits(document);
   document = substituteEvaluatorReframePosture(document);
+  document = substituteProducerCatalogue(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${codexOrchestratorPreamble()}## Hard Rules\n`);
     document += `${renderCapabilityPlaybookAppendix(options)}${codexRoleContractAppendix(options)}\n`;

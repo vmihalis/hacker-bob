@@ -77,6 +77,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_http_confirm: "scoped_http_network",
   bob_http_cors_confirm: "scoped_http_network",
   bob_http_idor_confirm: "scoped_http_network",
+  bob_http_massread_confirm: "scoped_http_network",
   bob_http_scan: "scoped_http_network",
   bob_http_xss_confirm: "scoped_http_network",
   bob_http_xss_reflect: "scoped_http_network",
@@ -88,6 +89,12 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_ingest_schema_doc: "initialized_session_mutation",
   bob_init_session: "bootstrap_session",
   bob_init_repo_session: "bootstrap_session",
+  // Smart-contract bootstrap sibling of bob_init_session (url axis) /
+  // bob_init_repo_session (repo axis): it CREATES the session from the
+  // contracts axis, so it must route to authorizeBootstrap, not the
+  // session-bound mutation path (which would deadlock on a pre-existing
+  // state.json + a target_domain argument this tool's schema does not carry).
+  bob_init_contract_session: "bootstrap_session",
   bob_list_auth_profiles: "initialized_session_read",
   bob_list_candidate_claims: "initialized_session_read",
   bob_log_capability_friction: "initialized_session_mutation",
@@ -170,6 +177,8 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // bob_schedule_tasks (both append to scheduler-decisions.jsonl and
   // mutate session state via downstream tools).
   bob_schedule_graph_nodes: "initialized_session_mutation",
+  bob_materialize_producer_floor: "initialized_session_mutation",
+  bob_schedule_seed_producers: "initialized_session_mutation",
   bob_set_pack_telemetry_config: "initialized_session_mutation",
   bob_set_queue_policy: "initialized_session_mutation",
   bob_read_session_state: "initialized_session_read",

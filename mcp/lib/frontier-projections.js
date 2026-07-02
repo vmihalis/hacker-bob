@@ -323,6 +323,19 @@ const SURFACE_INDEX_SCALAR_FIELDS = [
   "contract_address",
   "file_path",
   "language",
+  // OD3 verified-source provenance marker. The materializer preserves it on the
+  // surface-index entry; the projection must carry it into the legacy shape so
+  // readScExpanderSurfaces recovers real provenance and the OD3 same-chain
+  // linked-contract gate fires on the persisted path.
+  "provenance",
+];
+
+// Integer scalar fields projected as NUMBERS (not the trimmed strings the scalar
+// loop would produce). depth is the OD4 linked-contract recursion depth;
+// readScExpanderSurfaces uses a Number.isInteger check, so a string depth would
+// fall back to the depth-1 default and OD4 depth-capping would never fire.
+const SURFACE_INDEX_INTEGER_FIELDS = [
+  "depth",
 ];
 
 const SURFACE_INDEX_BOOLEAN_FIELDS = [
@@ -381,6 +394,11 @@ function projectMaterializedSurface(materialized) {
   for (const field of SURFACE_INDEX_SCALAR_FIELDS) {
     if (typeof materialized[field] === "string" && materialized[field].trim()) {
       projected[field] = materialized[field].trim();
+    }
+  }
+  for (const field of SURFACE_INDEX_INTEGER_FIELDS) {
+    if (Number.isInteger(materialized[field])) {
+      projected[field] = materialized[field];
     }
   }
   for (const field of SURFACE_INDEX_BOOLEAN_FIELDS) {

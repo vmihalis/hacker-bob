@@ -38,7 +38,7 @@ npm run test:hooks
 ## Project layout
 
 - `adapters/` contains host-specific install, doctor, uninstall, render, and
-  config ownership for Claude, Codex, and generic MCP hosts.
+  config ownership for Claude, Codex, Kimi, and generic MCP hosts.
 - `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, and
   `.claude/hooks/` are the generated Claude adapter surface.
 - `prompts/roles/` and `mcp/lib/role-model.js` define shared role contracts
@@ -96,7 +96,8 @@ test with them.
 
 - Update `CHANGELOG.md` with a semver section for the release.
 - Confirm `package.json` has the intended canonical package metadata and
-  `packages/hacker-bob-cc/package.json` pins the same version.
+  `packages/hacker-bob-cc/package.json`, `packages/hacker-bob-codex/package.json`,
+  and `packages/hacker-bob-kimi/package.json` pin the same version.
 - Run `npm test`.
 - Run `npm run release:check` and verify the canonical package includes
   adapter surfaces, neutral resources, `mcp/`, `bin/`, `scripts/`, docs, and

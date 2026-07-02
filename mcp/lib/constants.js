@@ -29,6 +29,11 @@ const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
 // coverage-cell schedulable unit (element x bug_class x auth_role). Growing
 // the set requires a new cycle per X-P8.
 const SURFACE_KIND_VALUES = ["surface", "transition", "hypothesis", "claim", "cell"];
+// TaskGraph node-only kind. A `producer` node is materialized into task-graph.json
+// but is INTENTIONALLY OUTSIDE SURFACE_KIND_VALUES: a producer node is
+// never persisted to surface-index.json (it is not a scannable surface), so it
+// must not appear in the closed surface-index kind discriminator above.
+const PRODUCER_NODE_KIND = "producer";
 const CHAIN_FAMILY_VALUES = ["evm", "svm", "aptos", "sui", "substrate", "cosmwasm"];
 const SVM_CLUSTER_VALUES = ["mainnet-beta", "devnet", "testnet"];
 // Aptos and Sui both identify networks by string name in tooling and RPC URLs.
@@ -134,6 +139,13 @@ const STATIC_SCAN_FINDING_MAX_ITEMS = 100;
 const STATIC_SCAN_HINT_MAX_ITEMS = 10;
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 
+// OD1 seed-producer governors (consumed by the queue-policy defaults). The
+// per-pass cap and the per-expander linked-address cap are the load-bearing,
+// MCP-enforced, NON-null fan-out bounds; the lifetime total is only a backstop.
+const DEFAULT_MAX_TOTAL_SEED_PRODUCERS = 1024;
+const DEFAULT_SEED_PRODUCER_PER_PASS_CAP = 32;
+const DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP = 16;
+
 const SESSION_LOCK_NAME = ".session.lock";
 const SESSION_LOCK_STALE_MS = 300_000;
 const SESSION_PUBLIC_STATE_FIELDS = [
@@ -176,6 +188,14 @@ const SESSION_PUBLIC_STATE_FIELDS = [
   "verification_snapshot_hash",
   "verification_entered_at",
   "handoff_provenance_required",
+  // Smart-contract sessions bind a third primary axis: target_contracts (the
+  // in-scope contract addresses) plus an optional chain_authority_hash. Web and
+  // repo sessions leave these at [] / null and the public projection omits them,
+  // so the historical url/repo public-state shape stays byte-stable. An empty
+  // target_contracts is NOT the contracts axis (the exactly-one-primary-axis
+  // normalization treats [] as absent).
+  "target_contracts",
+  "chain_authority_hash",
 ];
 
 const VERIFICATION_ROUND_FILE_MAP = {
@@ -199,6 +219,9 @@ module.exports = {
   COVERAGE_STATUS_VALUES,
   COVERAGE_SUMMARY_MAX_ITEMS,
   COVERAGE_UNFINISHED_STATUS_VALUES,
+  DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
+  DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
+  DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
   FINDING_ID_RE,
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,
@@ -206,6 +229,7 @@ module.exports = {
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
   OFFENSIVE_OUTCOME_VALUES,
+  PRODUCER_NODE_KIND,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,
   SAFE_ORACLE_KINDS,

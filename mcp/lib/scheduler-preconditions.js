@@ -19,10 +19,33 @@ const {
   getLatestMergedWavePartialSurfaceIds,
 } = require("./wave-handoff-store.js");
 
+// Classifies a throw from the seed_surfaces_present materialize/route pipeline.
+// Returns true ONLY for the expected "surface input is not present yet" signals:
+// a fresh SETUP session whose producers have not materialized any surface. Those
+// are legitimately non-terminal (reported_gap -> the SETUP gate passes). Every
+// OTHER throw — corrupt surface-index.json / attack_surface.json (a JSON.parse
+// SyntaxError or a "Malformed ... JSON" wrap), a read-cap breach, a disk or lock
+// failure — is a materialization ERROR: the surface input exists but could not be
+// read/routed, so the seed gate must BLOCK rather than read it as "no surfaces".
+function isSeedInputNotYetMaterialized(error) {
+  if (!error) return false;
+  // A missing expected file (surface-index.json / attack_surface.json) surfaces
+  // as ENOENT: the input has not been seeded yet.
+  if (error.code === "ENOENT") return true;
+  const message = typeof error.message === "string" ? error.message : "";
+  // buildSurfaceRoutesDocument's canonical "no surface input has been seeded yet"
+  // throw (currentSurfaces returned source: "missing"). NOT the "Malformed attack
+  // surface JSON:" wrap, which is a corruption error and must NOT match here.
+  if (/^Missing attack surface JSON:/.test(message)) return true;
+  return false;
+}
+
 const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "partial_surfaces_drained",
   "chain_work_terminal",
   "uncovered_reachable_cells",
+  "seed_producers_drained",
+  "seed_surfaces_present",
 ]);
 
 // Each check receives `{target_domain}` and returns an object with at minimum
@@ -146,6 +169,124 @@ const PRECONDITION_CHECKS = Object.freeze({
       uncovered_count: uncovered,
       uncovered_surface_ids: uncoveredSurfaceIds.slice(0, 50),
     };
+  },
+  // Producer-floor teeth: a frontier cannot freeze while the deterministic
+  // recon-producer floor is not at its fixpoint — a READY non-advisory producer
+  // remains OR a per-instance sc-expander is still pending. The drain verdict runs
+  // the SAME buildProducerFloorPlan the dispatch handler uses (the whole PLAN, not
+  // merely the isProducerFloorAtFixpoint predicate), so the gate and the dispatcher
+  // can never disagree on what "drained" means: they feed planProducerFloor the
+  // IDENTICAL policy-derived caps, so a depth-capped sc-expander the dispatcher will
+  // never propose is never counted pending here. A plan rebuilt WITHOUT those caps
+  // would fall back to the hardcoded depthCap default of 3 and, at a non-default
+  // linked_contract_depth (0/1), freeze the frontier forever waiting on an expander
+  // the dispatcher is permanently depth-capped from proposing. The suppressed bare
+  // sc_address_expander rides in plan.sc_expander_instances, which plan.ready does
+  // not represent, so a verdict read off plan.ready alone would freeze ahead of a
+  // pending SC linked-contract expansion. SELF-ACTIVATING — a session that never
+  // materialized a producer floor has no producer node in the graph and is
+  // vacuously satisfied, so recon-angle-only / legacy / surface-only runs are
+  // unaffected. RANK != BOUND: derived producers whose upstream input is absent are
+  // surfaced in producer_gaps[] (sliced for display only) but NEVER block — gaps
+  // satisfy-and-report. Read-only: materializeTaskGraph runs with {write:false} and
+  // buildProducerFloorPlan only reads state + the producer_run ledger + SC surfaces
+  // and runs the pure planProducerFloor, exactly mirroring uncovered_reachable_cells
+  // (the sibling above).
+  seed_producers_drained(context) {
+    const targetDomain = context && context.target_domain;
+    if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+      throw new Error("seed_producers_drained: target_domain is required");
+    }
+    const { materializeTaskGraph } = require("./task-graph-materializer.js");
+    const { PRODUCER_NODE_KIND } = require("./constants.js");
+    const doc = materializeTaskGraph(targetDomain, { write: false }).document;
+    const hasProducerFloor = doc.nodes.some((node) => node.kind === PRODUCER_NODE_KIND);
+    if (!hasProducerFloor) {
+      return { satisfied: true, producer_floor_active: false, ready_count: 0, producer_gaps: [] };
+    }
+    // Single-sourced with the dispatch handler: buildProducerFloorPlan assembles the
+    // IDENTICAL plan inputs — the policy-derived caps (linked_contract_depth + the
+    // OD1 seed governors), the live SC surface inventory, the terminal producer_run
+    // set, and availableArtifactKinds (root seeds UNION every terminal producer's
+    // produces[]) — and runs the same pure planProducerFloor. Reusing the whole
+    // builder (not just the fixpoint predicate) keeps the caps single-sourced too:
+    // the gate's depth governor is the operator's persisted linked_contract_depth,
+    // never a hardcoded depthCap default, so a depth-capped sc-expander the
+    // dispatcher will never propose cannot keep this gate blocked forever. Read-only:
+    // buildProducerFloorPlan only reads state + the producer_run ledger + SC surfaces
+    // and runs the pure planner.
+    const {
+      buildProducerFloorPlan,
+      isProducerFloorAtFixpoint,
+    } = require("./tools/materialize-producer-floor.js");
+    const { plan } = buildProducerFloorPlan(targetDomain);
+    // Same null-guard the fixpoint predicate uses (isProducerFloorAtFixpoint):
+    // plan.ready never holds null, so this is a consistency guard only.
+    const readyNonAdvisory = plan.ready.filter((p) => p && p.advisory !== true);
+    const scExpanderInstances = Array.isArray(plan.sc_expander_instances)
+      ? plan.sc_expander_instances
+      : [];
+    return {
+      // Single-sourced fixpoint predicate over a single-sourced plan: the floor is
+      // drained only when NO ready non-advisory producer remains AND NO per-instance
+      // sc-expander is pending. Because buildProducerFloorPlan fed planProducerFloor
+      // the SAME caps the dispatch handler uses, the gate and the dispatcher agree on
+      // which sc-expander instances are depth-admissible — the caps can never drift.
+      satisfied: isProducerFloorAtFixpoint(plan),
+      producer_floor_active: true,
+      ready_count: readyNonAdvisory.length,
+      ready_producer_ids: readyNonAdvisory.map((p) => p.producer_id).slice(0, 50),
+      sc_expander_instance_count: scExpanderInstances.length,
+      sc_expander_instance_keys: scExpanderInstances.map((i) => i.producer_key).slice(0, 50),
+      producer_gaps: plan.gaps.slice(0, 50),
+    };
+  },
+  // Seed teeth: a frontier with zero routed seed surfaces has nothing to
+  // schedule. materializeFrontier(domain, {write:true}) FORCES synchronous
+  // surface-index.json materialization (its write path wraps the reentrant
+  // session lock, so this stays safe to call later from inside an
+  // already-held lock at a gate), and buildSurfaceRoutesDocument then derives
+  // the routed seed surfaces; satisfied when at least one route exists.
+  //
+  // A throw is triaged by its cause. An "input not seeded yet" throw (a fresh
+  // session that has neither surface-index.json nor attack_surface.json, where
+  // buildSurfaceRoutesDocument throws "Missing attack surface JSON: <path>", or an
+  // ENOENT on an expected file) is a REPORTED gap, not a confirmed-empty frontier:
+  // map it to {satisfied:false, reported_gap:true, reason} so a downstream gate
+  // never reads a not-yet-materialized frontier as "no surfaces exist". An
+  // UNEXPECTED throw — corrupt surface-index.json / attack_surface.json, a read-cap
+  // breach, a disk or lock failure — is a materialization ERROR: the input exists
+  // but could not be read/routed, so it maps to {satisfied:false,
+  // materialization_error:true, error_code:"seed_surfaces_materialization_error",
+  // reason} and the SETUP gate BLOCKS rather than advancing on broken state. The
+  // only permitted bare satisfied:false is a successful route build whose routes
+  // array is genuinely empty. The reason string has any absolute filesystem path
+  // redacted to a basename so it never leaks the local session/home path.
+  seed_surfaces_present(context) {
+    const targetDomain = context && context.target_domain;
+    if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+      throw new Error("seed_surfaces_present: target_domain is required");
+    }
+    try {
+      const { materializeFrontier } = require("./frontier-materializer.js");
+      const { buildSurfaceRoutesDocument } = require("./surface-router.js");
+      materializeFrontier(targetDomain, { write: true });
+      const routes = buildSurfaceRoutesDocument(targetDomain).routes;
+      return { satisfied: routes.length >= 1, seed_surface_count: routes.length };
+    } catch (error) {
+      const path = require("path");
+      const rawReason = error && error.message ? error.message : String(error);
+      const reason = rawReason.replace(/\/[^\s]+/g, (match) => path.basename(match));
+      if (isSeedInputNotYetMaterialized(error)) {
+        return { satisfied: false, reported_gap: true, reason };
+      }
+      return {
+        satisfied: false,
+        materialization_error: true,
+        error_code: "seed_surfaces_materialization_error",
+        reason,
+      };
+    }
   },
 });
 

@@ -90,9 +90,14 @@ sync_shared_runtime() {
   cp "$SCRIPT_DIR/.hacker-bob/bypass-tables/"*.txt "$BOB_DIR/bypass-tables/"
 
   mkdir -p "$TARGET_ABS/mcp/lib"
+  # Top-level mcp/ runtime files. scripts/install.js MCP_TOP_LEVEL_RUNTIME_FILES is the canonical,
+  # test-enforced list (install-smoke.test.js pins it == the real top-level mcp/*.js); keep these in
+  # step with it. browser-driver.js — the Patchright driver server.js spawns — is the file the installer
+  # historically missed; dev-sync must copy it too so a dev workspace gets the current driver.
   cp "$SCRIPT_DIR/mcp/server.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/auto-signup.js" "$TARGET_ABS/mcp/"
   cp "$SCRIPT_DIR/mcp/redaction.js" "$TARGET_ABS/mcp/"
+  cp "$SCRIPT_DIR/mcp/browser-driver.js" "$TARGET_ABS/mcp/"
   # Mirror the entire dev mcp/lib tree so every split-module subdir lands
   # (tools/, waves/, body-resolvers/, belief/, future). A per-subdir copy list
   # silently drops new dirs and crashes server.js with "Cannot find module".
@@ -195,7 +200,7 @@ echo "Next:"
 if adapter_includes "claude"; then
   echo "  1. Fully restart Claude Code in $TARGET_ABS"
   echo "  2. Run /mcp"
-  echo "  3. Smoke test with bounty_http_scan using target_domain: \"example.com\" against https://example.com"
+  echo "  3. Smoke test with bob_http_scan using target_domain: \"example.com\" against https://example.com"
 elif adapter_includes "codex"; then
   echo "  1. Restart Codex in $TARGET_ABS"
   echo "  2. Confirm the hacker-bob plugin is available"

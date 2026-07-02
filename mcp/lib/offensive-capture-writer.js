@@ -248,6 +248,7 @@ function buildAndSignOffensiveRow(domain, {
   // finding-differential flip gate. null for a self-contained direct observation (IDOR,
   // reflected XSS) where the producer row itself is the executed binding.
   oracleKind = null,
+  requireExplicitSeverity = false,
 }) {
   // The offensive_outcome is a CONTROLLED, registry-bounded field. The positive
   // demonstrates the issue (exploited_safely); a negative control leg signs the
@@ -268,6 +269,17 @@ function buildAndSignOffensiveRow(domain, {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `oracleKind must be null or one of [${[...OFFENSIVE_ROW_ORACLE_KINDS].join(", ")}]: ${oracleKind}`,
+    );
+  }
+  // Defense-in-depth for a tool whose registry ceiling is above the lowest tier and that decides
+  // severity PER RUN (e.g. bob_http_massread_confirm: medium for v1, high only on a proven victim arm):
+  // with a raised ceiling, an omitted override would default demonstrated_severity to the high ceiling
+  // (fail-OPEN). Such a producer passes requireExplicitSeverity:true so a future call path / refactor that
+  // forgets the override fails CLOSED here instead of silently signing the ceiling severity.
+  if (requireExplicitSeverity && demonstratedSeverityOverride == null) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `${toolId} requires an explicit demonstratedSeverityOverride (its registry ceiling is per-run; omitting it would fail open to the ceiling)`,
     );
   }
   // runIdPrefix flows into the capture-file path (newRunId -> path.join), so a

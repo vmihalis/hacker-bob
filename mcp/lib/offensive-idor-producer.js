@@ -73,9 +73,11 @@ const {
 const {
   findRoutedSurface,
   candidateSurfaceEndpoints,
+  pathTemplateMatchesEndpoint,
   resolveBaselineFromSurface,
   normalizePathTemplate,
   assertReadOnlyPath,
+  assertCreateCollectionShapeSafe,
   capturedIdSegmentIsSafe,
   originFromState,
   isResourceShapedResponse,
@@ -112,6 +114,256 @@ const {
 
 const TOOL_ID = "bob_http_idor_confirm";
 const READ_ONLY_METHODS = Object.freeze(["GET", "HEAD"]);
+// The create body is a tiny synthetic skeleton (a few non-canary fields) + a 64-hex canary. safeFetch
+// caps RESPONSES, never request bodies, so an oversized create_body would otherwise be POSTed whole to
+// the target before the oracle could block (Codex P2). Cap the serialized create_body well above any
+// legitimate skeleton; the canary the producer adds is fixed-size and screened separately.
+const MAX_CREATE_BODY_BYTES = 8192;
+// __proto__/constructor/prototype as a JSON create-body key are prototype-pollution payload shapes on
+// many handlers; refused as canary_field / id_field / any create_body key before any write (Codex P2).
+const RESERVED_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+// Body-level method / action dispatch keys: a target honoring `{"_method":"DELETE"}` or `{"action":"run"}`
+// could execute a mutation even though the path action-guard passed, so they are refused in create_body
+// at any depth before any write (Codex P2).
+// Method/action dispatch keys, stored NORMALIZED (so _method / method-override / methodOverride / X-HTTP-
+// Method-Override-style body keys all match via normalizeFieldName, not an exact lowercase spelling, Codex P1).
+const CREATE_BODY_OVERRIDE_KEYS = new Set([
+  "method", "action", "op", "operation", "cmd", "command", "do",
+  "methodoverride", "httpmethod", "httpmethodoverride", "xhttpmethodoverride",
+]);
+// Canonicalize a field NAME so camelCase / snake_case / kebab-case / spacing aliases collapse to one form
+// (tenantId / tenant_id / tenant-id -> "tenantid", _id -> "id"). Lets the create-contract guards reject a
+// scope-key or id alias on APIs that normalize JSON field names, not just the exact snake_case spelling
+// (Codex P1). Returns "" for a non-string so a bogus key can never silently pass.
+function normalizeFieldName(name) {
+  return typeof name === "string" ? name.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+}
+// Request-side client-id aliases (normalized): a create/upsert API honoring any of these would let an
+// agent pick the object id, breaking the server-minted-id invariant. The configured id_field is checked
+// separately (its normalized form), so this set covers the common aliases beyond it (Codex P1).
+const ID_ALIAS_KEYS = new Set(["id", "objectid", "resourceid", "recordid", "entityid", "uuid", "guid", "uid"]);
+// Reserved prototype key check that also splits a deep-setter path (dotted / bracketed) — so a JSON
+// endpoint expanding `constructor.prototype.x` / `__proto__[x]` into a prototype write is caught for BOTH
+// create_body keys AND the canary_field / id_field NAMEs (Codex P1). Raw, case-sensitive segments — the
+// JS-meaningful spellings (normalizeFieldName would strip the underscores).
+function keyHasReservedSegment(key) {
+  return String(key).split(/[.[\]]/).some((seg) => RESERVED_PROTO_KEYS.has(seg));
+}
+// Client-id alias check that ALSO splits a deep-setter path (dotted / bracketed), mirroring
+// keyHasReservedSegment — so a create_body key like `id.uuid` / `uid[value]` (which a JSON endpoint may
+// expand into an id object, letting the caller choose/upsert the object id before the server-minted-id
+// invariant can be enforced) is caught alongside the whole-name normalized check that only sees the
+// collapsed `iduuid`/`uidvalue` (Codex P1). Each split segment is normalized before matching the alias set
+// or the configured id_field. Used for create_body keys AND the canary_field NAME.
+function keyHasIdAliasSegment(key, normIdField) {
+  return String(key).split(/[.[\]]/).some((seg) => {
+    const n = normalizeFieldName(seg);
+    return n !== "" && (ID_ALIAS_KEYS.has(n) || (normIdField && n === normIdField));
+  });
+}
+// Ownership / scope SELECTOR fields, matched by BASE NOUN rather than an enumerated alias list: a create
+// API honoring one would steer the synthetic object into a caller-chosen real tenant/principal, breaking
+// the synthetic-owned boundary (the object must belong to the creating synthetic identity, inferred from
+// its auth). `baseNoun` normalizes then strips a trailing "id"/"by" (twice), so the BARE form (tenant,
+// user, team), the _id form (tenant_id, user_id), and the _by[_id] form (created_by, created_by_id) all
+// collapse to one base — closing the alias/suffix tail rather than enumerating it (Codex P1).
+const SCOPE_BASE_NOUNS = new Set(["tenant", "org", "organization", "workspace", "ownerscope", "namespace", "realm", "company", "enterprise", "business"]);
+// Clear ownership SELECTORS only — content-ambiguous nouns (created/creator/author, which appear in benign
+// created_at / author-name fields) are deliberately excluded; the actor pattern *_by (created_by/updated_by)
+// is caught by the "by" token rule in fieldIsOwnerSelector instead.
+const OWNER_BASE_NOUNS = new Set(["user", "owner", "account", "customer", "member", "team", "group", "project", "principal", "assignee"]);
+function baseNoun(normName) {
+  let s = String(normName);
+  // Strip trailing key-suffixes iteratively so tenant_uuid / workspaceGuid / owner_uid / tenant_ids /
+  // user_ids / created_by_id / teams all collapse to the base noun (tenant, workspace, owner, user,
+  // created, team) — closing the suffix tail rather than enumerating it (Codex P1). Longest suffix first;
+  // length guards keep a BARE "uid"/"uuid"/"guid"/"id" intact (those are caught as id aliases instead).
+  for (let i = 0; i < 5; i += 1) {
+    if (s.length > 4 && (s.endsWith("uuid") || s.endsWith("guid"))) s = s.slice(0, -4);
+    else if (s.length > 3 && (s.endsWith("ids") || s.endsWith("bys") || s.endsWith("uid"))) s = s.slice(0, -3);
+    else if (s.length > 2 && (s.endsWith("id") || s.endsWith("by"))) s = s.slice(0, -2);
+    else if (s.length > 3 && s.endsWith("s")) s = s.slice(0, -1);
+    else break;
+  }
+  return s;
+}
+// TOKENIZE a field name into lowercase word tokens (split on non-alnum AND camelCase/Pascal boundaries).
+// Matching ANY token against the scope/owner sets — instead of normalizing the WHOLE name — catches a
+// PREFIXED selector (victim_tenant_id), a COMPOSITE one (owner_user_id), and an alternative-suffix one
+// (tenant_slug, workspaceKey, org_code) that whole-name base-noun matching misses (brutalist / Codex P1).
+function fieldNameTokens(name) {
+  return String(name)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+const inSet = (set, t) => set.has(t) || set.has(baseNoun(t));
+function fieldIsScopeSelector(name) {
+  // Whole-name match catches a JOINED noun (owner_scope -> "ownerscope"); token match catches a prefixed /
+  // composite / alt-suffix one (victim_tenant_id, tenant_slug).
+  if (inSet(SCOPE_BASE_NOUNS, normalizeFieldName(name))) return true;
+  return fieldNameTokens(name).some((t) => inSet(SCOPE_BASE_NOUNS, t));
+}
+function fieldIsOwnerSelector(name) {
+  if (inSet(OWNER_BASE_NOUNS, normalizeFieldName(name))) return true;
+  const tokens = fieldNameTokens(name);
+  // A trailing-actor field (created_by / updated_by / modified_by / deleted_by) assigns the principal —
+  // detected by a standalone "by" token, so created_at / updated_at (timestamps) are NOT caught.
+  if (tokens.includes("by")) return true;
+  return tokens.some((t) => inSet(OWNER_BASE_NOUNS, t));
+}
+// Privilege / authorization-assignment SELECTOR tokens: a create API honoring one would let the
+// operator-armed write mint an ELEVATED synthetic object (an admin/role/permission-bearing account)
+// instead of a plain canary-bearing resource — a confined agent using the operator's write-authorization
+// for privilege escalation rather than the intended cross-tenant READ proof (Codex P1). Matched by TOKEN
+// (like the scope/owner selectors) so role / roles / is_admin / isAdmin / user_role / permission_ids /
+// granted_scopes all trip. Deliberately omits over-generic tokens (root/staff/access/level) that collide
+// with benign fields (root_cause, staff_name); kept to unambiguous privilege markers.
+const PRIVILEGE_BASE_TOKENS = new Set([
+  "role", "roles", "admin", "isadmin", "superuser", "superadmin", "sudo",
+  "privilege", "privileges", "permission", "permissions", "perm", "perms",
+  "grant", "grants", "acl", "scope", "scopes", "capability", "capabilities",
+  "authority", "authorities", "entitlement", "entitlements",
+]);
+function fieldIsPrivilegeSelector(name) {
+  if (PRIVILEGE_BASE_TOKENS.has(normalizeFieldName(name))) return true;
+  return fieldNameTokens(name).some((t) => PRIVILEGE_BASE_TOKENS.has(t) || PRIVILEGE_BASE_TOKENS.has(baseNoun(t)));
+}
+// Credential / secret-bearing field NAMES: screenCreateBody screens value SHAPES (URL / GraphQL) and the
+// write-byte scan catches narrowly-shaped tokens (AWS / JWT / PEM), but a `{password:"weak"}` /
+// `{api_key:"local-test"}` whose VALUE matches no token regex would be POSTed verbatim — contradicting the
+// "every written byte secret-screened" contract (brutalist / Codex P1). Refuse the field by NAME, fail-closed,
+// regardless of value shape. Matched as a whole normalized name OR a joined-token match (apiKey -> "apikey",
+// client_secret -> "clientsecret") so camel/snake/kebab spellings all trip.
+const CREDENTIAL_WHOLE_NAMES = new Set([
+  "password", "passwd", "pwd", "secret", "apikey", "apisecret", "token", "accesstoken", "refreshtoken",
+  "clientsecret", "privatekey", "secretkey", "authorization", "credential", "credentials", "passphrase",
+  "sessiontoken", "bearertoken",
+]);
+// STRONG markers safe to match as a BARE token inside a compound name (user_password, account_apikey) without
+// false-positiving on benign fields — UNLIKE the generic `secret` / `token` / `authorization`, which match
+// ONLY as a whole name, so secret_note / csrf_token / authorization_status stay clean and still mint.
+const CREDENTIAL_STRONG_TOKENS = new Set([
+  "password", "passwd", "pwd", "apikey", "apisecret", "clientsecret", "privatekey", "secretkey", "passphrase",
+  "accesstoken", "refreshtoken", "sessiontoken", "bearertoken",
+]);
+function fieldIsCredentialSelector(name) {
+  if (CREDENTIAL_WHOLE_NAMES.has(normalizeFieldName(name))) return true;
+  const tokens = fieldNameTokens(name);
+  if (tokens.some((t) => CREDENTIAL_STRONG_TOKENS.has(t))) return true;
+  // Join adjacent tokens so api_key/apiKey -> "apikey", client_secret -> "clientsecret", access_token ->
+  // "accesstoken" all match the joined credential names even when split into two tokens.
+  for (let i = 0; i < tokens.length - 1; i += 1) {
+    if (CREDENTIAL_WHOLE_NAMES.has(tokens[i] + tokens[i + 1])) return true;
+  }
+  return false;
+}
+// True when a create_body string VALUE is a fetch/connection URL (brutalist / Codex P1). SCHEME-AGNOSTIC,
+// not an enumerated allowlist — any authority-bearing URI can drive a server-side fetch/connection (SSRF):
+//  - protocol-relative `//host` / `\\host` (either slash direction);
+//  - ANY `scheme://authority` (http/https/ftp/file/gopher/ldap/ssh/sftp/redis/mongodb/jdbc:mysql://…);
+//  - a known fetch scheme with NO `//` then ANY authority char (incl. IPv6 `[`, userinfo `@`, alnum) — so
+//    http:host / http:[::1] / http:@h (WHATWG-normalized to absolute URLs) are caught;
+//  - a WHATWG parse that yields a non-empty HOST (any scheme), catching anything the regexes miss.
+// "file: report" / "note: hi" / "ratio 3:1" (no `//`, no authority char, unparseable) are NOT URLs.
+function valueLooksLikeUrl(value) {
+  const s = String(value).trim();
+  if (/^[\\/]{2}/.test(s)) return true;
+  if (/:\/\//.test(s)) return true;
+  if (/^(?:https?|ftp|file|gopher|wss?|dict|ldaps?|sftp|ssh|redis|mongodb|jar):[\\/]*[^\s/\\]/i.test(s)) return true;
+  try { if (new URL(s).host) return true; } catch { /* not URL-parseable */ }
+  return false;
+}
+// True when a create_body string value carries a GraphQL OPERATION document — query, mutation, OR
+// subscription (brutalist / Codex P1: the mutation-only screen let a `{"query":"query {...}"}` body + a
+// derived POST /graphql become an arbitrary authenticated GraphQL surface, where even a read query can
+// exfiltrate data the tool then carries in-process). An operation keyword + a `{` (a selection set must
+// follow) closes the whole grammar tail — directives (@x), comments (#…), commas, named/anonymous ops — in
+// one rule. A benign "mutation rate: 0.5" / "query the manual" (no `{`) is not matched; the derived
+// /graphql COLLECTION itself is independently refused by the action-verb guard (graphql ∈ WRITE_ACTION_VERBS).
+function valueLooksLikeGraphqlOperation(value) {
+  const s = String(value);
+  // Named/keyworded operation: query|mutation|subscription + a selection set.
+  if (/\b(?:query|mutation|subscription)\b/i.test(s) && s.includes("{")) return true;
+  // ANONYMOUS query shorthand (brutalist / Codex P1): `{ viewer { email } }` is a valid GraphQL query
+  // document with NO operation keyword, so it slips the keyword check and — on a GraphQL endpoint mounted
+  // at /api or /gql (not literally /graphql, so the action-verb collection guard misses it) — a
+  // `create_body:{query:"{ ... }"}` becomes an authenticated GraphQL READ on the first POST. A brace-wrapped
+  // value that is NOT valid JSON (GraphQL field selections have no quoted keys / colons, unlike a JSON
+  // object) is treated as a GraphQL document and refused. A benign JSON-object string still parses and passes.
+  const t = s.trim();
+  if (t.startsWith("{") && t.includes("}")) {
+    try { JSON.parse(t); } catch { return true; }
+  }
+  return false;
+}
+// Recursively screen the agent-supplied create_body skeleton BEFORE any write. The body is spread
+// unchanged into the POST (only canary_field is overwritten), so a hostile/buggy skeleton can subvert
+// the target or the oracle. Walk every key at every depth (objects + arrays) and fail closed on:
+//  - a reserved prototype key (nested prototype-pollution shape);
+//  - a method/action-dispatch key (body-level method override);
+//  - a client-id key — the configured id_field OR a known id alias (object_id/resource_id/uuid/...),
+//    normalized, at ANY depth: the object id must NEVER be agent-supplied (Codex P1);
+//  - an owning-scope key (owner_scope/tenant_id/org_id/workspace_id and their aliases), normalized, at
+//    ANY depth: a {tenant_id:"victim-org"} body would make the live write drift into a caller-chosen
+//    tenant/workspace before the oracle blocks (Codex P1);
+//  - an owner-ASSIGNMENT key (user_id/owner_id/account_id/created_by/…), normalized, at ANY depth: a
+//    create API honoring it would assign the synthetic object to a caller-chosen real principal (Codex P1);
+//  - a URL-shaped string VALUE at ANY depth, in objects OR arrays (avatar_url/callback_url/["http://…"]):
+//    a target that fetches body URLs would turn the canary create into an SSRF / off-target callback;
+//  - a GraphQL mutation/subscription OPERATION string at ANY depth: on a GraphQL-compatible derived
+//    collection it would execute an arbitrary mutation rather than create a synthetic object (Codex P1).
+// Returns a blocked() reason string, or null when the body is clean. depth-bounded to fail closed.
+function screenCreateBody(value, idField, depth = 0) {
+  if (depth > 8) return "create_body_too_deep";
+  // STRING values are screened at the top so the same checks cover BOTH object-property values AND array
+  // elements (a URL/GraphQL string hidden in {callbacks:["http://…"]} must not slip the property-only loop,
+  // Codex P1). A URL-shaped value would be fetched by some targets (SSRF/callback); a GraphQL mutation
+  // operation would execute on a GraphQL-compatible derived collection.
+  if (typeof value === "string") {
+    // Screen the raw value AND its fully-decoded form: a target that percent-/unicode-decodes a JSON
+    // string before using it as a callback/import URL or GraphQL document would otherwise be reached by
+    // an encoded `http%3a%2f%2f…` / `mutation%20{` the raw check misses (Codex P1).
+    for (const probe of [value, decodeAllEncodingLayers(value)]) {
+      if (valueLooksLikeUrl(probe)) return "create_body_url_value";
+      if (valueLooksLikeGraphqlOperation(probe)) return "create_body_graphql_operation";
+    }
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const el of value) { const r = screenCreateBody(el, idField, depth + 1); if (r) return r; }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const normIdField = normalizeFieldName(idField);
+  for (const key of Object.keys(value)) {
+    const k = String(key);
+    if (keyHasReservedSegment(k)) return "reserved_field_name"; // incl. dotted/bracketed deep-setter paths
+    const norm = normalizeFieldName(k);
+    if (CREATE_BODY_OVERRIDE_KEYS.has(norm)) return "create_body_action_override";
+    if (fieldIsScopeSelector(k)) return "create_body_scope_field";
+    // The configured id_field / a generic id alias is the most precise reason (client-supplied object id);
+    // check it BEFORE the broader owner selector so e.g. id_field:"account_id" reports client_supplied_id,
+    // while a non-id owner field (user_id / created_by with the default id_field) reports owner_field. The
+    // dotted/bracketed deep-setter form (id.uuid / uid[value]) is caught by keyHasIdAliasSegment, mirroring
+    // keyHasReservedSegment — the whole-name normalize collapses it to a non-alias `iduuid` (Codex P1).
+    if (ID_ALIAS_KEYS.has(norm) || (normIdField && norm === normIdField) || keyHasIdAliasSegment(k, normIdField)) {
+      return "create_body_client_supplied_id";
+    }
+    if (fieldIsOwnerSelector(k)) return "create_body_owner_field";
+    // A privilege/authorization-assignment key (role / is_admin / permissions / granted_scopes) would mint
+    // an ELEVATED synthetic object via the operator-armed write — refuse before the recursive descent (Codex P1).
+    if (fieldIsPrivilegeSelector(k)) return "create_body_privilege_field";
+    // A credential-NAMED key (password / api_key / token / client_secret) would write a secret to the target
+    // verbatim even when its VALUE matches no token-shape regex — refuse by name, fail-closed (Codex P1).
+    if (fieldIsCredentialSelector(k)) return "create_body_credential_field";
+    const r = screenCreateBody(value[key], idField, depth + 1); // string values hit the top URL/GraphQL screen
+    if (r) return r;
+  }
+  return null;
+}
 const ORACLE_KIND_VALUES = Object.freeze(["differential_response"]);
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -285,6 +537,21 @@ function secretShapesIn(parsedBodyOrText) {
     if (re.test(scan)) found.push(label);
   }
   return found;
+}
+
+// Replace the producer's OWN minted canaries with a neutral token before a FOREIGN-PII/secret scan. The
+// canaries are 256-bit nonces the producer generated — known-safe, definitionally not foreign data — but a
+// CHANCE 16+-digit run inside a 64-hex canary can false-positive as a credit card (Luhn) and block a clean
+// mint (~0.4% per canary). Stripping the EXACT 64-char run cannot hide adjacent real PII (only the canary
+// itself is removed, never a neighbouring value), so this is precision-only. Returns a STRING so callers
+// canonicalize a parsed body first. Applied to every body that BOTH reflects a canary AND is foreign-scanned:
+// the create responses (#4), the owner readback (#24), and the signed proof bodies (#17/#17b).
+function neutralizeCanaries(textOrParsed, canaries) {
+  let s = typeof textOrParsed === "string" ? textOrParsed : canonicalJson(textOrParsed);
+  for (const c of canaries) {
+    if (typeof c === "string" && c) s = s.split(c).join("CANARY");
+  }
+  return s;
 }
 
 // Walk a parsed body to a fixed FIELD_PATH (array of string keys) and return the
@@ -553,27 +820,49 @@ function profileHasProvenance(profile) {
 
 // ── AC-2 cardinality + scan-trail provenance ─────────────────────────────────
 
-// GAP A: v1 is scoped to single-endpoint, single-host surfaces. row.target is
-// pinned to that single endpoint, never agent free-text.
-function assertSingleEndpointSingleHost(surface, stateOrigin) {
+// GAP A (relaxed to ONE-RESOURCE multi-endpoint surfaces): v1 confirms single-HOST surfaces. A surface
+// may record MULTIPLE endpoints (real discovery records a route pattern, sampled concrete instances, and
+// the collection — e.g. the lab's ["/api/users/:id", "/api/users/1"]), but they must ALL resolve to ONE
+// origin AND describe ONE resource: only path_template's item-route forms (the collection segments + an
+// id segment, concrete OR a ":id"/"{id}" pattern) plus that route's collection are allowed. Any OTHER
+// endpoint — a sub-resource, an unrelated resource, or a query-routed sibling — fails closed, because the
+// downstream proof gate binds a row to a finding by surface_id ONLY, so a second resource on the surface
+// could launder an item proof onto a different finding (the intra-surface laundering the old
+// single-endpoint guard prevented; Codex P1). The bound target is a server-RECORDED item endpoint (the
+// same route resolveBaselineFromSurface selects), never agent free-text. See the classification below.
+function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const endpoints = candidateSurfaceEndpoints(surface);
-  if (endpoints.length !== 1) {
+  if (endpoints.length === 0) {
     rejectInvalidArguments(
-      "bob_http_idor_confirm v1 only confirms single-endpoint surfaces; this surface records more than one endpoint.",
-      { code: "idor_producer_surface_not_single_endpoint", endpoint_count: endpoints.length },
+      "bob_http_idor_confirm requires a surface with at least one recorded endpoint.",
+      { code: "idor_producer_surface_no_endpoint", endpoint_count: 0 },
     );
   }
-  // Count the origin(s) the surface's endpoint actually LIVES on — an absolute
-  // endpoint resolves to its OWN origin (which may be an in-scope subdomain of the
-  // session base), a relative endpoint to the session origin — PLUS any surface.hosts.
-  // Do NOT seed the bare session origin the way resolveSurfaceOrigins does, or a single
-  // endpoint on a subdomain would falsely count as two hosts and be rejected.
+  // Resolve an endpoint to its URL: absolute → its OWN origin (may be an in-scope subdomain), a
+  // path-absolute "/x" → the session origin. Reject a "//host" network-path ref (it resolves to a
+  // FOREIGN origin, escaping the surface-host binding) exactly as urlFromEndpoint does. null = skip.
+  const resolveUrl = (value) => {
+    if (typeof value !== "string") return null;
+    try {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        const u = new URL(value);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
+      if (value.startsWith("/") && !value.startsWith("//")) {
+        const u = new URL(value, stateOrigin);
+        return (u.protocol === "http:" || u.protocol === "https:") ? u : null;
+      }
+    } catch {}
+    return null;
+  };
+  // SINGLE HOST: every endpoint PLUS any surface.hosts must collapse to ONE origin — so a relative
+  // endpoint and a DIFFERENT declared host can never split the target across origins. Do NOT seed the
+  // bare session origin the way resolveSurfaceOrigins does, or an endpoint on an in-scope subdomain
+  // would falsely count as two.
   const origins = new Set();
   for (const { value } of endpoints) {
-    try {
-      const u = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? new URL(value) : new URL(value, stateOrigin);
-      if (u.protocol === "http:" || u.protocol === "https:") origins.add(u.origin);
-    } catch {}
+    const u = resolveUrl(value);
+    if (u) origins.add(u.origin);
   }
   if (Array.isArray(surface.hosts)) {
     let protocol = "https:";
@@ -586,10 +875,122 @@ function assertSingleEndpointSingleHost(surface, stateOrigin) {
   if (origins.size !== 1) {
     rejectInvalidArguments(
       "bob_http_idor_confirm v1 only confirms single-host surfaces; this surface resolves to more than one origin.",
-      { code: "idor_producer_surface_not_single_endpoint", origin_count: origins.size },
+      { code: "idor_producer_surface_not_single_host", origin_count: origins.size },
     );
   }
-  return { endpoint: endpoints[0], origin: [...origins][0] };
+  // Classify every recorded endpoint STRUCTURALLY against path_template's shape. path_template has a
+  // single, trailing {id} slot, so the route is COLLECTION-segments + one id segment. An endpoint is an
+  // ITEM FORM of the route iff it has the same segment count AND its non-final segments equal the
+  // collection — the final segment is the id in ANY recorded form (a concrete value OR a ":id"/"{id}"
+  // route-pattern marker). Multiple item forms are the SAME route (a pattern + sampled instances), NOT
+  // distinct targets. The only OTHER endpoint allowed is the route's COLLECTION itself. Everything else
+  // fails closed, because the downstream proof gate binds a row to a finding by surface_id ONLY, so any
+  // OTHER resource sharing the surface could be laundered:
+  //   - a sub-resource (/api/accounts/{id}/settings) — a DIFFERENT, often higher-sensitivity resource;
+  //   - an unrelated resource (/api/users/{id} under /api/accounts/{id});
+  //   - a query-routed sibling (/api/items?type=invoice) — selects different data than its bare path and
+  //     would make the derived create-collection POST to a broader/different collection than recorded.
+  const templatePath = String(pathTemplate).split("?")[0];
+  const templateSegments = templatePath.split("/").filter(Boolean);
+  const collectionSegments = templateSegments.slice(0, -1);
+  // A ":id"/"{id}" route-pattern marker — a recorded template form, not a smuggling id (capturedIdSegmentIsSafe
+  // rejects the ":" so markers need their own clause). new URL() percent-encodes "{"/"}", so accept the
+  // %7B…%7D form too.
+  const isRouteParamMarker = (seg) => /^:[^/]+$/.test(seg)
+    || /^\{[^/]+\}$/.test(seg)
+    || /^%7b[^/]+%7d$/i.test(seg);
+  const isItemForm = (segs) => {
+    if (segs.length !== templateSegments.length) return false;
+    if (!collectionSegments.every((seg, index) => segs[index] === seg)) return false;
+    // The id segment must be a CLEAN resource id (the SAME capturedIdSegmentIsSafe rule pathTemplateMatchesEndpoint
+    // applies to the baseline) or an explicit route-pattern marker. An encoded-separator / action-punctuation
+    // final segment ("foo%2Fsettings", "a;b") is route-smuggling to a sub-resource, NOT an item form — without
+    // this it would land in `items` and escape the others/isCollection reject entirely (Codex %2F).
+    const finalSeg = segs[segs.length - 1];
+    return isRouteParamMarker(finalSeg) || capturedIdSegmentIsSafe(finalSeg);
+  };
+  const isCollection = (segs) => segs.length === collectionSegments.length
+    && collectionSegments.every((seg, index) => segs[index] === seg);
+  const items = [];
+  const others = [];
+  for (const ep of endpoints) {
+    const u = resolveUrl(ep.value);
+    if (!u) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a recorded endpoint could not be resolved to an in-scope http(s) URL.",
+        { code: "idor_producer_surface_unresolvable_endpoint" },
+      );
+    }
+    const segs = u.pathname.split("/").filter(Boolean);
+    const entry = { ep, search: u.search, pathname: u.pathname, segs };
+    if (isItemForm(segs)) items.push(entry);
+    else others.push(entry);
+  }
+  // No item form at all → path_template is off-route for this surface (the AC-2 message, mirroring
+  // resolveBaselineFromSurface which rejects the same case right after).
+  if (items.length === 0) {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm: path_template path shape does not match any recorded endpoint on this single-host surface.",
+      { code: "idor_producer_surface_no_matched_endpoint", match_count: 0 },
+    );
+  }
+  // With ≥1 item form, every OTHER endpoint MUST be exactly the route's collection — a sub-resource or
+  // unrelated resource means the surface aggregates more than one resource and is rejected (Codex P1).
+  for (const other of others) {
+    if (!isCollection(other.segs)) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: this surface records an endpoint that is neither path_template's item route nor its collection; it aggregates a different resource (intra-surface laundering risk).",
+        { code: "idor_producer_surface_aggregates_unrelated_endpoints" },
+      );
+    }
+  }
+  // Bind DETERMINISTICALLY (brutalist agy/glm: identical surface content must select the same endpoint AND
+  // the same outcome regardless of recorded-endpoint order — candidateSurfaceEndpoints returns surface.uri
+  // before endpoints[], so the order is real). Sort by pathname, then prefer a CLEAN (query-free) CONCRETE
+  // instance: row.target is then a real recorded value, AND the bound entry — which is exempt from the
+  // query-routed sibling reject below — is never itself query-routed, so a surface with a bindable clean item
+  // form is not turned into an order-dependent soft-block-vs-throw coin flip (agy's false negative). Fall back
+  // to a query-bearing concrete (its own query is caught downstream by the create-collection ?-guard), then a
+  // clean route pattern, then any item form (resolveBaselineFromSurface rejects a no-concrete surface
+  // downstream). All item forms are the SAME id-route (others-must-be-collection admits nothing else), so this
+  // only fixes determinism; it does not widen what binds.
+  //
+  // RESIDUAL — laundering-class, accepted + tracked (brutalist agy + Claude, both MEDIUM): the "one resource"
+  // boundary is drawn from path_template's segment SHAPE, and a path segment's SEMANTICS are not structurally
+  // knowable, so two shapes slip through:
+  //   (a) action siblings — a concrete final segment is indistinguishable from an id ("/api/accounts/export"
+  //       vs the slug id "/api/accounts/alice"), so a static action under the collection classifies as an item;
+  //   (b) shallow-template collapse — a too-shallow template ("/api/{id}") treats a COLLECTION segment as the
+  //       id, so "/api/users" and "/api/orders" both classify as item forms of one "resource".
+  // Both are BOUNDED, not unbounded: row.target is always the path_template-derived URL (never the action
+  // endpoint / sibling collection — see the call site), demonstrated_severity is MEDIUM-capped, the derived
+  // create POST to a non-collection typically fails (no row minted), and the 3 blind verification rounds
+  // re-examine the finding's subject. The DURABLE close is binding the finding's subject to the proven
+  // row.target in the claims gate (claims.js:1043 names this a PRODUCER obligation the string-binding gate
+  // cannot meet); tracked as issue #173, NOT closed structurally here.
+  const byPathname = (a, b) => (a.pathname < b.pathname ? -1 : a.pathname > b.pathname ? 1 : 0);
+  const sortedItems = [...items].sort(byPathname);
+  const concreteMatches = sortedItems.filter((item) => pathTemplateMatchesEndpoint(templatePath, item.pathname));
+  const boundEntry =
+    concreteMatches.find((item) => !item.search)
+    || concreteMatches[0]
+    || sortedItems.find((item) => !item.search)
+    || sortedItems[0];
+  // Every NON-bound recorded endpoint must be clean path-routed. The BOUND endpoint's own query, if any,
+  // is caught downstream by the create-collection ?-guard (which returns a blocked result, reason
+  // create_collection_query_routed_endpoint — see PR-D r14). But a query-routed SIBLING (e.g. a
+  // query-routed collection) escapes that guard and could let the derived POST hit a broader/different
+  // collection than recorded — so reject it here (Codex).
+  for (const entry of [...items, ...others]) {
+    if (entry !== boundEntry && entry.search) {
+      rejectInvalidArguments(
+        "bob_http_idor_confirm: a non-bound recorded endpoint is query-routed; v1 confirms only clean path-routed sibling endpoints.",
+        { code: "idor_producer_surface_query_routed_endpoint" },
+      );
+    }
+  }
+  const boundEndpoint = boundEntry.ep;
+  return { endpoint: boundEndpoint, origin: [...origins][0] };
 }
 
 // ── the P0–P6 canary runner ──────────────────────────────────────────────────
@@ -675,6 +1076,260 @@ function buildTargetUrl(pathTemplate, objectId, origin) {
   return new URL(resolved, origin);
 }
 
+// ── PR-D live self-provisioning (the operator-armed write arm) ───────────────────
+// The OPERATOR CHECKPOINT for live object creation (a WRITE to the target): INERT unless the
+// operator explicitly arms it for THIS target via the env, target-BOUND (=== domain, never a bare
+// "1"), mirroring the mass-read owner-authorization gate. Default-off keeps the tool dormant.
+const IDOR_PROVISION_ENV = "BOB_IDOR_PROVISION_AUTHORIZED";
+function idorProvisionAuthorizedFor(domain) {
+  const v = process.env[IDOR_PROVISION_ENV];
+  return typeof v === "string" && v.trim().length > 0 && v.trim() === String(domain);
+}
+
+// A 256-bit canary as 64 lowercase hex chars (mint condition #19).
+function mintCanary() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// A path segment shaped like a concrete resource INSTANCE (a numeric id, a uuid, or an id-bearing slug
+// like `proj-123` / `tenant_42`) — as opposed to a static route word (`api`, `v1`, `orgs`, `accounts`).
+// Version tags (`v1`, `v2`) and acronym-with-digit route words (`oauth2`, `s3`) are NOT instances: they
+// carry no SEPARATED id portion. Used by pathHasConcreteParentInstance for the #5 nested-container guard.
+const UUID_INSTANCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function segmentLooksLikeResourceInstance(seg) {
+  const s = String(seg);
+  if (/^\d+$/.test(s)) return true;       // 123
+  if (UUID_INSTANCE_RE.test(s)) return true; // 550e8400-e29b-41d4-a716-446655440000
+  if (/[-_.]\d+$/.test(s)) return true;   // proj-123, tenant_42, org-1   (separated trailing id, incl. 1 digit)
+  if (/^\d+[-_.]/.test(s)) return true;   // 42-acme, 7_widgets           (separated leading id, incl. 1 digit)
+  return false;
+}
+// True when a derived create-collection's PARENT path (the ancestors of the collection segment) contains a
+// concrete resource INSTANCE — i.e. the collection is nested inside a FIXED real container like
+// /api/orgs/acme-corp/projects/proj-123/accounts, where the armed POST would write a synthetic object into
+// a real tenant/project rather than a synthetic-owned collection (#5, brutalist). Inspects only the
+// ANCESTOR segments; the collection itself (last segment) is allowed to be any noun.
+// Percent-encoding is decoded to a fixed point BEFORE splitting (mirroring assertCreateCollectionShapeSafe's
+// decoder): an encoded id-bearing parent (%34%32 -> 42, proj%2d123 -> proj-123) must be seen as the instance
+// a router decodes it to, and an encoded separator (%2f -> /) re-splits into the real segments — the raw
+// check was parser-inconsistent with the action-verb guard (brutalist / Codex P1). A residual percent-escape
+// in any ancestor fails CLOSED (could decode further at the router to an untested id-bearing segment).
+// A PURE-ALPHA tenant slug (`acme`, `acme-corp`, no id portion) is indistinguishable from a static route
+// word HERE, so this concrete-instance check alone cannot tell /api/orgs/acme/projects/accounts (a real
+// tenant container) from /api/reports/entries. That gap is closed FAIL-CLOSED by
+// createCollectionParentIsAmbiguous below, which refuses the write unless EVERY ancestor is provably a
+// known API-structural word — not by any downstream guard, which fires only AFTER the POST already landed
+// in the container AND only when the response bodies echo a comparable owning-scope key.
+function pathHasConcreteParentInstance(parentPath) {
+  const decoded = decodePercentToFixedPoint(String(parentPath));
+  const segs = decoded.split(/[/\\]/).filter(Boolean);
+  const ancestors = segs.slice(0, -1);
+  if (ancestors.some((s) => /%/.test(s))) return true; // residual encoding → fail closed
+  return ancestors.some(segmentLooksLikeResourceInstance);
+}
+// Path segments that are DEFINITIVELY API-structural — the versioned / gateway prefixes a REST route
+// carries ABOVE its top-level collection, never a tenant/org/customer INSTANCE. Kept deliberately SMALL:
+// the fail-closed direction prefers declining a legitimate-but-nested collection over ever POSTing a
+// synthetic object into a real tenant container.
+const STATIC_API_ANCESTOR_WORDS = new Set([
+  "api", "apis", "rest", "restapi", "rpc", "jsonrpc", "graphql", "gql",
+  "public", "internal", "external", "gateway", "app",
+]);
+// A version-tag ancestor (v1, v2, v1_2, v2.1) is structural, not an instance.
+const VERSION_SEGMENT_RE = /^v\d+(?:[._-]\d+)*$/i;
+function isStaticApiAncestor(seg) {
+  const s = String(seg).toLowerCase();
+  return STATIC_API_ANCESTOR_WORDS.has(s) || VERSION_SEGMENT_RE.test(s);
+}
+// STRONGER than pathHasConcreteParentInstance: true when a derived create collection's PARENT path is NOT
+// provably a synthetic-owned / top-level-static collection — i.e. ANY ancestor segment is not a known
+// API-structural word, so the collection may be nested inside a real tenant/org container
+// (/api/orgs/acme/projects/accounts, where `acme` is a real tenant slug this cannot distinguish from a
+// static route word). The write-arm refuses in that case rather than POST a synthetic object into a
+// possibly-real container. Ancestors ONLY (the collection itself — the last segment — is the thing being
+// POSTed to and may be any noun). Percent-decoded to a fixed point (parser-consistent with the concrete
+// guard + the action-verb guard); a residual percent-escape in any ancestor fails CLOSED. A create path
+// with NO ancestors (a top-level collection like /accounts) is unambiguously safe.
+function createCollectionParentIsAmbiguous(createPath) {
+  const decoded = decodePercentToFixedPoint(String(createPath));
+  const segs = decoded.split(/[/\\]/).filter(Boolean);
+  const ancestors = segs.slice(0, -1);
+  if (ancestors.some((s) => /%/.test(s))) return true; // residual encoding → fail closed
+  return ancestors.some((s) => !isStaticApiAncestor(s));
+}
+
+// CREATE one synthetic object as `identity` via POST to the derived collection endpoint, the canary
+// written into `canaryField` of a server-templated synthetic body (the producer mints the canary;
+// the body skeleton is PII-screened upstream). Returns the server-minted id (from `idField`) + the
+// parsed response. The create is the ONE intentional WRITE: scope-validated + audited (circuit
+// breaker) but NEVER read-only-guarded. Mirrors runProbe's audit-or-abort discipline.
+async function createObject({ createUrl, headers, canaryField, canary, idField, createBody, probeBase }) {
+  const body = JSON.stringify({
+    ...(createBody && typeof createBody === "object" ? createBody : {}),
+    [canaryField]: canary, // server-minted canary ALWAYS wins over any skeleton value
+  });
+  const startedAt = Date.now();
+  const reqHeaders = { ...(headers || {}), "Content-Type": "application/json" };
+  // PRE-FLIGHT the audit BEFORE the mutating POST (Codex P1): a create is a target WRITE, so it must
+  // never fire if it cannot be recorded in http-audit.jsonl (the circuit-breaker / request-budget trail).
+  // Reserve a request-initiated record (status null); if the audit log is unwritable, ABORT before any
+  // POST so no unaudited mutation escapes the control plane. The completion record (with the real status)
+  // is appended after the POST below; the reserved record stands as the trail entry even if that fails.
+  const reserveOk = auditConfirmRequest({
+    domain: probeBase.domain, surfaceId: probeBase.surfaceId, method: "POST", url: createUrl,
+    egressProfile: probeBase.egressProfile, status: null, scopeDecision: "allowed", startedAt, toolId: TOOL_ID,
+  });
+  if (reserveOk === false) {
+    const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create http-audit preflight write failed");
+    e.probe_audit_failed = true;
+    throw e;
+  }
+  let response;
+  let error;
+  try {
+    if (typeof probeBase.fetchFn === "function") {
+      response = await probeBase.fetchFn({ url: createUrl, method: "POST", headers: reqHeaders, body });
+    } else {
+      response = await safeFetch(createUrl, {
+        method: "POST",
+        headers: reqHeaders,
+        body,
+        followRedirects: false,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        targetDomain: probeBase.domain,
+        blockInternalHosts: probeBase.blockInternalHosts,
+        agent: probeBase.agent,
+      });
+    }
+  } catch (e) {
+    error = e;
+  }
+  const auditOk = auditConfirmRequest({
+    domain: probeBase.domain,
+    surfaceId: probeBase.surfaceId,
+    method: "POST",
+    url: createUrl,
+    egressProfile: probeBase.egressProfile,
+    status: response ? response.status : null,
+    scopeDecision: error && error.scope_decision === "blocked" ? "blocked" : null,
+    error: error ? (error.message || String(error)) : null,
+    startedAt,
+    toolId: TOOL_ID,
+  });
+  if (auditOk === false) {
+    const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create http-audit write failed");
+    e.probe_audit_failed = true;
+    throw e;
+  }
+  if (error) throw error;
+  const parsed = parseJsonBody(response);
+  // Only a SUCCESSFUL create supplies a server id (a 4xx/5xx error envelope that happens to carry an
+  // `id`/request-id must NOT be treated as a created object, Codex P2). The id must be the response's
+  // OWN scalar field (hasOwnProperty + string/number) — a missing/inherited key like `toString` /
+  // `constructor` resolves to a prototype function, which must read as "no id captured", not a value.
+  const is2xx = response && typeof response.status === "number" && response.status >= 200 && response.status < 300;
+  const own = is2xx && parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && Object.prototype.hasOwnProperty.call(parsed, idField) ? parsed[idField] : undefined;
+  // A numeric id outside the safe-integer range (common for 64-bit ids) was ALREADY rounded by
+  // JSON.parse, so stringifying it into the readback / probe URL would address a DIFFERENT resource
+  // than the one just created — a credentialed read of an unrelated object and invalid evidence. Accept
+  // a number only when it round-trips exactly (Number.isSafeInteger); require string ids otherwise
+  // (Codex P2). A non-string/non-safe-int value reads as "no id captured" → caller fail-fasts.
+  const id = typeof own === "string" ? own
+    : (typeof own === "number" && Number.isSafeInteger(own)) ? own
+      : undefined;
+  return { id, response, parsed };
+}
+
+// Live self-provision O_A/O_B/O_C IN ORDER + owner-readback of B. Minting 3 distinct 256-bit
+// canaries and creating one object per identity in A→B→C order lets a creation-order-dependent
+// broken read-grant land the A→B cross-tenant break. Captures the server-minted ids and reads B's
+// object back AS B (for the oracle's canary-leaf discovery + #24 create-time PII screen). Returns
+// the `provision` shape idorConfirm's oracle consumes; throws on transport / audit failure.
+// Exported + injectable `fetchFn` so unit tests drive it without a live target.
+async function liveProvision({ idA, idB, idC, createUrl, canaryField, idField, createBody, pathTemplate, origin, allowedEmails, probeBase }) {
+  const canary_a = mintCanary();
+  const canary_b = mintCanary();
+  const canary_c = mintCanary();
+  const base = { object_a: null, object_b: null, object_c: null, canary_a, canary_b, canary_c, owner_readback_b: null };
+  // A captured id is interpolated into the readback / probe URLs, so it must be a SAFE single resource
+  // segment carrying no operator PII/secret BEFORE it is dispatched. idorConfirm re-checks the ids after
+  // this returns, but the owner-readback GET below fires inside here — so validate the id at capture
+  // (Codex P1: a bad contract returning `foo/transfer` must not produce a credentialed GET to a
+  // sub-resource before the run blocks). Decoded, mirroring the id screen in idorConfirm.
+  const idCaptureSafe = (id) => {
+    if (id == null) return false;
+    const s = String(id);
+    if (!capturedIdSegmentIsSafe(s)) return false;
+    for (const probe of [s, decodeAllEncodingLayers(s)]) {
+      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) return false;
+    }
+    return true;
+  };
+  // #4 (brutalist): the A/B/C CREATE responses themselves must be screened for foreign PII / secret shapes
+  // BEFORE the next create POST fires or the proof continues — a create endpoint that echoes another tenant's
+  // PII / a credential in its create response would otherwise leak that data into the tool process while the
+  // later readback/proof bodies still pass. Mirrors the owner-readback gate (#24): scan the RAW response bytes
+  // (raw + all decoded layers) and fail CLOSED via a tagged error idorConfirm maps to a precise blocked reason.
+  const assertCreateRespClean = (created) => {
+    const resp = created && created.response;
+    // FAIL CLOSED on a TRUNCATED create response (Codex P1): a body capped by safe-fetch is only screened over
+    // the retained prefix, so foreign PII/secret PAST the cap goes unseen while the prefix still yields a usable
+    // id — the tool would proceed to B/C creates + probes after ingesting unscreened non-synthetic data. Mirror
+    // the owner-readback / proof-body truncation gates and refuse before using the captured id.
+    if (resp && resp.bodyTruncated === true) {
+      const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create response truncated; cannot fully screen");
+      e.create_response_truncated = true;
+      throw e;
+    }
+    const raw = resp && Buffer.isBuffer(resp.bodyBytes) ? resp.bodyBytes.toString("utf8") : "";
+    if (!raw) return; // a 201-no-body / empty create response carries nothing to leak
+    for (const probe of [raw, decodeAllEncodingLayers(raw)]) {
+      // Neutralize the producer's OWN minted canaries before the FOREIGN-data scan: each is a 256-bit nonce
+      // we generated (known-safe, definitionally not foreign data), but a chance 16-digit run inside a hex
+      // canary can false-positive as a credit card and block a clean mint. Exact 64-char replacement cannot
+      // hide adjacent real PII — only the canary run itself is removed — so this is precision-only.
+      const scan = neutralizeCanaries(probe, [canary_a, canary_b, canary_c]);
+      if (piiScan(scan, allowedEmails).length > 0 || secretShapesIn(scan).length > 0) {
+        const e = new ToolError(ERROR_CODES.STATE_CONFLICT, "create response carried foreign PII / secret");
+        e.create_response_contaminated = true;
+        throw e;
+      }
+    }
+  };
+  // FAIL FAST: a bad create contract / wrong id_field / unsafe id on the FIRST object must not trigger
+  // the later B/C writes or the readback (Codex P1/P2). Validate the captured id after each create, and
+  // screen each create RESPONSE for foreign data before the next write (#4).
+  const a = await createObject({ createUrl, headers: idA.headers, canaryField, canary: canary_a, idField, createBody, probeBase });
+  assertCreateRespClean(a);
+  if (!idCaptureSafe(a.id)) return base;
+  base.object_a = String(a.id);
+  const b = await createObject({ createUrl, headers: idB.headers, canaryField, canary: canary_b, idField, createBody, probeBase });
+  assertCreateRespClean(b);
+  if (!idCaptureSafe(b.id)) return base;
+  base.object_b = String(b.id);
+  const c = await createObject({ createUrl, headers: idC.headers, canaryField, canary: canary_c, idField, createBody, probeBase });
+  assertCreateRespClean(c);
+  if (!idCaptureSafe(c.id)) return base;
+  base.object_c = String(c.id);
+  // All three created → read B's object back AS B (canary-leaf discovery + #24 create-time PII screen).
+  const readbackUrl = buildTargetUrl(pathTemplate, String(b.id), origin).toString();
+  assertSafeRequestUrl(readbackUrl, probeBase.domain, SCOPE_VALIDATION_OPTS);
+  assertReadOnlyPath(readbackUrl, TOOL_ID);
+  const rb = await runProbe({ ...probeBase, url: readbackUrl, method: "GET", headers: idB.headers });
+  base.owner_readback_b = parseJsonBody(rb);
+  // Preserve the RAW readback bytes for the #24 foreign-PII gate: PII present only in bytes JSON.parse
+  // discards/normalizes (a shadowed duplicate key before the final value) would slip a parsed-only scan
+  // (Codex P2). Captured here so idorConfirm can scan the raw body, not just the parsed object.
+  base.owner_readback_b_raw = (rb && Buffer.isBuffer(rb.bodyBytes)) ? rb.bodyBytes.toString("utf8") : null;
+  // A TRUNCATED readback is trusted for neither canary discovery nor the #24 PII/secret screen: foreign
+  // PII/secret past the response cap would go unscreened while a parseable prefix still reflects the
+  // canary. Capture the flag so idorConfirm fails closed, mirroring the proof-body non-truncation gate
+  // (Codex P2).
+  base.owner_readback_b_truncated = rb ? rb.bodyTruncated : null;
+  return base;
+}
+
 // The full oracle. `fetch_fn` is injectable so seeded tests need no live target.
 // `provision` supplies the producer-created object ids + canaries + the
 // owner-readbacks (PR-D drives these live; PR-C tests seed them). All identity
@@ -689,6 +1344,16 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   const surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
   const oracleKind = normalizeOracleKind(args.oracle_kind);
   const method = normalizeMethod(args.method);
+  // HEAD has no response body, so the canary differential can never read B's canary back and the oracle
+  // can never mint — but an armed HEAD call would still self-provision A/B/C (live WRITEs) before the
+  // body-less probes block (Codex P1). Refuse GET-only BEFORE any provisioning. The tool schema also
+  // narrows `method` to GET; this handler guard is the authoritative enforcement.
+  if (method !== "GET") {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm requires method GET; HEAD has no response body for the canary differential and must not reach live object provisioning",
+      { method },
+    );
+  }
   // GAP E: {id}-final clean path segment, no query (mint condition #23).
   const pathTemplate = normalizePathTemplate(args.path_template, TOOL_ID);
 
@@ -699,7 +1364,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // Resolve + route the surface; AC-2 cardinality (GAP A, mint condition #22).
   const { surface } = findRoutedSurface(domain, surfaceId);
   const stateOrigin = originFromState(domain, state, TOOL_ID);
-  assertSingleEndpointSingleHost(surface, stateOrigin);
+  // The surface's ONE validated origin (an in-scope subdomain or the apex). assertSingleHostBoundEndpoint
+  // rejects a surface that resolves to >1 origin (so a relative endpoint + a DIFFERENT declared host can
+  // never reach here) and DETERMINISTICALLY binds boundEndpoint to a recorded item-route endpoint that
+  // path_template matches (sorted by pathname, concrete instance preferred — all item forms are the same
+  // id-route, so the choice is order-independent rather than an ambiguity reject). We capture the single
+  // origin and bind the live create + probes to it explicitly below — so even a future change to
+  // resolveBaselineFromSurface's origin ordering can't point a WRITE at the session apex instead of the
+  // surface-declared host (Codex P1, defense-in-depth).
+  const { origin: surfaceOrigin, endpoint: boundEndpoint } = assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate);
   // AC-2 (operator-locked, NON-circular): bind the agent-supplied path_template to
   // the surface's RECORDED endpoint. resolveBaselineFromSurface throws
   // "path_template path shape does not match any recorded endpoint" unless the
@@ -710,6 +1383,15 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // it ties the signed proof to the routed surface. The probe targets below are
   // built from this bound origin, so row.target is routed by construction.
   const baselineUrl = resolveBaselineFromSurface({ domain, surface, pathTemplate, state, toolName: TOOL_ID });
+  // Bind the baseline (and thus the derived create URL + every probe, which all use baselineUrl.origin) to
+  // the surface's single validated origin. Fail closed (structural, like the off-route guards below) on any
+  // mismatch so a WRITE is never sent to the session apex instead of the assigned subdomain host (Codex P1).
+  if (baselineUrl.origin !== surfaceOrigin) {
+    rejectInvalidArguments(
+      "bob_http_idor_confirm: resolved baseline origin does not match the surface's single declared host; refusing to bind a live create/probe to a different origin",
+      { baseline_origin: baselineUrl.origin, surface_origin: surfaceOrigin },
+    );
+  }
   // Reject a mutation-shaped recorded endpoint BEFORE any probe — normalizePathTemplate
   // already forces {id} to be the FINAL segment, but a verb-NAMED collection before
   // the id (/api/reset/{id}, /delete/{id}) still resolves here, so apply the same
@@ -761,15 +1443,229 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // containing ONLY the 256-bit canary + synthetic fields (AC-5). The object id
   // is captured from the producer's OWN create/readback, NEVER an agent arg.
   if (!provision || typeof provision !== "object") {
-    // INERT at HEAD: live self-provisioning lands in PR-D. With no provision and
-    // no fetch_fn there is no object to create, so the producer mints nothing.
-    return blocked("blocked_by_design", "object_not_self_provisioned", {
-      target_domain: domain,
-      surface_id: surfaceId,
-      oracle_kind: oracleKind,
-      ...identity,
-      ...internalHostPolicy,
-    });
+    // PR-D LIVE self-provisioning. STRUCTURAL DORMANCY: live object-creation is INERT unless the
+    // operator has ARMED this target (idorProvisionAuthorizedFor — target-bound env). Unarmed →
+    // blocked_by_design, the HEAD default. (The internal create/readback use the same injectable
+    // fetch_fn as the probes, so an armed unit test drives the full path with a mock and a real run
+    // — fetch_fn null — uses safeFetch; the live WRITE therefore only happens armed AND fetch_fn-null.)
+    if (!idorProvisionAuthorizedFor(domain)) {
+      return blocked("blocked_by_design", "object_not_self_provisioned", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Create-contract (metadata only; AC-3 still forbids the canary VALUE + object ids). The create
+    // endpoint is DERIVED from the AC-2-bound path_template (strip the trailing /{id} → the
+    // collection), so the write target is structurally on-route — no new off-route write surface.
+    const canaryField = assertNonEmptyString(args.canary_field, "canary_field");
+    const idField = typeof args.id_field === "string" && args.id_field.trim() ? args.id_field.trim() : "id";
+    const createBody = (args.create_body && typeof args.create_body === "object" && !Array.isArray(args.create_body))
+      ? args.create_body : {};
+    // canary_field / id_field NAMES must not be reserved prototype keys (they become JSON body keys).
+    // canary_field / id_field NAMES become JSON keys in the create body, so reject a reserved prototype
+    // name INCLUDING a dotted/bracketed deep-setter path (constructor.prototype.x, __proto__[x]) — same
+    // segment check the create_body keys use (Codex P1).
+    if (keyHasReservedSegment(canaryField) || keyHasReservedSegment(idField)) {
+      return blocked("blocked_by_design", "reserved_field_name", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not overlap an owning-scope discriminator (tenant/org/workspace, any prefix/
+    // composite/suffix form): the producer writes a DISTINCT minted canary into that field per identity,
+    // and the oracle reads those keys as the private tenant discriminator (#13/#14). On an API that
+    // normalizes such a create field into the stored/readback object, an unblocked alias would forge
+    // "provably distinct tenants" from attacker-chosen values and strip the confidence downgrade — signing
+    // an inflated cross-tenant proof. Refuse via the tokenized scope-selector match (Codex P1).
+    if (fieldIsScopeSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_scope_key", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not alias id_field OR any client-id alias (id/object_id/resourceId/uuid/…, in any
+    // camel/snake/kebab/case form): createObject writes the minted canary into canary_field AFTER this
+    // screen, so an id-aliasing canary_field places the (server-minted) canary into the OBJECT-ID slot of
+    // the create body — on a create/upsert API that honors/normalizes client ids that POSTs an object with
+    // a client-supplied id, violating the server-minted-id invariant before the post-write
+    // canary_reflected_in_object_id guard can fire (Codex P1). The configured id is the most precise reason,
+    // so check it BEFORE the broader owner selector. Refuse the (normalized) alias before any write.
+    const normCanaryField = normalizeFieldName(canaryField);
+    const normIdFieldForCanary = normalizeFieldName(idField);
+    if (ID_ALIAS_KEYS.has(normCanaryField) || (normCanaryField && normCanaryField === normIdFieldForCanary)
+      || keyHasIdAliasSegment(canaryField, normIdFieldForCanary)) {
+      return blocked("blocked_by_design", "canary_field_aliases_id_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not be an OWNER selector either (user_id/owner_id/createdBy/…): createObject POSTs
+    // { [canaryField]: canary }, so an owner-named canary_field writes the minted canary into an ownership
+    // slot, and an API honoring it would assign the synthetic object to a caller-chosen real principal
+    // before any readback gate (brutalist / Codex P1).
+    if (fieldIsOwnerSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_owner_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not be a PRIVILEGE selector (role/is_admin/scopes/…): the same POST-into-an-ownership-
+    // -slot logic applies — an elevation-named canary_field would write the minted canary into a privilege
+    // slot, minting an elevated synthetic object on an API that honors it (Codex P1).
+    if (fieldIsPrivilegeSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_privilege_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // canary_field must not be a CREDENTIAL-named field either (password/api_key/token/…): writing the minted
+    // canary into a credential slot is nonsensical and an API honoring it could set a guessable secret (Codex P1).
+    if (fieldIsCredentialSelector(canaryField)) {
+      return blocked("blocked_by_design", "canary_field_overlaps_credential_field", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Recursively screen create_body content (nested reserved/proto keys, method/action-dispatch keys,
+    // a top-level client-supplied id) BEFORE any write — the body is spread unchanged into the POST so a
+    // hostile skeleton must not subvert the target or the server-minted-id invariant (Codex P2).
+    const createBodyReason = screenCreateBody(createBody, idField);
+    if (createBodyReason) {
+      return blocked("blocked_by_design", createBodyReason, {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // Cap the FINAL serialized create body BEFORE any write — the POST body is createBody PLUS the
+    // canary_field key + its 64-hex value, so the cap must include the (caller-supplied) canary_field
+    // NAME, not just createBody. safeFetch caps responses, never request bodies (Codex P2).
+    const finalBodyBytes = Buffer.byteLength(JSON.stringify({ ...createBody, [canaryField]: "c".repeat(64) }), "utf8");
+    if (finalBodyBytes > MAX_CREATE_BODY_BYTES) {
+      return blocked("blocked_by_design", "create_body_too_large", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // The "drop trailing /{id}" derivation is only valid when {id} is its OWN final segment. normalizePathTemplate
+    // forbids anything AFTER {id} (except an inert extension) but NOT a prefix BEFORE it in the same segment,
+    // so /api/account-{id} or /api/v1/accounts.{id} would pass there yet strip to /api or /api/v1 — a broader /
+    // off-route POST target. Require the final segment to be exactly {id} (optionally {id}.ext) before deriving
+    // the collection, else fail closed (Codex P1).
+    // A query-qualified recorded endpoint (/api/items/123?type=invoice) is query-ROUTED: resolveBaselineFromSurface
+    // strips the query, so the derived create collection /api/items may be a broader/different collection than
+    // the one actually recorded + bound. Refuse to derive a create target from a query-routed endpoint (Codex P1).
+    if (String(boundEndpoint.value).includes("?")) {
+      return blocked("blocked_by_design", "create_collection_query_routed_endpoint", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    const finalSegment = pathTemplate.slice(pathTemplate.lastIndexOf("/") + 1);
+    if (!/^\{id\}(?:\.[a-z0-9]+)?$/i.test(finalSegment)) {
+      return blocked("blocked_by_design", "create_collection_not_id_terminated", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // The create endpoint = the COLLECTION: strip the FINAL path segment (now proven to be exactly {id}[.ext]).
+    // Robust to inert-suffix templates (`/api/accounts/{id}.json` → `/api/accounts`) — never POST a malformed
+    // `%7Bid%7D` URL. Structurally on-route (derived from the AC-2-bound template), never an agent free-text write.
+    const createPath = pathTemplate.replace(/\/[^/]*$/, "");
+    // A read template like /{id} strips to an EMPTY collection → POST / (the site root, often routed to
+    // login/contact/search), not a collection-specific create endpoint and with no segment for the
+    // action-shape guard to inspect. Refuse a root-level derived create endpoint (Codex P2).
+    if (!createPath) {
+      return blocked("blocked_by_design", "create_collection_is_root", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    // #5 nested-container guard: route-binding proves the READ is on-surface, but the stripped PARENT path
+    // is not proven to be a synthetic-owned collection. A concrete resource-INSTANCE ancestor (numeric id /
+    // uuid / `proj-123`) means the derived POST would create the synthetic object INSIDE a real fixed
+    // tenant/project container (/api/orgs/acme-corp/projects/proj-123/accounts), so refuse rather than write
+    // there (brutalist). A concrete instance gives the most precise reason; a pure-alpha ambiguous parent
+    // (`acme`) is caught fail-closed by createCollectionParentIsAmbiguous below (post-PII-screen).
+    if (pathHasConcreteParentInstance(createPath)) {
+      return blocked("blocked_by_design", "create_collection_nested_in_real_container", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    const createUrl = new URL(createPath, baselineUrl.origin).toString();
+    // The read template passed assertReadOnlyPath, but that guard intentionally allows action-NOUNS like
+    // `transfer`/`refund` for a GET-by-id; the DERIVED collection POST /api/transfer would EXECUTE the
+    // action (real mutation). Hold the create collection to the stricter fail-closed action-verb guard
+    // BEFORE any write (Codex P1) — an action-shaped create path is refused, never POSTed to.
+    assertCreateCollectionShapeSafe(createUrl, TOOL_ID);
+    // EVERY byte WRITTEN to the target — the create URL, the serialized body, AND the canary FIELD NAME —
+    // is screened for operator PII / secrets BEFORE any write, with LAYERED DECODING (percent / unicode,
+    // to a fixed point), mirroring the proof-body gates so an encoded `victim%40example.test` or token can't
+    // slip through. The hard rule: never submit operator identifiers to a target. (The canary VALUE is a
+    // server-minted 256-bit hex nonce — safe — and is not agent-supplied, so it is not part of this scan.)
+    const writeBytes = `${createUrl}\n${JSON.stringify(createBody)}\n${canaryField}`;
+    for (const probe of [writeBytes, decodeAllEncodingLayers(writeBytes)]) {
+      if (piiScan(probe, allowedEmails).length > 0 || secretShapesIn(probe).length > 0) {
+        return blocked("blocked_operator_pii", "create_inputs_contain_sensitive_value", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+    }
+    // #5b nested-container guard (STRONGER than the concrete-instance check above): route-binding proves
+    // the READ is on-surface, but the stripped PARENT is only safe to POST INTO when it is provably a
+    // synthetic-owned / top-level-static collection. A PURE-ALPHA tenant/org slug (`acme` in
+    // /api/orgs/acme/projects/accounts) is indistinguishable from a static route word, so the concrete-
+    // instance check cannot catch it and no downstream guard can backstop it: the same-tenant guard fires
+    // only AFTER this POST already created a synthetic object inside the real container, and only when the
+    // response bodies echo a comparable owning-scope key (absent → it merely soft-downgrades and STILL
+    // mints). So refuse the write unless EVERY ancestor is a known API-structural word — a false decline is
+    // preferred over ever writing into a real tenant/org container (fail-closed; the decline is recorded as
+    // a blocked_by_design row, never a silent drop). Ordered AFTER the write-byte PII screen so an ambiguous
+    // parent that ALSO carries operator PII reports the more actionable PII reason.
+    if (createCollectionParentIsAmbiguous(createPath)) {
+      return blocked("blocked_by_design", "create_collection_nested_in_ambiguous_container", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
+    }
+    assertSafeRequestUrl(createUrl, domain, SCOPE_VALIDATION_OPTS); // the ONE allowed write; NOT read-only-guarded
+    const provisionProbeBase = {
+      fetchFn: fetch_fn, method: "GET", domain, surfaceId, egressProfile: egressProfileName,
+      blockInternalHosts, agent: egressAgent, startedAt,
+    };
+    try {
+      provision = await liveProvision({
+        idA, idB, idC, createUrl, canaryField, idField, createBody,
+        pathTemplate, origin: baselineUrl.origin, allowedEmails, probeBase: provisionProbeBase,
+      });
+    } catch (e) {
+      if (e && e.probe_audit_failed) {
+        return blocked("blocked_by_infra", "provision_audit_failed", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      // #4 (brutalist): a create response that echoed foreign PII / a secret fails CLOSED with a precise
+      // reason — the tool received non-synthetic data, so sign nothing (parity with the readback #24 gate).
+      if (e && e.create_response_contaminated) {
+        return blocked("blocked_by_design", "create_response_contains_foreign_data", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      // A truncated create response cannot be fully foreign-screened — fail closed (Codex P1).
+      if (e && e.create_response_truncated) {
+        return blocked("blocked_by_design", "create_response_truncated", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+      return blocked("blocked_by_infra", "provision_transport_error", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        failure_reason: e.message || String(e), ...identity, ...internalHostPolicy,
+      });
+    }
   }
   const { object_a, object_b, object_c, canary_a, canary_b, canary_c, owner_readback_b } = provision;
   // Self-provisioned ids must come from the producer's own create response.
@@ -839,6 +1735,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     }
   }
 
+  // FAIL CLOSED on a TRUNCATED owner readback (Codex P2): a readback larger than the response cap is
+  // trusted for neither canary discovery nor the #24 PII/secret screen — foreign PII/secret past the cap
+  // would go unscreened while a parseable prefix still reflects the canary. The live arm stamps
+  // owner_readback_b_truncated (boolean); seeded provisions omit it (undefined → trusted by construction).
+  if (provision.owner_readback_b_truncated === true) {
+    return blocked("blocked_by_design", "owner_readback_truncated", {
+      target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+      ...identity, ...internalHostPolicy,
+    });
+  }
+
   // CANARY-REFLECTED + FIELD_PATH discovery (mint condition #20, D11b): discover
   // FIELD_PATH from the owner readback; if the canary is not reflected, abort.
   const readbackBody = owner_readback_b != null
@@ -855,12 +1762,33 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
 
   // CREATE-TIME FOREIGN-PII (mint condition #24): the fresh owner readback must
   // carry the canary AND no foreign PII shape — else a shared object store.
-  const readbackPii = piiScan(parsedReadback, allowedEmails);
+  // The producer's own canaries are neutralized first (neutralizeCanaries) so a chance card-shaped digit
+  // run inside a hex canary does not false-positive — the readback legitimately reflects canary_b.
+  const ownCanaries = [canary_a, canary_b, canary_c];
+  const readbackPii = piiScan(neutralizeCanaries(parsedReadback, ownCanaries), allowedEmails);
   if (readbackPii.length > 0) {
     return blocked("blocked_by_design", "shared_object_store", {
       target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
       ...identity, ...internalHostPolicy,
     });
+  }
+  // Also scan the RAW readback bytes for foreign PII AND secret shapes, with layered decoding — mirroring
+  // the proof-body / write-byte gates (Codex P2). Foreign data present only in bytes JSON.parse
+  // discards/normalizes (a shadowed duplicate key) or in an encoded form (a `victim%40corp.test` / an
+  // `sk-...` token) would otherwise slip the parsed-only PII scan, letting a contaminated / shared object
+  // store through after the tool already received non-synthetic data. The live arm captures
+  // owner_readback_b_raw; seeded provisions omit it.
+  const rawReadback = typeof provision.owner_readback_b_raw === "string" ? provision.owner_readback_b_raw : null;
+  if (rawReadback) {
+    for (const probe of [rawReadback, decodeAllEncodingLayers(rawReadback)]) {
+      const scan = neutralizeCanaries(probe, ownCanaries);
+      if (piiScan(scan, allowedEmails).length > 0 || secretShapesIn(scan).length > 0) {
+        return blocked("blocked_by_design", "shared_object_store", {
+          target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+          ...identity, ...internalHostPolicy,
+        });
+      }
+    }
   }
 
   // Build the canonical P2 target from the surface-bound origin (AC-2).
@@ -1296,14 +2224,17 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // parsed object (canonicalJson resolves escapes but drops shadowed keys), the raw
   // text (keeps shadowed keys but not escapes), and the raw text with \u escapes
   // decoded (keeps shadowed keys AND resolves escapes).
-  const proofParsed = [p1Parsed, p2Parsed, p2primeParsed];
+  // The producer's own canaries are neutralized in every proof-scan form (neutralizeCanaries) so a chance
+  // card-shaped digit run inside a hex canary cannot false-positive — the proof bodies legitimately reflect
+  // canary_b. Exact 64-char replacement leaves any adjacent injected PII/secret intact for the scan.
+  const proofParsedScan = [p1Parsed, p2Parsed, p2primeParsed].map((p) => neutralizeCanaries(p, ownCanaries));
   const proofScanTexts = [P1, P2, P2prime].flatMap((r) => {
     const raw = bodyTextOf(r);
     // raw + ALL decoded layers (\u / percent / layered) — a sensitive value encoded in
     // the body survives JSON.parse + canonicalJson but decodes server-side.
-    return [raw, decodeAllEncodingLayers(raw)];
+    return [neutralizeCanaries(raw, ownCanaries), neutralizeCanaries(decodeAllEncodingLayers(raw), ownCanaries)];
   });
-  if (proofParsed.some((p) => piiScan(p, allowedEmails).length > 0)
+  if (proofParsedScan.some((t) => piiScan(t, allowedEmails).length > 0)
     || proofScanTexts.some((t) => piiScan(t, allowedEmails).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_pii_in_response");
   }
@@ -1311,7 +2242,7 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
   // credential-shaped data (JWT / AWS key / PEM / prefixed tokens). O_B is
   // self-provisioned synthetic, so a secret here is a server-injected expanded-record
   // leak. Same parsed + raw + \u-decoded screening as the PII tripwire.
-  if (proofParsed.some((p) => secretShapesIn(p).length > 0)
+  if (proofParsedScan.some((t) => secretShapesIn(t).length > 0)
     || proofScanTexts.some((t) => secretShapesIn(t).length > 0)) {
     return fail("blocked_operator_pii", "non_synthetic_secret_in_response");
   }
@@ -1448,7 +2379,15 @@ module.exports = {
   tenantDiscriminator,
   piiScan,
   profileHasProvenance,
-  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleEndpointSingleHost
+  // PR-D live-arm internals (injectable fetchFn so unit tests drive create/readback without a live target).
+  liveProvision,
+  createObject,
+  idorProvisionAuthorizedFor,
+  mintCanary,
+  pathHasConcreteParentInstance,
+  createCollectionParentIsAmbiguous,
+  IDOR_PROVISION_ENV,
+  // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleHostBoundEndpoint
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the
   // mint-condition gates (those live in idorConfirm), so re-exporting it would give an
   // internal caller a gate-bypassing signed-row path. Keep the row builder private to the

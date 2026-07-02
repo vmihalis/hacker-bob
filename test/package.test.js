@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  CANONICAL_PACKAGE_MAX_BYTES,
   DISALLOWED_PACKED_FILE_PATTERNS,
   DISALLOWED_PACKED_TEXT_PATTERNS,
   EXCLUDED_CANONICAL_PACKAGE_FILES,
@@ -161,27 +162,16 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     // (mcp/lib/cvss31.js, mcp/lib/cwe-catalog.js, cwe/cvss prompt + doc surfaces),
     // now measured against the lean tarball — mcp/node_modules is excluded from
     // the pack, so this budget tracks shipped source/docs only.
-    // Raised to 3.3 MB for the OSS multi-TU fuzz foundation: the image-baked builder
-    // (mcp/lib/fuzz/bob-multitu-build.sh), bob_import_harness (mcp/lib/harness-store.js
-    // + tools/import-harness.js), and packing the .claude/hooks write-guard table the
-    // runtime write-guard hooks read. The same 3.3 MB ceiling also covers the
-    // container-runner-backed offensive tool surface (mcp/lib/offensive-nuclei-producer.js
-    // + mcp/lib/tools/bob-nuclei-scan.js + the runner detection channel) plus its
-    // regenerated agent/skill/settings surfaces. Keep in lockstep with scripts/release-check.js.
-    // Raised to 3.6 MB in core when the full offensive arsenal (XSS/IDOR/CORS/OOB/nuclei
-    // producers+tools, HMAC exploit-proof ledger, sandbox+runner) merged on top of core's
-    // belief/OSS-repro superset, taking the lean tarball to ~3.42 MB.
-    // Raised to 3.7 MB for the open-vocabulary mechanism registry (bob_register_mechanism_template
-    // + finding-differential-verifier.js + mechanism-candidate-store.js + the finding-differential
-    // audit-graded ledger) and the cross-role fan-out tool surface (bob_plan_recon_angles +
-    // recon-angle-plan.js, bob_stage_verification_round_partial, phase-fanout-plan.js) plus the
-    // regenerated agent/skill/settings surfaces that carry the new tools. Keep in lockstep with scripts/release-check.js.
-    // Raised to 3.9 MB for the offensive-sandbox isolation arc (sandbox-isolation-attest.js +
-    // sandbox-isolation-gate.js + sc-container-exec.js + signing-key-custody.js, the ed25519/scheme-tagged
-    // MAC + keyed verdict ledgers across handoff-signing-key.js/offensive-row-mac.js, the container routing
-    // of the seven SC runners, and scripts/launch-bob-signer.sh), which took the lean tarball just over the
-    // prior 3.7 MB ceiling. Keep in lockstep with scripts/release-check.js.
-    assert.ok(pack.size < 3900000, `npm pack size ${pack.size} exceeds 3.9 MB threshold`);
+    // The 921 KB docs/hacker-bob-social.png (a web/marketing asset unused by the installed
+    // runtime) is excluded from the pack (EXCLUDED_CANONICAL_PACKAGE_FILES in
+    // scripts/lib/package-policy.js). The ceiling is a single source of truth
+    // (CANONICAL_PACKAGE_MAX_BYTES), shared with scripts/release-check.js so the two cannot
+    // drift; it is calibrated to core's full offensive + sandbox-isolation surface, a larger
+    // lean tarball than the public line.
+    assert.ok(
+      pack.size < CANONICAL_PACKAGE_MAX_BYTES,
+      `npm pack size ${pack.size} exceeds ${CANONICAL_PACKAGE_MAX_BYTES}-byte ceiling`,
+    );
 
     for (const file of files) {
       assert.ok(!file.startsWith("node_modules/"), `${file} should not vendor runtime dependencies`);

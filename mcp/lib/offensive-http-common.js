@@ -51,6 +51,46 @@ const { redactUrlSensitiveValues } = require("../redaction.js");
 const STATE_CHANGE_PATH_SEGMENT_RE = /(?:^|\/)(?:delete|logout|remove|destroy|deactivate|disable|revoke|reset|unsubscribe|terminate|purge|wipe)(?:[./;,]|\/|$)/i;
 const VERB_LIKE_TOKEN_RE = /^(?:delete|remove|destroy|logout|create|update|patch|put|post|submit|send|transfer|refund|reset|revoke|disable|enable|drop|truncate|mutation)$/i;
 
+// A WRITE (create POST) is derived by stripping the trailing /{id} from a read template. The read-only
+// guard (STATE_CHANGE_PATH_SEGMENT_RE) intentionally ALLOWS ambiguous action-nouns like `transfer` /
+// `refund` for a GET-by-id (reading a transfer RECORD is safe), but POSTing to the derived collection
+// /api/transfer typically EXECUTES the action (money movement / state change). A write primitive must
+// never trigger that blindly, so the derived create collection is held to a STRICTER, fail-closed
+// action-verb set than the read path. Over-blocking is the correct bias here — the only cost is that
+// LIVE auto-provisioning is unavailable on an action-shaped endpoint (the operator can seed-provision).
+// This set is DEFENSE-IN-DEPTH on top of the operator's target-bound write-arming env, NOT the primary
+// boundary: a denylist can never enumerate every product-specific action noun, so it is kept deliberately
+// BROAD (commerce / lifecycle / destructive / auth / workflow / communication verbs) to catch the common
+// classes; the operator arming a SPECIFIC authorized target + the synthetic canary remain the real gate.
+const WRITE_ACTION_VERBS = new Set([
+  // financial / value-movement / commerce
+  "transfer", "refund", "withdraw", "withdrawal", "deposit", "pay", "payment", "payout",
+  "charge", "send", "wire", "remit", "disburse", "disbursement", "checkout", "purchase", "buy", "sell",
+  "order",
+  // generic execution
+  "execute", "exec", "invoke", "trigger", "run", "apply", "submit", "import", "export", "sync", "migrate",
+  // lifecycle / state change
+  "approve", "approval", "reject", "cancel", "void", "capture", "settle", "settlement", "publish",
+  "unpublish", "archive", "unarchive", "lock", "unlock", "enable", "disable", "activate", "deactivate",
+  "start", "stop", "restart", "resume", "suspend", "rollback", "restore",
+  // workflow state-transition verbs (a collection POST advances a record's workflow state)
+  "verify", "confirm", "accept", "decline", "complete", "release", "promote", "demote", "resend", "deliver", "merge",
+  // destructive
+  "delete", "remove", "destroy", "terminate", "purge", "wipe", "drop", "truncate", "kill", "flush", "clear",
+  // auth / access
+  "login", "logout", "register", "signup", "revoke", "grant", "reset", "ban", "unban", "password",
+  // workflow / fulfillment / provisioning action nouns: these commonly appear as /{verb}/{id} reads, but a
+  // collection POST EXECUTES the action (brutalist / Codex: the read-side denylist was missing this class).
+  "redeem", "claim", "fulfill", "fulfillment", "process", "dispatch", "issue", "escalate", "assign",
+  "schedule", "enqueue", "provision", "deploy", "convert", "swap", "stake",
+  // subscription / billing lifecycle (a collection POST starts billing / changes plan = value movement)
+  "subscribe", "subscription", "renew", "renewal", "upgrade", "downgrade",
+  // outbound communication (a collection POST SENDS a message / invite / notification = real side effect)
+  "notify", "notification", "broadcast", "invite", "invitation", "share", "email", "sms", "alert", "webhook",
+  // generic mutation markers + GraphQL (a derived POST /graphql is an arbitrary-operation surface, not a create)
+  "create", "update", "mutation", "graphql",
+]);
+
 // An encoded path separator at ANY encoding depth: %2F / %5C, %252F, %2525252F,
 // etc. (`(25)*` absorbs each extra `%25` layer). Layer-count-independent, so it
 // does not depend on how many times decodePathSegments iterates.
@@ -186,6 +226,70 @@ function assertReadOnlyPath(url, toolName = "bob_http_confirm") {
   }
 }
 
+// Fail closed when a DERIVED create-collection path (the trailing /{id} already stripped) resolves to
+// an action-shaped segment. Stricter than assertReadOnlyPath because this is the path the tool will
+// POST to: /api/transfer/{id} reads safely but POST /api/transfer executes a transfer. Each path
+// segment is decoded to a fixed point and split on `. _ -` so /transfer-funds, /transfer_v2 and
+// /transfers all surface the `transfer` action; a token (or its singular) in WRITE_ACTION_VERBS is
+// refused before any write. Resource-noun collections (/api/accounts, /api/notes, /api/orders/{id} →
+// note: `order` IS blocked as an action) pass; the bias is deliberately toward refusing the write.
+// Decode every VALID percent-triplet to a fixed point, leaving a malformed one (e.g. %zz) in place. Unlike
+// decodePathSegments (decodeURIComponent abandons the WHOLE segment the moment any triplet is malformed),
+// this recovers the valid `%3b`->`;` in /api/transfer%3bv=%zz so a router that decodes valid triplets
+// independently cannot hide an action delimiter behind a later malformed escape (Codex P1).
+function decodeValidPercentTriplets(segment) {
+  let cur = String(segment);
+  for (let i = 0; i < 12; i += 1) {
+    const next = cur.replace(/%[0-9a-f]{2}/gi, (m) => {
+      try { const d = decodeURIComponent(m); return d === m ? m : d; } catch { return m; }
+    });
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
+}
+
+function assertCreateCollectionShapeSafe(url, toolName = "bob_http_confirm") {
+  const parsed = new URL(url);
+  const decodedPath = decodePathSegments(parsed.pathname);
+  for (const rawSegment of decodedPath.split("/")) {
+    if (!rawSegment) continue;
+    // Recover any VALID percent-triplet a malformed escape elsewhere in the segment would otherwise mask,
+    // so /api/transfer%3bv=%zz still surfaces the `;` delimiter (Codex P1).
+    const segment = decodeValidPercentTriplets(rawSegment);
+    // FAIL CLOSED on ANY residual `%` after the bounded valid-triplet decode — not just a still-VALID `%XX`.
+    // A MALFORMED escape (`%64elete%zz` → `delete%zz`) leaves a `%zz` the valid-triplet regex skips, and `%`
+    // is not a token delimiter, so `delete%zz` tokenizes whole and slips the action guard — while a router
+    // that decodes valid triplets independently still routes it to `delete`. A surviving VALID `%XX` (deeply
+    // nested `%2525…` beyond the iteration cap) is equally unsafe. Either way refuse rather than POST blind
+    // (Codex P1 / brutalist).
+    if (/%/.test(segment)) {
+      rejectInvalidArguments(
+        `derived create-collection path retains percent-encoding after decoding; ${toolName} refuses to POST to an unresolved-encoding endpoint`,
+        { path: parsed.pathname },
+      );
+    }
+    // Break camelCase / PascalCase by rewriting each boundary to a hyphen (lower|digit->Upper and
+    // ACRONYM->Word), so /transferFunds and /refundOrder surface their action verb the same way
+    // /transfer-funds does (a camelCase action endpoint would otherwise tokenize whole and slip the guard).
+    const withBreaks = segment
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2");
+    // Split on `. _ -` AND matrix/param punctuation `; , : =` AND a recovered `/` or `\` so a matrix-suffix
+    // collection like /api/transfer;v=1 (or its `%3b`/`%2f`/`%5c` encoded forms — frameworks decode `%5c`
+    // to a path separator) cannot tokenize whole and slip the action-shape guard (Codex P1).
+    for (const token of withBreaks.toLowerCase().split(/[._\-;,:=/\\]/).filter(Boolean)) {
+      const singular = token.endsWith("s") ? token.slice(0, -1) : token;
+      if (WRITE_ACTION_VERBS.has(token) || WRITE_ACTION_VERBS.has(singular)) {
+        rejectInvalidArguments(
+          `derived create-collection path resolves to an action-shaped segment ("${token}"); ${toolName} refuses to POST to a state-changing endpoint`,
+          { path: parsed.pathname },
+        );
+      }
+    }
+  }
+}
+
 function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
   const template = assertRequiredText(rawTemplate, "path_template");
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(template)) {
@@ -247,6 +351,21 @@ function normalizePathTemplate(rawTemplate, toolName = "bob_http_confirm") {
 
 function findRoutedSurface(domain, surfaceId) {
   const routed = readSurfaceRoutesStrict(domain);
+  // Sanitize EVERY id/reason echoed by ANY rejection below. surfaceId is agent-controlled, and all
+  // three rejection sites in this function (malformed-route, unrouted, routed-but-absent) feed the
+  // same rejectInvalidArguments sink. Bound each echo to MAX_ID_LEN AND strip both ASCII C0/C1+DEL
+  // controls and the Unicode line-separator + bidi-control set (U+2028/9, U+202A-E, U+2066-9, the
+  // LRM/RLM/ALM marks) so none can bloat the line or forge/visually-reorder message/log content —
+  // e.g. an ESC or RTL-override (Trojan-Source) sequence in a
+  // surfaceId that exact-matches a quarantined route, or a 100 KB id. Hoisted above the FIRST
+  // rejection so the guarantee is function-wide, not one branch (a per-branch helper would leave the
+  // sibling rejections half-hardened and the "uniform" claim false).
+  const MAX_ID_LEN = 120;
+  const safe = (value) => {
+    const text = String(value ?? "");
+    const clipped = text.length > MAX_ID_LEN ? `${text.slice(0, MAX_ID_LEN - 1)}…` : text;
+    return clipped.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, "·");
+  };
   // Check quarantined routes for THIS surface FIRST — BEFORE accepting a route — so a corrupt file
   // (even one with a valid-first occurrence AND a malformed duplicate for the same surface_id) is
   // rejected here exactly as getContextBudget rejects it. Otherwise live offensive probes would
@@ -255,17 +374,70 @@ function findRoutedSurface(domain, surfaceId) {
   if (Array.isArray(routed.malformed_routes)) {
     const malformed = routed.malformed_routes.find((entry) => entry.surface_id === surfaceId);
     if (malformed) {
-      rejectInvalidArguments(`surface_id ${surfaceId} has a malformed route (re-run bob_route_surfaces): ${malformed.reason}`);
+      rejectInvalidArguments(
+        `surface_id ${safe(surfaceId)} has a malformed route (re-run bob_route_surfaces): ${safe(malformed.reason)}`,
+        { code: "surface_id_malformed_route" },
+      );
     }
   }
   const route = routed.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
   if (!route) {
-    rejectInvalidArguments(`unknown or unrouted surface_id ${surfaceId}`);
+    // Help the caller self-correct. An agent that drops the canonical `surface:` prefix (e.g.
+    // passes "search" for "surface:search") otherwise hits a dead-end error and abandons the
+    // signed producer — falling back to a hand-rolled scan + manual claim, the exact under-firing
+    // the offensive arsenal is meant to replace. The MESSAGE is the load-bearing self-correction
+    // interface (the caller is an LLM reading the error text); no consumer reads a structured
+    // route inventory, so details stay at the stable {code}. Every echoed id goes through the
+    // hoisted safe() (declared at the top of this function), so the listed routes, the suggestion,
+    // and the quarantine hint are all bounded + control-char-stripped exactly like the caller's
+    // surface_id — the same guarantee the malformed-route and routed-but-absent rejections get.
+    const MAX_LISTED = 20;
+    const known = routed.document.routes
+      .map((entry) => entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    const quarantined = (Array.isArray(routed.malformed_routes) ? routed.malformed_routes : [])
+      .map((entry) => entry && entry.surface_id)
+      .filter((id) => typeof id === "string" && id);
+    // Suggest the closest id by EXACT EQUALITY only (the dropped `surface:` prefix or its inverse)
+    // — never a substring/suffix wildcard, which for a short/typo'd input could point at the wrong
+    // (if in-scope) surface, against this file's {id}-must-terminate discipline. An exact match is
+    // only possible within ±"surface:".length of a candidate id's length, so for anything longer we
+    // skip the key-building entirely — it cannot match, and this bounds both the work and the
+    // rebuilt `surface:${surfaceId}` string on a pathologically long surface_id.
+    const maxCandidateLen = [...known, ...quarantined].reduce((max, id) => Math.max(max, id.length), 0);
+    const canMatch = surfaceId.length <= maxCandidateLen + "surface:".length;
+    const matchExact = (ids) => (canMatch
+      ? ids.find((id) => id === `surface:${surfaceId}`)
+        || ids.find((id) => id === surfaceId.replace(/^surface:/, ""))
+        || null
+      : null);
+    // Prefer a LIVE routed id (the caller can act on it immediately). Only when no live id matches
+    // do we point at a QUARANTINED (malformed) duplicate — a surface that exists but needs
+    // re-routing. A surface that still has a valid route resolves above and never reaches here, so a
+    // live suggestion is always the most actionable hint even when a malformed duplicate of the
+    // same id also exists.
+    const suggestion = matchExact(known);
+    const quarantinedMatch = suggestion ? null : matchExact(quarantined);
+    const listed = known.length
+      ? known.slice(0, MAX_LISTED).map(safe).join(", ") + (known.length > MAX_LISTED ? `, … (${known.length} total)` : "")
+      : "(none)";
+    const hint = suggestion
+      ? ` (did you mean ${safe(suggestion)}?)`
+      : quarantinedMatch
+        ? ` (${safe(quarantinedMatch)} exists but has a malformed route — re-run bob_route_surfaces)`
+        : "";
+    rejectInvalidArguments(
+      `unknown or unrouted surface_id ${safe(surfaceId)}${hint}; routed surface_ids: ${listed}`,
+      { code: "surface_id_unrouted" },
+    );
   }
   const surfaces = currentSurfaces(domain);
   const surface = (surfaces.surfaces || []).find((entry) => entry && entry.id === surfaceId) || null;
   if (!surface) {
-    rejectInvalidArguments(`surface_id ${surfaceId} is routed but not present in current surfaces`);
+    rejectInvalidArguments(
+      `surface_id ${safe(surfaceId)} is routed but not present in current surfaces`,
+      { code: "surface_id_not_in_surfaces" },
+    );
   }
   return { route, surface };
 }
@@ -907,6 +1079,7 @@ module.exports = {
   capturedIdSegmentIsSafe,
   pathTemplateMatchesEndpoint,
   assertReadOnlyPath,
+  assertCreateCollectionShapeSafe,
   normalizePathTemplate,
   findRoutedSurface,
   candidateSurfaceEndpoints,

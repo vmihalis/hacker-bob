@@ -264,6 +264,7 @@ async function startSession({
   sessionsRoot,
   patchrightCheck = isPatchrightAvailable,
   proxy = null,
+  authCookies = null,
   spawnFn = spawn,
 } = {}) {
   if (!patchrightCheck()) {
@@ -302,7 +303,11 @@ async function startSession({
     // (see mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile). null
     // means direct egress (no proxy), which is the default.
     proxy: proxy && typeof proxy === "object" ? proxy : null,
+    // Cookie auth for the trusted authed_fetch transport is NOT passed here — it would put
+    // auth secrets in the child process environment. It is sent after ready over stdin via the
+    // server-side-only `set_auth_cookies` command (below), so secrets never touch the env.
   };
+  const pendingAuthCookies = Array.isArray(authCookies) && authCookies.length ? authCookies : null;
 
   const child = spawnFn(process.execPath, [DRIVER_SCRIPT_PATH], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -352,6 +357,19 @@ async function startSession({
     throw err;
   }
   scheduleIdleTimer(entry);
+
+  // Inject producer-supplied cookie auth over stdin (never the env) as the FIRST command, so
+  // it is applied to the context before any authed_fetch. A scope violation (an out-of-scope
+  // cookie) fails the whole session closed. The bob_browser_* MCP tools never pass
+  // authCookies, so an agent cannot reach this path.
+  if (pendingAuthCookies) {
+    try {
+      await sendCommand(sessionId, "set_auth_cookies", { cookies: pendingAuthCookies });
+    } catch (err) {
+      closeSessionByEntry(entry, "auth_cookie_injection_failed");
+      throw err;
+    }
+  }
 
   return {
     session_id: sessionId,

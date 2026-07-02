@@ -17,6 +17,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnLedgerJsonlPath } = require("./paths.js");
+const { withSessionLock } = require("./storage.js");
 
 // Append one envelope row. The caller supplies ts (deterministic, testable) and
 // the worst-case tree size it reserved for this root. `worst_case_tree` is the
@@ -42,9 +43,16 @@ function appendSpawnLedgerEntry(domain, entry) {
   if (descendantTree != null) row.descendant_tree = descendantTree;
   if (entry.kind) row.kind = entry.kind;
   const file = spawnLedgerJsonlPath(domain);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
-  return row;
+  // Take the session lock for the append like every other session-owned write.
+  // withSessionLock is reentrant, so callers already holding the lock (the wave
+  // scheduler's dispatch step) reuse the hold rather than deadlocking. The write
+  // is NOT swallowed here — an IO failure propagates so the dispatch step that
+  // reserved this slot can surface it rather than leaving the gate undercounted.
+  return withSessionLock(domain, () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
+    return row;
+  });
 }
 
 function readSpawnLedgerEntries(domain) {

@@ -753,6 +753,46 @@ function doctor({
     addCheck(checks, "warn", checkId("mcp_dependency_proxy_agent"), "proxy-agent is missing; non-default egress profiles will not work until dependencies are installed");
   }
 
+  // patchright dependency for the browser-driver MCP tools (authenticated /
+  // Server-Action evaluation). Optional — warn (never error) when absent so an
+  // operator sees it from `doctor` BEFORE an evaluator needs a browser and the
+  // run silently skips the authenticated surface. Three states:
+  //   ok   — package installed AND a Chromium binary is launchable
+  //   warn — package installed but Chromium binary missing (npx patchright install chromium skipped)
+  //   warn — package not installed at all
+  const SYSTEM_CHROME_EXECUTABLES = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+  ];
+  let patchrightPkgAvailable = false;
+  let chromiumLaunchable = false;
+  try {
+    require.resolve("patchright", { paths: [path.join(targetAbs, "mcp"), targetAbs] });
+    patchrightPkgAvailable = true;
+    try {
+      const { chromium } = require("patchright");
+      const bundled = chromium.executablePath();
+      if (typeof bundled === "string" && fs.existsSync(bundled)) {
+        chromiumLaunchable = true;
+      }
+    } catch {}
+    if (!chromiumLaunchable) {
+      chromiumLaunchable = SYSTEM_CHROME_EXECUTABLES.some((p) => fs.existsSync(p));
+    }
+  } catch {}
+  if (patchrightPkgAvailable && chromiumLaunchable) {
+    addCheck(checks, "ok", checkId("mcp_dependency_patchright"), "patchright is available for the browser-driver tools (authenticated / Server-Action testing)");
+  } else if (patchrightPkgAvailable) {
+    addCheck(checks, "warn", checkId("mcp_dependency_patchright"), "patchright is installed but no Chromium binary was found; browser-driver tools are unavailable. Run `npx patchright install chromium` in this project to enable them");
+  } else {
+    addCheck(checks, "warn", checkId("mcp_dependency_patchright"), "patchright is missing; browser-driver tools (authenticated / Server-Action testing) are unavailable. Run `npm install patchright` and `npx patchright install chromium` in this project to enable them");
+  }
+
   // Policy replay harness: installed diagnostic files under testing/policy-replay/.
   const POLICY_REPLAY_FILES = [
     "replay.mjs",

@@ -4,6 +4,7 @@ const TOOL_MODULES = Object.freeze([
   require("./http-scan.js"),
   require("./bob-http-confirm.js"),
   require("./bob-http-cors-confirm.js"),
+  require("./bob-http-massread-confirm.js"),
   require("./bob-http-idor-confirm.js"),
   require("./bob-http-xss-reflect.js"),
   require("./bob-http-xss-confirm.js"),
@@ -49,6 +50,7 @@ const TOOL_MODULES = Object.freeze([
   require("./read-grade-verdict.js"),
   require("./init-session.js"),
   require("./init-repo-session.js"),
+  require("./init-contract-session.js"),
   require("./repo-inventory.js"),
   require("./repo-prepare-env.js"),
   require("./repo-docker-run.js"),
@@ -217,6 +219,11 @@ const TOOL_MODULES = Object.freeze([
   // filter rejects them so the two schedulers never contend for the
   // same node.
   require("./schedule-graph-nodes.js"),
+  // Producer-floor engine: the materializer sweeps the PRODUCER_PACKS DAG into
+  // schedulable 'producer' nodes; the seed-producer scheduler dispatches the
+  // not-run ones via bob_prepare_node. Both orchestrator-only, kept paired.
+  require("./materialize-producer-floor.js"),
+  require("./schedule-seed-producers.js"),
   require("./materialize-frontier.js"),
   require("./read-queue-policy.js"),
   require("./set-queue-policy.js"),

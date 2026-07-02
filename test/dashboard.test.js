@@ -13,6 +13,7 @@ const {
 const {
   repoInventoryPath,
   pipelineEventsJsonlPath,
+  frontierEventsJsonlPath,
 } = require("../mcp/lib/paths.js");
 const {
   initSession,
@@ -62,6 +63,30 @@ function requestText(url) {
   });
 }
 
+function requestWithHeaders(url, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { headers }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => resolve({ statusCode: res.statusCode, body }));
+    });
+    req.on("error", reject);
+  });
+}
+
+// Open an SSE connection and resolve once the response headers arrive (the stream
+// is open and its concurrency slot is occupied server-side). Caller must destroy().
+function openHeldSse(url) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      res.on("data", () => {});
+      resolve({ destroy: () => req.destroy() });
+    });
+    req.on("error", reject);
+  });
+}
+
 function seedRepoSession(domain, repoPath) {
   JSON.parse(initSession({
     target_domain: domain,
@@ -97,6 +122,49 @@ function appendPipelineEvent(domain, type, fields) {
     `${JSON.stringify(normalizePipelineEvent(domain, type, fields))}\n`,
     "utf8",
   );
+}
+
+function appendFrontierRaw(domain, record) {
+  fs.appendFileSync(frontierEventsJsonlPath(domain), `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function parseSse(raw) {
+  const events = [];
+  for (const block of raw.split("\n\n")) {
+    if (!block.trim()) continue;
+    const ev = {};
+    for (const line of block.split("\n")) {
+      if (line.startsWith("id:")) ev.id = line.slice(3).trim();
+      else if (line.startsWith("event:")) ev.event = line.slice(6).trim();
+      else if (line.startsWith("data:")) ev.data = line.slice(5).trim();
+      else if (line.startsWith(":")) ev.comment = `${ev.comment || ""}${line.slice(1).trim()}`;
+    }
+    if (ev.id || ev.event || ev.data) events.push(ev);
+  }
+  return events;
+}
+
+// SSE responses never "end"; read for a short settle window, then tear down.
+function collectSse(url, { headers = {}, settleMs = 300 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
+    const req = http.get(url, { headers }, (res) => {
+      let buf = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { buf += chunk; });
+      res.on("error", () => {});
+      setTimeout(() => {
+        req.destroy();
+        finish({ statusCode: res.statusCode, raw: buf, events: parseSse(buf) });
+      }, settleMs);
+    });
+    req.on("error", () => finish({ statusCode: 0, raw: "", events: [] }));
+  });
 }
 
 test("dashboard arg parser handles local server and JSON flags", () => {
@@ -141,6 +209,48 @@ test("dashboard snapshot filters repo sessions and keeps compact repo metadata",
     assert.equal(snapshot.sessions[0].repo.root_path, repoPath);
     assert.equal(snapshot.sessions[0].repo.inventory.counts.files, 12);
     assert.deepEqual(snapshot.sessions[0].repo.inventory.tech_stack, ["C/C++", "Autotools"]);
+  });
+});
+
+test("dashboard snapshot redacts absolute filesystem paths when bound to a non-loopback host", () => {
+  withTempHome((home) => {
+    const repoPath = path.join(home, "repo");
+    fs.mkdirSync(repoPath, { recursive: true });
+    seedRepoSession("repo-dashboard.example", repoPath);
+
+    // Loopback (default): the trusted local view keeps absolute paths.
+    const local = buildDashboardSnapshot({ repo_only: true, window_days: 30, limit: 10 });
+    assert.ok(typeof local.sessions_root === "string" && local.sessions_root.length > 0);
+    assert.equal(local.sessions[0].repo.root_path, repoPath);
+
+    // Non-loopback (the warn-only network-exposed posture): sessions_root and per-session
+    // repo.root_path are redacted so a LAN client cannot harvest the operator's home/checkout
+    // layout — the non-path analytics still flow as the shareable view.
+    const exposed = buildDashboardSnapshot({ host: "0.0.0.0", repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(exposed.sessions_root, null);
+    assert.equal(exposed.sessions[0].repo.root_path, null);
+    assert.equal(exposed.sessions[0].target_domain, "repo-dashboard.example");
+    assert.equal(exposed.sessions[0].repo.is_repo, true);
+  });
+});
+
+test("dashboard snapshot redacts a path-bearing inventory read error when network-exposed", () => {
+  withTempHome((home) => {
+    const repoPath = path.join(home, "repo");
+    fs.mkdirSync(repoPath, { recursive: true });
+    seedRepoSession("repo-invfail.example", repoPath);
+    // Force a filesystem read error: replace the inventory FILE with a DIRECTORY so the
+    // safe read yields a non-null error string (the kind that can embed an absolute path).
+    const invPath = repoInventoryPath("repo-invfail.example");
+    fs.rmSync(invPath, { force: true });
+    fs.mkdirSync(invPath, { recursive: true });
+
+    const local = buildDashboardSnapshot({ repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(typeof local.sessions[0].repo.inventory.error, "string");
+    assert.ok(local.sessions[0].repo.inventory.error.length > 0, "loopback keeps the raw error");
+
+    const exposed = buildDashboardSnapshot({ host: "0.0.0.0", repo_only: true, window_days: 30, limit: 10 });
+    assert.equal(exposed.sessions[0].repo.inventory.error, "redacted");
   });
 });
 
@@ -224,6 +334,11 @@ test("dashboard server serves HTML and API JSON", async () => {
       assert.equal(html.statusCode, 200);
       assert.match(html.body, /Hacker Bob Dashboard/);
       assert.match(html.body, /if \(avoided > 0\)/);
+      // a resync (trim gap / backlog cap) must reload the snapshot, not just clear the live list
+      assert.ok(
+        html.body.includes('addEventListener("resync", () => { clear(live); scheduleRefresh(); })'),
+        "resync handler reloads the snapshot to reconcile counters across the gap",
+      );
 
       const api = await requestText(`${started.url}api/snapshot?repo_only=true&limit=5`);
       assert.equal(api.statusCode, 200);
@@ -232,6 +347,7 @@ test("dashboard server serves HTML and API JSON", async () => {
       assert.equal(parsed.filters.repo_only, true);
       assert.equal(parsed.filters.limit, 5);
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
@@ -257,9 +373,283 @@ test("dashboard server warns when binding outside loopback", async () => {
       assert.match(warning, /unauthenticated/);
       assert.match(warning, /0\.0\.0\.0/);
     } finally {
+      started.server.closeAllConnections?.();
       await new Promise((resolve, reject) => {
         started.server.close((error) => error ? reject(error) : resolve());
       });
+    }
+  });
+});
+
+test("dashboard SSE route streams folded frontier + pipeline frames", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-stream.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, {
+      event_id: "FE-1",
+      ts: "2026-06-21T10:00:00.000Z",
+      kind: "surface.observed",
+      target_domain: domain,
+      payload: { surface_type: "web_route" },
+    });
+    appendPipelineEvent(domain, "finding_recorded", { ts: "2026-06-21T10:00:01.000Z", surface_id: "S-1" });
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const sse = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(sse.statusCode, 200);
+      const sources = sse.events.map((e) => e.event);
+      assert.ok(sources.includes("frontier"), "streams a frontier frame");
+      assert.ok(sources.includes("pipeline"), "streams a pipeline frame (the verification/wave/finding merge)");
+      const frontier = sse.events.find((e) => e.event === "frontier");
+      assert.equal(JSON.parse(frontier.data).event_id, "FE-1");
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route resumes after Last-Event-ID without replaying the cursor", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-resume.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-1", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+    appendFrontierRaw(domain, { event_id: "FE-2", ts: "2026-06-21T10:00:01.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      // initSession seeds its own frontier/pipeline events, so assert resume
+      // relative to the actual ordered frame list rather than a fixed count.
+      assert.ok(ids.length >= 2, "more than one frame to resume across");
+      const cursor = ids[0];
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events`, {
+        headers: { "last-event-id": cursor },
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(!resumedIds.includes(cursor), "does not replay the cursor frame");
+      assert.deepEqual(resumedIds, ids.slice(1));
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route honors the per-request backlog when resuming (caps + resync)", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-backlog.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    for (let i = 0; i < 6; i++) {
+      appendFrontierRaw(domain, { event_id: `FE-${i}`, ts: `2026-06-21T10:00:0${i}.000Z`, kind: "surface.observed", target_domain: domain, payload: {} });
+    }
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length > 3, "enough frames to exceed a backlog of 2");
+      const cursor = ids[0];
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events?backlog=2`, {
+        headers: { "last-event-id": cursor },
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.equal(resumedIds.length, 2, "resume flush capped at the requested backlog, not SSE_MAX_BACKLOG");
+      assert.deepEqual(resumedIds, ids.slice(-2), "the newest `backlog` missed frames are sent");
+      assert.ok(resumed.events.some((e) => e.event === "resync"), "the elided gap is acknowledged with a resync");
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route refuses off-loopback with 403 loopback_only", async () => {
+  await withTempHome(async () => {
+    const started = await startDashboardServer({ host: "0.0.0.0", port: 0 }, { stderr: { write() {} } });
+    try {
+      const port = started.server.address().port;
+      const res = await requestText(`http://127.0.0.1:${port}/api/session/x.example/events`);
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route rejects a non-loopback Host header (DNS-rebinding defense)", async () => {
+  await withTempHome(async () => {
+    const domain = "rebind.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const port = started.server.address().port;
+      // TCP to loopback but a spoofed Host = a rebound attacker page
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/session/${domain}/events`, { host: "evil.example" });
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard snapshot route rejects a non-loopback Host header (DNS-rebinding defense)", async () => {
+  await withTempHome(async () => {
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const port = started.server.address().port;
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/snapshot`, { host: "evil.example:9999" });
+      assert.equal(res.statusCode, 403);
+      assert.match(res.body, /loopback_only/);
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route caps concurrent connections (503 past the ceiling)", async () => {
+  await withTempHome(async () => {
+    const domain = "cap.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const prev = process.env.BOB_SSE_MAX_CONNECTIONS;
+    process.env.BOB_SSE_MAX_CONNECTIONS = "1";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    let held;
+    try {
+      const port = started.server.address().port;
+      // occupy the single slot, then a second connection must be refused
+      held = await openHeldSse(`http://127.0.0.1:${port}/api/session/${domain}/events`);
+      const res = await requestWithHeaders(`http://127.0.0.1:${port}/api/session/${domain}/events`, {});
+      assert.equal(res.statusCode, 503);
+      assert.match(res.body, /too_many_streams/);
+    } finally {
+      if (held) held.destroy();
+      if (prev === undefined) delete process.env.BOB_SSE_MAX_CONNECTIONS;
+      else process.env.BOB_SSE_MAX_CONNECTIONS = prev;
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route survives a partial trailing ledger line", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-tolerant.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-ok", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+    fs.appendFileSync(frontierEventsJsonlPath(domain), '{"event_id":"FE-partial","ts":"2026', "utf8");
+
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const sse = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(sse.statusCode, 200);
+      const ids = sse.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.some((id) => id.includes("FE-ok")), "valid frame still streamed past the partial line");
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+});
+
+test("dashboard SSE route does not re-send history when resuming already caught up", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-caughtup.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    appendFrontierRaw(domain, { event_id: "FE-1", ts: "2026-06-21T10:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+
+    // fast poll + short heartbeat so the test exercises several poll ticks
+    // (and tears down) quickly; restored in finally.
+    const prevPoll = process.env.BOB_SSE_POLL_MS;
+    const prevHeartbeat = process.env.BOB_SSE_HEARTBEAT_MS;
+    process.env.BOB_SSE_POLL_MS = "40";
+    process.env.BOB_SSE_HEARTBEAT_MS = "120";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      assert.equal(first.statusCode, 200);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length >= 1, "precondition: first connect received at least one frame");
+      const newest = ids[ids.length - 1];
+      // reconnect caught-up; ~7 poll ticks elapse — must still receive no frames
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events`, {
+        headers: { "last-event-id": newest },
+        settleMs: 300,
+      });
+      assert.equal(resumed.statusCode, 200, "precondition: resumed connection established");
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.deepEqual(resumedIds, [], "caught-up resume streams nothing (poll did not re-send history)");
+    } finally {
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+      if (prevPoll === undefined) delete process.env.BOB_SSE_POLL_MS;
+      else process.env.BOB_SSE_POLL_MS = prevPoll;
+      if (prevHeartbeat === undefined) delete process.env.BOB_SSE_HEARTBEAT_MS;
+      else process.env.BOB_SSE_HEARTBEAT_MS = prevHeartbeat;
+    }
+  });
+});
+
+test("backlog=0 resume advances the cursor past elided frames (no later re-send)", async () => {
+  await withTempHome(async () => {
+    const domain = "sse-backlog0.example";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    for (let i = 0; i < 5; i++) {
+      appendFrontierRaw(domain, { event_id: `FE-${i}`, ts: `2026-06-21T10:00:0${i}.000Z`, kind: "surface.observed", target_domain: domain, payload: {} });
+    }
+    const prevPoll = process.env.BOB_SSE_POLL_MS;
+    process.env.BOB_SSE_POLL_MS = "40";
+    const started = await startDashboardServer({ host: "127.0.0.1", port: 0 });
+    let timer = null;
+    try {
+      const first = await collectSse(`${started.url}api/session/${domain}/events`);
+      const ids = first.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(ids.length >= 3, "precondition: several frames to elide");
+      const cursor = ids[0]; // old cursor → ids.slice(1) are "missed" and elided by backlog=0
+      // mid-window, append a guaranteed-newest frame so the poll fires after the elision
+      timer = setTimeout(() => {
+        appendFrontierRaw(domain, { event_id: "FE-NEW", ts: "2099-01-01T00:00:00.000Z", kind: "surface.observed", target_domain: domain, payload: {} });
+      }, 120);
+      const resumed = await collectSse(`${started.url}api/session/${domain}/events?backlog=0`, {
+        headers: { "last-event-id": cursor }, settleMs: 400,
+      });
+      const resumedIds = resumed.events.filter((e) => e.id).map((e) => e.id);
+      assert.ok(resumedIds.some((id) => id.includes("FE-NEW")), "the new post-resume frame is delivered");
+      for (const elided of ids.slice(1)) {
+        assert.ok(!resumedIds.includes(elided), "an elided backlog=0 frame is not re-sent after a later append");
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      started.server.closeAllConnections?.();
+      await new Promise((resolve, reject) => {
+        started.server.close((error) => error ? reject(error) : resolve());
+      });
+      if (prevPoll === undefined) delete process.env.BOB_SSE_POLL_MS;
+      else process.env.BOB_SSE_POLL_MS = prevPoll;
     }
   });
 });

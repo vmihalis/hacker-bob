@@ -33,7 +33,7 @@ const { readHttpAuditRecordsFromJsonl } = require("../mcp/lib/http-records.js");
 const { routeSurfaces } = require("../mcp/lib/surface-router.js");
 const { initSession } = require("../mcp/lib/session-state.js");
 const { readSessionStateStrict } = require("../mcp/lib/session-state-store.js");
-const { attackSurfacePath } = require("../mcp/lib/paths.js");
+const { attackSurfacePath, surfaceRoutesPath } = require("../mcp/lib/paths.js");
 const {
   resetForTests: resetMaterializationDebounce,
 } = require("../mcp/lib/frontier-materialize-debounce.js");
@@ -64,6 +64,23 @@ function seedRoutedSurface(domain, surfaceId, endpoint) {
       tech_stack: ["fixture"],
       priority: "HIGH",
     }],
+  }, null, 2)}\n`, "utf8");
+  JSON.parse(routeSurfaces({ target_domain: domain }));
+}
+
+// Seed + route N web surfaces at once (for the bounded-error-list assertions).
+function seedSurfaces(domain, ids) {
+  fs.mkdirSync(path.dirname(attackSurfacePath(domain)), { recursive: true });
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: ids.map((id) => ({
+      id,
+      title: "Synthetic surface",
+      surface_type: "web",
+      hosts: [domain],
+      endpoints: [`https://${domain}/p/${encodeURIComponent(id)}`],
+      tech_stack: ["fixture"],
+      priority: "HIGH",
+    })),
   }, null, 2)}\n`, "utf8");
   JSON.parse(routeSurfaces({ target_domain: domain }));
 }
@@ -310,6 +327,212 @@ test("findRoutedSurface returns the routed surface and throws on an unknown id",
   assert.ok(caught);
   assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
   assert.match(caught.message, /unknown or unrouted surface_id surface:does-not-exist/);
+  // The error lists the routed ids so a caller can self-correct instead of dead-ending.
+  assert.match(caught.message, /routed surface_ids: surface:accounts/);
+  assert.equal(caught.details.code, "surface_id_unrouted");
+}));
+
+test("findRoutedSurface suggests the prefixed id when a caller drops the surface: prefix", () => withTempHome(() => {
+  // Regression (smoke-test 2026-06-26): an agent that routed to a producer with "search"
+  // instead of "surface:search" got a no-hint error and abandoned the producer (fell back to
+  // a hand-rolled scan + manual claim). The error must name the closest routed id so the next
+  // call fires — the whole point of routing to the signed producer.
+  const domain = "common-find-suggest.example.test";
+  const surfaceId = "surface:search";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedRoutedSurface(domain, surfaceId, `https://${domain}/search?q=test`);
+
+  let caught;
+  try { findRoutedSurface(domain, "search"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
+  assert.match(caught.message, /did you mean surface:search\?/);
+  assert.match(caught.message, /routed surface_ids: surface:search/);
+}));
+
+test("findRoutedSurface caps the listed ids at 20 and reports the full count", () => withTempHome(() => {
+  const domain = "common-find-cap.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, Array.from({ length: 21 }, (_, i) => `surface:s${String(i).padStart(2, "0")}`));
+
+  let caught;
+  try { findRoutedSurface(domain, "definitely-missing"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  // The message reports the full count and truncates the list (s00..s19 shown, s20 cut).
+  assert.match(caught.message, /\(21 total\)/);
+  assert.match(caught.message, /surface:s00/);
+  assert.ok(!caught.message.includes("surface:s20"), "the 21st id is beyond the 20-cap");
+}));
+
+test("findRoutedSurface clips an oversized routed surface_id to 120 chars in the error", () => withTempHome(() => {
+  const domain = "common-find-clip.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  const longId = `surface:${"x".repeat(140)}`;
+  seedSurfaces(domain, [longId]);
+
+  let caught;
+  try { findRoutedSurface(domain, "miss"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  // The message clips the oversized id (119 + ellipsis); the full 140-char value never appears.
+  assert.match(caught.message, /…/);
+  assert.ok(!caught.message.includes(longId), "the full oversized id is not echoed");
+}));
+
+test("findRoutedSurface points a dropped-prefix caller at a QUARANTINED surface (re-run hint)", () => withTempHome(() => {
+  // A corrupt route file QUARANTINES surface:search (the v2.1 hunter_agent->evaluator_agent
+  // rename shape) so it is absent from the live routes. A dropped-prefix caller ("search")
+  // should still be told it exists-but-needs-rerouting, not a bare "unknown".
+  const domain = "common-find-quarantine.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:search"]);
+  const rp = surfaceRoutesPath(domain);
+  const doc = JSON.parse(fs.readFileSync(rp, "utf8"));
+  for (const r of doc.routes) {
+    if (r.surface_id === "surface:search") { delete r.evaluator_agent; r.hunter_agent = "hunter-agent"; }
+  }
+  fs.writeFileSync(rp, `${JSON.stringify(doc, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "search"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.code, ERROR_CODES.INVALID_ARGUMENTS);
+  assert.match(caught.message, /surface:search exists but has a malformed route — re-run bob_route_surfaces/);
+}));
+
+test("findRoutedSurface sanitizes control chars in EVERY echo path (caller, listed, suggestion)", () => withTempHome(() => {
+  // surface_id AND persisted route ids are echoed into the LLM-facing error. A control char in
+  // ANY echoed id — the caller's free-text id, a listed routed id, or the suggested id — must be
+  // stripped so it can't forge extra log/message lines. One safe() guards all paths; exercise each
+  // with a REAL control char (BEL) so the property is verified, not vacuously true on clean inputs.
+  const domain = "common-find-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  // The BEL-bearing routed id survives routing into the live inventory (probed), so it appears in
+  // the `listed` echo AND is an exact dropped-prefix suggestion target for the caller below.
+  seedSurfaces(domain, ["surface:ev\u0007il", "surface:keep"]);
+
+  // (caller + listed) a newline/tab caller id is sanitized, and the BEL routed id is sanitized in
+  // the listed inventory — no raw control char survives from either path.
+  let c1;
+  try { findRoutedSurface(domain, "a\nb\tc"); } catch (error) { c1 = error; }
+  assert.ok(c1);
+  assert.match(c1.message, /unknown or unrouted surface_id a·b·c/);
+  assert.match(c1.message, /surface:ev·il/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(c1.message), "no raw control char survives (caller + listed paths)");
+
+  // (suggestion) a dropped-prefix caller matching the BEL routed id gets a sanitized "did you mean".
+  let c2;
+  try { findRoutedSurface(domain, "ev\u0007il"); } catch (error) { c2 = error; }
+  assert.ok(c2);
+  assert.match(c2.message, /did you mean surface:ev·il\?/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(c2.message), "no raw control char survives the suggestion path");
+}));
+
+test("findRoutedSurface sanitizes a control char in the quarantine-hint path", () => withTempHome(() => {
+  // The quarantine hint echoes a malformed route's id; a control char in it must be stripped too —
+  // the same safe() as every other echo path, not just the live-suggestion/listed paths.
+  const domain = "common-find-quarantine-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:sea\u0007rch"]);
+  const rp = surfaceRoutesPath(domain);
+  const doc = JSON.parse(fs.readFileSync(rp, "utf8"));
+  // Malform the BEL-bearing route so it drops to malformed_routes (the quarantine branch), mirroring
+  // the v2.1 evaluator_agent->hunter_agent rename shape used by the sibling quarantine test.
+  for (const r of doc.routes) {
+    if (r.surface_id === "surface:sea\u0007rch") { delete r.evaluator_agent; r.hunter_agent = "hunter-agent"; }
+  }
+  fs.writeFileSync(rp, `${JSON.stringify(doc, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "sea\u0007rch"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /surface:sea·rch exists but has a malformed route — re-run bob_route_surfaces/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the quarantine hint");
+}));
+
+test("findRoutedSurface bounds the suggestion lookup on a pathologically long surface_id", () => withTempHome(() => {
+  // A huge caller id must not drive key-building (`surface:${id}` + replace) against every candidate:
+  // it cannot exact-match a short routed id, so the suggestion is skipped and the echoed value is
+  // still clipped. Guards the error path against unbounded work and an unbounded message.
+  const domain = "common-find-bound.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:real"]);
+  const huge = "z".repeat(100000);
+
+  let caught;
+  try { findRoutedSurface(domain, huge); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.ok(!caught.message.includes(huge), "the huge caller id is clipped, not echoed in full");
+  assert.match(caught.message, /…/, "the echoed caller id is clipped to the bound");
+  // Pin the EXACT clip (MAX_ID_LEN=120 → 119 chars + ellipsis): a drift to 121/130/any other
+  // shorter-than-full bound is caught, not just "shorter than the full id" (CodeRabbit round-8).
+  assert.ok(caught.message.includes(`${"z".repeat(119)}…`), "echo clipped to exactly 119 chars + ellipsis");
+  assert.ok(!caught.message.includes("z".repeat(120)), "no 120th pre-ellipsis char — the clip is exactly MAX_ID_LEN");
+  assert.ok(!/did you mean/.test(caught.message), "no suggestion is attempted for an unmatchable huge id");
+  assert.ok(caught.message.length < 1000, "the error message stays bounded");
+}));
+
+test("findRoutedSurface sanitizes the surface_id echoed by the malformed-route rejection", () => withTempHome(() => {
+  // The malformed-route rejection (reached when the caller's EXACT id is a quarantined route) echoes
+  // the agent-controlled surface_id; a control char in it must be stripped by the SAME safe() as the
+  // unrouted branch — proving the hardening is function-wide, not an island (the round-6 finding).
+  const domain = "common-find-malformed-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:bad\u0007id"]);
+  const rp = surfaceRoutesPath(domain);
+  const doc = JSON.parse(fs.readFileSync(rp, "utf8"));
+  for (const r of doc.routes) {
+    if (r.surface_id === "surface:bad\u0007id") { delete r.evaluator_agent; r.hunter_agent = "hunter-agent"; }
+  }
+  fs.writeFileSync(rp, `${JSON.stringify(doc, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "surface:bad\u0007id"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /surface_id surface:bad·id has a malformed route/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the malformed-route rejection");
+}));
+
+test("findRoutedSurface sanitizes the surface_id echoed by the routed-but-absent rejection", () => withTempHome(() => {
+  // The routed-but-not-present rejection also echoes the agent-controlled surface_id; the same
+  // safe() must cover it — the third echo site the function-wide 'uniform' invariant must hold for.
+  const domain = "common-find-absent-sanitize.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep", "surface:gho\u0007st"]); // routes BOTH ids
+  // Drop the BEL surface from attack_surface.json so it stays ROUTED but is no longer present.
+  fs.writeFileSync(attackSurfacePath(domain), `${JSON.stringify({
+    surfaces: [{
+      id: "surface:keep", title: "t", surface_type: "web", hosts: [domain],
+      endpoints: [`https://${domain}/k`], tech_stack: ["fixture"], priority: "HIGH",
+    }],
+  }, null, 2)}\n`);
+
+  let caught;
+  try { findRoutedSurface(domain, "surface:gho\u0007st"); } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.match(caught.message, /surface_id surface:gho·st is routed but not present/);
+  assert.ok(!/[\x00-\x1f\x7f]/.test(caught.message), "no raw control char survives the routed-but-absent rejection");
+}));
+
+test("findRoutedSurface strips Unicode line/bidi controls from the echoed surface_id", () => withTempHome(() => {
+  // safe() must also strip the Unicode log-forging / Trojan-Source set (line/paragraph separators and
+  // bidi embeddings/overrides/isolates), not just ASCII controls — else a U+2028 forges a log line and
+  // a U+202E (RLO) visually reorders the echoed id. (round-7 Codex/brutalist finding.) String.fromCharCode
+  // keeps these out of the source as raw bytes while still exercising the real chars at runtime.
+  const RLO = String.fromCharCode(0x202e); // RIGHT-TO-LEFT OVERRIDE (Trojan-Source bidi)
+  const LS = String.fromCharCode(0x2028);  // LINE SEPARATOR (a JS/log line terminator)
+  const PDI = String.fromCharCode(0x2069); // POP DIRECTIONAL ISOLATE
+  const domain = "common-find-unicode-strip.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  seedSurfaces(domain, ["surface:keep"]);
+
+  let caught;
+  try { findRoutedSurface(domain, `a${RLO}b${LS}c${PDI}d`); } catch (error) { caught = error; }
+  assert.ok(caught);
+  // each stripped char becomes "·": the echoed caller id is a·b·c·d, no raw separator/bidi survives.
+  assert.match(caught.message, /unknown or unrouted surface_id a·b·c·d/);
+  assert.ok(!caught.message.includes(RLO), "no raw RLO (bidi override) survives");
+  assert.ok(!caught.message.includes(LS), "no raw line separator survives");
+  assert.ok(!caught.message.includes(PDI), "no raw bidi isolate survives");
 }));
 
 // --- originFromState / urlFromEndpoint / resolveBaselineFromSurface (I/O) ---
