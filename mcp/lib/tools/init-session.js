@@ -54,7 +54,15 @@ function handler(args) {
     : null;
   const initResultJson = initSession(args);
   if (!companion) return initResultJson;
-  const domain = JSON.parse(initResultJson).state.target;
+  // The companion binds at session CREATION only; a resume returns the existing
+  // binding untouched so a re-init never overwrites the already-bound
+  // target_contracts / chain_authority_hash. Fail-closed: any creation signal
+  // that is not exactly `created:true` (including an indeterminable one) skips
+  // the read-modify-write re-bind. Parse the init result once for both the
+  // creation check and the domain.
+  const initResult = JSON.parse(initResultJson);
+  if (initResult.created !== true) return initResultJson;
+  const domain = initResult.state.target;
   return bindContractCompanion(companion, initResultJson, domain);
 }
 

@@ -835,18 +835,20 @@ class BrowserDriver {
     // the finally so a thrown op can't leave logging suppressed for later agent traffic.
     //
     // ACCEPTED RESIDUAL — priming redirect under block_internal_hosts: page.goto follows
-    // redirects, so a server-driven 3xx to an internal host could fire ONE request before the
-    // origin-drift guard rejects the fetch. We deliberately do NOT block it with a catch-all
-    // network-route interceptor — that is forbidden (browser-driver-tools.test.js): such an
-    // interceptor aborts page-decided subresource loads (Kasada/Akamai anti-bot, CDN bundles,
-    // OAuth callbacks), the exact WAF-protected flows this transport exists to survive, so it
-    // would defeat the transport's purpose. Bounded instead by: the producer REFUSES under
-    // block_internal_hosts (this is a direct-driver defense-in-depth path); the pin connects the
-    // target host to a validated IP; the origin-drift guard refuses the fetch after any
-    // redirect; and the scope check validates the URL's resolved IP under block_internal_hosts.
+    // redirects, so a server-driven 3xx could fire ONE credentialed request to the first
+    // redirect target before Node can inspect the chain. We deliberately do NOT block it with a
+    // catch-all network-route interceptor (a route glob over every URL) — that is forbidden
+    // (browser-driver-tools.test.js): such an interceptor aborts page-decided subresource loads
+    // (Kasada/Akamai anti-bot, CDN bundles, OAuth callbacks), the exact WAF-protected flows this
+    // transport exists to survive, so it would defeat the transport's purpose. Bounded instead
+    // by: the producer REFUSES under block_internal_hosts (this is a direct-driver
+    // defense-in-depth path); the pin connects the target host to a validated IP; runAuthedFetchOp
+    // walks the FULL redirect chain and rejects the op if ANY hop — not only the landed origin —
+    // is off-scope or internal; and the scope check validates the URL's resolved IP under
+    // block_internal_hosts.
     this.authedFetchOp = { host: fetchHost };
     try {
-      return await this.runAuthedFetchOp({ origin, url, method, headers, body, timeout });
+      return await this.runAuthedFetchOp({ origin, url, method, headers, body, timeout, blockInternalHosts });
     } finally {
       this.authedFetchOp = null;
     }
@@ -855,7 +857,7 @@ class BrowserDriver {
   // Executes the priming navigation + the in-page credentialed fetch for authedFetch(). Split
   // out so authedFetch() can wrap it in the trusted-op guards (request-log suppression + the
   // strict per-host request abort) with a single try/finally cleanup.
-  async runAuthedFetchOp({ origin, url, method, headers, body, timeout }) {
+  async runAuthedFetchOp({ origin, url, method, headers, body, timeout, blockInternalHosts }) {
     // waitUntil:"commit" returns as soon as the response begins — it minimizes execution of
     // the (authenticated) origin page's own JS before the in-page fetch. Same-origin context
     // is still required (a cross-origin fetch would be CORS-opaque), so a minimal navigation
@@ -867,6 +869,42 @@ class BrowserDriver {
       const e = new Error(`authed_fetch_origin_drift: landed on ${landedOrigin} not ${origin}`);
       e.code = "authed_fetch_origin_drift";
       throw e;
+    }
+    // FULL redirect-chain scope check. page.goto follows 3xx by default, so a server-driven
+    // redirect could steer this ALREADY-credentialed priming navigation (session cookies are
+    // injected, credentialedSession=true) origin -> off-scope or internal host — a one-hop
+    // SSRF / scope bypass. The landed-origin check above only inspects the FINAL origin, so a
+    // bounce (origin -> attacker -> origin) would pass it while a credentialed request already
+    // reached the attacker. Walk the WHOLE chain via request.redirectedFrom() (the final
+    // request back to the first) and scope-check EVERY hop with the SAME predicate the fetch
+    // URL uses; fail closed — naming the offending hop — if any hop is off-scope/internal.
+    //
+    // BOUNDED RESIDUAL: a single credentialed request may reach the FIRST redirect target
+    // before Node can inspect the chain here — inherent to browser redirect-following without
+    // the forbidden catch-all network-route interceptor (a route glob over every URL), which
+    // aborts page-decided subresource loads (Kasada/Akamai/CDN/OAuth), the WAF flows this
+    // transport exists to survive. Bounded by: the target-host launch pin, the producer's
+    // block_internal_hosts refusal, and this full-chain post-check.
+    if (navResp) {
+      const hopUrls = [];
+      let hopReq = navResp.request();
+      while (hopReq) {
+        let hopUrl = null;
+        try { hopUrl = hopReq.url(); } catch { hopUrl = null; }
+        if (hopUrl) hopUrls.push(hopUrl);
+        hopReq = typeof hopReq.redirectedFrom === "function" ? hopReq.redirectedFrom() : null;
+      }
+      for (const hopUrl of hopUrls) {
+        try {
+          await assertSafeResolvedRequestUrl(hopUrl, this.targetDomain, { blockInternalHosts });
+        } catch (err) {
+          const e = new Error(
+            `authed_fetch_origin_drift: priming redirect hop ${hopUrl} is off-scope — ${err && err.message ? err.message : err}`,
+          );
+          e.code = "authed_fetch_origin_drift";
+          throw e;
+        }
+      }
     }
     await randomDelay(150, 400);
     // redirect:"manual" — do NOT follow redirects: an authenticated request that followed a

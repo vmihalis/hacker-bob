@@ -1114,17 +1114,48 @@ function segmentLooksLikeResourceInstance(seg) {
 // a router decodes it to, and an encoded separator (%2f -> /) re-splits into the real segments — the raw
 // check was parser-inconsistent with the action-verb guard (brutalist / Codex P1). A residual percent-escape
 // in any ancestor fails CLOSED (could decode further at the router to an untested id-bearing segment).
-// RESIDUAL: a pure-alpha tenant slug (`acme-corp`, no id portion) is indistinguishable from a static route
-// word and is NOT caught here — but A/B/C then share that container and the downstream same-tenant guard
-// (identities_collided_same_tenant / own_scope_missing) hard-blocks or downgrades the cross-tenant claim, so
-// cross-tenant SOUNDNESS stays backstopped even when this write-side defense-in-depth does not fire. A fully
-// known-synthetic (operator-seeded) parent contract is the deferred robust closure (ties to canary-injection).
+// A PURE-ALPHA tenant slug (`acme`, `acme-corp`, no id portion) is indistinguishable from a static route
+// word HERE, so this concrete-instance check alone cannot tell /api/orgs/acme/projects/accounts (a real
+// tenant container) from /api/reports/entries. That gap is closed FAIL-CLOSED by
+// createCollectionParentIsAmbiguous below, which refuses the write unless EVERY ancestor is provably a
+// known API-structural word — not by any downstream guard, which fires only AFTER the POST already landed
+// in the container AND only when the response bodies echo a comparable owning-scope key.
 function pathHasConcreteParentInstance(parentPath) {
   const decoded = decodePercentToFixedPoint(String(parentPath));
   const segs = decoded.split(/[/\\]/).filter(Boolean);
   const ancestors = segs.slice(0, -1);
   if (ancestors.some((s) => /%/.test(s))) return true; // residual encoding → fail closed
   return ancestors.some(segmentLooksLikeResourceInstance);
+}
+// Path segments that are DEFINITIVELY API-structural — the versioned / gateway prefixes a REST route
+// carries ABOVE its top-level collection, never a tenant/org/customer INSTANCE. Kept deliberately SMALL:
+// the fail-closed direction prefers declining a legitimate-but-nested collection over ever POSTing a
+// synthetic object into a real tenant container.
+const STATIC_API_ANCESTOR_WORDS = new Set([
+  "api", "apis", "rest", "restapi", "rpc", "jsonrpc", "graphql", "gql",
+  "public", "internal", "external", "gateway", "app",
+]);
+// A version-tag ancestor (v1, v2, v1_2, v2.1) is structural, not an instance.
+const VERSION_SEGMENT_RE = /^v\d+(?:[._-]\d+)*$/i;
+function isStaticApiAncestor(seg) {
+  const s = String(seg).toLowerCase();
+  return STATIC_API_ANCESTOR_WORDS.has(s) || VERSION_SEGMENT_RE.test(s);
+}
+// STRONGER than pathHasConcreteParentInstance: true when a derived create collection's PARENT path is NOT
+// provably a synthetic-owned / top-level-static collection — i.e. ANY ancestor segment is not a known
+// API-structural word, so the collection may be nested inside a real tenant/org container
+// (/api/orgs/acme/projects/accounts, where `acme` is a real tenant slug this cannot distinguish from a
+// static route word). The write-arm refuses in that case rather than POST a synthetic object into a
+// possibly-real container. Ancestors ONLY (the collection itself — the last segment — is the thing being
+// POSTed to and may be any noun). Percent-decoded to a fixed point (parser-consistent with the concrete
+// guard + the action-verb guard); a residual percent-escape in any ancestor fails CLOSED. A create path
+// with NO ancestors (a top-level collection like /accounts) is unambiguously safe.
+function createCollectionParentIsAmbiguous(createPath) {
+  const decoded = decodePercentToFixedPoint(String(createPath));
+  const segs = decoded.split(/[/\\]/).filter(Boolean);
+  const ancestors = segs.slice(0, -1);
+  if (ancestors.some((s) => /%/.test(s))) return true; // residual encoding → fail closed
+  return ancestors.some((s) => !isStaticApiAncestor(s));
 }
 
 // CREATE one synthetic object as `identity` via POST to the derived collection endpoint, the canary
@@ -1553,8 +1584,8 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
     // is not proven to be a synthetic-owned collection. A concrete resource-INSTANCE ancestor (numeric id /
     // uuid / `proj-123`) means the derived POST would create the synthetic object INSIDE a real fixed
     // tenant/project container (/api/orgs/acme-corp/projects/proj-123/accounts), so refuse rather than write
-    // there (brutalist). Pure-alpha tenant slugs are a documented residual backstopped by the downstream
-    // same-tenant guard (see pathHasConcreteParentInstance).
+    // there (brutalist). A concrete instance gives the most precise reason; a pure-alpha ambiguous parent
+    // (`acme`) is caught fail-closed by createCollectionParentIsAmbiguous below (post-PII-screen).
     if (pathHasConcreteParentInstance(createPath)) {
       return blocked("blocked_by_design", "create_collection_nested_in_real_container", {
         target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
@@ -1580,6 +1611,23 @@ async function idorConfirm(args = {}, { fetch_fn = null, provision = null } = {}
           ...identity, ...internalHostPolicy,
         });
       }
+    }
+    // #5b nested-container guard (STRONGER than the concrete-instance check above): route-binding proves
+    // the READ is on-surface, but the stripped PARENT is only safe to POST INTO when it is provably a
+    // synthetic-owned / top-level-static collection. A PURE-ALPHA tenant/org slug (`acme` in
+    // /api/orgs/acme/projects/accounts) is indistinguishable from a static route word, so the concrete-
+    // instance check cannot catch it and no downstream guard can backstop it: the same-tenant guard fires
+    // only AFTER this POST already created a synthetic object inside the real container, and only when the
+    // response bodies echo a comparable owning-scope key (absent → it merely soft-downgrades and STILL
+    // mints). So refuse the write unless EVERY ancestor is a known API-structural word — a false decline is
+    // preferred over ever writing into a real tenant/org container (fail-closed; the decline is recorded as
+    // a blocked_by_design row, never a silent drop). Ordered AFTER the write-byte PII screen so an ambiguous
+    // parent that ALSO carries operator PII reports the more actionable PII reason.
+    if (createCollectionParentIsAmbiguous(createPath)) {
+      return blocked("blocked_by_design", "create_collection_nested_in_ambiguous_container", {
+        target_domain: domain, surface_id: surfaceId, oracle_kind: oracleKind,
+        ...identity, ...internalHostPolicy,
+      });
     }
     assertSafeRequestUrl(createUrl, domain, SCOPE_VALIDATION_OPTS); // the ONE allowed write; NOT read-only-guarded
     const provisionProbeBase = {
@@ -2337,6 +2385,7 @@ module.exports = {
   idorProvisionAuthorizedFor,
   mintCanary,
   pathHasConcreteParentInstance,
+  createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
   // NOTE: buildAndSignOffensiveRow (in offensive-capture-writer.js) + assertSingleHostBoundEndpoint
   // are NOT re-exported here. buildAndSignOffensiveRow signs+writes a row WITHOUT running the

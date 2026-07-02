@@ -31,6 +31,7 @@ const {
   createObject,
   idorProvisionAuthorizedFor,
   pathHasConcreteParentInstance,
+  createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
 } = require("../mcp/lib/offensive-idor-producer.js");
 const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
@@ -3436,6 +3437,64 @@ test("PR-D r15/r16: pathHasConcreteParentInstance flags id-bearing parents (incl
   assert.equal(pathHasConcreteParentInstance("/api/notes"), false);
   assert.equal(pathHasConcreteParentInstance("/api/v1/notes"), false, "a version tag is not an instance");
   assert.equal(pathHasConcreteParentInstance("/api/oauth2/tokens"), false, "an acronym-with-digit route word is not an instance");
+});
+
+test("PR-D r17 (security HIGH): a PURE-ALPHA nested tenant parent (/api/orgs/acme/projects/accounts) is REFUSED before any write", () => withTempHome(async () => {
+  const domain = "idor-r17-alphatenant.example.test";
+  JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}/` }));
+  // The parent /api/orgs/acme/projects carries a REAL tenant slug `acme` that no concrete-instance check can
+  // distinguish from a static route word; the derived POST would create a synthetic object INSIDE acme's
+  // container. The write-arm must refuse fail-closed, NOT rely on a downstream same-tenant guard that fires
+  // only after the POST already landed (and only when the bodies echo a comparable owning-scope key).
+  seedRoutedSurface(domain, SURFACE_ID, `https://${domain}/api/orgs/acme/projects/accounts/${OBJ_B}`);
+  seedSyntheticProfiles(domain, {});
+  ensureHandoffSigningKey(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm(
+      { ...baseArgs(domain), path_template: "/api/orgs/acme/projects/accounts/{id}", canary_field: "note" },
+      { fetch_fn: mock },
+    );
+    assert.equal(result.offensive_outcome, "blocked_by_design", JSON.stringify(result));
+    assert.equal(result.reason, "create_collection_nested_in_ambiguous_container", JSON.stringify(result));
+    assert.equal(result.confirmed, false);
+    assert.equal(mock.postCount(), 0, "ZERO create POSTs into a real (pure-alpha) tenant container");
+    assert.equal(readOffensiveRunRecords(domain).length, 0, "no row minted for a refused write");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r17: a genuinely-safe top-level synthetic-owned collection (/api/accounts) still mints", () => withTempHome(async () => {
+  const domain = "idor-r17-safetop.example.test";
+  setupSession(domain);
+  const saved = process.env[IDOR_PROVISION_ENV];
+  process.env[IDOR_PROVISION_ENV] = domain;
+  try {
+    const mock = liveArmFetchFn();
+    const result = await idorConfirm({ ...baseArgs(domain), canary_field: "note" }, { fetch_fn: mock });
+    assert.equal(result.confirmed, true, JSON.stringify(result));
+    assert.equal(result.offensive_outcome, "exploited_safely");
+    assert.equal(mock.postCount(), 3, "a top-level collection whose only ancestors are static API words still provisions");
+  } finally {
+    if (saved === undefined) delete process.env[IDOR_PROVISION_ENV]; else process.env[IDOR_PROVISION_ENV] = saved;
+  }
+}));
+
+test("PR-D r17: createCollectionParentIsAmbiguous refuses ambiguous alpha parents, allows top-level/static", () => {
+  // ambiguous: a plain collection-noun or pure-alpha tenant slug ancestor → refuse (fail-closed)
+  assert.equal(createCollectionParentIsAmbiguous("/api/orgs/acme/projects/accounts"), true, "pure-alpha tenant slug parent");
+  assert.equal(createCollectionParentIsAmbiguous("/api/tenants/acme/users"), true, "tenant-slug parent");
+  assert.equal(createCollectionParentIsAmbiguous("/api/orgs/accounts"), true, "nested collection-noun parent (orgs) is not provably static");
+  assert.equal(createCollectionParentIsAmbiguous("/api/users/%zz/notes"), true, "residual percent-escape parent fails closed");
+  // safe: a top-level collection whose ancestors are ALL known API-structural words (or none)
+  assert.equal(createCollectionParentIsAmbiguous("/api/accounts"), false, "api-rooted top-level collection");
+  assert.equal(createCollectionParentIsAmbiguous("/api/v1/accounts"), false, "version-tag ancestor is structural");
+  assert.equal(createCollectionParentIsAmbiguous("/api/v2.1/users"), false, "dotted version tag is structural");
+  assert.equal(createCollectionParentIsAmbiguous("/accounts"), false, "a bare top-level collection has no ancestors");
+  assert.equal(createCollectionParentIsAmbiguous("/public/gql/tokens"), false, "all-structural ancestors");
 });
 
 // ───────────────────────────── round-16 review (brutalist + Codex P1 + CodeRabbit) ─────────────────────────────

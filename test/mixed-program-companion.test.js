@@ -232,6 +232,87 @@ test("a control web-only init (no contracts) is unchanged", async () => {
   });
 });
 
+test("a resume (re-init of the same domain with a DIFFERENT companion) does NOT overwrite the bound target_contracts", async () => {
+  await withTempHome(async () => {
+    // First init binds contract ADDR_IN.
+    const first = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
+    });
+    assert.equal(first.ok, true, `expected ok:true, got ${JSON.stringify(first)}`);
+    assert.deepEqual(first.data.target_contracts, [CAIP_IN]);
+
+    // Re-init the SAME domain with a DIFFERENT companion contract. The resume
+    // must not overwrite the already-bound chain authority. (The web-axis init
+    // refuses to re-create an existing session, so this returns an error rather
+    // than silently re-binding.)
+    const resume = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_OUT }],
+    });
+    assert.equal(resume.ok, false, `expected the resume to be refused, got ${JSON.stringify(resume)}`);
+
+    // The originally-bound scope survives untouched: ADDR_IN, never ADDR_OUT.
+    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
+    assert.deepEqual(persisted.target_contracts, [CAIP_IN],
+      `resume must not clobber target_contracts, got ${JSON.stringify(persisted.target_contracts)}`);
+  });
+});
+
+test("the handler guard skips the companion re-bind when initSession reports created !== true (fail-closed resume)", async () => {
+  await withTempHome(async () => {
+    // Establish a real session bound to ADDR_IN so a clobber would be observable
+    // on disk as target_contracts flipping to ADDR_OUT.
+    const first = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_IN }],
+    });
+    assert.equal(first.ok, true, `expected ok:true, got ${JSON.stringify(first)}`);
+    assert.deepEqual(first.data.target_contracts, [CAIP_IN]);
+
+    // Directly exercise the guard: patch initSession to RETURN created:false
+    // (a resume that yields the existing binding instead of throwing), then load
+    // a fresh copy of the tool that destructures the patched function. Without
+    // the guard this would drive bindContractCompanion (a read-modify-write) and
+    // overwrite target_contracts with the ADDR_OUT companion.
+    const sessionStateModule = require("../mcp/lib/session-state.js");
+    const original = sessionStateModule.initSession;
+    const toolPath = require.resolve("../mcp/lib/tools/init-session.js");
+    sessionStateModule.initSession = () => JSON.stringify({
+      version: 1,
+      created: false,
+      session_dir: "example.com",
+      state: { target: "example.com" },
+    });
+    delete require.cache[toolPath];
+    try {
+      const tool = require("../mcp/lib/tools/init-session.js");
+      const out = tool.handler({
+        target_domain: "example.com",
+        target_url: "https://example.com",
+        contracts: [{ chain_family: "evm", chain_id: "1", address: ADDR_OUT }],
+      });
+      const parsed = JSON.parse(out);
+      // The init result is returned UNTOUCHED: no companion projection is added.
+      assert.equal(parsed.created, false);
+      assert.equal(parsed.target_contracts, undefined,
+        `resume must not project a companion binding, got ${JSON.stringify(parsed.target_contracts)}`);
+      assert.equal(parsed.seeded_surfaces, undefined);
+    } finally {
+      sessionStateModule.initSession = original;
+      delete require.cache[toolPath];
+    }
+
+    // The read-modify-write never ran: the bound scope is still ADDR_IN.
+    const persisted = readJsonFile(statePath("example.com"), { label: "state.json" });
+    assert.deepEqual(persisted.target_contracts, [CAIP_IN],
+      `guard must leave target_contracts bound to ADDR_IN, got ${JSON.stringify(persisted.target_contracts)}`);
+  });
+});
+
 test("contract identity keys preserve base58/SS58 case and stay consistent across mint + membership", () => {
   const { caip10Endpoint, contractSurfaceId } = require("../mcp/lib/contract-target.js");
   const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");

@@ -230,6 +230,34 @@ test("authed_fetch scope-checks the URL and guards origin drift", () => {
   assert.match(DRIVER_SRC, /authed_fetch_origin_drift/);
 });
 
+test("authed_fetch scope-checks the FULL priming redirect chain, not just the landed origin", () => {
+  // SSRF/scope-bypass regression: page.goto follows 3xx while ALREADY credentialed. Checking
+  // only the LANDED origin lets a bounce (origin -> attacker -> origin) pass — a credentialed
+  // request already reached `attacker`. The op must walk the whole chain via redirectedFrom()
+  // (the final request back to the first) and scope-check EVERY hop, fail-closed on any that
+  // is off-scope. The landed-origin check stays as a first-line guard.
+  assert.match(DRIVER_SRC, /navResp\.request\(\)/, "the chain walk starts from the nav response's request");
+  assert.match(DRIVER_SRC, /\.redirectedFrom\(\)/, "the redirect chain is walked via redirectedFrom()");
+  // Every collected hop is validated with the same resolved-scope predicate the fetch URL uses,
+  // honoring the block_internal_hosts policy threaded into runAuthedFetchOp.
+  assert.match(
+    DRIVER_SRC,
+    /for \(const hopUrl of hopUrls\)[\s\S]*?assertSafeResolvedRequestUrl\(hopUrl, this\.targetDomain, \{ blockInternalHosts \}\)/,
+    "each redirect hop must be scope-checked, not only the landed origin",
+  );
+  assert.match(
+    DRIVER_SRC,
+    /runAuthedFetchOp\(\{[^}]*blockInternalHosts[^}]*\}\)/,
+    "the block_internal_hosts policy must be threaded into the redirect-chain check",
+  );
+  // An off-scope hop fails closed with a structured origin-drift error that names the hop.
+  assert.match(DRIVER_SRC, /authed_fetch_origin_drift: priming redirect hop \$\{hopUrl\} is off-scope/);
+  // The landed-origin check is preserved (it is not replaced by the chain walk).
+  assert.match(DRIVER_SRC, /authed_fetch_origin_drift: landed on \$\{landedOrigin\} not \$\{origin\}/);
+  // The fix must NOT reach for the forbidden catch-all route interceptor.
+  assert.doesNotMatch(DRIVER_SRC, /context\.route\s*\(\s*["'`]\*\*\/\*["'`]/);
+});
+
 test("authed_fetch races a wall-clock timeout (no session pin) and caps the body", () => {
   assert.match(DRIVER_SRC, /authed_fetch_timeout after \$\{timeout\}ms/);
   assert.match(DRIVER_SRC, /MAX_AUTHED_FETCH_BODY_BYTES/);
