@@ -13,6 +13,7 @@ async function handler(args) {
     timeout_ms: args.timeout_ms,
     egress_profile: args.egress_profile,
     platform: args.platform,
+    harness_override: args.harness_override,
   });
   return JSON.stringify({
     version: 1,
@@ -72,6 +73,10 @@ module.exports = Object.freeze({
         type: "string",
         enum: ["native", "linux/amd64", "linux/arm64"],
         description: "Container platform. 'native' (default) = host arch; 'linux/amd64' runs an x86_64 image (via emulation on Apple Silicon) so x86-only targets like Firedancer build/fuzz correctly — the emulated CPU here supports AVX2+AES-NI.",
+      },
+      harness_override: {
+        type: "string",
+        description: "Optional repo-relative path (no absolute path, no .. escape) to the LLVMFuzzerTestOneInput harness the native fuzz arms must use. Forces the image-baked builder to use that TU verbatim instead of its auto-selection; the builder fails closed if the file is absent. Use this to disambiguate a multi-harness tree (e.g. select a protocol harness instead of an app-config one).",
       },
     },
     required: ["target_domain"],
