@@ -258,3 +258,47 @@ test("normalizeOneTuple case-folds hex families but PRESERVES base58/SS58 identi
     "evm case-insensitive membership preserved",
   );
 });
+
+test("chain-authority hardening: traversal-guarded chain_id/address, fail-closed query family, inert provenanced", () => {
+  const {
+    normalizeContractTupleStrict, normalizeOneTuple, isChainTupleInAuthority,
+  } = require("../mcp/lib/chain-authority.js");
+  // (1) chain_id / address are interpolated into contracts/<chain_id>/<address>/ —
+  // path-traversal / separator chars must fail closed at bind time.
+  for (const bad of ["../../x", "a/b", "a\\b", "1:2"]) {
+    assert.throws(
+      () => normalizeContractTupleStrict({ chain_family: "evm", chain_id: bad, address: "0xabc" }),
+      /must not contain/,
+      `chain_id '${bad}' must be rejected`,
+    );
+  }
+  assert.throws(
+    () => normalizeContractTupleStrict({ chain_family: "evm", chain_id: "1", address: "../evil" }),
+    /path-traversal/,
+    "address with '..' must be rejected",
+  );
+  // legit still passes
+  assert.equal(
+    normalizeContractTupleStrict({ chain_family: "evm", chain_id: "1", address: "0xABC" }).chain_id,
+    "1",
+  );
+  // (2) query-time normalizer applies the SAME CHAIN_FAMILY_VALUES check as bind-time.
+  assert.equal(
+    normalizeOneTuple({ chain_family: "boguschain", chain_id: "1", address: "0xabc" }),
+    null,
+    "unknown chain_family drops to null at query time (fail-closed, matches bind path)",
+  );
+  // (3) OD3 same-chain relaxation is inert: provenanced:true must NOT admit a
+  // same-(family,chain_id) DIFFERENT address (that was a primed chain-wide fail-open).
+  const bound = [{ chain_family: "evm", chain_id: "1", address: "0xaaa" }];
+  assert.equal(
+    isChainTupleInAuthority({ chain_family: "evm", chain_id: "1", address: "0xbbb" }, bound, { provenanced: true }),
+    false,
+    "provenanced:true does NOT authorize a different same-chain address (no bare same-chain fail-open)",
+  );
+  assert.equal(
+    isChainTupleInAuthority({ chain_family: "evm", chain_id: "1", address: "0xaaa" }, bound, { provenanced: true }),
+    true,
+    "exact tuple still admitted regardless of the flag",
+  );
+});

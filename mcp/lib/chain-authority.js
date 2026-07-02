@@ -119,10 +119,15 @@ function normalizeContractTupleStrict(raw, index) {
       at,
     );
   }
-  if (chainId.includes(":")) {
+  // chain_id round-trips through the CAIP-10 '<family>:<chainId>:<address>'
+  // projection AND is interpolated into the sc-recon-expander scratch path
+  // contracts/<chain_id>/<address>/, so reject the CAIP separator ':' and any
+  // path-traversal / separator characters ('/', '\', '..'): an operator typo or a
+  // hostile chain_id must fail closed at bind time, never escape the scratch dir.
+  if (/[:/\\]/.test(chainId) || chainId.includes("..")) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
-      `contract binding${where} chain_id must not contain ':' (reserved CAIP-10 separator)`,
+      `contract binding${where} chain_id must not contain ':', '/', '\\', or '..' (CAIP-10 separator / path-traversal)`,
       at,
     );
   }
@@ -131,6 +136,14 @@ function normalizeContractTupleStrict(raw, index) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `contract binding${where} must carry a non-empty address`,
+      at,
+    );
+  }
+  // address is likewise interpolated into the scratch path — same traversal guard.
+  if (/[/\\]/.test(address) || address.includes("..")) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `contract binding${where} address must not contain '/', '\\', or '..' (path-traversal)`,
       at,
     );
   }
@@ -181,6 +194,12 @@ function normalizeOneTuple(entry) {
   ) {
     return null;
   }
+  // Bind-vs-query consistency: the bind path (normalizeContractTupleStrict) rejects
+  // any chain_family outside CHAIN_FAMILY_VALUES. This query-time normalizer must
+  // apply the SAME membership check (fail-closed) so a family that could never be
+  // bound is never normalized-and-compared into a match — a tuple with an unknown
+  // family drops to null (no membership, no hash entry), never a lenient pass.
+  if (!CHAIN_FAMILY_VALUES.includes(normalizedFamily)) return null;
 
   const normalizedChainId = String(chainId).trim();
   // Single-sourced canonical address normalization (fold hex families, preserve
@@ -235,12 +254,14 @@ function chainAuthorityHash(contracts) {
   return hashCanonicalJson(projected);
 }
 
-// Membership predicate. Default is strict exact-tuple membership (chain_family
-// AND chain_id AND address all match a bound contract). The OD3 same-chain
-// relaxation — chain_family + chain_id match, address may differ — is reachable
-// ONLY when the caller explicitly passes { provenanced: true }. This implements
-// the relaxed-membership switch only; provenance DETECTION is not wired here and
-// lands with a later node.
+// Membership predicate. ALWAYS strict exact-tuple membership (chain_family AND
+// chain_id AND address all match a bound contract). The OD3 same-chain relaxation
+// is INTENTIONALLY INERT: a bare same-(chain_family, chain_id) match would be a
+// chain-wide fail-open (one bound contract authorizing every address on the chain),
+// so it must require a PROVEN edge (impl slot / role table / constructor arg) from
+// the bound set — and that provenance-edge detection is not yet wired. The
+// { provenanced } option is reserved for that future edge-checked path; today it
+// changes NOTHING (never a bare same-chain shortcut).
 function isChainTupleInAuthority(tuple, boundContracts, options = {}) {
   const { provenanced = false } = options;
   const t = normalizeOneTuple(tuple);
@@ -256,12 +277,15 @@ function isChainTupleInAuthority(tuple, boundContracts, options = {}) {
   );
   if (exact) return true;
 
-  if (provenanced) {
-    return authority.some(
-      (a) => a.chain_family === t.chain_family && a.chain_id === t.chain_id,
-    );
-  }
-
+  // OD3 same-chain relaxation is INTENTIONALLY inert. A bare same-(chain_family,
+  // chain_id) match is a chain-WIDE fail-open — one bound contract would authorize
+  // EVERY address on that chain. A real relaxation must require a PROVEN edge
+  // (EIP-1967 impl slot / role table / constructor arg) from the bound set to the
+  // candidate address; that provenance-edge detection is not yet wired, and until it
+  // is, membership stays STRICT exact-tuple regardless of the flag. `provenanced` is
+  // reserved for the future edge-checked path — it is NEVER a bare same-chain
+  // shortcut (which would be a primed fail-open in the authority kernel).
+  void provenanced;
   return false;
 }
 
