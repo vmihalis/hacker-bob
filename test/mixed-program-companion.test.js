@@ -231,3 +231,29 @@ test("a control web-only init (no contracts) is unchanged", async () => {
     );
   });
 });
+
+test("contract identity keys preserve base58/SS58 case and stay consistent across mint + membership", () => {
+  const { caip10Endpoint, contractSurfaceId } = require("../mcp/lib/contract-target.js");
+  const { normalizeOneTuple, isChainTupleInAuthority } = require("../mcp/lib/chain-authority.js");
+  // svm (base58, case-SENSITIVE): the minted CAIP-10 endpoint + surface id must
+  // PRESERVE case (the pre-fix unconditional lowercase corrupted Solana identity
+  // and desynced the persisted target_contracts[] from the membership tuple).
+  const svm = { chainFamily: "svm", chainId: "mainnet", address: "AbCdEf1234" };
+  assert.equal(caip10Endpoint(svm), "svm:mainnet:AbCdEf1234", "svm caip10 endpoint case-preserved");
+  assert.ok(contractSurfaceId(svm).endsWith("AbCdEf1234"), "svm surface id case-preserved");
+  // Round-trip: the persisted CAIP-10 string re-parses (normalizeOneTuple) to a tuple
+  // that IS in its own authority, and a case-variant svm address is NOT (fail-closed).
+  const persisted = caip10Endpoint(svm);
+  assert.equal(isChainTupleInAuthority(persisted, [persisted]), true, "persisted svm endpoint self-admits");
+  assert.equal(
+    isChainTupleInAuthority("svm:mainnet:abcdef1234", [persisted]),
+    false,
+    "case-variant svm address is NOT admitted (no fail-open collision)",
+  );
+  // evm (hex, case-INSENSITIVE): still folds, so checksummed and lowercased are one key.
+  assert.equal(
+    caip10Endpoint({ chainFamily: "evm", chainId: "1", address: "0xABCDEF" }),
+    "evm:1:0xabcdef",
+    "evm caip10 endpoint case-folded",
+  );
+});

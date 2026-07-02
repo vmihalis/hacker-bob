@@ -20,7 +20,11 @@ const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 const { validateNoSensitiveMaterial } = require("./sensitive-material.js");
 const { ToolError, ERROR_CODES } = require("./envelope.js");
-const { chainAuthorityHash, normalizeContractTupleStrict } = require("./chain-authority.js");
+const {
+  chainAuthorityHash,
+  normalizeContractTupleStrict,
+  normalizeContractAddress,
+} = require("./chain-authority.js");
 
 // Normalize ONE raw {chain_family, chain_id, address} binding into the internal
 // camelCase shape the seeding + CAIP-10 helpers consume. Delegates to the single
@@ -37,19 +41,19 @@ function normalizeContractBinding(raw, index) {
 }
 
 // Deterministic on-chain surface identity. Colon-free, '-'-separated so it stays
-// index/path-safe (cf. safeSurfaceId, repo-target.js:1265); address lowercased so
-// two casings of one EVM address fold to a single surface. Same contract => same
-// id (idempotent fold); distinct contracts => distinct id.
+// index/path-safe (cf. safeSurfaceId, repo-target.js:1265); address normalized via
+// the shared normalizeContractAddress (hex families case-fold; base58/SS58 preserve)
+// so one contract => one id and distinct contracts => distinct id on every chain.
 function contractSurfaceId({ chainFamily, chainId, address }) {
-  return `sc-${chainFamily}-${chainId}-${address.toLowerCase()}`;
+  return `sc-${chainFamily}-${chainId}-${normalizeContractAddress(chainFamily, address)}`;
 }
 
-// Canonical CAIP-10 '<family>:<chainId>:<addr.toLowerCase()>'. Parse-compatible
-// with lead-promotion.smartContractSurfaceKey (lead-promotion.js:171-184) so a
-// seeded surface and any promoted lead for the same contract share one on-chain
-// identity key.
+// Canonical CAIP-10 '<family>:<chainId>:<normalizeContractAddress(...)>'. Parse-
+// compatible with lead-promotion.smartContractSurfaceKey, which routes through the
+// SAME shared family+address normalizers, so a seeded surface and any promoted lead
+// for one contract share one on-chain identity key (hex fold; base58/SS58 preserve).
 function caip10Endpoint({ chainFamily, chainId, address }) {
-  return `${chainFamily}:${chainId}:${address.toLowerCase()}`;
+  return `${chainFamily}:${chainId}:${normalizeContractAddress(chainFamily, address)}`;
 }
 
 // Seed one surface.observed per bound contract through the Y-D21 funnel. READ-ONLY

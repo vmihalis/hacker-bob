@@ -47,6 +47,20 @@ function normalizeChainToken(value) {
   return normalized || null;
 }
 
+// THE single canonical contract-address normalizer every identity / dedup / hash
+// / CAIP-10 site must call, so address casing can never disagree across modules
+// (the whack-a-mole that produced repeated base58/SS58 scope fail-opens). Trims,
+// then case-folds ONLY for case-insensitive hex families (evm/aptos/sui); base58
+// (svm), SS58 (substrate), and bech32 (cosmwasm) are case-PRESERVED. Accepts a
+// raw or already-normalized chain_family (normalizeChainToken is idempotent).
+function normalizeContractAddress(chainFamily, address) {
+  const trimmed = String(address == null ? "" : address).trim();
+  const family = normalizeChainToken(chainFamily);
+  return family != null && CASE_FOLD_SAFE_CHAIN_FAMILIES.has(family)
+    ? trimmed.toLowerCase()
+    : trimmed;
+}
+
 // Strict, fail-closed canonical normalization of ONE raw {chain_family, chain_id,
 // address} binding into a canonical tuple. This is the SINGLE bind-time normal
 // form shared by every axis that persists an in-scope contract set: the
@@ -156,14 +170,9 @@ function normalizeOneTuple(entry) {
   }
 
   const normalizedChainId = String(chainId).trim();
-  const trimmedAddress = String(address).trim();
-  // Case-fold the address ONLY for case-insensitive hex families; PRESERVE case
-  // for base58/SS58/bech32 (svm/substrate/cosmwasm) — lowercasing them corrupts
-  // identity and can collide two distinct addresses onto one authority entry
-  // (membership fail-open) or desync the authority hash from the bind-time tuple.
-  const normalizedAddress = CASE_FOLD_SAFE_CHAIN_FAMILIES.has(normalizedFamily)
-    ? trimmedAddress.toLowerCase()
-    : trimmedAddress;
+  // Single-sourced canonical address normalization (fold hex families, preserve
+  // base58/SS58/bech32) so membership + hash never disagree with the other sites.
+  const normalizedAddress = normalizeContractAddress(normalizedFamily, address);
   if (normalizedChainId === "" || normalizedAddress === "") return null;
 
   return {
@@ -256,4 +265,8 @@ module.exports = {
   // Single-sourced case-fold-safe (hex) family set; imported by the producer floor
   // so address case-folding keys on chain_family identically everywhere.
   CASE_FOLD_SAFE_CHAIN_FAMILIES,
+  // The single canonical address / family normalizers every contract identity,
+  // dedup key, and CAIP-10 endpoint routes through so casing never diverges.
+  normalizeContractAddress,
+  normalizeChainToken,
 };

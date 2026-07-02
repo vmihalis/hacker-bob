@@ -19,6 +19,7 @@ const {
 const { surfaceLeadsPath } = require("./paths.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
 const { withSessionLock } = require("./storage.js");
+const { normalizeChainToken, normalizeContractAddress } = require("./chain-authority.js");
 const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
 const {
@@ -173,9 +174,11 @@ function warnExternalProducerMissingRationale(domain, normalizedLeads) {
 
 // Y-D21 / derive a contract-address identity key for
 // smart_contract surfaces so a surface_id keys on the on-chain identity
-// (chain_family, chain_id, contract_address.toLowerCase()) rather than the
+// (chain_family, chain_id, contract_address) rather than the
 // human title. Returns a `${chain_family}:${chain_id}:${address}` string
-// (address lowercased; family/chain_id trimmed) when the lead is a
+// (normalized through the shared chain-authority normalizers — family folded to
+// its canonical token, address case-folded for hex families and preserved for
+// base58/SS58/bech32, chain_id trimmed) when the lead is a
 // smart_contract carrying chain_family + chain_id + a contract address
 // (an explicit contract_address field, or the first endpoints[] entry in
 // the canonical 'family:chainId:address' form whose family/chainId match the
@@ -206,7 +209,11 @@ function smartContractSurfaceKey(lead) {
     }
   }
   if (!address) return null;
-  return `${chainFamily}:${chainId}:${address.toLowerCase()}`;
+  // Route through the SAME shared normalizers as contract-target.caip10Endpoint so
+  // a seeded surface and a promoted lead for one contract yield one identity key:
+  // family folded to the canonical token, address case-folded ONLY for hex families
+  // (base58/SS58 preserved — the pre-fix unconditional lowercase desynced Solana).
+  return `${normalizeChainToken(chainFamily)}:${chainId}:${normalizeContractAddress(chainFamily, address)}`;
 }
 
 function uniqueSurfaceId(lead) {
