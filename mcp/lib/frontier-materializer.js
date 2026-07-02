@@ -187,6 +187,31 @@ function applySurfaceFields(surface, event) {
     // semantic (rank-don't-bound: the cap is the only bound). The FIRST
     // observation of a surface has no prior depth to fold against, so it records
     // the incoming depth verbatim; only a re-observation takes the min.
+    //
+    // KNOWN-BOUNDED DESYNC (sc-expander re-expansion). This fold lowers the
+    // SURFACE depth, but the per-instance sc_address_expander that consumes the
+    // surface is keyed by a DEPTH-INDEPENDENT producer_key
+    // (`sc_address_expander:<family>:<chain_id>:<address>`, minted in
+    // planScExpanderRecursion and used as the run-ledger terminal-dedup key
+    // `runSet.has(producer_key)` in materialize-producer-floor.js). A contract
+    // first discovered DEEP that fully expanded — its producer_key is terminal
+    // 'produced' in the run ledger — and is LATER re-reached via a shorter path
+    // folds its surface depth DOWN here (correct), but the depth-independent
+    // terminal dedup skips re-expansion, so its now-in-budget deeper links
+    // (grandchildren) stay undiscovered. This is graceful UNDER-exploration, never
+    // a false finding: this fold and surface-index.json are correct; only the
+    // already-terminal expander does not re-fire. The blast radius is bounded by
+    // depth-1-safe provenance — the server never stamps provenance on
+    // producer-emitted surfaces, so EVERY unprovenanced same-chain linked child is
+    // withheld as an sc_unprovenanced_link gap REGARDLESS of this desync, i.e.
+    // same-chain lineage is never expanded past depth 1 whether or not the expander
+    // re-fires. The residual is only bound-root re-discovery (already depth<=1, so
+    // this fold is a no-op there) and cross-chain re-discovery (a chain no seed
+    // bound, admitted without a provenance verdict). A structural fix would
+    // depth-key the expander's producer_key in the sibling-owned floor planner
+    // (planScExpanderRecursion), not at this fold, and must keep the key inside
+    // [1, linked_contract_depth] to preserve the isProducerFloorAtFixpoint
+    // termination the producer floor establishes.
     if (Number.isInteger(surface[field])) {
       surface[field] = Math.min(surface[field], incoming);
     } else {

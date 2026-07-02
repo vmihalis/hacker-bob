@@ -317,6 +317,7 @@
   "test/producer-race-freedom.test.js",
   "test/producer-packs-sc.test.js",
   "test/sc-expander-recursion.test.js",
+  "test/sc-expander-depth-desync.test.js",
   "test/oss-repo-ref-gate.test.js",
   "test/sc-expander-provenance.test.js",
   "test/sc-recon-expander-prompt.test.js",

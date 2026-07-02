@@ -33,6 +33,7 @@ const {
   recordProducerRun,
   producerStrikeTally,
   producerRunSet,
+  buildProducerRunLedgerCache,
   STUCK_PRODUCER_DISPATCH_THRESHOLD,
 } = require("../mcp/lib/producer-run-ledger.js");
 const {

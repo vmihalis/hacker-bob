@@ -157,14 +157,24 @@ function planProducerFloor({
       // never a gap) once address-keyed instances cover the recursion.
       if (producerId === SC_ADDRESS_EXPANDER_PRODUCER_ID && hasScSurfaces) continue;
       const consumes = Array.isArray(trigger.consumes) ? trigger.consumes : [];
+      const produces = Array.isArray(pack.produces) ? pack.produces : [];
       // ONE readiness source (isProducerReady). The default 'all' mode is a JOIN:
       // a multi-input producer (web_assembly's eight kinds) is ready only when
       // EVERY consumed kind is available, never on a partial input set. A pack
       // may opt into 'any' (e.g. sc_address_expander) via trigger.input_mode.
-      if (isProducerReady(consumes, available, trigger.input_mode)) {
+      // pack.produces is passed so a self-edge kind (sc_surface, which the expander
+      // both consumes AND produces) is excluded from readiness: a self-produced kind
+      // is permanently available once minted and would make the producer "ready
+      // forever", so readiness rests on the external inputs and the self-recursion's
+      // termination is carried structurally by the per-instance dedup below (an
+      // instance is proposed iff its on-chain identity is un-expanded).
+      if (isProducerReady(consumes, available, trigger.input_mode, produces)) {
         ready.push(pack);
       } else {
-        const missing = consumes.filter((kind) => !available.has(kind));
+        // Report only the EXTERNAL (non-self-produced) inputs as missing — a
+        // self-edge kind is never a readiness input, so it is never "missing".
+        const selfProduced = new Set(produces);
+        const missing = consumes.filter((kind) => !selfProduced.has(kind) && !available.has(kind));
         // PRD-2 RANK != BOUND: every not-ready derived producer is REPORTED at
         // construction — pushed onto gaps[] in full, never dropped, capped, or
         // truncated here. Any later display ceiling is an external read-time
