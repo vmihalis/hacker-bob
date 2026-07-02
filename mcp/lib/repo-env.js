@@ -210,6 +210,20 @@ const RECOMMENDED_COMMAND_ROLES = Object.freeze([
   "compose",
 ]);
 
+// Container platform for docker build/run. "native" (default) emits NO
+// --platform flag, so the argv is byte-identical to a caller that omits the
+// param (host arch). The explicit linux/* values push --platform onto BOTH
+// the build argv and the run argv so an x86-only target (e.g. Firedancer,
+// which needs AVX2+AES-NI) builds and fuzzes under emulation on Apple Silicon.
+const PLATFORM_VALUES = Object.freeze(["native", "linux/amd64", "linux/arm64"]);
+
+// Single "native ⇒ omit" rule shared by the build and run argv builders so
+// they cannot drift: returns the platform string to hand docker, or null to
+// emit nothing (native / absent).
+function platformFlagValue(platform) {
+  return platform && platform !== "native" ? platform : null;
+}
+
 function dockerfileBobPath(domain) {
   return path.join(sessionDir(domain), "Dockerfile.bob");
 }
@@ -852,9 +866,14 @@ function buildDockerBuildArgv({
   allowNetwork,
   targetDomain,
   egressProfile,
+  platform,
   env = {},
 }) {
   const args = ["build"];
+  // platform: native (or absent) emits nothing so the argv is unchanged from
+  // the pre-platform behavior; a linux/* value pins the built image's arch.
+  const platformValue = platformFlagValue(platform);
+  if (platformValue) args.push("--platform", platformValue);
   args.push("--network", allowNetwork ? "default" : "none");
   args.push("--build-arg", `SESSION_ID=${targetDomain}`);
   if (allowNetwork) {
@@ -940,6 +959,7 @@ function buildRepoEnvDocument({
   recommendedCommands,
   imageTag,
   baseImage,
+  platform,
   buildImage,
   dryRun,
   allowNetwork,
@@ -967,6 +987,7 @@ function buildRepoEnvDocument({
       seed_corpus_count: normalizedSeedCorpusCount,
     },
     base_image: baseImage,
+    platform,
     image_tag: imageTag,
     dry_run: dryRun,
     build_image: buildImage,
@@ -1039,6 +1060,22 @@ function loadNativeFuzzShape(targetDomain) {
   }
 }
 
+// Read the build platform recorded by prepareRepoEnv in repo-env.json so a
+// docker run defaults to the same arch the image was built for. Falls back to
+// "native" when the doc is absent, unreadable, or carries an unknown value —
+// keeping run/image consistent without ever trusting an out-of-enum value.
+function platformFromRepoEnv(targetDomain) {
+  const envPath = repoEnvJsonPath(targetDomain);
+  if (!fs.existsSync(envPath)) return "native";
+  try {
+    const doc = JSON.parse(fs.readFileSync(envPath, "utf8"));
+    if (doc && PLATFORM_VALUES.includes(doc.platform)) return doc.platform;
+    return "native";
+  } catch {
+    return "native";
+  }
+}
+
 async function prepareRepoEnv({
   target_domain: targetDomain,
   base_image: baseImageOverride = null,
@@ -1048,6 +1085,7 @@ async function prepareRepoEnv({
   image_tag: imageTagOverride = null,
   timeout_ms: timeoutMsOverride = null,
   egress_profile: egressProfileNameOverride = null,
+  platform = null,
   runtime = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
@@ -1064,6 +1102,9 @@ async function prepareRepoEnv({
   const normalizedDryRun = dryRun == null ? true : assertBoolean(dryRun, "dry_run");
   const normalizedBuildImage = buildImage == null ? false : assertBoolean(buildImage, "build_image");
   const normalizedAllowNetwork = allowNetwork == null ? false : assertBoolean(allowNetwork, "allow_network");
+  // Fail-closed enum: an unknown platform throws before any docker exec.
+  // null/absent normalizes to "native", which emits no --platform.
+  const normalizedPlatform = platform == null ? "native" : assertEnumValue(platform, PLATFORM_VALUES, "platform");
   if (normalizedDryRun && normalizedBuildImage) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
@@ -1150,6 +1191,7 @@ async function prepareRepoEnv({
     recommendedCommands,
     imageTag,
     baseImage,
+    platform: normalizedPlatform,
     buildImage: normalizedBuildImage,
     dryRun: normalizedDryRun,
     allowNetwork: normalizedAllowNetwork,
@@ -1199,6 +1241,7 @@ async function prepareRepoEnv({
       allowNetwork: normalizedAllowNetwork,
       targetDomain: domain,
       egressProfile: egressProfileResolved,
+      platform: normalizedPlatform,
     });
     const runner = runtime && typeof runtime.execFile === "function"
       ? runtime.execFile
@@ -1222,6 +1265,7 @@ async function prepareRepoEnv({
     repo_env_path: repoEnvPath,
     image_tag: imageTag,
     base_image: baseImage,
+    platform: normalizedPlatform,
     language: envDetection.language,
     nfs_xdr_shape: nfsXdrShape,
     native_fuzz_shape: nativeFuzzShape,
@@ -1666,11 +1710,17 @@ function buildDockerRunArgv({
   egressProfile,
   harnessDir,
   seedsDir,
+  platform,
 }) {
   if (!repoRoot || !workDir || !imageTag || !Array.isArray(command) || command.length === 0) {
     throw new Error("buildDockerRunArgv requires repoRoot, workDir, imageTag, command");
   }
   const args = ["run", "--rm"];
+  // platform must agree with the built image's arch: native (or absent) emits
+  // nothing (unchanged argv); a linux/* value runs the pinned-arch image so
+  // docker does not re-resolve it to the host arch.
+  const platformValue = platformFlagValue(platform);
+  if (platformValue) args.push("--platform", platformValue);
   // Network: --network none by default. When allow_network is true we
   // attach the standard bridge network and pin DNS to 1.1.1.1 so the
   // host's resolver (which may carry secret tokens via /etc/hosts
@@ -2091,6 +2141,7 @@ async function repoDockerRun({
   blocked_harness_run_id: blockedHarnessRunIdRaw = null,
   egress_profile: egressProfileNameOverride = null,
   checkout_patch: checkoutPatchRaw = null,
+  platform = null,
   runtime = null,
 } = {}) {
   const domain = assertSafeDomain(targetDomain);
@@ -2197,6 +2248,13 @@ async function repoDockerRun({
       min: 1000,
       max: REPO_DOCKER_RUN_MAX_TIMEOUT_MS,
     });
+  // platform default = the build platform recorded in repo-env.json, so an
+  // amd64 image is never accidentally run without --platform linux/amd64. An
+  // explicit arg is validated fail-closed; the repo-env default is trusted
+  // only if it is a known value (prepareRepoEnv validated it on write).
+  const normalizedPlatform = platform == null
+    ? platformFromRepoEnv(domain)
+    : assertEnumValue(platform, PLATFORM_VALUES, "platform");
   const normalizedReplayContext = normalizeReplayContext(replayContextRaw);
   const normalizedBlockedHarnessRunId = blockedHarnessRunIdRaw == null
     ? null
@@ -2288,6 +2346,7 @@ async function repoDockerRun({
     egressProfile: egressProfileResolved,
     harnessDir,
     seedsDir,
+    platform: normalizedPlatform,
   });
   const commandHash = sha256Hex(JSON.stringify(normalizedCommand));
   const replayCommandHash = normalizedInputCommand
@@ -2330,6 +2389,7 @@ async function repoDockerRun({
       command_hash: commandHash,
       argv_hash: argvHash,
       network_mode: networkMode,
+      platform: normalizedPlatform,
       mount_mode: normalizedMountMode,
       work_mount_mode: REPO_WORK_MOUNT_MODE,
       image_tag: imageTag,
@@ -2368,6 +2428,7 @@ async function repoDockerRun({
       dry_run: true,
       image_tag: imageTag,
       network_mode: networkMode,
+      platform: normalizedPlatform,
       mount_mode: normalizedMountMode,
       work_mount_mode: REPO_WORK_MOUNT_MODE,
       command_hash: commandHash,
@@ -2475,6 +2536,7 @@ async function repoDockerRun({
     command_hash: commandHash,
     argv_hash: argvHash,
     network_mode: networkMode,
+    platform: normalizedPlatform,
     mount_mode: normalizedMountMode,
     work_mount_mode: REPO_WORK_MOUNT_MODE,
     image_tag: imageTag,
@@ -2547,6 +2609,7 @@ async function repoDockerRun({
     dry_run: false,
     image_tag: imageTag,
     network_mode: networkMode,
+    platform: normalizedPlatform,
     mount_mode: normalizedMountMode,
     work_mount_mode: REPO_WORK_MOUNT_MODE,
     command_hash: commandHash,

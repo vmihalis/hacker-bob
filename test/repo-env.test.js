@@ -768,6 +768,49 @@ test("buildDockerBuildArgv does NOT thread proxy creds via process env (avoiding
   assert.deepEqual(argv.env, {}, "buildDockerBuildArgv must not pre-populate env table");
 });
 
+// ---------- buildDockerBuildArgv --platform (native ⇒ omit) ----------
+
+test("buildDockerBuildArgv emits NO --platform when platform is native/absent (byte-identical back-compat)", () => {
+  const omitted = buildDockerBuildArgv({
+    dockerfilePath: "/tmp/Dockerfile.bob",
+    contextPath: "/tmp/repo",
+    imageTag: "bob-oss-repo-x:abc",
+    allowNetwork: false,
+    targetDomain: "repo-x-12345678",
+    egressProfile: null,
+  });
+  assert.equal(omitted.args.indexOf("--platform"), -1, "absent platform must emit no --platform");
+  const native = buildDockerBuildArgv({
+    dockerfilePath: "/tmp/Dockerfile.bob",
+    contextPath: "/tmp/repo",
+    imageTag: "bob-oss-repo-x:abc",
+    allowNetwork: false,
+    targetDomain: "repo-x-12345678",
+    egressProfile: null,
+    platform: "native",
+  });
+  assert.equal(native.args.indexOf("--platform"), -1, "platform: native must emit no --platform");
+  // The two argvs must be identical: "native" is exactly "omit".
+  assert.deepEqual(native.args, omitted.args);
+});
+
+test("buildDockerBuildArgv emits --platform linux/amd64 when requested", () => {
+  const argv = buildDockerBuildArgv({
+    dockerfilePath: "/tmp/Dockerfile.bob",
+    contextPath: "/tmp/repo",
+    imageTag: "bob-oss-repo-x:abc",
+    allowNetwork: false,
+    targetDomain: "repo-x-12345678",
+    egressProfile: null,
+    platform: "linux/amd64",
+  });
+  const idx = argv.args.indexOf("--platform");
+  assert.ok(idx >= 0, "--platform flag missing");
+  assert.equal(argv.args[idx + 1], "linux/amd64");
+  // --network handling is unchanged and still present.
+  assert.equal(argv.args[argv.args.indexOf("--network") + 1], "none");
+});
+
 // ---------- buildImageTag binds to nucleus-pinned repo_hash ----------
 
 test("buildImageTag binds to target_domain + pinned repo_hash", () => {
@@ -891,6 +934,78 @@ test("prepareRepoEnv build_image=true with stubbed docker reaches docker exec wi
     assert.ok(
       sessionArgs.some((entry) => args[entry.index + 1] === `SESSION_ID=${init.target_domain}`),
       "SESSION_ID build-arg missing",
+    );
+  });
+});
+
+test("prepareRepoEnv default omits platform from repo-env.json and the build argv (back-compat)", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    let buildArgs = null;
+    const runtime = {
+      execFile: async (command, args) => {
+        if (command === "docker" && args[0] === "--version") return { stdout: "Docker version 25.0", stderr: "" };
+        if (command === "docker" && args[0] === "build") { buildArgs = args; return { stdout: "", stderr: "" }; }
+        throw new Error(`unexpected call: ${command} ${args.join(" ")}`);
+      },
+    };
+    const result = await prepareRepoEnv({
+      target_domain: init.target_domain,
+      dry_run: false,
+      build_image: true,
+      runtime,
+    });
+    // Omitted platform normalizes to "native" and emits no --platform.
+    assert.equal(result.platform, "native");
+    assert.ok(buildArgs, "expected a docker build invocation");
+    assert.equal(buildArgs.indexOf("--platform"), -1, "default build must emit no --platform");
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.platform, "native");
+  });
+});
+
+test("prepareRepoEnv platform:linux/amd64 threads --platform into the build argv and repo-env.json", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    let buildArgs = null;
+    const runtime = {
+      execFile: async (command, args) => {
+        if (command === "docker" && args[0] === "--version") return { stdout: "Docker version 25.0", stderr: "" };
+        if (command === "docker" && args[0] === "build") { buildArgs = args; return { stdout: "", stderr: "" }; }
+        throw new Error(`unexpected call: ${command} ${args.join(" ")}`);
+      },
+    };
+    const result = await prepareRepoEnv({
+      target_domain: init.target_domain,
+      dry_run: false,
+      build_image: true,
+      platform: "linux/amd64",
+      runtime,
+    });
+    assert.equal(result.platform, "linux/amd64");
+    assert.ok(buildArgs, "expected a docker build invocation");
+    const idx = buildArgs.indexOf("--platform");
+    assert.ok(idx >= 0, "--platform flag missing from build argv");
+    assert.equal(buildArgs[idx + 1], "linux/amd64");
+    const repoEnv = JSON.parse(fs.readFileSync(repoEnvJsonPath(init.target_domain), "utf8"));
+    assert.equal(repoEnv.platform, "linux/amd64");
+  });
+});
+
+test("prepareRepoEnv rejects an unknown platform fail-closed", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => prepareRepoEnv({ target_domain: init.target_domain, platform: "linux/riscv64" }),
+      /platform must be one of/,
     );
   });
 });

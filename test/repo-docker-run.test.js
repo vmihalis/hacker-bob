@@ -237,6 +237,30 @@ test("buildDockerRunArgv sets HOME=/work so build caches land on the writable mo
   assert.equal(valueAfterFlag(argv.args, "--env"), "HOME=/work");
 });
 
+test("buildDockerRunArgv emits NO --platform when platform is native/absent (byte-identical back-compat)", () => {
+  const omitted = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null,
+  });
+  assert.equal(omitted.args.indexOf("--platform"), -1, "absent platform must emit no --platform");
+  const native = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null, platform: "native",
+  });
+  assert.equal(native.args.indexOf("--platform"), -1, "platform: native must emit no --platform");
+  assert.deepEqual(native.args, omitted.args, "native must be byte-identical to omitted");
+});
+
+test("buildDockerRunArgv emits --platform linux/amd64 when requested (and keeps --network)", () => {
+  const argv = buildDockerRunArgv({
+    repoRoot: "/r", workDir: "/w", imageTag: "img:t", command: ["x"],
+    allowNetwork: false, repoMountMode: "read_only", egressProfile: null, platform: "linux/amd64",
+  });
+  assert.equal(valueAfterFlag(argv.args, "--platform"), "linux/amd64");
+  // --network handling is unchanged.
+  assert.equal(valueAfterFlag(argv.args, "--network"), "none");
+});
+
 test("buildDockerRunArgv mounts /src read-only by default and /work read-write", () => {
   const argv = buildDockerRunArgv({
     repoRoot: "/path/to/repo",
@@ -438,6 +462,69 @@ test("repoDockerRun dry_run records plan to repo-command-runs.jsonl without dock
     assert.equal(Object.prototype.hasOwnProperty.call(rows[0], "checkout_kind"), false);
     assert.ok(typeof rows[0].command_hash === "string" && /^[0-9a-f]{64}$/.test(rows[0].command_hash));
     assert.equal(rows[0].replay_command_hash, sha256Hex(JSON.stringify(["echo", "hi"])));
+  });
+});
+
+test("repoDockerRun dry_run omits --platform by default and emits it when requested", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    // No platform + no repo-env.json → defaults to native → no --platform.
+    const bare = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+    });
+    assert.equal(bare.platform, "native");
+    assert.equal(bare.planned_argv.indexOf("--platform"), -1, "default run must emit no --platform");
+
+    // Explicit platform threads --platform into the planned argv.
+    const amd = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+      platform: "linux/amd64",
+    });
+    assert.equal(amd.platform, "linux/amd64");
+    const idx = amd.planned_argv.indexOf("--platform");
+    assert.ok(idx >= 0, "--platform missing from planned_argv");
+    assert.equal(amd.planned_argv[idx + 1], "linux/amd64");
+
+    // Plan rows carry the platform for provenance.
+    const rows = readJsonl(repoCommandRunsJsonlPath(init.target_domain));
+    assert.equal(rows[rows.length - 1].platform, "linux/amd64");
+  });
+});
+
+test("repoDockerRun defaults its platform to the build platform recorded in repo-env.json", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+
+    // Record a linux/amd64 build in repo-env.json (dry_run, no docker exec).
+    await prepareRepoEnv({ target_domain: init.target_domain, platform: "linux/amd64" });
+
+    // A run that omits platform inherits the build platform so the image is
+    // never accidentally run without --platform linux/amd64.
+    const run = await repoDockerRun({
+      target_domain: init.target_domain,
+      command: ["echo", "hi"],
+    });
+    assert.equal(run.platform, "linux/amd64");
+    assert.equal(valueAfterFlag(run.planned_argv, "--platform"), "linux/amd64");
+  });
+});
+
+test("repoDockerRun rejects an unknown platform fail-closed", async () => {
+  await withTempHome(async () => {
+    const repoRoot = makeTempRepoDir();
+    write(repoRoot, "package.json", JSON.stringify({ name: "x" }));
+    const init = initRepoSession({ repo_path: repoRoot });
+    await assert.rejects(
+      () => repoDockerRun({ target_domain: init.target_domain, command: ["echo", "hi"], platform: "linux/riscv64" }),
+      /platform must be one of/,
+    );
   });
 });
 
