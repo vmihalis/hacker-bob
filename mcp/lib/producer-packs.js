@@ -241,10 +241,17 @@ const SC_ADDRESS_EXPANDER_PRODUCER_PACK = Object.freeze({
     kind: "derived",
     target_class: "smart_contract",
     consumes: Object.freeze(["chain_address_set", "sc_surface"]),
-    // ANY-of: the chain_address_set seed bootstraps the depth-1 root expansion
-    // OR a minted sc_surface feeds the identity-keyed recursion. Either input
-    // alone makes the expander ready — never a JOIN that would deadlock waiting
-    // for the sc_surface it is itself responsible for producing.
+    // ANY-of over the EXTERNAL inputs: the chain_address_set seed bootstraps the
+    // depth-1 root expansion. The self-produced sc_surface is deliberately NOT a
+    // readiness trigger — isProducerReady excludes self-edge kinds — because once a
+    // single sc_surface is ever minted it is PERMANENTLY available, so counting it
+    // would make the bare expander "ready forever" (a non-structural termination
+    // leaning on downstream dedup/caps). The identity-keyed sc_surface recursion
+    // instead runs through the per-instance expanders (planScExpanderRecursion),
+    // whose readiness IS structural: an instance is proposed iff its on-chain
+    // identity is not yet expanded (a non-terminal run-ledger key), so once every
+    // source is expanded that readiness goes FALSE — a true fixpoint. 'any' still
+    // never JOIN-waits for the sc_surface the expander is itself responsible for.
     input_mode: "any",
   }),
   produces: Object.freeze(["sc_surface"]),
@@ -272,24 +279,43 @@ const PRODUCER_PACKS = Object.freeze({
 const PRODUCER_INPUT_MODE_VALUES = Object.freeze(["all", "any"]);
 
 // Pure readiness predicate for a derived producer: given its declared consumed
-// artifact kinds and the set of currently-available kinds, decide whether its
-// input clause holds. THE SINGLE readiness source — both the producer-floor
-// planner (planProducerFloor) and, transitively through it, the
-// seed_producers_drained scheduler precondition resolve readiness here so the
-// two can never drift. 'all' (the default) is a JOIN: every consumed kind must
-// be available, so a multi-input synthesizer (e.g. web_assembly's eight inputs)
-// never fires on a partial input set. 'any' is a disjunction for a producer
-// whose inputs are alternative triggers (e.g. sc_address_expander). An empty
-// consumes set is never ready under either mode (a derived producer with no
-// declared input has no trigger). Closed over no I/O — deterministic.
-function isProducerReady(consumes, available, mode = "all") {
+// artifact kinds, the set of currently-available kinds, and (for a self-edge
+// producer) the kinds it itself produces, decide whether its input clause holds.
+// THE SINGLE readiness source — both the producer-floor planner (planProducerFloor)
+// and, transitively through it, the seed_producers_drained scheduler precondition
+// resolve readiness here so the two can never drift. 'all' (the default) is a JOIN:
+// every consumed kind must be available, so a multi-input synthesizer (e.g.
+// web_assembly's eight inputs) never fires on a partial input set. 'any' is a
+// disjunction for a producer whose inputs are alternative triggers (e.g.
+// sc_address_expander).
+//
+// STRUCTURAL SELF-EDGE EXCLUSION: a kind a producer ALSO produces is a self-edge
+// input (sc_address_expander consumes AND produces sc_surface). Once a single
+// instance of that kind is ever minted it is PERMANENTLY available, so counting it
+// toward readiness would make the producer "ready forever" — a non-structural
+// termination that leans on downstream dedup/caps to eventually emit nothing rather
+// than on readiness itself going false. Readiness therefore rests on the EXTERNAL
+// (non-self-produced) inputs ONLY: the sc-expander bootstraps off the external
+// chain_address_set seed, and its self-recursion's "ready iff an un-expanded source
+// remains" termination is carried STRUCTURALLY by the per-instance run-ledger dedup
+// in planScExpanderRecursion, never by this kind-availability predicate. Excluding
+// self-produced kinds also strengthens the deadlock fix: the producer never waits on
+// — nor is perpetually re-triggered by — the output it is itself responsible for.
+//
+// An empty consumes set, or one with no external (non-self) input, is never ready
+// under either mode (a producer with no external trigger cannot bootstrap itself).
+// Closed over no I/O — deterministic.
+function isProducerReady(consumes, available, mode = "all", produces = []) {
   const kinds = Array.isArray(consumes) ? consumes : [];
   if (kinds.length === 0) return false;
   const have = available instanceof Set
     ? available
     : new Set(Array.isArray(available) ? available : []);
-  if (mode === "any") return kinds.some((kind) => have.has(kind));
-  return kinds.every((kind) => have.has(kind));
+  const selfProduced = new Set(Array.isArray(produces) ? produces : []);
+  const external = kinds.filter((kind) => !selfProduced.has(kind));
+  if (external.length === 0) return false;
+  if (mode === "any") return external.some((kind) => have.has(kind));
+  return external.every((kind) => have.has(kind));
 }
 
 // Pure: the single root producer whose trigger fires on this target_class, or

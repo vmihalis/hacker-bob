@@ -16,8 +16,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { planProducerFloor } = require("../mcp/lib/tools/materialize-producer-floor.js");
-const { PRODUCER_PACKS } = require("../mcp/lib/producer-packs.js");
+const {
+  planProducerFloor,
+  isProducerFloorAtFixpoint,
+} = require("../mcp/lib/tools/materialize-producer-floor.js");
+const { PRODUCER_PACKS, isProducerReady } = require("../mcp/lib/producer-packs.js");
 
 function readyIds(plan) {
   return plan.ready.map((pack) => pack.producer_id).sort();
@@ -207,6 +210,65 @@ test("caps are CLAMPED, not merely defaulted: negative/zero/huge overrides never
   const huge = planProducerFloor({ ...base, caps: { seed_producer_per_pass_cap: 10 ** 12 } });
   assert.equal(huge.sc_expander_instances.length, 4,
     "an absurdly-large per-pass cap is clamped but still admits every in-range source");
+});
+
+test("a self-produced kind is NOT a readiness trigger: the minted sc_surface alone never makes the sc-expander ready (structural, no ready-forever)", () => {
+  const pack = PRODUCER_PACKS.sc_address_expander;
+  const consumes = pack.trigger.consumes; // ["chain_address_set", "sc_surface"]
+  const produces = pack.produces; // ["sc_surface"] — the self-edge output
+  const mode = pack.trigger.input_mode; // "any"
+
+  // The finding: once a single sc_surface has EVER been minted it is permanently
+  // available, so under a naive any-of the expander would be READY FOREVER. The
+  // self-produced sc_surface must NOT satisfy readiness on its own.
+  assert.equal(isProducerReady(consumes, ["sc_surface"], mode, produces), false,
+    "the self-produced sc_surface alone must NOT make the expander ready (no ready-forever fixpoint)");
+
+  // The EXTERNAL chain_address_set seed is the real bootstrap trigger.
+  assert.equal(isProducerReady(consumes, ["chain_address_set"], mode, produces), true,
+    "the external chain_address_set seed bootstraps the expander");
+
+  // Both present is still ready (the bootstrap seed carries it) — but sc_surface is
+  // never the reason, so removing it can never leave the expander perpetually ready.
+  assert.equal(isProducerReady(consumes, ["chain_address_set", "sc_surface"], mode, produces), true,
+    "the external seed still bootstraps the expander when both kinds are present");
+
+  // A producer whose ONLY declared input is its own output has no external trigger.
+  assert.equal(isProducerReady(["sc_surface"], ["sc_surface"], "any", ["sc_surface"]), false,
+    "a pure self-edge (no external input) is never ready — it cannot bootstrap itself");
+});
+
+test("once every sc source is expanded (its per-instance key terminal) the floor proposes ZERO instances and the bare expander is not ready — a structural fixpoint", () => {
+  // One seed contract whose per-instance expander has ALREADY run: its
+  // identity-keyed producer_key is terminal in the run ledger, so the recursion
+  // has no un-expanded source left.
+  const scSurfaces = [{
+    chain_family: "evm",
+    chain_id: "1",
+    address: "0xABCdef0000000000000000000000000000000001",
+    depth: 1,
+    provenance: "seed",
+  }];
+  const expandedKey = "sc_address_expander:evm:1:0xabcdef0000000000000000000000000000000001";
+  // The chain root is terminal (bootstrap done) and every source is expanded.
+  const runSet = new Set(["sc_chain_root", expandedKey]);
+
+  const plan = planProducerFloor({
+    packs: PRODUCER_PACKS,
+    producerRunSet: runSet,
+    // BOTH consumed kinds are present — pre-fix the any-of predicate would keep the
+    // bare expander perpetually ready off the self-produced sc_surface.
+    availableArtifactKinds: ["chain_address_set", "sc_surface"],
+    scSurfaces,
+    caps: {},
+  });
+
+  assert.equal(plan.sc_expander_instances.length, 0,
+    "every source is expanded ⇒ the per-instance recursion proposes zero instances (structural dedup)");
+  assert.equal(readyIds(plan).includes("sc_address_expander"), false,
+    "the bare expander is not proposed once the recursion is exhausted — readiness is not perpetually-true-but-empty");
+  assert.equal(isProducerFloorAtFixpoint(plan), true,
+    "no ready producer and no pending instance ⇒ the producer floor is at a true structural fixpoint");
 });
 
 test("with no live SC surfaces the bare expander follows the any-of predicate, never suppressed", () => {
