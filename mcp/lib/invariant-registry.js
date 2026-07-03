@@ -225,6 +225,26 @@ const REGISTRY = Object.freeze({
       Object.freeze({ file: "mcp/lib/frontier-events.js", symbol: "assertSmartContractChainFamily" }),
     ]),
   }),
+
+  // ── Confidence-modulated friction widening (Y-P16) ───────────────────────
+  // The per-surface routing confidence tunes how eagerly derivePackForNode
+  // widens the allowed-tools set from friction. Modulation only ADDS
+  // friction-derived tools and only RAISES the widen threshold for confident
+  // routes; the absent-confidence default (threshold 1) is never LESS eager
+  // than the unconditional union — RANKED, never bounded.
+  "Y-P16": Object.freeze({
+    kind: "invariant",
+    class: "capability_widening",
+    title:
+      "Confidence modulates friction-widening eagerness: a friction wanted_tool "
+      + "joins allowed_tools_for_node only when its occurrence count in "
+      + "friction_history meets the confidence-derived widen threshold "
+      + "(low/absent=1, medium=2, high=3); modulation only ADDS tools and never "
+      + "widens LESS eagerly than the unconditional union.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/capability-pack-derivation.js", symbol: "widenThresholdForConfidence" }),
+    ]),
+  }),
 });
 
 // Backlog: tags that EXIST in the tree but do not yet have a written registry

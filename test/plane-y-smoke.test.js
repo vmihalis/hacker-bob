@@ -9,7 +9,7 @@
 //   Subtest A — Capability friction (tool_absent) is appendable through the
 //               Y.2 logger; the round-trip lands a frontier-event of kind
 //               capability_friction_observed (Y.1 substrate) and the Y-P3
-//               5-tuple idempotency holds.
+//               6-tuple idempotency holds.
 //   Subtest B — Adversarial scanner (Y.7) catches silent Bash + the five W2
 //               extensions + the rev-4.1 silent_lead_threshold_drop runtime
 //               tripwire. Closed-set drift_signatures are surfaced for each
@@ -305,19 +305,19 @@ test("Y.13 Subtest A — tool_absent capability friction round-trips through Y.2
     assert.equal(frictionEvents[0].payload.wanted_tool, "bob_browser_session_start");
     assert.equal(frictionEvents[0].payload.friction_kind, "tool_absent");
 
-    // Y-P3 5-tuple idempotency: re-emit with the SAME (run_id, node_id,
-    // wanted_tool, purpose, detected_by) — must be deduped to a single
-    // event on the ledger.
+    // Y-P3 6-tuple idempotency: re-emit with the SAME (run_id, node_id,
+    // wanted_tool, friction_kind, purpose, detected_by) — must be deduped to a
+    // single event on the ledger.
     const dupResponse = callTool(logFrictionTool, args);
     assert.equal(dupResponse.appended, false,
-      "second emission with the same 5-tuple MUST be reported as not appended (Y-P3 idempotency)");
+      "second emission with the same 6-tuple MUST be reported as not appended (Y-P3 idempotency)");
     assert.equal(dupResponse.idempotent, true);
     const eventsAfter = readFrontierEvents(domain).filter(
       (e) => e.payload && e.payload.observation_kind === "capability_friction_observed",
     );
     assert.equal(
       eventsAfter.length, 1,
-      "Y-P3 5-tuple idempotency MUST silently de-dup a second emission with the same tuple",
+      "Y-P3 6-tuple idempotency MUST silently de-dup a second emission with the same tuple",
     );
   });
 });

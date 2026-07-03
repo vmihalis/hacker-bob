@@ -57,6 +57,13 @@ const {
   readFrontierEvents,
 } = require("../frontier-events.js");
 const {
+  assertCapabilityFrictionPayload,
+} = require("../capability-observations.js");
+const {
+  idempotencyKeyFromPayload,
+  idempotencyKeyFromEvent,
+} = require("./log-capability-friction.js");
+const {
   recordProducerRun,
   recordProducerTerminalBlock,
 } = require("../producer-run-ledger.js");
@@ -187,6 +194,50 @@ function checkToolConstraintViolation(agentOutput, allowedToolsForNode) {
     }
   }
   return violations;
+}
+
+// Pure map from an X.6 tool_constraint_violation list to capability_friction
+// payloads so the friction→pack-widening loop does not depend on voluntary
+// agent reporting. Each violating tool the agent reached for outside
+// allowed_tools_for_node[] becomes one tool_absent synthetic
+// (detected_by = "mcp_runtime_auto_emit"). tool_absent — NOT tool_inadequate —
+// is the honest kind: the tool was literally not in the routed pack, and
+// tool_inadequate would require a witness whose recorded tool matches
+// wanted_tool (Y-P10), which the only available witness (the
+// bob_finalize_node node.transitioned event) can never satisfy. The
+// failedEventId witness is carried in the free-text rationale for traceability.
+// No fs, no append, no clock — deterministic; the caller does the dedupe read
+// and the append.
+function synthesizeToolConstraintFriction({
+  toolViolations,
+  nodeId,
+  runId,
+  surfaceId,
+  failedEventId,
+}) {
+  const violations = Array.isArray(toolViolations) ? toolViolations : [];
+  const payloads = [];
+  for (const violation of violations) {
+    if (!violation || typeof violation.tool !== "string" || !violation.tool) continue;
+    const payload = {
+      run_id: runId,
+      node_id: nodeId,
+      wanted_tool: violation.tool,
+      purpose: "other",
+      fallback_used: "none",
+      friction_kind: "tool_absent",
+      detected_by: "mcp_runtime_auto_emit",
+      rationale:
+        `X.6 tool_constraint_violation: agent invoked ${violation.tool} outside `
+        + `allowed_tools_for_node[]; auto-emitted tool_absent friction. Witness `
+        + `node.transitioned frontier_event:${failedEventId}.`,
+    };
+    if (typeof surfaceId === "string" && surfaceId.length > 0) {
+      payload.surface_id = surfaceId;
+    }
+    payloads.push(payload);
+  }
+  return payloads;
 }
 
 function findNodeInDocument(document, nodeId) {
@@ -698,6 +749,63 @@ function finalizeNodeLocked(args) {
       source: { tool: "bob_finalize_node" },
       actor: input.actor,
     });
+    // Auto-emit tool_absent friction (detected_by = "mcp_runtime_auto_emit")
+    // per DISTINCT violating tool so the friction→pack-widening loop
+    // (capability-pack-derivation frictionWantedTools union) and the
+    // friction→confidence loop do not depend on voluntary agent reporting.
+    // Idempotent via the Y-P3 6-tuple (run_id, node_id, wanted_tool, friction_kind,
+    // purpose, detected_by): re-finalizing the same node with the same runId fallback
+    // does not double-count, and a voluntary agent_self_report for the same
+    // tool coexists (distinct detected_by leg — Y-P11). Best-effort telemetry:
+    // the executed → failed transition and the returned failure_reason are the
+    // authoritative result and MUST NOT be masked by a friction-append failure.
+    // Runs under the ambient withSessionLock (finalize handler); no nested lock.
+    try {
+      const frictionRunId = (typeof agentOutput.run_id === "string" && agentOutput.run_id.length > 0)
+        ? agentOutput.run_id
+        : nodeId;
+      const frictionSurfaceId = Array.isArray(finalizedNode.surface_refs)
+        && typeof finalizedNode.surface_refs[0] === "string"
+        ? finalizedNode.surface_refs[0]
+        : null;
+      const frictionPayloads = synthesizeToolConstraintFriction({
+        toolViolations,
+        nodeId,
+        runId: frictionRunId,
+        surfaceId: frictionSurfaceId,
+        failedEventId: failedEvent.event_id,
+      });
+      const existingKeys = new Set();
+      for (const event of readFrontierEvents(domain)) {
+        const key = idempotencyKeyFromEvent(event);
+        if (key !== null) existingKeys.add(key);
+      }
+      for (const payload of frictionPayloads) {
+        // Isolate each payload: a single malformed / non-capability-tool
+        // violation (e.g. a local Bash invocation, which is not a known
+        // capability tool) must not abort the remaining valid friction rows.
+        try {
+          const normalized = assertCapabilityFrictionPayload(payload);
+          const key = idempotencyKeyFromPayload(normalized);
+          if (existingKeys.has(key)) continue;
+          appendFrontierEvent({
+            target_domain: domain,
+            kind: "observation.recorded",
+            surface_id: normalized.surface_id == null ? null : normalized.surface_id,
+            payload: normalized,
+            source: {
+              artifact: "frontier-events.jsonl",
+              tool: "bob_finalize_node",
+            },
+          });
+          existingKeys.add(key);
+        } catch {
+          // Skip this one payload; continue recording the rest.
+        }
+      }
+    } catch {
+      // Best-effort telemetry; the executed → failed transition is authoritative.
+    }
     try { scheduleMaterialization(domain); } catch {}
     return JSON.stringify({
       version: 1,

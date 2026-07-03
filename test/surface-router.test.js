@@ -11,15 +11,18 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  buildSurfaceRoutesDocument,
   readSurfaceRoutesStrict,
+  routeSurfaces,
   routeSurfacesInternal,
   validateSurfaceRoute,
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
 } = require("../mcp/lib/surface-router.js");
 const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
-const { surfaceRoutesPath } = require("../mcp/lib/paths.js");
+const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
   const prev = process.env.HOME;
@@ -154,4 +157,208 @@ test("happy path: routeSurfacesInternal writes valid routes that read back clean
   const read = readSurfaceRoutesStrict(domain);
   assert.equal(read.document.routes.length, 2);
   assert.equal(read.malformed_routes, undefined, "a clean file carries no malformed_routes");
+}));
+
+test("persists chain_family + confidence for a resolved EVM smart-contract route", () => withTempHome(() => {
+  const domain = "router-sc-evm.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const surface = { id: "sc-evm", surface_type: "smart_contract", chain_family: "evm", address: "0xabc" };
+  const expected = classifySurfaceCapability(surface);
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  routeSurfacesInternal(domain, { attackSurfaceInfo });
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.malformed_routes, undefined, "a resolved SC route reads back clean");
+  const route = read.document.routes.find((r) => r.surface_id === "sc-evm");
+  assert.ok(route, "the evm route reads back in document.routes");
+  assert.equal(route.chain_family, expected.chain_family, "chain_family is persisted from the classifier (closes the always-null read)");
+  assert.equal(route.chain_family, "evm");
+  assert.ok(route.confidence, "confidence is truthy");
+  assert.equal(route.confidence, expected.confidence);
+}));
+
+test("records an unroutable disposition for an unknown-chain_family smart-contract surface (never web-routed, no throw)", () => withTempHome(() => {
+  const domain = "router-sc-unknown.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const webPackId = classifySurfaceCapability({ id: "w", surface_type: "web" }).capability_pack;
+  const cases = [
+    { id: "sc-unknown", surface_type: "smart_contract", chain_family: "quantum" },
+    { id: "sc-nofam", surface_type: "smart_contract" },
+  ];
+  for (const surface of cases) {
+    const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+    assert.doesNotThrow(() => routeSurfacesInternal(domain, { attackSurfaceInfo }), "an unroutable SC surface never halts routing");
+    const read = readSurfaceRoutesStrict(domain);
+    assert.equal(read.malformed_routes, undefined, "an unroutable route reads back in document.routes, not malformed_routes");
+    const route = read.document.routes.find((r) => r.surface_id === surface.id);
+    assert.ok(route, "the unroutable route is present in document.routes");
+    assert.equal(route.disposition, "unroutable");
+    assert.equal(typeof route.reason, "string");
+    assert.ok(route.reason.length > 0, "the unroutable route carries an evidenced reason");
+    assert.equal(route.capability_pack, undefined, "an ambiguous smart_contract is never web-routed");
+    assert.notEqual(route.capability_pack, webPackId);
+  }
+}));
+
+test("a resolved SC route and an unroutable SC route read back cleanly together (no quarantine)", () => withTempHome(() => {
+  const domain = "router-sc-mixed.example.test";
+  fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "sc-evm", surface_type: "smart_contract", chain_family: "evm", address: "0xabc" },
+    { id: "sc-unknown", surface_type: "smart_contract", chain_family: "quantum" },
+    { id: "w1", surface_type: "web", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] },
+  ] } };
+  routeSurfacesInternal(domain, { attackSurfaceInfo });
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.malformed_routes, undefined, "the mixed file has no quarantined routes");
+  assert.equal(read.document.routes.length, 3);
+}));
+
+// A capability_friction_observed frontier event scoped to one surface_id
+// (mirrors the frictionEvent(...) shape in frontier-friction-predicate.test.js).
+function frictionEvent(surfaceId, frictionKind, extra = {}) {
+  return {
+    kind: "observation.recorded",
+    payload: {
+      observation_kind: "capability_friction_observed",
+      surface_id: surfaceId,
+      friction_kind: frictionKind,
+      ...extra,
+    },
+  };
+}
+
+// The confidence ordinal ladder, mirrored from capability-packs.js, so the
+// caller-seam tests derive the demoted step from the classifier rather than
+// hardcoding a level a pack edit could break.
+const ROUTER_CONFIDENCE_LADDER = ["high", "medium", "low"];
+
+test("buildSurfaceRoutesDocument: no frictionEvents keeps the classifier confidence (back-compat)", () => {
+  const domain = "router-friction-none.example.test";
+  // surface_type "api" is a known web type => classifier confidence "high".
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  assert.equal(classification.routable, true);
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].confidence, classification.confidence);
+});
+
+test("buildSurfaceRoutesDocument: >=3 tool_inadequate events for a surface demote its route confidence one step", () => {
+  const domain = "router-friction-demote.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx >= 0, "classifier confidence is on the ladder");
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step (guards the assertion)");
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const frictionEvents = [
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    // an unrelated surface's friction and a non-matching kind must not count
+    frictionEvent("other", "tool_inadequate"),
+    frictionEvent("w1", "tool_absent"),
+  ];
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "one full threshold demotes exactly one step");
+});
+
+test("buildSurfaceRoutesDocument: an unroutable smart_contract is byte-identical with and without friction", () => {
+  const domain = "router-friction-unroutable.example.test";
+  const surface = { id: "sc-none", surface_type: "smart_contract" };
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+  const frictionEvents = [
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+    frictionEvent("sc-none", "tool_inadequate"),
+  ];
+  const without = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  const withFriction = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(without.routes[0].disposition, "unroutable");
+  assert.equal(withFriction.routes[0].disposition, "unroutable");
+  // demotion never touches routability: the unroutable route is identical.
+  assert.deepEqual(withFriction.routes[0], without.routes[0]);
+});
+
+// Friction threaded through the routeSurfacesInternal / routeSurfaces caller
+// seam so confidence demotion fires on the live bob_route_surfaces path.
+
+// Write a legacy attack_surface.json under the current temp HOME so the live
+// routeSurfaces path (which passes no attackSurfaceInfo and reads via
+// currentSurfaces) has a surface source to route.
+function writeAttackSurface(domain, surfaces) {
+  const p = attackSurfacePath(domain);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, `${JSON.stringify({ surfaces }, null, 2)}\n`);
+  return p;
+}
+
+test("routeSurfacesInternal: frictionEvents param demotes the route one ladder step vs no friction", () => withTempHome(() => {
+  const domain = "router-internal-friction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx >= 0, "classifier confidence is on the ladder");
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step");
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [surface] } };
+
+  // No frictionEvents => base confidence, byte-identical to today (fail-open default).
+  const noFriction = routeSurfacesInternal(domain, { attackSurfaceInfo });
+  assert.equal(noFriction.document.routes[0].confidence, classification.confidence);
+
+  // >= threshold tool_inadequate events for the surface => demote exactly one step.
+  const frictionEvents = [
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+    frictionEvent("w1", "tool_inadequate"),
+  ];
+  const demoted = routeSurfacesInternal(domain, { attackSurfaceInfo, frictionEvents });
+  assert.equal(demoted.document.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "one full threshold demotes exactly one step");
+}));
+
+test("routeSurfaces (live): heavy friction on frontier-events.jsonl demotes the persisted route confidence", () => withTempHome(() => {
+  const domain = "router-live-friction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  const baseIdx = ROUTER_CONFIDENCE_LADDER.indexOf(classification.confidence);
+  assert.ok(baseIdx < ROUTER_CONFIDENCE_LADDER.length - 1, "base has room to demote one step");
+  writeAttackSurface(domain, [surface]);
+
+  // >= HEAVY_FRICTION_DEMOTION_THRESHOLD (3) tool_inadequate observations for w1.
+  for (let i = 0; i < 3; i += 1) {
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "observation.recorded",
+      payload: { observation_kind: "capability_friction_observed", surface_id: "w1", friction_kind: "tool_inadequate" },
+    });
+  }
+
+  const raw = routeSurfaces({ target_domain: domain });
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.routed, true);
+  // The persisted surface-routes.json carries the demoted confidence.
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.document.routes.length, 1);
+  assert.equal(read.document.routes[0].confidence, ROUTER_CONFIDENCE_LADDER[baseIdx + 1], "live route demoted one step by heavy friction");
+}));
+
+test("routeSurfaces (live): no frontier-events.jsonl fails open to base confidence and never throws", () => withTempHome(() => {
+  const domain = "router-live-nofriction.example.test";
+  const surface = { id: "w1", surface_type: "api", hosts: ["w1.example.test"], endpoints: ["https://w1.example.test/a"] };
+  const classification = classifySurfaceCapability(surface);
+  writeAttackSurface(domain, [surface]);
+  // No frontier-events.jsonl written at all.
+  assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+
+  let raw;
+  assert.doesNotThrow(() => { raw = routeSurfaces({ target_domain: domain }); }, "a missing friction ledger never breaks routing");
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.routed, true);
+  const read = readSurfaceRoutesStrict(domain);
+  assert.equal(read.document.routes.length, 1);
+  // Fail-open: base classification confidence, byte-identical to today.
+  assert.equal(read.document.routes[0].confidence, classification.confidence);
 }));

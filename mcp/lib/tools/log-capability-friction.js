@@ -12,17 +12,22 @@
 // Thin wrapper over bob_append_frontier_event that:
 //   * Validates the payload via assertCapabilityFrictionPayload (Y-P2 + Y-P10
 //     mechanical-witness wired with a session-context frontier-event lookup).
-//   * Stamps a per-(run_id, node_id, wanted_tool, purpose, detected_by)
-//     idempotency key (Y-P3 5-tuple) and SILENTLY short-circuits the second
-//     emission rather than appending a duplicate observation.
+//   * Stamps a per-(run_id, node_id, wanted_tool, friction_kind, purpose,
+//     detected_by) idempotency key (Y-P3) and SILENTLY short-circuits the
+//     second emission rather than appending a duplicate observation. The
+//     canonical friction identity is these SIX fields: purpose distinguishes
+//     the context the tool was wanted in, and friction_kind keeps a
+//     tool_absent and a tool_inadequate record for the same
+//     (wanted_tool, purpose, detected_by) DISTINCT so both coexist (Y-P11).
 //   * Appends an `observation.recorded` frontier event with
 //     payload.observation_kind = "capability_friction_observed" — siblings
 //     of OSS observation kinds; ZERO new top-level FRONTIER_EVENT_KIND
 //     (Y-P1 / X-P8 honoured).
 //
 // Voluntary `tool_inadequate` and synthetic adversarial scans for the same
-// wanted_tool must COEXIST per Y-P11. The 5-tuple includes `detected_by`,
-// so a voluntary "agent_self_report" record and an "adversarial_transcript_scan"
+// wanted_tool must COEXIST per Y-P11. The identity includes both
+// `friction_kind` and `detected_by`, so a voluntary "agent_self_report"
+// tool_inadequate record and an "adversarial_transcript_scan" tool_absent
 // record for the same wanted_tool resolve to different idempotency keys.
 
 const {
@@ -48,6 +53,7 @@ function idempotencyKeyFromPayload(payload) {
     payload.run_id,
     payload.node_id,
     payload.wanted_tool,
+    payload.friction_kind == null ? "" : payload.friction_kind,
     payload.purpose,
     payload.detected_by,
   ].join("");
@@ -60,6 +66,7 @@ function idempotencyKeyFromEvent(event) {
   if (typeof payload.run_id !== "string"
     || typeof payload.node_id !== "string"
     || typeof payload.wanted_tool !== "string"
+    || typeof payload.friction_kind !== "string"
     || typeof payload.purpose !== "string"
     || typeof payload.detected_by !== "string"
   ) {
@@ -69,6 +76,7 @@ function idempotencyKeyFromEvent(event) {
     payload.run_id,
     payload.node_id,
     payload.wanted_tool,
+    payload.friction_kind,
     payload.purpose,
     payload.detected_by,
   ].join("");
@@ -128,6 +136,7 @@ function handler(args) {
           run_id: normalized.run_id,
           node_id: normalized.node_id,
           wanted_tool: normalized.wanted_tool,
+          friction_kind: normalized.friction_kind,
           purpose: normalized.purpose,
           detected_by: normalized.detected_by,
         },
@@ -160,6 +169,7 @@ function handler(args) {
         run_id: normalized.run_id,
         node_id: normalized.node_id,
         wanted_tool: normalized.wanted_tool,
+        friction_kind: normalized.friction_kind,
         purpose: normalized.purpose,
         detected_by: normalized.detected_by,
       },
@@ -170,7 +180,7 @@ function handler(args) {
 module.exports = Object.freeze({
   name: "bob_log_capability_friction",
   description:
-    "Append a capability_friction_observed observation to frontier-events.jsonl. The agent declares the MCP tool it wanted (wanted_tool MUST exist in TOOL_REGISTRY), the closed-enum purpose, the Bash fallback it reached for, and the friction_kind (tool_absent vs tool_inadequate). tool_inadequate REQUIRES inadequate_invocation_ref pointing at a recorded MCP invocation in the same run_id (Y-P10 mechanical witness). Per-(run_id, node_id, wanted_tool, purpose, detected_by) idempotent (Y-P3) — second emission with the same 5-tuple is silently de-duped.",
+    "Append a capability_friction_observed observation to frontier-events.jsonl. The agent declares the MCP tool it wanted (wanted_tool MUST exist in TOOL_REGISTRY), the closed-enum purpose, the Bash fallback it reached for, and the friction_kind (tool_absent vs tool_inadequate). tool_inadequate REQUIRES inadequate_invocation_ref pointing at a recorded MCP invocation in the same run_id (Y-P10 mechanical witness). Per-(run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) idempotent (Y-P3) — second emission with the same canonical identity is silently de-duped. friction_kind is an identity field so a tool_absent and a tool_inadequate record for the same tool/purpose/detected_by coexist (Y-P11).",
   inputSchema: {
     type: "object",
     properties: {
@@ -230,7 +240,7 @@ module.exports = Object.freeze({
           "adversarial_transcript_scan",
           "mcp_runtime_auto_emit",
         ],
-        description: "Voluntary vs synthetic vs runtime-emit attribution. Affects the 5-tuple so voluntary + synthetic coexist (Y-P11).",
+        description: "Voluntary vs synthetic vs runtime-emit attribution. Part of the canonical (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) identity so voluntary + synthetic coexist (Y-P11).",
       },
       rationale: {
         type: "string",
@@ -288,4 +298,13 @@ module.exports = Object.freeze({
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
+  // Single-source the Y-P3 idempotency derivation over the canonical
+  // (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by)
+  // identity so the finalize-time auto-emit path (bob_finalize_node
+  // synthesizing tool_absent friction on an X.6 tool_constraint_violation)
+  // reuses the SAME key computation instead of re-implementing it — voluntary
+  // and synthetic frictions must share one key vocabulary so re-finalize
+  // dedupes and distinct friction_kind/detected_by records coexist.
+  idempotencyKeyFromPayload,
+  idempotencyKeyFromEvent,
 });

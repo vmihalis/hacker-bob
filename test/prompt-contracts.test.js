@@ -1264,7 +1264,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // Plane Y Cycle Y.2 adds bob_log_capability_friction +
   // bob_log_protocol_drift to evaluator-shared (Y-D2 voluntary emission
   // entries). Both are summary-grade by shape (Y-P2): closed-prefix
-  // payloads, no body fields, 5-tuple idempotent. Per-evaluator brief
+  // payloads, no body fields, 6-tuple idempotent. Per-evaluator brief
   // tokens unchanged (no brief surfacing); budgets bump by +2 (SC 39→41,
   // web 41→43) to keep parity with the bundle surface.
   // IP7 adds bob_ingest_sarif to evaluator-shared. It reads already-captured

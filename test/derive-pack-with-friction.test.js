@@ -137,12 +137,28 @@ test("selectRelevantFrictions wave-scopes to surface_refs (Y-P5)", () => {
   );
 });
 
-test("selectRelevantFrictions dedupes by Y-P3 5-tuple", () => {
+test("selectRelevantFrictions dedupes by Y-P3 6-tuple", () => {
   const node = webSurfaceNode("1", "surf1");
   const dup = frictionRecord({ wanted_tool: "bob_x" });
   const all = [dup, { ...dup }, { ...dup }];
   const selected = selectRelevantFrictions(all, node, {});
-  assert.equal(selected.length, 1, "three identical 5-tuples collapse to one");
+  assert.equal(selected.length, 1, "three identical 6-tuples collapse to one");
+});
+
+test("selectRelevantFrictions keeps purpose-distinct records for the same tool distinct (6-tuple)", () => {
+  const node = webSurfaceNode("1", "surf1");
+  // Same wanted_tool, same friction_kind, same detected_by, DIFFERENT purpose.
+  // Before purpose entered the selection key these collapsed to one, so the
+  // per-surface widening under-counted purpose-distinct evidence. Both must
+  // now survive.
+  const all = [
+    frictionRecord({ wanted_tool: "bob_aptos_run", purpose: "http_probe" }),
+    frictionRecord({ wanted_tool: "bob_aptos_run", purpose: "schema_fetch" }),
+  ];
+  const selected = selectRelevantFrictions(all, node, {});
+  assert.equal(selected.length, 2, "two purpose-distinct records must not collapse");
+  const purposes = selected.map((r) => r.purpose).sort();
+  assert.deepEqual(purposes, ["http_probe", "schema_fetch"]);
 });
 
 test("selectRelevantFrictions keeps tool_absent + tool_inadequate distinct (Y-P11)", () => {

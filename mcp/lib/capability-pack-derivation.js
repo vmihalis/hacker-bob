@@ -121,6 +121,30 @@ const DEFAULT_CAPABILITY_PACK_ID = "web";
 // caller that ignored the contract.
 const FRICTION_HISTORY_HARD_CAP = 32;
 
+// A tool must be wanted at least this many times across a capability pack's
+// surfaces (per the caller-side pack-friction aggregate) before it counts as a
+// chronic pack deficiency worth widening the pack for; a single stray friction
+// record is one-off noise, not a systematic pack gap. Y-P6 widening semantics:
+// clearing this threshold only ADDS the tool to the pack union; it never removes
+// or truncates a tool.
+const PACK_FRICTION_CHRONIC_MIN_COUNT = 2;
+
+// Confidence modulates friction-widening eagerness. A LOW-confidence route
+// widens from a single friction record; a MEDIUM route needs 2 distinct
+// records; a HIGH route needs 3 (the pack routing was confident, so it takes
+// repeated friction to override it). Absent/unknown confidence falls to the
+// eager default (threshold 1) so widening is never LESS eager than the
+// unconditional union — modulation only ever RAISES the bar, never truncates.
+const FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE = Object.freeze({ low: 1, medium: 2, high: 3 });
+
+function widenThresholdForConfidence(confidence) {
+  if (typeof confidence === "string"
+    && Object.prototype.hasOwnProperty.call(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE, confidence)) {
+    return FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE[confidence];
+  }
+  return 1;
+}
+
 // CN (coverage-nesting) — defensive caps on the (bug_class x auth_role) child
 // fan-out plan. CHILD_FANOUT_HARD_CAP mirrors the queue-policy max_spawn_children
 // ceiling so a buggy caller cannot blow the spawn budget; CHILD_FANOUT_BUG_CLASS_CAP
@@ -158,26 +182,74 @@ function dedupePreserveOrder(values) {
   return out;
 }
 
-function packIdForSurfaceMetadata(metadata) {
-  if (!isPlainObject(metadata)) return DEFAULT_CAPABILITY_PACK_ID;
-  // Two paths: (1) the metadata may carry a pre-classified `capability_pack`
-  // (the surface-routes.json shape); (2) it may carry the raw fields the
-  // classifier reads (surface_type + chain_family). Honor (1) when present so
-  // a caller that already routed surfaces can short-circuit.
+// The authoritative routability of a surface's metadata, consumed by the
+// single-surface deriver (and by downstream disposition recorders). Returns
+// `{ pack_id, routable, surface_type, reason }`. A smart_contract surface whose
+// chain_family is missing/unsupported is `routable:false` with a `null` pack and
+// a human-readable `reason`; it is NEVER laundered into the web pack. Web/OSS/
+// resolved-SC/unknown-type surfaces are `routable:true` with their resolved pack.
+// PURE: consults only classifySurfaceCapability + getCapabilityPack (both pure).
+function routabilityForSurfaceMetadata(metadata) {
+  if (!isPlainObject(metadata)) {
+    return { pack_id: DEFAULT_CAPABILITY_PACK_ID, routable: true, surface_type: "unknown", reason: null };
+  }
+  // Pre-classified short-circuit: the metadata may already carry a resolved
+  // `capability_pack` (the surface-routes.json shape). Honor it directly.
   if (typeof metadata.capability_pack === "string" && metadata.capability_pack.length > 0) {
     const pack = getCapabilityPack(metadata.capability_pack);
-    if (pack) return pack.id;
+    if (pack) {
+      return {
+        pack_id: pack.id,
+        routable: true,
+        surface_type: typeof metadata.surface_type === "string" && metadata.surface_type.length > 0
+          ? metadata.surface_type
+          : "unknown",
+        reason: null,
+      };
+    }
   }
+  // The classifier is the single routing source of truth and never throws for a
+  // smart_contract with an unresolved chain_family — it returns routable:false.
   try {
     const classified = classifySurfaceCapability(metadata);
-    return classified.capability_pack;
-  } catch {
-    // classifySurfaceCapability throws on smart_contract with unsupported
-    // chain_family. Fall back to the default web pack; the caller will see
-    // a pack that doesn't carry the chain-specific tools and the brief
-    // renderer surfaces that as a missing-pack signal in a later cycle.
-    return DEFAULT_CAPABILITY_PACK_ID;
+    if (classified.routable === false) {
+      const reason = classified.unroutable_reason
+        || (Array.isArray(classified.reasons) && classified.reasons[0])
+        || "unroutable smart_contract";
+      return {
+        pack_id: null,
+        routable: false,
+        surface_type: classified.surface_type || "unknown",
+        reason,
+      };
+    }
+    return {
+      pack_id: classified.capability_pack,
+      routable: true,
+      surface_type: classified.surface_type || "unknown",
+      reason: null,
+    };
+  } catch (err) {
+    // Defensive: any unexpected classifier error must not launder a
+    // smart_contract surface into the web pack; surface it as an unroutable
+    // disposition instead (fail-closed, Y-D21).
+    return {
+      pack_id: null,
+      routable: false,
+      surface_type: "smart_contract",
+      reason: (err && err.message) ? err.message : "unroutable smart_contract",
+    };
   }
+}
+
+function packIdForSurfaceMetadata(metadata) {
+  // String-returning contract preserved for the cross-stack union callers
+  // (deriveTransitionPack / deriveChildFanoutPlan): an unroutable endpoint
+  // contributes the graceful web baseline to the UNION, never a hard stop. The
+  // single-surface deriver consults routabilityForSurfaceMetadata directly so
+  // it can record the unroutable disposition instead of degrading to web.
+  const r = routabilityForSurfaceMetadata(metadata);
+  return r.routable ? r.pack_id : DEFAULT_CAPABILITY_PACK_ID;
 }
 
 function toolsForCapabilityPack(packId) {
@@ -381,8 +453,27 @@ function deriveSurfacePack(node, graph_context) {
   const surfaceMetadata = primarySurfaceId
     ? graph_context.surface_metadata_by_id[primarySurfaceId]
     : null;
-  const packId = packIdForSurfaceMetadata(surfaceMetadata);
-  const allowedTools = dedupeSorted(toolsForCapabilityPack(packId));
+  const routability = routabilityForSurfaceMetadata(surfaceMetadata);
+  // An unroutable smart_contract surface is NEVER routed to the web pack. It
+  // gets the read-only evaluator-shared baseline (so the agent can still read
+  // session state and record the disposition — NOT a web attack toolset) and a
+  // structured `routable:false` + `unroutable_reason` signal that a downstream
+  // node records as a non-halting partial disposition.
+  if (routability.routable === false) {
+    return {
+      capability_pack_ids: [],
+      allowed_tools: dedupeSorted(toolNamesForRoleBundle("evaluator-shared")),
+      brief_emphasis: {
+        node_kind: "surface",
+        capability_pack: null,
+        routable: false,
+        unroutable_reason: routability.reason,
+        primary_surface_id: primarySurfaceId,
+      },
+    };
+  }
+  const packId = routability.pack_id;
+  const allowedTools = dedupeSorted(toolsForCapabilityPack(packId)); // X.6
   return {
     capability_pack_ids: [packId],
     allowed_tools: allowedTools,
@@ -714,8 +805,21 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
   if (authAxis.length === 0) authAxis = [""];
   const coveredKeys = new Set(asStringArray(opts.covered_cell_keys));
 
-  const packId = packIdForSurfaceMetadata(surfaceMetadata || null);
-  const allowedToolsForChild = dedupeSorted(toolsForCapabilityPack(packId));
+  // Route the child allow-list off the parent's routability, not a bare pack
+  // id. An UNROUTABLE parent (a smart_contract with a missing/unsupported
+  // chain_family) is NEVER laundered into the web pack: it yields the read-only
+  // evaluator-shared baseline and NO capability_pack id on its children,
+  // mirroring deriveSurfacePack's routable:false stance. packIdForSurfaceMetadata
+  // returns "web" for both a genuine web parent (correct) and an unroutable SC
+  // (wrong), so routabilityForSurfaceMetadata is the discriminator.
+  const r = routabilityForSurfaceMetadata(surfaceMetadata || null);
+  const packId = r.routable === true ? r.pack_id : null;
+  const allowedToolsForChild = r.routable === true
+    ? dedupeSorted(toolsForCapabilityPack(r.pack_id))
+    : dedupeSorted(toolNamesForRoleBundle("evaluator-shared"));
+  const childCapabilityPackIds = r.routable === true
+    ? Object.freeze([packId])
+    : Object.freeze([]);
 
   // The open mechanism registry (corpus tier-2 + registered tier-3 candidates),
   // deduped so near-identical templates collapse to one axis entry. Read by the
@@ -772,7 +876,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
             surface_id: parentSurfaceId,
             bug_class: bugClass,
             auth_profile: authProfile || "",
-            capability_pack_ids: Object.freeze([packId]),
+            capability_pack_ids: childCapabilityPackIds,
             allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
             technique_pack_ids: Object.freeze(techniquePackIds.slice()),
             rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId}`,
@@ -806,7 +910,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
             auth_profile: authProfile || "",
             mechanism_template_id: typeof template.id === "string" ? template.id : null,
             mechanism_tier: Number.isInteger(template.tier) ? template.tier : 3,
-            capability_pack_ids: Object.freeze([packId]),
+            capability_pack_ids: childCapabilityPackIds,
             allowed_tools_for_node: Object.freeze(allowedToolsForChild.slice()),
             technique_pack_ids: Object.freeze(techniquePackIds.slice()),
             rationale: `Uncovered ${bugClass} cell under ${authLabel} on ${parentSurfaceId} via mechanism ${template.id || mechanismToken}`,
@@ -837,7 +941,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
     remaining_depth: remainingDepth,
     max_children: maxChildren,
     capability_pack: packId,
-    children: Object.freeze(children),
+    children: Object.freeze(children), // X.6 — packId is null for an unroutable parent (evaluator-shared baseline)
     covered_pruned_count: coveredPruned,
     budget_pruned_count: budgetPruned,
     relevance_pruned_count: relevancePruned,
@@ -914,26 +1018,45 @@ function deriveTransitionPack(node, graph_context) {
   // Transition nodes carry TWO surface_refs (the from_surface and to_surface
   // captured by the transition_proposed event). Look both up in the
   // surface_metadata_by_id map to pick each endpoint's capability_pack;
-  // UNION the resulting tool sets.
+  // UNION the resulting tool sets. An UNROUTABLE endpoint (a smart_contract
+  // whose chain_family is missing/unsupported) is NEVER laundered into the web
+  // pack — it contributes the read-only evaluator-shared baseline, mirroring
+  // deriveSurfacePack's routable:false stance. routabilityForSurfaceMetadata is
+  // the discriminator: packIdForSurfaceMetadata returns "web" for BOTH a genuine
+  // web endpoint (correct) AND an unroutable SC (wrong), so the pack id alone
+  // cannot tell them apart.
   const surfaceRefs = asStringArray(node.surface_refs);
   const endpointPackIds = [];
+  const allowedToolSet = new Set();
   for (const surfaceId of surfaceRefs) {
     const metadata = graph_context.surface_metadata_by_id[surfaceId];
-    const packId = packIdForSurfaceMetadata(metadata);
-    if (!endpointPackIds.includes(packId)) endpointPackIds.push(packId);
+    const r = routabilityForSurfaceMetadata(metadata);
+    if (r.routable === true) {
+      if (!endpointPackIds.includes(r.pack_id)) endpointPackIds.push(r.pack_id);
+      for (const tool of toolsForCapabilityPack(r.pack_id)) {
+        allowedToolSet.add(tool);
+      }
+    } else {
+      // Unroutable endpoint: contribute the read-only evaluator-shared baseline
+      // (never a web attack toolset) and no capability_pack id.
+      for (const tool of toolNamesForRoleBundle("evaluator-shared")) {
+        allowedToolSet.add(tool);
+      }
+    }
   }
-  if (endpointPackIds.length === 0) {
+  // Only the truly-empty-surface_refs case falls back to the web default. An
+  // all-unroutable transition (endpoints seen, all routable:false) already
+  // carries the evaluator-shared baseline in allowedToolSet and keeps
+  // endpointPackIds empty — it must NOT degrade to web.
+  if (surfaceRefs.length === 0 && allowedToolSet.size === 0) {
     endpointPackIds.push(DEFAULT_CAPABILITY_PACK_ID);
-  }
-  const allowedToolSet = new Set();
-  for (const packId of endpointPackIds) {
-    for (const tool of toolsForCapabilityPack(packId)) {
+    for (const tool of toolsForCapabilityPack(DEFAULT_CAPABILITY_PACK_ID)) {
       allowedToolSet.add(tool);
     }
   }
   return {
     capability_pack_ids: endpointPackIds,
-    allowed_tools: dedupeSorted(Array.from(allowedToolSet)),
+    allowed_tools: dedupeSorted(Array.from(allowedToolSet)), // X.6
     brief_emphasis: {
       node_kind: "transition",
       endpoint_capability_packs: endpointPackIds.slice(),
@@ -1119,20 +1242,74 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
   // Both unions defend against pack-bypass: the Y.5 scheduler MUST emit
   // the underlying `wanted_tool` strings through the closed TOOL_REGISTRY,
   // so a friction record can never smuggle a non-registered tool name.
-  const frictionWantedTools = [];
+  const primarySurfaceId = asStringArray(node.surface_refs)[0];
+  const primaryMeta = primarySurfaceId ? ctx.surface_metadata_by_id[primarySurfaceId] : null;
+  const routeConfidence = isPlainObject(primaryMeta) && typeof primaryMeta.confidence === "string"
+    ? primaryMeta.confidence
+    : null;
+  const widenThreshold = widenThresholdForConfidence(routeConfidence);
+  const frictionOccurrenceCount = new Map();
   for (const record of frictionHistory) {
     if (!isPlainObject(record)) continue;
     if (typeof record.wanted_tool === "string" && record.wanted_tool.length > 0) {
-      frictionWantedTools.push(record.wanted_tool);
+      frictionOccurrenceCount.set(
+        record.wanted_tool,
+        (frictionOccurrenceCount.get(record.wanted_tool) || 0) + 1,
+      );
+    }
+  }
+  const frictionWantedTools = [];
+  for (const [wantedTool, count] of frictionOccurrenceCount) {
+    // Y-P16 — confidence modulates friction-widening eagerness: a wanted_tool
+    // joins the pack only once its occurrence count clears the confidence
+    // threshold (low/absent=1 eager default, medium=2, high=3). This only ADDS
+    // friction-derived tools; it never removes a tool that clears its threshold.
+    if (count >= widenThreshold) {
+      frictionWantedTools.push(wantedTool);
     }
   }
   const targetClassAuxTools = targetClass
     ? deriveAuxiliaryToolsForTargetClass(targetClass).slice()
     : [];
+  // PACK-level friction widening (Y-P6). A chronic deficiency observed on ANY
+  // surface routed to this node's own capability pack(s) widens the pack for
+  // EVERY sibling surface. The aggregate is the caller-side pack-friction
+  // rollup keyed by capability_pack id → { wanted_tool → { count, surface_ids } }
+  // (built caller-side; the deriver stays pure). A tool joins only once its
+  // cross-surface count clears PACK_FRICTION_CHRONIC_MIN_COUNT (noise floor); an
+  // unroutable node has an empty `capability_pack_ids` so the lookup returns
+  // nothing and the node keeps its evaluator-shared baseline — no web fallback.
+  // Widening only ADDS: the final dedupeSorted union collapses a tool wanted
+  // both per-surface and pack-level to a single entry.
+  const packFrictionAggregate = isPlainObject(opts.pack_friction_aggregate)
+    ? opts.pack_friction_aggregate
+    : null;
+  const packWidenedToolSet = new Set();
+  if (packFrictionAggregate) {
+    for (const packId of perKind.capability_pack_ids) {
+      const toolBuckets = packFrictionAggregate[packId];
+      if (!isPlainObject(toolBuckets)) continue;
+      for (const [wantedTool, bucket] of Object.entries(toolBuckets)) {
+        if (typeof wantedTool !== "string" || wantedTool.length === 0) continue;
+        // Chronic = deficient across MULTIPLE surfaces of the pack, not one
+        // surface hitting friction repeatedly. Gate on the count of DISTINCT
+        // surface_ids so a single surface's repeated friction never widens the
+        // whole pack for its siblings.
+        const surfaceCount = isPlainObject(bucket) && Array.isArray(bucket.surface_ids)
+          ? bucket.surface_ids.length
+          : 0;
+        if (surfaceCount >= PACK_FRICTION_CHRONIC_MIN_COUNT) {
+          packWidenedToolSet.add(wantedTool);
+        }
+      }
+    }
+  }
+  const packWidenedTools = Array.from(packWidenedToolSet).sort();
   const unionedAllowedTools = dedupeSorted([
     ...perKind.allowed_tools,
     ...frictionWantedTools,
     ...targetClassAuxTools,
+    ...packWidenedTools,
   ]);
 
   return Object.freeze({
@@ -1146,6 +1323,9 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
       technique_pack_ids: Array.from(techniquePackIds).sort(),
       target_class: targetClass,
       friction_history_count: frictionHistory.length,
+      pack_friction_widened_tools_count: packWidenedTools.length,
+      pack_friction_widened_tools: packWidenedTools.slice(),
+      route_confidence: routeConfidence,
     }),
   });
 }
@@ -1222,11 +1402,15 @@ module.exports = {
   DEFAULT_CAPABILITY_PACK_ID,
   EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK,
   FRICTION_HISTORY_HARD_CAP,
+  PACK_FRICTION_CHRONIC_MIN_COUNT,
+  FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE,
+  widenThresholdForConfidence,
   RECOMMENDED_READS_HARD_CAP,
   RECOMMENDED_READS_PER_SURFACE,
   WEB3_IDENTITY_HANDOFF_PACK_ID,
   CHILD_FANOUT_HARD_CAP,
   CHILD_FANOUT_BUG_CLASS_CAP,
+  routabilityForSurfaceMetadata,
   buildOneHopGraphContext,
   derivePackForNode,
   deriveChildFanoutPlan,

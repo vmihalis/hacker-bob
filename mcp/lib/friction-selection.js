@@ -16,8 +16,9 @@
 // Selection rules (closed):
 //   1. Only frictions whose `surface_id` matches a `surface_ref` of the
 //      dispatched node are included (wave-scoped, Y-P5).
-//   2. Records are de-duped by the Y-P3 5-tuple
-//      (run_id, node_id, wanted_tool, friction_kind, detected_by).
+//   2. Records are de-duped by the Y-P3 canonical 6-tuple
+//      (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) —
+//      the identical field set + order the append side keys on.
 //   3. `tool_inadequate` frictions are EXCLUDED unless
 //      `options.include_inadequacy === true` (Y-P11 voluntary +
 //      synthetic quarantine — operator must opt in).
@@ -41,14 +42,20 @@ function asStringArray(value) {
 }
 
 function frictionKeyForDedupe(record) {
-  // Y-P3 5-tuple. Anything missing collapses to empty string so the key
-  // is stable; the validator at Y.2 emit time guarantees the 5 fields
-  // populate when the record was appended through bob_log_capability_friction.
+  // Y-P3 canonical 6-tuple, IDENTICAL field set + order to the append-side
+  // idempotency key (run_id, node_id, wanted_tool, friction_kind, purpose,
+  // detected_by) so this selection dedupe counts exactly what storage holds.
+  // Anything missing collapses to empty string so the key is stable; the
+  // validator at Y.2 emit time guarantees the six fields populate when the
+  // record was appended through bob_log_capability_friction. The `|` joiner
+  // may differ from the append-side joiner — the two key sets are never
+  // string-compared across functions, only the FIELD SET + ORDER must match.
   return [
     typeof record.run_id === "string" ? record.run_id : "",
     typeof record.node_id === "string" ? record.node_id : "",
     typeof record.wanted_tool === "string" ? record.wanted_tool : "",
     typeof record.friction_kind === "string" ? record.friction_kind : "",
+    typeof record.purpose === "string" ? record.purpose : "",
     typeof record.detected_by === "string" ? record.detected_by : "",
   ].join("|");
 }
@@ -82,7 +89,7 @@ function selectRelevantFrictions(allFrictions, node, options) {
     if (typeof record.surface_id !== "string" || !surfaceRefs.has(record.surface_id)) {
       continue;
     }
-    // Rule 2: 5-tuple dedupe.
+    // Rule 2: canonical 6-tuple dedupe.
     const key = frictionKeyForDedupe(record);
     if (seen.has(key)) continue;
     seen.add(key);

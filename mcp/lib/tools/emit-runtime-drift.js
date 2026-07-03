@@ -12,7 +12,7 @@
 //
 // Per Y-R20: idempotent on (run_id, drift_signature, tool). Same triplet
 // inside a single run is silently de-duped so a stuck retry loop cannot bury
-// the ledger. The 5-tuple discipline of bob_log_capability_friction does not
+// the ledger. The 6-tuple discipline of bob_log_capability_friction does not
 // apply here — runtime drift records have no node_id / purpose semantics.
 //
 // Rev 3 Y-D13 explicitly states the write-tool auto-emit path goes through

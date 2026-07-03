@@ -22,6 +22,7 @@ const {
   attackSurfacePath,
   pipelineEventsJsonlPath,
   statePath,
+  surfaceRoutesPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
 const {
@@ -411,5 +412,63 @@ test("session artifact analytics strips state fields when authority validation f
     assert.equal(summary.state.pending_wave, null);
     assert.equal(summary.state.total_findings, 0);
     assert.equal(summary.state.hold_count, 0);
+  });
+});
+
+test("pipeline analytics counts the medium-confidence + unroutable + friction routing tail", () => {
+  withTempHome(() => {
+    const domain = "routing-tail.example.com";
+    fs.mkdirSync(path.dirname(statePath(domain)), { recursive: true });
+    fs.writeFileSync(statePath(domain), `${JSON.stringify({
+      target: domain,
+      phase: "EVALUATE",
+    }, null, 2)}\n`, "utf8");
+
+    // A routable web route carrying the classifier's medium confidence plus an
+    // unroutable smart-contract disposition (disjoint: unroutable is confidence
+    // "low"), matching the versioned document readSurfaceRoutesStrict validates.
+    fs.writeFileSync(surfaceRoutesPath(domain), `${JSON.stringify({
+      version: 1,
+      route_version: 1,
+      routes: [
+        {
+          surface_id: "surface-web-medium",
+          surface_type: "http_endpoint",
+          capability_pack: "web",
+          capability_pack_version: 1,
+          evaluator_agent: "evaluator-agent",
+          brief_profile: "web",
+          confidence: "medium",
+          reasons: ["seeded_medium"],
+        },
+        {
+          surface_id: "surface-sc-unroutable",
+          surface_type: "smart_contract",
+          capability_pack: null,
+          confidence: "low",
+          disposition: "unroutable",
+          reason: "unresolved chain family",
+        },
+      ],
+    }, null, 2)}\n`, "utf8");
+
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "observation.recorded",
+      surface_id: "surface-friction",
+      payload: {
+        observation_kind: "capability_friction_observed",
+        surface_id: "surface-friction",
+        friction_kind: "tool_absent",
+      },
+      source: { artifact: "evaluator-run", tool: "bob_log_capability_friction" },
+    });
+
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain }));
+    const routingTail = analytics.sessions[0].routing_tail;
+    assert.ok(routingTail.medium_confidence_count >= 1);
+    assert.ok(routingTail.unroutable_count >= 1);
+    // medium route surface + friction surface, deduped.
+    assert.ok(routingTail.likely_misroute_count >= 2);
   });
 });

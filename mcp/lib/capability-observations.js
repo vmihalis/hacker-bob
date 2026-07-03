@@ -81,8 +81,10 @@ const FALLBACK_USED_VALUES = Object.freeze([
   "none",
 ]);
 
-// Closed `friction_kind` enum. Y-P3 5-tuple keeps `tool_absent` and
-// `tool_inadequate` records for the same wanted_tool DISTINCT (they must
+// Closed `friction_kind` enum. friction_kind is part of the canonical Y-P3
+// friction identity (run_id, node_id, wanted_tool, friction_kind, purpose,
+// detected_by), which keeps `tool_absent` and `tool_inadequate` records for the
+// same wanted_tool DISTINCT (they must
 // not collapse — see Y-P11). Y-P10 mechanical witness is REQUIRED on
 // `tool_inadequate` and FORBIDDEN on `tool_absent`.
 const FRICTION_KIND_VALUES = Object.freeze([
@@ -106,8 +108,8 @@ const INADEQUACY_MODE_VALUES = Object.freeze([
 
 // Closed `detected_by` enum. Voluntary emissions carry "agent_self_report";
 // the Y.6 adversarial scanner carries "adversarial_transcript_scan" so the
-// 5-tuple keeps voluntary + synthetic records distinct (Y-P11 coexistence
-// signal). The runtime / dispatch-layer auto-emit path uses
+// canonical friction identity keeps voluntary + synthetic records distinct
+// (Y-P11 coexistence signal). The runtime / dispatch-layer auto-emit path uses
 // "mcp_runtime_auto_emit" so operators can grep telemetry by source.
 const DETECTED_BY_VALUES = Object.freeze([
   "agent_self_report",

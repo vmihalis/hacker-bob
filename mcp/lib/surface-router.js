@@ -14,9 +14,14 @@ const {
 } = require("./validation.js");
 const {
   classifySurfaceCapability,
+  deriveConfidenceAdjustment,
   getCapabilityPack,
   normalizeContextBudget,
 } = require("./capability-packs.js");
+const {
+  capabilityFrictionPayloads,
+  readFrontierEvents,
+} = require("./frontier-events.js");
 const {
   currentSurfaces,
 } = require("./frontier-projections.js");
@@ -24,7 +29,7 @@ const {
 const SURFACE_ROUTES_VERSION = 1;
 const SURFACE_ROUTE_VERSION = 1;
 
-function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
+function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null } = {}) {
   // Surface input read from currentSurfaces (Cycle F.5): surface-index.json
   // is authoritative when present; legacy attack_surface.json is only used
   // when the materialized view is absent (transitional fallback removed in D.3).
@@ -44,7 +49,42 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
     seenSurfaceIds.add(surfaceId);
 
     const classification = classifySurfaceCapability(surface);
-    routes.push({
+    // An unroutable smart-contract surface (unknown/unresolved chain_family)
+    // carries no capability pack: it is recorded as a disposition-only route
+    // with an evidenced reason, never laundered into the web pack.
+    if (classification.routable === false) {
+      const route = {
+        surface_id: surfaceId,
+        surface_type: classification.surface_type,
+        disposition: "unroutable",
+        reason: classification.unroutable_reason,
+        confidence: classification.confidence,
+        reasons: classification.reasons,
+      };
+      if (classification.chain_family != null) {
+        route.chain_family = classification.chain_family;
+      }
+      routes.push(route);
+      continue;
+    }
+    // Optional friction-driven confidence demotion (routable routes only).
+    // route.confidence is regenerated only by bob_route_surfaces ->
+    // buildSurfaceRoutesDocument, so demotion takes effect on (re-)route —
+    // cross-run, or on a frontier re-open that re-routes this surface — NOT
+    // mid-run. deriveConfidenceAdjustment only LOWERS confidence: it never
+    // promotes above the base classification confidence and never changes
+    // routability. When frictionEvents is null/absent, confidence is
+    // classification.confidence verbatim (byte-identical to no-friction routing).
+    let routeConfidence = classification.confidence;
+    if (Array.isArray(frictionEvents) && frictionEvents.length > 0) {
+      const sliced = capabilityFrictionPayloads(frictionEvents, {
+        surfaceId,
+        frictionKinds: ["tool_inadequate"],
+      });
+      const aggregate = { tool_inadequate_count: sliced.length };
+      routeConfidence = deriveConfidenceAdjustment(classification.confidence, aggregate);
+    }
+    const route = {
       surface_id: surfaceId,
       surface_type: classification.surface_type,
       capability_pack: classification.capability_pack,
@@ -52,9 +92,15 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
       evaluator_agent: classification.evaluator_agent,
       brief_profile: classification.brief_profile,
       context_budget: classification.context_budget,
-      confidence: classification.confidence,
+      confidence: routeConfidence,
       reasons: classification.reasons,
-    });
+    };
+    // chain_family is a resolved smart-contract's routing key; web/OSS routes
+    // have none, so it is only persisted when the classifier resolved one.
+    if (classification.chain_family != null) {
+      route.chain_family = classification.chain_family;
+    }
+    routes.push(route);
   }
 
   return {
@@ -67,6 +113,9 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
 function countRoutesByCapabilityPack(routes) {
   const counts = {};
   for (const route of routes) {
+    // An unroutable route has no capability_pack; skip it so counts do not
+    // gain an `undefined` bucket.
+    if (route.capability_pack == null) continue;
     counts[route.capability_pack] = (counts[route.capability_pack] || 0) + 1;
   }
   return counts;
@@ -75,6 +124,15 @@ function countRoutesByCapabilityPack(routes) {
 function validateSurfaceRoute(route, index, filePath) {
   if (route == null || typeof route !== "object" || Array.isArray(route)) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] must be an object)`);
+  }
+  // An unroutable smart-contract route carries a disposition + reason and no
+  // pack; validate it as a disposition-only record so it reads back cleanly
+  // (a plain Error on bad data keeps a malformed row quarantinable, not a
+  // re-thrown code bug).
+  if (route.disposition === "unroutable" || route.capability_pack == null) {
+    const unroutableId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
+    assertNonEmptyString(route.reason, `routes[${index}].reason`);
+    return { ...route, surface_id: unroutableId };
   }
   const surfaceId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
   const capabilityPack = assertNonEmptyString(route.capability_pack, `routes[${index}].capability_pack`);
@@ -107,9 +165,9 @@ function validateSurfaceRoute(route, index, filePath) {
   };
 }
 
-function routeSurfacesInternal(domain, { attackSurfaceInfo = null } = {}) {
+function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
-  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo });
+  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents });
   const filePath = surfaceRoutesPath(targetDomain);
   // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
   // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
@@ -212,7 +270,19 @@ function readSurfaceRoutesStrict(domain) {
 function routeSurfaces(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
-    const routed = routeSurfacesInternal(domain);
+    // Thread friction into the live route so demotion fires on (re-)route.
+    // The read is fail-open: a missing/corrupt frontier-events.jsonl yields
+    // frictionEvents=null and routing proceeds with base-confidence routes
+    // identical to no-friction routing. A friction read NEVER gates or breaks
+    // bob_route_surfaces.
+    let frictionEvents = null;
+    try {
+      const ev = readFrontierEvents(domain);
+      if (Array.isArray(ev)) frictionEvents = ev;
+    } catch {
+      frictionEvents = null;
+    }
+    const routed = routeSurfacesInternal(domain, { frictionEvents });
     return JSON.stringify({
       version: SURFACE_ROUTES_VERSION,
       routed: true,

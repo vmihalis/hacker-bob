@@ -45,6 +45,9 @@ const {
 const {
   appendFrontierEvent,
 } = require("../mcp/lib/frontier-events.js");
+const {
+  routeSurfacesInternal,
+} = require("../mcp/lib/surface-router.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -217,6 +220,62 @@ test("buildWaveBriefDerivation wave-scopes by surface_id — other-surface frict
   });
 });
 
+test("buildWaveBriefDerivation routes an EVM smart_contract surface to the EVM capability pack, not the web default (BUG-A)", () => {
+  withTempHome(() => {
+    // Fallback path: no surface-routes.json on disk, so the derivation must
+    // route off the in-hand surfaceObj's chain_family.
+    const fallbackDomain = uniqueDomain("y5-sc-evm-fallback");
+    const fallback = buildWaveBriefDerivation({
+      surfaceObj: { id: "sc-evm-1", surface_type: "smart_contract", chain_family: "evm" },
+      surfaceId: "sc-evm-1",
+      waveNumber: 1,
+      frontierEvents: [],
+      queuePolicy: null,
+      domain: fallbackDomain,
+      explicitTargetClass: null,
+      includeInadequacy: false,
+    });
+    assert.equal(
+      fallback.capability_pack,
+      "smart_contract_evm",
+      "EVM smart_contract surface MUST derive the EVM pack via the surfaceObj fallback, not the web default",
+    );
+    // The wave brief carries only the routed pack id, not the full tool union
+    // (inlining it would leak cross-lens tools). A smart_contract surface
+    // resolving to smart_contract_evm and never to web is the routing property
+    // under test; the smart_contract_evm -> EVM tool mapping is covered by
+    // test/capability-pack-derivation.test.js.
+    assert.notEqual(fallback.capability_pack, "web");
+
+    // Routes path: a real surface-routes.json produced by the canonical
+    // router carries chain_family, so readSurfaceRoutesStrict resolves the
+    // EVM pack the same way.
+    const routesDomain = uniqueDomain("y5-sc-evm-routes");
+    fs.mkdirSync(sessionDir(routesDomain), { recursive: true });
+    const surfaces = [{
+      id: "sc-evm-1",
+      surface_type: "smart_contract",
+      chain_family: "evm",
+      title: "Vault",
+      addresses: ["0x0000000000000000000000000000000000000001"],
+      chain: "ethereum",
+    }];
+    routeSurfacesInternal(routesDomain, { attackSurfaceInfo: { source: "agent", document: { surfaces } } });
+    const routed = buildWaveBriefDerivation({
+      surfaceObj: surfaces[0],
+      surfaceId: "sc-evm-1",
+      waveNumber: 1,
+      frontierEvents: [],
+      queuePolicy: null,
+      domain: routesDomain,
+      explicitTargetClass: null,
+      includeInadequacy: false,
+    });
+    assert.equal(routed.capability_pack, "smart_contract_evm");
+    assert.notEqual(routed.capability_pack, "web");
+  });
+});
+
 test("buildWaveBriefDerivation default quarantines tool_inadequate frictions (Y-P11)", () => {
   // Direct call rather than through the full brief: feeding tool_inadequate
   // through appendFrontierEvent requires a real witness event, but the
@@ -251,4 +310,26 @@ test("buildWaveBriefDerivation default quarantines tool_inadequate frictions (Y-
     0,
     "tool_inadequate quarantined by default (Y-P11)",
   );
+});
+
+test("buildWaveBriefDerivation records an unroutable smart_contract surface as no pack, never web, without throwing", () => {
+  withTempHome(() => {
+    // An ambiguous smart_contract surface (no chain_family) is unroutable. The
+    // wave brief must derive a null capability_pack (never the web default) and
+    // must not throw — Y-D21 normally guarantees SC surfaces carry chain_family,
+    // so this locks the defensive path.
+    const domain = uniqueDomain("y5-sc-unroutable");
+    const result = buildWaveBriefDerivation({
+      surfaceObj: { id: "sc-unroutable-1", surface_type: "smart_contract" },
+      surfaceId: "sc-unroutable-1",
+      waveNumber: 1,
+      frontierEvents: [],
+      queuePolicy: null,
+      domain,
+      explicitTargetClass: null,
+      includeInadequacy: false,
+    });
+    assert.equal(result.capability_pack, null, "unroutable SC derives no capability pack");
+    assert.notEqual(result.capability_pack, "web", "unroutable SC is never routed to the web default");
+  });
 });

@@ -60,16 +60,20 @@ const SERVER_WITNESSABLE_SCANNER_KINDS = Object.freeze(new Set([
 
 const DEFAULT_PROMOTION_THRESHOLD = 2;
 
-// Same Y-P3 key the log tool uses (log-capability-friction.js:46-75). Kept
-// byte-identical so a server-fired synthetic and an agent/prose re-forward of
-// THAT SAME synthetic (same detected_by) collapse to a single frontier event.
-// A voluntary agent_self_report for the same logical friction has a DIFFERENT
-// detected_by and coexists by design (Y-P11) — not a double-fire.
+// The canonical friction identity the log tool uses
+// (log-capability-friction.js idempotencyKeyFromPayload): the six fields
+// (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by). friction_kind
+// is part of the identity so a tool_absent and a tool_inadequate synthetic for the
+// same wanted_tool coexist (Y-P11) rather than collapsing to one frontier event; a
+// server-fired synthetic and an agent/prose re-forward of THAT SAME synthetic (same
+// six fields) still collapse. A voluntary agent_self_report has a different
+// detected_by and coexists by design.
 function frictionIdempotencyKey(payload) {
   return [
     payload.run_id,
     payload.node_id,
     payload.wanted_tool,
+    payload.friction_kind == null ? "" : payload.friction_kind,
     payload.purpose,
     payload.detected_by,
   ].join("");

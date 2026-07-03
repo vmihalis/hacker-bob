@@ -865,3 +865,101 @@ test("finalize accepts agent_output with only evidence_refs[] (non-empty)", () =
     assert.equal(result.to_state, "finalized");
   });
 });
+
+// ─── Surface-node pack derivation reads the persisted per-route chain_family ──
+//
+// A smart_contract surface routed with chain_family "evm" resolves through
+// safeSurfaceRouteMap → graph_context.surface_metadata_by_id → deriveSurfacePack
+// to the chain-specific "smart_contract_evm" pack, whose family_tag is "evm".
+// The persisted route's chain_family is the routing key; a Surface node whose
+// route carries it must NOT collapse to the web fallback.
+
+test("prepare_node surfaces a non-null chain-specific family_tag for a smart_contract surface routed with chain_family evm", () => {
+  withTempHome(() => {
+    const domain = "c2-sc-chainfamily.example.com";
+    seedSession(domain);
+
+    const { routeSurfacesInternal, readSurfaceRoutesStrict } = require("../mcp/lib/surface-router.js");
+    const { surfaceRoutesPath } = require("../mcp/lib/paths.js");
+
+    // Persist the routed smart_contract surface the way the router produces it:
+    // classifySurfaceCapability resolves the evm chain and writes chain_family
+    // + the smart_contract_evm capability_pack onto the route.
+    fs.mkdirSync(path.dirname(surfaceRoutesPath(domain)), { recursive: true });
+    routeSurfacesInternal(domain, {
+      attackSurfaceInfo: {
+        source: "test",
+        document: {
+          surfaces: [{
+            id: "surface:vault",
+            surface_type: "smart_contract",
+            chain_family: "evm",
+            hosts: ["vault.example.com"],
+            endpoints: [],
+          }],
+        },
+      },
+    });
+
+    // Mint a Surface node on the same surface id and drive it to a prepare-legal
+    // state. Surface nodes don't go through bob_attach_contract; the established
+    // path emits the transitions directly (mirrors the adjacent_hypotheses test).
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      ts: "2026-05-31T00:01:00.000Z",
+      surface_id: "surface:vault",
+      payload: { title: "vault" },
+    });
+    materializeTaskGraph(domain, { write: true });
+    const surfaceNodeId = `${TASK_GRAPH_NODE_ID_PREFIX}S-surface:vault`;
+
+    appendNodeTransition({
+      target_domain: domain,
+      node_id: surfaceNodeId,
+      from_state: "proposed",
+      to_state: "contracted",
+      contract_hash: "feedface".repeat(8),
+      contract: {
+        contract_id: "C-vault",
+        contract_hash: "feedface".repeat(8),
+        severity_floor: "high",
+        invariants: [{ id: "I1", statement: "Vault withdrawals authorize the caller." }],
+        witnesses: [{
+          id: "W1",
+          kind: "tool_output_match",
+          predicate: { tool: KNOWN_TOOL, match: { path: "$.status", equals: 200 } },
+        }],
+        production_paths: [{
+          description: "probe vault",
+          tool_call_pattern: [{ tool: KNOWN_TOOL }],
+        }],
+      },
+    });
+    materializeTaskGraph(domain, { write: true });
+
+    const out = JSON.parse(TOOL_HANDLERS.bob_prepare_node({
+      target_domain: domain,
+      node_id: surfaceNodeId,
+    }));
+    assert.equal(
+      out.family_tag,
+      "evm",
+      "SC surface's persisted chain_family must resolve to the evm pack, not the web fallback",
+    );
+    assert.ok(
+      out.family_tag && out.family_tag !== "web",
+      "chain_family must not collapse to the web default",
+    );
+
+    // The persisted route carries chain_family — the precondition prepare-node consumes.
+    const routed = readSurfaceRoutesStrict(domain).document.routes.find(
+      (r) => r.surface_id === "surface:vault",
+    );
+    assert.equal(
+      routed.chain_family,
+      "evm",
+      "the router must persist chain_family on the route (precondition for consumption)",
+    );
+  });
+});
