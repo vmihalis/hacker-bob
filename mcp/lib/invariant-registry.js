@@ -239,7 +239,7 @@ const REGISTRY = Object.freeze({
       "Confidence modulates friction-widening eagerness: a friction wanted_tool "
       + "joins allowed_tools_for_node only when its occurrence count in "
       + "friction_history meets the confidence-derived widen threshold "
-      + "(low/absent=1, medium=2, high=3); modulation only ADDS tools and never "
+      + "(low/absent=1, medium=2, high=2); modulation only ADDS tools and never "
       + "widens LESS eagerly than the unconditional union.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/capability-pack-derivation.js", symbol: "widenThresholdForConfidence" }),

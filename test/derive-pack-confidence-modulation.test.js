@@ -3,7 +3,7 @@
 // Y-P16 — route.confidence modulates friction-widening eagerness inside
 // derivePackForNode. A LOW-confidence surface widens from a single friction
 // record (threshold 1); a HIGH-confidence surface under the SAME single
-// record does NOT widen (threshold 3). Modulation only ever RAISES the bar
+// record does NOT widen (threshold 2). Modulation only ever RAISES the bar
 // for confident routes and only ADDS friction-derived tools — the
 // absent-confidence default (threshold 1) is never LESS eager than the
 // unconditional union (RANKED, not bounded).
@@ -55,7 +55,7 @@ const OFF_PACK_TOOL = "bob_aptos_run";
 test("widenThresholdForConfidence maps low/medium/high and defaults to 1", () => {
   assert.equal(widenThresholdForConfidence("low"), 1);
   assert.equal(widenThresholdForConfidence("medium"), 2);
-  assert.equal(widenThresholdForConfidence("high"), 3);
+  assert.equal(widenThresholdForConfidence("high"), 2);
   assert.equal(widenThresholdForConfidence(null), 1);
   assert.equal(widenThresholdForConfidence(undefined), 1);
   assert.equal(widenThresholdForConfidence("bogus"), 1);
@@ -64,7 +64,7 @@ test("widenThresholdForConfidence maps low/medium/high and defaults to 1", () =>
 test("FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE matches the resolver + is frozen", () => {
   assert.equal(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE.low, 1);
   assert.equal(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE.medium, 2);
-  assert.equal(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE.high, 3);
+  assert.equal(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE.high, 2);
   assert.ok(Object.isFrozen(FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE));
   for (const c of ["low", "medium", "high"]) {
     assert.equal(
@@ -100,11 +100,11 @@ test("THE DECISION FLIP: one friction record widens low-confidence, not high-con
   );
   assert.ok(
     !highPack.allowed_tools_for_node.includes(OFF_PACK_TOOL),
-    "the SAME single friction record MUST NOT widen a high-confidence surface (threshold 3)",
+    "the SAME single friction record MUST NOT widen a high-confidence surface (threshold 2)",
   );
 });
 
-test("high-confidence surface DOES widen on 3 distinct (6-tuple-distinct) records", () => {
+test("high-confidence surface DOES widen on 2 distinct (6-tuple-distinct) records", () => {
   const node = surfaceNode("1", "s1");
   const pack = derivePackForNode(
     node,
@@ -115,13 +115,12 @@ test("high-confidence surface DOES widen on 3 distinct (6-tuple-distinct) record
       friction_history: [
         frictionRecord({ wanted_tool: OFF_PACK_TOOL, friction_kind: "tool_absent", detected_by: "agent_self_report", purpose: "p1" }),
         frictionRecord({ wanted_tool: OFF_PACK_TOOL, friction_kind: "tool_absent", detected_by: "mcp_runtime_auto_emit", purpose: "p2" }),
-        frictionRecord({ wanted_tool: OFF_PACK_TOOL, friction_kind: "tool_absent", detected_by: "agent_self_report", purpose: "p3", run_id: "run_other" }),
       ],
     },
   );
   assert.ok(
     pack.allowed_tools_for_node.includes(OFF_PACK_TOOL),
-    "3 distinct friction records for the same tool MUST widen even a high-confidence surface",
+    "2 distinct friction records for the same tool MUST widen even a high-confidence surface (threshold 2)",
   );
 });
 

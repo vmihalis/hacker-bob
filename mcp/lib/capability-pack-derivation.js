@@ -135,7 +135,7 @@ const PACK_FRICTION_CHRONIC_MIN_COUNT = 2;
 // repeated friction to override it). Absent/unknown confidence falls to the
 // eager default (threshold 1) so widening is never LESS eager than the
 // unconditional union — modulation only ever RAISES the bar, never truncates.
-const FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE = Object.freeze({ low: 1, medium: 2, high: 3 });
+const FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE = Object.freeze({ low: 1, medium: 2, high: 2 });
 
 function widenThresholdForConfidence(confidence) {
   if (typeof confidence === "string"
@@ -1262,7 +1262,7 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
   for (const [wantedTool, count] of frictionOccurrenceCount) {
     // Y-P16 — confidence modulates friction-widening eagerness: a wanted_tool
     // joins the pack only once its occurrence count clears the confidence
-    // threshold (low/absent=1 eager default, medium=2, high=3). This only ADDS
+    // threshold (low/absent=1 eager default, medium=2, high=2). This only ADDS
     // friction-derived tools; it never removes a tool that clears its threshold.
     if (count >= widenThreshold) {
       frictionWantedTools.push(wantedTool);
