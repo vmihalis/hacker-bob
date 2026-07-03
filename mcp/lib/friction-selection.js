@@ -25,6 +25,8 @@
 //   4. Result is hard-capped at `options.limit` (default 32 per Y-P4
 //      bounded input).
 
+const { frictionIdentityKey } = require("./capability-observations.js");
+
 // ─── Pure friction selection ────────────────────────────────────────────
 //
 // Everything below the divider is the body the load-time purity guard
@@ -42,22 +44,13 @@ function asStringArray(value) {
 }
 
 function frictionKeyForDedupe(record) {
-  // Y-P3 canonical 6-tuple, IDENTICAL field set + order to the append-side
-  // idempotency key (run_id, node_id, wanted_tool, friction_kind, purpose,
-  // detected_by) so this selection dedupe counts exactly what storage holds.
-  // Anything missing collapses to empty string so the key is stable; the
-  // validator at Y.2 emit time guarantees the six fields populate when the
-  // record was appended through bob_log_capability_friction. The `|` joiner
-  // may differ from the append-side joiner — the two key sets are never
-  // string-compared across functions, only the FIELD SET + ORDER must match.
-  return [
-    typeof record.run_id === "string" ? record.run_id : "",
-    typeof record.node_id === "string" ? record.node_id : "",
-    typeof record.wanted_tool === "string" ? record.wanted_tool : "",
-    typeof record.friction_kind === "string" ? record.friction_kind : "",
-    typeof record.purpose === "string" ? record.purpose : "",
-    typeof record.detected_by === "string" ? record.detected_by : "",
-  ].join("|");
+  // Delegate to the canonical Y-P3 identity (capability-observations.js) — no
+  // hand-listed field array here. `frictionIdentityKey` is pure (string-only,
+  // no clock / random / env / IO), so this call keeps the purity-guarded body
+  // pure. Selection keys are compared only within one `selectRelevantFrictions`
+  // `seen` Set, never string-compared across modules, so the canonical joiner
+  // is safe here.
+  return frictionIdentityKey(record);
 }
 
 function selectRelevantFrictions(allFrictions, node, options) {
@@ -150,4 +143,7 @@ function selectRelevantFrictions(allFrictions, node, options) {
 module.exports = {
   DEFAULT_LIMIT,
   selectRelevantFrictions,
+  // exported for the single-source friction-identity test (proves this entry
+  // point derives the same canonical Y-P3 key as the log / mechanization sites)
+  frictionKeyForDedupe,
 };

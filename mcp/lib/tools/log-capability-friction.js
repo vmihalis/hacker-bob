@@ -39,6 +39,8 @@ const {
 } = require("../frontier-materialize-debounce.js");
 const {
   assertCapabilityFrictionPayload,
+  frictionIdentityKey,
+  frictionIdentityKeyFromEvent,
 } = require("../capability-observations.js");
 const {
   assertSafeDomain,
@@ -48,38 +50,15 @@ const {
 } = require("../storage.js");
 const { ERROR_CODES, ToolError } = require("../envelope.js");
 
+// Delegate to the canonical Y-P3 identity in capability-observations.js — no
+// hand-listed field array here. The exported names are kept verbatim:
+// finalize-node.js imports both from this module.
 function idempotencyKeyFromPayload(payload) {
-  return [
-    payload.run_id,
-    payload.node_id,
-    payload.wanted_tool,
-    payload.friction_kind == null ? "" : payload.friction_kind,
-    payload.purpose,
-    payload.detected_by,
-  ].join("");
+  return frictionIdentityKey(payload);
 }
 
 function idempotencyKeyFromEvent(event) {
-  if (!event || event.kind !== "observation.recorded") return null;
-  const payload = event.payload;
-  if (!payload || payload.observation_kind !== "capability_friction_observed") return null;
-  if (typeof payload.run_id !== "string"
-    || typeof payload.node_id !== "string"
-    || typeof payload.wanted_tool !== "string"
-    || typeof payload.friction_kind !== "string"
-    || typeof payload.purpose !== "string"
-    || typeof payload.detected_by !== "string"
-  ) {
-    return null;
-  }
-  return [
-    payload.run_id,
-    payload.node_id,
-    payload.wanted_tool,
-    payload.friction_kind,
-    payload.purpose,
-    payload.detected_by,
-  ].join("");
+  return frictionIdentityKeyFromEvent(event);
 }
 
 function frictionEventLookup(domain) {

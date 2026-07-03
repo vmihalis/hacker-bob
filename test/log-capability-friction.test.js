@@ -501,3 +501,61 @@ test("drift idempotency: runtime-emit (no skill_path) collapses onto <runtime> s
     assert.equal(driftPayloadsFromLedger(domain).length, 2);
   });
 });
+
+// Y-P3 single-source friction identity: all three key-derivation entry points
+// (log / selection / mechanization) delegate to the ONE canonical
+// frictionIdentityKey in capability-observations.js, and the standardized
+// control-byte joiner fixes the collisions the old `|` / `""` joiners allowed.
+const {
+  frictionKeyForDedupe,
+} = require("../mcp/lib/friction-selection.js");
+const {
+  frictionIdempotencyKey,
+} = require("../mcp/lib/friction-mechanization.js");
+
+test("single-source: log / selection / mechanization derive the IDENTICAL Y-P3 key", () => {
+  const identity = {
+    run_id: "run-single-source",
+    node_id: "node-1",
+    wanted_tool: "bob_http_scan",
+    friction_kind: "tool_absent",
+    purpose: "http_probe",
+    detected_by: "agent_self_report",
+  };
+  const fromLog = logCapabilityFrictionTool.idempotencyKeyFromPayload(identity);
+  const fromSelection = frictionKeyForDedupe(identity);
+  const fromMechanization = frictionIdempotencyKey(identity);
+
+  assert.equal(typeof fromLog, "string");
+  assert.equal(fromLog, fromSelection);
+  assert.equal(fromSelection, fromMechanization);
+});
+
+test("collision fix: adjacent-field identities that collided under `|` / `\"\"` stay distinct", () => {
+  const base = {
+    wanted_tool: "bob_http_scan",
+    friction_kind: "tool_absent",
+    purpose: "http_probe",
+    detected_by: "agent_self_report",
+  };
+  // Adjacent run_id/node_id boundary. Under the old `|` joiner these collided
+  // ("a|b|c" == "a|b|c"); under the old `""` joiner the second pair collided
+  // ("abc" == "abc"). The canonical control-byte joiner keeps them distinct.
+  const pipeA = { ...base, run_id: "a", node_id: "b|c" };
+  const pipeB = { ...base, run_id: "a|b", node_id: "c" };
+  const emptyA = { ...base, run_id: "ab", node_id: "c" };
+  const emptyB = { ...base, run_id: "a", node_id: "bc" };
+
+  assert.notEqual(
+    logCapabilityFrictionTool.idempotencyKeyFromPayload(pipeA),
+    logCapabilityFrictionTool.idempotencyKeyFromPayload(pipeB),
+  );
+  assert.notEqual(
+    frictionKeyForDedupe(emptyA),
+    frictionKeyForDedupe(emptyB),
+  );
+  assert.notEqual(
+    frictionIdempotencyKey(emptyA),
+    frictionIdempotencyKey(emptyB),
+  );
+});
