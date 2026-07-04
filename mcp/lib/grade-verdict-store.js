@@ -130,6 +130,17 @@ function normalizeGradeFinding(result, findingIdSet) {
   if (result.reachability != null) {
     normalized.reachability = normalizeReachabilityDispositionStamp(result.reachability, "reachability");
   }
+  // The graded-on severity for a finding whose reachability was silent (no cap).
+  // Carried through read-back so a downstream reader has the display severity;
+  // validated as a severity band. Absent when a reachability stamp is present (the
+  // severity lives there) or on legacy verdicts, whose shape stays byte-identical.
+  if (result.graded_severity != null) {
+    normalized.graded_severity = assertEnumValue(
+      result.graded_severity,
+      ["critical", "high", "medium", "low", "info"],
+      "graded_severity",
+    );
+  }
   // Additive server-derived defender relens (customer /r surface speaks defender,
   // not SUBMIT/HOLD/SKIP). Carried through read-back like reachability; never
   // enters the score/verdict math. Present on grades written after this wiring;
@@ -670,7 +681,17 @@ function writeGradeVerdict(args) {
       reportable: finalReportableSeveritySet.has(finding.finding_id),
     });
     const stamped = { ...finding, defender_disposition };
-    if (reachability) stamped.reachability = reachability;
+    if (reachability) {
+      // The graded-on severity lives on the reachability stamp when it spoke.
+      stamped.reachability = reachability;
+    } else {
+      // Reachability was silent (unknown) — which is every web/SC finding. The
+      // graded severity then equals the recorded final severity (nothing capped it).
+      // Carry it explicitly so a downstream reader (e.g. the hosted witness) has the
+      // finding's severity for display weight WITHOUT a reachability stamp — the
+      // recorded severity is otherwise in hand at grade time and lost on write.
+      stamped.graded_severity = recordedSeverity;
+    }
     return stamped;
   });
 

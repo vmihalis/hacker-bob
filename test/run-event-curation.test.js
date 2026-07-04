@@ -201,16 +201,28 @@ test("the witness vocabulary is exactly the canonical defender vocabulary (singl
 });
 
 test("grade finding: the display band is the graded SEVERITY, never the 0-100 rubric score", () => {
-  // A high rubric score with NO reachability graded severity must NOT be lit as a
-  // severe band — the rubric score is not a severity. No graded severity => no band,
-  // dim weight.
+  // A high rubric score with NO severity of any kind must NOT be lit — the rubric
+  // score is not a severity. No graded severity => no band, dim weight.
   const e = curate({ _source: "grade", finding_id: "F-hi", total_score: 95, defender_disposition: "held" });
   assert.equal(e.payload.total, "", "no severity => no fabricated band");
   assert.equal(e.weight, "dim");
-  // With a graded severity, the band IS that severity.
+  // With a reachability graded severity, the band IS that severity.
   const g = curate({ _source: "grade", finding_id: "F-g", total_score: 30, defender_disposition: "worth_fixing", reachability: { graded_severity: "high", network_reachable: true, disposition: "unchanged" } });
   assert.equal(g.payload.total, "high");
   assert.equal(g.weight, "lit");
+});
+
+test("grade finding: a severe LIVE-TARGET finding (no reachability stamp, top-level graded_severity) still lights", () => {
+  // Web/SC targets have unknown reachability, so grade-verdict-store carries the
+  // graded severity top-level. The witness must read it and light a severe finding —
+  // not render it dim/unlit (the bug that would ship every web/SC high as breath).
+  const e = curate({ _source: "grade", finding_id: "F-web", total_score: 60, defender_disposition: "fix_now", graded_severity: "critical" });
+  assert.equal(e.payload.total, "critical");
+  assert.equal(e.weight, "lit");
+  assert.equal(e.signal, true);
+  const h = curate({ _source: "grade", finding_id: "F-web2", total_score: 55, defender_disposition: "fix_now", graded_severity: "high" });
+  assert.equal(h.payload.total, "high");
+  assert.equal(h.weight, "lit");
 });
 
 test("grade finding: unknown reachability makes no claim — the customer is never told 'reachable' on absence", () => {

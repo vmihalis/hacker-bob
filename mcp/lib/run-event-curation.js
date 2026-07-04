@@ -416,12 +416,15 @@ function curateGradeFinding(raw) {
   const fixNow = disposition === FIX_NOW;
 
   // band is a DISPLAY weight input only (the lit/ember cue), never the disposition.
-  // It is the actual SEVERITY — the reachability-graded severity when reachability
-  // spoke — NOT the 0-100 grade rubric score, which is not a severity and must never
-  // be read as one. Absent a graded severity, the finding carries no band and stays
-  // dim; the disposition word above is still authoritative.
+  // It is the actual graded SEVERITY — from the reachability stamp when it spoke,
+  // else the finding's top-level graded_severity (grade-verdict-store carries it for
+  // every finding whose reachability was silent, i.e. every web/SC target). The
+  // 0-100 grade RUBRIC score is not a severity and is never read as one. A severe
+  // live-target finding therefore lights even without a reachability stamp.
   const reach = isPlainObject(raw.reachability) ? raw.reachability : null;
-  const gradedSeverity = reach ? clip(reach.graded_severity, 16) : "";
+  const gradedSeverity = reach
+    ? clip(reach.graded_severity, 16)
+    : clip(raw.graded_severity, 16);
   const band = ["critical", "high", "medium", "low"].includes(gradedSeverity)
     ? gradedSeverity
     : "";
