@@ -153,6 +153,48 @@ test("routable: the start next_action is byte-identical (spawn_evaluators) — z
   assert.equal(response.zero_executable, false);
 });
 
+test("routes_unreadable: the start next_action instructs regenerating routes — not a misleading 'no candidates' stop", () => {
+  // planNextWave fails CLOSED on a corrupt/version-mismatched routes file
+  // (decision: routes_unreadable). The next_action must name the recovery
+  // (bob_route_surfaces re-derives fresh routes, self-healing a version bump),
+  // never fall through to the default "no assignable candidates" stop that
+  // misdiagnoses a recoverable corruption as an empty frontier.
+  const domain = "routes-unreadable-nextaction.example.com";
+  const response = buildStartNextWaveResponse({
+    domain,
+    dryRun: false,
+    state: {},
+    plan: {
+      decision: "routes_unreadable",
+      reason: "Malformed surface routes JSON: surface-routes.json",
+      routes_error: { code: "routes_unreadable", message: "Malformed surface routes JSON: surface-routes.json" },
+    },
+    promotion: { would_promote: 0, would_promote_lead_ids: [] },
+  });
+
+  assert.equal(response.decision, "routes_unreadable");
+  assert.notEqual(response.next_action.kind, "stop", "a recoverable corruption must not read as a dead-end stop");
+  assert.equal(response.next_action.kind, "call_tool");
+  assert.equal(response.next_action.tool, "bob_route_surfaces");
+  assert.equal(response.next_action.arguments.target_domain, domain);
+  assert.match(response.next_action.reason, /regenerate|bob_route_surfaces/i);
+});
+
+test("spawn_budget_exhausted: the start next_action stops with an honest budget reason, not 'no candidates'", () => {
+  const domain = "budget-exhausted-nextaction.example.com";
+  const response = buildStartNextWaveResponse({
+    domain,
+    dryRun: false,
+    state: {},
+    plan: { decision: "spawn_budget_exhausted", reason: "spawn budget exhausted: 3 open surface(s) remain uncovered" },
+    promotion: { would_promote: 0, would_promote_lead_ids: [] },
+  });
+
+  assert.equal(response.next_action.kind, "stop", "budget exhaustion is a genuine stop");
+  assert.match(response.next_action.reason, /spawn budget exhausted/i);
+  assert.doesNotMatch(response.next_action.reason, /no assignable candidates/i);
+});
+
 test("wave-status derives the unroutable set from the SAME shared helper as the planner", () => {
   withClaudeHome(() => {
     const domain = "status-single-source.example.com";
