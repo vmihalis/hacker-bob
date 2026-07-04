@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hacker-bob.ai/schemas/runner/authorization.v1.json",
+  "title": "Hosted-bob ephemeral-runner authorization",
+  "description": "The signed dispatch payload the bob-site run-dispatch endpoint hands to an EC2 ephemeral container's entrypoint (run.mjs). One payload authorizes exactly one engagement: provision -> bind egress identity -> run bob -> stream curated events into Convex -> POST the sealed report to /api/reports -> destroy. The payload is the ENTIRE grant. The container holds no standing credentials and reaches nothing this object does not name. SCOPE OF THIS SCHEMA: it validates the SHAPE of the grant (types, required fields, string/enum bounds) at the dispatch endpoint before signing and at the entrypoint after verifying the signature. It is NOT the security boundary on its own — signature verification, expiry/anti-replay (now < expiresAt, a max TTL, single-use of engagementId), callbackUrl host-allow-listing / private-range + metadata rejection, and the autonomy x targetKind gate are RUNTIME checks the dispatch endpoint and the run.mjs glue perform (see runner-contract.md). A schema-valid payload is necessary, not sufficient; the runtime gates are what fail the grant closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "engagementId",
+    "issuedAt",
+    "expiresAt",
+    "target",
+    "targetKind",
+    "runMode",
+    "autonomy",
+    "callbackUrl",
+    "ingestToken",
+    "accessPassword"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Authorization payload schema version. The entrypoint refuses a version it does not recognize (fail-closed); the engine is shared, but the wire contract is pinned."
+    },
+    "engagementId": {
+      "type": "string",
+      "pattern": "^eng_[0-9a-zA-Z]{16,}$",
+      "description": "Stable id for this one engagement. Used as the partition key for run_events + runs rows in Convex, and as the container's self-naming identity. One engagementId == one ephemeral container == one sealed report. Never reused; the container destroys itself, so a second run is a new id."
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch ms the dispatch endpoint signed this payload."
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch ms after which the entrypoint refuses to start (fail-closed). A grant is short-lived; a signature that outlives its window cannot launch a container. The dispatch endpoint sets a tight window (minutes), not a session."
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "What bob is authorized to engage, and NOTHING ELSE. Interpretation depends on targetKind: a registrable HTTP scope domain (web), a git/clone reference (repo), or a chain+address smart-contract reference (sc). This is the fail-closed scope seed: the entrypoint binds the engine's scope gate (mcp/lib/scope.js assertHttpScopeDomain / validateHttpScanScope) to exactly this value. Out-of-scope reach is refused by the SAME gate the local rail uses; the runner adds no new bypass."
+    },
+    "targetKind": {
+      "type": "string",
+      "enum": ["repo", "web", "sc"],
+      "description": "Which engine target family bob runs (repo = source review, web = live HTTP target, sc = smart contract). Selects which scope-gate path binds and which surface family findings carry (the F-1 surface family in the real engine). This is a SELECTOR for the existing mcp engine paths, NOT a new engine path."
+    },
+    "runMode": {
+      "type": "string",
+      "enum": ["balanced", "brutalist", "final"],
+      "description": "The bob workflow intensity, mirroring the local CLI workflow vocabulary (wave/handoff/brutalist/balanced/final/grade). Governs depth and the brutalist scoring lens; does not change the lifecycle order. Shared with the run-dispatch endpoint payload shape."
+    },
+    "autonomy": {
+      "type": "string",
+      "enum": ["autonomous", "operator-approved"],
+      "description": "The autonomy gradient — the one rule of the gate. 'autonomous' is only valid for zero-blast-radius targets (an OSS/local-style repo run). 'operator-approved' is REQUIRED before a container touches any live target (web/sc, or a private/staging/prod repo): a named human accountability has approved this exact engagement. The entrypoint cross-checks autonomy against targetKind and the scope gate and fails closed on a mismatch (e.g. autonomous + web is refused). This is a binding rule carried on the grant, never an onboarding step."
+    },
+    "callbackUrl": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?(/[^\\s]*)?$",
+      "description": "The Convex deployment URL the runner writes curated run_events + runs rows to. The pattern enforces SHAPE only: HTTPS, an explicit host as a DNS-label grammar (labels of alphanumerics/hyphens, no leading/trailing/consecutive dots, no leading/trailing hyphens), an optional port and path, no embedded userinfo credentials (no `user:pass@`), no whitespace-smuggled authority, no bare `https://`. It does NOT and cannot prevent SSRF — a schema-valid host may still be 127.0.0.1, 169.254.169.254 (cloud metadata), a private range, or a DNS-rebind target. Rejecting those is a RUNTIME check the runner glue performs at write time (an explicit Convex-deployment host allow-list, resolved-IP private/link-local/metadata rejection); the schema only pins the wire shape. The runner authenticates these writes with the runner write-secret (carried out-of-band in the container's transport-layer environment, NOT in this payload and NEVER in model context) — the same secret-gate discipline convex/reports.ts uses for REPORTS_SECRET. Convex live queries are the streaming layer; there is no WebSocket/SSE/Durable-Object channel."
+    },
+    "ingestToken": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 512,
+      "description": "Bearer token the runner presents to POST the sealed report to bob-site's /api/reports, exactly as the `bob-report publish` CLI does today (Authorization: Bearer <token>). The runner is a PUBLISHER on the existing ingest path; it adds no new report surface. Held only at the transport layer; never enters model context. Bounded length so an oversized token cannot be smuggled through the grant."
+    },
+    "accessPassword": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "description": "The access password for the sealed /r/<slug> report this engagement will produce. The runner forwards it to /api/reports as `password`; bob-site hashes it (PBKDF2, report-crypto.ts) and stores only the hash. The plaintext lives only in transit and is delivered to the operator out-of-band. Never logged, never streamed into an event, never in model context."
+    },
+    "scope": {
+      "type": "object",
+      "description": "Optional explicit scope refinement for the fail-closed gate. Absent means scope is exactly `target`. Present narrows or attests; it can never widen beyond what autonomy permits.",
+      "additionalProperties": false,
+      "properties": {
+        "allowedHosts": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+          },
+          "description": "Additional in-scope hosts for a web engagement (e.g. an API subdomain). Each item is a bare host as a DNS-label grammar (labels of alphanumerics/hyphens, no scheme/path/port, no wildcard or whitespace, no leading/trailing/consecutive dots, no leading/trailing hyphens), and the array is bounded and de-duplicated so it cannot balloon the grant. This is SHAPE only: the actual scope decision is the RUNTIME gate — every host is run through the same assertHttpScopeDomain / validateHttpScanScope check the local rail uses, and an entry that fails (or would widen beyond what `target` + autonomy permit) fails the whole grant closed. The schema cannot itself decide scope; it just rejects malformed/oversized host bags."
+        },
+        "labAuthorization": {
+          "type": "object",
+          "description": "Operator-attested lab/private-target escape for a loopback/RFC1918 web target, mapping to mcp/lib/scope.js opts.labAuthorization. OFF unless explicitly present in the SIGNED grant (the runner's operator-attestation equivalent of the local rail's BOB_LAB_TARGET_ACK env); cloud-metadata/link-local/IPv6/.internal/.local remain ineligible even with it. Requires autonomy 'operator-approved'. Shape pinned so this security escape carries no unconstrained fields.",
+          "additionalProperties": false,
+          "required": ["private_targets"],
+          "properties": {
+            "private_targets": {
+              "const": true,
+              "description": "Must be exactly true — the operator's declared private-target intent. parseLabAuthorization (mcp/lib/lab-target-attest.js) reads ONLY this bit; ack_source and scope are server-derived, never accepted from the grant. No other field is honored."
+            }
+          }
+        }
+      }
+    },
+    "egressProfile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "description": "Name of the egress profile the container binds before bob runs (mcp/lib/egress-profiles.js). Determines the adversary's identity on the wire. Defaults to the engagement's provisioned profile when absent. The RESOLVED identity is disclosed back as egress_profile_identity_hash in the run's opening event — who the container IS on the wire, stated plainly, never as a badge."
+    }
+  }
+}

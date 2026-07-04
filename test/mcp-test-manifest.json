@@ -329,5 +329,7 @@
   "test/frontier-friction-predicate.test.js",
   "test/finalize-node-auto-friction.test.js",
   "test/derive-pack-confidence-modulation.test.js",
-  "test/pipeline-analytics-pack-friction.test.js"
+  "test/pipeline-analytics-pack-friction.test.js",
+  "test/defender-disposition.test.js",
+  "test/run-event-curation.test.js"
 ]

@@ -419,6 +419,11 @@ test("grade verdict is bound to the frozen claim batch via claim_freeze_id", () 
       false,
       "ordinary non-repo findings must not receive unknown reachability metadata",
     );
+    // Producer-fires proof: a no-reachability (web/SC) finding still gets its graded
+    // severity (== recorded, uncapped) + defender word stamped, so the hosted witness
+    // can light a severe live-target finding without a reachability stamp.
+    assert.equal(onDisk.findings[0].graded_severity, "high");
+    assert.equal(onDisk.findings[0].defender_disposition, "fix_now");
 
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.equal(read.claim_freeze_id, freeze.freeze_id);
@@ -500,6 +505,13 @@ test("reachability cap stamps graded severity without removing the reportable fi
     const read = JSON.parse(readGradeVerdict({ target_domain: domain }));
     assert.equal(read.findings[0].reachability.graded_severity, "medium");
     assert.equal(read.findings[0].reachability.disposition, "capped");
+
+    // Wiring proof (end-to-end): the grade verdict actually STAMPS the defender
+    // relens per finding, and it reads the GRADED severity — capped-to-medium at a
+    // submit score is worth_fixing, never fix_now, even though the RECORDED severity
+    // was high. Reachability flows into the customer word exactly as into the grade.
+    assert.equal(onDisk.findings[0].defender_disposition, "worth_fixing");
+    assert.equal(read.findings[0].defender_disposition, "worth_fixing");
 
     appendCandidateClaim({
       target_domain: domain,

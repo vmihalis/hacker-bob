@@ -51,6 +51,10 @@ const {
   normalizeReachabilityDispositionStamp,
   reachabilityDispositionForFinding,
 } = require("./reachability-ceiling.js");
+const {
+  computeDefenderDisposition,
+  DEFENDER_DISPOSITION_VALUES,
+} = require("./defender-disposition.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -125,6 +129,28 @@ function normalizeGradeFinding(result, findingIdSet) {
   };
   if (result.reachability != null) {
     normalized.reachability = normalizeReachabilityDispositionStamp(result.reachability, "reachability");
+  }
+  // The graded-on severity for a finding whose reachability was silent (no cap).
+  // Carried through read-back so a downstream reader has the display severity;
+  // validated as a severity band. Absent when a reachability stamp is present (the
+  // severity lives there) or on legacy verdicts, whose shape stays byte-identical.
+  if (result.graded_severity != null) {
+    normalized.graded_severity = assertEnumValue(
+      result.graded_severity,
+      ["critical", "high", "medium", "low", "info"],
+      "graded_severity",
+    );
+  }
+  // Additive server-derived defender relens (customer /r surface speaks defender,
+  // not SUBMIT/HOLD/SKIP). Carried through read-back like reachability; never
+  // enters the score/verdict math. Present on grades written after this wiring;
+  // absent on legacy verdicts, whose shape stays byte-identical.
+  if (result.defender_disposition != null) {
+    normalized.defender_disposition = assertEnumValue(
+      result.defender_disposition,
+      DEFENDER_DISPOSITION_VALUES,
+      "defender_disposition",
+    );
   }
 
   const expectedTotal = normalized.impact
@@ -630,17 +656,43 @@ function writeGradeVerdict(args) {
   }
   const findings = normalizedFindings.map((finding) => {
     const recordedSeverity = finalSeverities.get(finding.finding_id);
+    // A finding not carried into the final verification round has no graded
+    // severity; it is not a customer-facing result, so it gets NO defender word
+    // (absent — never a fabricated "held" that a consumer cannot tell apart from a
+    // genuinely held finding). Mirrors reachability, which is stamped only when it
+    // has spoken.
     if (!recordedSeverity) return finding;
-    const reachability = reachabilityDispositionForFinding({
+    const stamp = reachabilityDispositionForFinding({
       domain,
       findingId: finding.finding_id,
       recordedSeverity,
     });
-    if (reachability.disposition === "unknown") return finding;
-    return {
-      ...finding,
-      reachability,
-    };
+    const reachability = stamp.disposition !== "unknown" ? stamp : null;
+    // Deterministic defender relens of the SAME verdict numbers (final severity ×
+    // reachability × per-finding score × reportable → fix_now/worth_fixing/watch/
+    // held). Additive and non-gating — it never enters enforceGradeVerdictConsistency
+    // or the score math. The graded-on severity is authoritative when reachability
+    // has spoken; otherwise the recorded final severity.
+    const defender_disposition = computeDefenderDisposition({
+      finalSeverity: recordedSeverity,
+      graded_severity: reachability ? reachability.graded_severity : null,
+      disposition: reachability ? reachability.disposition : null,
+      total_score: finding.total_score,
+      reportable: finalReportableSeveritySet.has(finding.finding_id),
+    });
+    const stamped = { ...finding, defender_disposition };
+    if (reachability) {
+      // The graded-on severity lives on the reachability stamp when it spoke.
+      stamped.reachability = reachability;
+    } else {
+      // Reachability was silent (unknown) — which is every web/SC finding. The
+      // graded severity then equals the recorded final severity (nothing capped it).
+      // Carry it explicitly so a downstream reader (e.g. the hosted witness) has the
+      // finding's severity for display weight WITHOUT a reachability stamp — the
+      // recorded severity is otherwise in hand at grade time and lost on write.
+      stamped.graded_severity = recordedSeverity;
+    }
+    return stamped;
   });
 
   const claimFreezeId = currentClaimFreezeId(domain);
