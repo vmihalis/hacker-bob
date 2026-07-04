@@ -25,7 +25,11 @@
 
 const { readFrontierEvents, appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
-const { assertCapabilityFrictionPayload } = require("./capability-observations.js");
+const {
+  assertCapabilityFrictionPayload,
+  frictionIdentityKey,
+  frictionIdentityKeyFromEvent,
+} = require("./capability-observations.js");
 const {
   DEFAULT_SCANNERS,
   normalizeOperatorScanner,
@@ -60,31 +64,27 @@ const SERVER_WITNESSABLE_SCANNER_KINDS = Object.freeze(new Set([
 
 const DEFAULT_PROMOTION_THRESHOLD = 2;
 
-// Same Y-P3 key the log tool uses (log-capability-friction.js:46-75). Kept
-// byte-identical so a server-fired synthetic and an agent/prose re-forward of
-// THAT SAME synthetic (same detected_by) collapse to a single frontier event.
-// A voluntary agent_self_report for the same logical friction has a DIFFERENT
-// detected_by and coexists by design (Y-P11) — not a double-fire.
+// The canonical friction identity the log tool uses
+// (log-capability-friction.js idempotencyKeyFromPayload): the six fields
+// (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by). friction_kind
+// is part of the identity so a tool_absent and a tool_inadequate synthetic for the
+// same wanted_tool coexist (Y-P11) rather than collapsing to one frontier event; a
+// server-fired synthetic and an agent/prose re-forward of THAT SAME synthetic (same
+// six fields) still collapse. A voluntary agent_self_report has a different
+// detected_by and coexists by design.
+// Delegate to the canonical Y-P3 identity (capability-observations.js) — no
+// hand-listed field array here. The exported `frictionIdempotencyKey` name is
+// kept verbatim (the wave-merge test imports it).
 function frictionIdempotencyKey(payload) {
-  return [
-    payload.run_id,
-    payload.node_id,
-    payload.wanted_tool,
-    payload.purpose,
-    payload.detected_by,
-  ].join("");
+  return frictionIdentityKey(payload);
 }
 
 function existingFrictionKeys(events) {
   const keys = new Set();
   for (const event of events) {
-    if (!event || event.kind !== "observation.recorded") continue;
-    const p = event.payload;
-    if (!p || p.observation_kind !== "capability_friction_observed") continue;
-    if (typeof p.run_id !== "string" || typeof p.node_id !== "string"
-      || typeof p.wanted_tool !== "string" || typeof p.purpose !== "string"
-      || typeof p.detected_by !== "string") continue;
-    keys.add(frictionIdempotencyKey(p));
+    const key = frictionIdentityKeyFromEvent(event);
+    if (key === null) continue;
+    keys.add(key);
   }
   return keys;
 }

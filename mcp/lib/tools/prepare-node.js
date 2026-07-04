@@ -56,18 +56,14 @@ const {
   materializeTaskGraph,
 } = require("../task-graph-materializer.js");
 const {
-  buildOneHopGraphContext,
-  derivePackForNode,
-} = require("../capability-pack-derivation.js");
-const {
   familyTagForCapabilityPackId,
 } = require("../capability-packs.js");
 const {
   scheduleMaterialization,
 } = require("../frontier-materialize-debounce.js");
 const {
-  readSurfaceRoutesStrict,
-} = require("../surface-router.js");
+  deriveDispatchNodePack,
+} = require("../dispatch-node-pack.js");
 const {
   isPlainObject,
 } = require("../verification-contracts.js");
@@ -216,53 +212,6 @@ function normalizeUntrustedEnvelopeNoncesForHash(value) {
   return String(value)
     .replace(new RegExp(`${escapeRegExp(OPEN_SENTINEL)} nonce=${noncePattern}`, "g"), `${OPEN_SENTINEL} nonce=<nonce>`)
     .replace(new RegExp(`${escapeRegExp(CLOSE_SENTINEL)} nonce=${noncePattern}`, "g"), `${CLOSE_SENTINEL} nonce=<nonce>`);
-}
-
-function safeSurfaceRouteMap(targetDomain) {
-  let result;
-  try {
-    result = readSurfaceRoutesStrict(targetDomain);
-  } catch {
-    return {};
-  }
-  const map = {};
-  const doc = result && result.document;
-  if (!doc || !Array.isArray(doc.routes)) return map;
-  // readSurfaceRoutesStrict is now tolerant: it QUARANTINES stale/duplicate routes (it used to throw,
-  // which the catch above turned into a silent empty {} — losing ALL routes). The valid routes survive
-  // in doc.routes; the quarantined ones are omitted from this metadata map. Surface a diagnostic so a
-  // fully- or partially-corrupt routing artifact is not silently indistinguishable from "no routes were
-  // set up". This map only enriches one-hop graph context, so we degrade gracefully (no throw) — unlike
-  // getContextBudget/findRoutedSurface, where a wrong/missing route must hard-fail the operation.
-  if (Array.isArray(result.malformed_routes) && result.malformed_routes.length > 0) {
-    const quarantinedIds = result.malformed_routes
-      .map((m) => (m && m.surface_id) || `routes[${m && m.index}]`)
-      .join(", ");
-    process.stderr.write(
-      `WARNING: surface-routes.json has ${result.malformed_routes.length} quarantined route(s) [${quarantinedIds}] omitted from the surface metadata map; re-run bob_route_surfaces to regenerate (${doc.routes.length} valid route(s) retained).\n`,
-    );
-  }
-  for (const route of doc.routes) {
-    if (!route || typeof route !== "object") continue;
-    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
-    if (!surfaceId) continue;
-    map[surfaceId] = {
-      id: surfaceId,
-      surface_type: route.surface_type || null,
-      chain_family: route.chain_family || null,
-      capability_pack: route.capability_pack || null,
-      brief_profile: route.brief_profile || null,
-    };
-  }
-  return map;
-}
-
-// Build the ≤1-hop snapshot the X.5 pack derivation expects. Reads the
-// materialized graph, walks edges incident to the dispatched node, and
-// trims surface metadata to only the surfaces the dispatched + adjacent
-// nodes touch (X-P5 bound).
-function snapshotOneHopGraphContext({ document, nodeId, surfaceMetadataById }) {
-  return buildOneHopGraphContext(document, nodeId, surfaceMetadataById);
 }
 
 // graph_context_hash binds the snapshot the agent's reasoning is grounded
@@ -942,20 +891,18 @@ function handler(args) {
     );
   }
 
-  // Build the ≤1-hop graph context and derive the per-node pack.
-  const surfaceMetadataById = safeSurfaceRouteMap(domain);
-  const graphContext = snapshotOneHopGraphContext({
+  // Build the ≤1-hop graph context and derive the per-node pack. Both this
+  // and bob_finalize_node route through the shared deriveDispatchNodePack so
+  // finalize re-derives the IDENTICAL allowed_tools_for_node[] the brief
+  // carried (the X.6 tool_constraint_violation invariant holds by construction).
+  const { pack, graphContext } = deriveDispatchNodePack({
+    targetDomain: domain,
     document,
     nodeId,
-    surfaceMetadataById,
+    node: dispatchedNode,
+    contract: attached.contract,
   });
   const graphContextHash = computeGraphContextHash(graphContext);
-  const pack = derivePackForNode(
-    dispatchedNode,
-    graphContext,
-    [], // observation_history — adjacent observations folded in the brief context separately
-    attached.contract,
-  );
 
   // Plane X Cycle X.10 — family-tagged spawn label. Derives from the
   // pack's brief_emphasis (endpoint packs for transitions, single pack

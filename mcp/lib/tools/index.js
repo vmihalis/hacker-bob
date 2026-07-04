@@ -248,7 +248,7 @@ const TOOL_MODULES = Object.freeze([
   // emission entries plus the orchestrator-facing runtime drift telemetry
   // tool (Y-D13). Friction + drift records ride observation.recorded as
   // payload.observation_kind siblings of OSS kinds — zero new top-level
-  // FRONTIER_EVENT_KIND (Y-P1 / X-P8). Friction is 5-tuple idempotent
+  // FRONTIER_EVENT_KIND (Y-P1 / X-P8). Friction is 6-tuple idempotent
   // (Y-P3); drift is per-(run_id, skill_path, drift_signature) idempotent;
   // runtime-drift is per-(run_id, drift_signature, details.tool) idempotent
   // (Y-R20). bob_emit_runtime_drift is orchestrator-only at the
@@ -268,7 +268,7 @@ const TOOL_MODULES = Object.freeze([
   // silent_lead_threshold_drop, large_response_body_unimported, etc.). The
   // tool is pure-read: it does not append events. The orchestrator
   // forwards each record through bob_log_capability_friction /
-  // bob_log_protocol_drift so the Y-P3 5-tuple idempotency key remains
+  // bob_log_protocol_drift so the Y-P3 6-tuple idempotency key remains
   // authoritative.
   require("./scan-transcript-for-friction.js"),
   require("./ws-probe.js"),

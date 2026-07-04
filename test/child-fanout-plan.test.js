@@ -6,6 +6,13 @@ const {
   fanoutPlanningKey,
   CHILD_FANOUT_HARD_CAP,
 } = require("../mcp/lib/capability-pack-derivation.js");
+const {
+  toolNamesForRoleBundle,
+} = require("../mcp/lib/tool-registry.js");
+
+function dedupeSorted(values) {
+  return Array.from(new Set(values.filter((v) => typeof v === "string" && v.length > 0))).sort();
+}
 
 const META = { capability_pack: "web_generic" };
 
@@ -157,6 +164,59 @@ test("deterministic: output is independent of input axis order (X-P4 purity)", (
     budget: { remaining_depth: 1, max_children: 8 },
   });
   assert.deepEqual(a, b);
+});
+
+test("an UNROUTABLE parent yields the evaluator-shared baseline for children, never the web pack", () => {
+  // A smart_contract parent with an unsupported chain_family is unroutable. Its
+  // children must carry the read-only evaluator-shared baseline (mirroring
+  // deriveSurfacePack's routable:false stance), NOT the web pack — and no web
+  // capability_pack id must leak onto the children or the top-level plan.
+  const plan = deriveChildFanoutPlan(
+    "S-doge",
+    { surface_type: "smart_contract", chain_family: "dogechain" },
+    {
+      bug_class_hints: ["reentrancy"],
+      auth_profiles: ["admin"],
+      budget: { remaining_depth: 1, max_children: 8 },
+    },
+  );
+  // No synthetic web pack id leaks.
+  assert.equal(plan.capability_pack, null);
+  assert.ok(plan.children.length > 0, "reentrancy is relevant on a smart_contract surface");
+  const shared = dedupeSorted(toolNamesForRoleBundle("evaluator-shared"));
+  for (const child of plan.children) {
+    assert.deepEqual(child.capability_pack_ids, [], "unroutable child carries no capability_pack id");
+    assert.deepEqual(
+      child.allowed_tools_for_node,
+      shared,
+      "unroutable child allow-list is exactly the evaluator-shared baseline",
+    );
+    assert.ok(
+      !child.allowed_tools_for_node.includes("bob_http_scan"),
+      "unroutable child must not carry the web producer",
+    );
+  }
+});
+
+test("a ROUTABLE EVM parent still yields the chain pack for children (routable-lock guard)", () => {
+  // Regression lock: the fix must not disturb a routable parent. An EVM parent's
+  // children still carry the smart_contract_evm pack (bob_evm_call) and never the
+  // web producer.
+  const plan = deriveChildFanoutPlan(
+    "S-sc",
+    { surface_type: "smart_contract", chain_family: "evm" },
+    {
+      bug_class_hints: ["reentrancy", "idor"],
+      auth_profiles: ["admin"],
+      budget: { remaining_depth: 1, max_children: 8 },
+    },
+  );
+  assert.equal(plan.capability_pack, "smart_contract_evm");
+  const child = plan.children.find((c) => c.bug_class === "reentrancy");
+  assert.ok(child, "reentrancy cell exists on an EVM surface");
+  assert.deepEqual(child.capability_pack_ids, ["smart_contract_evm"]);
+  assert.ok(child.allowed_tools_for_node.includes("bob_evm_call"), "EVM child still gets its chain read tool");
+  assert.ok(!child.allowed_tools_for_node.includes("bob_http_scan"), "EVM child excludes the web producer");
 });
 
 test("rejects a missing parent surface id", () => {

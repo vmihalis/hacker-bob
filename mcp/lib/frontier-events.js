@@ -184,12 +184,86 @@ function frontierEventContentHash(event) {
   return hashDocumentExcluding(event, ["event_hash"]);
 }
 
+function isPlainFrontierObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Single home for the capability_friction event predicate. A capability_friction
+// observation rides inside an observation.recorded event as
+// { kind: "observation.recorded", payload: { observation_kind:
+// "capability_friction_observed", surface_id, friction_kind, ... } }. Pure and
+// deterministic: it operates only on the in-memory `events` array (no fs, no IO),
+// so filesystem reads stay caller-side. Returns the matching payload objects in
+// array order. `surfaceId`, when a non-empty string, scopes to that surface;
+// omitted means global (no surface filter). `frictionKinds`, when a non-empty
+// array, gates payload.friction_kind to that set; omitted means no friction-kind
+// filter — the analytics caller passes FRICTION_KIND_VALUES and stays the sole
+// authority for its own gate, so no queue-policy dependency is required here.
+function capabilityFrictionPayloads(events, { surfaceId = null, frictionKinds = null } = {}) {
+  if (!Array.isArray(events)) return [];
+  const scopeSurface = typeof surfaceId === "string" && surfaceId.length > 0;
+  const gateFrictionKind = Array.isArray(frictionKinds) && frictionKinds.length > 0;
+  const out = [];
+  for (const event of events) {
+    if (!isPlainFrontierObject(event)) continue;
+    if (event.kind !== "observation.recorded") continue;
+    const payload = isPlainFrontierObject(event.payload) ? event.payload : null;
+    if (!payload) continue;
+    if (payload.observation_kind !== "capability_friction_observed") continue;
+    if (scopeSurface && payload.surface_id !== surfaceId) continue;
+    if (gateFrictionKind && !frictionKinds.includes(payload.friction_kind)) continue;
+    out.push(payload);
+  }
+  return out;
+}
+
+// Group capability_friction payloads by (capability_pack, wanted_tool) across
+// all surfaces so systematic pack deficiencies surface ("pack X chronically
+// lacks tool Y for surfaces {A,B,C}"). Friction payloads carry surface_id and
+// wanted_tool but NOT capability_pack; the pack is resolved by joining
+// surface_id -> pack through the caller-supplied `surfaceIdToPack` map (a plain
+// object or a Map). Operates ONLY on the capabilityFrictionPayloads output —
+// never re-walks events — and reuses isPlainFrontierObject for payload guards.
+// Pure and deterministic: no fs/IO, no input mutation. Counts every payload as
+// given (friction records are idempotent at append time), but dedupes
+// surface_ids within a single (pack, wanted_tool) bucket in first-seen order.
+// Exhaustive: every (pack, wanted_tool, surface) triple is counted and listed;
+// downstream consumers rank, so nothing is truncated or capped here.
+function aggregateFrictionByPack(frictionPayloads, surfaceIdToPack) {
+  if (!Array.isArray(frictionPayloads)) return {};
+  const isMap = surfaceIdToPack instanceof Map;
+  if (!isMap && !isPlainFrontierObject(surfaceIdToPack)) return {};
+  const lookup = isMap
+    ? (id) => surfaceIdToPack.get(id)
+    : (id) => surfaceIdToPack[id];
+
+  const out = {};
+  for (const payload of frictionPayloads) {
+    if (!isPlainFrontierObject(payload)) continue;
+    const surfaceId = typeof payload.surface_id === "string" ? payload.surface_id : null;
+    const wantedTool = typeof payload.wanted_tool === "string" ? payload.wanted_tool : null;
+    if (!surfaceId || !wantedTool) continue;
+    const pack = lookup(surfaceId);
+    if (typeof pack !== "string" || pack.length === 0) continue;
+
+    const packBucket = out[pack] || (out[pack] = {});
+    const toolBucket = packBucket[wantedTool] || (packBucket[wantedTool] = { count: 0, surface_ids: [] });
+    toolBucket.count += 1;
+    if (!toolBucket.surface_ids.includes(surfaceId)) {
+      toolBucket.surface_ids.push(surfaceId);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   FRONTIER_EVENTS_MAX_RECORDS,
   FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_VERSION,
   PRODUCER_OBSERVATION_SUBTYPES,
+  aggregateFrictionByPack,
   appendFrontierEvent,
+  capabilityFrictionPayloads,
   frontierEventContentHash,
   generatedFrontierEventId,
   isProducerObservationSubtype,

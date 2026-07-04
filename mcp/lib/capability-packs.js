@@ -553,6 +553,50 @@ function defaultWebRouteMetadata() {
   };
 }
 
+// Ordinal confidence ladder in demotion order (highest first).
+// deriveConfidenceAdjustment only ever walks DOWN this ladder, never UP.
+const CONFIDENCE_LADDER = Object.freeze(["high", "medium", "low"]);
+
+// N distinct tool_inadequate observations on a surface/pack = one confidence
+// step down. Heavier friction crosses more thresholds and demotes further.
+const HEAVY_FRICTION_DEMOTION_THRESHOLD = 3;
+
+// PURE, deterministic post-adjustment of a classifier confidence given a
+// per-surface / per-pack friction aggregate. No fs, no frontier reads, no
+// Date.now(), no randomness — input maps to output only. Demotes one ordinal
+// step per HEAVY_FRICTION_DEMOTION_THRESHOLD tool_inadequate observations,
+// clamped at "low"; NEVER promotes above baseConfidence, NEVER changes
+// routability. An unrecognised/absent base is returned unchanged.
+function deriveConfidenceAdjustment(baseConfidence, frictionSignalForSurfaceOrPack) {
+  const idx = CONFIDENCE_LADDER.indexOf(baseConfidence);
+  // Unrecognised base (or absent): never invent a level — no-op passthrough.
+  if (idx === -1) return baseConfidence;
+
+  // Accept the small aggregate shape { tool_inadequate_count: <int> }, or a
+  // bare non-negative integer as shorthand for that count. Any other shape,
+  // null, or undefined means zero steps (no demotion).
+  let count = 0;
+  if (
+    frictionSignalForSurfaceOrPack &&
+    typeof frictionSignalForSurfaceOrPack === "object" &&
+    Number.isInteger(frictionSignalForSurfaceOrPack.tool_inadequate_count) &&
+    frictionSignalForSurfaceOrPack.tool_inadequate_count >= 0
+  ) {
+    count = frictionSignalForSurfaceOrPack.tool_inadequate_count;
+  } else if (
+    Number.isInteger(frictionSignalForSurfaceOrPack) &&
+    frictionSignalForSurfaceOrPack >= 0
+  ) {
+    count = frictionSignalForSurfaceOrPack;
+  }
+
+  const steps = Math.floor(count / HEAVY_FRICTION_DEMOTION_THRESHOLD);
+  // demotedIdx >= idx structurally guarantees demotion-only (never promotes);
+  // steps === 0 returns baseConfidence unchanged.
+  const demotedIdx = Math.min(CONFIDENCE_LADDER.length - 1, idx + steps);
+  return CONFIDENCE_LADDER[demotedIdx];
+}
+
 function classifySurfaceCapability(surface) {
   const rawSurfaceType = surface && typeof surface === "object" ? surface.surface_type : null;
   const normalizedType = normalizeSurfaceType(rawSurfaceType);
@@ -573,21 +617,50 @@ function classifySurfaceCapability(surface) {
           evaluator_agent: pack.evaluator_agent,
           brief_profile: pack.brief_profile,
           context_budget: cloneContextBudget(pack.context_budget),
+          chain_family: normalizedChainFamily,
           confidence: "high",
+          routable: true,
           reasons,
         };
       }
-      // Smart-contract surface with an unrecognised chain_family. Falling
-      // back to the web pack would create a contradiction (surface_type=smart_contract
-      // routed to a evaluator that has no on-chain tools); fail loudly so the
-      // operator either fixes the surface or registers the missing pack.
-      throw new Error(
-        `smart_contract surface ${surface && surface.id ? surface.id : "(unknown)"} has unsupported chain_family ${normalizedChainFamily}; register a capability pack or correct the surface`,
-      );
+      // Smart-contract surface with an unrecognised chain_family. Falling back
+      // to the web pack would launder an on-chain surface into a web evaluator
+      // with no chain tools, contradicting surface_type. Per Y-D21 the
+      // smart_contract classification and its chain_family are preserved and
+      // the result is marked unroutable so the caller records a graceful
+      // disposition instead of mis-routing.
+      reasons.push(`chain_family:${normalizedChainFamily}`);
+      return {
+        surface_type: surfaceType,
+        capability_pack: null,
+        capability_pack_version: null,
+        evaluator_agent: null,
+        brief_profile: null,
+        context_budget: null,
+        chain_family: normalizedChainFamily,
+        confidence: "low",
+        routable: false,
+        unroutable_reason: `smart_contract surface has unsupported chain_family ${normalizedChainFamily}; register a capability pack or correct the surface`,
+        reasons,
+      };
     }
-    throw new Error(
-      `smart_contract surface ${surface && surface.id ? surface.id : "(unknown)"} is missing chain_family; capability routing requires it`,
-    );
+    // Smart-contract surface without a chain_family: routing requires it, so
+    // preserve the smart_contract classification and mark unroutable rather
+    // than falling through to the web pack (Y-D21).
+    reasons.push("chain_family:missing");
+    return {
+      surface_type: surfaceType,
+      capability_pack: null,
+      capability_pack_version: null,
+      evaluator_agent: null,
+      brief_profile: null,
+      context_budget: null,
+      chain_family: normalizedChainFamily,
+      confidence: "low",
+      routable: false,
+      unroutable_reason: "smart_contract surface is missing chain_family; capability routing requires it",
+      reasons,
+    };
   }
 
   if (normalizedType && OSS_SURFACE_TYPE_TO_PACK[normalizedType]) {
@@ -600,7 +673,9 @@ function classifySurfaceCapability(surface) {
       evaluator_agent: pack.evaluator_agent,
       brief_profile: pack.brief_profile,
       context_budget: cloneContextBudget(pack.context_budget),
+      chain_family: null,
       confidence: "high",
+      routable: true,
       reasons,
     };
   }
@@ -617,7 +692,9 @@ function classifySurfaceCapability(surface) {
     evaluator_agent: WEB_CAPABILITY_PACK.evaluator_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
     context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
+    chain_family: null,
     confidence: knownWebType ? "high" : "medium",
+    routable: true,
     reasons,
   };
 }
@@ -790,7 +867,16 @@ function surfaceClassForMetadata(surfaceMetadata) {
       const pack = getCapabilityPack(surfaceMetadata.capability_pack);
       if (pack) packId = pack.id;
     }
-    if (!packId) packId = classifySurfaceCapability(surfaceMetadata || {}).capability_pack;
+    if (!packId) {
+      const classification = classifySurfaceCapability(surfaceMetadata || {});
+      packId = classification.capability_pack;
+      // An ambiguous smart_contract (missing/unknown chain_family) classifies
+      // with capability_pack:null but is never a web surface (Y-D21).
+      if ((packId == null) && (classification.surface_type === "smart_contract"
+        || classification.routable === false)) {
+        return "smart_contract";
+      }
+    }
   } catch {
     return null;
   }
@@ -851,6 +937,7 @@ module.exports = {
   capabilityPackForLegacyFinding,
   chainSpecificEvaluatorBundles,
   classifySurfaceCapability,
+  deriveConfidenceAdjustment,
   isBugClassRelevantForSurface,
   isOssSurfaceMetadata,
   OSS_SANITIZER_CLASS_AXIS,

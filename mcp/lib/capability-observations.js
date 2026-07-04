@@ -81,8 +81,10 @@ const FALLBACK_USED_VALUES = Object.freeze([
   "none",
 ]);
 
-// Closed `friction_kind` enum. Y-P3 5-tuple keeps `tool_absent` and
-// `tool_inadequate` records for the same wanted_tool DISTINCT (they must
+// Closed `friction_kind` enum. friction_kind is part of the canonical Y-P3
+// friction identity (run_id, node_id, wanted_tool, friction_kind, purpose,
+// detected_by), which keeps `tool_absent` and `tool_inadequate` records for the
+// same wanted_tool DISTINCT (they must
 // not collapse — see Y-P11). Y-P10 mechanical witness is REQUIRED on
 // `tool_inadequate` and FORBIDDEN on `tool_absent`.
 const FRICTION_KIND_VALUES = Object.freeze([
@@ -106,8 +108,8 @@ const INADEQUACY_MODE_VALUES = Object.freeze([
 
 // Closed `detected_by` enum. Voluntary emissions carry "agent_self_report";
 // the Y.6 adversarial scanner carries "adversarial_transcript_scan" so the
-// 5-tuple keeps voluntary + synthetic records distinct (Y-P11 coexistence
-// signal). The runtime / dispatch-layer auto-emit path uses
+// canonical friction identity keeps voluntary + synthetic records distinct
+// (Y-P11 coexistence signal). The runtime / dispatch-layer auto-emit path uses
 // "mcp_runtime_auto_emit" so operators can grep telemetry by source.
 const DETECTED_BY_VALUES = Object.freeze([
   "agent_self_report",
@@ -141,6 +143,45 @@ const DRIFT_SIGNATURE_VALUES = Object.freeze([
   "producer_trace_dropped",
   "silent_lead_threshold_drop",
 ]);
+
+// Y-P3 — the SINGLE definition of the canonical friction identity. The
+// identity is the six fields, in this order; no consumer may hand-list them.
+// log-capability-friction, friction-selection, and friction-mechanization all
+// derive their dedup/idempotency key from `frictionIdentityKey` /
+// `frictionIdentityKeyFromEvent` here. Pure: string-only, no clock / random /
+// env / IO. The joiner is a control byte so the key is collision-safe (a
+// wanted_tool containing "|" or ambiguous concatenation cannot false-merge two
+// distinct identities).
+const FRICTION_IDENTITY_FIELDS = Object.freeze([
+  "run_id",
+  "node_id",
+  "wanted_tool",
+  "friction_kind",
+  "purpose",
+  "detected_by",
+]);
+const FRICTION_IDENTITY_JOINER = "\x01";
+
+// Defensive read for payloads/records: null unless `source` is an object; each
+// field String()-coerced (null/undefined -> "") and joined by the control byte.
+function frictionIdentityKey(source) {
+  if (source == null || typeof source !== "object") return null;
+  return FRICTION_IDENTITY_FIELDS
+    .map((f) => (source[f] == null ? "" : String(source[f])))
+    .join(FRICTION_IDENTITY_JOINER);
+}
+
+// Strict variant: null unless a well-formed capability_friction_observed
+// frontier event whose six identity fields are all strings.
+function frictionIdentityKeyFromEvent(event) {
+  if (!event || event.kind !== "observation.recorded") return null;
+  const p = event.payload;
+  if (!p || p.observation_kind !== "capability_friction_observed") return null;
+  for (const f of FRICTION_IDENTITY_FIELDS) {
+    if (typeof p[f] !== "string") return null;
+  }
+  return frictionIdentityKey(p);
+}
 
 function isCapabilityObservationKind(value) {
   return typeof value === "string"
@@ -372,6 +413,10 @@ module.exports = {
   DETECTED_BY_VALUES,
   DRIFT_SIGNATURE_VALUES,
   RATIONALE_MAX_CHARS,
+  FRICTION_IDENTITY_FIELDS,
+  FRICTION_IDENTITY_JOINER,
+  frictionIdentityKey,
+  frictionIdentityKeyFromEvent,
   isCapabilityObservationKind,
   assertCapabilityFrictionPayload,
   assertProtocolDriftPayload,

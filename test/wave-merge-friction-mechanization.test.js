@@ -98,6 +98,25 @@ function hypothesisProposals(domain, surfaceId) {
     && e.payload.suggested_contract.promotion_marker.surface_id === surfaceId);
 }
 
+test("frictionIdempotencyKey: tool_absent and tool_inadequate for the same other fields do NOT collide (Y-P11)", () => {
+  const base = {
+    run_id: "run-x",
+    node_id: "N-x",
+    wanted_tool: "bob_http_scan",
+    purpose: "http_probe",
+    detected_by: "agent_self_report",
+  };
+  const absentKey = frictionIdempotencyKey({ ...base, friction_kind: "tool_absent" });
+  const inadequateKey = frictionIdempotencyKey({ ...base, friction_kind: "tool_inadequate" });
+  assert.notEqual(
+    absentKey,
+    inadequateKey,
+    "friction_kind is part of the identity, so tool_absent and tool_inadequate coexist (Y-P11) rather than one being dropped at forward time",
+  );
+  // A genuine re-forward (identical six fields) still collapses to one.
+  assert.equal(absentKey, frictionIdempotencyKey({ ...base, friction_kind: "tool_absent" }));
+});
+
 // ── PRIMARY: end-to-end through applyWaveMerge (closes F1 + F5) ──────────────
 test("CR-3 E2E: a real merge auto-proposes a tool_absent group with NO agent action", () => {
   withTempHome(() => {
@@ -227,7 +246,7 @@ test("Y-P3 per-detected_by: verbatim re-forward collapses; voluntary report coex
     const second = forwardFrictionSynthetics(domain, [synthetic]);
     assert.equal(second.length, 0, "verbatim re-forward de-dupes — no double-fire");
 
-    // An explicit log with the SAME 5-tuple (same detected_by) is also a no-op.
+    // An explicit log with the SAME 6-tuple (same detected_by) is also a no-op.
     const sameKind = JSON.parse(logCapabilityFrictionTool.handler({
       target_domain: domain, run_id: "run-X", node_id: "N-X",
       wanted_tool: "bob_import_http_traffic", purpose: "evidence_pull",

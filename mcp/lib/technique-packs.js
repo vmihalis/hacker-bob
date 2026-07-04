@@ -1162,6 +1162,29 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     route = classifySurfaceCapability(surface);
   }
 
+  // Per Y-D21 an ambiguous smart_contract surface is unroutable, not web: the
+  // classifier returns `{ routable:false, capability_pack:null, unroutable_reason }`
+  // and the router persists it as `{ disposition:"unroutable", reason }`. On the
+  // auto-routed path (no explicit pack request) technique selection records the
+  // unroutable disposition and returns empty rather than calling
+  // getCapabilityPack(null) and hard-halting. An explicit requestedCapabilityPack
+  // still flows through the validation below so an operator's request is not
+  // silently swallowed.
+  const isUnroutable =
+    route.routable === false || route.capability_pack == null || route.disposition === "unroutable";
+  if (isUnroutable && !requestedCapabilityPack) {
+    return {
+      capability_pack: null,
+      capability_pack_version: null,
+      brief_profile: null,
+      evaluator_agent: null,
+      context_budget: normalizeContextBudget(null, { context_budget: null }),
+      unroutable: true,
+      unroutable_reason:
+        route.unroutable_reason || route.reason || "unroutable smart_contract surface",
+    };
+  }
+
   const capabilityPack = requestedCapabilityPack || route.capability_pack;
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
@@ -1197,6 +1220,37 @@ function selectTechniquePacks(args) {
 
   const route = resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack);
   const requestedLimit = normalizeOptionalInteger(args.max_packs, "max_packs", { min: 1, max: 50 });
+  if (route.unroutable === true) {
+    // Unroutable smart_contract surface (Y-D21): emit the same envelope shape
+    // with no packs and an unroutable marker so the assignment-brief technique
+    // slice renders "no techniques (unroutable)" instead of crashing. Do not read
+    // candidate_pack_limit off a substituted pack budget — carry the route's safe
+    // default budget straight through.
+    const unroutableMaxPacks = Math.min(
+      requestedLimit || route.context_budget.candidate_pack_limit,
+      route.context_budget.candidate_pack_limit,
+    );
+    return JSON.stringify({
+      version: 1,
+      target_domain: domain,
+      surface_id: surfaceId,
+      capability_pack: null,
+      capability_pack_version: null,
+      brief_profile: null,
+      context_budget: route.context_budget,
+      max_packs: unroutableMaxPacks,
+      include_attempted: includeAttempted,
+      technique_packs: [],
+      selection_limits: { candidate_pack_limit: route.context_budget.candidate_pack_limit },
+      registry_warnings: [],
+      attempts_summary: {
+        total_for_surface: 0,
+        omitted_attempted: [],
+      },
+      unroutable: true,
+      unroutable_reason: route.unroutable_reason,
+    });
+  }
   const maxPacks = Math.min(
     requestedLimit || route.context_budget.candidate_pack_limit,
     route.context_budget.candidate_pack_limit,
@@ -1423,6 +1477,13 @@ function logTechniqueAttempt(args) {
     routeMetadata = assignment;
   } else {
     const route = resolveSurfaceTechniqueRoute(domain, surface);
+    // An unroutable auto-routed surface has no capability_pack, so no technique pack can match it; report it as unroutable rather than as a null-pack mismatch.
+    if (route.unroutable === true || route.capability_pack == null) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `surface unroutable: ${surfaceId} — ${route.unroutable_reason}; no technique packs apply`,
+      );
+    }
     assertTechniquePackMatchesCapability(packResult.technique_pack, route.capability_pack);
     routeMetadata = route;
   }

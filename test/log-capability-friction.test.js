@@ -2,13 +2,13 @@
 
 // Cycle Y.2 — bob_log_capability_friction + bob_log_protocol_drift
 // integration tests. Asserts:
-//   * Y-P3 5-tuple idempotency: second emission with the same
-//     (run_id, node_id, wanted_tool, purpose, detected_by) tuple silently
-//     short-circuits (no duplicate append).
-//   * Same 4-tuple with a DIFFERENT purpose appends TWO events (operator
-//     scrutiny path per Y-P11 coexistence signal).
+//   * Y-P3 6-tuple idempotency: second emission with the same
+//     (run_id, node_id, wanted_tool, friction_kind, purpose, detected_by) tuple
+//     silently short-circuits (no duplicate append).
+//   * Same identity except purpose (purpose differs) appends TWO events
+//     (operator scrutiny path per Y-P11 coexistence signal).
 //   * Voluntary tool_inadequate + adversarial-scan synthetic on the same
-//     wanted_tool COEXIST (different detected_by → different 5-tuple key).
+//     wanted_tool COEXIST (different detected_by → different 6-tuple key).
 //   * The validator IS invoked through the tool (Y-P2 shape rejection
 //     happens at the wrapper, not just on isolated validator calls).
 //   * Y-P10 witness existence + tool match is verified end-to-end using a
@@ -201,9 +201,9 @@ test("tool_absent friction APPENDS an observation.recorded event with payload.ob
   });
 });
 
-// ── Y-P3 5-tuple idempotency ────────────────────────────────────────────────
+// ── Y-P3 6-tuple idempotency ────────────────────────────────────────────────
 
-test("second emission with the SAME 5-tuple is silently de-duped (Y-P3)", () => {
+test("second emission with the SAME 6-tuple is silently de-duped (Y-P3)", () => {
   withTempHome(() => {
     const domain = "friction-idempotent.example.com";
     ensureSessionDir(domain);
@@ -214,8 +214,8 @@ test("second emission with the SAME 5-tuple is silently de-duped (Y-P3)", () => 
 
     const second = JSON.parse(logCapabilityFrictionTool.handler(baseFrictionArgs(domain, {
       // Change rationale + surface_id to prove these fields are NOT in the
-      // 5-tuple; the de-dupe must still fire because the 5-tuple is identical.
-      rationale: "Different rationale — should still de-dupe on 5-tuple match.",
+      // 6-tuple; the de-dupe must still fire because the 6-tuple is identical.
+      rationale: "Different rationale — should still de-dupe on 6-tuple match.",
       surface_id: "surface:NEW",
     })));
     assert.equal(second.appended, false);
@@ -227,7 +227,7 @@ test("second emission with the SAME 5-tuple is silently de-duped (Y-P3)", () => 
   });
 });
 
-test("same 4-tuple but DIFFERENT purpose appends TWO events (operator scrutiny)", () => {
+test("differing only in purpose appends TWO events (operator scrutiny)", () => {
   withTempHome(() => {
     const domain = "friction-purpose-distinct.example.com";
     ensureSessionDir(domain);
@@ -295,6 +295,49 @@ test("voluntary tool_inadequate + adversarial-scan synthetic on SAME wanted_tool
       "tool_absent/adversarial_transcript_scan",
       "tool_inadequate/agent_self_report",
     ]);
+  });
+});
+
+test("same (run_id,node_id,wanted_tool,purpose,detected_by) with DIFFERENT friction_kind BOTH append (Y-P11 coexistence)", () => {
+  withTempHome(() => {
+    const domain = "friction-kind-distinct.example.com";
+    ensureSessionDir(domain);
+
+    // Seed the Y-P10 mechanical witness for the tool_inadequate leg (a
+    // recorded MCP invocation in the same run_id whose tool matches).
+    const witness = appendFrontierEvent({
+      target_domain: domain,
+      kind: "observation.recorded",
+      payload: {
+        observation_kind: "tool_invocation_recorded",
+        tool: "bob_http_scan",
+        run_id: "run-A",
+        outcome: "non_success",
+      },
+    });
+    const witnessRef = `frontier_event:${witness.event_id}`;
+
+    // tool_absent — the friction_kind now inside the idempotency identity.
+    const absent = JSON.parse(logCapabilityFrictionTool.handler(baseFrictionArgs(domain, {
+      friction_kind: "tool_absent",
+    })));
+    // tool_inadequate — SAME run_id/node_id/wanted_tool/purpose/detected_by,
+    // DIFFERENT friction_kind. Before the 6-tuple fix this collided with the
+    // tool_absent record and was silently DROPPED, violating Y-P11.
+    const inadequate = JSON.parse(logCapabilityFrictionTool.handler(baseFrictionArgs(domain, {
+      friction_kind: "tool_inadequate",
+      inadequacy_mode: "body_truncated",
+      inadequate_invocation_ref: witnessRef,
+    })));
+
+    assert.equal(absent.appended, true);
+    assert.equal(inadequate.appended, true);
+    assert.notEqual(absent.event_id, inadequate.event_id);
+
+    const ledger = frictionPayloadsFromLedger(domain);
+    assert.equal(ledger.length, 2);
+    const kinds = ledger.map(({ payload }) => payload.friction_kind).sort();
+    assert.deepEqual(kinds, ["tool_absent", "tool_inadequate"]);
   });
 });
 
@@ -457,4 +500,62 @@ test("drift idempotency: runtime-emit (no skill_path) collapses onto <runtime> s
 
     assert.equal(driftPayloadsFromLedger(domain).length, 2);
   });
+});
+
+// Y-P3 single-source friction identity: all three key-derivation entry points
+// (log / selection / mechanization) delegate to the ONE canonical
+// frictionIdentityKey in capability-observations.js, and the standardized
+// control-byte joiner fixes the collisions the old `|` / `""` joiners allowed.
+const {
+  frictionKeyForDedupe,
+} = require("../mcp/lib/friction-selection.js");
+const {
+  frictionIdempotencyKey,
+} = require("../mcp/lib/friction-mechanization.js");
+
+test("single-source: log / selection / mechanization derive the IDENTICAL Y-P3 key", () => {
+  const identity = {
+    run_id: "run-single-source",
+    node_id: "node-1",
+    wanted_tool: "bob_http_scan",
+    friction_kind: "tool_absent",
+    purpose: "http_probe",
+    detected_by: "agent_self_report",
+  };
+  const fromLog = logCapabilityFrictionTool.idempotencyKeyFromPayload(identity);
+  const fromSelection = frictionKeyForDedupe(identity);
+  const fromMechanization = frictionIdempotencyKey(identity);
+
+  assert.equal(typeof fromLog, "string");
+  assert.equal(fromLog, fromSelection);
+  assert.equal(fromSelection, fromMechanization);
+});
+
+test("collision fix: adjacent-field identities that collided under `|` / `\"\"` stay distinct", () => {
+  const base = {
+    wanted_tool: "bob_http_scan",
+    friction_kind: "tool_absent",
+    purpose: "http_probe",
+    detected_by: "agent_self_report",
+  };
+  // Adjacent run_id/node_id boundary. Under the old `|` joiner these collided
+  // ("a|b|c" == "a|b|c"); under the old `""` joiner the second pair collided
+  // ("abc" == "abc"). The canonical control-byte joiner keeps them distinct.
+  const pipeA = { ...base, run_id: "a", node_id: "b|c" };
+  const pipeB = { ...base, run_id: "a|b", node_id: "c" };
+  const emptyA = { ...base, run_id: "ab", node_id: "c" };
+  const emptyB = { ...base, run_id: "a", node_id: "bc" };
+
+  assert.notEqual(
+    logCapabilityFrictionTool.idempotencyKeyFromPayload(pipeA),
+    logCapabilityFrictionTool.idempotencyKeyFromPayload(pipeB),
+  );
+  assert.notEqual(
+    frictionKeyForDedupe(emptyA),
+    frictionKeyForDedupe(emptyB),
+  );
+  assert.notEqual(
+    frictionIdempotencyKey(emptyA),
+    frictionIdempotencyKey(emptyB),
+  );
 });

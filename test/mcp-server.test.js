@@ -10098,20 +10098,23 @@ test("bob_record_finding rejects sc_evidence in the no-wave/no-agent path so SC 
   });
 });
 
-test("classifySurfaceCapability throws on smart_contract surface with missing or unsupported chain_family", () => {
-  // Pre-fix the router silently fell back to the web pack for SC surfaces
-  // with no chain_family, producing surface_type="smart_contract" routed to
-  // evaluator-agent (a contradiction). Now the router fails loudly so the
-  // operator either fixes the surface or registers the missing pack.
+test("classifySurfaceCapability returns a non-throwing unroutable result for smart_contract with missing or unsupported chain_family", () => {
+  // An ambiguous smart_contract surface (no chain_family, or one with no
+  // registered capability pack) is never routed to the web pack. The classifier
+  // returns a structured unroutable result (routable:false, capability_pack:null,
+  // unroutable_reason) so downstream records a non-halting disposition instead of
+  // mis-arming a web evaluator on an on-chain target.
   const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
-  assert.throws(
-    () => classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" }),
-    /missing chain_family/,
-  );
-  assert.throws(
-    () => classifySurfaceCapability({ id: "surface-near", surface_type: "smart_contract", chain_family: "near" }),
-    /unsupported chain_family/,
-  );
+
+  const missing = classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" });
+  assert.strictEqual(missing.routable, false);
+  assert.strictEqual(missing.capability_pack, null);
+  assert.match(missing.unroutable_reason, /missing chain_family/);
+
+  const unsupported = classifySurfaceCapability({ id: "surface-near", surface_type: "smart_contract", chain_family: "near" });
+  assert.strictEqual(unsupported.routable, false);
+  assert.strictEqual(unsupported.capability_pack, null);
+  assert.match(unsupported.unroutable_reason, /unsupported chain_family/);
 });
 
 test("normalizeAssignmentRouteMetadata throws on smart_contract assignment without route metadata", () => {

@@ -57,6 +57,13 @@ const {
   readFrontierEvents,
 } = require("../frontier-events.js");
 const {
+  assertCapabilityFrictionPayload,
+} = require("../capability-observations.js");
+const {
+  idempotencyKeyFromPayload,
+  idempotencyKeyFromEvent,
+} = require("./log-capability-friction.js");
+const {
   recordProducerRun,
   recordProducerTerminalBlock,
 } = require("../producer-run-ledger.js");
@@ -81,12 +88,9 @@ const {
   isPlainObject,
 } = require("../verification-contracts.js");
 const {
-  buildOneHopGraphContext,
-  derivePackForNode,
-} = require("../capability-pack-derivation.js");
-const {
-  readSurfaceRoutesStrict,
-} = require("../surface-router.js");
+  deriveDispatchNodePack,
+  safeSurfaceRouteMap,
+} = require("../dispatch-node-pack.js");
 const {
   readCompositionVerifiedSummary,
 } = require("../composition-live-verifier.js");
@@ -110,49 +114,6 @@ function structuredError(code, message, details) {
   err.code = code;
   if (details) err.details = details;
   return err;
-}
-
-// Helper shared with bob_prepare_node for the surface metadata used in
-// pack derivation. Inlined here (rather than imported) because the
-// surface-router strict read is sensitive to absent route files and we
-// must not regress finalize on a missing routes shape.
-function safeSurfaceRouteMap(targetDomain) {
-  let result;
-  try {
-    result = readSurfaceRoutesStrict(targetDomain);
-  } catch {
-    return {};
-  }
-  const map = {};
-  const doc = result && result.document;
-  if (!doc || !Array.isArray(doc.routes)) return map;
-  // readSurfaceRoutesStrict is now tolerant: it QUARANTINES stale/duplicate routes (it used to throw,
-  // which the catch above turned into a silent empty {} — losing ALL routes). The valid routes survive
-  // in doc.routes; the quarantined ones are omitted from this metadata map. Surface a diagnostic so a
-  // fully- or partially-corrupt routing artifact is not silently indistinguishable from "no routes were
-  // set up". This map only enriches one-hop graph context, so we degrade gracefully (no throw) — unlike
-  // getContextBudget/findRoutedSurface, where a wrong/missing route must hard-fail the operation.
-  if (Array.isArray(result.malformed_routes) && result.malformed_routes.length > 0) {
-    const quarantinedIds = result.malformed_routes
-      .map((m) => (m && m.surface_id) || `routes[${m && m.index}]`)
-      .join(", ");
-    process.stderr.write(
-      `WARNING: surface-routes.json has ${result.malformed_routes.length} quarantined route(s) [${quarantinedIds}] omitted from the surface metadata map; re-run bob_route_surfaces to regenerate (${doc.routes.length} valid route(s) retained).\n`,
-    );
-  }
-  for (const route of doc.routes) {
-    if (!route || typeof route !== "object") continue;
-    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
-    if (!surfaceId) continue;
-    map[surfaceId] = {
-      id: surfaceId,
-      surface_type: route.surface_type || null,
-      chain_family: route.chain_family || null,
-      capability_pack: route.capability_pack || null,
-      brief_profile: route.brief_profile || null,
-    };
-  }
-  return map;
 }
 
 // Plane X Cycle X.10 — tool_constraint_violation detective control.
@@ -187,6 +148,50 @@ function checkToolConstraintViolation(agentOutput, allowedToolsForNode) {
     }
   }
   return violations;
+}
+
+// Pure map from an X.6 tool_constraint_violation list to capability_friction
+// payloads so the friction→pack-widening loop does not depend on voluntary
+// agent reporting. Each violating tool the agent reached for outside
+// allowed_tools_for_node[] becomes one tool_absent synthetic
+// (detected_by = "mcp_runtime_auto_emit"). tool_absent — NOT tool_inadequate —
+// is the honest kind: the tool was literally not in the routed pack, and
+// tool_inadequate would require a witness whose recorded tool matches
+// wanted_tool (Y-P10), which the only available witness (the
+// bob_finalize_node node.transitioned event) can never satisfy. The
+// failedEventId witness is carried in the free-text rationale for traceability.
+// No fs, no append, no clock — deterministic; the caller does the dedupe read
+// and the append.
+function synthesizeToolConstraintFriction({
+  toolViolations,
+  nodeId,
+  runId,
+  surfaceId,
+  failedEventId,
+}) {
+  const violations = Array.isArray(toolViolations) ? toolViolations : [];
+  const payloads = [];
+  for (const violation of violations) {
+    if (!violation || typeof violation.tool !== "string" || !violation.tool) continue;
+    const payload = {
+      run_id: runId,
+      node_id: nodeId,
+      wanted_tool: violation.tool,
+      purpose: "other",
+      fallback_used: "none",
+      friction_kind: "tool_absent",
+      detected_by: "mcp_runtime_auto_emit",
+      rationale:
+        `X.6 tool_constraint_violation: agent invoked ${violation.tool} outside `
+        + `allowed_tools_for_node[]; auto-emitted tool_absent friction. Witness `
+        + `node.transitioned frontier_event:${failedEventId}.`,
+    };
+    if (typeof surfaceId === "string" && surfaceId.length > 0) {
+      payload.surface_id = surfaceId;
+    }
+    payloads.push(payload);
+  }
+  return payloads;
 }
 
 function findNodeInDocument(document, nodeId) {
@@ -657,23 +662,32 @@ function finalizeNodeLocked(args) {
   // violation. Note: we re-materialize only the ≤1-hop graph context
   // (not the full live graph) so the derivation matches what was
   // bound into the prep_token.
+  // surfaceMetadataById is needed on EVERY path — including a 'producer' node,
+  // whose pack is never derived — because the cross-stack mechanism gate
+  // (claimsCrossStackMechanism) reads it below. Compute it unconditionally via
+  // the shared safeSurfaceRouteMap; a non-producer additionally re-derives its
+  // pack through the same deriveDispatchNodePack bob_prepare_node used, so the
+  // X.6 allowed_tools_for_node[] is byte-identical by construction (not by two
+  // hand-duplicated copies happening to match).
   const surfaceMetadataById = safeSurfaceRouteMap(domain);
-  const finalizeGraphContext = buildOneHopGraphContext(document, nodeId, surfaceMetadataById);
-  // derivePackForNode derives the per-node tool allow-list only for the
-  // dispatchable evaluator kinds (surface/transition/hypothesis/claim/cell). A
-  // 'producer' node has no per-node capability pack, so the tool_constraint
-  // detective control is kind-scoped and skipped for it; its output is
-  // SERVER-minted from attested counts in the kind === "producer" branch below.
-  // Every other kind runs the derivation + check exactly as before.
+  // deriveDispatchNodePack (via derivePackForNode) derives the per-node tool
+  // allow-list only for the dispatchable evaluator kinds
+  // (surface/transition/hypothesis/claim/cell). A 'producer' node has no per-node
+  // capability pack (derivePackForNode throws on kind 'producer'), so the
+  // tool_constraint detective control is kind-scoped and skipped for it; its
+  // output is SERVER-minted from attested counts in the kind === "producer"
+  // branch below. Every other kind runs the derivation + check exactly as before.
   const isProducerNode = finalizedNode.kind === "producer";
   const finalizePack = isProducerNode
     ? null
-    : derivePackForNode(
-      finalizedNode,
-      finalizeGraphContext,
-      [],
-      attached.contract,
-    );
+    : deriveDispatchNodePack({
+      targetDomain: domain,
+      document,
+      nodeId,
+      node: finalizedNode,
+      contract: attached.contract,
+      surfaceMetadataById,
+    }).pack;
   const toolViolations = isProducerNode
     ? []
     : checkToolConstraintViolation(
@@ -698,6 +712,63 @@ function finalizeNodeLocked(args) {
       source: { tool: "bob_finalize_node" },
       actor: input.actor,
     });
+    // Auto-emit tool_absent friction (detected_by = "mcp_runtime_auto_emit")
+    // per DISTINCT violating tool so the friction→pack-widening loop
+    // (capability-pack-derivation frictionWantedTools union) and the
+    // friction→confidence loop do not depend on voluntary agent reporting.
+    // Idempotent via the Y-P3 6-tuple (run_id, node_id, wanted_tool, friction_kind,
+    // purpose, detected_by): re-finalizing the same node with the same runId fallback
+    // does not double-count, and a voluntary agent_self_report for the same
+    // tool coexists (distinct detected_by leg — Y-P11). Best-effort telemetry:
+    // the executed → failed transition and the returned failure_reason are the
+    // authoritative result and MUST NOT be masked by a friction-append failure.
+    // Runs under the ambient withSessionLock (finalize handler); no nested lock.
+    try {
+      const frictionRunId = (typeof agentOutput.run_id === "string" && agentOutput.run_id.length > 0)
+        ? agentOutput.run_id
+        : nodeId;
+      const frictionSurfaceId = Array.isArray(finalizedNode.surface_refs)
+        && typeof finalizedNode.surface_refs[0] === "string"
+        ? finalizedNode.surface_refs[0]
+        : null;
+      const frictionPayloads = synthesizeToolConstraintFriction({
+        toolViolations,
+        nodeId,
+        runId: frictionRunId,
+        surfaceId: frictionSurfaceId,
+        failedEventId: failedEvent.event_id,
+      });
+      const existingKeys = new Set();
+      for (const event of readFrontierEvents(domain)) {
+        const key = idempotencyKeyFromEvent(event);
+        if (key !== null) existingKeys.add(key);
+      }
+      for (const payload of frictionPayloads) {
+        // Isolate each payload: a single malformed / non-capability-tool
+        // violation (e.g. a local Bash invocation, which is not a known
+        // capability tool) must not abort the remaining valid friction rows.
+        try {
+          const normalized = assertCapabilityFrictionPayload(payload);
+          const key = idempotencyKeyFromPayload(normalized);
+          if (existingKeys.has(key)) continue;
+          appendFrontierEvent({
+            target_domain: domain,
+            kind: "observation.recorded",
+            surface_id: normalized.surface_id == null ? null : normalized.surface_id,
+            payload: normalized,
+            source: {
+              artifact: "frontier-events.jsonl",
+              tool: "bob_finalize_node",
+            },
+          });
+          existingKeys.add(key);
+        } catch {
+          // Skip this one payload; continue recording the rest.
+        }
+      }
+    } catch {
+      // Best-effort telemetry; the executed → failed transition is authoritative.
+    }
     try { scheduleMaterialization(domain); } catch {}
     return JSON.stringify({
       version: 1,

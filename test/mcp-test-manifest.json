@@ -149,6 +149,7 @@
   "test/offensive-cors-producer.test.js",
   "test/offensive-massread-producer.test.js",
   "test/surface-router.test.js",
+  "test/capability-packs-classify.test.js",
   "test/circuit-breaker-auth.test.js",
   "test/auth-provenance-stamp.test.js",
   "test/offensive-run-freeze-completeness.test.js",
@@ -206,6 +207,7 @@
   "test/write-chain-rollup-evidence-refs-validator.test.js",
   "test/write-verification-round-sha256.test.js",
   "test/derive-pack-with-friction.test.js",
+  "test/derive-pack-with-pack-friction.test.js",
   "test/derive-pack-with-target-class.test.js",
   "test/derivation-purity.test.js",
   "test/wave-brief-derivation.test.js",
@@ -322,5 +324,9 @@
   "test/sc-expander-provenance.test.js",
   "test/sc-recon-expander-prompt.test.js",
   "test/pure-sc-front-door.test.js",
-  "test/parse-rpc-flag-scheme-only.test.js"
+  "test/parse-rpc-flag-scheme-only.test.js",
+  "test/frontier-friction-predicate.test.js",
+  "test/finalize-node-auto-friction.test.js",
+  "test/derive-pack-confidence-modulation.test.js",
+  "test/pipeline-analytics-pack-friction.test.js"
 ]

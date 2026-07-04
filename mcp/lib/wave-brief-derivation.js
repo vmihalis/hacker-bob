@@ -4,9 +4,13 @@
 //
 // Y.5 wires the per-node capability-pack derivation (Y.4 / X.5) into the
 // wave-side assignment brief. For each Surface/Claim wave assignment the
-// scheduler materializes a synthetic Surface node, builds a wave-scoped
-// 1-hop adjacency context (Y-P5), threads `friction_history` (Y-P6) and
-// `target_class` (rev-4 O5), and calls the pure `derivePackForNode`. The
+// scheduler builds the real Surface node (`surfaceNodeId(surfaceId)`,
+// `kind: "surface"`, `surface_refs: [surfaceId]`) and a wave-scoped ≤1-hop
+// graph context (Y-P5) whose `surface_metadata_by_id[surfaceId]` carries the
+// routed surface metadata — crucially `chain_family` — so `deriveSurfacePack`
+// routes an EVM/SVM/Move/Substrate/CosmWasm surface to its chain pack instead
+// of the DEFAULT web pack. It threads `friction_history` (Y-P6) and
+// `target_class` (rev-4 O5), then calls the pure `derivePackForNode`. The
 // caller (assignment-brief.js readAssignmentBrief) consumes the bounded
 // result to (a) extend the brief's allowed-tools surface via the Y-P6
 // friction widening, and (b) carry target-class auxiliaries (e.g.,
@@ -14,11 +18,11 @@
 // allowed_tools_for_node[].
 //
 // `derivePackForNode` itself is PURE (Y-P4). All non-pure work
-// (filesystem reads for friction events + queue policy + synthetic node
-// adjacency) happens here, in the caller side, mirroring the
-// friction-selection.js / target-class-pack-derivation.js layering. The
-// helper exports `buildWaveBriefDerivation` which the brief renderer
-// invokes with already-loaded session artifacts.
+// (filesystem reads for surface routes, friction events, and queue policy)
+// happens here, in the caller side, mirroring the friction-selection.js /
+// target-class-pack-derivation.js layering. The helper exports
+// `buildWaveBriefDerivation` which the brief renderer invokes with
+// already-loaded session artifacts.
 
 const fs = require("fs");
 
@@ -36,24 +40,24 @@ const {
   deriveAuxiliaryToolsForTargetClass,
 } = require("./target-class-pack-derivation.js");
 const {
-  TASK_GRAPH_NODE_ID_PREFIX,
-} = require("./task-graph-events.js");
+  surfaceNodeId,
+} = require("./task-graph-materializer.js");
+const {
+  readSurfaceRoutesStrict,
+} = require("./surface-router.js");
 const {
   queuePolicyPath,
 } = require("./paths.js");
-
-// Synthetic node IDs for the wave-scheduler derivation path. The Plane X
-// TaskGraph executor materializes real TG- nodes via task-graph events;
-// the wave-side derivation needs a stable TG- prefix so the
-// derivePackForNode validator (which rejects non-TG ids) accepts the
-// synthetic input. Encoding the wave + surface id keeps the synthetic id
-// deterministic per (wave, surface) pair.
-function syntheticSurfaceNodeId(waveNumber, surfaceId) {
-  // Encode unsafe chars conservatively — derivePackForNode validates the
-  // TG- prefix only; the suffix is unbounded but we still keep it readable.
-  const safeSurface = String(surfaceId).replace(/[^A-Za-z0-9._-]/g, "_");
-  return `${TASK_GRAPH_NODE_ID_PREFIX}WS-w${waveNumber}-${safeSurface}`;
-}
+const {
+  aggregateFrictionByPack,
+  capabilityFrictionPayloads,
+} = require("./frontier-events.js");
+const {
+  FRICTION_KIND_VALUES,
+} = require("./capability-observations.js");
+const {
+  deriveSurfaceIdToPack,
+} = require("./pipeline-analytics.js");
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -62,22 +66,12 @@ function isPlainObject(value) {
 // Filter the frontier-event log down to capability_friction_observed
 // payloads matching the assignment surface. Returns plain payloads — the
 // `surface_id` field is required so friction-selection can wave-scope.
+// Delegates to the shared capabilityFrictionPayloads predicate; the explicit
+// non-string/empty surfaceId guard yields [] here (an omitted surfaceId means
+// GLOBAL in the shared helper, so this call site keeps its per-surface intent).
 function frictionPayloadsForSurface(frontierEvents, surfaceId) {
-  if (!Array.isArray(frontierEvents)) return [];
   if (typeof surfaceId !== "string" || surfaceId.length === 0) return [];
-  const out = [];
-  for (const event of frontierEvents) {
-    if (!isPlainObject(event)) continue;
-    // frontier-events.js uses `kind` (not `event_kind`) as the top-level
-    // event kind field per FRONTIER_EVENT_KINDS / Y-P1.
-    if (event.kind !== "observation.recorded") continue;
-    const payload = isPlainObject(event.payload) ? event.payload : null;
-    if (!payload) continue;
-    if (payload.observation_kind !== "capability_friction_observed") continue;
-    if (payload.surface_id !== surfaceId) continue;
-    out.push(payload);
-  }
-  return out;
+  return capabilityFrictionPayloads(frontierEvents, { surfaceId });
 }
 
 // Read the raw queue-policy JSON for the target without going through
@@ -122,96 +116,60 @@ function resolveTargetClassForBrief({ explicitTargetClass, queuePolicy }) {
   return null;
 }
 
-// Per-field caps for the synthetic-node surface_metadata triage scalars.
-// Mirrors the ASSIGNMENT_BRIEF_SURFACE_SCALAR_LIMITS entries in
-// assignment-brief.js so the synthetic node never inflates unboundedly even
-// if a surface field carries an oversized scalar — same drop-in cap
-// discipline the brief slim function applies (Y.5 caller-side, X-D4 bound).
-const SYNTHETIC_SURFACE_TRIAGE_SCALAR_LIMITS = Object.freeze({
-  surface_type: 80,
-  attack_vector: 40,
-  severity_ceiling: 40,
-  network_reachable: 8,
-});
-
-const SYNTHETIC_SURFACE_TRIAGE_ARRAY_LIMITS = Object.freeze({
-  // residual_hunt_targets is the incomplete-fix seed stamped by
-  // repo-target.js. Threading it onto the synthetic node keeps the
-  // derivation context faithful to the assignment surface; arrays are
-  // capped at the same 20 the assignment-brief surface array limit uses.
-  residual_hunt_targets: 20,
-});
-
-function isBriefScalar(value) {
-  return value == null || ["string", "number", "boolean"].includes(typeof value);
-}
-
-function cappedSyntheticScalar(value, maxChars) {
-  if (!isBriefScalar(value) || value == null) return null;
-  const text = typeof value === "string" ? value : String(value);
-  return text.length > maxChars ? text.slice(0, maxChars) : text;
-}
-
-function cappedSyntheticArray(value, limit) {
-  if (!Array.isArray(value)) return null;
-  const out = [];
-  for (const item of value) {
-    if (item == null) continue;
-    if (out.length >= limit) break;
-    out.push(typeof item === "string" ? item : String(item));
+// Build the `surface_metadata_by_id` map the deriver keys on
+// (`graph_context.surface_metadata_by_id[surface_refs[0]]`), carrying the
+// routed surface metadata — crucially `chain_family` — so
+// `deriveSurfacePack` routes an EVM/SVM/Move/Substrate/CosmWasm surface to
+// its chain pack instead of the DEFAULT web pack. Mirrors the canonical
+// `safeSurfaceRouteMap` shape at tools/prepare-node.js: read the routes
+// strictly, find the route for this surface, and stamp
+// `{ id, surface_type, chain_family, capability_pack, brief_profile }`.
+// When routing artifacts are absent OR this surface has no route yet, fall
+// back to the same shape from the in-hand assignment surface so the wave
+// path still routes. Never throws; returns `{}` only when there is truly
+// nothing — an empty map preserves the graceful web fallback
+// (`packIdForSurfaceMetadata(null) → DEFAULT_CAPABILITY_PACK_ID`) for
+// web/OSS surfaces.
+function buildRoutedSurfaceMetadataById(domain, surfaceId, surfaceObj) {
+  if (typeof surfaceId !== "string" || surfaceId.length === 0) return {};
+  let routes = null;
+  try {
+    const result = readSurfaceRoutesStrict(domain);
+    const doc = result && result.document;
+    if (doc && Array.isArray(doc.routes)) routes = doc.routes;
+  } catch {
+    routes = null;
   }
-  return out;
-}
-
-// Materialize a synthetic Surface node + wave-scoped 1-hop graph context
-// for `derivePackForNode`. The context is intentionally minimal (no
-// adjacent nodes, no incident edges) because the wave-scheduler does not
-// own a TaskGraph slice — Y-P5 says the wave scope IS the bound. The
-// derivation function tolerates an empty graph_context and falls back to
-// the default per-kind tool set.
-//
-// `surface_metadata` carries the triage scalars (`surface_type`,
-// `attack_vector`, `severity_ceiling`, `network_reachable`) plus the
-// `residual_hunt_targets` array when the assignment surface stamped them
-// (OSS native-code surfaces from repo-target.js). Threading these keeps
-// the synthetic node faithful to the assignment surface — without them a
-// future derivation reader that branched on `network_reachable` would see
-// `undefined` and silently misroute. Caps mirror the assignment-brief
-// slim discipline so an oversized scalar never inflates the synthetic
-// node.
-function buildSyntheticSurfaceNode({ surfaceObj, surfaceId, waveNumber }) {
-  const surfaceRefs = [surfaceId];
-  const source = surfaceObj && typeof surfaceObj === "object" && !Array.isArray(surfaceObj)
-    ? surfaceObj
-    : {};
-  const metadata = {};
-  for (const [field, maxChars] of Object.entries(SYNTHETIC_SURFACE_TRIAGE_SCALAR_LIMITS)) {
-    const value = cappedSyntheticScalar(source[field], maxChars);
-    metadata[field] = value;
+  if (Array.isArray(routes)) {
+    for (const route of routes) {
+      if (!route || typeof route !== "object") continue;
+      if (route.surface_id !== surfaceId) continue;
+      return {
+        [surfaceId]: {
+          id: surfaceId,
+          surface_type: route.surface_type || null,
+          chain_family: route.chain_family || null,
+          capability_pack: route.capability_pack || null,
+          brief_profile: route.brief_profile || null,
+          confidence: route.confidence || null,
+        },
+      };
+    }
   }
-  for (const [field, limit] of Object.entries(SYNTHETIC_SURFACE_TRIAGE_ARRAY_LIMITS)) {
-    const value = cappedSyntheticArray(source[field], limit);
-    if (value != null) metadata[field] = value;
-  }
-  return {
-    node_id: syntheticSurfaceNodeId(waveNumber, surfaceId),
-    kind: "surface",
-    surface_refs: surfaceRefs,
-    // Echo metadata onto the node so downstream callers can read it
-    // without reaching into the assignment surface; matches the X.5
-    // contract that node.surface_metadata may live alongside surface_refs.
-    surface_metadata: {
-      [surfaceId]: metadata,
-    },
+  // Fall back to the in-hand assignment surface. Pass `chain_family`
+  // through faithfully (including null) so an ambiguous smart_contract is
+  // never silently routed to web here — the deriver classifies the truth.
+  const source = isPlainObject(surfaceObj) ? surfaceObj : {};
+  if (source.surface_type == null && source.chain_family == null) return {};
+  const metadata = {
+    id: surfaceId,
+    surface_type: source.surface_type || null,
+    chain_family: source.chain_family || null,
+    confidence: source.confidence || null,
   };
-}
-
-function buildEmptyAdjacencyContext() {
-  return {
-    adjacent_nodes: [],
-    incident_edges: [],
-    surface_metadata_by_id: {},
-  };
+  if (source.capability_pack != null) metadata.capability_pack = source.capability_pack;
+  if (source.brief_profile != null) metadata.brief_profile = source.brief_profile;
+  return { [surfaceId]: metadata };
 }
 
 // Top-level helper. The brief renderer feeds in already-loaded session
@@ -234,23 +192,58 @@ function buildWaveBriefDerivation({
   explicitTargetClass,
   includeInadequacy,
 }) {
-  const syntheticNode = buildSyntheticSurfaceNode({ surfaceObj, surfaceId, waveNumber });
+  const realNode = {
+    node_id: surfaceNodeId(surfaceId),
+    kind: "surface",
+    surface_refs: [surfaceId],
+  };
   const allFrictionPayloads = frictionPayloadsForSurface(frontierEvents, surfaceId);
   const frictionHistory = selectRelevantFrictions(
     allFrictionPayloads,
-    syntheticNode,
+    realNode,
     { include_inadequacy: includeInadequacy === true },
   );
   const effectivePolicy = queuePolicy != null ? queuePolicy : readRawQueuePolicy(domain);
   const targetClass = resolveTargetClassForBrief({ explicitTargetClass, queuePolicy: effectivePolicy });
+  // X-P5 — the wave scope IS the ≤1-hop bound: no adjacency walk, the map
+  // is keyed only by the single dispatched surface_id.
+  const surfaceMetadataById = buildRoutedSurfaceMetadataById(domain, surfaceId, surfaceObj);
+  const realGraphContext = {
+    adjacent_nodes: [],
+    incident_edges: [],
+    surface_metadata_by_id: surfaceMetadataById,
+  };
+  // PACK-level friction aggregate (caller-side IO; the deriver stays pure).
+  // `allFrictionPayloads` above is surface-SCOPED (the per-surface widening
+  // input); the pack aggregate needs the GLOBAL friction set so a deficiency
+  // observed on a SIBLING surface widens this pack too. Gate with
+  // FRICTION_KIND_VALUES (the single authority for the actionable friction
+  // kinds). The surface_id → capability_pack join reuses deriveSurfaceIdToPack
+  // over the persisted routes (unroutable rows contribute no pack). Both the
+  // frontier scan and the routes read are caller-side; aggregateFrictionByPack
+  // is pure. Fails open to {} on any read error so the brief still composes.
+  let packFrictionAggregate = {};
+  try {
+    const globalFriction = capabilityFrictionPayloads(frontierEvents, {
+      frictionKinds: FRICTION_KIND_VALUES,
+    });
+    const surfaceIdToPack = deriveSurfaceIdToPack(readSurfaceRoutesStrict(domain).document.routes);
+    packFrictionAggregate = aggregateFrictionByPack(globalFriction, surfaceIdToPack);
+  } catch {
+    packFrictionAggregate = {};
+  }
+  // X.5 — the primary surface's pack is derived from
+  // graph_context.surface_metadata_by_id[surface_refs[0]] (chain_family
+  // carried), and the full tool set is surfaced RANKED, not BOUNDED.
   const derivation = derivePackForNode(
-    syntheticNode,
-    buildEmptyAdjacencyContext(),
+    realNode,
+    realGraphContext,
     [],
     null,
     {
       friction_history: frictionHistory,
       target_class: targetClass,
+      pack_friction_aggregate: packFrictionAggregate,
     },
   );
 
@@ -286,10 +279,35 @@ function buildWaveBriefDerivation({
       addedTools.push(tool);
     }
   }
+  // Fold in the deriver's pack-friction-widened tools (chronic cross-surface
+  // pack deficiencies whose count cleared PACK_FRICTION_CHRONIC_MIN_COUNT).
+  // Single-sourced from derivePackForNode's brief_emphasis — the threshold is
+  // NOT re-derived here. RANKED not BOUNDED: this only ADDS via the same
+  // seenAdded de-dupe, so a tool already surfaced per-surface or via
+  // target-class aux is not duplicated.
+  const packWidened = Array.isArray(derivation.brief_emphasis && derivation.brief_emphasis.pack_friction_widened_tools)
+    ? derivation.brief_emphasis.pack_friction_widened_tools
+    : [];
+  for (const tool of packWidened) {
+    if (typeof tool === "string" && tool.length > 0 && !seenAdded.has(tool)) {
+      seenAdded.add(tool);
+      addedTools.push(tool);
+    }
+  }
   addedTools.sort();
 
   return {
-    synthetic_node_id: syntheticNode.node_id,
+    surface_node_id: realNode.node_id,
+    // The routed capability pack id is the routing witness: it confirms an
+    // EVM/SVM/Move/Substrate/CosmWasm surface routed to its chain pack instead
+    // of the DEFAULT web pack. The pack's full tool union is intentionally NOT
+    // inlined here — wave-dispatched evaluators receive it via frontmatter, and
+    // surfacing it in the brief would leak cross-lens tools (e.g. the browser
+    // driver) into a projection whose task_lens excludes them. `added_tools[]`
+    // below carries this brief's widening delta (RANKED not BOUNDED).
+    capability_pack: derivation.brief_emphasis && derivation.brief_emphasis.capability_pack
+      ? derivation.brief_emphasis.capability_pack
+      : null,
     target_class: targetClass,
     friction_history_count: frictionHistory.length,
     friction_history_total_for_surface: allFrictionPayloads.length,
@@ -312,9 +330,7 @@ function buildWaveBriefDerivation({
 
 module.exports = {
   buildWaveBriefDerivation,
-  buildSyntheticSurfaceNode,
   frictionPayloadsForSurface,
   readRawQueuePolicy,
   resolveTargetClassForBrief,
-  syntheticSurfaceNodeId,
 };
