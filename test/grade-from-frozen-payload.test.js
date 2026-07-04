@@ -501,6 +501,13 @@ test("reachability cap stamps graded severity without removing the reportable fi
     assert.equal(read.findings[0].reachability.graded_severity, "medium");
     assert.equal(read.findings[0].reachability.disposition, "capped");
 
+    // Wiring proof (end-to-end): the grade verdict actually STAMPS the defender
+    // relens per finding, and it reads the GRADED severity — capped-to-medium at a
+    // submit score is worth_fixing, never fix_now, even though the RECORDED severity
+    // was high. Reachability flows into the customer word exactly as into the grade.
+    assert.equal(onDisk.findings[0].defender_disposition, "worth_fixing");
+    assert.equal(read.findings[0].defender_disposition, "worth_fixing");
+
     appendCandidateClaim({
       target_domain: domain,
       title: "Post-freeze network duplicate",

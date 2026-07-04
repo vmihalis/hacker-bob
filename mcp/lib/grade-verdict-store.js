@@ -51,6 +51,10 @@ const {
   normalizeReachabilityDispositionStamp,
   reachabilityDispositionForFinding,
 } = require("./reachability-ceiling.js");
+const {
+  computeDefenderDisposition,
+  DEFENDER_DISPOSITION_VALUES,
+} = require("./defender-disposition.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -125,6 +129,17 @@ function normalizeGradeFinding(result, findingIdSet) {
   };
   if (result.reachability != null) {
     normalized.reachability = normalizeReachabilityDispositionStamp(result.reachability, "reachability");
+  }
+  // Additive server-derived defender relens (customer /r surface speaks defender,
+  // not SUBMIT/HOLD/SKIP). Carried through read-back like reachability; never
+  // enters the score/verdict math. Present on grades written after this wiring;
+  // absent on legacy verdicts, whose shape stays byte-identical.
+  if (result.defender_disposition != null) {
+    normalized.defender_disposition = assertEnumValue(
+      result.defender_disposition,
+      DEFENDER_DISPOSITION_VALUES,
+      "defender_disposition",
+    );
   }
 
   const expectedTotal = normalized.impact
@@ -629,18 +644,32 @@ function writeGradeVerdict(args) {
     );
   }
   const findings = normalizedFindings.map((finding) => {
-    const recordedSeverity = finalSeverities.get(finding.finding_id);
-    if (!recordedSeverity) return finding;
-    const reachability = reachabilityDispositionForFinding({
-      domain,
-      findingId: finding.finding_id,
-      recordedSeverity,
+    const recordedSeverity = finalSeverities.get(finding.finding_id) || null;
+    let reachability = null;
+    if (recordedSeverity) {
+      const stamp = reachabilityDispositionForFinding({
+        domain,
+        findingId: finding.finding_id,
+        recordedSeverity,
+      });
+      if (stamp.disposition !== "unknown") reachability = stamp;
+    }
+    // Deterministic defender relens of the SAME verdict numbers (final severity ×
+    // reachability × per-finding score × reportable → fix_now/worth_fixing/watch/
+    // held). Additive and non-gating — it never enters enforceGradeVerdictConsistency
+    // or the score math; it is stamped on EVERY finding so the customer /r surface has
+    // a defender word for each. The graded-on severity is authoritative when
+    // reachability has spoken; otherwise the recorded final severity.
+    const defender_disposition = computeDefenderDisposition({
+      finalSeverity: recordedSeverity,
+      graded_severity: reachability ? reachability.graded_severity : null,
+      disposition: reachability ? reachability.disposition : null,
+      total_score: finding.total_score,
+      reportable: finalReportableSeveritySet.has(finding.finding_id),
     });
-    if (reachability.disposition === "unknown") return finding;
-    return {
-      ...finding,
-      reachability,
-    };
+    const stamped = { ...finding, defender_disposition };
+    if (reachability) stamped.reachability = reachability;
+    return stamped;
   });
 
   const claimFreezeId = currentClaimFreezeId(domain);
