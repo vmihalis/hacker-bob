@@ -88,23 +88,52 @@ function waveStatus(args) {
     }];
   }
 
-  // Surface the parked, unroutable surfaces from the most-recent wave
-  // assignment doc as an actionable coverage gap. Read defensively: a missing
-  // file or an old wave doc without an `unroutable_surfaces` field reads as [].
+  // Surface the parked, unroutable surfaces from the DURABLE surface-routes.json
+  // (`route.disposition === "unroutable"`), NOT a transient wave-assignment doc.
+  // The routes file is written at route time and persists across waves, so this
+  // coverage gap stays visible even after a later wave whose assignment doc
+  // carries no unroutable surfaces (fixes the cross-wave amnesia). Back-compat:
+  // a missing routes file reads as []. A genuinely corrupt/unreadable routes
+  // file is NOT masked to a silent [] — it surfaces a distinct diagnostic so a
+  // coverage gap is never under-reported by a swallowed read error.
   let unroutableSurfaces = [];
+  let unroutableSurfacesError = null;
+  let unroutableSurfacesQuarantine = null;
   try {
-    const { readJsonFile } = require("../storage.js");
-    const { waveAssignmentsPath } = require("../paths.js");
-    const { listWaveAssignmentNumbers } = require("../wave-handoff-store.js");
-    const waveNumbers = listWaveAssignmentNumbers(domain);
-    if (waveNumbers.length > 0) {
-      const latestWave = waveNumbers[waveNumbers.length - 1];
-      const doc = readJsonFile(waveAssignmentsPath(domain, latestWave));
-      if (doc && Array.isArray(doc.unroutable_surfaces)) {
-        unroutableSurfaces = doc.unroutable_surfaces;
-      }
+    const { readSurfaceRoutesStrict } = require("../surface-router.js");
+    const routesResult = readSurfaceRoutesStrict(domain);
+    const routes = routesResult && routesResult.document && Array.isArray(routesResult.document.routes)
+      ? routesResult.document.routes
+      : [];
+    unroutableSurfaces = routes
+      .filter((route) => route && route.disposition === "unroutable")
+      .map((route) => ({
+        surface_id: route.surface_id,
+        surface_type: route.surface_type,
+        unroutable_reason: route.reason,
+      }));
+    // Per-route corruption (a single stale/malformed row) is quarantined by the
+    // reader, not thrown. Surface a count + repair hint so a per-route drop is
+    // not under-reported either.
+    if (Array.isArray(routesResult.malformed_routes) && routesResult.malformed_routes.length > 0) {
+      unroutableSurfacesQuarantine = {
+        code: "routes_quarantined",
+        malformed_route_count: routesResult.malformed_routes.length,
+        repair_hint: routesResult.repair_hint
+          || "re-run bob_route_surfaces to regenerate surface-routes.json from the current surface index",
+      };
     }
-  } catch {}
+  } catch (error) {
+    // A missing routes file (no routing yet) is the expected back-compat path,
+    // NOT corruption: read as [] with no error. Any other hard failure
+    // (unparseable JSON, version mismatch, routes-not-an-array) is genuinely
+    // unrecoverable — surface a distinct diagnostic instead of masking a
+    // coverage gap to a silent zero.
+    const message = error && error.message ? error.message : String(error);
+    if (!/^Missing surface routes JSON:/.test(message)) {
+      unroutableSurfacesError = { code: "routes_unreadable", message };
+    }
+  }
 
   let auditSummary = null;
   let trafficSummary = null;
@@ -129,7 +158,7 @@ function waveStatus(args) {
     };
   } catch {}
 
-  return JSON.stringify({
+  const response = {
     ...summary,
     coverage,
     transition_blockers: transitionBlockers,
@@ -145,7 +174,13 @@ function waveStatus(args) {
       endpoint: finding.endpoint,
       wave_agent: finding.wave || finding.agent ? `${finding.wave || "?"}/${finding.agent || "?"}` : null,
     })),
-  });
+  };
+  // Additive diagnostics: only present when a read error or per-route
+  // quarantine occurred, so the "no unroutable surfaces" (empty routes, no
+  // error) case stays distinguishable from "could not read routes".
+  if (unroutableSurfacesError) response.unroutable_surfaces_error = unroutableSurfacesError;
+  if (unroutableSurfacesQuarantine) response.unroutable_surfaces_quarantine = unroutableSurfacesQuarantine;
+  return JSON.stringify(response);
 }
 
 module.exports = {

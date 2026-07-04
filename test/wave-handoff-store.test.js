@@ -14,11 +14,20 @@ const {
   mergeWaveHandoffs,
 } = require("../mcp/lib/wave-handoff-store.js");
 const {
+  attackSurfacePath,
   liveDeadEndsJsonlPath,
   sessionDir,
+  surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
+const {
+  initSession,
+  advanceSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  startWave,
+} = require("../mcp/lib/waves.js");
 const {
   writeFileAtomic,
 } = require("../mcp/lib/storage.js");
@@ -307,13 +316,98 @@ test("bob_wave_status surfaces the unroutable surface as an actionable coverage 
   });
 });
 
-test("bob_wave_status reads unroutable_surfaces as [] for an old wave doc without the field", () => {
+test("bob_wave_status reads unroutable_surfaces as [] when no routes file exists (back-compat)", () => {
   withTempHome(() => {
     const domain = "unroutable-backcompat.example.com";
-    // writeAssignments writes a wave doc with NO unroutable_surfaces field.
+    // writeAssignments writes a wave doc but NO surface-routes.json; a missing
+    // routes file is the expected back-compat path, read as [] with no error.
     writeAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
     const status = JSON.parse(waveStatus({ target_domain: domain }));
     assert.deepEqual(status.unroutable_surfaces, []);
+    assert.equal(status.unroutable_surfaces_error, undefined, "a missing routes file is not a corruption error");
+  });
+});
+
+test("bob_wave_status surfaces the unroutable gap from the DURABLE routes file even after a later wave has no unroutable surfaces", () => {
+  withTempHome(() => {
+    const domain = "unroutable-durable-status.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // Wave 1 routes a routable web surface + an unroutable SC surface; this
+    // persists surface-routes.json (the durable source of truth).
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-web", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+      { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+    ]);
+    const prepared1 = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "surface-sc", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+    writeWaveAssignmentsDocument(prepared1.assignmentsPath, prepared1.assignmentsDocument);
+
+    // A LATER wave whose assignment doc carries NO unroutable_surfaces. Under
+    // the old wave-doc read this would make the gap VANISH; the durable
+    // routes-file read keeps it visible.
+    writeAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-web" }]);
+
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.equal(status.unroutable_surfaces.length, 1, "the unroutable gap survives a later wave (durable)");
+    assert.equal(status.unroutable_surfaces[0].surface_id, "surface-sc");
+    assert.equal(status.unroutable_surfaces[0].surface_type, "smart_contract");
+    assert.ok(status.unroutable_surfaces[0].unroutable_reason.length > 0);
+    assert.equal(status.unroutable_surfaces_error, undefined);
+  });
+});
+
+test("bob_wave_status surfaces a distinct diagnostic for a corrupt routes file, NOT a silent zero", () => {
+  withTempHome(() => {
+    const domain = "unroutable-corrupt-routes.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // A genuinely unreadable routes file: valid JSON but a version mismatch
+    // (readSurfaceRoutesStrict hard-throws on the top-level shape).
+    fs.writeFileSync(
+      surfaceRoutesPath(domain),
+      `${JSON.stringify({ version: 999, route_version: 999, routes: [] }, null, 2)}\n`,
+    );
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(status.unroutable_surfaces, [], "a corrupt read yields no false unroutable surfaces");
+    assert.ok(status.unroutable_surfaces_error, "a corrupt read is surfaced, not masked to a silent zero");
+    assert.equal(status.unroutable_surfaces_error.code, "routes_unreadable");
+    assert.ok(status.unroutable_surfaces_error.message.length > 0);
+  });
+});
+
+test("bob_start_wave sync response includes unroutable_count/surfaces for the parked SC surface", () => {
+  withTempHome(() => {
+    const domain = "unroutable-start-response.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    // Seed a routable web surface + an unroutable SC surface (unknown chain).
+    writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({
+      surfaces: [
+        { id: "surface-web", surface_type: "api", hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: ["idor"] },
+        { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], priority: "HIGH", bug_class_hints: [] },
+      ],
+    }, null, 2)}\n`);
+    JSON.parse(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+
+    const started = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web" },
+        { agent: "a2", surface_id: "surface-sc" },
+      ],
+    }));
+    assert.equal(started.started, true);
+    assert.equal(started.assignments.map((a) => a.surface_id).join(","), "surface-web", "only the routable surface is executable");
+    assert.equal(started.unroutable_count, 1, "the sync start response carries the parked count");
+    assert.ok(Array.isArray(started.unroutable_surfaces));
+    assert.equal(started.unroutable_surfaces.length, 1);
+    assert.equal(started.unroutable_surfaces[0].surface_id, "surface-sc");
   });
 });
 

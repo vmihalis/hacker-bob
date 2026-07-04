@@ -40,6 +40,13 @@ function isOpenForAssignment(surfaceOrId, state, options = {}) {
   if (options.surfaceIdSet && !options.surfaceIdSet.has(surfaceId)) return false;
   if (options.exploredSurfaceIds instanceof Set && options.exploredSurfaceIds.has(surfaceId)) return false;
   if (options.terminallyBlockedSurfaceIds instanceof Set && options.terminallyBlockedSurfaceIds.has(surfaceId)) return false;
+  // An unroutable-route surface (surface-routes.json disposition:"unroutable",
+  // set at route time and durable across waves) carries no capability pack and
+  // must never be (re-)scheduled — otherwise it stays "open" every wave and
+  // starves routable siblings. Symmetric to the explored/blocked legs; an empty
+  // set (no unroutable routes, or an unreadable routes file) is a no-op so
+  // routable planning stays byte-identical.
+  if (options.unroutableSurfaceIds instanceof Set && options.unroutableSurfaceIds.has(surfaceId)) return false;
   return true;
 }
 
@@ -356,7 +363,36 @@ function planNextWave({
     leadSurfaceIds = [];
   }
 
-  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet };
+  // Durable unroutable-coverage set. Sourced from surface-routes.json
+  // (persisted at route time, survives wave advance) rather than a transient
+  // wave-assignment doc, so a parked unroutable surface is never re-scheduled
+  // across waves. Accepts a pre-computed set (test/replay purity) like the
+  // explored/blocked legs above; otherwise projects the live target lazily
+  // inside a fail-open try/catch. A missing/unreadable routes file yields an
+  // empty set (fail-open to today's behavior — routable planning byte-identical).
+  let unroutableSurfaceIds = options.unroutableSurfaceIds instanceof Set
+    ? options.unroutableSurfaceIds
+    : new Set(Array.isArray(options.unroutableSurfaceIds) ? options.unroutableSurfaceIds : []);
+  if (options.unroutableSurfaceIds == null && typeof normalizedState.target === "string" && normalizedState.target) {
+    try {
+      const { readSurfaceRoutesStrict } = require("./surface-router.js");
+      const routesResult = readSurfaceRoutesStrict(normalizedState.target);
+      const routes = routesResult && routesResult.document && Array.isArray(routesResult.document.routes)
+        ? routesResult.document.routes
+        : [];
+      for (const route of routes) {
+        if (route && route.disposition === "unroutable" && typeof route.surface_id === "string" && route.surface_id) {
+          unroutableSurfaceIds.add(route.surface_id);
+        }
+      }
+    } catch {
+      // Fail-open: a missing/unreadable routes file leaves the set empty, which
+      // preserves today's planning. Corruption is SURFACED in bob_wave_status
+      // (a diagnostic), not here where it would silently block planning.
+    }
+  }
+
+  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet, unroutableSurfaceIds };
   const rawOpenSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
   const beliefPriority = applyBeliefSchedulerPriority({
     target_domain: normalizedState.target,

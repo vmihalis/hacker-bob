@@ -190,6 +190,12 @@ function buildStartNextWaveResponse({ domain, dryRun, state, plan, promotion, st
   if (started) {
     response.wave_number = started.wave_number;
     response.assignments = started.assignments;
+    // Additive: expose the parked unroutable coverage gap on the start response
+    // (rides the `started` object produced by startWaveLocked) so a caller sees
+    // it without grepping telemetry. Present only on a real start (started !=
+    // null); the planning/dry-run path is unchanged.
+    if (started.unroutable_count != null) response.unroutable_count = started.unroutable_count;
+    if (started.unroutable_surfaces != null) response.unroutable_surfaces = started.unroutable_surfaces;
     response.assignments_path = started.assignments_path;
     response.state = started.state;
     response.next_action.assignments_path = started.assignments_path;

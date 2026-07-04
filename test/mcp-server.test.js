@@ -5322,6 +5322,8 @@ test("bob_start_wave validates inputs, writes assignments, and updates pending_w
       version: 1,
       started: true,
       wave_number: 2,
+      unroutable_count: 0,
+      unroutable_surfaces: [],
       assignments: [
         {
           agent: "a1",

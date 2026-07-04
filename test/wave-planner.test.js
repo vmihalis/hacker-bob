@@ -16,7 +16,12 @@ const {
 } = require("../mcp/lib/surface-graph.js");
 const {
   sessionDir,
+  surfaceRoutesPath,
 } = require("../mcp/lib/paths.js");
+const {
+  SURFACE_ROUTE_VERSION,
+  SURFACE_ROUTES_VERSION,
+} = require("../mcp/lib/surface-router.js");
 
 function withTempHome(fn) {
   const previousHome = process.env.HOME;
@@ -409,6 +414,127 @@ test("belief-assisted priority is policy-gated and re-ranks through existing pri
     assert.equal(enabled.belief_assisted_priority.applied, true);
     assert.equal(enabled.belief_assisted_priority.hint_count, 1);
     assert.deepEqual(enabled.assignments, [planned("a1", "surface:idor")]);
+  });
+});
+
+test("isOpenForAssignment excludes an unroutable-route surface (durable coverage gap)", () => {
+  const state = {};
+  const options = {
+    surfaceIdSet: new Set(["routable", "unroutable"]),
+    exploredSurfaceIds: new Set(),
+    terminallyBlockedSurfaceIds: new Set(),
+    unroutableSurfaceIds: new Set(["unroutable"]),
+  };
+  assert.equal(isOpenForAssignment("routable", state, options), true);
+  assert.equal(isOpenForAssignment("unroutable", state, options), false);
+  // An empty unroutable set is a no-op: routable planning stays byte-identical.
+  assert.equal(
+    isOpenForAssignment("unroutable", state, {
+      ...options,
+      unroutableSurfaceIds: new Set(),
+    }),
+    true,
+  );
+});
+
+test("planNextWave excludes a pre-computed unroutable surface without starving its routable sibling", () => {
+  const state = { evaluation_wave: 0, pending_wave: null };
+  const surfaces = [
+    surface("routable-high", "HIGH", 50),
+    surface("unroutable-sc", "HIGH", 90),
+  ];
+  const plan = planNextWave({
+    state,
+    surfaces,
+    exploredSurfaceIds: [],
+    terminallyBlockedSurfaceIds: [],
+    leadSurfaceIds: [],
+    unroutableSurfaceIds: ["unroutable-sc"],
+    queuePolicy: DEFAULT_QUEUE_POLICY,
+  });
+  const plannedIds = plan.assignments.map((a) => a.surface_id);
+  assert.ok(!plannedIds.includes("unroutable-sc"), "unroutable surface is never scheduled");
+  assert.ok(!plan.candidate_surface_ids.includes("unroutable-sc"), "unroutable surface is not even a candidate");
+  assert.ok(plannedIds.includes("routable-high"), "the routable sibling is still scheduled (no starvation)");
+});
+
+function writeUnroutableRoutes(domain, unroutableIds, routableIds = []) {
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  const routes = [
+    ...routableIds.map((id) => ({
+      surface_id: id,
+      surface_type: "api",
+      capability_pack: "web_generic",
+      capability_pack_version: 1,
+      evaluator_agent: "evaluator-web",
+      brief_profile: "web_generic",
+      confidence: "high",
+      reasons: [],
+    })),
+    ...unroutableIds.map((id) => ({
+      surface_id: id,
+      surface_type: "smart_contract",
+      disposition: "unroutable",
+      reason: `unresolved chain_family for ${id}`,
+      confidence: "low",
+      reasons: [],
+    })),
+  ];
+  fs.writeFileSync(
+    surfaceRoutesPath(domain),
+    `${JSON.stringify({ version: SURFACE_ROUTES_VERSION, route_version: SURFACE_ROUTE_VERSION, routes }, null, 2)}\n`,
+  );
+}
+
+test("planNextWave does NOT re-schedule an unroutable surface across two consecutive waves (durable, from surface-routes.json)", () => {
+  withTempHome(() => {
+    const domain = "unroutable-durable-plan.example.com";
+    writeUnroutableRoutes(domain, ["unroutable-sc"], ["routable-high"]);
+    const surfaces = [
+      surface("routable-high", "HIGH", 50),
+      surface("unroutable-sc", "HIGH", 90),
+    ];
+
+    for (const evaluationWave of [0, 1]) {
+      const plan = planNextWave({
+        state: { target: domain, evaluation_wave: evaluationWave, pending_wave: null },
+        surfaces,
+        coverageRecords: [
+          { surface_id: "routable-high", status: "requeue", endpoint: "/a", bug_class: "idor" },
+          { surface_id: "unroutable-sc", status: "requeue", endpoint: "/b", bug_class: "sc" },
+        ],
+        queuePolicy: DEFAULT_QUEUE_POLICY,
+      });
+      const plannedIds = plan.assignments.map((a) => a.surface_id);
+      assert.ok(
+        !plannedIds.includes("unroutable-sc"),
+        `wave ${evaluationWave + 1}: durable unroutable surface is never re-scheduled`,
+      );
+      assert.ok(
+        !plan.candidate_surface_ids.includes("unroutable-sc"),
+        `wave ${evaluationWave + 1}: durable unroutable surface is not a candidate`,
+      );
+      assert.ok(
+        plannedIds.includes("routable-high"),
+        `wave ${evaluationWave + 1}: the routable sibling is still scheduled (no starvation)`,
+      );
+    }
+  });
+});
+
+test("planNextWave with no unroutable routes is byte-identical (missing routes file fails open)", () => {
+  withTempHome(() => {
+    const domain = "no-unroutable-routes.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // No surface-routes.json written → readSurfaceRoutesStrict throws (missing)
+    // → empty unroutable set → routable planning unchanged.
+    const plan = planNextWave({
+      state: { target: domain, evaluation_wave: 0, pending_wave: null },
+      surfaces: [surface("routable-a", "HIGH", 50), surface("routable-b", "HIGH", 40)],
+      queuePolicy: DEFAULT_QUEUE_POLICY,
+    });
+    const plannedIds = plan.assignments.map((a) => a.surface_id).sort();
+    assert.deepEqual(plannedIds, ["routable-a", "routable-b"]);
   });
 });
 

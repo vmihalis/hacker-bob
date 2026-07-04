@@ -229,6 +229,13 @@ function startWaveLocked(domain, {
     },
   }, buildGovernanceContext(nextState));
 
+  // Surface the parked, unroutable surfaces on the SYNCHRONOUS start response,
+  // sourced from the same assignmentsDocument the wave_started event reads
+  // above, so a caller sees the coverage gap without grepping telemetry.
+  // Additive fields only — routable-surface response shape is unchanged.
+  const unroutableSurfaces = Array.isArray(assignmentsDocument.unroutable_surfaces)
+    ? assignmentsDocument.unroutable_surfaces
+    : [];
   return {
     wave_number: waveNumber,
     assignments: persistedAssignments.map((assignment) => ({
@@ -243,6 +250,8 @@ function startWaveLocked(domain, {
       budget: assignment.budget,
       handoff_token: assignment.handoff_token,
     })),
+    unroutable_count: unroutableSurfaces.length,
+    unroutable_surfaces: unroutableSurfaces,
     assignments_path: assignmentsPath,
     state: compactSessionState(nextState),
   };
@@ -268,6 +277,8 @@ function startWave(args) {
       started: true,
       wave_number: started.wave_number,
       assignments: started.assignments,
+      unroutable_count: started.unroutable_count,
+      unroutable_surfaces: started.unroutable_surfaces,
       assignments_path: started.assignments_path,
       state: started.state,
     });
