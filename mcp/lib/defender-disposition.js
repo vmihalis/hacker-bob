@@ -56,8 +56,12 @@ const REPORTABLE_SEVERITY_BANDS = Object.freeze(["medium", "high", "critical"]);
 // when reachability is unknown/absent do we fall back to the final round's
 // recorded severity. Never invent above what the verified round recorded.
 function resolveGradedSeverity({ finalSeverity, graded_severity, disposition }) {
-  if (disposition && disposition !== "unknown" && isSeverity(graded_severity)) {
-    return graded_severity;
+  // When reachability has spoken, its graded severity is authoritative. If that
+  // value is present but unusable, fail CLOSED (null -> held) — never fall back to
+  // the UNCAPPED recorded severity, which would defeat the very cap reachability
+  // applied and over-state a capped finding.
+  if (disposition && disposition !== "unknown") {
+    return isSeverity(graded_severity) ? graded_severity : null;
   }
   if (isSeverity(finalSeverity)) return finalSeverity;
   if (isSeverity(graded_severity)) return graded_severity;
@@ -65,9 +69,8 @@ function resolveGradedSeverity({ finalSeverity, graded_severity, disposition }) 
 }
 
 function isSeverity(value) {
-  return typeof value === "string" && REPORTABLE_SEVERITY_BANDS.includes(value)
-    || value === "low"
-    || value === "info";
+  return typeof value === "string"
+    && (REPORTABLE_SEVERITY_BANDS.includes(value) || value === "low" || value === "info");
 }
 
 // Pure projection: (final severity x reachability x score x reportable) -> word.

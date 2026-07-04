@@ -64,6 +64,17 @@ test("reachability is authoritative when it has spoken — a capped severity is 
   }), "fix_now");
 });
 
+test("reachability spoke but the graded severity is malformed — fail CLOSED (held), never the uncapped recorded severity", () => {
+  // A capped finding whose graded_severity is unusable must NOT fall back to the
+  // recorded high (that would defeat the cap). It reads held, not fix_now.
+  assert.equal(computeDefenderDisposition({
+    finalSeverity: "high", graded_severity: "garbage", disposition: "capped", total_score: 90, reportable: true,
+  }), "held");
+  assert.equal(computeDefenderDisposition({
+    finalSeverity: "critical", graded_severity: null, disposition: "capped", total_score: 90, reportable: true,
+  }), "held");
+});
+
 test("an unknown reachability disposition falls back to the recorded final severity (never the ignored graded value)", () => {
   // disposition === "unknown" means reachability has NOT spoken; graded_severity is
   // ignored and the recorded high severity drives the word.
