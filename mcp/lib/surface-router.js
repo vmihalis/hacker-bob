@@ -112,12 +112,24 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
 function countRoutesByCapabilityPack(routes) {
   const counts = {};
   for (const route of routes) {
-    // An unroutable route has no capability_pack; skip it so counts do not
-    // gain an `undefined` bucket.
-    if (route.capability_pack == null) continue;
+    // An unroutable route contributes no pack bucket (via the canonical predicate,
+    // not a rogue inline null-pack check — one definition even in-file).
+    if (isUnroutableRoute(route)) continue;
     counts[route.capability_pack] = (counts[route.capability_pack] || 0) + 1;
   }
   return counts;
+}
+
+// The single canonical predicate for "this persisted route is unroutable": it
+// carries the disposition marker OR has no capability pack. The write side pairs
+// both for a current-version unroutable route (buildSurfaceRoutesDocument), so on
+// fresh data disposition ⟺ null-pack; keying on the union closes the SC+null-pack
+// wave-halt a cross-version route (one field present without the other) would open,
+// and keeps every consumer — the validator, the wave partition, the analytics
+// derivation, and technique-pack selection — reading ONE definition.
+function isUnroutableRoute(route) {
+  return route != null && typeof route === "object"
+    && (route.disposition === "unroutable" || route.capability_pack == null);
 }
 
 function validateSurfaceRoute(route, index, filePath) {
@@ -128,7 +140,7 @@ function validateSurfaceRoute(route, index, filePath) {
   // pack; validate it as a disposition-only record so it reads back cleanly
   // (a plain Error on bad data keeps a malformed row quarantinable, not a
   // re-thrown code bug).
-  if (route.disposition === "unroutable" || route.capability_pack == null) {
+  if (isUnroutableRoute(route)) {
     const unroutableId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
     assertNonEmptyString(route.reason, `routes[${index}].reason`);
     return { ...route, surface_id: unroutableId };
@@ -266,6 +278,66 @@ function readSurfaceRoutesStrict(domain) {
   return result;
 }
 
+// Single source of the "unroutable" derivation. planNextWave (fail-CLOSED on
+// corruption) and bob_wave_status (additive diagnostic) both call this so they
+// share ONE read of surface-routes.json and ONE corruption policy — no divergent
+// inline reads that could disagree on whether a parked surface is unroutable.
+//   - Missing routes file (no routing yet) -> empty set, empty rows, error:null
+//     (fail-open: there are no routes, planning is byte-identical to today).
+//   - Corrupt/unreadable/version-mismatch/not-an-array -> empty set, empty rows,
+//     error:{code:"routes_unreadable", message} with any absolute session path
+//     basename-sanitized (never leak the local filesystem path).
+//   - Valid -> the unroutable set + rows; a per-route quarantine (a single stale
+//     row the reader dropped) is reported via malformed_route_count + repair_hint
+//     so a partial drop is not under-reported either.
+function deriveUnroutableSurfacesFromRoutes(domain) {
+  const filePath = surfaceRoutesPath(domain);
+  let routesResult;
+  try {
+    routesResult = readSurfaceRoutesStrict(domain);
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    // A missing routes file is the expected back-compat path (no routing yet),
+    // NOT corruption: fail-open with an empty set and no error. Any other hard
+    // failure (unparseable JSON, version mismatch, routes-not-an-array) is
+    // genuinely unrecoverable — surface a sanitized diagnostic so no absolute
+    // session path leaks and callers can fail closed on it.
+    if (/^Missing surface routes JSON:/.test(message)) {
+      return { surfaceIds: new Set(), surfaces: [], error: null };
+    }
+    return {
+      surfaceIds: new Set(),
+      surfaces: [],
+      error: { code: "routes_unreadable", message: sanitizeRouteReason(message, filePath) },
+    };
+  }
+  const routes = routesResult && routesResult.document && Array.isArray(routesResult.document.routes)
+    ? routesResult.document.routes
+    : [];
+  const surfaceIds = new Set();
+  const surfaces = [];
+  for (const route of routes) {
+    if (isUnroutableRoute(route) && typeof route.surface_id === "string" && route.surface_id) {
+      surfaceIds.add(route.surface_id);
+      surfaces.push({
+        surface_id: route.surface_id,
+        surface_type: route.surface_type,
+        unroutable_reason: route.reason,
+      });
+    }
+  }
+  const result = { surfaceIds, surfaces, error: null };
+  // Per-route corruption (a single stale/malformed row the reader dropped) is
+  // quarantined, not thrown. Expose the count + repair hint so wave-status can
+  // keep its quarantine diagnostic from ONE call instead of re-reading routes.
+  if (Array.isArray(routesResult.malformed_routes) && routesResult.malformed_routes.length > 0) {
+    result.malformed_route_count = routesResult.malformed_routes.length;
+    result.repair_hint = routesResult.repair_hint
+      || "re-run bob_route_surfaces to regenerate surface-routes.json from the current surface index";
+  }
+  return result;
+}
+
 function routeSurfaces(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
@@ -299,6 +371,8 @@ module.exports = {
   SURFACE_ROUTES_VERSION,
   buildSurfaceRoutesDocument,
   countRoutesByCapabilityPack,
+  deriveUnroutableSurfacesFromRoutes,
+  isUnroutableRoute,
   readSurfaceRoutesStrict,
   routeSurfaces,
   routeSurfacesInternal,

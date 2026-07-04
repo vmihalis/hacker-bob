@@ -88,6 +88,33 @@ function waveStatus(args) {
     }];
   }
 
+  // Surface the parked, unroutable surfaces from the DURABLE surface-routes.json
+  // (the canonical isUnroutableRoute predicate: disposition marker OR null pack),
+  // NOT a transient wave-assignment doc.
+  // The routes file is written at route time and persists across waves, so this
+  // coverage gap stays visible even after a later wave whose assignment doc
+  // carries no unroutable surfaces (fixes the cross-wave amnesia). This shares
+  // the SINGLE derivation (deriveUnroutableSurfacesFromRoutes) with planNextWave,
+  // so status and the planner never disagree on which surfaces are parked or on
+  // the corruption policy. Back-compat: a missing routes file reads as []. A
+  // genuinely corrupt/unreadable routes file is NOT masked to a silent [] — it
+  // surfaces a distinct diagnostic so a coverage gap is never under-reported by a
+  // swallowed read error.
+  const { deriveUnroutableSurfacesFromRoutes } = require("../surface-router.js");
+  const routesDerivation = deriveUnroutableSurfacesFromRoutes(domain);
+  const unroutableSurfaces = routesDerivation.surfaces;
+  const unroutableSurfacesError = routesDerivation.error;
+  // Per-route corruption (a single stale/malformed row) is quarantined by the
+  // reader, not thrown. Surface a count + repair hint so a per-route drop is not
+  // under-reported either.
+  const unroutableSurfacesQuarantine = routesDerivation.malformed_route_count > 0
+    ? {
+        code: "routes_quarantined",
+        malformed_route_count: routesDerivation.malformed_route_count,
+        repair_hint: routesDerivation.repair_hint,
+      }
+    : null;
+
   let auditSummary = null;
   let trafficSummary = null;
   let circuitBreakerSummary = null;
@@ -111,7 +138,7 @@ function waveStatus(args) {
     };
   } catch {}
 
-  return JSON.stringify({
+  const response = {
     ...summary,
     coverage,
     transition_blockers: transitionBlockers,
@@ -119,6 +146,7 @@ function waveStatus(args) {
     traffic: trafficSummary,
     circuit_breaker: circuitBreakerSummary,
     surface_leads: surfaceLeadsSummary,
+    unroutable_surfaces: unroutableSurfaces,
     findings_summary: findings.map((finding) => ({
       id: finding.id,
       severity: finding.severity,
@@ -126,7 +154,13 @@ function waveStatus(args) {
       endpoint: finding.endpoint,
       wave_agent: finding.wave || finding.agent ? `${finding.wave || "?"}/${finding.agent || "?"}` : null,
     })),
-  });
+  };
+  // Additive diagnostics: only present when a read error or per-route
+  // quarantine occurred, so the "no unroutable surfaces" (empty routes, no
+  // error) case stays distinguishable from "could not read routes".
+  if (unroutableSurfacesError) response.unroutable_surfaces_error = unroutableSurfacesError;
+  if (unroutableSurfacesQuarantine) response.unroutable_surfaces_quarantine = unroutableSurfacesQuarantine;
+  return JSON.stringify(response);
 }
 
 module.exports = {

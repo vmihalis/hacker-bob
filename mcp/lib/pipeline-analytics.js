@@ -35,6 +35,7 @@ const {
 } = require("./pipeline-session-artifacts.js");
 const {
   readSurfaceRoutesStrict,
+  isUnroutableRoute,
 } = require("./surface-router.js");
 const {
   readFrontierEvents,
@@ -630,9 +631,10 @@ function deriveRoutingTail(routes, frictionPayloads) {
       mediumConfidenceCount += 1;
       if (surfaceId) misrouteIds.add(surfaceId);
     }
-    // D1 persists an unroutable surface as a disposition-only route
-    // (surface-router.js:54); dedupe by surface_id so one surface counts once.
-    if (route.disposition === "unroutable" && surfaceId) {
+    // An unroutable surface is a disposition-only / null-pack route
+    // (surface-router.js isUnroutableRoute); dedupe by surface_id so one surface
+    // counts once.
+    if (isUnroutableRoute(route) && surfaceId) {
       unroutableIds.add(surfaceId);
     }
   }
@@ -660,9 +662,9 @@ function deriveSurfaceIdToPack(routes) {
   const map = {};
   for (const route of routeList) {
     if (route == null || typeof route !== "object" || Array.isArray(route)) continue;
-    // An unroutable route contributes no pack bucket even if a stray
-    // capability_pack survives in a corrupted row (mirror deriveRoutingTail).
-    if (route.disposition === "unroutable") continue;
+    // An unroutable route (disposition marker OR no pack) contributes no pack
+    // bucket even if a stray capability_pack survives in a corrupted row.
+    if (isUnroutableRoute(route)) continue;
     const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
     const pack = typeof route.capability_pack === "string" && route.capability_pack.length > 0
       ? route.capability_pack

@@ -14,17 +14,33 @@ const {
   mergeWaveHandoffs,
 } = require("../mcp/lib/wave-handoff-store.js");
 const {
+  attackSurfacePath,
   liveDeadEndsJsonlPath,
   sessionDir,
+  surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
+const {
+  initSession,
+  advanceSession,
+} = require("../mcp/lib/session-state.js");
+const {
+  startWave,
+} = require("../mcp/lib/waves.js");
 const {
   writeFileAtomic,
 } = require("../mcp/lib/storage.js");
 const {
   loadWaveAssignments,
 } = require("../mcp/lib/assignments.js");
+const {
+  prepareWaveAssignments,
+  writeWaveAssignmentsDocument,
+} = require("../mcp/lib/waves/wave-assignment-store.js");
+const {
+  waveStatus,
+} = require("../mcp/lib/waves/wave-prereq-snapshots.js");
 const {
   ensureHandoffSigningKey,
   readHandoffSigningKey,
@@ -151,6 +167,329 @@ function writeHandoff(domain, wave, agent, surfaceId, fields = {}) {
     `${JSON.stringify(document, null, 2)}\n`,
   );
 }
+
+// Build an attackSurfaceInfo the shape prepareWaveAssignments/routeSurfacesInternal
+// read: a non-"missing" source, document.surfaces, surface_ids, and a surface_id_set
+// Set. Drives partition through the REAL router (routeSurfacesInternal → classify).
+function attackSurfaceInfoForSurfaces(surfaces) {
+  const surfaceIdSet = new Set(surfaces.map((s) => s.id));
+  return {
+    source: "test",
+    path: "test://attack-surface",
+    document: { surfaces },
+    surface_ids: Array.from(surfaceIdSet),
+    surface_id_set: surfaceIdSet,
+  };
+}
+
+test("prepareWaveAssignments partitions an unroutable SC surface out of the executable assignments", () => {
+  withTempHome(() => {
+    const domain = "unroutable-mix.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // A routable web surface and an unroutable smart_contract surface (unknown
+    // chain_family → classifySurfaceCapability returns routable:false).
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-web", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+      { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+    ]);
+
+    const prepared = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "surface-sc", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+
+    // Executable assignments contain ONLY the routable surface; no SC+null-pack row.
+    assert.deepEqual(
+      prepared.assignmentsDocument.assignments.map((a) => a.surface_id),
+      ["surface-web"],
+    );
+    assert.deepEqual(
+      prepared.persistedAssignments.map((a) => a.surface_id),
+      ["surface-web"],
+    );
+    // The unroutable surface is recorded, never silently dropped.
+    assert.equal(prepared.assignmentsDocument.unroutable_surfaces.length, 1);
+    const parked = prepared.assignmentsDocument.unroutable_surfaces[0];
+    assert.equal(parked.surface_id, "surface-sc");
+    assert.equal(parked.agent, "a2");
+    assert.equal(parked.surface_type, "smart_contract");
+    assert.equal(typeof parked.unroutable_reason, "string");
+    assert.ok(parked.unroutable_reason.length > 0);
+
+    // Persist it, then loadWaveAssignments (which calls normalizeAssignmentRouteMetadata
+    // per assignment) does NOT throw and the unroutable agent is not in the map.
+    writeWaveAssignmentsDocument(prepared.assignmentsPath, prepared.assignmentsDocument);
+    const loaded = loadWaveAssignments(domain, 1);
+    assert.deepEqual(loaded.assignments.map((a) => a.surface_id), ["surface-web"]);
+    assert.equal(loaded.assignmentByAgent.has("a2"), false);
+    assert.ok(loaded.assignmentByAgent.has("a1"));
+  });
+});
+
+test("prepareWaveAssignments handles an ALL-unroutable wave (empty executable set stays non-halting)", () => {
+  withTempHome(() => {
+    const domain = "unroutable-all.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // Every assigned surface is an unroutable smart_contract (unknown chain_family).
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "sc-1", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+      { id: "sc-2", surface_type: "smart_contract", chain_family: "tezos", hosts: [], endpoints: [] },
+    ]);
+
+    const prepared = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [
+        { agent: "a1", surface_id: "sc-1", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "sc-2", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+
+    // No executable assignment is minted; BOTH surfaces are parked, never dropped.
+    assert.deepEqual(prepared.assignmentsDocument.assignments, []);
+    assert.deepEqual(prepared.persistedAssignments, []);
+    assert.equal(prepared.assignmentsDocument.unroutable_surfaces.length, 2);
+
+    // loadWaveAssignments over an empty executable set does NOT throw or deadlock.
+    writeWaveAssignmentsDocument(prepared.assignmentsPath, prepared.assignmentsDocument);
+    const loaded = loadWaveAssignments(domain, 1);
+    assert.deepEqual(loaded.assignments, []);
+    assert.equal(loaded.assignmentByAgent.has("a1"), false);
+    assert.equal(loaded.assignmentByAgent.has("a2"), false);
+  });
+});
+
+test("prepareWaveAssignments accepts a routable EVM smart_contract surface (partition is disposition-keyed)", () => {
+  withTempHome(() => {
+    const domain = "routable-sc.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-evm", surface_type: "smart_contract", chain_family: "evm", hosts: [], endpoints: [] },
+    ]);
+
+    const prepared = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-evm", task_lens: "surface_scout" }],
+      attackSurfaceInfo,
+    });
+
+    // A resolved-chain SC is routable → it stays an executable assignment.
+    assert.deepEqual(
+      prepared.assignmentsDocument.assignments.map((a) => a.surface_id),
+      ["surface-evm"],
+    );
+    assert.deepEqual(prepared.assignmentsDocument.unroutable_surfaces, []);
+  });
+});
+
+test("bob_wave_status surfaces the unroutable surface as an actionable coverage gap", () => {
+  withTempHome(() => {
+    const domain = "unroutable-status.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-web", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+      { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+    ]);
+    const prepared = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "surface-sc", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+    writeWaveAssignmentsDocument(prepared.assignmentsPath, prepared.assignmentsDocument);
+
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.ok(Array.isArray(status.unroutable_surfaces));
+    assert.equal(status.unroutable_surfaces.length, 1);
+    assert.equal(status.unroutable_surfaces[0].surface_id, "surface-sc");
+    assert.ok(status.unroutable_surfaces[0].unroutable_reason.length > 0);
+  });
+});
+
+test("bob_wave_status reads unroutable_surfaces as [] when no routes file exists (back-compat)", () => {
+  withTempHome(() => {
+    const domain = "unroutable-backcompat.example.com";
+    // writeAssignments writes a wave doc but NO surface-routes.json; a missing
+    // routes file is the expected back-compat path, read as [] with no error.
+    writeAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(status.unroutable_surfaces, []);
+    assert.equal(status.unroutable_surfaces_error, undefined, "a missing routes file is not a corruption error");
+  });
+});
+
+test("bob_wave_status surfaces the unroutable gap from the DURABLE routes file even after a later wave has no unroutable surfaces", () => {
+  withTempHome(() => {
+    const domain = "unroutable-durable-status.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // Wave 1 routes a routable web surface + an unroutable SC surface; this
+    // persists surface-routes.json (the durable source of truth).
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-web", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+      { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+    ]);
+    const prepared1 = prepareWaveAssignments({
+      domain,
+      waveNumber: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "surface-sc", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+    writeWaveAssignmentsDocument(prepared1.assignmentsPath, prepared1.assignmentsDocument);
+
+    // A LATER wave whose assignment doc carries NO unroutable_surfaces. Under
+    // the old wave-doc read this would make the gap VANISH; the durable
+    // routes-file read keeps it visible.
+    writeAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-web" }]);
+
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.equal(status.unroutable_surfaces.length, 1, "the unroutable gap survives a later wave (durable)");
+    assert.equal(status.unroutable_surfaces[0].surface_id, "surface-sc");
+    assert.equal(status.unroutable_surfaces[0].surface_type, "smart_contract");
+    assert.ok(status.unroutable_surfaces[0].unroutable_reason.length > 0);
+    assert.equal(status.unroutable_surfaces_error, undefined);
+  });
+});
+
+test("bob_wave_status surfaces a distinct diagnostic for a corrupt routes file, NOT a silent zero", () => {
+  withTempHome(() => {
+    const domain = "unroutable-corrupt-routes.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // A genuinely unreadable routes file: valid JSON but a version mismatch
+    // (readSurfaceRoutesStrict hard-throws on the top-level shape).
+    fs.writeFileSync(
+      surfaceRoutesPath(domain),
+      `${JSON.stringify({ version: 999, route_version: 999, routes: [] }, null, 2)}\n`,
+    );
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(status.unroutable_surfaces, [], "a corrupt read yields no false unroutable surfaces");
+    assert.ok(status.unroutable_surfaces_error, "a corrupt read is surfaced, not masked to a silent zero");
+    assert.equal(status.unroutable_surfaces_error.code, "routes_unreadable");
+    assert.ok(status.unroutable_surfaces_error.message.length > 0);
+  });
+});
+
+test("bob_start_wave sync response includes unroutable_count/surfaces for the parked SC surface", () => {
+  withTempHome(() => {
+    const domain = "unroutable-start-response.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    // Seed a routable web surface + an unroutable SC surface (unknown chain).
+    writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({
+      surfaces: [
+        { id: "surface-web", surface_type: "api", hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: ["idor"] },
+        { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], priority: "HIGH", bug_class_hints: [] },
+      ],
+    }, null, 2)}\n`);
+    JSON.parse(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+
+    const started = JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web" },
+        { agent: "a2", surface_id: "surface-sc" },
+      ],
+    }));
+    assert.equal(started.started, true);
+    assert.equal(started.assignments.map((a) => a.surface_id).join(","), "surface-web", "only the routable surface is executable");
+    assert.equal(started.unroutable_count, 1, "the sync start response carries the parked count");
+    assert.ok(Array.isArray(started.unroutable_surfaces));
+    assert.equal(started.unroutable_surfaces.length, 1);
+    assert.equal(started.unroutable_surfaces[0].surface_id, "surface-sc");
+  });
+});
+
+test("wave completes on its routable surface without waiting for the partitioned-out unroutable surface", () => {
+  withTempHome(() => {
+    const domain = "unroutable-complete.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    const attackSurfaceInfo = attackSurfaceInfoForSurfaces([
+      { id: "surface-web", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+      { id: "surface-sc", surface_type: "smart_contract", chain_family: "cardano", hosts: [], endpoints: [] },
+    ]);
+    const prepared = prepareWaveAssignments({
+      domain,
+      waveNumber: 2,
+      assignments: [
+        { agent: "a1", surface_id: "surface-web", task_lens: "surface_scout" },
+        { agent: "a2", surface_id: "surface-sc", task_lens: "surface_scout" },
+      ],
+      attackSurfaceInfo,
+    });
+    // Persist the prepared doc directly (it carries unroutable_surfaces), and
+    // seed a matching handoff-token sha for the routable agent so its handoff
+    // verifies against the seeded token.
+    const routableAssignment = prepared.assignmentsDocument.assignments.find((a) => a.agent === "a1");
+    routableAssignment.handoff_token_sha256 = sha256Hex(seededHandoffToken(domain, 2, "a1"));
+    routableAssignment.handoff_token_required = true;
+    writeWaveAssignmentsDocument(prepared.assignmentsPath, prepared.assignmentsDocument);
+    ensureHandoffSigningKey(domain);
+
+    writeHandoff(domain, "w2", "a1", "surface-web");
+    seedTechniqueAttempt(domain, "surface-web");
+
+    const document = buildWaveHandoffsDocument(domain, [2]);
+    // The unroutable surface is never in missing_handoffs — it was never an
+    // executable assignment, so completion does not wait on a handoff for it.
+    assert.deepEqual(document.missing_handoffs, []);
+    assert.ok(!document.missing_handoffs.some((m) => m.surface_id === "surface-sc"));
+
+    const artifacts = loadWaveArtifacts(domain, 2);
+    const readiness = buildWaveReadiness(artifacts);
+    assert.equal(readiness.assignments_total, 1);
+    assert.deepEqual(readiness.missing_agents, []);
+    assert.equal(readiness.is_complete, true);
+  });
+});
+
+test("prepareWaveAssignments still errors for a genuinely un-routed surface (no route at all)", () => {
+  withTempHome(() => {
+    const domain = "unrouted-error.example.com";
+    fs.mkdirSync(sessionDir(domain), { recursive: true });
+    // A surface that exists in the surface set (passes the Unknown surface_id
+    // guard) but whose id is not in the routed set — simulate by routing a set
+    // that omits it, then referencing it. prepareWaveAssignments routes the
+    // passed attackSurfaceInfo, so include the surface in surface_id_set but NOT
+    // in document.surfaces so the router never emits a route for it.
+    const surfaceIdSet = new Set(["surface-routed", "surface-unrouted"]);
+    const attackSurfaceInfo = {
+      source: "test",
+      path: "test://attack-surface",
+      document: {
+        surfaces: [
+          { id: "surface-routed", surface_type: "api", hosts: ["api.example.com"], endpoints: [] },
+        ],
+      },
+      surface_ids: Array.from(surfaceIdSet),
+      surface_id_set: surfaceIdSet,
+    };
+
+    assert.throws(
+      () => prepareWaveAssignments({
+        domain,
+        waveNumber: 1,
+        assignments: [
+          { agent: "a1", surface_id: "surface-routed", task_lens: "surface_scout" },
+          { agent: "a2", surface_id: "surface-unrouted", task_lens: "surface_scout" },
+        ],
+        attackSurfaceInfo,
+      }),
+      /Missing route for surface_id/,
+    );
+  });
+});
 
 test("wave handoff store readiness indexes structured JSON without parsing payloads", () => {
   withTempHome(() => {

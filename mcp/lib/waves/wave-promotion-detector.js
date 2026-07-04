@@ -142,6 +142,30 @@ function buildNextActionForPlan(domain, decision, waveNumber, plan = null) {
       arguments: { target_domain: domain, wave_number: waveNumber, force_merge: false },
     };
   }
+  if (decision === "routes_unreadable") {
+    // The surface routes artifact is unreadable (corrupt or version-mismatched).
+    // Planning fails CLOSED on it — never resurrecting a parked surface off stale
+    // data — so the coherent recovery is to REGENERATE the routes: bob_route_surfaces
+    // re-derives fresh routes and self-heals a version bump, then the wave retries.
+    // A bare "stop / no assignable candidates" here would misdiagnose a recoverable
+    // corruption as an empty frontier.
+    return {
+      kind: "call_tool",
+      tool: "bob_route_surfaces",
+      arguments: { target_domain: domain },
+      reason: "surface-routes.json is unreadable (corrupt or version-mismatched); regenerate it with bob_route_surfaces, then retry bob_start_next_wave.",
+    };
+  }
+  if (decision === "spawn_budget_exhausted") {
+    // The operator's lifetime spawn ceiling (max_total_spawned_agents) is fully
+    // reserved while open surfaces remain — a NAMED coverage gap (plan.reason /
+    // plan.buckets), not "no candidates". Stop spawning honestly; raising the
+    // ceiling or letting in-flight evaluators settle is the operator's call.
+    return {
+      kind: "stop",
+      reason: "spawn budget exhausted: the lifetime max_total_spawned_agents ceiling is fully reserved while open surfaces remain uncovered (see plan.reason / plan.buckets). Raise the ceiling or let in-flight evaluators settle.",
+    };
+  }
   if (decision === "start_wave") {
     const action = {
       kind: "spawn_evaluators",
@@ -190,9 +214,36 @@ function buildStartNextWaveResponse({ domain, dryRun, state, plan, promotion, st
   if (started) {
     response.wave_number = started.wave_number;
     response.assignments = started.assignments;
+    // Additive: expose the parked unroutable coverage gap on the start response
+    // (rides the `started` object produced by startWaveLocked) so a caller sees
+    // it without grepping telemetry. Present only on a real start (started !=
+    // null); the planning/dry-run path is unchanged.
+    if (started.unroutable_count != null) response.unroutable_count = started.unroutable_count;
+    if (started.unroutable_surfaces != null) response.unroutable_surfaces = started.unroutable_surfaces;
+    // Additive zero-executable signal (all assigned surfaces unroutable): honest,
+    // non-halting. Present only on a real start; the planning/dry-run path is
+    // unchanged.
+    if (started.has_routable_assignments != null) response.has_routable_assignments = started.has_routable_assignments;
+    if (started.zero_executable != null) response.zero_executable = started.zero_executable;
     response.assignments_path = started.assignments_path;
     response.state = started.state;
     response.next_action.assignments_path = started.assignments_path;
+    // A zero-executable wave (every assigned surface routed unroutable) started and
+    // self-settles — buildWaveReadiness treats an empty assignment set as complete.
+    // The spawn_evaluators next_action is then incoherent (it would direct the
+    // orchestrator to spawn against `assignments: []`). Reconcile it with the honest
+    // signal: instruct settling this wave so the loop advances (non-halting), never
+    // spawning zero evaluators. Guarded on zero_executable === true, so the routable
+    // start path is byte-identical.
+    if (started.zero_executable === true) {
+      response.next_action = {
+        kind: "call_tool",
+        tool: "bob_apply_wave_merge",
+        arguments: { target_domain: domain, wave_number: started.wave_number, force_merge: false },
+        reason: "All assigned surfaces are unroutable (no runnable evaluator work); settle this wave and continue.",
+        assignments_path: started.assignments_path,
+      };
+    }
   }
   return response;
 }

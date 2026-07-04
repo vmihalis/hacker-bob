@@ -26,6 +26,7 @@ const {
 } = require("../assignments.js");
 const {
   routeSurfacesInternal,
+  isUnroutableRoute,
 } = require("../surface-router.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
@@ -122,7 +123,38 @@ function prepareWaveAssignments({
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Missing route for surface_id in assignments: ${assignment.surface_id}`);
     }
   }
-  const persistedAssignments = assignments.map((assignment) => {
+  // Partition on the route's disposition. A surface WITH a route classified
+  // unroutable (unknown/unresolved chain_family → capability_pack:null) must
+  // not be minted into an executable assignment: that would persist an
+  // SC+null-pack row that normalizeAssignmentRouteMetadata throws on later
+  // (at brief-read/handoff), halting the wave. Instead it is recorded as a
+  // parked coverage gap so routable siblings proceed and the surface stays
+  // visible (surfaced by bob_wave_status), never silently dropped. A surface
+  // with NO route still errors at the "Missing route" guard above.
+  //
+  // SINGLE DURABLE SOURCE: routeSurfacesInternal above WROTE surface-routes.json,
+  // so this in-memory partition IS the writer of that durable file — not a second,
+  // divergent derivation of "unroutable". The planner (planNextWave) and
+  // bob_wave_status both READ that same file through the shared
+  // deriveUnroutableSurfacesFromRoutes helper, so all three agree by construction.
+  // This partition operates on the just-written route doc; do not add a re-read
+  // here or change these partition semantics.
+  const routableAssignments = [];
+  const unroutableSurfaces = [];
+  for (const assignment of assignments) {
+    const route = routeBySurfaceId.get(assignment.surface_id);
+    if (isUnroutableRoute(route)) {
+      unroutableSurfaces.push({
+        surface_id: assignment.surface_id,
+        agent: assignment.agent,
+        surface_type: surfaceTypeById.get(assignment.surface_id) || route.surface_type || null,
+        unroutable_reason: route.reason,
+      });
+      continue;
+    }
+    routableAssignments.push(assignment);
+  }
+  const persistedAssignments = routableAssignments.map((assignment) => {
     const token = generateHandoffToken();
     const route = routeBySurfaceId.get(assignment.surface_id);
     return {
@@ -148,6 +180,7 @@ function prepareWaveAssignments({
     handoff_provenance_model: HANDOFF_PROVENANCE_MODEL,
     wave_number: waveNumber,
     assignments: assignmentsForDisk,
+    unroutable_surfaces: unroutableSurfaces,
   };
   if (schedulerDecisionId) assignmentsDocument.scheduler_decision_id = schedulerDecisionId;
   if (assignmentBatchId) assignmentsDocument.assignment_batch_id = assignmentBatchId;

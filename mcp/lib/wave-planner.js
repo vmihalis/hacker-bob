@@ -40,6 +40,13 @@ function isOpenForAssignment(surfaceOrId, state, options = {}) {
   if (options.surfaceIdSet && !options.surfaceIdSet.has(surfaceId)) return false;
   if (options.exploredSurfaceIds instanceof Set && options.exploredSurfaceIds.has(surfaceId)) return false;
   if (options.terminallyBlockedSurfaceIds instanceof Set && options.terminallyBlockedSurfaceIds.has(surfaceId)) return false;
+  // An unroutable-route surface (surface-routes.json disposition:"unroutable",
+  // set at route time and durable across waves) carries no capability pack and
+  // must never be (re-)scheduled — otherwise it stays "open" every wave and
+  // starves routable siblings. Symmetric to the explored/blocked legs; an empty
+  // set (no unroutable routes, or an unreadable routes file) is a no-op so
+  // routable planning stays byte-identical.
+  if (options.unroutableSurfaceIds instanceof Set && options.unroutableSurfaceIds.has(surfaceId)) return false;
   return true;
 }
 
@@ -356,7 +363,39 @@ function planNextWave({
     leadSurfaceIds = [];
   }
 
-  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet };
+  // Durable unroutable-coverage set. Sourced from surface-routes.json
+  // (persisted at route time, survives wave advance) rather than a transient
+  // wave-assignment doc, so a parked unroutable surface is never re-scheduled
+  // across waves. Accepts a pre-computed set (test/replay purity) like the
+  // explored/blocked legs above; otherwise projects the live target through the
+  // SINGLE shared derivation (deriveUnroutableSurfacesFromRoutes), so planner +
+  // wave-status agree on which surfaces are parked and on one corruption policy.
+  //   - Missing routes file (no routing yet) -> empty set, error null: FAIL-OPEN,
+  //     routable planning stays byte-identical to today.
+  //   - Corrupt/unreadable routes -> the helper returns error != null. The
+  //     planner then FAILS CLOSED: it must NOT proceed with an empty unroutable
+  //     set, because that would resurrect the parked surfaces a prior route
+  //     marked unroutable (the never-reschedule invariant). Return a no-plan
+  //     decision carrying the sanitized error instead of minting assignments off
+  //     a corrupt artifact.
+  let unroutableSurfaceIds = options.unroutableSurfaceIds instanceof Set
+    ? options.unroutableSurfaceIds
+    : new Set(Array.isArray(options.unroutableSurfaceIds) ? options.unroutableSurfaceIds : []);
+  if (options.unroutableSurfaceIds == null && typeof normalizedState.target === "string" && normalizedState.target) {
+    const { deriveUnroutableSurfacesFromRoutes } = require("./surface-router.js");
+    const derived = deriveUnroutableSurfacesFromRoutes(normalizedState.target);
+    if (derived.error != null) {
+      return {
+        ...basePlan,
+        decision: "routes_unreadable",
+        reason: derived.error.message,
+        routes_error: derived.error,
+      };
+    }
+    unroutableSurfaceIds = derived.surfaceIds;
+  }
+
+  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet, unroutableSurfaceIds };
   const rawOpenSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
   const beliefPriority = applyBeliefSchedulerPriority({
     target_domain: normalizedState.target,
