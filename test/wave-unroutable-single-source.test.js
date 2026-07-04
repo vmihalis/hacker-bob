@@ -19,6 +19,9 @@ const { startWave, waveStatus } = require("../mcp/lib/waves.js");
 const {
   deriveUnroutableSurfacesFromRoutes,
 } = require("../mcp/lib/surface-router.js");
+const {
+  buildStartNextWaveResponse,
+} = require("../mcp/lib/waves/wave-promotion-detector.js");
 
 function withClaudeHome(fn) {
   const prevHome = process.env.HOME;
@@ -86,6 +89,68 @@ test("zero-executable: a routable wave start carries has_routable_assignments:tr
     assert.equal(response.has_routable_assignments, true);
     assert.equal(response.zero_executable, false);
   });
+});
+
+test("zero-executable: the start next_action settles the wave — never spawn_evaluators against an empty assignment set", () => {
+  // A zero-executable wave carries the honest signal AND a coherent next_action:
+  // buildWaveReadiness self-settles an empty wave, so the orchestrator must be
+  // told to settle (bob_apply_wave_merge), not to spawn evaluators against
+  // `assignments: []`. Non-halting is preserved (settle advances the loop).
+  const domain = "zero-exec-nextaction.example.com";
+  const started = {
+    wave_number: 3,
+    assignments: [],
+    unroutable_count: 1,
+    unroutable_surfaces: [{ surface_id: "surface:sc", surface_type: "smart_contract" }],
+    has_routable_assignments: false,
+    zero_executable: true,
+    assignments_path: "/session/assignments-wave-3.json",
+    state: {},
+  };
+  const response = buildStartNextWaveResponse({
+    domain,
+    dryRun: false,
+    state: {},
+    plan: { decision: "start_wave", wave_number: 3 },
+    promotion: { would_promote: 0, would_promote_lead_ids: [] },
+    started,
+  });
+
+  assert.notEqual(response.next_action.kind, "spawn_evaluators", "must NOT direct spawning against an empty wave");
+  assert.equal(response.next_action.kind, "call_tool");
+  assert.equal(response.next_action.tool, "bob_apply_wave_merge");
+  assert.equal(response.next_action.arguments.wave_number, 3, "settles the started wave");
+  assert.equal(response.next_action.arguments.target_domain, domain);
+  assert.equal(response.next_action.assignments_path, started.assignments_path);
+  assert.equal(response.zero_executable, true, "the honest signal is still present");
+  assert.equal(response.has_routable_assignments, false);
+});
+
+test("routable: the start next_action is byte-identical (spawn_evaluators) — zero-executable reconciliation does not touch it", () => {
+  const domain = "routable-nextaction.example.com";
+  const started = {
+    wave_number: 1,
+    assignments: [{ agent: "a1", surface_id: "surface:api", capability_pack: "web" }],
+    unroutable_count: 0,
+    unroutable_surfaces: [],
+    has_routable_assignments: true,
+    zero_executable: false,
+    assignments_path: "/session/assignments-wave-1.json",
+    state: {},
+  };
+  const response = buildStartNextWaveResponse({
+    domain,
+    dryRun: false,
+    state: {},
+    plan: { decision: "start_wave", wave_number: 1 },
+    promotion: { would_promote: 0, would_promote_lead_ids: [] },
+    started,
+  });
+
+  assert.equal(response.next_action.kind, "spawn_evaluators", "the routable path is unchanged");
+  assert.equal(response.next_action.assignments_source, "top_level_assignments");
+  assert.equal(response.next_action.assignments_path, started.assignments_path);
+  assert.equal(response.zero_executable, false);
 });
 
 test("wave-status derives the unroutable set from the SAME shared helper as the planner", () => {

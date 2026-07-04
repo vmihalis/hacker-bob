@@ -204,6 +204,22 @@ function buildStartNextWaveResponse({ domain, dryRun, state, plan, promotion, st
     response.assignments_path = started.assignments_path;
     response.state = started.state;
     response.next_action.assignments_path = started.assignments_path;
+    // A zero-executable wave (every assigned surface routed unroutable) started and
+    // self-settles — buildWaveReadiness treats an empty assignment set as complete.
+    // The spawn_evaluators next_action is then incoherent (it would direct the
+    // orchestrator to spawn against `assignments: []`). Reconcile it with the honest
+    // signal: instruct settling this wave so the loop advances (non-halting), never
+    // spawning zero evaluators. Guarded on zero_executable === true, so the routable
+    // start path is byte-identical.
+    if (started.zero_executable === true) {
+      response.next_action = {
+        kind: "call_tool",
+        tool: "bob_apply_wave_merge",
+        arguments: { target_domain: domain, wave_number: started.wave_number, force_merge: false },
+        reason: "All assigned surfaces are unroutable (no runnable evaluator work); settle this wave and continue.",
+        assignments_path: started.assignments_path,
+      };
+    }
   }
   return response;
 }
