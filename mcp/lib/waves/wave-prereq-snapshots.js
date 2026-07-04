@@ -88,6 +88,24 @@ function waveStatus(args) {
     }];
   }
 
+  // Surface the parked, unroutable surfaces from the most-recent wave
+  // assignment doc as an actionable coverage gap. Read defensively: a missing
+  // file or an old wave doc without an `unroutable_surfaces` field reads as [].
+  let unroutableSurfaces = [];
+  try {
+    const { readJsonFile } = require("../storage.js");
+    const { waveAssignmentsPath } = require("../paths.js");
+    const { listWaveAssignmentNumbers } = require("../wave-handoff-store.js");
+    const waveNumbers = listWaveAssignmentNumbers(domain);
+    if (waveNumbers.length > 0) {
+      const latestWave = waveNumbers[waveNumbers.length - 1];
+      const doc = readJsonFile(waveAssignmentsPath(domain, latestWave));
+      if (doc && Array.isArray(doc.unroutable_surfaces)) {
+        unroutableSurfaces = doc.unroutable_surfaces;
+      }
+    }
+  } catch {}
+
   let auditSummary = null;
   let trafficSummary = null;
   let circuitBreakerSummary = null;
@@ -119,6 +137,7 @@ function waveStatus(args) {
     traffic: trafficSummary,
     circuit_breaker: circuitBreakerSummary,
     surface_leads: surfaceLeadsSummary,
+    unroutable_surfaces: unroutableSurfaces,
     findings_summary: findings.map((finding) => ({
       id: finding.id,
       severity: finding.severity,

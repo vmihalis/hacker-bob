@@ -12579,6 +12579,7 @@ test("bob_read_findings, bob_list_findings, and bob_wave_status return empty-sta
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
       coverage: null,
+      unroutable_surfaces: [],
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for frontier readiness",
@@ -12657,6 +12658,7 @@ test("bob_list_findings and bob_wave_status keep their external shapes while rea
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
       coverage: null,
+      unroutable_surfaces: [],
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for frontier readiness",

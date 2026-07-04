@@ -223,7 +223,10 @@ function startWaveLocked(domain, {
     started_by: startedBy,
     scheduler_decision_id: schedulerDecisionId || null,
     assignment_batch_id: assignmentBatchId || null,
-    counts: { assignments: assignments.length },
+    counts: {
+      assignments: persistedAssignments.length,
+      unroutable: assignmentsDocument.unroutable_surfaces.length,
+    },
   }, buildGovernanceContext(nextState));
 
   return {
