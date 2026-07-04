@@ -12,9 +12,8 @@ const assert = require("node:assert/strict");
 
 const {
   curate,
-  DISPOSITION,
+  DEFENDER_DISPOSITION_VALUES,
   PHASE,
-  projectDisposition,
   severityBand,
 } = require("../mcp/lib/run-event-curation.js");
 
@@ -133,33 +132,54 @@ test("a non-witnessed pipeline type is dropped", () => {
   assert.equal(curate({ _source: "pipeline", type: "wave_merged" }), null);
 });
 
-// ---- grade finding curator (the disposition relens) -----------------------
+// ---- grade finding curator (consumes the verdict's stamped word) ----------
 
-test("grade finding at fix_now cuts in as a gold strike", () => {
-  const e = curate({ _source: "grade", finding_id: "F-9", total_score: 55, reachability: { graded_severity: "high", network_reachable: true, disposition: "unchanged" } });
+test("grade finding: the stamped fix_now word is consumed verbatim as a gold strike (live == sealed)", () => {
+  // A real grade.json finding carries the verdict's stamped defender_disposition.
+  const e = curate({ _source: "grade", finding_id: "F-9", total_score: 55, defender_disposition: "fix_now", reachability: { graded_severity: "high", network_reachable: true, disposition: "unchanged" } });
   assert.equal(e.kind, "verdict");
   assert.equal(e.phase, PHASE.GRADE);
-  assert.equal(e.payload.verdict, DISPOSITION.FIX_NOW);
+  assert.equal(e.payload.verdict, "fix_now"); // canonical snake_case, identical to grade.json
   assert.equal(e.register, "strike");
   assert.equal(e.signal, true); // gold only at fix_now
 });
 
-test("a reachability-capped finding is watched, not fix_now, and never gold", () => {
-  const e = curate({ finding_id: "F-3", total_score: 55, reachability: { graded_severity: "high", network_reachable: false, disposition: "capped" } });
-  assert.notEqual(e.payload.verdict, DISPOSITION.FIX_NOW);
+test("grade finding: a capped worth_fixing is streamed as-stamped, never gold, and reads not-reachable", () => {
+  // The verdict already resolved the capped finding to worth_fixing; curate does not
+  // second-guess it. Reachability drives only the display band/meta, not the word.
+  const e = curate({ finding_id: "F-3", total_score: 55, defender_disposition: "worth_fixing", reachability: { graded_severity: "high", network_reachable: false, disposition: "capped" } });
+  assert.equal(e.payload.verdict, "worth_fixing");
+  assert.notEqual(e.payload.verdict, "fix_now");
   assert.equal(e.signal, false);
   assert.equal(e.register, "breath");
   assert.match(e.payload.meta, /not reachable/);
 });
 
-test("a low-scoring grade finding is held", () => {
-  const e = curate({ _source: "grade", finding_id: "F-2", total_score: 10 });
-  assert.equal(e.payload.verdict, DISPOSITION.HELD);
+test("grade finding: a stamped held word is consumed as held", () => {
+  const e = curate({ _source: "grade", finding_id: "F-2", total_score: 10, defender_disposition: "held" });
+  assert.equal(e.payload.verdict, "held");
   assert.equal(e.signal, false);
 });
 
+test("grade finding: an unstamped finding streams conservatively as held (never re-derived / over-stated)", () => {
+  // No defender_disposition (legacy/malformed grade.json). curate must NOT re-derive
+  // a word from the rubric score — a high score with no stamp still reads held, so a
+  // fail-open sniff can never promote a held finding to worth-fixing on the surface.
+  const e = curate({ _source: "grade", finding_id: "F-7", total_score: 95 });
+  assert.equal(e.payload.verdict, "held");
+  assert.equal(e.signal, false);
+  assert.equal(e.register, "breath");
+});
+
+test("grade finding: the witness word is drawn from the same canonical vocabulary the verdict stamps", () => {
+  for (const word of DEFENDER_DISPOSITION_VALUES) {
+    const e = curate({ _source: "grade", finding_id: "F-1", total_score: 50, defender_disposition: word });
+    assert.equal(e.payload.verdict, word, `witness word must equal the sealed word ${word}`);
+  }
+});
+
 test("a grade finding with no score is dropped", () => {
-  assert.equal(curate({ _source: "grade", finding_id: "F-0" }), null);
+  assert.equal(curate({ _source: "grade", finding_id: "F-0", defender_disposition: "fix_now" }), null);
 });
 
 // ---- fail-closed on sensitive material ------------------------------------
@@ -177,12 +197,13 @@ test("a curated event that would leak a secret is dropped (fail closed at the la
 
 // ---- exported pure helpers ------------------------------------------------
 
-test("projectDisposition and severityBand are pure and consistent with the four words", () => {
-  assert.equal(projectDisposition({ score: 50, band: "high", reportable: true, reachable: true }), DISPOSITION.FIX_NOW);
-  assert.equal(projectDisposition({ score: 50, band: "high", reportable: true, reachable: false }), DISPOSITION.WORTH_FIXING);
-  assert.equal(projectDisposition({ score: 25, band: "medium", reportable: true, reachable: true }), DISPOSITION.WATCH);
-  assert.equal(projectDisposition({ score: 5, band: "low", reportable: false, reachable: true }), DISPOSITION.HELD);
+test("the witness vocabulary is exactly the canonical defender vocabulary (single source, snake_case)", () => {
+  assert.deepEqual(DEFENDER_DISPOSITION_VALUES, ["fix_now", "worth_fixing", "watch", "held"]);
+});
+
+test("severityBand is pure over both the 0-100 bob scale and the 0-10 cvss scale", () => {
   assert.equal(severityBand(95, "bob"), "critical");
   assert.equal(severityBand(9.5, "cvss"), "critical");
+  assert.equal(severityBand(75, "bob"), "high");
   assert.equal(severityBand(10, "bob"), "low");
 });

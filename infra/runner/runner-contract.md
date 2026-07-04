@@ -220,7 +220,7 @@ the runner writes rows of this shape. Curated fields only:
 | `face` | Witness panel kind this maps to (`wire`/`attempts`/`spill`/`pivot`/`matrix`/`code`/`grade`/`verdict`) when applicable |
 | `payload` | the minimum a face needs — same engine vocabulary as the frozen Witness panels |
 | `band` / `cvss` | severity as weight + CVSS vector (findings only) |
-| `disposition` | `fix now` \| `worth fixing` \| `watch` \| `held` (verify/grade only) |
+| `disposition` | `fix_now` \| `worth_fixing` \| `watch` \| `held` (verify/grade only) — the CANONICAL snake_case word the grade verdict stamped (`defender_disposition`), consumed verbatim so the live word IS the sealed word; the site renders it in its spoken form (`fix now` …) |
 | `at` | epoch ms |
 
 Disallowed in any row: raw stdout/stderr, full ledgers, secrets, the access

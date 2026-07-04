@@ -44,6 +44,9 @@ const {
 const {
   PIPELINE_EVENT_TYPES,
 } = require("./pipeline-events.js");
+const {
+  DEFENDER_DISPOSITION_VALUES,
+} = require("./defender-disposition.js");
 
 // ---------------------------------------------------------------------------
 // Display bounds. The Witness reads, not audits — projected strings are short
@@ -146,39 +149,18 @@ const SURFACE_GLOSS = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
-// The defender DISPOSITION projection (relens). Deterministic, no LLM prose.
-// (final severity x reachability x score x reportable) -> one of four words.
-// This is the customer takeaway; SUBMIT/HOLD/SKIP/EV/triager NEVER leak here.
-//   fix now      — reportable, severe, network-reachable, scored to submit
-//   worth fixing — reportable + scored above the hold floor
-//   watch        — real but capped/below-floor (held back from the report)
-//   held         — not reportable / unreachable / below the skip floor
-// `signal` (gold permission) is granted ONLY at "fix now". Everything else is
-// weight, never gold.
+// The defender DISPOSITION is the deterministic relens the grade verdict ALREADY
+// stamped on each finding — grade-verdict-store -> computeDefenderDisposition is
+// the SINGLE producer (authoritative inputs: the reachability-graded severity, the
+// per-finding score against the SAME imported HOLD/SUBMIT floors, and the verified
+// reportable bit). curate() CONSUMES that word verbatim; it never re-derives it, so
+// the live word streamed to the witness IS the sealed word on /r — one vocabulary,
+// no drift. The canonical form is snake_case (DEFENDER_DISPOSITION_VALUES); the site
+// maps it to its spoken form ("fix now" …) at render, not here.
+// SUBMIT/HOLD/SKIP/EV/triager NEVER leak. `signal` (gold) rides ONLY "fix_now".
 // ---------------------------------------------------------------------------
-const DISPOSITION = Object.freeze({
-  FIX_NOW: "fix now",
-  WORTH_FIXING: "worth fixing",
-  WATCH: "watch",
-  HELD: "held",
-});
-
-// Mirrors grade-verdict-store's score floors WITHOUT importing the writer:
-// these are the SAME thresholds the deterministic verdict already enforces, so
-// the rendered disposition can never contradict bob's grade math (the math is
-// untouched; this only re-projects its inputs).
-const HOLD_MIN_SCORE = 20;
-const SUBMIT_MIN_SCORE = 40;
-
-function projectDisposition({ score, band, reportable, reachable }) {
-  const s = Number.isFinite(score) ? score : 0;
-  if (!reportable || s < HOLD_MIN_SCORE) return DISPOSITION.HELD;
-  // Capped/unreachable severe findings are real but watched, not fix-now.
-  const severe = band === "high" || band === "critical";
-  if (severe && reachable && s >= SUBMIT_MIN_SCORE) return DISPOSITION.FIX_NOW;
-  if (s >= SUBMIT_MIN_SCORE) return DISPOSITION.WORTH_FIXING;
-  return DISPOSITION.WATCH;
-}
+const FIX_NOW = "fix_now";
+const HELD = "held";
 
 // ---------------------------------------------------------------------------
 // The WitnessEvent shape. A bounded, register-tagged, phase-felt display event.
@@ -431,9 +413,17 @@ function curateGradeFinding(raw) {
   const score = Number.isFinite(raw.total_score) ? raw.total_score : null;
   if (score == null) return null;
 
-  // final severity x reachability: prefer the reachability stamp's graded
-  // severity (the ceiling-capped truth) over a raw band; reachable is true only
-  // for a network-reachable, non-capped disposition.
+  // The disposition is the word the verdict already stamped (the single producer);
+  // consume it verbatim. An unstamped finding (legacy/malformed grade.json) is
+  // streamed conservatively as HELD — never re-derived here, so a sniffed fail-open
+  // can never over-state a held finding as worth-fixing.
+  const disposition = DEFENDER_DISPOSITION_VALUES.includes(raw.defender_disposition)
+    ? raw.defender_disposition
+    : HELD;
+  const fixNow = disposition === FIX_NOW;
+
+  // band is a DISPLAY input only (weight/ember), not the disposition: the graded
+  // severity when reachability spoke, else the score-derived band.
   const reach = isPlainObject(raw.reachability) ? raw.reachability : null;
   const gradedSeverity = reach ? clip(reach.graded_severity, 16) : "";
   const band = ["critical", "high", "medium", "low"].includes(gradedSeverity)
@@ -441,30 +431,23 @@ function curateGradeFinding(raw) {
     : severityBand(score, "bob");
   const reachable = reach
     ? reach.network_reachable === true && reach.disposition !== "capped"
-    : true; // no stamp => not capped; treat as reachable for disposition.
-  // reportable: a finding bound into grade.json at medium+ is the engine's own
-  // reportable bar (requireFinalReportableSeveritySet). The caller may pass an
-  // explicit reportable flag; default to medium-or-higher band.
-  const reportable = typeof raw.reportable === "boolean"
-    ? raw.reportable
-    : ["medium", "high", "critical"].includes(band);
-
-  const disposition = projectDisposition({ score, band, reportable, reachable });
-  const fixNow = disposition === DISPOSITION.FIX_NOW;
+    : true;
   const severe = band === "high" || band === "critical";
 
   return witnessEvent({
     kind: "verdict",
     phase: PHASE.GRADE,
-    register: fixNow ? "strike" : "breath", // only fix-now cuts in.
+    register: fixNow ? "strike" : "breath", // only fix_now cuts in.
     // Severity as WEIGHT: severe bands light up; the lone warn ember (high/
     // critical) is the renderer's to add from `weight:"lit"` + band, not a color
     // chosen here.
     weight: severe ? "lit" : "dim",
-    // GOLD: granted ONLY at the fix-now / found terminus. Never on watch/held.
+    // GOLD: granted ONLY at the fix_now / found terminus. Never on watch/held.
     signal: fixNow,
     payload: {
       label: findingId,
+      // The CANONICAL word (snake_case) — identical to the sealed grade verdict,
+      // so a consumer comparing the live word to the sealed word never diverges.
       verdict: disposition,
       // band is the renderer's weight/ember input — a word, not a color.
       total: band,
@@ -516,12 +499,12 @@ function curate(rawEvent) {
 
 module.exports = {
   curate,
-  // Exported for the runner's tests and for the Convex writer's idempotency:
-  DISPOSITION,
+  // The canonical defender vocabulary the witness word is drawn from — identical to
+  // the value grade-verdict-store stamps, re-exported from the single producer.
+  DEFENDER_DISPOSITION_VALUES,
   PHASE,
   WITNESSED_FRONTIER_KINDS,
   WITNESSED_PIPELINE_TYPES,
-  projectDisposition,
   severityBand,
   // Internal curators exported for unit isolation; curate() is the entry point.
   curateFrontierEvent,

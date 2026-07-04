@@ -62,17 +62,20 @@
     "callbackUrl": {
       "type": "string",
       "format": "uri",
-      "pattern": "^https://",
-      "description": "The Convex deployment URL the runner writes curated run_events + runs rows to. HTTPS only. The runner authenticates these writes with the runner write-secret (carried out-of-band in the container's transport-layer environment, NOT in this payload and NEVER in model context) — the same secret-gate discipline convex/reports.ts uses for REPORTS_SECRET. Convex live queries are the streaming layer; there is no WebSocket/SSE/Durable-Object channel."
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$",
+      "description": "The Convex deployment URL the runner writes curated run_events + runs rows to. HTTPS with an explicit authority ONLY: the pattern requires a host and forbids embedded userinfo credentials (no `user:pass@`), a whitespace-smuggled authority, or a bare `https://` — so a schema-valid value cannot smuggle a confused-deputy authority. Host allow-listing / private-range rejection is enforced by the runner glue at write time; the schema pins the shape. The runner authenticates these writes with the runner write-secret (carried out-of-band in the container's transport-layer environment, NOT in this payload and NEVER in model context) — the same secret-gate discipline convex/reports.ts uses for REPORTS_SECRET. Convex live queries are the streaming layer; there is no WebSocket/SSE/Durable-Object channel."
     },
     "ingestToken": {
       "type": "string",
       "minLength": 16,
-      "description": "Bearer token the runner presents to POST the sealed report to bob-site's /api/reports, exactly as the `bob-report publish` CLI does today (Authorization: Bearer <token>). The runner is a PUBLISHER on the existing ingest path; it adds no new report surface. Held only at the transport layer; never enters model context."
+      "maxLength": 512,
+      "description": "Bearer token the runner presents to POST the sealed report to bob-site's /api/reports, exactly as the `bob-report publish` CLI does today (Authorization: Bearer <token>). The runner is a PUBLISHER on the existing ingest path; it adds no new report surface. Held only at the transport layer; never enters model context. Bounded length so an oversized token cannot be smuggled through the grant."
     },
     "accessPassword": {
       "type": "string",
       "minLength": 8,
+      "maxLength": 256,
       "description": "The access password for the sealed /r/<slug> report this engagement will produce. The runner forwards it to /api/reports as `password`; bob-site hashes it (PBKDF2, report-crypto.ts) and stores only the hash. The plaintext lives only in transit and is delivered to the operator out-of-band. Never logged, never streamed into an event, never in model context."
     },
     "scope": {
@@ -87,8 +90,15 @@
         },
         "labAuthorization": {
           "type": "object",
-          "description": "Operator-attested lab/private-target escape for a loopback/RFC1918 web target, mapping to mcp/lib/scope.js opts.labAuthorization. OFF unless explicitly present and signed; cloud-metadata/link-local/IPv6/.internal/.local remain ineligible even with it. Requires autonomy 'operator-approved'.",
-          "additionalProperties": true
+          "description": "Operator-attested lab/private-target escape for a loopback/RFC1918 web target, mapping to mcp/lib/scope.js opts.labAuthorization. OFF unless explicitly present in the SIGNED grant (the runner's operator-attestation equivalent of the local rail's BOB_LAB_TARGET_ACK env); cloud-metadata/link-local/IPv6/.internal/.local remain ineligible even with it. Requires autonomy 'operator-approved'. Shape pinned so this security escape carries no unconstrained fields.",
+          "additionalProperties": false,
+          "required": ["private_targets"],
+          "properties": {
+            "private_targets": {
+              "const": true,
+              "description": "Must be exactly true — the operator's declared private-target intent. parseLabAuthorization (mcp/lib/lab-target-attest.js) reads ONLY this bit; ack_source and scope are server-derived, never accepted from the grant. No other field is honored."
+            }
+          }
         }
       }
     },
