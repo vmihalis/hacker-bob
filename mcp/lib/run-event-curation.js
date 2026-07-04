@@ -123,18 +123,6 @@ function clip(value, maxChars) {
   return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
 
-// A finding's severity band from a CVSS-ish score (0-100 bob-score OR a 0-10
-// CVSS base). The Witness already renders bands as weight + the lone warn ember
-// for high/critical — curate() only names the band; the renderer owns color.
-function severityBand(score, scale) {
-  if (!Number.isFinite(score)) return "low";
-  const v = scale === "cvss" ? score : score / 10; // normalize to 0-10
-  if (v >= 9) return "critical";
-  if (v >= 7) return "high";
-  if (v >= 4) return "medium";
-  return "low";
-}
-
 // Surface family from a frontier surface_type, glossed for a non-expert. Kept
 // to the engine's own surface_type tokens; unknowns pass through as the raw
 // (already-bounded) token so the projection never invents a taxonomy.
@@ -291,7 +279,12 @@ function curateFrontierEvent(raw) {
 function curateCoverageRecord(raw) {
   const status = raw.status;
   if (!COVERAGE_STATUS_VALUES.includes(status)) return null;
-  const endpoint = clip(raw.endpoint, MAX_LABEL_CHARS);
+  // Witness only the PATH — drop any ?query/#fragment before display. A probed URL
+  // routinely carries a reset/session token or PII in its query; that must not ride
+  // onto the public witness surface (the sensitive-material gate is the backstop,
+  // not the only line of defense).
+  const pathOnly = typeof raw.endpoint === "string" ? raw.endpoint.split(/[?#]/)[0] : raw.endpoint;
+  const endpoint = clip(pathOnly, MAX_LABEL_CHARS);
   if (!endpoint) return null;
   const bugClass = clip(raw.bug_class, 40);
   const summary = clip(raw.evidence_summary, MAX_CAPTION_CHARS);
@@ -422,17 +415,25 @@ function curateGradeFinding(raw) {
     : HELD;
   const fixNow = disposition === FIX_NOW;
 
-  // band is a DISPLAY input only (weight/ember), not the disposition: the graded
-  // severity when reachability spoke, else the score-derived band.
+  // band is a DISPLAY weight input only (the lit/ember cue), never the disposition.
+  // It is the actual SEVERITY — the reachability-graded severity when reachability
+  // spoke — NOT the 0-100 grade rubric score, which is not a severity and must never
+  // be read as one. Absent a graded severity, the finding carries no band and stays
+  // dim; the disposition word above is still authoritative.
   const reach = isPlainObject(raw.reachability) ? raw.reachability : null;
   const gradedSeverity = reach ? clip(reach.graded_severity, 16) : "";
   const band = ["critical", "high", "medium", "low"].includes(gradedSeverity)
     ? gradedSeverity
-    : severityBand(score, "bob");
+    : "";
+  const severe = band === "high" || band === "critical";
+  // Reachability is a display note only; unknown (no stamp) makes NO claim — the
+  // customer is never told "reachable" on absence.
   const reachable = reach
     ? reach.network_reachable === true && reach.disposition !== "capped"
-    : true;
-  const severe = band === "high" || band === "critical";
+    : null;
+  const reachMeta = reachable === true
+    ? "reachable"
+    : reachable === false ? "not reachable from the network" : "";
 
   return witnessEvent({
     kind: "verdict",
@@ -449,10 +450,10 @@ function curateGradeFinding(raw) {
       // The CANONICAL word (snake_case) — identical to the sealed grade verdict,
       // so a consumer comparing the live word to the sealed word never diverges.
       verdict: disposition,
-      // band is the renderer's weight/ember input — a word, not a color.
+      // band is the renderer's weight/ember input — a word (severity), not a color.
       total: band,
       // No EV, no triager, no SUBMIT. The disposition IS the meta.
-      meta: clip(reachable ? "reachable" : "not reachable from the network", MAX_CAPTION_CHARS),
+      meta: clip(reachMeta, MAX_CAPTION_CHARS),
       filing: "",
     },
   });
@@ -492,7 +493,12 @@ function curate(rawEvent) {
     return null;
   } catch {
     // A sensitive-material throw (or any normalization error) means this record
-    // cannot be safely witnessed. Drop it. Fail closed.
+    // cannot be safely witnessed. Drop it. Fail closed — for a PUBLIC surface,
+    // silently withholding a record is always safe; emitting a possibly-tainted one
+    // is not, so the drop is never traded for observability here. This module is
+    // pure (no clock/fs/log), so it cannot instrument the drop itself: the runner is
+    // responsible for counting null returns (curated vs dropped) so a rise in drops
+    // — a curator bug OR a spike in sensitive records — is visible operationally.
     return null;
   }
 }
@@ -505,7 +511,6 @@ module.exports = {
   PHASE,
   WITNESSED_FRONTIER_KINDS,
   WITNESSED_PIPELINE_TYPES,
-  severityBand,
   // Internal curators exported for unit isolation; curate() is the entry point.
   curateFrontierEvent,
   curateCoverageRecord,

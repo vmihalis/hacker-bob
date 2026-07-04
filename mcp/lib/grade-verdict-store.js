@@ -644,22 +644,24 @@ function writeGradeVerdict(args) {
     );
   }
   const findings = normalizedFindings.map((finding) => {
-    const recordedSeverity = finalSeverities.get(finding.finding_id) || null;
-    let reachability = null;
-    if (recordedSeverity) {
-      const stamp = reachabilityDispositionForFinding({
-        domain,
-        findingId: finding.finding_id,
-        recordedSeverity,
-      });
-      if (stamp.disposition !== "unknown") reachability = stamp;
-    }
+    const recordedSeverity = finalSeverities.get(finding.finding_id);
+    // A finding not carried into the final verification round has no graded
+    // severity; it is not a customer-facing result, so it gets NO defender word
+    // (absent — never a fabricated "held" that a consumer cannot tell apart from a
+    // genuinely held finding). Mirrors reachability, which is stamped only when it
+    // has spoken.
+    if (!recordedSeverity) return finding;
+    const stamp = reachabilityDispositionForFinding({
+      domain,
+      findingId: finding.finding_id,
+      recordedSeverity,
+    });
+    const reachability = stamp.disposition !== "unknown" ? stamp : null;
     // Deterministic defender relens of the SAME verdict numbers (final severity ×
     // reachability × per-finding score × reportable → fix_now/worth_fixing/watch/
     // held). Additive and non-gating — it never enters enforceGradeVerdictConsistency
-    // or the score math; it is stamped on EVERY finding so the customer /r surface has
-    // a defender word for each. The graded-on severity is authoritative when
-    // reachability has spoken; otherwise the recorded final severity.
+    // or the score math. The graded-on severity is authoritative when reachability
+    // has spoken; otherwise the recorded final severity.
     const defender_disposition = computeDefenderDisposition({
       finalSeverity: recordedSeverity,
       graded_severity: reachability ? reachability.graded_severity : null,

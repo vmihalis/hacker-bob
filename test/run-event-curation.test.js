@@ -14,7 +14,6 @@ const {
   curate,
   DEFENDER_DISPOSITION_VALUES,
   PHASE,
-  severityBand,
 } = require("../mcp/lib/run-event-curation.js");
 
 // ---- routing + fail-closed drops -----------------------------------------
@@ -201,9 +200,33 @@ test("the witness vocabulary is exactly the canonical defender vocabulary (singl
   assert.deepEqual(DEFENDER_DISPOSITION_VALUES, ["fix_now", "worth_fixing", "watch", "held"]);
 });
 
-test("severityBand is pure over both the 0-100 bob scale and the 0-10 cvss scale", () => {
-  assert.equal(severityBand(95, "bob"), "critical");
-  assert.equal(severityBand(9.5, "cvss"), "critical");
-  assert.equal(severityBand(75, "bob"), "high");
-  assert.equal(severityBand(10, "bob"), "low");
+test("grade finding: the display band is the graded SEVERITY, never the 0-100 rubric score", () => {
+  // A high rubric score with NO reachability graded severity must NOT be lit as a
+  // severe band — the rubric score is not a severity. No graded severity => no band,
+  // dim weight.
+  const e = curate({ _source: "grade", finding_id: "F-hi", total_score: 95, defender_disposition: "held" });
+  assert.equal(e.payload.total, "", "no severity => no fabricated band");
+  assert.equal(e.weight, "dim");
+  // With a graded severity, the band IS that severity.
+  const g = curate({ _source: "grade", finding_id: "F-g", total_score: 30, defender_disposition: "worth_fixing", reachability: { graded_severity: "high", network_reachable: true, disposition: "unchanged" } });
+  assert.equal(g.payload.total, "high");
+  assert.equal(g.weight, "lit");
+});
+
+test("grade finding: unknown reachability makes no claim — the customer is never told 'reachable' on absence", () => {
+  const e = curate({ _source: "grade", finding_id: "F-u", total_score: 50, defender_disposition: "worth_fixing" });
+  assert.equal(e.payload.meta, "", "no reachability stamp => no reachable/not-reachable claim");
+});
+
+test("coverage: a query string / fragment is stripped from the witnessed endpoint (no path-embedded token/PII leak)", () => {
+  const e = curate({
+    status: "promising",
+    endpoint: "/account/reset?token=super-secret-value&uid=alice",
+    bug_class: "auth",
+    evidence_summary: "reset flow accepts a replayed token",
+  });
+  // Only the path is witnessed; the query (with the token) is gone from every field.
+  assert.equal(e.payload.cols[0].name, "/account/reset");
+  assert.match(e.payload.caption, /I test \/account\/reset\./);
+  assert.ok(!JSON.stringify(e).includes("super-secret-value"), "the query token must not appear anywhere in the event");
 });
