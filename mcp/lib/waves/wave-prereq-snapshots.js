@@ -89,7 +89,8 @@ function waveStatus(args) {
   }
 
   // Surface the parked, unroutable surfaces from the DURABLE surface-routes.json
-  // (`route.disposition === "unroutable"`), NOT a transient wave-assignment doc.
+  // (the canonical isUnroutableRoute predicate: disposition marker OR null pack),
+  // NOT a transient wave-assignment doc.
   // The routes file is written at route time and persists across waves, so this
   // coverage gap stays visible even after a later wave whose assignment doc
   // carries no unroutable surfaces (fixes the cross-wave amnesia). This shares

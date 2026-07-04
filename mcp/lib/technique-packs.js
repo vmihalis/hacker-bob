@@ -35,6 +35,7 @@ const {
 } = require("./capability-packs.js");
 const {
   readSurfaceRoutesStrict,
+  isUnroutableRoute,
 } = require("./surface-router.js");
 const {
   appendJsonlLine,
@@ -1170,8 +1171,10 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
   // getCapabilityPack(null) and hard-halting. An explicit requestedCapabilityPack
   // still flows through the validation below so an operator's request is not
   // silently swallowed.
-  const isUnroutable =
-    route.routable === false || route.capability_pack == null || route.disposition === "unroutable";
+  // Canonical unroutable predicate (disposition marker OR null pack) via the
+  // shared surface-router helper, plus the legacy in-memory `routable === false`
+  // flag some callers still pass on a classification-shaped object.
+  const isUnroutable = route.routable === false || isUnroutableRoute(route);
   if (isUnroutable && !requestedCapabilityPack) {
     return {
       capability_pack: null,

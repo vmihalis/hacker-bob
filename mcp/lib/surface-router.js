@@ -120,6 +120,18 @@ function countRoutesByCapabilityPack(routes) {
   return counts;
 }
 
+// The single canonical predicate for "this persisted route is unroutable": it
+// carries the disposition marker OR has no capability pack. The write side pairs
+// both for a current-version unroutable route (buildSurfaceRoutesDocument), so on
+// fresh data disposition ⟺ null-pack; keying on the union closes the SC+null-pack
+// wave-halt a cross-version route (one field present without the other) would open,
+// and keeps every consumer — the validator, the wave partition, the analytics
+// derivation, and technique-pack selection — reading ONE definition.
+function isUnroutableRoute(route) {
+  return route != null && typeof route === "object"
+    && (route.disposition === "unroutable" || route.capability_pack == null);
+}
+
 function validateSurfaceRoute(route, index, filePath) {
   if (route == null || typeof route !== "object" || Array.isArray(route)) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] must be an object)`);
@@ -128,7 +140,7 @@ function validateSurfaceRoute(route, index, filePath) {
   // pack; validate it as a disposition-only record so it reads back cleanly
   // (a plain Error on bad data keeps a malformed row quarantinable, not a
   // re-thrown code bug).
-  if (route.disposition === "unroutable" || route.capability_pack == null) {
+  if (isUnroutableRoute(route)) {
     const unroutableId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
     assertNonEmptyString(route.reason, `routes[${index}].reason`);
     return { ...route, surface_id: unroutableId };
@@ -305,7 +317,7 @@ function deriveUnroutableSurfacesFromRoutes(domain) {
   const surfaceIds = new Set();
   const surfaces = [];
   for (const route of routes) {
-    if (route && route.disposition === "unroutable" && typeof route.surface_id === "string" && route.surface_id) {
+    if (isUnroutableRoute(route) && typeof route.surface_id === "string" && route.surface_id) {
       surfaceIds.add(route.surface_id);
       surfaces.push({
         surface_id: route.surface_id,
@@ -360,6 +372,7 @@ module.exports = {
   buildSurfaceRoutesDocument,
   countRoutesByCapabilityPack,
   deriveUnroutableSurfacesFromRoutes,
+  isUnroutableRoute,
   readSurfaceRoutesStrict,
   routeSurfaces,
   routeSurfacesInternal,

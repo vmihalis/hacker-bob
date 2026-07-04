@@ -16,6 +16,8 @@ const {
   routeSurfaces,
   routeSurfacesInternal,
   validateSurfaceRoute,
+  isUnroutableRoute,
+  deriveUnroutableSurfacesFromRoutes,
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
 } = require("../mcp/lib/surface-router.js");
@@ -361,4 +363,48 @@ test("routeSurfaces (live): no frontier-events.jsonl fails open to base confiden
   assert.equal(read.document.routes.length, 1);
   // Fail-open: base classification confidence, byte-identical to today.
   assert.equal(read.document.routes[0].confidence, classification.confidence);
+}));
+
+// One canonical unroutable predicate (isUnroutableRoute) shared by the validator,
+// the wave partition, the analytics derivation, and technique-pack selection.
+// The write side pairs disposition:"unroutable" with a null pack, so on fresh data
+// the two conditions agree; keying every consumer on their UNION closes the
+// SC+null-pack wave-halt a cross-version route (one field without the other) opens.
+test("isUnroutableRoute: disposition marker OR null pack — the two agree on fresh data, union catches drift", () => {
+  // Fresh unroutable route (both conditions true).
+  assert.equal(isUnroutableRoute({ surface_id: "s", disposition: "unroutable", reason: "x" }), true);
+  // Cross-version drift: null pack WITHOUT the disposition marker — the narrow
+  // `disposition === "unroutable"` check would have MISSED this and minted a
+  // routable assignment for a pack-less route; the union catches it.
+  assert.equal(isUnroutableRoute({ surface_id: "s", reason: "x" }), true);
+  assert.equal(isUnroutableRoute({ surface_id: "s", capability_pack: null }), true);
+  // Marker WITHOUT null pack (a stray pack survived) — still unroutable.
+  assert.equal(isUnroutableRoute({ surface_id: "s", disposition: "unroutable", capability_pack: "web" }), true);
+  // A routable web route is NOT unroutable.
+  assert.equal(isUnroutableRoute({ surface_id: "s", capability_pack: "web", capability_pack_version: 1 }), false);
+  // Defensive: null / non-object.
+  assert.equal(isUnroutableRoute(null), false);
+  assert.equal(isUnroutableRoute("nope"), false);
+});
+
+test("deriveUnroutableSurfacesFromRoutes classifies a drift row (null pack, no disposition marker) as unroutable", () => withTempHome(() => {
+  const domain = "unroutable-drift-row.example.test";
+  const routesPath = surfaceRoutesPath(domain);
+  fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+  // A cross-version route: pack-less (capability_pack absent) with a reason but
+  // NO disposition marker. Under the old narrow predicate this surface would be
+  // treated as routable everywhere the wave path read it.
+  fs.writeFileSync(routesPath, JSON.stringify({
+    version: SURFACE_ROUTES_VERSION,
+    route_version: SURFACE_ROUTE_VERSION,
+    routes: [
+      { surface_id: "drift:sc", surface_type: "smart_contract", reason: "unknown chain_family" },
+      { surface_id: "ok:api", surface_type: "api", capability_pack: "web", capability_pack_version: 1, evaluator_agent: "evaluator-agent", brief_profile: "web" },
+    ],
+  }));
+
+  const result = deriveUnroutableSurfacesFromRoutes(domain);
+  assert.equal(result.error, null, "a well-formed drift row is not a corruption error");
+  assert.deepEqual(Array.from(result.surfaceIds), ["drift:sc"], "the pack-less drift row is parked unroutable");
+  assert.equal(result.surfaces[0].unroutable_reason, "unknown chain_family");
 }));

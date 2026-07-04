@@ -26,6 +26,7 @@ const {
 } = require("../assignments.js");
 const {
   routeSurfacesInternal,
+  isUnroutableRoute,
 } = require("../surface-router.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
@@ -142,7 +143,7 @@ function prepareWaveAssignments({
   const unroutableSurfaces = [];
   for (const assignment of assignments) {
     const route = routeBySurfaceId.get(assignment.surface_id);
-    if (route.disposition === "unroutable") {
+    if (isUnroutableRoute(route)) {
       unroutableSurfaces.push({
         surface_id: assignment.surface_id,
         agent: assignment.agent,
