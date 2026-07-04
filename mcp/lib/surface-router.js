@@ -112,9 +112,9 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
 function countRoutesByCapabilityPack(routes) {
   const counts = {};
   for (const route of routes) {
-    // An unroutable route has no capability_pack; skip it so counts do not
-    // gain an `undefined` bucket.
-    if (route.capability_pack == null) continue;
+    // An unroutable route contributes no pack bucket (via the canonical predicate,
+    // not a rogue inline null-pack check — one definition even in-file).
+    if (isUnroutableRoute(route)) continue;
     counts[route.capability_pack] = (counts[route.capability_pack] || 0) + 1;
   }
   return counts;

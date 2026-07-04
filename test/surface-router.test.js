@@ -17,6 +17,7 @@ const {
   routeSurfacesInternal,
   validateSurfaceRoute,
   isUnroutableRoute,
+  countRoutesByCapabilityPack,
   deriveUnroutableSurfacesFromRoutes,
   SURFACE_ROUTES_VERSION,
   SURFACE_ROUTE_VERSION,
@@ -385,6 +386,20 @@ test("isUnroutableRoute: disposition marker OR null pack — the two agree on fr
   // Defensive: null / non-object.
   assert.equal(isUnroutableRoute(null), false);
   assert.equal(isUnroutableRoute("nope"), false);
+});
+
+test("countRoutesByCapabilityPack uses the canonical predicate — a stray-pack unroutable (drift) route makes no bucket", () => {
+  const counts = countRoutesByCapabilityPack([
+    { surface_id: "a", capability_pack: "web" },
+    { surface_id: "b", capability_pack: "web" },
+    // A drift route: marked unroutable but a stray pack survived. The old inline
+    // `capability_pack == null` check would have counted it into a "solana" bucket;
+    // the canonical isUnroutableRoute skips it (unroutable contributes no bucket).
+    { surface_id: "c", disposition: "unroutable", reason: "x", capability_pack: "solana" },
+    // A normal pack-less unroutable route is skipped either way.
+    { surface_id: "d", disposition: "unroutable", reason: "x" },
+  ]);
+  assert.deepEqual(counts, { web: 2 }, "only routable routes bucket; the drift route contributes nothing");
 });
 
 test("deriveUnroutableSurfacesFromRoutes classifies a drift row (null pack, no disposition marker) as unroutable", () => withTempHome(() => {

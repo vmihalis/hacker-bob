@@ -215,6 +215,13 @@ function startWaveLocked(domain, {
       }
     }
   } catch {}
+  // Parked, unroutable surfaces from the assignment doc, read ONCE with a single
+  // guard so the wave_started telemetry and the synchronous start response never
+  // diverge (a resume that reads an older assignment doc without the field must
+  // not throw on `.length`). Sourced from the same assignmentsDocument both below.
+  const unroutableSurfaces = Array.isArray(assignmentsDocument.unroutable_surfaces)
+    ? assignmentsDocument.unroutable_surfaces
+    : [];
   safeAppendPipelineEventDirect(domain, "wave_started", {
     lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,
@@ -225,17 +232,13 @@ function startWaveLocked(domain, {
     assignment_batch_id: assignmentBatchId || null,
     counts: {
       assignments: persistedAssignments.length,
-      unroutable: assignmentsDocument.unroutable_surfaces.length,
+      unroutable: unroutableSurfaces.length,
     },
   }, buildGovernanceContext(nextState));
 
-  // Surface the parked, unroutable surfaces on the SYNCHRONOUS start response,
-  // sourced from the same assignmentsDocument the wave_started event reads
-  // above, so a caller sees the coverage gap without grepping telemetry.
-  // Additive fields only — routable-surface response shape is unchanged.
-  const unroutableSurfaces = Array.isArray(assignmentsDocument.unroutable_surfaces)
-    ? assignmentsDocument.unroutable_surfaces
-    : [];
+  // Surface the parked, unroutable surfaces on the SYNCHRONOUS start response so a
+  // caller sees the coverage gap without grepping telemetry. Additive fields only —
+  // routable-surface response shape is unchanged.
   // Honest zero-executable signal. An all-unroutable wave persists zero routable
   // assignments; it stays STARTED and self-completing (non-halting — we do NOT
   // reject or throw), but a caller reading `started:true` alone would be misled
