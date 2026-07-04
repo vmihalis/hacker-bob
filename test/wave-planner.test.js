@@ -538,6 +538,98 @@ test("planNextWave with no unroutable routes is byte-identical (missing routes f
   });
 });
 
+function writeCorruptRoutes(domain, content) {
+  fs.mkdirSync(sessionDir(domain), { recursive: true });
+  fs.writeFileSync(surfaceRoutesPath(domain), content);
+}
+
+test("deriveUnroutableSurfacesFromRoutes: missing routes fail-open, valid routes yield the set/rows, corrupt routes surface a sanitized error", () => {
+  withTempHome(() => {
+    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/lib/surface-router.js");
+
+    // Missing routes file: fail-open (empty set, empty rows, no error).
+    const missingDomain = "helper-missing.example.com";
+    fs.mkdirSync(sessionDir(missingDomain), { recursive: true });
+    const missing = deriveUnroutableSurfacesFromRoutes(missingDomain);
+    assert.equal(missing.error, null);
+    assert.equal(missing.surfaceIds.size, 0);
+    assert.deepEqual(missing.surfaces, []);
+
+    // Valid routes: the unroutable disposition rows flow into both the Set and the rows.
+    const validDomain = "helper-valid.example.com";
+    writeUnroutableRoutes(validDomain, ["unroutable-sc"], ["routable-high"]);
+    const valid = deriveUnroutableSurfacesFromRoutes(validDomain);
+    assert.equal(valid.error, null);
+    assert.deepEqual(Array.from(valid.surfaceIds), ["unroutable-sc"]);
+    assert.deepEqual(valid.surfaces, [
+      { surface_id: "unroutable-sc", surface_type: "smart_contract", unroutable_reason: "unresolved chain_family for unroutable-sc" },
+    ]);
+
+    // Corrupt routes: distinct sanitized error, empty set (never resurrect).
+    const corruptDomain = "helper-corrupt.example.com";
+    writeCorruptRoutes(corruptDomain, JSON.stringify({ version: 999, route_version: 999, routes: "nope" }));
+    const corrupt = deriveUnroutableSurfacesFromRoutes(corruptDomain);
+    assert.equal(corrupt.surfaceIds.size, 0);
+    assert.deepEqual(corrupt.surfaces, []);
+    assert.ok(corrupt.error, "corruption yields an error");
+    assert.equal(corrupt.error.code, "routes_unreadable");
+    assert.match(corrupt.error.message, /surface-routes\.json/);
+    assert.ok(
+      !corrupt.error.message.includes(surfaceRoutesPath(corruptDomain)),
+      "the absolute session path is basename-sanitized out of the helper error",
+    );
+  });
+});
+
+test("planNextWave FAILS CLOSED on a corrupt routes file: no plan, no resurrection of a parked surface, sanitized error", () => {
+  withTempHome(() => {
+    const domain = "planner-corrupt-routes.example.com";
+    // First write a VALID routes file that parks `unroutable-sc`, then corrupt it.
+    // The corrupt read must NOT resurrect `unroutable-sc` into an assignment.
+    writeCorruptRoutes(domain, JSON.stringify({ version: 999, route_version: 999, routes: "not-an-array" }));
+
+    const plan = planNextWave({
+      state: { target: domain, evaluation_wave: 0, pending_wave: null },
+      surfaces: [surface("routable-high", "HIGH", 50), surface("unroutable-sc", "HIGH", 90)],
+      queuePolicy: DEFAULT_QUEUE_POLICY,
+    });
+
+    assert.equal(plan.decision, "routes_unreadable", "the planner fails closed with a no-plan decision");
+    assert.deepEqual(plan.assignments, [], "no assignments are minted off a corrupt artifact");
+    assert.deepEqual(plan.candidate_surface_ids, [], "no candidates are selected off a corrupt artifact");
+    // The never-reschedule invariant: the parked surface is NOT resurrected, and
+    // neither is any routable sibling planned off the corrupt read.
+    assert.ok(plan.routes_error, "the corruption is surfaced, not swallowed");
+    assert.equal(plan.routes_error.code, "routes_unreadable");
+    assert.match(plan.reason, /surface-routes\.json/);
+    assert.ok(
+      !plan.reason.includes(surfaceRoutesPath(domain)),
+      "the planner routes_error basename-sanitizes (no absolute session path leak)",
+    );
+  });
+});
+
+test("planNextWave + deriveUnroutableSurfacesFromRoutes derive the identical unroutable set from one file", () => {
+  withTempHome(() => {
+    const { deriveUnroutableSurfacesFromRoutes } = require("../mcp/lib/surface-router.js");
+    const domain = "planner-status-parity.example.com";
+    writeUnroutableRoutes(domain, ["unroutable-sc"], ["routable-high"]);
+
+    const helper = deriveUnroutableSurfacesFromRoutes(domain);
+    const plan = planNextWave({
+      state: { target: domain, evaluation_wave: 0, pending_wave: null },
+      surfaces: [surface("routable-high", "HIGH", 50), surface("unroutable-sc", "HIGH", 90)],
+      queuePolicy: DEFAULT_QUEUE_POLICY,
+    });
+
+    // The planner excludes exactly the helper's parked surface, and admits the sibling.
+    for (const parkedId of helper.surfaceIds) {
+      assert.ok(!plan.candidate_surface_ids.includes(parkedId), `planner never schedules parked ${parkedId}`);
+    }
+    assert.ok(plan.assignments.map((a) => a.surface_id).includes("routable-high"), "routable sibling still planned");
+  });
+});
+
 test("planNextWave returns pending-wave settle before selecting candidates", () => {
   const plan = planNextWave({
     state: {

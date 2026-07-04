@@ -236,6 +236,13 @@ function startWaveLocked(domain, {
   const unroutableSurfaces = Array.isArray(assignmentsDocument.unroutable_surfaces)
     ? assignmentsDocument.unroutable_surfaces
     : [];
+  // Honest zero-executable signal. An all-unroutable wave persists zero routable
+  // assignments; it stays STARTED and self-completing (non-halting — we do NOT
+  // reject or throw), but a caller reading `started:true` alone would be misled
+  // into thinking work is in flight. These additive flags name the gap explicitly.
+  // Additive-only: a routable wave carries has_routable_assignments:true /
+  // zero_executable:false, keeping its response shape byte-identical.
+  const hasRoutableAssignments = persistedAssignments.length > 0;
   return {
     wave_number: waveNumber,
     assignments: persistedAssignments.map((assignment) => ({
@@ -250,6 +257,8 @@ function startWaveLocked(domain, {
       budget: assignment.budget,
       handoff_token: assignment.handoff_token,
     })),
+    has_routable_assignments: hasRoutableAssignments,
+    zero_executable: !hasRoutableAssignments,
     unroutable_count: unroutableSurfaces.length,
     unroutable_surfaces: unroutableSurfaces,
     assignments_path: assignmentsPath,
@@ -277,6 +286,8 @@ function startWave(args) {
       started: true,
       wave_number: started.wave_number,
       assignments: started.assignments,
+      has_routable_assignments: started.has_routable_assignments,
+      zero_executable: started.zero_executable,
       unroutable_count: started.unroutable_count,
       unroutable_surfaces: started.unroutable_surfaces,
       assignments_path: started.assignments_path,

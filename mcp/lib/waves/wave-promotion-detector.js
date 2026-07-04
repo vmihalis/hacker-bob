@@ -196,6 +196,11 @@ function buildStartNextWaveResponse({ domain, dryRun, state, plan, promotion, st
     // null); the planning/dry-run path is unchanged.
     if (started.unroutable_count != null) response.unroutable_count = started.unroutable_count;
     if (started.unroutable_surfaces != null) response.unroutable_surfaces = started.unroutable_surfaces;
+    // Additive zero-executable signal (all assigned surfaces unroutable): honest,
+    // non-halting. Present only on a real start; the planning/dry-run path is
+    // unchanged.
+    if (started.has_routable_assignments != null) response.has_routable_assignments = started.has_routable_assignments;
+    if (started.zero_executable != null) response.zero_executable = started.zero_executable;
     response.assignments_path = started.assignments_path;
     response.state = started.state;
     response.next_action.assignments_path = started.assignments_path;

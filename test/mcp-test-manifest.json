@@ -43,6 +43,7 @@
   "test/wave-handoff-store.test.js",
   "test/wave-handoff-unconsumed-pivots.test.js",
   "test/wave-planner.test.js",
+  "test/wave-unroutable-single-source.test.js",
   "test/bob-export.test.js",
   "test/schema-contracts.test.js",
   "test/schema-contracts-store.test.js",

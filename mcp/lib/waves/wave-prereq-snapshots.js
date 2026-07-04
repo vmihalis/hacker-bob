@@ -92,48 +92,27 @@ function waveStatus(args) {
   // (`route.disposition === "unroutable"`), NOT a transient wave-assignment doc.
   // The routes file is written at route time and persists across waves, so this
   // coverage gap stays visible even after a later wave whose assignment doc
-  // carries no unroutable surfaces (fixes the cross-wave amnesia). Back-compat:
-  // a missing routes file reads as []. A genuinely corrupt/unreadable routes
-  // file is NOT masked to a silent [] — it surfaces a distinct diagnostic so a
-  // coverage gap is never under-reported by a swallowed read error.
-  let unroutableSurfaces = [];
-  let unroutableSurfacesError = null;
-  let unroutableSurfacesQuarantine = null;
-  try {
-    const { readSurfaceRoutesStrict } = require("../surface-router.js");
-    const routesResult = readSurfaceRoutesStrict(domain);
-    const routes = routesResult && routesResult.document && Array.isArray(routesResult.document.routes)
-      ? routesResult.document.routes
-      : [];
-    unroutableSurfaces = routes
-      .filter((route) => route && route.disposition === "unroutable")
-      .map((route) => ({
-        surface_id: route.surface_id,
-        surface_type: route.surface_type,
-        unroutable_reason: route.reason,
-      }));
-    // Per-route corruption (a single stale/malformed row) is quarantined by the
-    // reader, not thrown. Surface a count + repair hint so a per-route drop is
-    // not under-reported either.
-    if (Array.isArray(routesResult.malformed_routes) && routesResult.malformed_routes.length > 0) {
-      unroutableSurfacesQuarantine = {
+  // carries no unroutable surfaces (fixes the cross-wave amnesia). This shares
+  // the SINGLE derivation (deriveUnroutableSurfacesFromRoutes) with planNextWave,
+  // so status and the planner never disagree on which surfaces are parked or on
+  // the corruption policy. Back-compat: a missing routes file reads as []. A
+  // genuinely corrupt/unreadable routes file is NOT masked to a silent [] — it
+  // surfaces a distinct diagnostic so a coverage gap is never under-reported by a
+  // swallowed read error.
+  const { deriveUnroutableSurfacesFromRoutes } = require("../surface-router.js");
+  const routesDerivation = deriveUnroutableSurfacesFromRoutes(domain);
+  const unroutableSurfaces = routesDerivation.surfaces;
+  const unroutableSurfacesError = routesDerivation.error;
+  // Per-route corruption (a single stale/malformed row) is quarantined by the
+  // reader, not thrown. Surface a count + repair hint so a per-route drop is not
+  // under-reported either.
+  const unroutableSurfacesQuarantine = routesDerivation.malformed_route_count > 0
+    ? {
         code: "routes_quarantined",
-        malformed_route_count: routesResult.malformed_routes.length,
-        repair_hint: routesResult.repair_hint
-          || "re-run bob_route_surfaces to regenerate surface-routes.json from the current surface index",
-      };
-    }
-  } catch (error) {
-    // A missing routes file (no routing yet) is the expected back-compat path,
-    // NOT corruption: read as [] with no error. Any other hard failure
-    // (unparseable JSON, version mismatch, routes-not-an-array) is genuinely
-    // unrecoverable — surface a distinct diagnostic instead of masking a
-    // coverage gap to a silent zero.
-    const message = error && error.message ? error.message : String(error);
-    if (!/^Missing surface routes JSON:/.test(message)) {
-      unroutableSurfacesError = { code: "routes_unreadable", message };
-    }
-  }
+        malformed_route_count: routesDerivation.malformed_route_count,
+        repair_hint: routesDerivation.repair_hint,
+      }
+    : null;
 
   let auditSummary = null;
   let trafficSummary = null;
