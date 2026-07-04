@@ -63,8 +63,8 @@
       "type": "string",
       "format": "uri",
       "maxLength": 2048,
-      "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$",
-      "description": "The Convex deployment URL the runner writes curated run_events + runs rows to. The pattern enforces SHAPE only: HTTPS, an explicit host, no embedded userinfo credentials (no `user:pass@`), no whitespace-smuggled authority, no bare `https://`. It does NOT and cannot prevent SSRF — a schema-valid host may still be 127.0.0.1, 169.254.169.254 (cloud metadata), a private range, or a DNS-rebind target. Rejecting those is a RUNTIME check the runner glue performs at write time (an explicit Convex-deployment host allow-list, resolved-IP private/link-local/metadata rejection); the schema only pins the wire shape. The runner authenticates these writes with the runner write-secret (carried out-of-band in the container's transport-layer environment, NOT in this payload and NEVER in model context) — the same secret-gate discipline convex/reports.ts uses for REPORTS_SECRET. Convex live queries are the streaming layer; there is no WebSocket/SSE/Durable-Object channel."
+      "pattern": "^https://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?(/[^\\s]*)?$",
+      "description": "The Convex deployment URL the runner writes curated run_events + runs rows to. The pattern enforces SHAPE only: HTTPS, an explicit host as a DNS-label grammar (labels of alphanumerics/hyphens, no leading/trailing/consecutive dots, no leading/trailing hyphens), an optional port and path, no embedded userinfo credentials (no `user:pass@`), no whitespace-smuggled authority, no bare `https://`. It does NOT and cannot prevent SSRF — a schema-valid host may still be 127.0.0.1, 169.254.169.254 (cloud metadata), a private range, or a DNS-rebind target. Rejecting those is a RUNTIME check the runner glue performs at write time (an explicit Convex-deployment host allow-list, resolved-IP private/link-local/metadata rejection); the schema only pins the wire shape. The runner authenticates these writes with the runner write-secret (carried out-of-band in the container's transport-layer environment, NOT in this payload and NEVER in model context) — the same secret-gate discipline convex/reports.ts uses for REPORTS_SECRET. Convex live queries are the streaming layer; there is no WebSocket/SSE/Durable-Object channel."
     },
     "ingestToken": {
       "type": "string",
@@ -91,9 +91,9 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 253,
-            "pattern": "^[A-Za-z0-9.-]+$"
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
           },
-          "description": "Additional in-scope hosts for a web engagement (e.g. an API subdomain). Each item is a bare host token — no scheme, path, port, wildcard, or whitespace (pattern-enforced) — and the array is bounded and de-duplicated so it cannot balloon the grant. This is SHAPE only: the actual scope decision is the RUNTIME gate — every host is run through the same assertHttpScopeDomain / validateHttpScanScope check the local rail uses, and an entry that fails (or would widen beyond what `target` + autonomy permit) fails the whole grant closed. The schema cannot itself decide scope; it just rejects malformed/oversized host bags."
+          "description": "Additional in-scope hosts for a web engagement (e.g. an API subdomain). Each item is a bare host as a DNS-label grammar (labels of alphanumerics/hyphens, no scheme/path/port, no wildcard or whitespace, no leading/trailing/consecutive dots, no leading/trailing hyphens), and the array is bounded and de-duplicated so it cannot balloon the grant. This is SHAPE only: the actual scope decision is the RUNTIME gate — every host is run through the same assertHttpScopeDomain / validateHttpScanScope check the local rail uses, and an entry that fails (or would widen beyond what `target` + autonomy permit) fails the whole grant closed. The schema cannot itself decide scope; it just rejects malformed/oversized host bags."
         },
         "labAuthorization": {
           "type": "object",
