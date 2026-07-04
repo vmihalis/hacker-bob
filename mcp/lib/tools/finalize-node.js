@@ -88,12 +88,9 @@ const {
   isPlainObject,
 } = require("../verification-contracts.js");
 const {
-  buildOneHopGraphContext,
-  derivePackForNode,
-} = require("../capability-pack-derivation.js");
-const {
-  readSurfaceRoutesStrict,
-} = require("../surface-router.js");
+  deriveDispatchNodePack,
+  safeSurfaceRouteMap,
+} = require("../dispatch-node-pack.js");
 const {
   readCompositionVerifiedSummary,
 } = require("../composition-live-verifier.js");
@@ -117,49 +114,6 @@ function structuredError(code, message, details) {
   err.code = code;
   if (details) err.details = details;
   return err;
-}
-
-// Helper shared with bob_prepare_node for the surface metadata used in
-// pack derivation. Inlined here (rather than imported) because the
-// surface-router strict read is sensitive to absent route files and we
-// must not regress finalize on a missing routes shape.
-function safeSurfaceRouteMap(targetDomain) {
-  let result;
-  try {
-    result = readSurfaceRoutesStrict(targetDomain);
-  } catch {
-    return {};
-  }
-  const map = {};
-  const doc = result && result.document;
-  if (!doc || !Array.isArray(doc.routes)) return map;
-  // readSurfaceRoutesStrict is now tolerant: it QUARANTINES stale/duplicate routes (it used to throw,
-  // which the catch above turned into a silent empty {} — losing ALL routes). The valid routes survive
-  // in doc.routes; the quarantined ones are omitted from this metadata map. Surface a diagnostic so a
-  // fully- or partially-corrupt routing artifact is not silently indistinguishable from "no routes were
-  // set up". This map only enriches one-hop graph context, so we degrade gracefully (no throw) — unlike
-  // getContextBudget/findRoutedSurface, where a wrong/missing route must hard-fail the operation.
-  if (Array.isArray(result.malformed_routes) && result.malformed_routes.length > 0) {
-    const quarantinedIds = result.malformed_routes
-      .map((m) => (m && m.surface_id) || `routes[${m && m.index}]`)
-      .join(", ");
-    process.stderr.write(
-      `WARNING: surface-routes.json has ${result.malformed_routes.length} quarantined route(s) [${quarantinedIds}] omitted from the surface metadata map; re-run bob_route_surfaces to regenerate (${doc.routes.length} valid route(s) retained).\n`,
-    );
-  }
-  for (const route of doc.routes) {
-    if (!route || typeof route !== "object") continue;
-    const surfaceId = typeof route.surface_id === "string" ? route.surface_id : null;
-    if (!surfaceId) continue;
-    map[surfaceId] = {
-      id: surfaceId,
-      surface_type: route.surface_type || null,
-      chain_family: route.chain_family || null,
-      capability_pack: route.capability_pack || null,
-      brief_profile: route.brief_profile || null,
-    };
-  }
-  return map;
 }
 
 // Plane X Cycle X.10 — tool_constraint_violation detective control.
@@ -708,23 +662,32 @@ function finalizeNodeLocked(args) {
   // violation. Note: we re-materialize only the ≤1-hop graph context
   // (not the full live graph) so the derivation matches what was
   // bound into the prep_token.
+  // surfaceMetadataById is needed on EVERY path — including a 'producer' node,
+  // whose pack is never derived — because the cross-stack mechanism gate
+  // (claimsCrossStackMechanism) reads it below. Compute it unconditionally via
+  // the shared safeSurfaceRouteMap; a non-producer additionally re-derives its
+  // pack through the same deriveDispatchNodePack bob_prepare_node used, so the
+  // X.6 allowed_tools_for_node[] is byte-identical by construction (not by two
+  // hand-duplicated copies happening to match).
   const surfaceMetadataById = safeSurfaceRouteMap(domain);
-  const finalizeGraphContext = buildOneHopGraphContext(document, nodeId, surfaceMetadataById);
-  // derivePackForNode derives the per-node tool allow-list only for the
-  // dispatchable evaluator kinds (surface/transition/hypothesis/claim/cell). A
-  // 'producer' node has no per-node capability pack, so the tool_constraint
-  // detective control is kind-scoped and skipped for it; its output is
-  // SERVER-minted from attested counts in the kind === "producer" branch below.
-  // Every other kind runs the derivation + check exactly as before.
+  // deriveDispatchNodePack (via derivePackForNode) derives the per-node tool
+  // allow-list only for the dispatchable evaluator kinds
+  // (surface/transition/hypothesis/claim/cell). A 'producer' node has no per-node
+  // capability pack (derivePackForNode throws on kind 'producer'), so the
+  // tool_constraint detective control is kind-scoped and skipped for it; its
+  // output is SERVER-minted from attested counts in the kind === "producer"
+  // branch below. Every other kind runs the derivation + check exactly as before.
   const isProducerNode = finalizedNode.kind === "producer";
   const finalizePack = isProducerNode
     ? null
-    : derivePackForNode(
-      finalizedNode,
-      finalizeGraphContext,
-      [],
-      attached.contract,
-    );
+    : deriveDispatchNodePack({
+      targetDomain: domain,
+      document,
+      nodeId,
+      node: finalizedNode,
+      contract: attached.contract,
+      surfaceMetadataById,
+    }).pack;
   const toolViolations = isProducerNode
     ? []
     : checkToolConstraintViolation(

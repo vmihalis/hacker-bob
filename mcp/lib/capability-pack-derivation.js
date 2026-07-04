@@ -130,11 +130,11 @@ const FRICTION_HISTORY_HARD_CAP = 32;
 const PACK_FRICTION_CHRONIC_MIN_COUNT = 2;
 
 // Confidence modulates friction-widening eagerness. A LOW-confidence route
-// widens from a single friction record; a MEDIUM route needs 2 distinct
-// records; a HIGH route needs 3 (the pack routing was confident, so it takes
-// repeated friction to override it). Absent/unknown confidence falls to the
-// eager default (threshold 1) so widening is never LESS eager than the
-// unconditional union — modulation only ever RAISES the bar, never truncates.
+// widens from a single friction record; a MEDIUM or HIGH route needs 2 distinct
+// records (the pack routing was confident, so it takes repeated friction to
+// override it). Absent/unknown confidence falls to the eager default
+// (threshold 1) so widening is never LESS eager than the unconditional union —
+// modulation only ever RAISES the bar, never truncates.
 const FRICTION_WIDEN_THRESHOLD_BY_CONFIDENCE = Object.freeze({ low: 1, medium: 2, high: 2 });
 
 function widenThresholdForConfidence(confidence) {

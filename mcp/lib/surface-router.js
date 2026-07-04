@@ -25,7 +25,6 @@ const {
 const {
   currentSurfaces,
 } = require("./frontier-projections.js");
-
 const SURFACE_ROUTES_VERSION = 1;
 const SURFACE_ROUTE_VERSION = 1;
 

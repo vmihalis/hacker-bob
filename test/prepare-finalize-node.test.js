@@ -384,6 +384,45 @@ test("prepare → finalize succeeds with a relational_value_match Contract; down
   });
 });
 
+test("X.6 by construction: prepare-node and finalize-node derive the IDENTICAL allowed_tools_for_node via the shared deriveDispatchNodePack", () => {
+  withTempHome(() => {
+    const domain = "x6-shared-dispatch-pack.example.com";
+    seedSession(domain);
+    const nodeId = seedContractedNode(domain, "HP-x6-shared");
+
+    // What bob_prepare_node briefs the agent with.
+    const prep = JSON.parse(TOOL_HANDLERS.bob_prepare_node({
+      target_domain: domain,
+      node_id: nodeId,
+    }));
+    assert.ok(Array.isArray(prep.allowed_tools_for_node), "prepare must brief allowed_tools_for_node[]");
+    assert.ok(prep.allowed_tools_for_node.length > 0, "the routed node must carry a non-empty tool allow-list");
+
+    // What bob_finalize_node re-derives to run the tool_constraint_violation
+    // check: the SAME shared helper over the same node + document + contract.
+    // The single source is what makes these equal by construction.
+    const { deriveDispatchNodePack } = require("../mcp/lib/dispatch-node-pack.js");
+    const { findAttachedContract } = require("../mcp/lib/task-graph-events.js");
+    const document = materializeTaskGraph(domain, { write: false }).document;
+    const node = document.nodes.find((n) => n.node_id === nodeId);
+    const attached = findAttachedContract(domain, nodeId);
+    const { pack } = deriveDispatchNodePack({
+      targetDomain: domain,
+      document,
+      nodeId,
+      node,
+      contract: attached.contract,
+    });
+    const finalizeAllowed = pack.allowed_tools_for_node.slice().sort();
+    const prepareAllowed = prep.allowed_tools_for_node.slice().sort();
+    assert.deepEqual(
+      finalizeAllowed,
+      prepareAllowed,
+      "finalize-node must re-derive the identical allowed_tools_for_node[] prepare-node briefed (X.6 invariant)",
+    );
+  });
+});
+
 test("prepare_node keeps prep_token stable across equivalent briefs with fresh envelope nonces", () => {
   const fixedMaterializedAt = "2026-05-31T00:03:00.000Z";
   const domain = "x8-prep-token-nonce-stability.example.com";
