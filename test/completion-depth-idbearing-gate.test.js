@@ -151,6 +151,10 @@ function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount
       },
       divergences: [],
       distinct_principal_count: distinctPrincipalCount,
+      // The runner computes this; here we model it per scenario: a cross-tenant FLIP needs a
+      // real accessor (alice 2xx) AND a distinct validated denied principal (>=2). Both-denied
+      // (authenticatedAccess=false) or same-principal (distinct<2) => no flip.
+      cross_tenant_flip: authenticatedAccess && distinctPrincipalCount >= 2,
     }],
   }, null, 2)}\n`);
 }

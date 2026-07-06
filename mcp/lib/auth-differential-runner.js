@@ -162,6 +162,18 @@ function signatureIsNonError(sig) {
       || sig.response_class === "ok"));
 }
 
+// A DENIAL (401/403/4xx): the principal was refused this object. For a VALIDATED principal
+// this is the "negative control held" half of a cross-tenant flip; for a junk credential it
+// is meaningless (it was never a principal), which is why the flip requires the denied side
+// to be validated.
+function signatureIsDenied(sig) {
+  return !!(sig && typeof sig === "object"
+    && ((typeof sig.status === "number" && sig.status >= 400 && sig.status < 500)
+      || sig.status_class === "4xx"
+      || sig.response_class === "forbidden"
+      || sig.response_class === "unauthorized"));
+}
+
 function rowShowsExecutedDifferential(row) {
   const signatures = row && row.signatures_by_profile;
   if (!(signatures && typeof signatures === "object" && !Array.isArray(signatures))) return false;
@@ -216,7 +228,7 @@ async function runAuthDifferential({
   const cappedEndpoints = normalizedEndpoints.slice(0, effectiveLimit);
   const startedAt = new Date().toISOString();
   const perEndpoint = [];
-  const rowFingerprintSets = [];
+  const rowFpSignatures = [];
   // A fingerprint is a VALIDATED principal only if it produced a non-error (2xx) response
   // somewhere in the sweep — a real authenticated session. A junk/expired credential that
   // only ever 4xx'd is distinct MATERIAL but not a validated principal, so it must not
@@ -251,15 +263,15 @@ async function runAuthDifferential({
         profile_metadata: profile_metadata || null,
       })
       : [];
-    // Collect this row's fingerprints (by MCP-owned auth fingerprint, so two profile NAMES
-    // bound to the same session collapse to one) and mark those that AUTHENTICATED (2xx)
-    // anywhere as validated principals; distinct_principal_count is finalized post-loop.
-    const rowFps = new Set();
+    // Map this row's fingerprints (MCP-owned, so two profile NAMES of one session collapse)
+    // to their signature, and mark any that AUTHENTICATED (2xx) anywhere as validated
+    // principals. distinct_principal_count and cross_tenant_flip are finalized post-loop.
+    const rowFpSig = new Map();
     for (const profile of Object.keys(signaturesByProfile)) {
       const meta = profile_metadata && typeof profile_metadata === "object" ? profile_metadata[profile] : null;
       const fp = meta && typeof meta === "object" ? meta.principal_fingerprint : null;
       if (typeof fp !== "string" || !fp) continue;
-      rowFps.add(fp);
+      rowFpSig.set(fp, signaturesByProfile[profile]);
       if (signatureIsNonError(signaturesByProfile[profile])) validatedFingerprints.add(fp);
     }
     perEndpoint.push({
@@ -272,15 +284,27 @@ async function runAuthDifferential({
       signatures_by_profile: signaturesByProfile,
       divergences,
       distinct_principal_count: 0,
+      cross_tenant_flip: false,
       fetch_errors_by_profile: fetchErrorsByProfile,
     });
-    rowFingerprintSets.push(rowFps);
+    rowFpSignatures.push(rowFpSig);
   }
-  // Finalize distinct_principal_count over VALIDATED principals only (>=1 2xx in the sweep).
+  // Finalize per row: distinct_principal_count over VALIDATED principals, and cross_tenant_flip
+  // = a VALIDATED principal ACCESSED this object (2xx) while a DISTINCT VALIDATED principal was
+  // DENIED it (4xx) — the negative control flipped. Same-account-twice (both 2xx, no denial) and
+  // [real, junk] (junk not validated) both fail to produce a flip.
   perEndpoint.forEach((row, i) => {
-    let n = 0;
-    for (const fp of rowFingerprintSets[i]) if (validatedFingerprints.has(fp)) n += 1;
-    row.distinct_principal_count = n;
+    const fpSig = rowFpSignatures[i];
+    const accessors = new Set();
+    const deniedValidated = new Set();
+    let distinct = 0;
+    for (const [fp, sig] of fpSig) {
+      if (validatedFingerprints.has(fp)) distinct += 1;
+      if (signatureIsNonError(sig)) accessors.add(fp);
+      else if (signatureIsDenied(sig) && validatedFingerprints.has(fp)) deniedValidated.add(fp);
+    }
+    row.distinct_principal_count = distinct;
+    row.cross_tenant_flip = [...accessors].some((a) => [...deniedValidated].some((b) => a !== b));
   });
   perEndpoint.sort((a, b) => {
     const byEndpoint = a.endpoint.localeCompare(b.endpoint);

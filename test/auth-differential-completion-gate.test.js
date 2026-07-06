@@ -129,6 +129,8 @@ function writeAuthDifferentialResults(domain) {
       },
       divergences: [],
       distinct_principal_count: 2,
+      // tenant_a accessed (ok) while a distinct validated tenant_b was denied (forbidden) — a flip.
+      cross_tenant_flip: true,
     }],
   });
 }

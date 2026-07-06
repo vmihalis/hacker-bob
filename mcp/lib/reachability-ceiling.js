@@ -505,7 +505,22 @@ function capabilityBlockerCeilingViolations(domain) {
   for (const [findingId] of reportableSeverities) {
     const finding = frozenFindingForFinding(domain, findingId);
     const { value, fieldName } = capabilityBlockerValueForFinding(finding);
-    const blocker = normalizeCapabilityBlocker(value, fieldName);
+    let blocker;
+    try {
+      blocker = normalizeCapabilityBlocker(value, fieldName);
+    } catch (error) {
+      // A malformed authored capability_blocker field blocks THIS finding (fail-closed per
+      // finding), never the whole session — do not let one finding's bad field propagate out
+      // and deadlock grading for every other finding.
+      violations.push({
+        finding_id: findingId,
+        capability_id: "malformed_capability_blocker",
+        owning_tools: [],
+        surface_ids: surfaceIdsForFinding(domain, findingId),
+        reason: error && error.message ? String(error.message) : "malformed capability_blocker",
+      });
+      continue;
+    }
     if (!blocker) continue;
     const owningTools = map[blocker.capability_id] || [];
     if (owningTools.length === 0) continue;

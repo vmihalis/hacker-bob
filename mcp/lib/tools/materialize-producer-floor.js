@@ -955,7 +955,10 @@ function chainIdFromHintText(text) {
   // chain-SPECIFIC disambiguator, never a bare 'base' ("base fee"/"base url") or bare
   // 'mainnet' (matches "avalanche mainnet" etc.). Mirrors lead-intake resolveChainContext.
   if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli)\b/.test(normalized)) return "8453";
-  if (/\bethereum[-_\s]?mainnet\b|\bethereum\b/.test(normalized)) return "1";
+  // Bare \bethereum\b matches "Ethereum-compatible"/"EVM"/"Ethereum-based" for essentially
+  // every EVM L2 — require a mainnet-SPECIFIC disambiguator so a non-mainnet L2 contract is
+  // never silently stamped chain 1 (Y-D22 fail-closed).
+  if (/\bethereum[-_\s]?mainnet\b|\beip155[:_-]?1\b/.test(normalized)) return "1";
   if (/\barbitrum[-_\s]?one\b|\barbitrum[-_\s]?mainnet\b/.test(normalized)) return "42161";
   if (/\boptimism[-_\s]?mainnet\b|\bop[-_\s]?mainnet\b/.test(normalized)) return "10";
   if (/\bpolygon[-_\s]?mainnet\b/.test(normalized)) return "137";
@@ -1068,6 +1071,29 @@ function executeWebHttpBodiesProducer(domain, { runSet = null } = {}) {
   return { executed: true, input_item_count: rows.length };
 }
 
+function recordOverCapOnchainReference(domain, tuple) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "frontier.enqueued",
+    payload: {
+      lead_id: blockedPrereqId({ address: tuple && tuple.address ? tuple.address : contractIdentityKey(tuple) }),
+      surface_ref: null,
+      score: 0,
+      priority: "low",
+      confidence: "low",
+      blocked_prereqs: [{
+        kind: "onchain_ref_over_cap",
+        identifier_hint: tuple && tuple.address ? tuple.address : contractIdentityKey(tuple),
+        reason: "on-chain address reference from a captured response body exceeded the per-pass seed cap and was not auto-bound",
+        next_step: "Confirm this address is in program scope and record it as an authorized contract target before it is analyzed.",
+      }],
+      provenance: { source: WEB_ONCHAIN_REF_PRODUCER_ID, artifact: "http_body_corpus", line: null },
+    },
+    source: { artifact: "http_body_corpus", tool: WEB_ONCHAIN_REF_PRODUCER_ID },
+    actor: "orchestrator",
+  });
+}
+
 function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
   const runs = runSet instanceof Set ? runSet : producerRunSet(domain);
   if (runs.has(WEB_ONCHAIN_REF_PRODUCER_ID)) {
@@ -1098,15 +1124,28 @@ function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
   // ledger row; any resolved contract is seeded only through the shared
   // bindAndSeedContracts funnel, and unresolved chain context is recorded as a
   // blocked prerequisite instead of defaulted.
-  if (tuples.length > 0) {
-    require("../contract-target.js").bindAndSeedContracts(state, tuples);
+  // OD1-parity cap: an attacker-influenceable response body can carry an unbounded number of
+  // 0x-addresses; cap the tuples SEEDED so untrusted body content cannot mint an unbounded
+  // set of smart_contract obligations (a DoS on frontier convergence). This producer is
+  // one-shot (the runs.has short-circuit above), so the per-pass cap is also the lifetime
+  // bound. Over-cap refs are REPORTED as blocked prerequisites, never silently dropped.
+  const policy = loadQueuePolicy(domain);
+  const perPassCap = clampCap(policy && policy.seed_producer_per_pass_cap, {
+    lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  });
+  const seededTuples = tuples.slice(0, perPassCap);
+  const overCapTuples = tuples.slice(perPassCap);
+  if (seededTuples.length > 0) {
+    require("../contract-target.js").bindAndSeedContracts(state, seededTuples);
   }
+  for (const tuple of overCapTuples) recordOverCapOnchainReference(domain, tuple);
   recordInlineProducerProduced(domain, WEB_ONCHAIN_REF_PRODUCER_ID, rows.length);
   return {
     executed: true,
     input_item_count: rows.length,
-    resolved: tuples.length,
+    resolved: seededTuples.length,
     unresolved,
+    over_cap: overCapTuples.length,
   };
 }
 

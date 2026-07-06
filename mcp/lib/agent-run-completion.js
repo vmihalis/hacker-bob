@@ -310,20 +310,12 @@ function surfaceEndpointSet(domain, surfaceId) {
 }
 
 function rowHasTwoProfileSweep(row) {
-  const signatures = row && row.signatures_by_profile;
-  const signaturesOk = signatures != null
-    && typeof signatures === "object"
-    && !Array.isArray(signatures)
-    && Object.keys(signatures).length >= 2;
-  // Executed cross-tenant coverage requires >=2 DISTINCT PRINCIPALS (MCP-owned auth
-  // fingerprint), not >=2 profile NAMES — a same-principal 2-name sweep does not count —
-  // AND the sweep must show a real differential (a 2xx access or a divergence flip), so
-  // two fabricated cookies both getting denied cannot earn completion.
-  const { rowShowsExecutedDifferential } = require("./auth-differential-runner.js");
-  return signaturesOk
-    && typeof row.distinct_principal_count === "number"
-    && row.distinct_principal_count >= 2
-    && rowShowsExecutedDifferential(row);
+  // Executed cross-tenant coverage requires a per-endpoint FLIP (MCP-computed): one VALIDATED
+  // principal ACCESSED the object (2xx) while a DISTINCT VALIDATED principal was DENIED it
+  // (4xx) — the negative control flipped. Same-account-twice (both 2xx, no denial) and
+  // [real, junk] (junk never validated) both fail to flip; a genuinely-secure surface
+  // (owner-in/attacker-out) does flip and correctly earns completion.
+  return !!(row && row.cross_tenant_flip === true);
 }
 
 function hasAuthDifferentialSweepForSurface(marker) {

@@ -179,6 +179,8 @@ test("distinct_principal_count counts only VALIDATED principals (a junk profile 
     // Two distinct fingerprints were swept, but only "real" ever authenticated, so the sweep
     // tested no real SECOND principal -> distinct_principal_count is 1, not 2 (the [real, junk] forge).
     assert.equal(result.per_endpoint[0].distinct_principal_count, 1);
+    // junk (401-only) is not a validated principal, so there is no cross-tenant flip.
+    assert.equal(result.per_endpoint[0].cross_tenant_flip, false);
   } finally {
     cleanupDomain(domain);
   }
@@ -207,6 +209,9 @@ test("distinct_principal_count is 2 when BOTH principals authenticate somewhere 
     });
     // Both authenticated somewhere -> both validated -> every row's distinct_principal_count is 2.
     for (const row of result.per_endpoint) assert.equal(row.distinct_principal_count, 2);
+    // On each id-bearing url one owner accessed (2xx) while the distinct validated other was
+    // denied (403) — the negative control flipped, so this correct secure IDOR test clears.
+    for (const row of result.per_endpoint) assert.equal(row.cross_tenant_flip, true);
   } finally {
     cleanupDomain(domain);
   }

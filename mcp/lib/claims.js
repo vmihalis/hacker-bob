@@ -1945,22 +1945,17 @@ function completionDepthGapForCompleteSurfaces(domain) {
 
   const authDifferentialCovered = new Set();
   try {
-    const { readResults, rowShowsExecutedDifferential } = require("./auth-differential-runner.js");
+    const { readResults } = require("./auth-differential-runner.js");
     const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
     const results = readResults(domain);
     for (const row of ((results && Array.isArray(results.per_endpoint)) ? results.per_endpoint : [])) {
       if (!row || typeof row.endpoint !== "string") continue;
-      const signatures = row.signatures_by_profile && typeof row.signatures_by_profile === "object"
-        && !Array.isArray(row.signatures_by_profile)
-        ? row.signatures_by_profile
-        : {};
-      if (Object.keys(signatures).length < 2) continue;
-      // Coverage requires >=2 DISTINCT PRINCIPALS actually swept (MCP-owned auth
-      // fingerprint), not >=2 profile NAMES — a same-principal 2-name row does not clear it —
-      // AND a real executed differential (a 2xx access or a divergence flip), so two
-      // fabricated cookies both getting denied cannot clear the surface.
-      if ((typeof row.distinct_principal_count === "number" ? row.distinct_principal_count : 0) < 2) continue;
-      if (!rowShowsExecutedDifferential(row)) continue;
+      // Coverage requires a per-endpoint cross-tenant FLIP (MCP-computed): one VALIDATED
+      // principal ACCESSED the object (2xx) while a DISTINCT VALIDATED principal was DENIED
+      // it (4xx) — the negative control flipped. Same-account-twice (both 2xx, no denial)
+      // and [real, junk] (junk never validated) both fail to flip, so neither clears; a
+      // genuinely-secure surface (owner-in/attacker-out) does flip and correctly clears.
+      if (row.cross_tenant_flip !== true) continue;
       // Bind by surface_id: the sweep must have been RUN FOR this surface (stamped at call
       // time) AND hit one of its id-bearing endpoints. A row not stamped with a surface_id
       // (legacy / un-bound sweep) earns no coverage — fail closed, no endpoint-string bleed.
