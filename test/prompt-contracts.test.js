@@ -1038,7 +1038,7 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // block (one line per tool in the orchestrator role bundle). It is registry-
   // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
   // post-regen trimmed line count.
-  assert.ok(lines <= 451, `bob-evaluate-runner skill is ${lines} lines (cap 451)`);
+  assert.ok(lines <= 454, `bob-evaluate-runner skill is ${lines} lines (cap 454)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1320,7 +1320,9 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.spawn.profile === "web" ? 55 : EVALUATOR_MCP_TOOL_BUDGET;
+    // web evaluator carries bob_run_auth_differential so it can run the sweep that
+    // the auth-differential completion gate (AD1) requires before surface complete.
+    const budget = pack.spawn.profile === "web" ? 56 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,

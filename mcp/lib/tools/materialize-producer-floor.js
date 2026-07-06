@@ -1,5 +1,8 @@
 "use strict";
 
+const crypto = require("crypto");
+const fs = require("fs");
+
 // bob_materialize_producer_floor — the producer-floor producer. Sweeps the recon
 // producer DAG (PRODUCER_PACKS) and emits one producer_proposed
 // observation.recorded event per producer that is READY (its input clause holds)
@@ -16,7 +19,7 @@ const { assertNonEmptyString } = require("../validation.js");
 const { currentSurfaces } = require("../frontier-projections.js");
 const { appendFrontierEvent, readFrontierEvents } = require("../frontier-events.js");
 const { PRODUCER_PACKS, isProducerReady } = require("../producer-packs.js");
-const { CASE_FOLD_SAFE_CHAIN_FAMILIES } = require("../chain-authority.js");
+const { CASE_FOLD_SAFE_CHAIN_FAMILIES, contractIdentityKey } = require("../chain-authority.js");
 const {
   producerRunSet,
   recordProducerRun,
@@ -25,8 +28,8 @@ const {
 } = require("../producer-run-ledger.js");
 const { materializeTaskGraph, producerNodeId } = require("../task-graph-materializer.js");
 const { loadQueuePolicy, CLAMP_CEILING } = require("../queue-policy.js");
-const { statePath } = require("../paths.js");
-const { readJsonFile, withSessionLock } = require("../storage.js");
+const { httpAuditJsonlPath, statePath, trafficJsonlPath } = require("../paths.js");
+const { readFileUtf8, readJsonFile, withSessionLock } = require("../storage.js");
 const { scheduleMaterialization } = require("../frontier-materialize-debounce.js");
 const {
   PRODUCER_NODE_KIND,
@@ -78,6 +81,8 @@ const STALE_DISPATCH_NODE_STATES = Object.freeze(["proposed", "dispatched"]);
 // dirs, so it is suppressed whenever address-keyed instances exist; the per-pass
 // instance keys embed the on-chain identity after this prefix.
 const SC_ADDRESS_EXPANDER_PRODUCER_ID = "sc_address_expander";
+const WEB_HTTP_BODIES_PRODUCER_ID = "web_http_bodies";
+const WEB_ONCHAIN_REF_PRODUCER_ID = "web_onchain_ref";
 
 // Case-folding an on-chain address is only safe where the address encoding is
 // case-INSENSITIVE: EVM hex and the hex Move families (aptos, sui). Solana (svm)
@@ -148,6 +153,7 @@ function planProducerFloor({
       // (e.g. a web root in a contracts session) — not ready, but not a gap to
       // fill, so it is simply omitted.
       const rootSeed = trigger.target_class === "web" ? "target" : "chain_address_set";
+      if (producerId === WEB_HTTP_BODIES_PRODUCER_ID && !available.has("http_bodies")) continue;
       if (available.has(rootSeed)) ready.push(pack);
       continue;
     }
@@ -702,6 +708,301 @@ function readScExpanderSurfaces(domain) {
   return scSurfaces;
 }
 
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readJsonlObjectsFailSoft(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  let content;
+  try {
+    content = readFileUtf8(filePath, { label: filePath });
+  } catch {
+    return [];
+  }
+  if (!content.trim()) return [];
+  const rows = [];
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (isPlainObject(parsed)) rows.push(parsed);
+    } catch {
+      continue;
+    }
+  }
+  return rows;
+}
+
+function stringifyBodyValue(value) {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (isPlainObject(value) || Array.isArray(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function bodyTextFromRecord(record) {
+  if (!isPlainObject(record)) return "";
+  const directFields = [
+    "body",
+    "response_body",
+    "responseBody",
+    "text",
+    "html",
+    "content",
+    "_content",
+  ];
+  for (const field of directFields) {
+    const text = stringifyBodyValue(record[field]);
+    if (text.trim()) return text;
+  }
+  if (isPlainObject(record.response)) {
+    const responseFields = ["body", "response_body", "text", "html", "_content"];
+    for (const field of responseFields) {
+      const text = stringifyBodyValue(record.response[field]);
+      if (text.trim()) return text;
+    }
+    if (isPlainObject(record.response.content)) {
+      const text = stringifyBodyValue(record.response.content.text || record.response.content.body);
+      if (text.trim()) return text;
+    }
+  }
+  return "";
+}
+
+function readHttpBodyCorpus(domain) {
+  const rows = [];
+  for (const source of [
+    { artifact: "http-audit.jsonl", filePath: httpAuditJsonlPath(domain) },
+    { artifact: "traffic.jsonl", filePath: trafficJsonlPath(domain) },
+  ]) {
+    const records = readJsonlObjectsFailSoft(source.filePath);
+    for (let i = 0; i < records.length; i += 1) {
+      const body = bodyTextFromRecord(records[i]);
+      if (!body.trim()) continue;
+      rows.push({
+        artifact: source.artifact,
+        line: i + 1,
+        record: records[i],
+        body,
+      });
+    }
+  }
+  return rows;
+}
+
+function hasMaterializedHttpBodyCorpus(domain) {
+  return readHttpBodyCorpus(domain).length > 0;
+}
+
+function scanStringFields(value, out = []) {
+  if (typeof value === "string") {
+    out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) scanStringFields(item, out);
+    return out;
+  }
+  if (isPlainObject(value)) {
+    for (const item of Object.values(value)) scanStringFields(item, out);
+  }
+  return out;
+}
+
+function parseBodyJson(body) {
+  try {
+    const parsed = JSON.parse(body);
+    return isPlainObject(parsed) || Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function chainIdFromHintText(text) {
+  const normalized = typeof text === "string" ? text.trim().toLowerCase() : "";
+  if (!normalized) return null;
+  const eip155 = normalized.match(/\beip155[:_-](\d{1,10})\b/);
+  if (eip155) return eip155[1];
+  const chainId = normalized.match(/\bchain[_-]?id["'\s:=]+(\d{1,10})\b/);
+  if (chainId) return chainId[1];
+  if (/\bbase[-_\s]?mainnet\b|\bbase\b/.test(normalized)) return "8453";
+  if (/\bethereum[-_\s]?mainnet\b|\bmainnet\b/.test(normalized)) return "1";
+  if (/\barbitrum[-_\s]?one\b|\barbitrum\b/.test(normalized)) return "42161";
+  if (/\boptimism[-_\s]?mainnet\b|\boptimism\b|\bop[-_\s]?mainnet\b/.test(normalized)) return "10";
+  if (/\bpolygon[-_\s]?mainnet\b|\bpolygon\b/.test(normalized)) return "137";
+  return null;
+}
+
+function collectChainHintTexts(record, parsedBody, body) {
+  const texts = [];
+  scanStringFields(record, texts);
+  if (parsedBody) scanStringFields(parsedBody, texts);
+  const compact = typeof body === "string" ? body.slice(0, 200000) : "";
+  if (compact) texts.push(compact);
+  return texts;
+}
+
+function resolveChainFamilyForHit(hit) {
+  // depends: S4-resolver
+  if (!hit || typeof hit.address !== "string") return null;
+  const address = hit.address.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
+  const chainId = hit.chain_id == null ? "" : String(hit.chain_id).trim();
+  if (!chainId) return null;
+  return { chain_family: "evm", chain_id: chainId, address };
+}
+
+function extractOnchainReferenceHits(row) {
+  const parsedBody = parseBodyJson(row.body);
+  const hintTexts = collectChainHintTexts(row.record, parsedBody, row.body);
+  let chainId = null;
+  for (const text of hintTexts) {
+    chainId = chainIdFromHintText(text);
+    if (chainId) break;
+  }
+
+  const addressSet = new Set();
+  const addressRe = /0x[0-9a-fA-F]{40}/g;
+  const bodyMatches = row.body.match(addressRe) || [];
+  for (const address of bodyMatches) addressSet.add(address);
+  if (parsedBody) {
+    const jsonText = JSON.stringify(parsedBody);
+    for (const address of jsonText.match(addressRe) || []) addressSet.add(address);
+  }
+
+  return Array.from(addressSet).map((address) => ({
+    address,
+    chain_id: chainId,
+    artifact: row.artifact,
+    line: row.line,
+  }));
+}
+
+function blockedPrereqId(hit) {
+  return "web-onchain-ref-" + crypto.createHash("sha256")
+    .update(JSON.stringify([hit.artifact, hit.line, hit.address]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function recordUnresolvedOnchainReference(domain, hit) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "frontier.enqueued",
+    payload: {
+      lead_id: blockedPrereqId(hit),
+      surface_ref: null,
+      score: 0,
+      priority: "medium",
+      confidence: "low",
+      blocked_prereqs: [{
+        kind: "chain_family_unresolved",
+        identifier_hint: hit.address,
+        reason: "on-chain address reference was found in a captured response body without resolvable chain context",
+        next_step: "Record the chain context for this response or add a resolver hint that maps the address to a chain_family and chain_id.",
+      }],
+      provenance: {
+        source: WEB_ONCHAIN_REF_PRODUCER_ID,
+        artifact: hit.artifact,
+        line: hit.line,
+      },
+    },
+    source: { artifact: hit.artifact, tool: WEB_ONCHAIN_REF_PRODUCER_ID },
+    actor: "orchestrator",
+  });
+}
+
+function recordInlineProducerProduced(domain, producerKey, inputItemCount) {
+  appendFrontierEvent({
+    target_domain: domain,
+    kind: "observation.recorded",
+    payload: {
+      observation_kind: "producer_run",
+      producer_key: producerKey,
+      status: "produced",
+      reason: "input_consumed",
+      input_consumed: { input_item_count: inputItemCount },
+    },
+    source: { tool: "bob_materialize_producer_floor" },
+    actor: "orchestrator",
+  });
+}
+
+function executeWebHttpBodiesProducer(domain, { runSet = null } = {}) {
+  const runs = runSet instanceof Set ? runSet : producerRunSet(domain);
+  if (runs.has(WEB_HTTP_BODIES_PRODUCER_ID)) return { executed: false, input_item_count: 0 };
+  const rows = readHttpBodyCorpus(domain);
+  if (rows.length === 0) return { executed: false, input_item_count: 0 };
+  recordInlineProducerProduced(domain, WEB_HTTP_BODIES_PRODUCER_ID, rows.length);
+  return { executed: true, input_item_count: rows.length };
+}
+
+function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
+  const runs = runSet instanceof Set ? runSet : producerRunSet(domain);
+  if (runs.has(WEB_ONCHAIN_REF_PRODUCER_ID)) {
+    return { executed: false, input_item_count: 0, resolved: 0, unresolved: 0 };
+  }
+  const rows = readHttpBodyCorpus(domain);
+  if (rows.length === 0) return { executed: false, input_item_count: 0, resolved: 0, unresolved: 0 };
+
+  const tuples = [];
+  const tupleKeys = new Set();
+  let unresolved = 0;
+  for (const row of rows) {
+    for (const hit of extractOnchainReferenceHits(row)) {
+      const resolved = resolveChainFamilyForHit(hit);
+      if (!resolved) {
+        unresolved += 1;
+        recordUnresolvedOnchainReference(domain, hit);
+        continue;
+      }
+      const key = contractIdentityKey(resolved);
+      if (tupleKeys.has(key)) continue;
+      tupleKeys.add(key);
+      tuples.push(resolved);
+    }
+  }
+
+  // PRD-4: the materialized HTTP body corpus is consumed by this producer-run
+  // ledger row; any resolved contract is seeded only through the shared
+  // bindAndSeedContracts funnel, and unresolved chain context is recorded as a
+  // blocked prerequisite instead of defaulted.
+  if (tuples.length > 0) {
+    require("../contract-target.js").bindAndSeedContracts(state, tuples);
+  }
+  recordInlineProducerProduced(domain, WEB_ONCHAIN_REF_PRODUCER_ID, rows.length);
+  return {
+    executed: true,
+    input_item_count: rows.length,
+    resolved: tuples.length,
+    unresolved,
+  };
+}
+
+function executeInlineProducerWorkers(domain, plan, state, runSet) {
+  const readyIds = new Set((Array.isArray(plan && plan.ready) ? plan.ready : [])
+    .map((pack) => pack && pack.producer_id)
+    .filter(Boolean));
+  const executed = [];
+  if (readyIds.has(WEB_HTTP_BODIES_PRODUCER_ID)) {
+    const result = executeWebHttpBodiesProducer(domain, { runSet });
+    if (result.executed) executed.push({ producer_id: WEB_HTTP_BODIES_PRODUCER_ID, ...result });
+  }
+  if (readyIds.has(WEB_ONCHAIN_REF_PRODUCER_ID)) {
+    const stateForContracts = { ...(state || {}), target_domain: domain, target: domain };
+    const result = executeWebOnchainRefProducer(domain, stateForContracts, { runSet });
+    if (result.executed) executed.push({ producer_id: WEB_ONCHAIN_REF_PRODUCER_ID, ...result });
+  }
+  return executed;
+}
+
 // Single-sourced producer-floor PLAN builder. Assembles the EXACT inputs the
 // dispatch handler feeds planProducerFloor — the policy-derived caps
 // (linked_contract_depth + the OD1 seed governors), the live smart_contract
@@ -744,15 +1045,20 @@ function buildProducerFloorPlan(domain) {
   // session seeds 'chain_address_set'; each produced upstream producer unlocks its
   // produces[] kinds for the derived producers downstream.
   const availableArtifactKinds = new Set();
-  if (typeof state.target_url === "string" && state.target_url) {
+  const hasWebTarget = typeof state.target_url === "string" && state.target_url;
+  if (hasWebTarget) {
     availableArtifactKinds.add("target");
   }
   if (Array.isArray(state.target_contracts) && state.target_contracts.length > 0) {
     availableArtifactKinds.add("chain_address_set");
   }
+  if (hasWebTarget && hasMaterializedHttpBodyCorpus(domain)) {
+    availableArtifactKinds.add("http_bodies");
+  }
   for (const producerKey of runSet) {
     const pack = PRODUCER_PACKS[producerKey];
     if (pack && Array.isArray(pack.produces)) {
+      if (producerKey === WEB_ONCHAIN_REF_PRODUCER_ID && scSurfaces.length === 0) continue;
       for (const kind of pack.produces) availableArtifactKinds.add(kind);
     }
   }
@@ -763,7 +1069,7 @@ function buildProducerFloorPlan(domain) {
     scSurfaces,
     caps,
   });
-  return { plan, policy, caps, runSet, scSurfaces, availableArtifactKinds };
+  return { plan, policy, caps, runSet, scSurfaces, availableArtifactKinds, state };
 }
 
 function isLedgerPressureRefusal(err) {
@@ -819,7 +1125,13 @@ function handler(args) {
   // the emergent sc-expander recursion. The drain gate calls the SAME builder, so the
   // caps that govern the sc-expander recursion depth cannot drift between dispatch and
   // the freeze precondition.
-  const { plan } = buildProducerFloorPlan(domain);
+  let built = buildProducerFloorPlan(domain);
+  let { plan } = built;
+  const inlineProducerRuns = executeInlineProducerWorkers(domain, plan, built.state, built.runSet);
+  if (inlineProducerRuns.length > 0) {
+    built = buildProducerFloorPlan(domain);
+    plan = built.plan;
+  }
 
   // Read the live producer graph ONCE up front (fail SOFT on ledger pressure). It
   // serves the idempotent-emission dedupe below AND, when nothing new is emitted,
@@ -973,6 +1285,7 @@ function handler(args) {
     // RANK != BOUND: stale-dispatch producers stuck pre-executed are reported the
     // same way, never silently abandoned. Empty when no stale-dispatch node exists.
     stale_dispatch_reconciled: staleDispatchReconciled,
+    inline_producer_runs: inlineProducerRuns,
   });
   });
 }
@@ -1018,6 +1331,10 @@ module.exports = Object.freeze({
   planStaleDispatchReconcile,
   reconcileOrphanExecutedProducers,
   reconcileStaleDispatchProducers,
+  executeWebHttpBodiesProducer,
+  executeWebOnchainRefProducer,
+  hasMaterializedHttpBodyCorpus,
+  readHttpBodyCorpus,
   readScExpanderSurfaces,
   ORPHAN_EXECUTED_RECONCILE_PASS_THRESHOLD,
   STALE_DISPATCH_GRACE_MS,

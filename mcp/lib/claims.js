@@ -1913,12 +1913,65 @@ function completionDepthGapForCompleteSurfaces(domain) {
     else if (!surfaceBypass.has(handoff.surface_id)) surfaceBypass.set(handoff.surface_id, false);
   }
 
+  const idBearingSurfaces = new Set();
+  try {
+    const { readSurfaceRoutesStrict } = require("./surface-router.js");
+    for (const route of (readSurfaceRoutesStrict(domain).document.routes || [])) {
+      if (route && route.auth_differential_required === true && route.surface_id) {
+        idBearingSurfaces.add(route.surface_id);
+      }
+    }
+  } catch { /* routes unreadable/absent -> no surface is provably id-bearing */ }
+
+  const surfaceEndpointValues = new Map();
+  try {
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
+    const completeSurfaceIds = new Set(surfaceBypass.keys());
+    for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
+      if (!surface || !completeSurfaceIds.has(surface.id)) continue;
+      const endpoints = new Set();
+      for (const endpoint of candidateSurfaceEndpoints(surface)) {
+        if (endpoint && typeof endpoint.value === "string") endpoints.add(endpoint.value);
+      }
+      surfaceEndpointValues.set(surface.id, endpoints);
+    }
+  } catch { /* unreadable surface endpoints provide no auth-differential coverage */ }
+
+  const authDifferentialCovered = new Set();
+  try {
+    const { readResults } = require("./auth-differential-runner.js");
+    const results = readResults(domain);
+    for (const row of ((results && Array.isArray(results.per_endpoint)) ? results.per_endpoint : [])) {
+      if (!row || typeof row.endpoint !== "string") continue;
+      const signatures = row.signatures_by_profile && typeof row.signatures_by_profile === "object"
+        && !Array.isArray(row.signatures_by_profile)
+        ? row.signatures_by_profile
+        : {};
+      if (Object.keys(signatures).length < 2) continue;
+      for (const [surfaceId, endpoints] of surfaceEndpointValues) {
+        if (endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
+      }
+    }
+  } catch { /* malformed auth-differential results contribute no coverage */ }
+
   const missing = [];
   for (const [surfaceId, hasBypass] of surfaceBypass) {
     const hasCoverage = (coverageBySurface.get(surfaceId) || 0) > 0;
     const findings = findingsBySurface.get(surfaceId) || [];
     const hasExecuted = findings.some((findingId) => executedFindings.has(findingId));
     const hasCompositionExecuted = compositionExecutedSurfaces.has(surfaceId);
+    const isIdBearing = idBearingSurfaces.has(surfaceId);
+    if (isIdBearing) {
+      // X-DONE1 id-bearing complete surfaces clear only on executed proof or MCP-owned auth-differential coverage.
+      if (hasExecuted || hasCompositionExecuted || authDifferentialCovered.has(surfaceId)) continue;
+      missing.push({
+        surface_id: surfaceId,
+        finding_id: findings.length > 0 ? findings[0] : null,
+        reason: "complete_idbearing_surface_no_differential",
+      });
+      continue;
+    }
     if (hasBypass || hasCoverage || hasExecuted || hasCompositionExecuted) continue;
     missing.push({
       surface_id: surfaceId,

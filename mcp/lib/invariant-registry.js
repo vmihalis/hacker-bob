@@ -33,6 +33,7 @@ const TAG_GRAMMAR = Object.freeze({
     /\b[CX]\.\d+[a-z]?\b/g, //  C.7, X.10  (dotted cycle labels)
     /(?<![A-Za-z0-9_])X-P\d+\b/g, // X-P8 (plane-X invariant)
     /\bNS-\d+[a-z]?\b/g, // NS-1, NS-2 (coverage-nesting Step B — unique shape)
+    /\bAD\d+\b/g, // AD1 (auth-differential completion gate — unique shape)
   ]),
   // S/C/I families: collision-prone bare tokens. Matched ONLY as a leading
   // comment token so docs-prose homonyms (I6 the capability node, C2 the C&C
@@ -300,6 +301,68 @@ const REGISTRY = Object.freeze({
       + "widens LESS eagerly than the unconditional union.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/capability-pack-derivation.js", symbol: "widenThresholdForConfidence" }),
+    ]),
+  }),
+  "X-DONE1": Object.freeze({
+    kind: "invariant",
+    class: "completion_depth",
+    title:
+      "An id-bearing multi-principal complete surface earns completion only via an "
+      + "MCP-owned auth-differential row (>=2 profiles covering it) or a re-derived "
+      + "verified_pass; a coverage-row-alone or free-text bypass cannot clear it.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/claims.js", symbol: "completionDepthGapForCompleteSurfaces" }),
+      Object.freeze({ file: "mcp/lib/claims.js", symbol: "X-DONE1" }),
+    ]),
+  }),
+  "AD1": Object.freeze({
+    kind: "invariant",
+    class: "auth_differential_completion",
+    title:
+      "Id-bearing surfaces marked complete require MCP-owned auth-differential "
+      + "execution evidence, a signed finding differential bound to the surface, "
+      + "or a substantive cross-tenant blocker.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateAuthDifferentialCompletionCoverage" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "AD1" }),
+      Object.freeze({ file: "mcp/lib/wave-handoff-store.js", symbol: "AD1" }),
+    ]),
+  }),
+  "Y-D23": Object.freeze({
+    kind: "invariant",
+    class: "blocked_prereq_capability_clear",
+    title:
+      "A current blocked_prereqs premise whose required capability is now "
+      + "materialized stays open for requeue and blocks freeze until the surface "
+      + "is rerun or the current blocker resolves.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/waves/wave-promotion-detector.js", symbol: "computeCapabilityClearedPremiseSurfaceIds" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-promotion-detector.js", symbol: "Y-D23" }),
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "blocked_prereqs_capability_clear" }),
+    ]),
+  }),
+  "S3c": Object.freeze({
+    kind: "invariant",
+    class: "capability",
+    title:
+      "Capability-blocker ceiling: a reportable finding cannot stay severity-capped "
+      + "on a 'cannot do X' rationale when the registry owns a tool for X unless a "
+      + "substantive blocked_harness_runs escape exists for the finding surface.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/reachability-ceiling.js", symbol: "S3c" }),
+      Object.freeze({ file: "mcp/lib/lifecycle-gates.js", symbol: "S3c" }),
+    ]),
+  }),
+  "PRD-4": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "A materialized http-body corpus carrying an on-chain reference obligates "
+      + "a web_onchain_ref producer run — fail-closed, so a web session cannot "
+      + "reach the producer-floor fixpoint while an unscanned body corpus remains.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "executeWebOnchainRefProducer" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-4" }),
     ]),
   }),
 });

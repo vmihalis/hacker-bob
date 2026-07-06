@@ -15,11 +15,24 @@ const {
   loadWaveAssignments,
 } = require("./assignments.js");
 const {
+  attackSurfacePath,
   sessionDir,
 } = require("./paths.js");
 const {
   readJsonFile,
 } = require("./storage.js");
+const {
+  readResults: readAuthDifferentialResults,
+} = require("./auth-differential-runner.js");
+const {
+  readFindingDifferentialVerifiedSummary,
+} = require("./finding-differential-verifier.js");
+const {
+  bypassAttemptHasSubstance,
+} = require("./wave-handoff-contracts.js");
+const {
+  edgesFromAttackSurface,
+} = require("./surface-graph-builder.js");
 
 const EVIDENCE_MODE = "evidence";
 
@@ -256,6 +269,150 @@ function evaluateOssCompletionCoverage(marker, assignment, handoff) {
   };
 }
 
+function assignmentWithAuthDifferentialFlag(assignmentsInfo, marker) {
+  const assignment = assignmentsInfo.assignmentByAgent.get(marker.agent);
+  if (!assignment || assignment.auth_differential_required === true) return assignment;
+  try {
+    const raw = readJsonFile(assignmentsInfo.assignmentsPath, { label: "wave assignments" });
+    const rawAssignments = raw && Array.isArray(raw.assignments) ? raw.assignments : [];
+    const rawAssignment = rawAssignments.find((entry) => (
+      entry
+      && entry.agent === marker.agent
+      && entry.surface_id === marker.surface_id
+      && entry.auth_differential_required === true
+    ));
+    if (rawAssignment) return { ...assignment, auth_differential_required: true };
+  } catch {}
+  return assignment;
+}
+
+function surfaceEndpointSet(domain, surfaceId) {
+  let parsed;
+  try {
+    parsed = readJsonFile(attackSurfacePath(domain), { label: "attack_surface.json" });
+  } catch {
+    return new Set();
+  }
+  const endpoints = new Set();
+  for (const edge of edgesFromAttackSurface(parsed)) {
+    if (
+      edge
+      && edge.edge_type === "contains"
+      && edge.source
+      && edge.source.type === "surface"
+      && edge.source.id === surfaceId
+      && edge.target
+      && edge.target.type === "endpoint"
+      && typeof edge.target.id === "string"
+      && edge.target.id
+    ) {
+      endpoints.add(edge.target.id);
+    }
+  }
+  return endpoints;
+}
+
+function rowHasTwoProfileSweep(row) {
+  const signatures = row && row.signatures_by_profile;
+  return signatures != null
+    && typeof signatures === "object"
+    && !Array.isArray(signatures)
+    && Object.keys(signatures).length >= 2;
+}
+
+function hasAuthDifferentialSweepForSurface(marker) {
+  const endpoints = surfaceEndpointSet(marker.target_domain, marker.surface_id);
+  if (endpoints.size === 0) return false;
+  const results = readAuthDifferentialResults(marker.target_domain);
+  const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
+  return rows.some((row) => (
+    row
+    && typeof row.endpoint === "string"
+    && endpoints.has(row.endpoint)
+    && rowHasTwoProfileSweep(row)
+  ));
+}
+
+function hasVerifiedFindingDifferentialForSurface(marker) {
+  const summary = readFindingDifferentialVerifiedSummary(marker.target_domain);
+  const verified = summary && summary.verified_by_finding;
+  if (verified == null || typeof verified !== "object" || Array.isArray(verified)) return false;
+  return Object.values(verified).some((entry) => (
+    entry && entry.surface_id === marker.surface_id
+  ));
+}
+
+function blockerAsBypassAttempt(entry) {
+  if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const condition = [
+    entry.condition,
+    entry.kind,
+    entry.harness,
+    entry.identifier_hint,
+  ].filter((value) => typeof value === "string" && value.trim()).join(" ");
+  const attemptSummary = [
+    entry.attempt_summary,
+    entry.reason,
+    entry.evidence_summary,
+    entry.needed_for,
+  ].filter((value) => typeof value === "string" && value.trim()).join(" ");
+  return {
+    condition,
+    attempt_summary: attemptSummary,
+    outcome: typeof entry.outcome === "string" ? entry.outcome : "blocked",
+    finding_id: entry.finding_id,
+  };
+}
+
+function handoffHasSubstantiveAuthDifferentialBlocker(handoff) {
+  const blockers = [
+    ...(Array.isArray(handoff && handoff.blocked_prereqs) ? handoff.blocked_prereqs : []),
+    ...(Array.isArray(handoff && handoff.blocked_harness_runs) ? handoff.blocked_harness_runs : []),
+  ];
+  return blockers.some((entry) => {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const normalized = blockerAsBypassAttempt(entry);
+    return bypassAttemptHasSubstance(entry)
+      || (normalized ? bypassAttemptHasSubstance(normalized) : false);
+  });
+}
+
+function authDifferentialCompletionBlock(marker) {
+  return {
+    ok: false,
+    status: "blocked",
+    block_code: "missing_auth_differential",
+    reason: `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles), a signed IDOR/finding-differential confirm bound to the surface, or a substantive blocked_prereqs/blocked_harness_runs entry naming the un-run cross-tenant test.`,
+    marker,
+    handoff: null,
+  };
+}
+
+function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff) {
+  if (!assignment) return null;
+  if (assignment.auth_differential_required !== true) return null;
+  if (!handoff || handoff.surface_status !== "complete") return null;
+
+  const hasSubstantiveBlocker = handoffHasSubstantiveAuthDifferentialBlocker(handoff);
+  let ledgerReadFailed = false;
+  let hasLedgerEvidence = false;
+
+  try {
+    hasLedgerEvidence = hasAuthDifferentialSweepForSurface(marker) || hasLedgerEvidence;
+  } catch {
+    ledgerReadFailed = true;
+  }
+  try {
+    hasLedgerEvidence = hasVerifiedFindingDifferentialForSurface(marker) || hasLedgerEvidence;
+  } catch {
+    ledgerReadFailed = true;
+  }
+
+  // AD1
+  if (hasSubstantiveBlocker || (!ledgerReadFailed && hasLedgerEvidence)) return null;
+  return authDifferentialCompletionBlock(marker);
+}
+
 function normalizeFinalizeArgs(args) {
   const targetDomain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -347,7 +504,7 @@ function evaluateAgentCompletion(args) {
     };
   }
 
-  const assignment = waveAssignments.assignmentByAgent.get(marker.agent);
+  const assignment = assignmentWithAuthDifferentialFlag(waveAssignments, marker);
   const techniqueAttemptBlock = evaluateTechniqueAttemptRequirement(marker, assignment);
   if (techniqueAttemptBlock) {
     return {
@@ -360,6 +517,14 @@ function evaluateAgentCompletion(args) {
   if (ossCoverageBlock) {
     return {
       ...ossCoverageBlock,
+      handoff: handoffTelemetry(handoff),
+    };
+  }
+
+  const authDiffBlock = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+  if (authDiffBlock) {
+    return {
+      ...authDiffBlock,
       handoff: handoffTelemetry(handoff),
     };
   }
@@ -456,6 +621,7 @@ module.exports = {
   EVIDENCE_MODE,
   evaluateEvidenceCompletion,
   evaluateAgentCompletion,
+  evaluateAuthDifferentialCompletionCoverage,
   evaluateTechniqueAttemptRequirement,
   evidenceMarkerValidationError,
   evidenceTelemetryInput,

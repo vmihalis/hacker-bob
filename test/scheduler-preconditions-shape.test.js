@@ -38,6 +38,7 @@ const {
 } = require("../mcp/lib/waves.js");
 const {
   attackSurfacePath,
+  statePath,
 } = require("../mcp/lib/paths.js");
 const {
   writeFileAtomic,
@@ -45,6 +46,18 @@ const {
 const {
   recordProducerRun,
 } = require("../mcp/lib/producer-run-ledger.js");
+const {
+  authStore,
+} = require("../mcp/lib/auth.js");
+const {
+  BLOCKED_PREREQ_KIND_CAPABILITY,
+  computeCapabilityClearedPremiseSurfaceIds,
+  computeRequeueSurfaceIds,
+  detectTerminalPromotions,
+} = require("../mcp/lib/waves/wave-promotion-detector.js");
+const {
+  capabilityToolMapFromRegistry,
+} = require("../mcp/lib/tool-registry.js");
 const producerFloorTool = require("../mcp/lib/tools/materialize-producer-floor.js");
 const initContractSessionTool = require("../mcp/lib/tools/init-contract-session.js");
 const {
@@ -135,6 +148,12 @@ function recordTerminalChainAttempt(domain) {
   }));
 }
 
+function patchSessionState(domain, patch) {
+  const filePath = statePath(domain);
+  const doc = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  fs.writeFileSync(filePath, `${JSON.stringify({ ...doc, ...patch }, null, 2)}\n`);
+}
+
 test("SCHEDULER_PRECONDITION_VALUES is frozen and includes partial_surfaces_drained", () => {
   assert.equal(Object.isFrozen(SCHEDULER_PRECONDITION_VALUES), true);
   assert.ok(SCHEDULER_PRECONDITION_VALUES.length >= 1);
@@ -201,6 +220,174 @@ test("partial_surfaces_drained requires target_domain", () => {
     () => evaluateSchedulerPrecondition("partial_surfaces_drained", {}),
     /target_domain/,
   );
+});
+
+test("blocked_prereq capability table covers every kind with registered capability ids", () => {
+  const capabilityMap = capabilityToolMapFromRegistry();
+  assert.deepEqual(Object.keys(BLOCKED_PREREQ_KIND_CAPABILITY).sort(), [
+    "auth_missing",
+    "egress_unreachable",
+    "external_credential_missing",
+    "funded_wallet_missing",
+    "key_material_missing",
+  ].sort());
+  for (const config of Object.values(BLOCKED_PREREQ_KIND_CAPABILITY)) {
+    assert.ok(Object.prototype.hasOwnProperty.call(capabilityMap, config.required_capability_id));
+  }
+});
+
+test("computeCapabilityClearedPremiseSurfaceIds reads live auth profiles for auth blockers", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-auth.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const blockers = new Map([
+      ["surface-auth", [{ kind: "auth_missing", identifier_hint: "attacker" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      ["surface-auth"],
+    );
+  });
+});
+
+test("computeCapabilityClearedPremiseSurfaceIds reads producer terminal set for artifact blockers", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-producer.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const blockers = new Map([
+      ["surface-key", [{ kind: "key_material_missing", identifier_hint: "signer" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+    recordProducerRun(domain, { producer_key: "I7_chain_state_tree", status: "produced" });
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      ["surface-key"],
+    );
+  });
+});
+
+test("computeRequeueSurfaceIds unions capability-cleared surfaces through the existing path", () => {
+  const requeue = computeRequeueSurfaceIds(
+    {
+      wave: 1,
+      assignments: [{ agent: "bad-agent", surface_id: "surface-invalid" }],
+      assignmentByAgent: new Map([["bad-agent", { surface_id: "surface-invalid" }]]),
+    },
+    {
+      partial_surface_ids: ["surface-partial"],
+      missing_surface_ids: ["surface-cap"],
+      invalid_agents: ["bad-agent"],
+    },
+    [],
+    new Set(["surface-cap", "surface-auth"]),
+  );
+  assert.deepEqual(requeue, ["surface-partial", "surface-cap", "surface-invalid", "surface-auth"]);
+});
+
+test("detectTerminalPromotions leaves unrelated recurring blockers on a capability-cleared surface", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-mixed.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    const historyBySurface = new Map([
+      ["surface-mixed", [
+        { wave: 1, surface_id: "surface-mixed", kind: "auth_missing", identifier_hint: "attacker" },
+        { wave: 1, surface_id: "surface-mixed", kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+        { wave: 2, surface_id: "surface-mixed", kind: "auth_missing", identifier_hint: "attacker" },
+        { wave: 2, surface_id: "surface-mixed", kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+      ]],
+    ]);
+    const currentWaveBlockersBySurface = new Map([
+      ["surface-mixed", [
+        { kind: "auth_missing", identifier_hint: "attacker" },
+        { kind: "funded_wallet_missing", identifier_hint: "sepolia" },
+      ]],
+    ]);
+    const capabilityClearedSurfaceIds = computeCapabilityClearedPremiseSurfaceIds({
+      historyBySurface,
+      currentWaveBlockersBySurface,
+      currentWave: 2,
+      target_domain: domain,
+    });
+    const promotions = detectTerminalPromotions({
+      currentWaveBlockersBySurface,
+      historyBySurface,
+      prereqRegistrySnapshots: [],
+      clearHistoryBySurface: new Map(),
+      currentWave: 2,
+      capabilityClearedSurfaceIds,
+    });
+    assert.equal(promotions.length, 1);
+    assert.deepEqual(promotions[0].blockers.map((b) => b.kind), ["funded_wallet_missing"]);
+  });
+});
+
+test("blocked_prereqs_capability_clear is vacuous without current-wave blockers and blocks when auth clears one", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-gate.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    assert.ok(SCHEDULER_PRECONDITION_VALUES.includes("blocked_prereqs_capability_clear"));
+    assert.equal(typeof PRECONDITION_CHECKS.blocked_prereqs_capability_clear, "function");
+    let result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.capability_clear_active, false);
+
+    patchSessionState(domain, {
+      lifecycle_state: "OPEN_FRONTIER",
+      phase: "EVALUATE",
+      evaluation_wave: 1,
+      blocked_prereq_history: [
+        { wave: 1, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker" },
+      ],
+    });
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, false);
+    assert.equal(result.capability_clear_active, true);
+    assert.deepEqual(result.blocked_surface_ids, ["surface-auth"]);
+
+    patchSessionState(domain, {
+      evaluation_wave: 2,
+      blocked_prereq_history: [
+        { wave: 1, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker" },
+      ],
+    });
+    result = evaluateSchedulerPrecondition("blocked_prereqs_capability_clear", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.capability_clear_active, false);
+  });
 });
 
 test("SCHEDULER_PRECONDITION_VALUES includes chain_work_terminal with a paired check (covered by paired-safety iteration)", () => {

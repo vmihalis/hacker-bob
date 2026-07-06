@@ -18,6 +18,10 @@
 const {
   getLatestMergedWavePartialSurfaceIds,
 } = require("./wave-handoff-store.js");
+const {
+  readSessionStateStrict,
+  sessionStateMissing,
+} = require("./session-state-store.js");
 
 // Classifies a throw from the seed_surfaces_present materialize/route pipeline.
 // Returns true ONLY for the expected "surface input is not present yet" signals:
@@ -45,8 +49,66 @@ const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "chain_work_terminal",
   "uncovered_reachable_cells",
   "seed_producers_drained",
+  "blocked_prereqs_capability_clear",
   "seed_surfaces_present",
 ]);
+
+function historyBySurfaceFromBlockedPrereqs(history) {
+  const historyBySurface = new Map();
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (!entry || typeof entry.surface_id !== "string" || !entry.surface_id) continue;
+    if (!historyBySurface.has(entry.surface_id)) historyBySurface.set(entry.surface_id, []);
+    historyBySurface.get(entry.surface_id).push(entry);
+  }
+  return historyBySurface;
+}
+
+function latestBlockedPrereqWave(history) {
+  let latest = 0;
+  for (const entry of Array.isArray(history) ? history : []) {
+    if (entry && Number.isInteger(entry.wave) && entry.wave > latest) latest = entry.wave;
+  }
+  return latest;
+}
+
+function evaluateBlockedPrereqsCapabilityClear(targetDomain) {
+  if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+    throw new Error("blocked_prereqs_capability_clear: target_domain is required");
+  }
+  let state;
+  try {
+    ({ state } = readSessionStateStrict(targetDomain));
+  } catch (error) {
+    if (sessionStateMissing(error)) {
+      return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+    }
+    throw error;
+  }
+  const history = Array.isArray(state.blocked_prereq_history) ? state.blocked_prereq_history : [];
+  if (history.length === 0) {
+    return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+  }
+  const currentWave = Number.isInteger(state.evaluation_wave) && state.evaluation_wave > 0
+    ? state.evaluation_wave
+    : latestBlockedPrereqWave(history);
+  if (!currentWave) {
+    return { satisfied: true, capability_clear_active: false, blocked_surface_ids: [] };
+  }
+  const historyBySurface = historyBySurfaceFromBlockedPrereqs(history);
+  const {
+    computeCapabilityClearedPremiseSurfaceIds,
+  } = require("./waves/wave-promotion-detector.js");
+  const blockedSurfaceIds = Array.from(computeCapabilityClearedPremiseSurfaceIds({
+    historyBySurface,
+    currentWave,
+    target_domain: targetDomain,
+  }));
+  return {
+    satisfied: blockedSurfaceIds.length === 0,
+    capability_clear_active: blockedSurfaceIds.length > 0,
+    blocked_surface_ids: blockedSurfaceIds,
+  };
+}
 
 // Each check receives `{target_domain}` and returns an object with at minimum
 // `{satisfied: boolean}`. When unsatisfied, the check MAY return additional
@@ -57,6 +119,14 @@ const PRECONDITION_CHECKS = Object.freeze({
     const targetDomain = context && context.target_domain;
     if (typeof targetDomain !== "string" || targetDomain.length === 0) {
       throw new Error("partial_surfaces_drained: target_domain is required");
+    }
+    const capabilityClear = evaluateBlockedPrereqsCapabilityClear(targetDomain);
+    if (!capabilityClear.satisfied) {
+      return {
+        satisfied: false,
+        blocked_surface_ids: capabilityClear.blocked_surface_ids,
+        blocked_prereqs_capability_clear: capabilityClear,
+      };
     }
     const blockedSurfaceIds = getLatestMergedWavePartialSurfaceIds(targetDomain);
     return {
@@ -240,6 +310,10 @@ const PRECONDITION_CHECKS = Object.freeze({
       sc_expander_instance_keys: scExpanderInstances.map((i) => i.producer_key).slice(0, 50),
       producer_gaps: plan.gaps.slice(0, 50),
     };
+  },
+  blocked_prereqs_capability_clear(context) {
+    const targetDomain = context && context.target_domain;
+    return evaluateBlockedPrereqsCapabilityClear(targetDomain);
   },
   // Seed teeth: a frontier with zero routed seed surfaces has nothing to
   // schedule. materializeFrontier(domain, {write:true}) FORCES synchronous

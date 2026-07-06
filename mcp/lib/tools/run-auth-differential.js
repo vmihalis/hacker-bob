@@ -117,7 +117,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "base_url", "endpoints", "auth_profiles"],
   },
   handler: runAuthDifferentialToolHandler,
-  role_bundles: ["orchestrator", "evaluator-web", "verifier"],
+  role_bundles: ["orchestrator", "evaluator-web"],
   mutating: true,
   global_preapproval: false,
   network_access: true,

@@ -103,6 +103,8 @@ Recon-producer floor (source of truth `mcp/lib/producer-packs.js`; lookup by `pr
 - `web_nuclei` (nuclei angle, derived/web): consumes live_hosts, family_live; produces nuclei_results.
 - `web_js_jwt` (js_jwt angle, derived/web): consumes all_urls; produces js_endpoints, js_secrets, jwt_candidates.
 - `web_assembly` (assembly angle, derived/web): consumes live_hosts, family_live, subdomains, all_urls, nuclei_results, js_endpoints, js_secrets, jwt_candidates; produces web_surface.
+- `web_http_bodies` (http_bodies angle, root/web): consumes —; produces http_bodies.
+- `web_onchain_ref` (onchain_ref angle, derived/web): consumes http_bodies; produces chain_address_set.
 - `sc_chain_root` (chain_root angle, root/smart_contract): consumes —; produces chain_address_set.
 - `sc_address_expander` (sc_expand angle, derived/smart_contract): consumes chain_address_set, sc_surface; produces sc_surface.
 
@@ -166,6 +168,7 @@ The friction-scanner registry in `mcp/lib/friction-scanners.js` is closed and fr
 <!-- @precondition: chain_work_terminal -->
 <!-- @precondition: uncovered_reachable_cells -->
 <!-- @precondition: seed_producers_drained -->
+<!-- @precondition: blocked_prereqs_capability_clear -->
 **Entry conditions.** SETUP complete: seed map routed (web mode) or repo inventory and env prep settled (repo mode), auth context resolved, nucleus hash stable. The frontier ledger and task queue are active. Re-entry from `CLAIM_FREEZE`, `VERIFY`, `GRADE`, or `REPORT` is server-authorized (claim freeze is bidirectional with the frontier). **Lenses likely requested:** `behavior_probe`, `control_check`, `claim_development`, `coverage_closeout` for web surfaces; `code_surface_scout`, `taint_trace`, `fuzz_run` for repo surfaces. Operators may request a focused lens via a manual wave but the scheduler still owns lens routing. **MCP tools:** `bob_read_state_summary`, `bob_wave_status` (`coverage`/`unexplored_high`/`transition_blockers` check before freeze), `bob_schedule_tasks`, `bob_start_next_wave`, `bob_start_wave`, `bob_apply_wave_merge`, `bob_read_assignment_brief`, `bob_record_candidate_claim`, `bob_log_coverage`, `bob_append_frontier_event`, `bob_materialize_frontier`, `bob_read_queue_policy`, `bob_set_queue_policy`, `bob_clear_terminal_block`, `bob_advance_session` (target `CLAIM_FREEZE`).
 
 Read `bob_read_state_summary.data` before every wave. Treat MCP ranking from `bob_wave_status.data`, `bob_start_next_wave.data.plan`, and `bob_read_assignment_brief.data.ranking_summary` as runtime prioritization. `explored` means closure events for completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` and promoted deep leads route later waves. Standard wave assignment policy is MCP-owned by `bob_start_next_wave`; `bob_start_wave` is reserved for explicit manual focused waves (e.g., grader-feedback regression).

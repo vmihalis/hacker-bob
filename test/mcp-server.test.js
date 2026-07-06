@@ -6645,7 +6645,7 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
   });
 });
 
-test("bob_apply_wave_merge does NOT promote auth_missing when the named handle was added between waves", () => {
+test("bob_apply_wave_merge promotes recurring auth_missing even when the prereq snapshot contains the named handle", () => {
   withTempHome(() => {
     const domain = "registry-grew.example.com";
     seedAttackSurfaces(domain, [
@@ -6687,7 +6687,63 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
     });
     seedWaveTechniqueAttempts(domain, 2);
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
+    assert.equal(result.merge.terminally_blocked_promoted.length, 1);
+    assert.equal(result.merge.terminally_blocked_promoted[0].surface_id, "surface-auth");
+    assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].kind, "auth_missing");
+    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    assert.equal(currentBlockers(domain).length, 1);
+    assert.ok(!result.merge.requeue_surface_ids.includes("surface-auth"));
+  });
+});
+
+test("bob_apply_wave_merge requeues a blocked_prereq surface when its auth capability is live", () => {
+  withTempHome(() => {
+    const domain = "capability-clear-auth.example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-auth", hosts: [`https://${domain}/auth`], priority: "HIGH" },
+    ]);
+    seedSessionState(domain, { phase: "EVALUATE", pending_wave: 1, evaluation_wave: 0 });
+    seedPrereqSnapshot(domain, 1, { auth_handles: [], egress_handles: [] });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "auth profile not registered; cannot test org-scoped IDOR",
+      content: "# A1",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 1);
+    JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
+
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer test-token" },
+    }));
+    setStatePendingWave(domain, 2);
+    seedPrereqSnapshot(domain, 2, { auth_handles: ["attacker"], egress_handles: [] });
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-auth" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w2",
+      agent: "a1",
+      surface_id: "surface-auth",
+      surface_status: "partial",
+      summary: "same surface needs a fresh run with the live auth profile",
+      content: "# A1 wave 2",
+      blocked_prereqs: [
+        { kind: "auth_missing", identifier_hint: "attacker", reason: "profile is now available" },
+      ],
+    });
+    seedWaveTechniqueAttempts(domain, 2);
+    const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
+    assert.ok(result.merge.requeue_surface_ids.includes("surface-auth"));
     const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
     assert.equal(currentBlockers(domain).length, 0);
   });

@@ -107,6 +107,36 @@ function gateVerifyToGrade(context) {
     });
   }
   if (blockers.length > 0) return blockers;
+  // S3c self-capped-severity vs owned capability. Fail-closed: refuse to grade
+  // a reportable finding self-capped with a "cannot do X" rationale when the
+  // registry owns a tool for X and no substantive blocked_harness_runs escape
+  // exists. Self-activating: no capability-blocker rationale => no violations.
+  try {
+    const { capabilityBlockerCeilingViolations } = require("./reachability-ceiling.js");
+    for (const v of capabilityBlockerCeilingViolations(context.target_domain).violations) {
+      blockers.push({
+        code: "self_capped_owned_capability",
+        blocked_by: "self_capped_owned_capability",
+        finding_id: v.finding_id,
+        capability_id: v.capability_id,
+        owning_tools: v.owning_tools,
+        message:
+          `VERIFY -> GRADE blocked: finding ${v.finding_id} was severity-capped citing `
+          + `"cannot do ${v.capability_id}" but Bob owns a tool for it (${v.owning_tools.join(", ")})`,
+        remediation:
+          `run ${v.owning_tools.join(" / ")} to attempt the "cannot do X" step and re-grade on the `
+          + "demonstrated outcome, OR record a substantive blocked_harness_runs[] entry for this "
+          + "finding's surface citing why the available tool is genuinely inadequate",
+      });
+    }
+  } catch (error) {
+    blockers.push({
+      code: "self_capped_owned_capability",
+      blocked_by: "self_capped_owned_capability",
+      message: `VERIFY -> GRADE blocked: capability-ceiling check failed (failing closed): ${compactError(error)}`,
+      error: compactError(error),
+    });
+  }
   try {
     const { state } = readSessionStateStrict(context.target_domain);
     if (!state || state.target_repo == null) return blockers;
