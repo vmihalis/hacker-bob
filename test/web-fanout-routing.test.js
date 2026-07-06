@@ -10,6 +10,19 @@ const {
   surfaceIdBearingEndpoints,
 } = require("../mcp/lib/offensive-idor-producer.js");
 
+function withClaudeHost(fn) {
+  // The router gates the reroute on the HOST-AWARE effective spawn depth (effectiveSpawnDepth
+  // returns 1 on a non-nesting host), so a web_fanout route only appears on a claude host.
+  const prev = process.env.BOB_CLIENT;
+  process.env.BOB_CLIENT = "claude";
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.BOB_CLIENT;
+    else process.env.BOB_CLIENT = prev;
+  }
+}
+
 function webSurfaceInfo(domain, surface) {
   return { source: "test", document: { surfaces: [{
     id: "S-1",
@@ -52,7 +65,7 @@ test("selectWebEvaluatorPack routes id-bearing web -> web_fanout ONLY when nesti
   assert.equal(selectWebEvaluatorPack({ capability_pack: "evm" }, { idBearing: true, spawnDepth: 3, queuePolicy: pol }), null);
 });
 
-test("routing to web_fanout PRESERVES the earned-done obligation (id_bearing + flag + frozen endpoints untouched)", () => {
+test("routing to web_fanout PRESERVES the earned-done obligation (id_bearing + flag + frozen endpoints untouched)", () => withClaudeHost(() => {
   const domain = "web-fanout.example.com";
   const doc = buildSurfaceRoutesDocument(domain, {
     attackSurfaceInfo: webSurfaceInfo(domain, { priority: "HIGH" }),
@@ -71,9 +84,9 @@ test("routing to web_fanout PRESERVES the earned-done obligation (id_bearing + f
   assert.equal(route.id_bearing, true);
   assert.equal(route.auth_differential_required, true);
   assert.deepEqual(route.id_bearing_endpoints, ["/api/orders/{id}"]);
-});
+}));
 
-test("flag OFF keeps an id-bearing web surface on the flat evaluator-agent (earned-done still applies)", () => {
+test("flag OFF keeps an id-bearing web surface on the flat evaluator-agent (earned-done still applies)", () => withClaudeHost(() => {
   const domain = "web-fanout-off.example.com";
   const doc = buildSurfaceRoutesDocument(domain, {
     attackSurfaceInfo: webSurfaceInfo(domain, {}),
@@ -87,4 +100,39 @@ test("flag OFF keeps an id-bearing web surface on the flat evaluator-agent (earn
   assert.equal(route.evaluator_agent, "evaluator-agent");
   assert.equal(route.id_bearing, true);
   assert.equal(route.auth_differential_required, true);
+}));
+
+test("a NON-claude host keeps an id-bearing web surface FLAT (host-blind routing fix — no transition-blind downgrade for a fan-out that can never fire)", () => {
+  const prev = process.env.BOB_CLIENT;
+  process.env.BOB_CLIENT = "codex";
+  try {
+    const domain = "web-fanout-nonclaude.example.com";
+    const doc = buildSurfaceRoutesDocument(domain, {
+      attackSurfaceInfo: webSurfaceInfo(domain, { priority: "HIGH" }),
+      idBearingDetector: surfaceExposesIdBearingCollection,
+      idBearingEndpoints: surfaceIdBearingEndpoints,
+      authProfileCount: 2,
+      queuePolicy: { max_spawn_depth: 3 },
+    });
+    const route = doc.routes.find((r) => r.surface_id === "S-1");
+    // On a non-nesting host, effectiveSpawnDepth clamps to 1, so the surface stays flat.
+    assert.equal(route.capability_pack, "web");
+    assert.equal(route.evaluator_agent, "evaluator-agent");
+    // Earned-done still applies (id_bearing is host-independent).
+    assert.equal(route.id_bearing, true);
+    assert.equal(route.auth_differential_required, true);
+  } finally {
+    if (prev === undefined) delete process.env.BOB_CLIENT;
+    else process.env.BOB_CLIENT = prev;
+  }
+});
+
+test("selectTechniquePacksForSurface treats web_fanout as web (no technique-guidance loss on reroute)", () => {
+  const { selectTechniquePacksForSurface } = require("../mcp/lib/technique-packs.js");
+  const surface = { id: "S-1", uri: "https://x.example.com/api/orders/123", hosts: ["https://x.example.com"] };
+  const web = selectTechniquePacksForSurface(surface, { capabilityPack: "web" });
+  const fanout = selectTechniquePacksForSurface(surface, { capabilityPack: "web_fanout" });
+  assert.ok(web.selected.length > 0, "web must yield technique packs");
+  assert.deepEqual(fanout.selected.map((p) => p.id), web.selected.map((p) => p.id),
+    "web_fanout must get the SAME technique packs as web");
 });

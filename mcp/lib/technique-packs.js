@@ -799,6 +799,11 @@ function selectTechniquePacksForSurface(surface, {
   includeAttempted = true,
   attempts = [],
 } = {}) {
+  // web_fanout is a spawn-capable ROUTING variant of web (same brief_profile/verifier); its
+  // technique packs are web's. Web technique packs default capability_packs to ["web"], so
+  // without this normalize a rerouted surface would get ZERO packs — stripping attack guidance
+  // from exactly the high-value id-bearing surfaces the fan-out means to deepen.
+  if (capabilityPack === "web_fanout") capabilityPack = "web";
   const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || EVALUATOR_KNOWLEDGE_MAX_ENTRIES;
   const registry = loadTechniqueRegistry();
   if (registry.packs.length === 0) {

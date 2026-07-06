@@ -650,6 +650,21 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
         surface_id: assignment.surface_id,
         error: error.message || String(error),
       });
+      // Pivot durability: even for an INVALID handoff, best-effort preserve discovered_pivots[]
+      // so a transition-blind evaluator-fanout's cross-surface pivots are not lost on a handoff
+      // validation failure (e.g. a secret-scanner trip on Set-Cookie/UUID evidence) — a flat
+      // evaluator's inline bob_propose_transition persists independent of handoff outcome. Pivots
+      // are ADVISORY/non-gating (orchestrator hints), so salvaging from an unvalidated handoff
+      // adds a lead to investigate, never a security gate.
+      try {
+        const rawHandoff = readJsonFile(filePath);
+        if (rawHandoff && Array.isArray(rawHandoff.discovered_pivots) && rawHandoff.discovered_pivots.length > 0) {
+          discoveredPivots.push(...attachHandoffOrigin(rawHandoff.discovered_pivots, {
+            agent: assignment.agent,
+            surfaceId: assignment.surface_id,
+          }));
+        }
+      } catch { /* raw unreadable -> nothing to salvage */ }
       // Surface the invalid handoff's surface_id via missing_surface_ids so it
       // reaches the orchestrator's requeue path. Without this, R1-HIGH-#2:
       // the surface is silently dropped from completed/partial/missing buckets
