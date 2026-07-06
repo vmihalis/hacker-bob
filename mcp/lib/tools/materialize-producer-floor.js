@@ -1110,13 +1110,19 @@ function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
 
   const tuples = [];
   const tupleKeys = new Set();
-  let unresolved = 0;
+  // Collect UNRESOLVED hits deduped by blocked-prereq identity (address/artifact/line), so a
+  // single attacker-reflected body cannot append one frontier event per repeated address.
+  const unresolvedHits = [];
+  const unresolvedKeys = new Set();
   for (const row of rows) {
     for (const hit of extractOnchainReferenceHits(row)) {
       const resolved = resolveChainFamilyForHit(hit);
       if (!resolved) {
-        unresolved += 1;
-        recordUnresolvedOnchainReference(domain, hit);
+        const uKey = blockedPrereqId(hit);
+        if (!unresolvedKeys.has(uKey)) {
+          unresolvedKeys.add(uKey);
+          unresolvedHits.push(hit);
+        }
         continue;
       }
       const key = contractIdentityKey(resolved);
@@ -1131,24 +1137,28 @@ function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
   // body), so it is NEVER auto-bound as an in-scope smart_contract surface — it is recorded
   // as a scope-confirmation blocked prerequisite for the operator to authorize. The per-pass
   // cap bounds how many leads a single (attacker-influenceable) body can enqueue so it cannot
-  // mint an unbounded set of obligations (a DoS on frontier convergence); this producer is
-  // one-shot (the runs.has short-circuit above), so the per-pass cap is also the lifetime
-  // bound. Over-cap refs are reported as a count, never silently dropped.
+  // mint an unbounded set of obligations (a DoS on frontier convergence) — applied to BOTH the
+  // resolved (scope-unconfirmed) and unresolved (chain-context-missing) branches, since both
+  // append frontier events into an evictable ring buffer. This producer is one-shot (the
+  // runs.has short-circuit above), so the per-pass cap is also the lifetime bound. Over-cap
+  // refs are reported as a count, never silently dropped.
   const policy = loadQueuePolicy(domain);
   const perPassCap = clampCap(policy && policy.seed_producer_per_pass_cap, {
     lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
   });
   const recordedTuples = tuples.slice(0, perPassCap);
   for (const tuple of recordedTuples) recordOnchainReferenceScopeUnconfirmed(domain, tuple);
-  const overCap = tuples.length - recordedTuples.length;
+  const recordedUnresolved = unresolvedHits.slice(0, perPassCap);
+  for (const hit of recordedUnresolved) recordUnresolvedOnchainReference(domain, hit);
+  const overCap = (tuples.length - recordedTuples.length) + (unresolvedHits.length - recordedUnresolved.length);
   recordInlineProducerProduced(domain, WEB_ONCHAIN_REF_PRODUCER_ID, rows.length);
   return {
     executed: true,
     input_item_count: rows.length,
     resolved: 0,
+    unresolved: recordedUnresolved.length,
     scope_unconfirmed: recordedTuples.length,
     over_cap: overCap,
-    unresolved,
   };
 }
 

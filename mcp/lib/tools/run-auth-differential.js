@@ -140,7 +140,7 @@ module.exports = Object.freeze({
         description: "Forwarded to bob_http_scan when set.",
       },
     },
-    required: ["target_domain", "base_url", "endpoints", "auth_profiles"],
+    required: ["target_domain", "base_url", "endpoints", "auth_profiles", "surface_id"],
   },
   handler: runAuthDifferentialToolHandler,
   role_bundles: ["orchestrator", "evaluator-web"],

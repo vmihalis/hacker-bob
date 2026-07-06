@@ -106,10 +106,17 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
       route.chain_family = classification.chain_family;
     }
     // S1 auth-differential routing obligation is computed from MCP-owned ledgers only.
-    route.auth_differential_required = !!(idBearingDetector && idBearingDetector(surface) && authProfileCount >= 2);
+    // id_bearing is the DETECTOR result, INDEPENDENT of principal count: a single-account run
+    // still marks the surface id-bearing so the grade gate keeps the strong no-bypass branch
+    // (an id-bearing surface never launders to complete via an agent-authored bypass_attempt
+    // narrative). auth_differential_required is the stronger FLIP obligation, which additionally
+    // needs >=2 distinct principals to be satisfiable.
+    const isIdBearing = !!(idBearingDetector && idBearingDetector(surface));
+    route.id_bearing = isIdBearing;
+    route.auth_differential_required = isIdBearing && authProfileCount >= 2;
     // Freeze the surface's id-bearing endpoints (template form) onto the MCP-owned route so
     // the completion gates bind coverage to endpoints the agent cannot tamper post-route.
-    if (route.auth_differential_required && typeof idBearingEndpoints === "function") {
+    if (isIdBearing && typeof idBearingEndpoints === "function") {
       const eps = idBearingEndpoints(surface);
       route.id_bearing_endpoints = Array.isArray(eps) ? eps.filter((e) => typeof e === "string" && e) : [];
     }
@@ -191,6 +198,7 @@ function validateSurfaceRoute(route, index, filePath) {
     evaluator_agent: evaluatorAgent,
     brief_profile: briefProfile,
     context_budget: normalizeContextBudget(route.context_budget, pack),
+    id_bearing: route.id_bearing === true,
     auth_differential_required: route.auth_differential_required === true,
   };
 }

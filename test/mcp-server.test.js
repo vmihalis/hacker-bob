@@ -2602,6 +2602,7 @@ test("executeTool enforces target URL scope for direct and composite HTTP tools"
 
       const authDifferentialBlocked = await executeTool("bob_run_auth_differential", {
         target_domain: "example.com",
+        surface_id: "surface-x",
         base_url: "https://auth.other.test",
         endpoints: ["/api/me"],
         auth_profiles: ["attacker", "victim"],
@@ -5247,6 +5248,7 @@ test("bob_route_surfaces writes bounded current routes and removes stale routes"
       "confidence",
       "context_budget",
       "evaluator_agent",
+      "id_bearing",
       "reasons",
       "surface_id",
       "surface_type",

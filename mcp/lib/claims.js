@@ -1923,7 +1923,12 @@ function completionDepthGapForCompleteSurfaces(domain) {
   try {
     const { readSurfaceRoutesStrict } = require("./surface-router.js");
     for (const route of (readSurfaceRoutesStrict(domain).document.routes || [])) {
-      if (route && route.auth_differential_required === true && route.surface_id) {
+      // id_bearing (detector result, principal-independent) drives the strong no-bypass grade
+      // branch, so a single-account run cannot launder an id-bearing surface to complete via a
+      // bypass_attempt narrative. The frozen endpoints are used only by the >=2-principal flip
+      // path (authDifferentialCovered); a <2-principal id-bearing surface clears only via a real
+      // finding (hasExecuted) / composition, else it stays an honest partial.
+      if (route && route.id_bearing === true && route.surface_id) {
         idBearingSurfaces.add(route.surface_id);
         const eps = Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints : [];
         surfaceEndpointValues.set(route.surface_id, new Set(eps.filter((e) => typeof e === "string" && e)));

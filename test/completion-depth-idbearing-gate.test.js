@@ -65,8 +65,11 @@ function setAuthDifferentialRequired(domain, surfaceId, required) {
     route && route.surface_id === surfaceId
       ? {
         ...route,
+        // Mirror the router: id_bearing (detector, principal-independent) drives the strong
+        // no-bypass branch; auth_differential_required (the FLIP obligation) additionally needs
+        // >=2 principals. This helper models both as the same `required` toggle.
+        id_bearing: required,
         auth_differential_required: required,
-        // Mirror the router: a flagged route freezes its id-bearing endpoints (template form).
         id_bearing_endpoints: required ? ["/api/orders/{id}"] : [],
       }
       : route
@@ -121,6 +124,16 @@ function seedCompleteSurface(domain, { surfaceId = "surface-a", idBearing = fals
     content: "# Handoff\n\nbody",
   }));
   return { endpoint, surfaceId };
+}
+
+function setRouteFlags(domain, surfaceId, { idBearing, authDiff, endpoints = [] }) {
+  const document = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
+  document.routes = (document.routes || []).map((route) => (
+    route && route.surface_id === surfaceId
+      ? { ...route, id_bearing: idBearing, auth_differential_required: authDiff, id_bearing_endpoints: endpoints }
+      : route
+  ));
+  writeFileAtomic(surfaceRoutesPath(domain), `${JSON.stringify(document, null, 2)}\n`);
 }
 
 function writeCoverageRow(domain, surfaceId, endpoint) {
@@ -254,6 +267,23 @@ test("id-bearing complete surface does NOT clear on a real flip hitting an endpo
     // set (/api/orders/{id}). An agent relabeling attack_surface.json to add /notes/{id} under
     // surface-a cannot help: the gate binds to the frozen route endpoints, never agent scratch.
     writeAuthDifferentialResults(domain, "/notes/999", { surfaceId });
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
+      surface_id: surfaceId,
+      finding_id: "F-1",
+      reason: "complete_idbearing_surface_no_differential",
+    }]);
+  }));
+});
+
+test("single-account id-bearing surface (id_bearing true, auth_differential_required false) does NOT launder to complete via a coverage/bypass narrative", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "single-account-idbearing.example.com";
+    const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    // A single-account run: the detector fired (id_bearing) but there are <2 distinct principals,
+    // so the cross-tenant flip obligation is unsatisfiable. The surface must NOT clear on a
+    // coverage row / bypass narrative — it needs a real finding, else it stays an honest partial.
+    setRouteFlags(domain, surfaceId, { idBearing: true, authDiff: false });
+    writeCoverageRow(domain, surfaceId, endpoint);
     assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
       surface_id: surfaceId,
       finding_id: "F-1",
