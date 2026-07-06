@@ -32,7 +32,7 @@ const {
 // the durable surface-routes.json written at wave start preserves
 // auth_differential_required — routeSurfacesInternal rewrites the file, and
 // without the detector it would clobber the flag route_surfaces set to false.
-const { surfaceExposesIdBearingCollection } = require("../offensive-idor-producer.js");
+const { surfaceExposesIdBearingCollection, surfaceIdBearingEndpoints } = require("../offensive-idor-producer.js");
 const { listAuthProfiles } = require("../auth.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
@@ -137,6 +137,7 @@ function prepareWaveAssignments({
     attackSurfaceInfo: attackSurface,
     authProfileCount,
     idBearingDetector: surfaceExposesIdBearingCollection,
+    idBearingEndpoints: surfaceIdBearingEndpoints,
   });
   const routeBySurfaceId = new Map(
     routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
@@ -192,6 +193,10 @@ function prepareWaveAssignments({
       // immutable assignment so the per-run AD1 gate can read it; sourced ONLY from
       // route, never the agent-supplied assignment (no forgeability re-entry).
       auth_differential_required: route.auth_differential_required === true,
+      // The FROZEN (MCP-owned, route-time) id-bearing endpoint set: the AD1 gate binds
+      // sweep coverage to these, so an agent cannot relabel a real flip onto this surface
+      // by editing agent-writable attack_surface.json after the fact.
+      id_bearing_endpoints: Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints.slice() : [],
       task_lens: assignment.task_lens,
       budget: assignment.budget,
       handoff_token_required: true,

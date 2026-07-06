@@ -158,7 +158,7 @@ test("auth differential completion evaluator is self-activating and credits MCP 
       agent: "a1",
       surface_id: "surface-auth",
     };
-    const assignment = { agent: "a1", surface_id: "surface-auth", auth_differential_required: true };
+    const assignment = { agent: "a1", surface_id: "surface-auth", auth_differential_required: true, id_bearing_endpoints: ["/api/accounts/{id}"] };
     const handoff = { surface_status: "complete", blocked_prereqs: [], blocked_harness_runs: [] };
 
     assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, null, handoff), null);
@@ -187,7 +187,7 @@ test("auth differential completion evaluator BLOCKS a complete id-bearing surfac
       agent: "a1",
       surface_id: "surface-auth",
     };
-    const assignment = { agent: "a1", surface_id: "surface-auth", auth_differential_required: true };
+    const assignment = { agent: "a1", surface_id: "surface-auth", auth_differential_required: true, id_bearing_endpoints: ["/api/accounts/{id}"] };
     // A substantive blocker on a COMPLETE id-bearing handoff must NOT earn completion:
     // the grade-time gate rejects a complete surface backed only by a blocker, so the
     // wave gate forces partial (evaluating.md: a blocked surface is recorded partial).
@@ -214,6 +214,7 @@ test("auth differential completion gate is enforced at finalize and merge", () =
       agent: "a1",
       surface_id: "surface-auth",
       auth_differential_required: true,
+      id_bearing_endpoints: ["/api/accounts/{id}"],
     }]);
     writeAttackSurface(domain);
     seedTechniqueAttempt(domain, "surface-auth");

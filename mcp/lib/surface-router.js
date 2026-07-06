@@ -34,7 +34,7 @@ const SURFACE_ROUTE_VERSION = 1;
 // S1 id-bearing detection is INJECTED by the tool handler (route-surfaces.js),
 // never required here: surface-router.js is inside the lead-closure that must
 // not reach an alias-require file, and the detector's module transitively does.
-function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null } = {}) {
+function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null } = {}) {
   // Surface input read from currentSurfaces (Cycle F.5): surface-index.json
   // is authoritative when present; legacy attack_surface.json is only used
   // when the materialized view is absent (transitional fallback removed in D.3).
@@ -107,6 +107,12 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
     }
     // S1 auth-differential routing obligation is computed from MCP-owned ledgers only.
     route.auth_differential_required = !!(idBearingDetector && idBearingDetector(surface) && authProfileCount >= 2);
+    // Freeze the surface's id-bearing endpoints (template form) onto the MCP-owned route so
+    // the completion gates bind coverage to endpoints the agent cannot tamper post-route.
+    if (route.auth_differential_required && typeof idBearingEndpoints === "function") {
+      const eps = idBearingEndpoints(surface);
+      route.id_bearing_endpoints = Array.isArray(eps) ? eps.filter((e) => typeof e === "string" && e) : [];
+    }
     routes.push(route);
   }
 
@@ -189,9 +195,9 @@ function validateSurfaceRoute(route, index, filePath) {
   };
 }
 
-function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null } = {}) {
+function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
-  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector });
+  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints });
   const filePath = surfaceRoutesPath(targetDomain);
   // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
   // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
@@ -351,7 +357,7 @@ function deriveUnroutableSurfacesFromRoutes(domain) {
   return result;
 }
 
-function routeSurfaces(args, { idBearingDetector = null } = {}) {
+function routeSurfaces(args, { idBearingDetector = null, idBearingEndpoints = null } = {}) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
     // Thread friction into the live route so demotion fires on (re-)route.
@@ -378,7 +384,7 @@ function routeSurfaces(args, { idBearingDetector = null } = {}) {
     } catch {
       authProfileCount = 0;
     }
-    const routed = routeSurfacesInternal(domain, { frictionEvents, authProfileCount, idBearingDetector });
+    const routed = routeSurfacesInternal(domain, { frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints });
     return JSON.stringify({
       version: SURFACE_ROUTES_VERSION,
       routed: true,

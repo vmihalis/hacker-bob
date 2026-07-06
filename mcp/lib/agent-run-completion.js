@@ -283,30 +283,13 @@ function assignmentWithAuthDifferentialFlag(assignmentsInfo, marker) {
   return assignment;
 }
 
-function surfaceEndpointSet(domain, surfaceId) {
-  // Derive endpoints from candidateSurfaceEndpoints (surface.uri + surface.endpoints[]),
-  // the SAME source the id-bearing detector uses — so a surface flagged id-bearing via its
-  // uri is not falsely un-coverable here (the grade-time gate in claims.js uses this same
-  // source; the two gates must agree on what an endpoint is).
-  const endpoints = new Set();
-  try {
-    const { readAttackSurfaceStrict } = require("./attack-surface.js");
-    const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
-    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
-    for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
-      if (!surface || surface.id !== surfaceId) continue;
-      for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        // Only ID-BEARING endpoints, in TEMPLATE form, so a concrete swept url matches the
-        // surface's templated endpoint and a benign sibling cannot clear the surface.
-        const t = endpoint && typeof endpoint.value === "string"
-          ? templatizeIdBearingEndpoint(endpoint.value) : null;
-        if (t) endpoints.add(t);
-      }
-    }
-  } catch {
-    return new Set();
-  }
-  return endpoints;
+function frozenIdBearingEndpoints(assignment) {
+  // The MCP-owned, route-FROZEN id-bearing endpoint set (already in {id}-template form),
+  // carried onto the immutable wave assignment from surface-routes.json. NEVER re-derived
+  // from agent-writable attack_surface.json, so a real cross-tenant flip cannot be
+  // relabelled onto a foreign surface by editing scratch after the sweep.
+  const eps = assignment && Array.isArray(assignment.id_bearing_endpoints) ? assignment.id_bearing_endpoints : [];
+  return new Set(eps.filter((e) => typeof e === "string" && e));
 }
 
 function rowHasTwoProfileSweep(row) {
@@ -318,8 +301,8 @@ function rowHasTwoProfileSweep(row) {
   return !!(row && row.cross_tenant_flip === true);
 }
 
-function hasAuthDifferentialSweepForSurface(marker) {
-  const endpoints = surfaceEndpointSet(marker.target_domain, marker.surface_id);
+function hasAuthDifferentialSweepForSurface(marker, assignment) {
+  const endpoints = frozenIdBearingEndpoints(assignment);
   if (endpoints.size === 0) return false;
   const results = readAuthDifferentialResults(marker.target_domain);
   const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
@@ -364,7 +347,7 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
   let hasLedgerEvidence = false;
 
   try {
-    hasLedgerEvidence = hasAuthDifferentialSweepForSurface(marker) || hasLedgerEvidence;
+    hasLedgerEvidence = hasAuthDifferentialSweepForSurface(marker, assignment) || hasLedgerEvidence;
   } catch {
     ledgerReadFailed = true;
   }

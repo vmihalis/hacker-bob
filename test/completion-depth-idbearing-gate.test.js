@@ -63,7 +63,12 @@ function setAuthDifferentialRequired(domain, surfaceId, required) {
   const document = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
   document.routes = (document.routes || []).map((route) => (
     route && route.surface_id === surfaceId
-      ? { ...route, auth_differential_required: required }
+      ? {
+        ...route,
+        auth_differential_required: required,
+        // Mirror the router: a flagged route freezes its id-bearing endpoints (template form).
+        id_bearing_endpoints: required ? ["/api/orders/{id}"] : [],
+      }
       : route
   ));
   writeFileAtomic(surfaceRoutesPath(domain), `${JSON.stringify(document, null, 2)}\n`);
@@ -231,6 +236,24 @@ test("id-bearing complete surface does NOT clear on a sweep bound to a DIFFERENT
     // must not clear this surface — coverage binds by surface_id, not raw endpoint string.
     writeAuthDifferentialResults(domain, endpoint, { surfaceId: "surface-other" });
 
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
+      surface_id: surfaceId,
+      finding_id: "F-1",
+      reason: "complete_idbearing_surface_no_differential",
+    }]);
+  }));
+});
+
+test("id-bearing complete surface does NOT clear on a real flip hitting an endpoint outside the FROZEN route set (attack_surface relabel is ignored)", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "idbearing-frozen-endpoint.example.com";
+    const { surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    writeCoverageRow(domain, surfaceId, "/api/orders/12345");
+    // A GENUINE cross-tenant flip, stamped surface_id=surface-a, but executed against an easy
+    // endpoint (/notes/999) that is NOT in the surface's FROZEN (MCP-owned route) id-bearing
+    // set (/api/orders/{id}). An agent relabeling attack_surface.json to add /notes/{id} under
+    // surface-a cannot help: the gate binds to the frozen route endpoints, never agent scratch.
+    writeAuthDifferentialResults(domain, "/notes/999", { surfaceId });
     assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
       surface_id: surfaceId,
       finding_id: "F-1",

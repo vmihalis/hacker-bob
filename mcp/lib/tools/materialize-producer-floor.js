@@ -1071,20 +1071,26 @@ function executeWebHttpBodiesProducer(domain, { runSet = null } = {}) {
   return { executed: true, input_item_count: rows.length };
 }
 
-function recordOverCapOnchainReference(domain, tuple) {
+// A 0x-address extracted from a captured (attacker-influenceable) response body is an
+// UNTRUSTED LEAD, never an authorized target: record it as a scope-confirmation blocked
+// prerequisite so an operator confirms program scope before it becomes an analyzable
+// smart_contract surface — never auto-bind it (bindAndSeedContracts performs NO scope
+// authorization, and a web session has no contract scope to authorize against).
+function recordOnchainReferenceScopeUnconfirmed(domain, tuple) {
+  const hint = tuple && tuple.address ? tuple.address : contractIdentityKey(tuple);
   appendFrontierEvent({
     target_domain: domain,
     kind: "frontier.enqueued",
     payload: {
-      lead_id: blockedPrereqId({ address: tuple && tuple.address ? tuple.address : contractIdentityKey(tuple) }),
+      lead_id: blockedPrereqId({ address: hint }),
       surface_ref: null,
       score: 0,
       priority: "low",
       confidence: "low",
       blocked_prereqs: [{
-        kind: "onchain_ref_over_cap",
-        identifier_hint: tuple && tuple.address ? tuple.address : contractIdentityKey(tuple),
-        reason: "on-chain address reference from a captured response body exceeded the per-pass seed cap and was not auto-bound",
+        kind: "onchain_ref_scope_unconfirmed",
+        identifier_hint: hint,
+        reason: "on-chain address reference found in a captured (untrusted) response body — not auto-bound as an in-scope smart_contract surface",
         next_step: "Confirm this address is in program scope and record it as an authorized contract target before it is analyzed.",
       }],
       provenance: { source: WEB_ONCHAIN_REF_PRODUCER_ID, artifact: "http_body_corpus", line: null },
@@ -1120,32 +1126,29 @@ function executeWebOnchainRefProducer(domain, state, { runSet = null } = {}) {
     }
   }
 
-  // PRD-4: the materialized HTTP body corpus is consumed by this producer-run
-  // ledger row; any resolved contract is seeded only through the shared
-  // bindAndSeedContracts funnel, and unresolved chain context is recorded as a
-  // blocked prerequisite instead of defaulted.
-  // OD1-parity cap: an attacker-influenceable response body can carry an unbounded number of
-  // 0x-addresses; cap the tuples SEEDED so untrusted body content cannot mint an unbounded
-  // set of smart_contract obligations (a DoS on frontier convergence). This producer is
+  // PRD-4: the materialized HTTP body corpus is consumed by this producer-run ledger row.
+  // A body-extracted address is UNTRUSTED (an attacker can reflect content into a captured
+  // body), so it is NEVER auto-bound as an in-scope smart_contract surface — it is recorded
+  // as a scope-confirmation blocked prerequisite for the operator to authorize. The per-pass
+  // cap bounds how many leads a single (attacker-influenceable) body can enqueue so it cannot
+  // mint an unbounded set of obligations (a DoS on frontier convergence); this producer is
   // one-shot (the runs.has short-circuit above), so the per-pass cap is also the lifetime
-  // bound. Over-cap refs are REPORTED as blocked prerequisites, never silently dropped.
+  // bound. Over-cap refs are reported as a count, never silently dropped.
   const policy = loadQueuePolicy(domain);
   const perPassCap = clampCap(policy && policy.seed_producer_per_pass_cap, {
     lo: 1, hi: CLAMP_CEILING, fallback: DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
   });
-  const seededTuples = tuples.slice(0, perPassCap);
-  const overCapTuples = tuples.slice(perPassCap);
-  if (seededTuples.length > 0) {
-    require("../contract-target.js").bindAndSeedContracts(state, seededTuples);
-  }
-  for (const tuple of overCapTuples) recordOverCapOnchainReference(domain, tuple);
+  const recordedTuples = tuples.slice(0, perPassCap);
+  for (const tuple of recordedTuples) recordOnchainReferenceScopeUnconfirmed(domain, tuple);
+  const overCap = tuples.length - recordedTuples.length;
   recordInlineProducerProduced(domain, WEB_ONCHAIN_REF_PRODUCER_ID, rows.length);
   return {
     executed: true,
     input_item_count: rows.length,
-    resolved: seededTuples.length,
+    resolved: 0,
+    scope_unconfirmed: recordedTuples.length,
+    over_cap: overCap,
     unresolved,
-    over_cap: overCapTuples.length,
   };
 }
 

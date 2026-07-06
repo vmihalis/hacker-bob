@@ -877,7 +877,7 @@ test("web_onchain_ref consumes a zero-reference body corpus and terminalizes wit
   });
 });
 
-test("web_onchain_ref seeds resolved EVM body references through the contract seeder", () => {
+test("web_onchain_ref records resolved EVM body references as scope-confirmation leads, never auto-binding them", () => {
   withTempHome(() => {
     const domain = "http-bodies-contract-ref.example.com";
     seedWebSession(domain);
@@ -891,21 +891,16 @@ test("web_onchain_ref seeds resolved EVM body references through the contract se
     const out = JSON.parse(materializeProducerFloor({ target_domain: domain }));
     const refRun = out.inline_producer_runs.find((run) => run.producer_id === "web_onchain_ref");
     assert.ok(refRun);
-    assert.equal(refRun.resolved, 1);
+    // A body-extracted (attacker-influenceable) address is an UNTRUSTED lead: it is recorded
+    // for operator scope confirmation, never auto-bound as an in-scope smart_contract surface.
+    assert.equal(refRun.resolved, 0);
+    assert.equal(refRun.scope_unconfirmed, 1);
     assert.equal(refRun.unresolved, 0);
 
     const surfaces = currentSurfaces(domain).surfaces
       .filter((surface) => surface.surface_type === "smart_contract");
-    assert.equal(surfaces.length, 1);
-    assert.equal(surfaces[0].chain_family, "evm");
-    assert.equal(surfaces[0].chain_id, "8453");
-    assert.equal(surfaces[0].contract_address, address);
-
-    const after = buildProducerFloorPlan(domain);
-    assert.equal(after.availableArtifactKinds.has("chain_address_set"), true,
-      "a resolved body reference seeds the chain_address_set artifact for SC expansion");
-    assert.equal(after.plan.sc_expander_instances.length, 1,
-      "the seeded smart_contract surface feeds the address-keyed SC expander");
+    assert.equal(surfaces.length, 0,
+      "an untrusted body address is not auto-bound as an in-scope smart_contract surface");
   });
 });
 

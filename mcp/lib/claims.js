@@ -1913,35 +1913,23 @@ function completionDepthGapForCompleteSurfaces(domain) {
     else if (!surfaceBypass.has(handoff.surface_id)) surfaceBypass.set(handoff.surface_id, false);
   }
 
+  // Both the id-bearing FLAG and the id-bearing ENDPOINT set come from the MCP-owned route
+  // (surface-routes.json), FROZEN at route time by the injected detector/extractor — never
+  // re-read from agent-writable attack_surface.json at grade time. Otherwise an agent could
+  // relabel a real cross-tenant flip on an easy resource onto a hard surface by adding that
+  // endpoint under the target surface in agent scratch.
   const idBearingSurfaces = new Set();
+  const surfaceEndpointValues = new Map();
   try {
     const { readSurfaceRoutesStrict } = require("./surface-router.js");
     for (const route of (readSurfaceRoutesStrict(domain).document.routes || [])) {
       if (route && route.auth_differential_required === true && route.surface_id) {
         idBearingSurfaces.add(route.surface_id);
+        const eps = Array.isArray(route.id_bearing_endpoints) ? route.id_bearing_endpoints : [];
+        surfaceEndpointValues.set(route.surface_id, new Set(eps.filter((e) => typeof e === "string" && e)));
       }
     }
   } catch { /* routes unreadable/absent -> no surface is provably id-bearing */ }
-
-  const surfaceEndpointValues = new Map();
-  try {
-    const { readAttackSurfaceStrict } = require("./attack-surface.js");
-    const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
-    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
-    const completeSurfaceIds = new Set(surfaceBypass.keys());
-    for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
-      if (!surface || !completeSurfaceIds.has(surface.id)) continue;
-      const endpoints = new Set();
-      for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        // Only ID-BEARING endpoints count (never a benign sibling like /me), and stored in
-        // TEMPLATE form so a concrete swept url matches the surface's templated endpoint.
-        const t = endpoint && typeof endpoint.value === "string"
-          ? templatizeIdBearingEndpoint(endpoint.value) : null;
-        if (t) endpoints.add(t);
-      }
-      surfaceEndpointValues.set(surface.id, endpoints);
-    }
-  } catch { /* unreadable surface endpoints provide no auth-differential coverage */ }
 
   const authDifferentialCovered = new Set();
   try {

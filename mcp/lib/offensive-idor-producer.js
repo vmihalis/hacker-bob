@@ -279,6 +279,23 @@ function surfaceExposesIdBearingCollection(surface) {
   }
   return false;
 }
+
+// The surface's id-bearing endpoints in canonical {id}-template form, sorted+deduped. The
+// router FREEZES this onto the MCP-owned route at route time (when attack_surface.json is
+// fresh from discovery), so the completion gates bind coverage to endpoints the agent cannot
+// later tamper — never re-reading agent-writable attack_surface.json at grade time.
+function surfaceIdBearingEndpoints(surface) {
+  const out = new Set();
+  try {
+    for (const { value } of candidateSurfaceEndpoints(surface)) {
+      const t = templatizeIdBearingEndpoint(value);
+      if (t) out.add(t);
+    }
+  } catch {
+    return [];
+  }
+  return Array.from(out).sort();
+}
 // Privilege / authorization-assignment SELECTOR tokens: a create API honoring one would let the
 // operator-armed write mint an ELEVATED synthetic object (an admin/role/permission-bearing account)
 // instead of a plain canary-bearing resource — a confined agent using the operator's write-authorization
@@ -2444,6 +2461,7 @@ module.exports = {
   idorProvisionAuthorizedFor,
   mintCanary,
   surfaceExposesIdBearingCollection,
+  surfaceIdBearingEndpoints,
   endpointValueIsIdBearing,
   templatizeIdBearingEndpoint,
   pathHasConcreteParentInstance,
