@@ -231,11 +231,18 @@ function candidateEndpointPathname(value) {
 }
 
 function concreteSegmentCarriesIdSignal(seg) {
-  for (let index = 0; index < seg.length; index += 1) {
-    const code = seg.charCodeAt(index);
-    if (code >= 48 && code <= 57) return true;
-  }
-  return seg.includes("-") || seg.includes("_") || seg.includes(".");
+  // A real per-object identifier: a numeric/mixed id (contains a digit), a uuid, or a long
+  // hex/hash token (content hash / 0x address). A bare '-'/'_'/'.' is NOT an id signal — it
+  // appears in ubiquitous FIXED routes (/oauth/access-token, /user-profile, /reset-password,
+  // /favicon.ico, /app.js) that have no per-object id to swap. Flagging those id-bearing
+  // would freeze an UNSATISFIABLE auth-differential obligation onto a secure fixed route
+  // (both principals see their own data at the same URL, so no cross-tenant flip is possible),
+  // forcing it partial forever.
+  if (/[0-9]/.test(seg)) return true;
+  // uuid (8-4-4-4-12) or a long all-hex token (>=16 hex chars) with no digit (e.g. deadbeef…).
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return true;
+  if (/^(0x)?[0-9a-f]{16,}$/i.test(seg)) return true;
+  return false;
 }
 
 // S1 id-bearing collection detector - reuses capturedIdSegmentIsSafe.

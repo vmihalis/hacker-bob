@@ -33,6 +33,7 @@ const {
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
+  endpointValueIsIdBearing,
 } = require("../mcp/lib/offensive-idor-producer.js");
 const { assertCreateCollectionShapeSafe } = require("../mcp/lib/offensive-http-common.js");
 const { validateAgainstSchema } = require("../mcp/lib/tool-validation.js");
@@ -269,6 +270,26 @@ async function run(domain, { fetch_fn, provision, args } = {}) {
 }
 
 // ───────────────────────── pure-helper unit tests ──────────────────────────
+
+test("endpointValueIsIdBearing requires a real id, not a bare punctuation char (fixed routes are NOT id-bearing)", () => {
+  // Ubiquitous FIXED routes: a hyphen/underscore/dot is NOT an id — flagging these would
+  // freeze an unsatisfiable auth-differential obligation (no per-object id to cross-tenant
+  // swap; both principals 2xx their own data at the same URL, so no flip is possible).
+  for (const p of [
+    "/oauth/access-token", "/account/reset-password", "/user-profile",
+    "/api/csrf-token", "/favicon.ico", "/assets/app.js", "/robots.txt",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(p), false, `fixed route ${p} must not be id-bearing`);
+  }
+  // Real per-object identifiers still ARE id-bearing.
+  for (const p of [
+    "/api/orders/12345", "/api/accounts/789", "/users/{id}", "/users/:id",
+    "/users/550e8400-e29b-41d4-a716-446655440000", "/tx/0xabcdef0123456789",
+    "/posts/deadbeefcafebabe00",
+  ]) {
+    assert.equal(endpointValueIsIdBearing(p), true, `id-bearing route ${p} must be detected`);
+  }
+});
 
 test("canaryAt walks an exact leaf path, never a substring", () => {
   const body = { details: { secret: { token: CANARY_B } }, note: `x${CANARY_B}x` };

@@ -108,31 +108,20 @@ function resolveChainContext(input) {
   const svmFamily = knownChainFamily("svm");
 
   if (/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
-    // Require a Base-SPECIFIC disambiguator — never a bare "base", which matches the
-    // ubiquitous EVM/DeFi tokens "base fee" (EIP-1559), "base asset", "base URL", etc.
-    // and would silently mis-stamp an Ethereum/Arbitrum contract as Base (8453).
-    if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli|testnet)\b|\beip155:8453\b|\bchain[-_\s]?id[\s:=]*8453\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: 8453 } : null;
-    }
-    if (/\boptimism\b|\boptimistic[-_\s]?ethereum\b|\bop[-_\s]?mainnet\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: 10 } : null;
-    }
-    if (/\barbitrum\b|\barb[-_\s]?mainnet\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: 42161 } : null;
-    }
-    if (/\bpolygon\b|\bmatic\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: 137 } : null;
-    }
-    // Only a MAINNET-SPECIFIC Ethereum token may resolve chain_id 1. Bare "ethereum"
-    // matches "Ethereum-compatible"/"Ethereum-based"/"Ethereum Virtual Machine" for nearly
-    // every EVM L2, and bare "mainnet"/"evm" appears in "avalanche mainnet" etc.; require an
-    // explicit ethereum-mainnet / eip155:1 / chain-id 1 so a non-mainnet EVM contract fails
-    // closed to null -> normalizeSurfaceLead stamps a blocked_prereqs lead, never a silent
-    // mis-resolution of a non-Ethereum EVM contract to Ethereum mainnet (Y-D22).
-    if (/\bethereum[-_\s]?mainnet\b|\beth[-_\s]?mainnet\b|\beip155:1\b|\bchain[-_\s]?id[\s:=]*1\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: 1 } : null;
-    }
-    return null;
+    // Collect EVERY chain the evidence names, then require EXACTLY ONE. A base-specific token
+    // is required for Base (bare "base" matches "base fee"/"base URL"); a mainnet-specific
+    // token for Ethereum (bare "ethereum" matches "Ethereum-compatible"/"EVM" on every L2).
+    // If the evidence names TWO different chains (e.g. "bridged via Arbitrum" on a Polygon
+    // contract), fail CLOSED to a blocked_prereqs lead rather than tie-break by branch
+    // priority onto the wrong chain (Y-D22).
+    const chainMatches = new Set();
+    if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli|testnet)\b|\beip155:8453\b|\bchain[-_\s]?id[\s:=]*8453\b/.test(contextText)) chainMatches.add(8453);
+    if (/\boptimism\b|\boptimistic[-_\s]?ethereum\b|\bop[-_\s]?mainnet\b/.test(contextText)) chainMatches.add(10);
+    if (/\barbitrum\b|\barb[-_\s]?mainnet\b/.test(contextText)) chainMatches.add(42161);
+    if (/\bpolygon\b|\bmatic\b/.test(contextText)) chainMatches.add(137);
+    if (/\bethereum[-_\s]?mainnet\b|\beth[-_\s]?mainnet\b|\beip155:1\b|\bchain[-_\s]?id[\s:=]*1\b/.test(contextText)) chainMatches.add(1);
+    if (chainMatches.size !== 1) return null;
+    return evmFamily ? { chain_family: evmFamily, chain_id: [...chainMatches][0] } : null;
   }
 
   if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(contractAddress) && /\bsolana\b|\bsvm\b/.test(contextText)) {
