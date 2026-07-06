@@ -134,14 +134,18 @@ function writeCoverageRow(domain, surfaceId, endpoint) {
   }));
 }
 
-function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount = 2 } = {}) {
+function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount = 2, authenticatedAccess = true } = {}) {
   writeFileAtomic(authDifferentialResultsPath(domain), `${JSON.stringify({
     version: 1,
     target_domain: domain,
     per_endpoint: [{
       endpoint,
       signatures_by_profile: {
-        alice: { status: 200, response_class: "ok", sent_with_auth: true },
+        // authenticatedAccess=false models the fabricated-cookie attack: two distinct
+        // credentials that BOTH get denied (no 2xx, no divergence) — never a real test.
+        alice: authenticatedAccess
+          ? { status: 200, response_class: "ok", sent_with_auth: true }
+          : { status: 403, response_class: "forbidden", sent_with_auth: true },
         bob: { status: 403, response_class: "forbidden", sent_with_auth: true },
       },
       divergences: [],
@@ -185,6 +189,24 @@ test("id-bearing complete surface does NOT clear on a same-principal two-name sw
     // ONE principal fingerprint, so the runner records distinct_principal_count: 1 — a
     // sweep that never actually tested cross-tenant. It must not clear the id-bearing gate.
     writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount: 1 });
+
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
+      surface_id: surfaceId,
+      finding_id: "F-1",
+      reason: "complete_idbearing_surface_no_differential",
+    }]);
+  }));
+});
+
+test("id-bearing complete surface does NOT clear on a two-fabricated-cookie sweep (distinct fingerprints, both denied, no flip)", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "idbearing-fabricated-cookies.example.com";
+    const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    writeCoverageRow(domain, surfaceId, endpoint);
+    // The attack: two throwaway cookies mint distinct fingerprints (distinct_principal_count:2)
+    // but neither is a real account — both requests are denied and divergences[] is empty, so
+    // the sweep never tested cross-tenant isolation. The gate must NOT count it as coverage.
+    writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount: 2, authenticatedAccess: false });
 
     assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
       surface_id: surfaceId,

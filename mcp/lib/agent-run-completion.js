@@ -314,10 +314,14 @@ function rowHasTwoProfileSweep(row) {
     && !Array.isArray(signatures)
     && Object.keys(signatures).length >= 2;
   // Executed cross-tenant coverage requires >=2 DISTINCT PRINCIPALS (MCP-owned auth
-  // fingerprint), not >=2 profile NAMES — a same-principal 2-name sweep does not count.
+  // fingerprint), not >=2 profile NAMES — a same-principal 2-name sweep does not count —
+  // AND the sweep must show a real differential (a 2xx access or a divergence flip), so
+  // two fabricated cookies both getting denied cannot earn completion.
+  const { rowShowsExecutedDifferential } = require("./auth-differential-runner.js");
   return signaturesOk
     && typeof row.distinct_principal_count === "number"
-    && row.distinct_principal_count >= 2;
+    && row.distinct_principal_count >= 2
+    && rowShowsExecutedDifferential(row);
 }
 
 function hasAuthDifferentialSweepForSurface(marker) {

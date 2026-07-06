@@ -123,7 +123,13 @@ function prepareWaveAssignments({
   let authProfileCount = 0;
   try {
     const authProfiles = JSON.parse(listAuthProfiles({ target_domain: domain }));
-    authProfileCount = Array.isArray(authProfiles.profiles) ? authProfiles.profiles.length : 0;
+    // Count DISTINCT AUTHENTICATED principals (non-null MCP-owned fingerprints), not raw
+    // profile names — so the auth-differential obligation fires exactly when >=2 real
+    // tenants exist to run the cross-tenant test (aligning the flag with the completion
+    // gate's clearance predicate; a single authed account + anon never over-flags).
+    authProfileCount = Array.isArray(authProfiles.profiles)
+      ? new Set(authProfiles.profiles.map((p) => p && p.principal_fingerprint).filter(Boolean)).size
+      : 0;
   } catch {
     authProfileCount = 0;
   }

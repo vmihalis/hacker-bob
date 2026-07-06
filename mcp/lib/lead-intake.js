@@ -120,8 +120,12 @@ function resolveChainContext(input) {
     if (/\bpolygon\b|\bmatic\b/.test(contextText)) {
       return evmFamily ? { chain_family: evmFamily, chain_id: 137 } : null;
     }
-    if (/\bethereum\b|\beth[-_\s]?mainnet\b|\bmainnet\b|\bevm\b/.test(contextText)) {
-      return evmFamily ? { chain_family: evmFamily, chain_id: /\bmainnet\b|\bethereum\b|\beth[-_\s]?mainnet\b/.test(contextText) ? 1 : null } : null;
+    // Only an ETHEREUM-SPECIFIC token may resolve chain_id 1. A bare "mainnet" or
+    // "evm" (which also appears in "avalanche mainnet", "bnb chain mainnet", etc.)
+    // must fail closed to null -> normalizeSurfaceLead stamps a blocked_prereqs lead,
+    // never a silent mis-resolution of a non-Ethereum EVM contract to Ethereum mainnet.
+    if (/\bethereum\b|\beth[-_\s]?mainnet\b/.test(contextText)) {
+      return evmFamily ? { chain_family: evmFamily, chain_id: 1 } : null;
     }
     return null;
   }

@@ -1940,7 +1940,7 @@ function completionDepthGapForCompleteSurfaces(domain) {
 
   const authDifferentialCovered = new Set();
   try {
-    const { readResults } = require("./auth-differential-runner.js");
+    const { readResults, rowShowsExecutedDifferential } = require("./auth-differential-runner.js");
     const results = readResults(domain);
     for (const row of ((results && Array.isArray(results.per_endpoint)) ? results.per_endpoint : [])) {
       if (!row || typeof row.endpoint !== "string") continue;
@@ -1950,8 +1950,11 @@ function completionDepthGapForCompleteSurfaces(domain) {
         : {};
       if (Object.keys(signatures).length < 2) continue;
       // Coverage requires >=2 DISTINCT PRINCIPALS actually swept (MCP-owned auth
-      // fingerprint), not >=2 profile NAMES — a same-principal 2-name row does not clear it.
+      // fingerprint), not >=2 profile NAMES — a same-principal 2-name row does not clear it —
+      // AND a real executed differential (a 2xx access or a divergence flip), so two
+      // fabricated cookies both getting denied cannot clear the surface.
       if ((typeof row.distinct_principal_count === "number" ? row.distinct_principal_count : 0) < 2) continue;
+      if (!rowShowsExecutedDifferential(row)) continue;
       for (const [surfaceId, endpoints] of surfaceEndpointValues) {
         if (endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
       }

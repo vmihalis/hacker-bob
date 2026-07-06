@@ -109,6 +109,27 @@ function readResults(domain) {
   }
 }
 
+// A per_endpoint row counts as an EXECUTED cross-tenant differential only if the
+// sweep actually exercised access: at least one swept principal got a non-error
+// (2xx) response — a real account reached the collection — OR the negative control
+// FLIPPED (a recorded divergence). Two fabricated credentials that both get denied
+// (401/403, no divergence) minted distinct fingerprints but never tested isolation,
+// so they do not earn completion. Single-source for both completion gates.
+function rowShowsExecutedDifferential(row) {
+  const signatures = row && row.signatures_by_profile;
+  if (signatures && typeof signatures === "object" && !Array.isArray(signatures)) {
+    for (const sig of Object.values(signatures)) {
+      if (sig && typeof sig === "object"
+        && ((typeof sig.status === "number" && sig.status >= 200 && sig.status < 300)
+          || sig.status_class === "2xx"
+          || sig.response_class === "ok")) {
+        return true;
+      }
+    }
+  }
+  return Array.isArray(row && row.divergences) && row.divergences.length > 0;
+}
+
 function countByType(perEndpoint) {
   const counts = {};
   for (const entry of perEndpoint) {
@@ -275,6 +296,7 @@ async function runAuthDifferential({
 module.exports = {
   runAuthDifferential,
   readResults,
+  rowShowsExecutedDifferential,
   joinUrl,
   normalizeEndpoints,
   normalizeProfiles,

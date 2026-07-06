@@ -369,7 +369,12 @@ function routeSurfaces(args, { idBearingDetector = null } = {}) {
     let authProfileCount = 0;
     try {
       const authProfiles = JSON.parse(listAuthProfiles({ target_domain: domain }));
-      authProfileCount = Array.isArray(authProfiles.profiles) ? authProfiles.profiles.length : 0;
+      // DISTINCT AUTHENTICATED principals (non-null MCP-owned fingerprints), not raw
+      // names — flag the auth-differential obligation only when >=2 real tenants exist
+      // (aligns the flag with the completion gate's distinct-principal clearance).
+      authProfileCount = Array.isArray(authProfiles.profiles)
+        ? new Set(authProfiles.profiles.map((p) => p && p.principal_fingerprint).filter(Boolean)).size
+        : 0;
     } catch {
       authProfileCount = 0;
     }
