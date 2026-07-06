@@ -650,7 +650,7 @@ function writeGradeVerdict(args) {
       { code: "missing_completion_depth", missing: completionGap.missing },
       {
         remediation:
-          "For each named surface: run the relevant bob_verify_* for one of its findings (the executed differential is verifier-owned, minted downstream), OR log concrete coverage rows / a substantive bypass_attempt for it, OR reconcile the surface to surface_status: partial (complete_surface_finding_not_executed = a recorded finding was never executed into a differential; complete_surface_no_evidence = complete with no finding, coverage, or bypass at all).",
+          "For each named surface: run the relevant bob_verify_* for one of its findings (the executed differential is verifier-owned, minted downstream), OR reconcile it to surface_status: partial. IMPORTANT: for a surface whose reason is complete_idbearing_surface_no_differential (an id-bearing / BOLA surface), a coverage row or a bypass_attempt narrative does NOT clear it — it requires an executed cross-tenant flip (needs >=2 distinct principals) or a verified finding; with <2 principals, reconcile to partial (an honest 'needs a 2nd principal to test cross-tenant' block). Only for a NON-id-bearing surface (complete_surface_no_evidence) are concrete coverage rows / a substantive bypass_attempt also accepted; complete_surface_finding_not_executed = a recorded finding was never executed into a differential.",
       },
     );
   }

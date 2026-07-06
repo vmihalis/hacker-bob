@@ -281,11 +281,13 @@ test("endpointValueIsIdBearing requires a real id, not a bare punctuation char (
   ]) {
     assert.equal(endpointValueIsIdBearing(p), false, `fixed route ${p} must not be id-bearing`);
   }
-  // Real per-object identifiers still ARE id-bearing.
+  // Real per-object identifiers still ARE id-bearing — including the canonical nested-collection
+  // BOLA shape where the owner id is in a NON-final segment (/users/{id}/orders).
   for (const p of [
     "/api/orders/12345", "/api/accounts/789", "/users/{id}", "/users/:id",
     "/users/550e8400-e29b-41d4-a716-446655440000", "/tx/0xabcdef0123456789",
     "/posts/deadbeefcafebabe00",
+    "/users/{id}/orders", "/api/tenants/42/settings", "/orgs/99/config", "/accounts/{id}/balance",
   ]) {
     assert.equal(endpointValueIsIdBearing(p), true, `id-bearing route ${p} must be detected`);
   }

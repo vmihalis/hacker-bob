@@ -254,26 +254,38 @@ function endpointValueIsIdBearing(value) {
   const pathname = candidateEndpointPathname(value);
   if (!pathname) return false;
   const segments = pathname.split("/").filter(Boolean);
-  if (segments.length === 0) return false;
-  const finalSeg = segments[segments.length - 1];
-  return isRouteParamMarker(finalSeg)
-    || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg));
+  // ANY segment being id-bearing makes the endpoint id-bearing — the owner id is often in a
+  // non-final segment (/users/{id}/orders, /api/tenants/42/settings), the canonical BOLA shape.
+  return segments.some(segmentIsIdBearing);
 }
 
-// Canonical id-bearing path with the final id segment collapsed to {id}, so a sweep of
-// a CONCRETE url (/api/orders/123) matches the surface's stored TEMPLATE (/api/orders/{id})
-// — a correctly-executed IDOR sweep must send a concrete id to elicit a 2xx, and the
-// completion gate would otherwise never match it to the templated surface endpoint.
+// One path segment is id-bearing iff it is a route-param marker (:id / {id} / %7b..%7d) or a
+// concrete id-signalling segment (a real identifier, not a bare-punctuation fixed-route word).
+function segmentIsIdBearing(seg) {
+  return isRouteParamMarker(seg)
+    || (capturedIdSegmentIsSafe(seg) && concreteSegmentCarriesIdSignal(seg));
+}
+
+// Canonical id-bearing path with EVERY id segment collapsed to {id}, so a concrete sweep
+// (/api/orders/123, /api/tenants/42/settings) matches the surface's stored TEMPLATE
+// (/api/orders/{id}, /api/tenants/{id}/settings). Inspects ALL segments — the most common
+// BOLA shape carries the owner id in a NON-final segment (/users/{id}/orders), which a
+// final-segment-only check would miss and revert to the bypass/coverage laundering path.
 function templatizeIdBearingEndpoint(value) {
   const pathname = candidateEndpointPathname(value);
   if (!pathname) return null;
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
-  const finalSeg = segments[segments.length - 1];
-  const isId = isRouteParamMarker(finalSeg)
-    || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg));
-  if (!isId) return null;
-  return `/${segments.slice(0, -1).concat("{id}").join("/")}`;
+  let sawId = false;
+  const templated = segments.map((seg) => {
+    if (segmentIsIdBearing(seg)) {
+      sawId = true;
+      return "{id}";
+    }
+    return seg;
+  });
+  if (!sawId) return null;
+  return `/${templated.join("/")}`;
 }
 
 function surfaceExposesIdBearingCollection(surface) {

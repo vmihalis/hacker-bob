@@ -162,14 +162,15 @@ function signatureIsNonError(sig) {
       || sig.response_class === "ok"));
 }
 
-// A DENIAL (401/403/4xx): the principal was refused this object. For a VALIDATED principal
-// this is the "negative control held" half of a cross-tenant flip; for a junk credential it
-// is meaningless (it was never a principal), which is why the flip requires the denied side
-// to be validated.
+// A genuine AUTHORIZATION denial (401/403, or existence-hiding 404) — the "negative control
+// held" half of a cross-tenant flip. A transient/throttle code (408/425/429) or a generic 400
+// is NOT a denial: it must not let a rate-limit on principal B masquerade as an access-control
+// boundary. The denied side must also be VALIDATED (a 2xx somewhere) so a junk credential's
+// 401 is never a flip. status_class "4xx" is intentionally NOT accepted (too coarse — it would
+// re-admit 429).
 function signatureIsDenied(sig) {
   return !!(sig && typeof sig === "object"
-    && ((typeof sig.status === "number" && sig.status >= 400 && sig.status < 500)
-      || sig.status_class === "4xx"
+    && ((typeof sig.status === "number" && (sig.status === 401 || sig.status === 403 || sig.status === 404))
       || sig.response_class === "forbidden"
       || sig.response_class === "unauthorized"));
 }
