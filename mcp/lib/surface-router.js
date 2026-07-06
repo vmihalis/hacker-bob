@@ -16,7 +16,11 @@ const {
   listAuthProfiles,
 } = require("./auth.js");
 const {
+  loadQueuePolicy,
+} = require("./queue-policy.js");
+const {
   classifySurfaceCapability,
+  selectWebEvaluatorPack,
   deriveConfidenceAdjustment,
   getCapabilityPack,
   normalizeContextBudget,
@@ -34,7 +38,7 @@ const SURFACE_ROUTE_VERSION = 1;
 // S1 id-bearing detection is INJECTED by the tool handler (route-surfaces.js),
 // never required here: surface-router.js is inside the lead-closure that must
 // not reach an alias-require file, and the detector's module transitively does.
-function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null } = {}) {
+function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null, queuePolicy = null } = {}) {
   // Surface input read from currentSurfaces (Cycle F.5): surface-index.json
   // is authoritative when present; legacy attack_surface.json is only used
   // when the materialized view is absent (transitional fallback removed in D.3).
@@ -120,6 +124,23 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
       const eps = idBearingEndpoints(surface);
       route.id_bearing_endpoints = Array.isArray(eps) ? eps.filter((e) => typeof e === "string" && e) : [];
     }
+    // Route a HIGH-VALUE web surface to the spawn-capable web_fanout variant (evaluator-fanout)
+    // when nesting can fire, so the (bug_class x auth) child fan-out actuates — the ns.com gap.
+    // Overwrite the pack fields from the SELECTED pack so route.evaluator_agent===pack.evaluator_agent
+    // stays green (idBearing is the frozen route.id_bearing, never re-derived here).
+    const selectedPack = selectWebEvaluatorPack(classification, {
+      idBearing: isIdBearing,
+      highPriority: String((surface && surface.priority) || "").toUpperCase() === "HIGH",
+      spawnDepth: Number.isInteger(queuePolicy && queuePolicy.max_spawn_depth) ? queuePolicy.max_spawn_depth : 1,
+      queuePolicy,
+    });
+    if (selectedPack && selectedPack.id !== route.capability_pack) {
+      route.capability_pack = selectedPack.id;
+      route.capability_pack_version = selectedPack.capability_pack_version;
+      route.evaluator_agent = selectedPack.evaluator_agent;
+      route.brief_profile = selectedPack.brief_profile;
+      route.context_budget = selectedPack.context_budget;
+    }
     routes.push(route);
   }
 
@@ -203,9 +224,9 @@ function validateSurfaceRoute(route, index, filePath) {
   };
 }
 
-function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null } = {}) {
+function routeSurfacesInternal(domain, { attackSurfaceInfo = null, frictionEvents = null, authProfileCount = 0, idBearingDetector = null, idBearingEndpoints = null, queuePolicy = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
-  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints });
+  const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo, frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints, queuePolicy });
   const filePath = surfaceRoutesPath(targetDomain);
   // Validate every generated route BEFORE persisting. classifySurfaceCapability cannot emit an
   // empty/pack-mismatched evaluator_agent today, but a future pack/derivation regression that did
@@ -392,7 +413,9 @@ function routeSurfaces(args, { idBearingDetector = null, idBearingEndpoints = nu
     } catch {
       authProfileCount = 0;
     }
-    const routed = routeSurfacesInternal(domain, { frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints });
+    let queuePolicy = null;
+    try { queuePolicy = loadQueuePolicy(domain); } catch { queuePolicy = null; }
+    const routed = routeSurfacesInternal(domain, { frictionEvents, authProfileCount, idBearingDetector, idBearingEndpoints, queuePolicy });
     return JSON.stringify({
       version: SURFACE_ROUTES_VERSION,
       routed: true,

@@ -45,6 +45,12 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   priority_order: ["critical", "high", "medium", "low"],
   stale_after_ms: 24 * 60 * 60 * 1000,
   close_blocked_on_freeze: false,
+  // Route high-value (id-bearing) web surfaces to the spawn-capable web_fanout variant so the
+  // (bug_class × auth) child fan-out fires (default ON; operators set false to keep flat routing).
+  route_high_value_to_fanout: true,
+  // Also route HIGH-priority (non-id-bearing) web surfaces to fanout — opt-in, since priority is
+  // an agent-writable RANK not a depth signal.
+  web_fanout_on_high_priority: false,
   standard_wave_target: 64,
   standard_wave_max: 128,
   deep_wave_target: 64,
@@ -407,6 +413,12 @@ function normalizeQueuePolicy(input = {}) {
     close_blocked_on_freeze: input.close_blocked_on_freeze == null
       ? DEFAULT_QUEUE_POLICY.close_blocked_on_freeze
       : assertBoolean(input.close_blocked_on_freeze, "close_blocked_on_freeze"),
+    route_high_value_to_fanout: input.route_high_value_to_fanout == null
+      ? DEFAULT_QUEUE_POLICY.route_high_value_to_fanout
+      : assertBoolean(input.route_high_value_to_fanout, "route_high_value_to_fanout"),
+    web_fanout_on_high_priority: input.web_fanout_on_high_priority == null
+      ? DEFAULT_QUEUE_POLICY.web_fanout_on_high_priority
+      : assertBoolean(input.web_fanout_on_high_priority, "web_fanout_on_high_priority"),
     standard_wave_target: normalizePositiveInteger(input.standard_wave_target, "standard_wave_target", {
       defaultValue: DEFAULT_QUEUE_POLICY.standard_wave_target,
       max: CLAMP_CEILING,

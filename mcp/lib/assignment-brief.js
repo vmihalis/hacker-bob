@@ -1246,6 +1246,17 @@ function cellFloorPlanningKeysForSurface(domain, surfaceId) {
 // rejects any other child subagent_type.
 const SPAWN_SUBAGENT_TYPE = "evaluator-fanout";
 
+// EARNED-DONE COMPOSITION INVARIANT (do not sever): child (bug_class × auth) cells are NOT
+// minted as wave assignments — they reuse the PARENT's (wave, agent) and re-read the parent's
+// on-disk assignment via bob_read_assignment_brief (prompts/roles/evaluator-fanout.md). The
+// completion gate keys on (wave, agent) -> parent assignment, and the id-bearing /
+// auth_differential_required / id_bearing_endpoints obligation lives ONLY on that parent
+// assignment. So a nested child marking an id-bearing surface complete is still BLOCKED
+// (missing_auth_differential) unless a real cross_tenant_flip row exists. A future redesign
+// that gives children DISTINCT agent ids, or has them consume the injected cell spec instead
+// of re-reading the parent assignment, would make assignmentByAgent.get(child_agent) miss and
+// silently BYPASS the earned-done gate through nesting — it must FIRST mint per-cell
+// assignments through prepareWaveAssignments (which re-stamps id_bearing from surface_id).
 function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverageSummary, wave = null }) {
   let policy;
   try {

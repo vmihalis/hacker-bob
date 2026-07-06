@@ -75,6 +75,38 @@ const WEB_CAPABILITY_PACK = Object.freeze({
   }),
 });
 
+// The spawn-capable web variant: byte-identical to WEB_CAPABILITY_PACK except the
+// evaluator_agent is the spawn-capable evaluator-fanout role. SPREAD-derived (never a
+// hand-cloned sibling) so verifier/evidence/completion_gate/context_budget/brief_profile
+// cannot drift from web. Selected (in place of web) for high-value surfaces when nesting is
+// actually possible (see selectWebEvaluatorPack); this is what ARMS the child fan-out plan a
+// flat evaluator-agent has no Task tool to actuate — the ns.com "0 of 33 spawned" gap.
+const WEB_FANOUT_CAPABILITY_PACK = Object.freeze({
+  ...WEB_CAPABILITY_PACK,
+  id: "web_fanout",
+  evaluator_agent: "evaluator-fanout",
+});
+
+// Select the web evaluator pack for a classified WEB surface: the spawn-capable web_fanout
+// variant for a HIGH-VALUE surface when nesting can actually fire, else the flat web pack.
+// idBearing is passed IN (from the MCP-owned route.id_bearing frozen in buildSurfaceRoutesDocument)
+// and NEVER re-derived here, so the routing choice and route.id_bearing cannot desync.
+//   - Default ON (route_high_value_to_fanout !== false): high-value web surfaces fan out.
+//   - Trigger = idBearing (the clean high-value signal). multi-auth is NOT a trigger — it is
+//     session-global (identical for every surface) and is the satisfiability PRECONDITION for a
+//     flip, not a depth signal. HIGH priority is an opt-in only (web_fanout_on_high_priority):
+//     priority is a RANK, agent-writable, and defaults medium.
+//   - Gated on spawnDepth>1: at max_spawn_depth<=1 nesting can never fire, so rerouting to the
+//     fanout role would only incur its transition-blindness for nothing — keep flat.
+function selectWebEvaluatorPack(classification, { idBearing = false, highPriority = false, spawnDepth = 1, queuePolicy = null } = {}) {
+  if (!classification || classification.capability_pack !== "web") return null;
+  const policy = queuePolicy && typeof queuePolicy === "object" ? queuePolicy : {};
+  if (policy.route_high_value_to_fanout === false) return WEB_CAPABILITY_PACK;
+  if (!(Number.isInteger(spawnDepth) && spawnDepth > 1)) return WEB_CAPABILITY_PACK;
+  const highValue = idBearing || (highPriority && policy.web_fanout_on_high_priority === true);
+  return highValue ? WEB_FANOUT_CAPABILITY_PACK : WEB_CAPABILITY_PACK;
+}
+
 function ossCapabilityPack(id, sampleType) {
   return Object.freeze({
     id,
@@ -346,6 +378,7 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
 
 const CAPABILITY_PACKS = Object.freeze({
   web: WEB_CAPABILITY_PACK,
+  web_fanout: WEB_FANOUT_CAPABILITY_PACK,
   oss_dependency: OSS_DEPENDENCY_CAPABILITY_PACK,
   oss_native_code: OSS_NATIVE_CODE_CAPABILITY_PACK,
   oss_api_schema: OSS_API_SCHEMA_CAPABILITY_PACK,
@@ -959,6 +992,7 @@ module.exports = {
   evaluatorRoleSpecs,
   familyTagForCapabilityPackId,
   normalizeAssignmentRouteMetadata,
+  selectWebEvaluatorPack,
   normalizeContextBudget,
   normalizeSurfaceType,
   SMART_CONTRACT_CONTEXT_BUDGET,

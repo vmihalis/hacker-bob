@@ -15,6 +15,9 @@ const {
   waveAssignmentsPath,
 } = require("../paths.js");
 const {
+  loadQueuePolicy,
+} = require("../queue-policy.js");
+const {
   appendJsonlLine,
   withSessionLock,
   writeFileAtomic,
@@ -133,11 +136,16 @@ function prepareWaveAssignments({
   } catch {
     authProfileCount = 0;
   }
+  // Thread the queue policy so the router can route high-value web surfaces to the
+  // spawn-capable web_fanout variant when nesting is enabled (max_spawn_depth>1).
+  let queuePolicyForRoute = null;
+  try { queuePolicyForRoute = loadQueuePolicy(domain); } catch { queuePolicyForRoute = null; }
   const routedSurfaces = routeSurfacesInternal(domain, {
     attackSurfaceInfo: attackSurface,
     authProfileCount,
     idBearingDetector: surfaceExposesIdBearingCollection,
     idBearingEndpoints: surfaceIdBearingEndpoints,
+    queuePolicy: queuePolicyForRoute,
   });
   const routeBySurfaceId = new Map(
     routedSurfaces.document.routes.map((route) => [route.surface_id, route]),

@@ -105,6 +105,7 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |
 |---|---|---|---|---|---|
 | `web` | `bob_http_scan` | `http_replay` | — | — | — |
+| `web_fanout` | `bob_http_scan` | `http_replay` | — | — | — |
 | `oss_dependency` | `bob_repo_check` | `repo_dependency_check` | — | — | — |
 | `oss_native_code` | `bob_repo_check` | `repo_native_code_check` | — | — | — |
 | `oss_api_schema` | `bob_repo_check` | `repo_api_schema_check` | — | — | — |

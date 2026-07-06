@@ -320,6 +320,7 @@
   "test/lead-intake-chain-resolver.test.js",
   "test/completion-depth-idbearing-gate.test.js",
   "test/auth-differential-completion-gate.test.js",
+  "test/web-fanout-routing.test.js",
   "test/scheduler-preconditions-shape.test.js",
   "test/composition-floor.test.js",
   "test/seed-drift-backpressure.test.js",

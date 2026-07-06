@@ -357,7 +357,11 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     description: "Spawn-capable per-surface evaluator — actuates the brain-owned child_fanout_plan, recursively fanning out one child sub-evaluator per (bug_class × auth) cell (default-off; depth>1 opt-in on host==claude). Transition-blind: discovered cross-surface pivots ride discovered_pivots[] up to the orchestrator.",
     model: "opus",
     color: "yellow",
-    max_turns: 200,
+    // Turn-cap PARITY with the flat evaluator (99999), not 200: the routing predicate targets
+    // the deepest, highest-value surfaces, and each leaf cell is itself capped by this value —
+    // a 200 cap would truncate exactly the surfaces most worth exhausting. The fan-out's
+    // benefit is PARALLEL (bug_class × auth) cells, not shorter per-agent budgets.
+    max_turns: 99999,
     background: true,
     mcp_server: true,
     spawn_capable: true,
