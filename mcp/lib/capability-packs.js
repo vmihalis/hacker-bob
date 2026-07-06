@@ -761,6 +761,7 @@ function normalizeAssignmentRouteMetadata(assignment) {
   // to it — never re-derived from agent-writable attack_surface.json.
   const idBearingEndpoints = Array.isArray(assignment && assignment.id_bearing_endpoints)
     ? assignment.id_bearing_endpoints.filter((e) => typeof e === "string" && e) : [];
+  const idBearing = !!(assignment && assignment.id_bearing === true);
   const hasRouteMetadata = !!assignment && (
     assignment.capability_pack != null ||
     assignment.capability_pack_version != null ||
@@ -782,7 +783,7 @@ function normalizeAssignmentRouteMetadata(assignment) {
         "assignment with surface_type=smart_contract is missing capability_pack/evaluator_agent/brief_profile; route the surface via bob_route_surfaces before starting the wave",
       );
     }
-    return { ...defaultWebRouteMetadata(), id_bearing_endpoints: idBearingEndpoints };
+    return { ...defaultWebRouteMetadata(), id_bearing: idBearing, id_bearing_endpoints: idBearingEndpoints };
   }
 
   const capabilityPack = assertPackString(assignment.capability_pack, "capability_pack");
@@ -808,6 +809,7 @@ function normalizeAssignmentRouteMetadata(assignment) {
     evaluator_agent: evaluatorAgent,
     brief_profile: briefProfile,
     context_budget: normalizeContextBudget(assignment.context_budget, pack),
+    id_bearing: idBearing,
     id_bearing_endpoints: idBearingEndpoints,
   };
 }

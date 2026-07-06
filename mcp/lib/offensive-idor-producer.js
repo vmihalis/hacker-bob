@@ -230,21 +230,6 @@ function candidateEndpointPathname(value) {
   }
 }
 
-function concreteSegmentCarriesIdSignal(seg) {
-  // A real per-object identifier: a numeric/mixed id (contains a digit), a uuid, or a long
-  // hex/hash token (content hash / 0x address). A bare '-'/'_'/'.' is NOT an id signal — it
-  // appears in ubiquitous FIXED routes (/oauth/access-token, /user-profile, /reset-password,
-  // /favicon.ico, /app.js) that have no per-object id to swap. Flagging those id-bearing
-  // would freeze an UNSATISFIABLE auth-differential obligation onto a secure fixed route
-  // (both principals see their own data at the same URL, so no cross-tenant flip is possible),
-  // forcing it partial forever.
-  if (/[0-9]/.test(seg)) return true;
-  // uuid (8-4-4-4-12) or a long all-hex token (>=16 hex chars) with no digit (e.g. deadbeef…).
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return true;
-  if (/^(0x)?[0-9a-f]{16,}$/i.test(seg)) return true;
-  return false;
-}
-
 // S1 id-bearing collection detector - reuses capturedIdSegmentIsSafe.
 // A single endpoint VALUE is id-bearing iff its final path segment is a route-param
 // marker (:id / {id} / %7b..%7d) or a concrete id-signalling segment. Single-sourced so
@@ -262,8 +247,22 @@ function endpointValueIsIdBearing(value) {
 // One path segment is id-bearing iff it is a route-param marker (:id / {id} / %7b..%7d) or a
 // concrete id-signalling segment (a real identifier, not a bare-punctuation fixed-route word).
 function segmentIsIdBearing(seg) {
+  // A route-param marker (:id / {id} / %7b..%7d) is always id-bearing. For a CONCRETE segment,
+  // reuse the file's existing resource-instance classifier (segmentLooksLikeResourceInstance:
+  // pure-numeric / uuid / separated slug like proj-123) and EXCLUDE API-structural words
+  // (isStaticApiAncestor: v1/v2/oauth2/graphql/... via VERSION_SEGMENT_RE + STATIC_API_ANCESTOR_WORDS).
+  // A digit-anywhere rule falsely flagged ubiquitous versioned routes (/api/v1/users), freezing
+  // an unsatisfiable cross-tenant obligation onto a fixed collection route.
   return isRouteParamMarker(seg)
-    || (capturedIdSegmentIsSafe(seg) && concreteSegmentCarriesIdSignal(seg));
+    || (!isStaticApiAncestor(seg) && capturedIdSegmentIsSafe(seg)
+      && (segmentLooksLikeResourceInstance(seg) || isHexIdToken(seg)));
+}
+
+// A long hex/hash token or 0x address (>=16 hex chars) — a per-object identifier (content
+// hash, tx hash, on-chain address) that segmentLooksLikeResourceInstance does not cover. The
+// >=16 length keeps short version/acronym segments (v1, s3, api2) excluded.
+function isHexIdToken(seg) {
+  return /^(0x)?[0-9a-f]{16,}$/i.test(String(seg));
 }
 
 // Canonical id-bearing path with EVERY id segment collapsed to {id}, so a concrete sweep

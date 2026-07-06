@@ -278,8 +278,10 @@ test("endpointValueIsIdBearing requires a real id, not a bare punctuation char (
   for (const p of [
     "/oauth/access-token", "/account/reset-password", "/user-profile",
     "/api/csrf-token", "/favicon.ico", "/assets/app.js", "/robots.txt",
+    // Versioned / API-structural / acronym segments are NOT per-object ids.
+    "/api/v1/users", "/oauth2/authorize", "/v2/orders", "/api2/reports", "/s3/bucket", "/graphql", "/api/v1.2/users",
   ]) {
-    assert.equal(endpointValueIsIdBearing(p), false, `fixed route ${p} must not be id-bearing`);
+    assert.equal(endpointValueIsIdBearing(p), false, `fixed/versioned route ${p} must not be id-bearing`);
   }
   // Real per-object identifiers still ARE id-bearing — including the canonical nested-collection
   // BOLA shape where the owner id is in a NON-final segment (/users/{id}/orders).

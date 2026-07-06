@@ -193,6 +193,10 @@ function prepareWaveAssignments({
       // immutable assignment so the per-run AD1 gate can read it; sourced ONLY from
       // route, never the agent-supplied assignment (no forgeability re-entry).
       auth_differential_required: route.auth_differential_required === true,
+      // id_bearing (detector result, principal-independent) so the finalize gate catches a
+      // single-account id-bearing 'complete' EARLY with the correct 'mark partial' guidance,
+      // consistent with the grade gate (which also keys on id_bearing).
+      id_bearing: route.id_bearing === true,
       // The FROZEN (MCP-owned, route-time) id-bearing endpoint set: the AD1 gate binds
       // sweep coverage to these, so an agent cannot relabel a real flip onto this surface
       // by editing agent-writable attack_surface.json after the fact.

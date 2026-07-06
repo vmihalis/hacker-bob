@@ -327,12 +327,15 @@ function hasVerifiedFindingDifferentialForSurface(marker) {
   ));
 }
 
-function authDifferentialCompletionBlock(marker) {
+function authDifferentialCompletionBlock(marker, { needsSecondPrincipal = false } = {}) {
+  const reason = needsSecondPrincipal
+    ? `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete: this run has <2 distinct authenticated principals, so a cross-tenant flip is not runnable. Provision a 2nd account and run bob_run_auth_differential, OR mark the surface partial (an honest "needs a 2nd principal to test cross-tenant IDOR" block) — do NOT mark it complete. A coverage row / bypass_attempt narrative does NOT clear an id-bearing surface.`
+    : `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles) or a signed IDOR/finding-differential confirm bound to the surface. If the cross-tenant test cannot be run, mark the surface partial with a blocked_prereqs/blocked_harness_runs entry naming the un-run test — do NOT mark it complete.`;
   return {
     ok: false,
     status: "blocked",
     block_code: "missing_auth_differential",
-    reason: `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles) or a signed IDOR/finding-differential confirm bound to the surface. If the cross-tenant test cannot be run, mark the surface partial with a blocked_prereqs/blocked_harness_runs entry naming the un-run test — do NOT mark it complete.`,
+    reason,
     marker,
     handoff: null,
   };
@@ -340,7 +343,13 @@ function authDifferentialCompletionBlock(marker) {
 
 function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff) {
   if (!assignment) return null;
-  if (assignment.auth_differential_required !== true) return null;
+  // Fire on id_bearing (detector result), NOT only auth_differential_required, so a
+  // single-account (<2-principal) id-bearing surface is caught HERE at finalize with the
+  // correct 'mark partial' guidance — consistent with the grade gate (which also keys on
+  // id_bearing). Otherwise finalize permits it and only grade rejects it, late and confusing.
+  const authDiffRequired = assignment.auth_differential_required === true;
+  const isIdBearing = assignment.id_bearing === true || authDiffRequired;
+  if (!isIdBearing) return null;
   if (!handoff || handoff.surface_status !== "complete") return null;
 
   let ledgerReadFailed = false;
@@ -362,7 +371,8 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
   // surface must be recorded PARTIAL — the grade-time gate rejects a complete surface
   // backed only by a blocker, so accepting it here would deadlock the run at grade.
   if (!ledgerReadFailed && hasLedgerEvidence) return null;
-  return authDifferentialCompletionBlock(marker);
+  // With <2 distinct principals a cross-tenant flip is not runnable — guide to partial.
+  return authDifferentialCompletionBlock(marker, { needsSecondPrincipal: isIdBearing && !authDiffRequired });
 }
 
 function normalizeFinalizeArgs(args) {
