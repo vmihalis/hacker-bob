@@ -3,6 +3,7 @@
 const { httpScan } = require("../http-scan.js");
 const { runAuthDifferential } = require("../auth-differential-runner.js");
 const { makePerCallHttpScanFetcher } = require("../http-scan-adapter.js");
+const { listAuthProfiles } = require("../auth.js");
 
 const UNAUTH_PROFILE_NAMES = new Set([
   "anon",
@@ -33,9 +34,29 @@ async function runAuthDifferentialToolHandler(args) {
     block_internal_hosts: args.block_internal_hosts,
     egress_profile: args.egress_profile,
   });
-  const profileMetadata = args.profile_metadata && typeof args.profile_metadata === "object"
+  const baseMetadata = args.profile_metadata && typeof args.profile_metadata === "object"
     ? args.profile_metadata
     : deriveDefaultProfileMetadata(args.auth_profiles);
+  // Force the MCP-owned principal fingerprint onto each profile's metadata, OVERRIDING
+  // any agent-supplied value, so the completion gate's distinct-principal check reads the
+  // real auth identity (a 2-name/1-token sweep collapses to one fingerprint) and never an
+  // agent-forgeable field.
+  const fingerprintByProfile = {};
+  try {
+    const listed = JSON.parse(listAuthProfiles({ target_domain: args.target_domain }));
+    for (const p of (listed && Array.isArray(listed.profiles) ? listed.profiles : [])) {
+      if (p && typeof p.profile_name === "string") {
+        fingerprintByProfile[p.profile_name] = typeof p.principal_fingerprint === "string" ? p.principal_fingerprint : null;
+      }
+    }
+  } catch { /* no auth store -> fingerprints null -> gate stays fail-closed on distinctness */ }
+  const profileMetadata = {};
+  for (const name of args.auth_profiles) {
+    profileMetadata[name] = {
+      ...(baseMetadata[name] && typeof baseMetadata[name] === "object" ? baseMetadata[name] : {}),
+      principal_fingerprint: fingerprintByProfile[name] || null,
+    };
+  }
   const result = await runAuthDifferential({
     target_domain: args.target_domain,
     base_url: args.base_url,

@@ -23,6 +23,7 @@ const {
   isFirstPartyHost,
   safeUrlObject,
 } = require("./url-surface.js");
+const { hashCanonicalJson } = require("./verification-contracts.js");
 
 const authProfiles = new Map();
 
@@ -330,6 +331,30 @@ function profileExpiryHint(profile, mtimeMs) {
 // leak the mailbox into the summary JSON. Uses the canonical PROFILE_METADATA_KEYS so it
 // can never drift from the outbound-header merge + the producer strip. The producer reads
 // the RAW profile, not this summary, so this is operator-visibility hygiene only.
+// A NON-SECRET, non-reversible fingerprint of a profile's OUTBOUND auth material
+// (the header/cookie/credential/storage VALUES that actually reach the target),
+// mirroring the egress-identity-hash pattern. Two profile names bound to the same
+// session material produce the same fingerprint, so a completion gate can require
+// >=2 DISTINCT principals for an auth-differential sweep — a 2-name/1-token sweep
+// (distinct names, same principal, zero real cross-tenant test) can no longer be
+// counted as executed cross-tenant coverage. Returns null when a profile carries
+// no outbound auth material (an unauthenticated principal).
+function principalFingerprint(profile) {
+  const normalizedProfile = profile && typeof profile === "object" ? profile : {};
+  const material = {};
+  for (const key of Object.keys(normalizedProfile).filter((k) => !PROFILE_METADATA_KEYS.has(k)).sort()) {
+    material[key] = normalizedProfile[key];
+  }
+  if (normalizedProfile.credentials && typeof normalizedProfile.credentials === "object") {
+    material.__credentials = normalizedProfile.credentials;
+  }
+  if (normalizedProfile.local_storage && typeof normalizedProfile.local_storage === "object") {
+    material.__local_storage = normalizedProfile.local_storage;
+  }
+  if (Object.keys(material).length === 0) return null;
+  return hashCanonicalJson(material).slice(0, 32);
+}
+
 function summarizeAuthProfile(name, profile, fileStats) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
   const headerKeys = Object.keys(normalizedProfile)
@@ -348,6 +373,7 @@ function summarizeAuthProfile(name, profile, fileStats) {
       : [],
     has_credentials: !!credentials,
     credential_fields: credentials ? Object.keys(credentials).sort() : [],
+    principal_fingerprint: principalFingerprint(normalizedProfile),
     expiry: profileExpiryHint(normalizedProfile, fileStats ? fileStats.mtimeMs : null),
   };
 }

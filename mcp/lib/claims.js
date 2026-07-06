@@ -1949,6 +1949,9 @@ function completionDepthGapForCompleteSurfaces(domain) {
         ? row.signatures_by_profile
         : {};
       if (Object.keys(signatures).length < 2) continue;
+      // Coverage requires >=2 DISTINCT PRINCIPALS actually swept (MCP-owned auth
+      // fingerprint), not >=2 profile NAMES — a same-principal 2-name row does not clear it.
+      if ((typeof row.distinct_principal_count === "number" ? row.distinct_principal_count : 0) < 2) continue;
       for (const [surfaceId, endpoints] of surfaceEndpointValues) {
         if (endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
       }

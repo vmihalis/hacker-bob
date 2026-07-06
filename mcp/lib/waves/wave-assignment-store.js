@@ -28,6 +28,12 @@ const {
   routeSurfacesInternal,
   isUnroutableRoute,
 } = require("../surface-router.js");
+// The id-bearing detector is INJECTED here (as in the route-surfaces handler) so
+// the durable surface-routes.json written at wave start preserves
+// auth_differential_required — routeSurfacesInternal rewrites the file, and
+// without the detector it would clobber the flag route_surfaces set to false.
+const { surfaceExposesIdBearingCollection } = require("../offensive-idor-producer.js");
+const { listAuthProfiles } = require("../auth.js");
 const {
   recordSurfaceLeadsForWaveHandoff,
 } = require("../surface-leads.js");
@@ -114,7 +120,18 @@ function prepareWaveAssignments({
   }
   // Capturing surface_type AT WAVE START into the immutable assignment file
   // makes the smart_contract completion gate tamper-resistant.
-  const routedSurfaces = routeSurfacesInternal(domain, { attackSurfaceInfo: attackSurface });
+  let authProfileCount = 0;
+  try {
+    const authProfiles = JSON.parse(listAuthProfiles({ target_domain: domain }));
+    authProfileCount = Array.isArray(authProfiles.profiles) ? authProfiles.profiles.length : 0;
+  } catch {
+    authProfileCount = 0;
+  }
+  const routedSurfaces = routeSurfacesInternal(domain, {
+    attackSurfaceInfo: attackSurface,
+    authProfileCount,
+    idBearingDetector: surfaceExposesIdBearingCollection,
+  });
   const routeBySurfaceId = new Map(
     routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
   );
@@ -165,6 +182,10 @@ function prepareWaveAssignments({
       evaluator_agent: route.evaluator_agent,
       brief_profile: route.brief_profile,
       context_budget: route.context_budget,
+      // Carry the route-derived (MCP-owned) auth-differential obligation onto the
+      // immutable assignment so the per-run AD1 gate can read it; sourced ONLY from
+      // route, never the agent-supplied assignment (no forgeability re-entry).
+      auth_differential_required: route.auth_differential_required === true,
       task_lens: assignment.task_lens,
       budget: assignment.budget,
       handoff_token_required: true,

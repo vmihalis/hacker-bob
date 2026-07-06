@@ -127,6 +127,7 @@ function writeAuthDifferentialResults(domain) {
         tenant_b: { response_class: "forbidden" },
       },
       divergences: [],
+      distinct_principal_count: 2,
     }],
   });
 }

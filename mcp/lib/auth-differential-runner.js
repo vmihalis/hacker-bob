@@ -181,11 +181,21 @@ async function runAuthDifferential({
         profile_metadata: profile_metadata || null,
       })
       : [];
+    // Count DISTINCT principals actually swept (by MCP-owned auth fingerprint), not
+    // profile NAMES: two names bound to the same session collapse to one fingerprint,
+    // so a same-principal 2-name sweep is not counted as an executed cross-tenant test.
+    const distinctPrincipals = new Set();
+    for (const profile of Object.keys(signaturesByProfile)) {
+      const meta = profile_metadata && typeof profile_metadata === "object" ? profile_metadata[profile] : null;
+      const fp = meta && typeof meta === "object" ? meta.principal_fingerprint : null;
+      if (typeof fp === "string" && fp) distinctPrincipals.add(fp);
+    }
     perEndpoint.push({
       endpoint,
       method,
       signatures_by_profile: signaturesByProfile,
       divergences,
+      distinct_principal_count: distinctPrincipals.size,
       fetch_errors_by_profile: fetchErrorsByProfile,
     });
   }

@@ -134,7 +134,7 @@ function writeCoverageRow(domain, surfaceId, endpoint) {
   }));
 }
 
-function writeAuthDifferentialResults(domain, endpoint) {
+function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount = 2 } = {}) {
   writeFileAtomic(authDifferentialResultsPath(domain), `${JSON.stringify({
     version: 1,
     target_domain: domain,
@@ -145,6 +145,7 @@ function writeAuthDifferentialResults(domain, endpoint) {
         bob: { status: 403, response_class: "forbidden", sent_with_auth: true },
       },
       divergences: [],
+      distinct_principal_count: distinctPrincipalCount,
     }],
   }, null, 2)}\n`);
 }
@@ -172,6 +173,24 @@ test("id-bearing complete surface clears with auth-differential coverage from tw
     writeAuthDifferentialResults(domain, endpoint);
 
     assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 0);
+  }));
+});
+
+test("id-bearing complete surface does NOT clear on a same-principal two-name sweep (distinct_principal_count < 2)", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "idbearing-same-principal.example.com";
+    const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    writeCoverageRow(domain, surfaceId, endpoint);
+    // The forgeability attack: two profile NAMES bound to the same session collapse to
+    // ONE principal fingerprint, so the runner records distinct_principal_count: 1 — a
+    // sweep that never actually tested cross-tenant. It must not clear the id-bearing gate.
+    writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount: 1 });
+
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
+      surface_id: surfaceId,
+      finding_id: "F-1",
+      reason: "complete_idbearing_surface_no_differential",
+    }]);
   }));
 });
 

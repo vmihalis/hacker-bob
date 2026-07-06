@@ -287,37 +287,37 @@ function assignmentWithAuthDifferentialFlag(assignmentsInfo, marker) {
 }
 
 function surfaceEndpointSet(domain, surfaceId) {
-  let parsed;
+  // Derive endpoints from candidateSurfaceEndpoints (surface.uri + surface.endpoints[]),
+  // the SAME source the id-bearing detector uses — so a surface flagged id-bearing via its
+  // uri is not falsely un-coverable here (the grade-time gate in claims.js uses this same
+  // source; the two gates must agree on what an endpoint is).
+  const endpoints = new Set();
   try {
-    parsed = readJsonFile(attackSurfacePath(domain), { label: "attack_surface.json" });
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
+    for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
+      if (!surface || surface.id !== surfaceId) continue;
+      for (const endpoint of candidateSurfaceEndpoints(surface)) {
+        if (endpoint && typeof endpoint.value === "string") endpoints.add(endpoint.value);
+      }
+    }
   } catch {
     return new Set();
-  }
-  const endpoints = new Set();
-  for (const edge of edgesFromAttackSurface(parsed)) {
-    if (
-      edge
-      && edge.edge_type === "contains"
-      && edge.source
-      && edge.source.type === "surface"
-      && edge.source.id === surfaceId
-      && edge.target
-      && edge.target.type === "endpoint"
-      && typeof edge.target.id === "string"
-      && edge.target.id
-    ) {
-      endpoints.add(edge.target.id);
-    }
   }
   return endpoints;
 }
 
 function rowHasTwoProfileSweep(row) {
   const signatures = row && row.signatures_by_profile;
-  return signatures != null
+  const signaturesOk = signatures != null
     && typeof signatures === "object"
     && !Array.isArray(signatures)
     && Object.keys(signatures).length >= 2;
+  // Executed cross-tenant coverage requires >=2 DISTINCT PRINCIPALS (MCP-owned auth
+  // fingerprint), not >=2 profile NAMES — a same-principal 2-name sweep does not count.
+  return signaturesOk
+    && typeof row.distinct_principal_count === "number"
+    && row.distinct_principal_count >= 2;
 }
 
 function hasAuthDifferentialSweepForSurface(marker) {
