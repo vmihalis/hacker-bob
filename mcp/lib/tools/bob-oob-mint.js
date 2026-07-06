@@ -33,6 +33,7 @@ module.exports = Object.freeze({
   // read-only/verifier/evidence roles (mirrors the other offensive producers).
   // check:authority-inventory asserts the narrow grant.
   role_bundles: ["evaluator-web"],
+  capability_id: "S3_oob_callback", // S3-cap: registry-typed OOB-callback capability so the ceiling gate can see Bob owns an out-of-band collector
   // Writes the audit-graded oob-tokens.jsonl binding (a durable session-state
   // mutation), so mutating:true. It issues NO network request of its own.
   mutating: true,

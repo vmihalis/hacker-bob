@@ -316,6 +316,8 @@
   "test/producer-tools-dispatch.test.js",
   "test/producer-finalize-witness.test.js",
   "test/producer-floor-termination.test.js",
+  "test/composition-floor-convergence.test.js",
+  "test/lead-intake-chain-resolver.test.js",
   "test/seed-drift-backpressure.test.js",
   "test/producer-race-freedom.test.js",
   "test/producer-packs-sc.test.js",

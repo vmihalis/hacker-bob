@@ -149,6 +149,7 @@ function handler(args) {
     if (children.length === 0) continue;
     let emittedForEdge = 0;
     for (const child of children) {
+      // S5
       if (!emitOrAutoBlock(child)) continue;
       appendCellProposal({
         target_domain: domain,

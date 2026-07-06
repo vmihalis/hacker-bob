@@ -214,6 +214,47 @@ function fieldIsOwnerSelector(name) {
   if (tokens.includes("by")) return true;
   return tokens.some((t) => inSet(OWNER_BASE_NOUNS, t));
 }
+
+function isRouteParamMarker(seg) {
+  return /^:[^/]+$/.test(seg)
+    || /^\{[^/]+\}$/.test(seg)
+    || /^%7b[^/]+%7d$/i.test(seg);
+}
+
+function candidateEndpointPathname(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    return new URL(value, "https://bob.invalid").pathname;
+  } catch {
+    return null;
+  }
+}
+
+function concreteSegmentCarriesIdSignal(seg) {
+  for (let index = 0; index < seg.length; index += 1) {
+    const code = seg.charCodeAt(index);
+    if (code >= 48 && code <= 57) return true;
+  }
+  return seg.includes("-") || seg.includes("_") || seg.includes(".");
+}
+
+// S1 id-bearing collection detector - reuses capturedIdSegmentIsSafe.
+function surfaceExposesIdBearingCollection(surface) {
+  try {
+    for (const { value } of candidateSurfaceEndpoints(surface)) {
+      const pathname = candidateEndpointPathname(value);
+      if (!pathname) continue;
+      const segments = pathname.split("/").filter(Boolean);
+      if (segments.length === 0) continue;
+      const finalSeg = segments[segments.length - 1];
+      if (isRouteParamMarker(finalSeg)
+        || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg))) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
 // Privilege / authorization-assignment SELECTOR tokens: a create API honoring one would let the
 // operator-armed write mint an ELEVATED synthetic object (an admin/role/permission-bearing account)
 // instead of a plain canary-bearing resource — a confined agent using the operator's write-authorization
@@ -893,12 +934,6 @@ function assertSingleHostBoundEndpoint(surface, stateOrigin, pathTemplate) {
   const templatePath = String(pathTemplate).split("?")[0];
   const templateSegments = templatePath.split("/").filter(Boolean);
   const collectionSegments = templateSegments.slice(0, -1);
-  // A ":id"/"{id}" route-pattern marker — a recorded template form, not a smuggling id (capturedIdSegmentIsSafe
-  // rejects the ":" so markers need their own clause). new URL() percent-encodes "{"/"}", so accept the
-  // %7B…%7D form too.
-  const isRouteParamMarker = (seg) => /^:[^/]+$/.test(seg)
-    || /^\{[^/]+\}$/.test(seg)
-    || /^%7b[^/]+%7d$/i.test(seg);
   const isItemForm = (segs) => {
     if (segs.length !== templateSegments.length) return false;
     if (!collectionSegments.every((seg, index) => segs[index] === seg)) return false;
@@ -2384,6 +2419,7 @@ module.exports = {
   createObject,
   idorProvisionAuthorizedFor,
   mintCanary,
+  surfaceExposesIdBearingCollection,
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,

@@ -25,6 +25,8 @@ const {
 const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
 const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
 const { findRoutedSurface } = require("../mcp/lib/offensive-http-common.js");
+// S1 detector is injected into routing by the tool handler; tests inject it too.
+const { surfaceExposesIdBearingCollection: idBearingDetector } = require("../mcp/lib/offensive-idor-producer.js");
 const { surfaceRoutesPath, attackSurfacePath } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
@@ -123,6 +125,63 @@ test("validateSurfaceRoute signals DATA failures with a PLAIN Error (premise of 
   } catch (error) {
     assert.equal(error.constructor, Error, "a data-validation failure must be a plain Error (so it is quarantined, not re-thrown)");
   }
+});
+
+test("buildSurfaceRoutesDocument marks id-bearing routable surfaces when multiple auth profiles exist", () => {
+  const domain = "router-auth-diff-id.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:item", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/1"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes.length, 1);
+  assert.equal(doc.routes[0].auth_differential_required, true);
+});
+
+test("buildSurfaceRoutesDocument accepts route-parameter item endpoints for auth-differential routing", () => {
+  const domain = "router-auth-diff-param.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:param", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/{id}"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, true);
+});
+
+test("buildSurfaceRoutesDocument keeps id-bearing surfaces vacuous with one auth profile", () => {
+  const domain = "router-auth-diff-one-profile.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:item", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users/1"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 1, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("buildSurfaceRoutesDocument keeps collection-only surfaces vacuous with multiple auth profiles", () => {
+  const domain = "router-auth-diff-collection.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "users:collection", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo, authProfileCount: 2, idBearingDetector });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("buildSurfaceRoutesDocument defaults auth-differential routing to false on clean legacy-shaped input", () => {
+  const domain = "router-auth-diff-default.example.test";
+  const attackSurfaceInfo = { source: "test", document: { surfaces: [
+    { id: "legacy:api", surface_type: "api", hosts: ["api.example.test"], endpoints: ["/api/users"] },
+  ] } };
+  const doc = buildSurfaceRoutesDocument(domain, { attackSurfaceInfo });
+  assert.equal(doc.routes[0].auth_differential_required, false);
+});
+
+test("validateSurfaceRoute round-trips auth_differential_required and rejects non-boolean values", () => {
+  const route = { ...validWebRoute("s1"), auth_differential_required: true };
+  const normalized = validateSurfaceRoute(route, 0, "routes.json");
+  assert.equal(normalized.auth_differential_required, true);
+
+  assert.throws(
+    () => validateSurfaceRoute({ ...route, auth_differential_required: "true" }, 0, "routes.json"),
+    /auth_differential_required must be a boolean/,
+  );
 });
 
 test("findRoutedSurface rejects a surface whose route was quarantined even if a valid duplicate exists (no split authority)", () => withTempHome(() => {

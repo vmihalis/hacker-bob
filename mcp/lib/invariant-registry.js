@@ -43,6 +43,20 @@ const TAG_GRAMMAR = Object.freeze({
 });
 
 const REGISTRY = Object.freeze({
+  // Auth-differential routing (S1)
+  "S1": Object.freeze({
+    kind: "invariant",
+    class: "auth_differential_routing",
+    title:
+      "a routable web surface exposing an id-bearing collection with >=2 auth "
+      + "profiles MUST carry auth_differential_required=true on its route; set "
+      + "fail-closed at route time (count 0 on unreadable auth.json -> false); "
+      + "vacuous on single-profile/collection-only surfaces",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/surface-router.js", symbol: "buildSurfaceRoutesDocument" }),
+    ]),
+  }),
+
   // ── Lifecycle (I6 — the reopenability back-edges) ───────────────────────
   "I6": Object.freeze({
     kind: "invariant",
@@ -91,6 +105,16 @@ const REGISTRY = Object.freeze({
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/repo-env.js", symbol: "assertContainerCheckoutDest" }),
       Object.freeze({ file: "mcp/lib/repo-env.js", symbol: "S14" }), // tag anchor (repo-env.js comment)
+    ]),
+  }),
+
+  "S5": Object.freeze({
+    kind: "invariant",
+    class: "composition_floor",
+    title: "Monotone edge-coverage convergence for the composition cell floor.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-cell-floor.js", symbol: "emitOrAutoBlock" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-cell-floor.js", symbol: "S5" }), // tag anchor
     ]),
   }),
 
@@ -223,6 +247,39 @@ const REGISTRY = Object.freeze({
       + "routing INTERNAL_ERROR.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/frontier-events.js", symbol: "assertSmartContractChainFamily" }),
+    ]),
+  }),
+  "Y-D22": Object.freeze({
+    kind: "invariant",
+    class: "frontier_integrity",
+    title:
+      "Lead-intake smart-contract chain context integrity: an intake lead with "
+      + "surface_type smart_contract and a contract_address but no chain_family "
+      + "must either resolve a CHAIN_FAMILY_VALUES member from address shape plus "
+      + "observed chain context, or carry a visible blocked_prereqs entry for "
+      + "capability routing.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/lead-intake.js", symbol: "resolveChainContext" }),
+    ]),
+  }),
+
+  // -- Step-up capability typing (S3-cap) --------------------------------
+  // Registers the account-registration / email-OTP / OOB-callback tools under a
+  // capability_id so capabilityToolMapFromRegistry is no longer blind to the
+  // step-up capability (M6b reachability ceiling). enforced_by points at the
+  // literal capability_id strings, which must be present in the tool defs.
+  "S3-cap": Object.freeze({
+    kind: "invariant",
+    class: "capability_typing",
+    title:
+      "Step-up tools (temp-email/auto-signup/signup-detect/oob-mint) carry a "
+      + "capability_id so the registry can answer 'does Bob own a tool for X' "
+      + "and the reachability ceiling can contradict a self-capped severity.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/temp-email.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/auto-signup.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/signup-detect.js", symbol: "S3_stepup_registration" }),
+      Object.freeze({ file: "mcp/lib/tools/bob-oob-mint.js", symbol: "S3_oob_callback" }),
     ]),
   }),
 

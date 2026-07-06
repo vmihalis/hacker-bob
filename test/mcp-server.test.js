@@ -2048,6 +2048,14 @@ test("MCP tool registry exposes capability metadata for metric and eval tools", 
       "bob_run_auth_differential",
       "bob_read_auth_differential_results",
     ],
+    S3_stepup_registration: [
+      "bob_temp_email",
+      "bob_signup_detect",
+      "bob_auto_signup",
+    ],
+    S3_oob_callback: [
+      "bob_oob_mint",
+    ],
     I7_chain_state_tree: [
       "bob_append_chain_node",
       "bob_query_chain_tree",
@@ -5232,6 +5240,7 @@ test("bob_route_surfaces writes bounded current routes and removes stale routes"
     let routeText = fs.readFileSync(surfaceRoutesPath(domain), "utf8");
     assert.doesNotMatch(routeText, /private\/export|large surface-discovery details/);
     assert.deepEqual(JSON.parse(routeText).routes.map((route) => Object.keys(route).sort()), [[
+      "auth_differential_required",
       "brief_profile",
       "capability_pack",
       "capability_pack_version",

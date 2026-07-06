@@ -40,6 +40,7 @@ module.exports = Object.freeze({
   },
   handler: tempEmail,
   role_bundles: ["auth"],
+  capability_id: "S3_stepup_registration", // S3-cap: registry-typed step-up capability so capabilityToolMapFromRegistry can answer "does Bob own a tool for the email-OTP / account-registration step" (M6b ceiling)
   mutating: true,
   global_preapproval: true,
   network_access: true,
