@@ -51,6 +51,7 @@ const SCHEDULER_PRECONDITION_VALUES = Object.freeze([
   "seed_producers_drained",
   "blocked_prereqs_capability_clear",
   "seed_surfaces_present",
+  "unscanned_bodies_drained",
 ]);
 
 function historyBySurfaceFromBlockedPrereqs(history) {
@@ -108,6 +109,21 @@ function evaluateBlockedPrereqsCapabilityClear(targetDomain) {
     capability_clear_active: blockedSurfaceIds.length > 0,
     blocked_surface_ids: blockedSurfaceIds,
   };
+}
+
+function resolveWebOnchainRefProducerIds() {
+  const { PRODUCER_PACKS } = require("./producer-packs.js");
+  const ids = new Set();
+  for (const pack of Object.values(PRODUCER_PACKS || {})) {
+    const trigger = pack && pack.trigger;
+    if (!pack || pack.advisory === true || !trigger || trigger.kind !== "derived") continue;
+    const consumes = Array.isArray(trigger.consumes) ? trigger.consumes : [];
+    const produces = Array.isArray(pack.produces) ? pack.produces : [];
+    if (consumes.includes("http_bodies") && produces.includes("chain_address_set")) {
+      ids.add(pack.producer_id);
+    }
+  }
+  return ids;
 }
 
 // Each check receives `{target_domain}` and returns an object with at minimum
@@ -309,6 +325,45 @@ const PRECONDITION_CHECKS = Object.freeze({
       sc_expander_instance_count: scExpanderInstances.length,
       sc_expander_instance_keys: scExpanderInstances.map((i) => i.producer_key).slice(0, 50),
       producer_gaps: plan.gaps.slice(0, 50),
+    };
+  },
+  // PRD-5
+  // An unscanned http_bodies artifact blocks the OPEN_FRONTIER -> CLAIM_FREEZE
+  // drain when the web_onchain_ref producer remains READY with no terminal
+  // producer_run row, so the unrouted on-chain ref is a recorded MCP-owned
+  // obligation. The verdict is single-sourced with the dispatcher through
+  // buildProducerFloorPlan. RANK != BOUND: absent-input gaps satisfy-and-report.
+  unscanned_bodies_drained(context) {
+    const targetDomain = context && context.target_domain;
+    if (typeof targetDomain !== "string" || targetDomain.length === 0) {
+      throw new Error("unscanned_bodies_drained: target_domain is required");
+    }
+    const { materializeTaskGraph } = require("./task-graph-materializer.js");
+    const { PRODUCER_NODE_KIND } = require("./constants.js");
+    const doc = materializeTaskGraph(targetDomain, { write: false }).document;
+    const hasProducerFloor = doc.nodes.some((node) => node.kind === PRODUCER_NODE_KIND);
+    if (!hasProducerFloor) {
+      return {
+        satisfied: true,
+        obligation_active: false,
+        unscanned_body_present: false,
+        ready_web_onchain_ref_count: 0,
+        ready_web_onchain_ref_ids: [],
+        obligation_gaps: [],
+      };
+    }
+    const { buildProducerFloorPlan } = require("./tools/materialize-producer-floor.js");
+    const { plan } = buildProducerFloorPlan(targetDomain);
+    const refIds = resolveWebOnchainRefProducerIds();
+    const readyRefProducers = plan.ready.filter((p) => p && p.advisory !== true && refIds.has(p.producer_id));
+    const unscanned_body_present = readyRefProducers.length > 0;
+    return {
+      satisfied: unscanned_body_present === false,
+      obligation_active: true,
+      unscanned_body_present,
+      ready_web_onchain_ref_count: readyRefProducers.length,
+      ready_web_onchain_ref_ids: readyRefProducers.map((p) => p.producer_id).slice(0, 50),
+      obligation_gaps: Array.isArray(plan.gaps) ? plan.gaps.slice(0, 50) : [],
     };
   },
   blocked_prereqs_capability_clear(context) {

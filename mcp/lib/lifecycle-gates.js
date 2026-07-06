@@ -557,6 +557,43 @@ function gateOpenFrontierToClaimFreeze(context) {
     });
   }
 
+  // Unscanned body obligations self-activate on a materialized producer floor.
+  // RANK != BOUND: absent-input gaps report without blocking; blockers
+  // accumulate like the sibling producer-drain gates.
+  let unscannedBodies;
+  try {
+    unscannedBodies = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
+      "unscanned_bodies_drained",
+      { target_domain: context.target_domain },
+    );
+  } catch (error) {
+    blockers.push({
+      code: "scheduler_precondition_error",
+      blocked_by: "scheduler_precondition_error",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE precondition evaluation failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (!unscannedBodies.satisfied) {
+    blockers.push({
+      code: "unscanned_bodies_undrained",
+      blocked_by: "unscanned_bodies_undrained",
+      ready_count: unscannedBodies.ready_web_onchain_ref_count,
+      ready_producer_ids: Array.isArray(unscannedBodies.ready_web_onchain_ref_ids)
+        ? unscannedBodies.ready_web_onchain_ref_ids
+        : [],
+      message: "OPEN_FRONTIER -> CLAIM_FREEZE blocked: "
+        + `${unscannedBodies.ready_web_onchain_ref_count} unscanned response-body`
+        + " artifact(s) remain — the on-chain-ref scan (web_onchain_ref) has not"
+        + " reached a terminal producer_run",
+      remediation: "dispatch the recon-producer floor to fixpoint via"
+        + " bob_materialize_producer_floor then the bob_schedule_seed_producers"
+        + " loop so every http_bodies artifact is scanned for on-chain refs, then"
+        + " retry the transition",
+    });
+  }
+
   let evaluation;
   try {
     evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(

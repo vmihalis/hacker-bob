@@ -38,6 +38,7 @@ const {
 } = require("../mcp/lib/waves.js");
 const {
   attackSurfacePath,
+  httpAuditJsonlPath,
   statePath,
 } = require("../mcp/lib/paths.js");
 const {
@@ -165,6 +166,11 @@ test("PRECONDITION_CHECKS is frozen and covers every value in SCHEDULER_PRECONDI
   for (const name of SCHEDULER_PRECONDITION_VALUES) {
     assert.equal(typeof PRECONDITION_CHECKS[name], "function", `${name} has no check function`);
   }
+});
+
+test("SCHEDULER_PRECONDITION_VALUES includes unscanned_bodies_drained with a paired check", () => {
+  assert.ok(SCHEDULER_PRECONDITION_VALUES.includes("unscanned_bodies_drained"));
+  assert.equal(typeof PRECONDITION_CHECKS.unscanned_bodies_drained, "function");
 });
 
 test("evaluateSchedulerPrecondition rejects unknown precondition names", () => {
@@ -581,4 +587,77 @@ test("seed_producers_drained matches the dispatch handler at a non-default linke
     assert.equal(result.satisfied, true,
       "the depth-capped floor is genuinely drained ⇒ OPEN_FRONTIER can advance");
   });
+});
+
+test("unscanned_bodies_drained is vacuous before a producer floor is materialized", () => {
+  withTempHome(() => {
+    const domain = "unscanned-vacuous.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.obligation_active, false);
+    assert.equal(result.unscanned_body_present, false);
+  });
+});
+
+test("unscanned_bodies_drained blocks when a materialized http body corpus leaves web_onchain_ref ready", () => {
+  withTempHome(() => {
+    const domain = "unscanned-blocking.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    JSON.parse(producerFloorTool.handler({ target_domain: domain }));
+    const auditPath = httpAuditJsonlPath(domain);
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    fs.writeFileSync(
+      auditPath,
+      `${JSON.stringify({ body: "see contract 0x0000000000000000000000000000000000000abc on chain" })}\n`,
+    );
+
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, false);
+    assert.equal(result.unscanned_body_present, true);
+    assert.equal(result.obligation_active, true);
+    assert.ok(result.ready_web_onchain_ref_count >= 1);
+
+    const lifecycleGates = require("../mcp/lib/lifecycle-gates.js");
+    const gate = lifecycleGates.gateOpenFrontierToClaimFreeze
+      || lifecycleGates.TRANSITION_GATES["OPEN_FRONTIER->CLAIM_FREEZE"];
+    if (typeof gate === "function") {
+      const blockers = gate({ target_domain: domain });
+      const blocker = blockers.find((b) => b.code === "unscanned_bodies_undrained");
+      assert.ok(blocker);
+      assert.ok(blocker.remediation);
+    }
+  });
+});
+
+test("unscanned_bodies_drained is satisfied once web_onchain_ref has a terminal producer_run", () => {
+  withTempHome(() => {
+    const domain = "unscanned-drained.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+
+    JSON.parse(producerFloorTool.handler({ target_domain: domain }));
+    const auditPath = httpAuditJsonlPath(domain);
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    fs.writeFileSync(
+      auditPath,
+      `${JSON.stringify({ body: "see contract 0x0000000000000000000000000000000000000abc on chain" })}\n`,
+    );
+
+    const blocked = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(blocked.satisfied, false);
+
+    recordProducerRun(domain, { producer_key: "web_onchain_ref", status: "produced" });
+    const result = evaluateSchedulerPrecondition("unscanned_bodies_drained", { target_domain: domain });
+    assert.equal(result.satisfied, true);
+    assert.equal(result.unscanned_body_present, false);
+  });
+});
+
+test("unscanned_bodies_drained requires target_domain", () => {
+  assert.throws(
+    () => evaluateSchedulerPrecondition("unscanned_bodies_drained", {}),
+    /target_domain/,
+  );
 });

@@ -1038,7 +1038,7 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // block (one line per tool in the orchestrator role bundle). It is registry-
   // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
   // post-regen trimmed line count.
-  assert.ok(lines <= 454, `bob-evaluate-runner skill is ${lines} lines (cap 454)`);
+  assert.ok(lines <= 455, `bob-evaluate-runner skill is ${lines} lines (cap 455)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,

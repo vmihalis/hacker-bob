@@ -83,6 +83,24 @@ const STALE_DISPATCH_NODE_STATES = Object.freeze(["proposed", "dispatched"]);
 const SC_ADDRESS_EXPANDER_PRODUCER_ID = "sc_address_expander";
 const WEB_HTTP_BODIES_PRODUCER_ID = "web_http_bodies";
 const WEB_ONCHAIN_REF_PRODUCER_ID = "web_onchain_ref";
+const COMPOSITION_TRANSITION_KIND = "identity_propagation";
+
+function compositionTransitionSurfaceId(payload, eventId) {
+  const proposalId = typeof payload.proposal_id === "string" ? payload.proposal_id.trim() : "";
+  if (proposalId) return `transition:${proposalId}`;
+  const from = typeof payload.from_surface === "string" ? payload.from_surface.trim() : "";
+  const to = typeof payload.to_surface === "string" ? payload.to_surface.trim() : "";
+  const kind = typeof payload.transition_kind === "string" ? payload.transition_kind.trim() : "";
+  if (from && to && kind) return `transition:${from}::${to}::${kind}`;
+  return `transition:event:${eventId}`;
+}
+
+function loadTransitionSurfaceId() {
+  const { transitionSurfaceId } = require("../frontier-materializer.js");
+  return typeof transitionSurfaceId === "function"
+    ? transitionSurfaceId
+    : compositionTransitionSurfaceId;
+}
 
 // Case-folding an on-chain address is only safe where the address encoding is
 // case-INSENSITIVE: EVM hex and the hex Move families (aptos, sui). Solana (svm)
@@ -104,6 +122,100 @@ function clampCap(value, { lo, hi, fallback }) {
   if (value < lo) return lo;
   if (value > hi) return hi;
   return value;
+}
+
+function planCompositionFloor({
+  leakedIdentifierFacts,
+  surfaceIds,
+  existingTransitionKeys,
+  transitionKeyOf,
+  transitionKindValues,
+}) {
+  const kindValues = transitionKindValues || require("../task-graph-events.js").TRANSITION_KIND_VALUES;
+  if (!Array.isArray(kindValues)
+    || !kindValues.includes(COMPOSITION_TRANSITION_KIND)) {
+    return {
+      propose: [],
+      blocked_prereqs: [{
+        kind: "missing_transition_kind",
+        transition_kind: COMPOSITION_TRANSITION_KIND,
+      }],
+    };
+  }
+  if (typeof transitionKeyOf !== "function") {
+    throw new Error("transitionKeyOf must be a function");
+  }
+
+  const eligibleSurfaceIds = surfaceIds instanceof Set ? surfaceIds : null;
+  const shouldFilterSurfaces = !!(eligibleSurfaceIds && eligibleSurfaceIds.size > 0);
+  const existingKeys = existingTransitionKeys instanceof Set
+    ? existingTransitionKeys
+    : new Set(existingTransitionKeys || []);
+  const groups = new Map();
+  const facts = Array.isArray(leakedIdentifierFacts) ? leakedIdentifierFacts : [];
+
+  for (const fact of facts) {
+    const payload = fact && fact.payload && typeof fact.payload === "object" ? fact.payload : fact;
+    if (!payload || typeof payload !== "object") continue;
+    const identifierClass = typeof payload.identifier_class === "string"
+      ? payload.identifier_class.trim()
+      : "";
+    const identifierFingerprint = typeof payload.identifier_fingerprint === "string"
+      ? payload.identifier_fingerprint.trim()
+      : "";
+    const surfaceId = typeof payload.surface_id === "string" ? payload.surface_id.trim() : "";
+    if (!identifierClass || !identifierFingerprint || !surfaceId) continue;
+    if (shouldFilterSurfaces && !eligibleSurfaceIds.has(surfaceId)) continue;
+
+    const groupKey = `${identifierClass}${identifierFingerprint}`;
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        identifier_class: identifierClass,
+        surfaces: new Map(),
+      });
+    }
+    const group = groups.get(groupKey);
+    if (!group.surfaces.has(surfaceId)) group.surfaces.set(surfaceId, []);
+    if (payload.claim_id != null) {
+      const claimId = String(payload.claim_id).trim();
+      if (claimId && !group.surfaces.get(surfaceId).includes(claimId)) {
+        group.surfaces.get(surfaceId).push(claimId);
+      }
+    }
+  }
+
+  const propose = [];
+  for (const key of Array.from(groups.keys()).sort()) {
+    const group = groups.get(key);
+    const surfaces = Array.from(group.surfaces.keys()).sort();
+    if (surfaces.length < 2) continue;
+    for (let i = 0; i < surfaces.length; i += 1) {
+      for (let j = i + 1; j < surfaces.length; j += 1) {
+        const from = surfaces[i];
+        const to = surfaces[j];
+        const forwardKey = transitionKeyOf({ from, to });
+        const reverseKey = transitionKeyOf({ from: to, to: from });
+        if (existingKeys.has(forwardKey) || existingKeys.has(reverseKey)) continue;
+
+        const evidenceRefs = [];
+        const fromClaim = group.surfaces.get(from)[0];
+        const toClaim = group.surfaces.get(to)[0];
+        if (fromClaim) evidenceRefs.push(String(fromClaim));
+        if (toClaim && toClaim !== fromClaim) evidenceRefs.push(String(toClaim));
+        propose.push({
+          from_surface: from,
+          to_surface: to,
+          kind: COMPOSITION_TRANSITION_KIND,
+          trust_assumption:
+            `identity_propagation: an ${group.identifier_class} leaked on surface ${from} `
+            + `also indexes surface ${to}; untested cross-collection identity handoff`,
+          evidence_refs: evidenceRefs,
+        });
+      }
+    }
+  }
+
+  return { propose, blocked_prereqs: [] };
 }
 
 // Pure planner: given the producer packs, the terminal producer_run set, and the
@@ -1204,6 +1316,58 @@ function handler(args) {
     emittedAny = true;
   }
 
+  // PRD-6: leaked-identifier composition floor. Turn cross-surface shared
+  // identifiers into deduped identity_propagation transition proposals; the
+  // existing transition-cell floor (enumerateTransitionCellFloor + emitOrAutoBlock)
+  // fans and converges them. Strictly monotone: each edge proposed at most once
+  // (dedup on transitionSurfaceId), so the reachable edge set stays finite and a
+  // repeat pass with no new leaked-identifier facts proposes zero new edges,
+  // preserving the transition-floor convergence proof's finiteness precondition.
+  const {
+    appendTransitionProposal,
+    readTransitionProposals,
+    TRANSITION_KIND_VALUES,
+  } = require("../task-graph-events.js");
+  const transitionSurfaceId = loadTransitionSurfaceId();
+  const leakedIdentifierFacts = readFrontierEvents(domain).filter((event) => (
+    event
+    && event.kind === "observation.recorded"
+    && event.payload
+    && event.payload.observation_kind === "leaked_identifier"
+  ));
+  const existingTransitionKeys = new Set(
+    readTransitionProposals(domain).map((event) => transitionSurfaceId(event.payload, event.event_id)),
+  );
+  const surfaceIds = new Set(
+    ((currentSurfaces(domain).surfaces || []))
+      .map((surface) => surface && surface.id)
+      .filter(Boolean),
+  );
+  const transitionKeyOf = ({ from, to }) => transitionSurfaceId({
+    from_surface: from,
+    to_surface: to,
+    transition_kind: COMPOSITION_TRANSITION_KIND,
+  }, null);
+  const composition = planCompositionFloor({
+    leakedIdentifierFacts,
+    surfaceIds,
+    existingTransitionKeys,
+    transitionKeyOf,
+    transitionKindValues: TRANSITION_KIND_VALUES,
+  });
+  for (const proposal of composition.propose) {
+    appendTransitionProposal({
+      target_domain: domain,
+      from_surface: proposal.from_surface,
+      to_surface: proposal.to_surface,
+      kind: COMPOSITION_TRANSITION_KIND,
+      trust_assumption: proposal.trust_assumption,
+      evidence_refs: proposal.evidence_refs,
+      actor: "orchestrator",
+    });
+    emittedAny = true;
+  }
+
   // When nothing new was emitted the pre-emission graph read is still current and
   // the reconcilers reuse it. When something was emitted, materialize (fail SOFT on
   // ledger pressure) and re-read so the reconcilers see the freshly-proposed
@@ -1325,6 +1489,7 @@ module.exports = Object.freeze({
   // helpers and the shared surface reader ride the same inert-key precedent for
   // the termination tests and the precondition's suppression parity.
   planProducerFloor,
+  planCompositionFloor,
   buildProducerFloorPlan,
   isProducerFloorAtFixpoint,
   planOrphanReconcile,

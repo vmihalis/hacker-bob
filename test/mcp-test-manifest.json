@@ -321,6 +321,7 @@
   "test/completion-depth-idbearing-gate.test.js",
   "test/auth-differential-completion-gate.test.js",
   "test/scheduler-preconditions-shape.test.js",
+  "test/composition-floor.test.js",
   "test/seed-drift-backpressure.test.js",
   "test/producer-race-freedom.test.js",
   "test/producer-packs-sc.test.js",

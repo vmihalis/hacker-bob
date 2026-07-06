@@ -365,6 +365,35 @@ const REGISTRY = Object.freeze({
       Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-4" }),
     ]),
   }),
+  "PRD-5": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "A web frontier cannot drain OPEN_FRONTIER -> CLAIM_FREEZE while a materialized "
+      + "http_bodies corpus is unscanned — the web_onchain_ref producer stays READY "
+      + "with no terminal producer_run row — so the unrouted on-chain reference is a "
+      + "recorded, MCP-owned drain obligation, never a silent pass.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "unscanned_bodies_drained" }),
+      Object.freeze({ file: "mcp/lib/scheduler-preconditions.js", symbol: "PRD-5" }),
+    ]),
+  }),
+  "PRD-6": Object.freeze({
+    kind: "invariant",
+    class: "producer_floor",
+    title:
+      "Leaked-identifier composition floor: cross-surface shared-identifier pairs "
+      + "deterministically propose DEDUPED identity_propagation transitions (dedup by "
+      + "transitionSurfaceId, RANK != BOUND, self-activating - zero edges when no leaked "
+      + "identifier is shared). Strictly monotone: each edge is proposed at most once so "
+      + "the reachable edge set stays finite and a repeat pass proposes nothing new, "
+      + "preserving the transition-cell floor's convergence-proof finiteness precondition; "
+      + "the existing enumerateTransitionCellFloor + emitOrAutoBlock fan and converge it.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "planCompositionFloor" }),
+      Object.freeze({ file: "mcp/lib/tools/materialize-producer-floor.js", symbol: "PRD-6" }),
+    ]),
+  }),
 });
 
 // Backlog: tags that EXIST in the tree but do not yet have a written registry
