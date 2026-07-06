@@ -292,10 +292,15 @@ function surfaceEndpointSet(domain, surfaceId) {
   try {
     const { readAttackSurfaceStrict } = require("./attack-surface.js");
     const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
+    const { endpointValueIsIdBearing } = require("./offensive-idor-producer.js");
     for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
       if (!surface || surface.id !== surfaceId) continue;
       for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        if (endpoint && typeof endpoint.value === "string") endpoints.add(endpoint.value);
+        // Only ID-BEARING endpoints count as auth-differential coverage for the surface,
+        // so a sweep of a benign sibling endpoint cannot clear the id-bearing surface.
+        if (endpoint && typeof endpoint.value === "string" && endpointValueIsIdBearing(endpoint.value)) {
+          endpoints.add(endpoint.value);
+        }
       }
     }
   } catch {

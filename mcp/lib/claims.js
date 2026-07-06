@@ -1927,12 +1927,17 @@ function completionDepthGapForCompleteSurfaces(domain) {
   try {
     const { readAttackSurfaceStrict } = require("./attack-surface.js");
     const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
+    const { endpointValueIsIdBearing } = require("./offensive-idor-producer.js");
     const completeSurfaceIds = new Set(surfaceBypass.keys());
     for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
       if (!surface || !completeSurfaceIds.has(surface.id)) continue;
       const endpoints = new Set();
       for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        if (endpoint && typeof endpoint.value === "string") endpoints.add(endpoint.value);
+        // Only ID-BEARING endpoints count: an auth-differential sweep clears an id-bearing
+        // surface only when it hit the id-bearing object, never a benign sibling (/me).
+        if (endpoint && typeof endpoint.value === "string" && endpointValueIsIdBearing(endpoint.value)) {
+          endpoints.add(endpoint.value);
+        }
       }
       surfaceEndpointValues.set(surface.id, endpoints);
     }

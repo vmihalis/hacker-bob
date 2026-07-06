@@ -111,7 +111,7 @@ function writeAttackSurface(domain) {
       id: "surface-auth",
       surface_type: "api",
       hosts: ["api.example.test"],
-      endpoints: ["/api/accounts"],
+      endpoints: ["/api/accounts/789"],
     }],
   });
 }
@@ -120,7 +120,7 @@ function writeAuthDifferentialResults(domain) {
   writeJson(authDifferentialResultsPath(domain), {
     schema_version: 1,
     per_endpoint: [{
-      endpoint: "/api/accounts",
+      endpoint: "/api/accounts/789",
       method: "GET",
       signatures_by_profile: {
         tenant_a: { response_class: "ok" },
@@ -192,8 +192,8 @@ test("auth differential completion evaluator BLOCKS a complete id-bearing surfac
       surface_status: "complete",
       blocked_prereqs: [{
         kind: "external_credential_missing",
-        reason: "Cannot run the cross-tenant auth differential for /api/accounts because the second tenant credential has not been provisioned.",
-        needed_for: "cross-tenant auth differential sweep across two tenant profiles for /api/accounts",
+        reason: "Cannot run the cross-tenant auth differential for /api/accounts/789 because the second tenant credential has not been provisioned.",
+        needed_for: "cross-tenant auth differential sweep across two tenant profiles for /api/accounts/789",
       }],
       blocked_harness_runs: [],
     };

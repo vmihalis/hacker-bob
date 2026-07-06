@@ -47,7 +47,7 @@ function withTempHome(fn) {
 }
 
 function seedAttackSurface(domain, surfaceId) {
-  const endpoint = "/api/export";
+  const endpoint = "/api/orders/12345";
   const surfaces = [{
     id: surfaceId,
     uri: `https://${domain}${endpoint}`,

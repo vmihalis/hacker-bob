@@ -239,16 +239,24 @@ function concreteSegmentCarriesIdSignal(seg) {
 }
 
 // S1 id-bearing collection detector - reuses capturedIdSegmentIsSafe.
+// A single endpoint VALUE is id-bearing iff its final path segment is a route-param
+// marker (:id / {id} / %7b..%7d) or a concrete id-signalling segment. Single-sourced so
+// the completion gates can count an auth-differential sweep as coverage ONLY when it hit
+// an id-bearing endpoint (never a benign sibling like /me the id-bearing surface bundles).
+function endpointValueIsIdBearing(value) {
+  const pathname = candidateEndpointPathname(value);
+  if (!pathname) return false;
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  const finalSeg = segments[segments.length - 1];
+  return isRouteParamMarker(finalSeg)
+    || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg));
+}
+
 function surfaceExposesIdBearingCollection(surface) {
   try {
     for (const { value } of candidateSurfaceEndpoints(surface)) {
-      const pathname = candidateEndpointPathname(value);
-      if (!pathname) continue;
-      const segments = pathname.split("/").filter(Boolean);
-      if (segments.length === 0) continue;
-      const finalSeg = segments[segments.length - 1];
-      if (isRouteParamMarker(finalSeg)
-        || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg))) return true;
+      if (endpointValueIsIdBearing(value)) return true;
     }
   } catch {
     return false;
@@ -2420,6 +2428,7 @@ module.exports = {
   idorProvisionAuthorizedFor,
   mintCanary,
   surfaceExposesIdBearingCollection,
+  endpointValueIsIdBearing,
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,
