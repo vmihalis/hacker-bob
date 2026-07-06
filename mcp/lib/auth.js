@@ -339,8 +339,31 @@ function profileExpiryHint(profile, mtimeMs) {
 // (distinct names, same principal, zero real cross-tenant test) can no longer be
 // counted as executed cross-tenant coverage. Returns null when a profile carries
 // no outbound auth material (an unauthenticated principal).
+// Extract a STABLE identity (iss+sub) from a Bearer JWT so the SAME account presented
+// across two sessions (different token strings) fingerprints identically — distinctness
+// then means distinct ACCOUNT identity, not distinct per-session credential material, so
+// one tenant re-authenticated twice cannot forge distinct_principal_count>=2.
+function jwtIdentityClaims(profile) {
+  try {
+    const authHeader = typeof profile.Authorization === "string" ? profile.Authorization
+      : (typeof profile.authorization === "string" ? profile.authorization : "");
+    const m = /^Bearer\s+([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(authHeader.trim());
+    if (!m) return null;
+    const json = Buffer.from(m[2].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    const claims = JSON.parse(json);
+    const sub = claims && claims.sub != null ? String(claims.sub) : "";
+    if (!sub) return null;
+    return { iss: claims && claims.iss != null ? String(claims.iss) : "", sub };
+  } catch {
+    return null;
+  }
+}
+
 function principalFingerprint(profile) {
   const normalizedProfile = profile && typeof profile === "object" ? profile : {};
+  // Prefer a stable identity claim over the raw credential blob when available.
+  const identity = jwtIdentityClaims(normalizedProfile);
+  if (identity) return hashCanonicalJson({ __principal_identity: identity }).slice(0, 32);
   const material = {};
   for (const key of Object.keys(normalizedProfile).filter((k) => !PROFILE_METADATA_KEYS.has(k)).sort()) {
     material[key] = normalizedProfile[key];

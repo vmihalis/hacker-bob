@@ -120,6 +120,7 @@ function writeAuthDifferentialResults(domain) {
   writeJson(authDifferentialResultsPath(domain), {
     schema_version: 1,
     per_endpoint: [{
+      surface_id: "surface-auth",
       endpoint: "/api/accounts/789",
       method: "GET",
       signatures_by_profile: {

@@ -66,6 +66,7 @@ async function runAuthDifferentialToolHandler(args) {
     profile_metadata: profileMetadata,
     run_id: args.run_id,
     limit: args.limit,
+    surface_id: args.surface_id,
   });
   return {
     schema_version: result.schema_version,
@@ -84,6 +85,10 @@ module.exports = Object.freeze({
     type: "object",
     properties: {
       target_domain: { type: "string" },
+      surface_id: {
+        type: "string",
+        description: "The surface this sweep is run for. Pass it so the completion gate binds this coverage to the surface actually tested (an id-bearing surface only earns completion via a sweep stamped with ITS surface_id on ITS id-bearing endpoint).",
+      },
       base_url: {
         type: "string",
         description: "Base URL the endpoint paths are joined onto.",

@@ -1960,8 +1960,12 @@ function completionDepthGapForCompleteSurfaces(domain) {
       // fabricated cookies both getting denied cannot clear the surface.
       if ((typeof row.distinct_principal_count === "number" ? row.distinct_principal_count : 0) < 2) continue;
       if (!rowShowsExecutedDifferential(row)) continue;
+      // Bind by surface_id: the sweep must have been RUN FOR this surface (stamped at call
+      // time) AND hit one of its id-bearing endpoints. A row not stamped with a surface_id
+      // (legacy / un-bound sweep) earns no coverage — fail closed, no endpoint-string bleed.
+      if (typeof row.surface_id !== "string" || !row.surface_id) continue;
       for (const [surfaceId, endpoints] of surfaceEndpointValues) {
-        if (endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
+        if (row.surface_id === surfaceId && endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
       }
     }
   } catch { /* malformed auth-differential results contribute no coverage */ }

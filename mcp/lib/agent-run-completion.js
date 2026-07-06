@@ -334,6 +334,9 @@ function hasAuthDifferentialSweepForSurface(marker) {
   return rows.some((row) => (
     row
     && typeof row.endpoint === "string"
+    // Bind by surface_id: the sweep must be stamped for THIS surface AND hit one of its
+    // id-bearing endpoints — no endpoint-string bleed from a sweep run for another surface.
+    && row.surface_id === marker.surface_id
     && endpoints.has(row.endpoint)
     && rowHasTwoProfileSweep(row)
   ));

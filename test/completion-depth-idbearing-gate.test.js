@@ -134,11 +134,12 @@ function writeCoverageRow(domain, surfaceId, endpoint) {
   }));
 }
 
-function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount = 2, authenticatedAccess = true } = {}) {
+function writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount = 2, authenticatedAccess = true, surfaceId = "surface-a" } = {}) {
   writeFileAtomic(authDifferentialResultsPath(domain), `${JSON.stringify({
     version: 1,
     target_domain: domain,
     per_endpoint: [{
+      surface_id: surfaceId,
       endpoint,
       signatures_by_profile: {
         // authenticatedAccess=false models the fabricated-cookie attack: two distinct
@@ -207,6 +208,24 @@ test("id-bearing complete surface does NOT clear on a two-fabricated-cookie swee
     // but neither is a real account — both requests are denied and divergences[] is empty, so
     // the sweep never tested cross-tenant isolation. The gate must NOT count it as coverage.
     writeAuthDifferentialResults(domain, endpoint, { distinctPrincipalCount: 2, authenticatedAccess: false });
+
+    assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
+      surface_id: surfaceId,
+      finding_id: "F-1",
+      reason: "complete_idbearing_surface_no_differential",
+    }]);
+  }));
+});
+
+test("id-bearing complete surface does NOT clear on a sweep bound to a DIFFERENT surface_id (no endpoint-string bleed)", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "idbearing-cross-surface.example.com";
+    const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    writeCoverageRow(domain, surfaceId, endpoint);
+    // A genuine distinct-principal, real-access sweep on the SAME endpoint string, but the
+    // row is stamped for a different surface (the sweep was run for "surface-other"). It
+    // must not clear this surface — coverage binds by surface_id, not raw endpoint string.
+    writeAuthDifferentialResults(domain, endpoint, { surfaceId: "surface-other" });
 
     assert.deepEqual(completionDepthGapForCompleteSurfaces(domain).missing, [{
       surface_id: surfaceId,

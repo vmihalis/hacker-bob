@@ -92,10 +92,50 @@ function normalizeProfiles(rawProfiles) {
   return result;
 }
 
+function rowUpsertKey(row) {
+  const sid = row && typeof row.surface_id === "string" ? row.surface_id : "";
+  const ep = row && typeof row.endpoint === "string" ? row.endpoint : "";
+  const m = row && typeof row.method === "string" ? row.method : "";
+  return `${sid}\t${ep}\t${m}`;
+}
+
+// ACCUMULATE across sweeps: each bob_run_auth_differential upserts its rows by
+// (surface_id, endpoint, method) into the existing file rather than overwriting it,
+// so a run that sweeps surface B does not clobber surface A's coverage — both id-bearing
+// surfaces retain their sweep row for the grade-time gate. Returns the merged payload.
 function persistResults(domain, payload) {
   ensureSessionDir(domain);
   const filePath = authDifferentialResultsPath(domain);
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  let priorRows = [];
+  if (fs.existsSync(filePath)) {
+    try {
+      const prior = JSON.parse(readFileUtf8(filePath, { label: "auth-differential-results.json" }));
+      if (prior && Array.isArray(prior.per_endpoint)) priorRows = prior.per_endpoint;
+    } catch {
+      priorRows = [];
+    }
+  }
+  const newRows = Array.isArray(payload.per_endpoint) ? payload.per_endpoint : [];
+  const newKeys = new Set(newRows.map(rowUpsertKey));
+  const merged = priorRows.filter((row) => !newKeys.has(rowUpsertKey(row))).concat(newRows);
+  merged.sort((a, b) => rowUpsertKey(a).localeCompare(rowUpsertKey(b)));
+  const summary = {
+    ...payload.summary,
+    divergences_total: merged.reduce((acc, e) => acc + (Array.isArray(e.divergences) ? e.divergences.length : 0), 0),
+    divergences_by_type: countByType(merged),
+    divergences_by_severity: countBySeverity(merged),
+  };
+  const mergedPayload = {
+    ...payload,
+    summary,
+    per_endpoint: merged,
+    results_hash: hashCanonicalJson({
+      summary: { ...summary, started_at: null, finished_at: null },
+      per_endpoint: merged,
+    }),
+  };
+  fs.writeFileSync(filePath, `${JSON.stringify(mergedPayload, null, 2)}\n`, "utf8");
+  return mergedPayload;
 }
 
 function readResults(domain) {
@@ -163,6 +203,7 @@ async function runAuthDifferential({
   profile_metadata,
   run_id,
   limit,
+  surface_id,
 }) {
   const domain = assertSafeDomain(target_domain);
   if (typeof base_url !== "string" || base_url.length === 0) {
@@ -216,6 +257,10 @@ async function runAuthDifferential({
       if (typeof fp === "string" && fp) distinctPrincipals.add(fp);
     }
     perEndpoint.push({
+      // The surface the sweep was RUN FOR (MCP-derived at call time) — the completion
+      // gates bind coverage by this, not by raw endpoint-string membership, so a sweep
+      // cannot clear an adjacent surface that merely shares the endpoint string.
+      surface_id: typeof surface_id === "string" && surface_id ? surface_id : null,
       endpoint,
       method,
       signatures_by_profile: signaturesByProfile,
@@ -257,7 +302,7 @@ async function runAuthDifferential({
   // LEGACY: removed in Plane D — auth-differential-results.json remains during
   // the dual-write window so capability-eval and report-writer keep working;
   // frontier-events.jsonl carries the authoritative observation signal.
-  persistResults(domain, payload);
+  const persisted = persistResults(domain, payload);
 
   // Dual-write per Pact P2: each auth-differential run produces a per-endpoint
   // observation about how a surface responds across auth profiles. Emit one
@@ -279,12 +324,12 @@ async function runAuthDifferential({
           divergence_types: Array.from(new Set(entry.divergences.map((d) => d.type))).sort(),
           divergence_severities: Array.from(new Set(entry.divergences.map((d) => d.severity_class))).sort(),
           run_id: summary.run_id,
-          results_hash: payload.results_hash,
+          results_hash: persisted.results_hash,
         },
         source: {
           artifact: "auth-differential-results.json",
           tool: "bob_run_auth_differential",
-          ref: payload.results_hash,
+          ref: persisted.results_hash,
         },
       });
     } catch {
@@ -294,7 +339,7 @@ async function runAuthDifferential({
   try {
     scheduleMaterialization(domain);
   } catch {}
-  return payload;
+  return persisted;
 }
 
 module.exports = {
