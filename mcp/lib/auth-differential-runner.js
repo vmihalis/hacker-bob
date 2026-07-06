@@ -155,23 +155,21 @@ function readResults(domain) {
 // FLIPPED (a recorded divergence). Two fabricated credentials that both get denied
 // (401/403, no divergence) minted distinct fingerprints but never tested isolation,
 // so they do not earn completion. Single-source for both completion gates.
+function signatureIsNonError(sig) {
+  return !!(sig && typeof sig === "object"
+    && ((typeof sig.status === "number" && sig.status >= 200 && sig.status < 300)
+      || sig.status_class === "2xx"
+      || sig.response_class === "ok"));
+}
+
 function rowShowsExecutedDifferential(row) {
   const signatures = row && row.signatures_by_profile;
   if (!(signatures && typeof signatures === "object" && !Array.isArray(signatures))) return false;
   // Require REAL authenticated access: at least one swept principal got a non-error (2xx)
   // response, proving a real account reached the collection. A sweep where every principal
   // is DENIED (401/403 — even with a status_class divergence BETWEEN two denial codes)
-  // never accessed the resource and never tested cross-tenant isolation, so two fabricated
-  // credentials eliciting different denial codes cannot earn completion.
-  for (const sig of Object.values(signatures)) {
-    if (sig && typeof sig === "object"
-      && ((typeof sig.status === "number" && sig.status >= 200 && sig.status < 300)
-        || sig.status_class === "2xx"
-        || sig.response_class === "ok")) {
-      return true;
-    }
-  }
-  return false;
+  // never accessed the resource and never tested cross-tenant isolation.
+  return Object.values(signatures).some(signatureIsNonError);
 }
 
 function countByType(perEndpoint) {
@@ -218,6 +216,12 @@ async function runAuthDifferential({
   const cappedEndpoints = normalizedEndpoints.slice(0, effectiveLimit);
   const startedAt = new Date().toISOString();
   const perEndpoint = [];
+  const rowFingerprintSets = [];
+  // A fingerprint is a VALIDATED principal only if it produced a non-error (2xx) response
+  // somewhere in the sweep — a real authenticated session. A junk/expired credential that
+  // only ever 4xx'd is distinct MATERIAL but not a validated principal, so it must not
+  // count toward distinct_principal_count (else [real, junk] forges a 2-principal test).
+  const validatedFingerprints = new Set();
   let fetchErrorCount = 0;
   let fetchTotal = 0;
   for (const { endpoint, method } of cappedEndpoints) {
@@ -247,28 +251,37 @@ async function runAuthDifferential({
         profile_metadata: profile_metadata || null,
       })
       : [];
-    // Count DISTINCT principals actually swept (by MCP-owned auth fingerprint), not
-    // profile NAMES: two names bound to the same session collapse to one fingerprint,
-    // so a same-principal 2-name sweep is not counted as an executed cross-tenant test.
-    const distinctPrincipals = new Set();
+    // Collect this row's fingerprints (by MCP-owned auth fingerprint, so two profile NAMES
+    // bound to the same session collapse to one) and mark those that AUTHENTICATED (2xx)
+    // anywhere as validated principals; distinct_principal_count is finalized post-loop.
+    const rowFps = new Set();
     for (const profile of Object.keys(signaturesByProfile)) {
       const meta = profile_metadata && typeof profile_metadata === "object" ? profile_metadata[profile] : null;
       const fp = meta && typeof meta === "object" ? meta.principal_fingerprint : null;
-      if (typeof fp === "string" && fp) distinctPrincipals.add(fp);
+      if (typeof fp !== "string" || !fp) continue;
+      rowFps.add(fp);
+      if (signatureIsNonError(signaturesByProfile[profile])) validatedFingerprints.add(fp);
     }
     perEndpoint.push({
-      // The surface the sweep was RUN FOR (MCP-derived at call time) — the completion
-      // gates bind coverage by this, not by raw endpoint-string membership, so a sweep
-      // cannot clear an adjacent surface that merely shares the endpoint string.
+      // The surface this sweep was run for (passed by the caller). NOTE: the ADVERSARIAL
+      // binding is the gate's endpoint-membership check against this surface's materialized
+      // id-bearing endpoints; surface_id only scopes which surface the row may credit.
       surface_id: typeof surface_id === "string" && surface_id ? surface_id : null,
       endpoint,
       method,
       signatures_by_profile: signaturesByProfile,
       divergences,
-      distinct_principal_count: distinctPrincipals.size,
+      distinct_principal_count: 0,
       fetch_errors_by_profile: fetchErrorsByProfile,
     });
+    rowFingerprintSets.push(rowFps);
   }
+  // Finalize distinct_principal_count over VALIDATED principals only (>=1 2xx in the sweep).
+  perEndpoint.forEach((row, i) => {
+    let n = 0;
+    for (const fp of rowFingerprintSets[i]) if (validatedFingerprints.has(fp)) n += 1;
+    row.distinct_principal_count = n;
+  });
   perEndpoint.sort((a, b) => {
     const byEndpoint = a.endpoint.localeCompare(b.endpoint);
     if (byEndpoint !== 0) return byEndpoint;

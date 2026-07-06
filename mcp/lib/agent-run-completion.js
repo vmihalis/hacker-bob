@@ -292,15 +292,15 @@ function surfaceEndpointSet(domain, surfaceId) {
   try {
     const { readAttackSurfaceStrict } = require("./attack-surface.js");
     const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
-    const { endpointValueIsIdBearing } = require("./offensive-idor-producer.js");
+    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
     for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
       if (!surface || surface.id !== surfaceId) continue;
       for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        // Only ID-BEARING endpoints count as auth-differential coverage for the surface,
-        // so a sweep of a benign sibling endpoint cannot clear the id-bearing surface.
-        if (endpoint && typeof endpoint.value === "string" && endpointValueIsIdBearing(endpoint.value)) {
-          endpoints.add(endpoint.value);
-        }
+        // Only ID-BEARING endpoints, in TEMPLATE form, so a concrete swept url matches the
+        // surface's templated endpoint and a benign sibling cannot clear the surface.
+        const t = endpoint && typeof endpoint.value === "string"
+          ? templatizeIdBearingEndpoint(endpoint.value) : null;
+        if (t) endpoints.add(t);
       }
     }
   } catch {
@@ -331,13 +331,14 @@ function hasAuthDifferentialSweepForSurface(marker) {
   if (endpoints.size === 0) return false;
   const results = readAuthDifferentialResults(marker.target_domain);
   const rows = results && Array.isArray(results.per_endpoint) ? results.per_endpoint : [];
+  const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
   return rows.some((row) => (
     row
     && typeof row.endpoint === "string"
     // Bind by surface_id: the sweep must be stamped for THIS surface AND hit one of its
-    // id-bearing endpoints — no endpoint-string bleed from a sweep run for another surface.
+    // id-bearing endpoints (matched in TEMPLATE form) — no bleed from another surface.
     && row.surface_id === marker.surface_id
-    && endpoints.has(row.endpoint)
+    && endpoints.has(templatizeIdBearingEndpoint(row.endpoint))
     && rowHasTwoProfileSweep(row)
   ));
 }

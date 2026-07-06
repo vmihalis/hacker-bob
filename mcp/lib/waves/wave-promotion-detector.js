@@ -18,6 +18,11 @@ const {
 } = require("../scheduler-decisions.js");
 const { appendFrontierEvent } = require("../frontier-events.js");
 
+// Max times a (kind, hint) tuple may be capability-cleared+requeued before it must promote
+// to an operator-clearable terminal — bounds the reprieve so a present-but-broken handle
+// cannot livelock the run (matches detectTerminalPromotions' 2-wave recurrence ceiling).
+const CAPABILITY_CLEAR_REPRIEVE_CAP = 2;
+
 const BLOCKED_PREREQ_KIND_CAPABILITY = Object.freeze({
   auth_missing: Object.freeze({
     required_capability_id: "S3_stepup_registration",
@@ -235,12 +240,26 @@ function computeCapabilityClearedPremiseSurfaceIds({
   // surface open for a fresh run until the current blocker is resolved.
   for (const [surfaceId, entries] of blockersBySurface) {
     if (!Array.isArray(entries)) continue;
+    const surfaceHistory = (historyBySurface instanceof Map ? historyBySurface.get(surfaceId) : null) || [];
     for (const entry of entries) {
-      if (capabilityClearedForBlockedPrereq(entry, sources)) {
-        surfaceIds.add(surfaceId);
-        if (!premiseKeysBySurface.has(surfaceId)) premiseKeysBySurface.set(surfaceId, new Set());
-        premiseKeysBySurface.get(surfaceId).add(blockedPrereqTupleKey(entry));
-      }
+      if (!capabilityClearedForBlockedPrereq(entry, sources)) continue;
+      // BOUNDED REPRIEVE (loop-breaker): a present handle grants a clear+requeue, but only
+      // a bounded number of times. Once this (kind, hint) tuple has already recurred
+      // CAPABILITY_CLEAR_REPRIEVE_CAP times, stop clearing it so detectTerminalPromotions
+      // promotes it to an operator-clearable terminal instead of requeuing forever on a
+      // present-but-broken handle (e.g. a stored-but-expired profile matching the hint).
+      const tupleKey = blockedPrereqTupleKey(entry);
+      // Count occurrences STRICTLY PRIOR to the current wave (exclude this wave's own
+      // re-record), so a handle that just became live earns its reprieve, but a tuple that
+      // has already recurred CAP times promotes instead of clearing again.
+      const priorOccurrences = surfaceHistory.filter((h) => (
+        blockedPrereqTupleKey(h) === tupleKey
+        && (typeof h.wave !== "number" || typeof currentWave !== "number" || h.wave < currentWave)
+      )).length;
+      if (priorOccurrences >= CAPABILITY_CLEAR_REPRIEVE_CAP) continue;
+      surfaceIds.add(surfaceId);
+      if (!premiseKeysBySurface.has(surfaceId)) premiseKeysBySurface.set(surfaceId, new Set());
+      premiseKeysBySurface.get(surfaceId).add(tupleKey);
     }
   }
   Object.defineProperty(surfaceIds, "cleared_premise_keys_by_surface", {

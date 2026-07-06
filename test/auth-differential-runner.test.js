@@ -154,6 +154,64 @@ test("profile_metadata enables the unauth_succeeds_where_auth_blocked security f
   }
 });
 
+test("distinct_principal_count counts only VALIDATED principals (a junk profile that only ever 4xx'd does not count)", async () => {
+  const domain = uniqueDomain();
+  try {
+    // "real" authenticates (2xx); "junk" is a distinct-material credential that only ever 401s.
+    const fetch_fn = async ({ auth_profile }) => ({
+      status: auth_profile === "real" ? 200 : 401,
+      content_type: "application/json",
+      body: auth_profile === "real" ? { id: 1 } : null,
+      sent_with_auth: true,
+    });
+    const result = await runAuthDifferential({
+      target_domain: domain,
+      base_url: "https://api.example.com",
+      endpoints: ["/orders/1"],
+      auth_profiles: ["real", "junk"],
+      fetch_fn,
+      surface_id: "surface-x",
+      profile_metadata: {
+        real: { principal_fingerprint: "fp-real" },
+        junk: { principal_fingerprint: "fp-junk" },
+      },
+    });
+    // Two distinct fingerprints were swept, but only "real" ever authenticated, so the sweep
+    // tested no real SECOND principal -> distinct_principal_count is 1, not 2 (the [real, junk] forge).
+    assert.equal(result.per_endpoint[0].distinct_principal_count, 1);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("distinct_principal_count is 2 when BOTH principals authenticate somewhere in the sweep", async () => {
+  const domain = uniqueDomain();
+  try {
+    // A real cross-tenant sweep: each principal gets a 2xx on its OWN object, 403 on the other's.
+    const fetch_fn = async ({ auth_profile, endpoint }) => {
+      const owns = (auth_profile === "victim" && endpoint === "/orders/1")
+        || (auth_profile === "attacker" && endpoint === "/orders/2");
+      return { status: owns ? 200 : 403, content_type: "application/json", body: owns ? { id: 1 } : null, sent_with_auth: true };
+    };
+    const result = await runAuthDifferential({
+      target_domain: domain,
+      base_url: "https://api.example.com",
+      endpoints: ["/orders/1", "/orders/2"],
+      auth_profiles: ["victim", "attacker"],
+      fetch_fn,
+      surface_id: "surface-x",
+      profile_metadata: {
+        victim: { principal_fingerprint: "fp-victim" },
+        attacker: { principal_fingerprint: "fp-attacker" },
+      },
+    });
+    // Both authenticated somewhere -> both validated -> every row's distinct_principal_count is 2.
+    for (const row of result.per_endpoint) assert.equal(row.distinct_principal_count, 2);
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
 test("results persist to auth-differential-results.json with deterministic results_hash", async () => {
   const domain = uniqueDomain();
   try {

@@ -185,6 +185,11 @@ function planCompositionFloor({
   }
 
   const propose = [];
+  // Within-pass dedup: M distinct shared identifiers across the SAME surface pair {A,B}
+  // must emit ONE (A,B) transition, not M identical ones (write-amplification on an
+  // identifier-rich, attacker-influenceable body). existingKeys dedups vs prior passes;
+  // this set dedups vs THIS pass.
+  const proposedKeys = new Set();
   for (const key of Array.from(groups.keys()).sort()) {
     const group = groups.get(key);
     const surfaces = Array.from(group.surfaces.keys()).sort();
@@ -196,6 +201,8 @@ function planCompositionFloor({
         const forwardKey = transitionKeyOf({ from, to });
         const reverseKey = transitionKeyOf({ from: to, to: from });
         if (existingKeys.has(forwardKey) || existingKeys.has(reverseKey)) continue;
+        if (proposedKeys.has(forwardKey) || proposedKeys.has(reverseKey)) continue;
+        proposedKeys.add(forwardKey);
 
         const evidenceRefs = [];
         const fromClaim = group.surfaces.get(from)[0];
@@ -944,11 +951,14 @@ function chainIdFromHintText(text) {
   if (eip155) return eip155[1];
   const chainId = normalized.match(/\bchain[_-]?id["'\s:=]+(\d{1,10})\b/);
   if (chainId) return chainId[1];
-  if (/\bbase[-_\s]?mainnet\b|\bbase\b/.test(normalized)) return "8453";
-  if (/\bethereum[-_\s]?mainnet\b|\bmainnet\b/.test(normalized)) return "1";
-  if (/\barbitrum[-_\s]?one\b|\barbitrum\b/.test(normalized)) return "42161";
-  if (/\boptimism[-_\s]?mainnet\b|\boptimism\b|\bop[-_\s]?mainnet\b/.test(normalized)) return "10";
-  if (/\bpolygon[-_\s]?mainnet\b|\bpolygon\b/.test(normalized)) return "137";
+  // Fail closed on ambiguous common words in UNTRUSTED response bodies: require a
+  // chain-SPECIFIC disambiguator, never a bare 'base' ("base fee"/"base url") or bare
+  // 'mainnet' (matches "avalanche mainnet" etc.). Mirrors lead-intake resolveChainContext.
+  if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli)\b/.test(normalized)) return "8453";
+  if (/\bethereum[-_\s]?mainnet\b|\bethereum\b/.test(normalized)) return "1";
+  if (/\barbitrum[-_\s]?one\b|\barbitrum[-_\s]?mainnet\b/.test(normalized)) return "42161";
+  if (/\boptimism[-_\s]?mainnet\b|\bop[-_\s]?mainnet\b/.test(normalized)) return "10";
+  if (/\bpolygon[-_\s]?mainnet\b/.test(normalized)) return "137";
   return null;
 }
 

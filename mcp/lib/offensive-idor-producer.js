@@ -253,6 +253,22 @@ function endpointValueIsIdBearing(value) {
     || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg));
 }
 
+// Canonical id-bearing path with the final id segment collapsed to {id}, so a sweep of
+// a CONCRETE url (/api/orders/123) matches the surface's stored TEMPLATE (/api/orders/{id})
+// — a correctly-executed IDOR sweep must send a concrete id to elicit a 2xx, and the
+// completion gate would otherwise never match it to the templated surface endpoint.
+function templatizeIdBearingEndpoint(value) {
+  const pathname = candidateEndpointPathname(value);
+  if (!pathname) return null;
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) return null;
+  const finalSeg = segments[segments.length - 1];
+  const isId = isRouteParamMarker(finalSeg)
+    || (capturedIdSegmentIsSafe(finalSeg) && concreteSegmentCarriesIdSignal(finalSeg));
+  if (!isId) return null;
+  return `/${segments.slice(0, -1).concat("{id}").join("/")}`;
+}
+
 function surfaceExposesIdBearingCollection(surface) {
   try {
     for (const { value } of candidateSurfaceEndpoints(surface)) {
@@ -2429,6 +2445,7 @@ module.exports = {
   mintCanary,
   surfaceExposesIdBearingCollection,
   endpointValueIsIdBearing,
+  templatizeIdBearingEndpoint,
   pathHasConcreteParentInstance,
   createCollectionParentIsAmbiguous,
   IDOR_PROVISION_ENV,

@@ -1927,17 +1927,17 @@ function completionDepthGapForCompleteSurfaces(domain) {
   try {
     const { readAttackSurfaceStrict } = require("./attack-surface.js");
     const { candidateSurfaceEndpoints } = require("./offensive-http-common.js");
-    const { endpointValueIsIdBearing } = require("./offensive-idor-producer.js");
+    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
     const completeSurfaceIds = new Set(surfaceBypass.keys());
     for (const surface of (readAttackSurfaceStrict(domain).document.surfaces || [])) {
       if (!surface || !completeSurfaceIds.has(surface.id)) continue;
       const endpoints = new Set();
       for (const endpoint of candidateSurfaceEndpoints(surface)) {
-        // Only ID-BEARING endpoints count: an auth-differential sweep clears an id-bearing
-        // surface only when it hit the id-bearing object, never a benign sibling (/me).
-        if (endpoint && typeof endpoint.value === "string" && endpointValueIsIdBearing(endpoint.value)) {
-          endpoints.add(endpoint.value);
-        }
+        // Only ID-BEARING endpoints count (never a benign sibling like /me), and stored in
+        // TEMPLATE form so a concrete swept url matches the surface's templated endpoint.
+        const t = endpoint && typeof endpoint.value === "string"
+          ? templatizeIdBearingEndpoint(endpoint.value) : null;
+        if (t) endpoints.add(t);
       }
       surfaceEndpointValues.set(surface.id, endpoints);
     }
@@ -1946,6 +1946,7 @@ function completionDepthGapForCompleteSurfaces(domain) {
   const authDifferentialCovered = new Set();
   try {
     const { readResults, rowShowsExecutedDifferential } = require("./auth-differential-runner.js");
+    const { templatizeIdBearingEndpoint } = require("./offensive-idor-producer.js");
     const results = readResults(domain);
     for (const row of ((results && Array.isArray(results.per_endpoint)) ? results.per_endpoint : [])) {
       if (!row || typeof row.endpoint !== "string") continue;
@@ -1964,8 +1965,10 @@ function completionDepthGapForCompleteSurfaces(domain) {
       // time) AND hit one of its id-bearing endpoints. A row not stamped with a surface_id
       // (legacy / un-bound sweep) earns no coverage — fail closed, no endpoint-string bleed.
       if (typeof row.surface_id !== "string" || !row.surface_id) continue;
+      const rowTemplate = templatizeIdBearingEndpoint(row.endpoint);
+      if (!rowTemplate) continue;
       for (const [surfaceId, endpoints] of surfaceEndpointValues) {
-        if (row.surface_id === surfaceId && endpoints.has(row.endpoint)) authDifferentialCovered.add(surfaceId);
+        if (row.surface_id === surfaceId && endpoints.has(rowTemplate)) authDifferentialCovered.add(surfaceId);
       }
     }
   } catch { /* malformed auth-differential results contribute no coverage */ }
