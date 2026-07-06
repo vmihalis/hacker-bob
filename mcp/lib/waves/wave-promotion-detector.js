@@ -151,10 +151,15 @@ function currentWaveBlockersFromHistory(historyBySurface, currentWave) {
   return currentWaveBlockersBySurface;
 }
 
-function readAuthProfileCount(targetDomain) {
+function readAuthProfileHandles(targetDomain) {
   const { listAuthProfiles } = require("../auth.js");
   const parsed = JSON.parse(listAuthProfiles({ target_domain: targetDomain }));
-  return Array.isArray(parsed.profiles) ? parsed.profiles.length : 0;
+  const handles = new Set();
+  for (const p of (Array.isArray(parsed.profiles) ? parsed.profiles : [])) {
+    if (p && typeof p.profile_name === "string" && p.profile_name) handles.add(p.profile_name);
+    if (p && typeof p.principal_fingerprint === "string" && p.principal_fingerprint) handles.add(p.principal_fingerprint);
+  }
+  return handles;
 }
 
 function validateBlockedPrereqCapabilityMap(capabilityToolMap) {
@@ -174,7 +179,12 @@ function capabilityClearedForBlockedPrereq(entry, sources) {
   if (!config) return false;
   const capabilityId = config.required_capability_id;
   if (config.clearance_source === "auth_profile") {
-    return sources.authProfileCount > 0;
+    // Require the SPECIFIC needed principal named by the premise's identifier_hint to
+    // be present, NOT merely "any profile exists". A surface blocked on an unobtainable
+    // admin/2nd-tenant principal must NOT be cleared just because a regular-user or anon
+    // profile is stored — otherwise it requeues forever and never escalates to terminal.
+    const hint = entry && typeof entry.identifier_hint === "string" ? entry.identifier_hint : "";
+    return hint.length > 0 && sources.authProfileHandles.has(hint);
   }
   if (config.clearance_source === "producer_terminal") {
     return sources.terminalRunSet.has(capabilityId);
@@ -216,7 +226,7 @@ function computeCapabilityClearedPremiseSurfaceIds({
   validateBlockedPrereqCapabilityMap(capabilityToolMap);
   const sources = {
     capabilityToolMap,
-    authProfileCount: readAuthProfileCount(target_domain),
+    authProfileHandles: readAuthProfileHandles(target_domain),
     terminalRunSet: buildProducerRunLedgerCache(target_domain).terminalKeys,
   };
   const surfaceIds = new Set();

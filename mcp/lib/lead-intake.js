@@ -108,7 +108,10 @@ function resolveChainContext(input) {
   const svmFamily = knownChainFamily("svm");
 
   if (/^0x[0-9a-fA-F]{40}$/.test(contractAddress)) {
-    if (/\bbase(?:[-_\s]?mainnet)?\b/.test(contextText)) {
+    // Require a Base-SPECIFIC disambiguator — never a bare "base", which matches the
+    // ubiquitous EVM/DeFi tokens "base fee" (EIP-1559), "base asset", "base URL", etc.
+    // and would silently mis-stamp an Ethereum/Arbitrum contract as Base (8453).
+    if (/\bbase[-_\s]?(?:mainnet|sepolia|goerli|testnet)\b|\beip155:8453\b|\bchain[-_\s]?id[\s:=]*8453\b/.test(contextText)) {
       return evmFamily ? { chain_family: evmFamily, chain_id: 8453 } : null;
     }
     if (/\boptimism\b|\boptimistic[-_\s]?ethereum\b|\bop[-_\s]?mainnet\b/.test(contextText)) {

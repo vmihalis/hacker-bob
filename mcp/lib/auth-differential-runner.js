@@ -117,17 +117,21 @@ function readResults(domain) {
 // so they do not earn completion. Single-source for both completion gates.
 function rowShowsExecutedDifferential(row) {
   const signatures = row && row.signatures_by_profile;
-  if (signatures && typeof signatures === "object" && !Array.isArray(signatures)) {
-    for (const sig of Object.values(signatures)) {
-      if (sig && typeof sig === "object"
-        && ((typeof sig.status === "number" && sig.status >= 200 && sig.status < 300)
-          || sig.status_class === "2xx"
-          || sig.response_class === "ok")) {
-        return true;
-      }
+  if (!(signatures && typeof signatures === "object" && !Array.isArray(signatures))) return false;
+  // Require REAL authenticated access: at least one swept principal got a non-error (2xx)
+  // response, proving a real account reached the collection. A sweep where every principal
+  // is DENIED (401/403 — even with a status_class divergence BETWEEN two denial codes)
+  // never accessed the resource and never tested cross-tenant isolation, so two fabricated
+  // credentials eliciting different denial codes cannot earn completion.
+  for (const sig of Object.values(signatures)) {
+    if (sig && typeof sig === "object"
+      && ((typeof sig.status === "number" && sig.status >= 200 && sig.status < 300)
+        || sig.status_class === "2xx"
+        || sig.response_class === "ok")) {
+      return true;
     }
   }
-  return Array.isArray(row && row.divergences) && row.divergences.length > 0;
+  return false;
 }
 
 function countByType(perEndpoint) {

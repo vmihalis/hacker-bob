@@ -981,7 +981,9 @@ function extractOnchainReferenceHits(row) {
   }
 
   const addressSet = new Set();
-  const addressRe = /0x[0-9a-fA-F]{40}/g;
+  // Boundary-anchored so a 64-hex tx/keccak/slot value (0x + 64 hex) is NOT truncated to
+  // its first 40 hex and mis-read as a contract address (which would mint a bogus surface).
+  const addressRe = /(?<![0-9a-fA-F])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
   const bodyMatches = row.body.match(addressRe) || [];
   for (const address of bodyMatches) addressSet.add(address);
   if (parsedBody) {

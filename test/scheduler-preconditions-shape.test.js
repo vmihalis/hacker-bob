@@ -271,6 +271,31 @@ test("computeCapabilityClearedPremiseSurfaceIds reads live auth profiles for aut
   });
 });
 
+test("computeCapabilityClearedPremiseSurfaceIds does NOT clear an auth blocker for an unobtainable principal while a different profile exists", () => {
+  withTempHome(() => {
+    const domain = "cap-clear-auth-mismatch.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    // Store a regular-user profile, but the surface is blocked on an admin principal it
+    // cannot obtain. The premise must NOT be cleared (was a livelock: any profile existing
+    // cleared it forever, so the surface never promoted to terminal / operator escalation).
+    JSON.parse(authStore({
+      target_domain: domain,
+      profile_name: "attacker",
+      headers: { Authorization: "Bearer regular-user" },
+    }));
+    const blockers = new Map([
+      ["surface-admin", [{ kind: "auth_missing", identifier_hint: "admin" }]],
+    ]);
+    assert.deepEqual(
+      Array.from(computeCapabilityClearedPremiseSurfaceIds({
+        currentWaveBlockersBySurface: blockers,
+        target_domain: domain,
+      })),
+      [],
+    );
+  });
+});
+
 test("computeCapabilityClearedPremiseSurfaceIds reads producer terminal set for artifact blockers", () => {
   withTempHome(() => {
     const domain = "cap-clear-producer.example.com";
