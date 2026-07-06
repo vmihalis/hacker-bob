@@ -28,9 +28,6 @@ const {
   readFindingDifferentialVerifiedSummary,
 } = require("./finding-differential-verifier.js");
 const {
-  bypassAttemptHasSubstance,
-} = require("./wave-handoff-contracts.js");
-const {
   edgesFromAttackSurface,
 } = require("./surface-graph-builder.js");
 
@@ -346,47 +343,12 @@ function hasVerifiedFindingDifferentialForSurface(marker) {
   ));
 }
 
-function blockerAsBypassAttempt(entry) {
-  if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const condition = [
-    entry.condition,
-    entry.kind,
-    entry.harness,
-    entry.identifier_hint,
-  ].filter((value) => typeof value === "string" && value.trim()).join(" ");
-  const attemptSummary = [
-    entry.attempt_summary,
-    entry.reason,
-    entry.evidence_summary,
-    entry.needed_for,
-  ].filter((value) => typeof value === "string" && value.trim()).join(" ");
-  return {
-    condition,
-    attempt_summary: attemptSummary,
-    outcome: typeof entry.outcome === "string" ? entry.outcome : "blocked",
-    finding_id: entry.finding_id,
-  };
-}
-
-function handoffHasSubstantiveAuthDifferentialBlocker(handoff) {
-  const blockers = [
-    ...(Array.isArray(handoff && handoff.blocked_prereqs) ? handoff.blocked_prereqs : []),
-    ...(Array.isArray(handoff && handoff.blocked_harness_runs) ? handoff.blocked_harness_runs : []),
-  ];
-  return blockers.some((entry) => {
-    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) return false;
-    const normalized = blockerAsBypassAttempt(entry);
-    return bypassAttemptHasSubstance(entry)
-      || (normalized ? bypassAttemptHasSubstance(normalized) : false);
-  });
-}
-
 function authDifferentialCompletionBlock(marker) {
   return {
     ok: false,
     status: "blocked",
     block_code: "missing_auth_differential",
-    reason: `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles), a signed IDOR/finding-differential confirm bound to the surface, or a substantive blocked_prereqs/blocked_harness_runs entry naming the un-run cross-tenant test.`,
+    reason: `Evaluator ${marker.wave}/${marker.agent} cannot mark id-bearing surface ${marker.surface_id} complete without an executed auth-differential sweep (≥1 endpoint across ≥2 profiles) or a signed IDOR/finding-differential confirm bound to the surface. If the cross-tenant test cannot be run, mark the surface partial with a blocked_prereqs/blocked_harness_runs entry naming the un-run test — do NOT mark it complete.`,
     marker,
     handoff: null,
   };
@@ -397,7 +359,6 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
   if (assignment.auth_differential_required !== true) return null;
   if (!handoff || handoff.surface_status !== "complete") return null;
 
-  const hasSubstantiveBlocker = handoffHasSubstantiveAuthDifferentialBlocker(handoff);
   let ledgerReadFailed = false;
   let hasLedgerEvidence = false;
 
@@ -412,8 +373,11 @@ function evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff)
     ledgerReadFailed = true;
   }
 
-  // AD1
-  if (hasSubstantiveBlocker || (!ledgerReadFailed && hasLedgerEvidence)) return null;
+  // AD1: an id-bearing surface earns complete ONLY on executed ledger evidence (a
+  // distinct-principal sweep or a signed finding-differential). A genuinely-blocked
+  // surface must be recorded PARTIAL — the grade-time gate rejects a complete surface
+  // backed only by a blocker, so accepting it here would deadlock the run at grade.
+  if (!ledgerReadFailed && hasLedgerEvidence) return null;
   return authDifferentialCompletionBlock(marker);
 }
 

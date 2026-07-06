@@ -25,7 +25,11 @@ const BLOCKED_PREREQ_KIND_CAPABILITY = Object.freeze({
   }),
   egress_unreachable: Object.freeze({
     required_capability_id: "S3_oob_callback",
-    clearance_source: "tool_registry",
+    // Materialization-gated (a real OOB callback terminal run proves egress reached
+    // back), NEVER tool-existence: bob_oob_mint is statically registered, so a
+    // tool-registry clearance would be unconditionally true and a firewalled surface
+    // would livelock (requeued every wave, never promoted to operator escalation).
+    clearance_source: "producer_terminal",
   }),
   funded_wallet_missing: Object.freeze({
     required_capability_id: "I7_chain_state_tree",
@@ -175,8 +179,10 @@ function capabilityClearedForBlockedPrereq(entry, sources) {
   if (config.clearance_source === "producer_terminal") {
     return sources.terminalRunSet.has(capabilityId);
   }
-  const tools = sources.capabilityToolMap[capabilityId];
-  return Array.isArray(tools) && tools.length > 0;
+  // Fail closed: an unrecognized/unmaterialized clearance source never auto-clears a
+  // premise (which would suppress its terminal promotion + operator escalation). Tool
+  // EXISTENCE is not a clearance signal — a statically-registered tool is always present.
+  return false;
 }
 
 function blockedPrereqTupleKey(entry) {

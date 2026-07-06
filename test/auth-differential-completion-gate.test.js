@@ -176,7 +176,7 @@ test("auth differential completion evaluator is self-activating and credits MCP 
   });
 });
 
-test("auth differential completion evaluator accepts substantive blocker entries", () => {
+test("auth differential completion evaluator BLOCKS a complete id-bearing surface backed only by a blocker (must be partial)", () => {
   withTempHome(() => {
     const marker = {
       target_domain: "auth-diff-blocker.example.com",
@@ -185,6 +185,9 @@ test("auth differential completion evaluator accepts substantive blocker entries
       surface_id: "surface-auth",
     };
     const assignment = { agent: "a1", surface_id: "surface-auth", auth_differential_required: true };
+    // A substantive blocker on a COMPLETE id-bearing handoff must NOT earn completion:
+    // the grade-time gate rejects a complete surface backed only by a blocker, so the
+    // wave gate forces partial (evaluating.md: a blocked surface is recorded partial).
     const handoff = {
       surface_status: "complete",
       blocked_prereqs: [{
@@ -195,7 +198,9 @@ test("auth differential completion evaluator accepts substantive blocker entries
       blocked_harness_runs: [],
     };
 
-    assert.equal(evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff), null);
+    const result = evaluateAuthDifferentialCompletionCoverage(marker, assignment, handoff);
+    assert.ok(result && result.ok === false, "a blocked complete id-bearing surface must be refused");
+    assert.equal(result.block_code, "missing_auth_differential");
   });
 });
 
