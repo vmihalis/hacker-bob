@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { getCapabilityPack, selectWebEvaluatorPack } = require("../mcp/lib/capability-packs.js");
 const { buildSurfaceRoutesDocument } = require("../mcp/lib/surface-router.js");
@@ -29,6 +32,9 @@ function webSurfaceInfo(domain, surface) {
     uri: `https://${domain}/api/orders/123`,
     hosts: [`https://${domain}`],
     endpoints: ["/api/orders/123"],
+    // Non-empty so the fan-out will actually produce (bug_class × auth) cells; without cells the
+    // router keeps the surface flat (no transition-blind role for a fan-out that won't fire).
+    bug_class_hints: ["idor"],
     ...surface,
   }] } };
 }
@@ -124,6 +130,35 @@ test("a NON-claude host keeps an id-bearing web surface FLAT (host-blind routing
   } finally {
     if (prev === undefined) delete process.env.BOB_CLIENT;
     else process.env.BOB_CLIENT = prev;
+  }
+});
+
+test("bob_write_wave_handoff PERSISTS discovered_pivots (the transition-blind fanout role's pivot uplink)", () => {
+  const prevHome = process.env.HOME;
+  process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "web-fanout-pivots-"));
+  try {
+    const paths = require("../mcp/lib/paths.js");
+    const { initSession, advanceSession } = require("../mcp/lib/session-state.js");
+    const { startWave, writeWaveHandoff } = require("../mcp/lib/waves.js");
+    const domain = "pivots.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    fs.writeFileSync(paths.attackSurfacePath(domain), JSON.stringify({ surfaces: [
+      { id: "S-1", uri: `https://${domain}/api/orders/1`, hosts: [`https://${domain}`], endpoints: ["/api/orders/1"] },
+    ] }));
+    JSON.parse(advanceSession({ target_domain: domain, to_state: "OPEN_FRONTIER" }));
+    const started = JSON.parse(startWave({ target_domain: domain, wave_number: 1, assignments: [{ agent: "a1", surface_id: "S-1" }] }));
+    JSON.parse(writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a1", surface_id: "S-1", surface_status: "partial",
+      handoff_token: started.assignments[0].handoff_token, summary: "s", content: "# H",
+      discovered_pivots: [{ from_surface: "S-1", to_surface: "S-2", kind: "shared_session", trust_assumption: "same cookie jar" }],
+    }));
+    const json = JSON.parse(fs.readFileSync(path.join(paths.sessionDir(domain), "handoff-w1-a1.json"), "utf8"));
+    // Previously dropped from the handoff literal — a transition-blind evaluator-fanout's only
+    // documented cross-surface uplink would be silently lost. It is now signed onto the handoff.
+    assert.deepEqual(json.discovered_pivots, [{ from_surface: "S-1", to_surface: "S-2", kind: "shared_session", trust_assumption: "same cookie jar" }]);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
   }
 });
 

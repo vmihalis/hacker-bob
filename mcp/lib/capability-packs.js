@@ -98,11 +98,16 @@ const WEB_FANOUT_CAPABILITY_PACK = Object.freeze({
 //     priority is a RANK, agent-writable, and defaults medium.
 //   - Gated on spawnDepth>1: at max_spawn_depth<=1 nesting can never fire, so rerouting to the
 //     fanout role would only incur its transition-blindness for nothing — keep flat.
-function selectWebEvaluatorPack(classification, { idBearing = false, highPriority = false, spawnDepth = 1, queuePolicy = null } = {}) {
+function selectWebEvaluatorPack(classification, { idBearing = false, highPriority = false, spawnDepth = 1, hasBugClassHints = true, queuePolicy = null } = {}) {
   if (!classification || classification.capability_pack !== "web") return null;
   const policy = queuePolicy && typeof queuePolicy === "object" ? queuePolicy : {};
   if (policy.route_high_value_to_fanout === false) return WEB_CAPABILITY_PACK;
   if (!(Number.isInteger(spawnDepth) && spawnDepth > 1)) return WEB_CAPABILITY_PACK;
+  // Only reroute if the fan-out will actually produce CELLS: deriveChildFanoutPlan is a leaf
+  // (null plan) when bug_class_hints is empty, so rerouting such a surface to the
+  // transition-blind evaluator-fanout would incur its blindness for zero fan-out benefit —
+  // keep it on the transition-capable flat evaluator-agent.
+  if (!hasBugClassHints) return WEB_CAPABILITY_PACK;
   const highValue = idBearing || (highPriority && policy.web_fanout_on_high_priority === true);
   return highValue ? WEB_FANOUT_CAPABILITY_PACK : WEB_CAPABILITY_PACK;
 }

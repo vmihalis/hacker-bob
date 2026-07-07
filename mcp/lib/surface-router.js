@@ -147,6 +147,7 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
       idBearing: isIdBearing,
       highPriority: String((surface && surface.priority) || "").toUpperCase() === "HIGH",
       spawnDepth: routeSpawnDepth,
+      hasBugClassHints: Array.isArray(surface && surface.bug_class_hints) && surface.bug_class_hints.length > 0,
       queuePolicy,
     });
     if (selectedPack && selectedPack.id !== route.capability_pack) {

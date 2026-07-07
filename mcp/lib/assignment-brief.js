@@ -1269,9 +1269,11 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   // and effectiveSpawnDepth('codex') is UNCAPPED — so gate
   // depth>1 on host==="claude" SPECIFICALLY and clamp by the host nesting ceiling
   // (claude: 5). A non-claude host gets remainingDepth 0 => no nested plan (the fan-out
-  // degrades to flat wave assignments the orchestrator dispatches). effectiveSpawnDepth(1,
-  // "claude")=1 keeps the default (max_spawn_depth=1) at remainingDepth 0 — byte-identical
-  // default-off on every host.
+  // degrades to flat wave assignments the orchestrator dispatches). The shipped default
+  // max_spawn_depth is 3, so on a claude host a fanned-out surface gets remainingDepth 2 (the
+  // fan-out fires); a max_spawn_depth=1 policy OR any non-claude host yields remainingDepth 0
+  // (flat, byte-identical to the pre-nesting path). The router only routes a surface HERE
+  // (evaluator-fanout) on the same claude+depth>1 predicate, so the two gates never desync.
   const hostId = require("./runtime-resources.js").runtimeClient();
   const remainingDepth = hostId === "claude"
     ? Math.max(0, require("./nested-spawn.js").effectiveSpawnDepth(policy.max_spawn_depth, hostId) - 1)

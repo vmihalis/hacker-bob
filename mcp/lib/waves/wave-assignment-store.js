@@ -63,6 +63,7 @@ const {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeDiscoveredPivots,
   normalizeHandoffSummary,
   normalizeSpawnedChildren,
   sha256Hex,
@@ -391,6 +392,10 @@ function writeWaveHandoff(args) {
       dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
       waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
       lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
+      // PERSIST discovered_pivots (previously dropped): the transition-blind evaluator-fanout
+      // role's cross-surface pivot uplink IS this field — the merge collect + pivot-durability
+      // salvage read it, so it must be signed onto the handoff, not silently discarded.
+      discovered_pivots: normalizeDiscoveredPivots(args.discovered_pivots),
     };
     if (surfaceLeadResult.lead_ids.length > 0) {
       handoff.surface_lead_ids = surfaceLeadResult.lead_ids;
