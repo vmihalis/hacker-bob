@@ -617,6 +617,15 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       // settled run already cleared the finalize technique gate, so it is skipped.
       if (gate.gate !== "settled"
         && handoffMissingRequiredTechniqueAttempt(domain, assignment, artifacts.wave, payload)) {
+        // Pivot durability: this handoff is VALID (payload validated) but gated on a missing
+        // technique attempt — still surface its cross-surface discovered_pivots (advisory,
+        // independent of the surface's completion gate) rather than dropping them with the surface.
+        if (Array.isArray(payload.discovered_pivots) && payload.discovered_pivots.length > 0) {
+          discoveredPivots.push(...attachHandoffOrigin(payload.discovered_pivots, {
+            agent: assignment.agent,
+            surfaceId: assignment.surface_id,
+          }));
+        }
         missingSurfaceIds.push(assignment.surface_id);
         continue;
       }
