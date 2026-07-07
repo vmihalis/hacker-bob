@@ -1257,7 +1257,7 @@ const SPAWN_SUBAGENT_TYPE = "evaluator-fanout";
 // of re-reading the parent assignment, would make assignmentByAgent.get(child_agent) miss and
 // silently BYPASS the earned-done gate through nesting — it must FIRST mint per-cell
 // assignments through prepareWaveAssignments (which re-stamps id_bearing from surface_id).
-function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverageSummary, wave = null }) {
+function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverageSummary, wave = null, remainingDepthOverride = null }) {
   let policy;
   try {
     policy = require("./queue-policy.js").loadQueuePolicy(domain);
@@ -1275,9 +1275,17 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   // (flat, byte-identical to the pre-nesting path). The router only routes a surface HERE
   // (evaluator-fanout) on the same claude+depth>1 predicate, so the two gates never desync.
   const hostId = require("./runtime-resources.js").runtimeClient();
-  const remainingDepth = hostId === "claude"
-    ? Math.max(0, require("./nested-spawn.js").effectiveSpawnDepth(policy.max_spawn_depth, hostId) - 1)
+  const hostCeiling = hostId === "claude"
+    ? require("./nested-spawn.js").effectiveSpawnDepth(policy.max_spawn_depth, hostId)
     : 0;
+  // NESTING-LEVEL AWARE: when a NESTED CHILD re-reads its (wave,agent) brief it passes its own
+  // injected remaining_depth as remainingDepthOverride, so the plan DECREMENTS and leafs out
+  // instead of recomputing the ROOT's session-level depth every level (which would let a child
+  // re-enter fan-out mode from a stateless brief re-read = ungoverned recursion). Clamped to the
+  // host ceiling. A root read (no override) computes effectiveSpawnDepth(max_spawn_depth)-1.
+  const remainingDepth = Number.isInteger(remainingDepthOverride)
+    ? Math.max(0, Math.min(remainingDepthOverride, hostCeiling))
+    : Math.max(0, hostCeiling - 1);
   // Read-path width bound (CN Step B, preventive at depth-1 width): when the session
   // spawn budget governor is set, cap this root's branching so its worst-case subtree
   // allocation fits the remaining budget (max_total_spawned_agents minus the MCP-owned
@@ -1441,6 +1449,9 @@ function readAssignmentBrief(args) {
     surfaceId: assignment.surface_id,
     coverageSummary,
     wave,
+    // A NESTED CHILD passes its injected remaining_depth so the re-read plan DECREMENTS and
+    // leafs out (else a stateless re-read recomputes the root's depth → ungoverned recursion).
+    remainingDepthOverride: Number.isInteger(args.remaining_depth) ? args.remaining_depth : null,
   });
 
   // Dispatch explicitly on brief_profile. The capability-pack registry is

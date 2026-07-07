@@ -565,6 +565,20 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       // merge bucketing below. A non-recoverable blocker (e.g.
       // missing_oss_coverage) stays closed regardless. (A `running` row never
       // reaches here — it routes through the "started" gate.)
+      // Best-effort pivot durability on the terminal-non-settled path too: an abandoned fanout
+      // agent that wrote a handoff still has its cross-surface discovered_pivots on disk — surface
+      // them to the orchestrator's requeue path rather than dropping them with the surface.
+      if (filePath) {
+        try {
+          const rawHandoff = readJsonFile(filePath);
+          if (rawHandoff && Array.isArray(rawHandoff.discovered_pivots) && rawHandoff.discovered_pivots.length > 0) {
+            discoveredPivots.push(...attachHandoffOrigin(rawHandoff.discovered_pivots, {
+              agent: assignment.agent,
+              surfaceId: assignment.surface_id,
+            }));
+          }
+        } catch { /* raw unreadable -> nothing to salvage */ }
+      }
       missingSurfaceIds.push(assignment.surface_id);
       continue;
     }

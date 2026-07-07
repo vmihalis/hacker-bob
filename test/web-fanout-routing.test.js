@@ -162,6 +162,30 @@ test("bob_write_wave_handoff PERSISTS discovered_pivots (the transition-blind fa
   }
 });
 
+test("child_fanout_plan is nesting-level aware — a nested re-read DECREMENTS and leafs out (no runaway recursion)", () => {
+  const prevHome = process.env.HOME;
+  const prevClient = process.env.BOB_CLIENT;
+  process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "web-fanout-depth-"));
+  process.env.BOB_CLIENT = "claude";
+  try {
+    const { buildChildFanoutPlanForSurface } = require("../mcp/lib/assignment-brief.js");
+    const { initSession } = require("../mcp/lib/session-state.js");
+    const domain = "nest-depth.example.com";
+    JSON.parse(initSession({ target_domain: domain, target_url: `https://${domain}` }));
+    const surfaceObj = { id: "S-1", uri: `https://${domain}/api/orders/1`, bug_class_hints: ["idor"] };
+    const args = { domain, surfaceObj, surfaceId: "S-1", coverageSummary: null, wave: "w1" };
+    // Root (no override) at the default max_spawn_depth=3 -> remaining_depth 2.
+    assert.equal(buildChildFanoutPlanForSurface(args).remaining_depth, 2);
+    // A nested child passing its injected remaining_depth=1 gets a DECREMENTED plan (1), not 2.
+    assert.equal(buildChildFanoutPlanForSurface({ ...args, remainingDepthOverride: 1 }).remaining_depth, 1);
+    // remaining_depth 0 -> leaf (null plan), so recursion terminates instead of re-fanning forever.
+    assert.equal(buildChildFanoutPlanForSurface({ ...args, remainingDepthOverride: 0 }), null);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevClient === undefined) delete process.env.BOB_CLIENT; else process.env.BOB_CLIENT = prevClient;
+  }
+});
+
 test("selectTechniquePacksForSurface treats web_fanout as web (no technique-guidance loss on reroute)", () => {
   const { selectTechniquePacksForSurface } = require("../mcp/lib/technique-packs.js");
   const surface = { id: "S-1", uri: "https://x.example.com/api/orders/123", hosts: ["https://x.example.com"] };
