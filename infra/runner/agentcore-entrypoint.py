@@ -30,14 +30,26 @@ def invoke(payload):
     target = payload["target"]
     sess = f"{os.environ['HOME']}/hacker-bob-sessions/{target}"  # HOME = durable EFS mount
 
+    # MODEL PROVIDER FLAG (zai now → bedrock when H1 lands). Pass env DIRECTLY — do NOT route
+    # through bob-runner.ts's CLAUDE_CHILD_ENV_ALLOWLIST (L67-94); it omits the model creds and
+    # would silently drop them.
+    model_env = dict(os.environ)
+    provider = os.environ.get("MODEL_PROVIDER", "zai")
+    if provider == "bedrock":
+        model_env["CLAUDE_CODE_USE_BEDROCK"] = "1"  # target: no egress hole, Bedrock VPC endpoint
+    else:  # "zai" — interim: unblocks the build before the Bedrock grant lands
+        # TODO(build-day): fetch the Z.ai token from Secrets Manager (NEVER bake it in), e.g.:
+        #   model_env["ANTHROPIC_BASE_URL"]  = os.environ["ZAI_GATEWAY_URL"]
+        #   model_env["ANTHROPIC_AUTH_TOKEN"] = secretsmanager_get("zai/agt-token")
+        #   model_env["ANTHROPIC_MODEL"]      = "glm-5.1"
+        # Requires the one narrow declared egress hole to the Z.ai gateway.
+        pass
+
     subprocess.run(
         ["claude", "--dangerously-skip-permissions", "--print",
          "--mcp-config", os.environ["BOB_MCP_CONFIG"], "--strict-mcp-config",
          f"/hacker-bob:bob-evaluate {target}"],
-        # NOTE: pass env DIRECTLY — do NOT route through bob-runner.ts's
-        # CLAUDE_CHILD_ENV_ALLOWLIST (L67-94); it omits CLAUDE_CODE_USE_BEDROCK/AWS_* and
-        # would silently drop the Bedrock creds.
-        env={**os.environ, "CLAUDE_CODE_USE_BEDROCK": "1"},
+        env=model_env,
         check=True,
     )
 

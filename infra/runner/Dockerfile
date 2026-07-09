@@ -30,8 +30,14 @@ COPY infra/runner/bedrock-model-overrides.json /tmp/bedrock-overrides.json
 # --- HOME on the EFS mount so $HOME/hacker-bob-sessions survives the split ---
 # GRADE / resume-REPORT invocations (paths.js:44 sessionsRoot() has no env override).
 ENV HOME=/mnt/efs/bob-home
-ENV CLAUDE_CODE_USE_BEDROCK=1
 ENV AWS_REGION=us-east-1
+
+# --- MODEL PROVIDER FLAG (zai now → bedrock when H1 lands) ---
+# INTERIM MODEL_PROVIDER=zai: the entrypoint sets ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+#   (Z.ai / GLM-5.1) from AWS Secrets Manager — NEVER bake the agt_ token into the image;
+#   needs ONE narrow declared egress hole to the Z.ai gateway.
+# TARGET  MODEL_PROVIDER=bedrock: the entrypoint sets CLAUDE_CODE_USE_BEDROCK=1 (no egress hole).
+ENV MODEL_PROVIDER=zai
 # ENV BOB_MCP_CONFIG=/opt/hacker-bob/mcp/mcp-config.json   # TODO(build-day): wire the mcp-config path
 
 COPY infra/runner/agentcore-entrypoint.py /opt/entrypoint.py
