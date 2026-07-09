@@ -262,7 +262,64 @@ function gateGradeToReport(context) {
       error: message,
     });
   }
+  for (const entry of gradeToReportApprovalBlocker(context)) {
+    blockers.push(entry);
+  }
   return blockers;
+}
+
+// AgentCore rail-b: additive GRADE -> REPORT human-approval blocker. Inert off the AWS
+// branch (BOB_AGENTCORE unset/falsy) so every local/interactive/CI session is completely
+// unaffected -- mirrors .claude/hooks/bob-approval-gate-impl.py's own AWS-branch gate.
+// When active, verifies the un-forgeable S3-backed, HMAC-bound approval artifact via
+// mcp/lib/approval-store.js: the model's own execution role can only s3:GetObject the
+// approvals/ prefix (never PutObject -- see template.yaml GlassboxAgentRuntimeExecutionRole),
+// and the artifact's HMAC is recomputed and compared, not merely its existence checked
+// (fx-gate-hardening: the old raw-existence-of-a-model-writable-file check was forgeable
+// by a headless --dangerously-skip-permissions model running as that same role). A single
+// ApprovalWriter Lambda write (triggered by a named human's approval action, itself calling
+// states:SendTaskSuccess) satisfies both this and the sibling PreToolUse hook's
+// belt-and-suspenders check. Fails CLOSED: BOB_AGENTCORE=1 with no valid, HMAC-verified
+// artifact for this target_domain blocks.
+function gradeToReportApprovalBlocker(context) {
+  if (process.env.BOB_AGENTCORE !== "1") return [];
+  const { verifyApprovalArtifact } = require("./approval-store.js");
+  const { assertSafeDomain } = require("./paths.js");
+  let approved = false;
+  try {
+    // This gate's trust assumption: every other gate in
+    // this engine reaches context.target_domain only through an
+    // assertSafeDomain-backed accessor (readSessionStateStrict et al. thread it
+    // through paths.js), so a path-traversal-shaped target_domain never
+    // survives to a raw filesystem/object-key join. verifyApprovalArtifact ->
+    // approval-store.js's readLocalArtifact/readS3Artifact interpolate
+    // targetDomain directly into a local path / S3 key with no such guard, so
+    // sanitize it here before it crosses that boundary. A rejected domain
+    // fails CLOSED into the same catch below (never treated as approved).
+    const safeDomain = assertSafeDomain(context.target_domain);
+    // fx-hmac-content: bind the approval to the EXACT grade the human reviewed.
+    // loadGradeVerdictHash throws (STATE_CONFLICT) when grade.json is absent/unreadable —
+    // that throw is caught by this same try/catch below, so "no grade.json yet" (a session
+    // that somehow reached GRADE -> REPORT without a persisted grade verdict, or a bug) fails
+    // CLOSED into the identical external_approval_pending blocker, with no new error shape.
+    const currentGradeVerdictHash = require("./report-finalize.js").loadGradeVerdictHash(safeDomain);
+    approved = verifyApprovalArtifact(safeDomain, currentGradeVerdictHash);
+  } catch {
+    approved = false;
+  }
+  if (approved) return [];
+  return [{
+    code: "external_approval_pending",
+    blocked_by: "external_approval_pending",
+    message:
+      "GRADE -> REPORT blocked: awaiting named-human external approval (Step Functions "
+      + `SendTaskSuccess) for ${context.target_domain}`,
+    remediation:
+      "a named human approves via the Step Functions task token (SendTaskSuccess through "
+      + "the ApprovalWriter Lambda), which writes and HMAC-signs the S3 "
+      + "approvals/<target_domain>.approved artifact this gate verifies; the report step "
+      + "is withheld until that artifact exists and its HMAC checks out",
+  }];
 }
 
 function gateClaimFreezeToVerify(context) {
@@ -803,4 +860,6 @@ module.exports = {
   // (the upstream verification/reachability checks short-circuit gateVerifyToGrade
   // before this block, so a focused test exercises the production producer directly).
   sandboxIsolationBlockersForReportableVerdictClaims,
+  // Exported so the GRADE -> REPORT human-approval blocker is testable in isolation.
+  gradeToReportApprovalBlocker,
 };

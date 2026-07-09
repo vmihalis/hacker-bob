@@ -1,0 +1,93 @@
+{
+  "Comment": "glassbox-engagement: orchestrates exactly two opaque AgentCore Runtime invocations around one human .waitForTaskToken approval pause. The microVM's own lifecycle gate remains authoritative; this state machine has no transition table and no lifecycle-state names.",
+  "StartAt": "InvokeAgentRuntimeThroughGrade",
+  "States": {
+    "InvokeAgentRuntimeThroughGrade": {
+      "Type": "Task",
+      "Comment": "Stage 1 - invoke the Runtime and pass an opaque stage hint; this task does not gate or interpret lifecycle transitions.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcorecontrol:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn.$": "$$.Execution.Input.AgentRuntimeArn",
+        "Payload": {
+          "target.$": "$.target",
+          "stage": "GRADE"
+        }
+      },
+      "ResultPath": "$.gradeResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.Timeout", "States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "AwaitHumanApproval"
+    },
+
+    "AwaitHumanApproval": {
+      "Type": "Task",
+      "Comment": "Stage 2 - zero compute while waiting. fx-gate-hardening: this no longer publishes SNS directly (sns:publish.waitForTaskToken) -- it invokes ApprovalPendingRecorderFunction, which persists {taskToken, targetDomain, gradeResult} to the S3 approvals/pending/ prefix (a prefix the AgentCore Runtime's own execution role has NO access to at all) and publishes the identical human-facing SNS notification itself. The state stays paused until a named human's own approval action (invoking the separate glassbox-approval-writer Lambda, which itself calls SendTaskSuccess) or a direct SendTaskFailure resolves this task's token, or HumanApprovalTimeoutSeconds elapses -- the causal write is now attributable to a real, separately-IAM-scoped approval action rather than a bare 'someone called SendTaskSuccess'.",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${ApprovalPendingRecorderFunctionArn}",
+        "Payload": {
+          "token.$": "$$.Task.Token",
+          "executionName.$": "$$.Execution.Name",
+          "target.$": "$.target",
+          "gradeResult.$": "$.gradeResult"
+        }
+      },
+      "TimeoutSecondsPath": "$$.Execution.Input.HumanApprovalTimeoutSeconds",
+      "ResultPath": "$.approval",
+      "Next": "ExportToSecurityHub"
+    },
+
+    "ExportToSecurityHub": {
+      "Type": "Task",
+      "Comment": "ARCHITECTURAL FIX (Eric-approved) - runs ONLY after AwaitHumanApproval resolves, i.e. only after ApprovalWriterFunction has already written the HMAC-signed approval artifact and called SendTaskSuccess. Invokes ExportSecurityHubFunction (its OWN dedicated IAM role -- GlassboxAgentRuntimeExecutionRole, the model's role, neither assumes it nor holds securityhub:BatchImportFindings at all), which reads ONLY the GRADE-time WORM freeze object keyed by $.gradeResult.grade_verdict_hash (mcp/lib/grade-freeze-store.js, written by writeGradeVerdict BEFORE any approval existed) -- never live EFS session state, never claims.jsonl, never a re-run bob_finalize_report snapshot. Runs BEFORE ResumeAgentRuntimeThroughReport (the REPORT-stage runtime invocation that composes report.md): export depends only on grade_verdict_hash + the pre-written WORM evidence, not on the eventual report.md. A rejected/failed export fails this state (visible via CloudTrail/console) but the caveat below governs whether that also blocks REPORT -- see Retry: it does NOT retry into ResumeAgentRuntimeThroughReport on failure, this state's own failure propagates to the whole execution.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ExportSecurityHubFunctionArn}",
+        "Payload": {
+          "target.$": "$.target",
+          "gradeVerdictHash.$": "$.gradeResult.grade_verdict_hash"
+        }
+      },
+      "ResultPath": "$.exportResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.Timeout", "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "ResumeAgentRuntimeThroughReport"
+    },
+
+    "ResumeAgentRuntimeThroughReport": {
+      "Type": "Task",
+      "Comment": "Stage 3 - resume the Runtime; this task does not bypass or replicate the microVM gate. Note: infra/runner/agentcore-entrypoint.py no longer reads any approvalToken/approval field from the Payload (fx-gate-hardening removed that model-writable-artifact producer entirely) -- the resumed session's own internal GRADE->REPORT gate (mcp/lib/lifecycle-gates.js gradeToReportApprovalBlocker, .claude/hooks/bob-approval-gate-impl.py) independently verifies the HMAC-bound S3 artifact ApprovalWriterFunction wrote, so nothing from $.approval needs to be threaded into this Payload at all.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcorecontrol:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn.$": "$$.Execution.Input.AgentRuntimeArn",
+        "Payload": {
+          "target.$": "$.target",
+          "stage": "REPORT",
+          "resume": true
+        }
+      },
+      "ResultPath": "$.reportResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.Timeout", "States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}

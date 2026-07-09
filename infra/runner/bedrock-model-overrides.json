@@ -4,5 +4,5 @@
     "opus": "us.anthropic.claude-opus-4-8",
     "sonnet": "us.anthropic.claude-sonnet-5"
   },
-  "_todo_build_day": "Confirm the exact modelOverrides key format the pinned claude CLI expects (modelOverrides map vs literal ANTHROPIC_MODEL) via a headless smoke test INSIDE the microVM — watch container logs for silent fallback to an older pinned model."
+  "_build_day_smoke_test": "Inside the built container, run `claude --dangerously-skip-permissions --print --mcp-config /opt/hacker-bob/mcp/agentcore-mcp-config.json 'echo test'` once per alias and inspect verbose/CloudTrail logs for the resolved Bedrock InvokeModel profile ID, confirming opus resolves to us.anthropic.claude-opus-4-8 and sonnet resolves to us.anthropic.claude-sonnet-5."
 }

@@ -148,6 +148,12 @@ const DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP = 16;
 
 const SESSION_LOCK_NAME = ".session.lock";
 const SESSION_LOCK_STALE_MS = 300_000;
+// fx-gate-bypass defense 1 — the process-lifetime, whole-engine singleton lock
+// (mcp/lib/engine-lock.js). Root-level (sessionsRoot(), not per-domain): the
+// engine's target_domain is unknown at process boot, so this cannot key on a
+// single session dir. Deliberately has NO staleness-reclaim policy (unlike
+// SESSION_LOCK_NAME/SESSION_LOCK_STALE_MS above) -- see engine-lock.js for why.
+const ENGINE_LOCK_NAME = ".engine.lock";
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
@@ -222,6 +228,7 @@ module.exports = {
   DEFAULT_MAX_TOTAL_SEED_PRODUCERS,
   DEFAULT_PER_EXPANDER_LINKED_ADDRESS_CAP,
   DEFAULT_SEED_PRODUCER_PER_PASS_CAP,
+  ENGINE_LOCK_NAME,
   FINDING_ID_RE,
   GRADE_HOLD_MIN_SCORE,
   GRADE_SUBMIT_MIN_SCORE,

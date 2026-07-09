@@ -13,6 +13,8 @@ const {
 
 const ROOT = path.join(__dirname, "..");
 const SETTINGS_PATH = path.join(ROOT, ".claude", "settings.json");
+const PROJECT_DIR_EXPR = "${CLAUDE_PROJECT_DIR:-$PWD}";
+const APPROVAL_GATE_MATCHER = "mcp__hacker-bob__bob_advance_session|mcp__hacker-bob__bob_finalize_report";
 
 function uniqueStrings(values) {
   return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim())));
@@ -31,6 +33,33 @@ function canonicalAllow() {
   ]);
 }
 
+function approvalGateHookEntry() {
+  return {
+    matcher: APPROVAL_GATE_MATCHER,
+    hooks: [
+      {
+        type: "command",
+        command: `bash "${PROJECT_DIR_EXPR}/.claude/hooks/bob-approval-gate.sh"`,
+        timeout: 5,
+      },
+    ],
+  };
+}
+
+function isAgentcoreBranch() {
+  return process.env.BOB_AGENTCORE === "1";
+}
+
+function withApprovalGateMatcher(preToolUseHooks) {
+  const withoutApprovalGate = preToolUseHooks.filter((entry) => (
+    !(entry && entry.matcher === APPROVAL_GATE_MATCHER)
+  ));
+  if (isAgentcoreBranch()) {
+    withoutApprovalGate.push(approvalGateHookEntry());
+  }
+  return withoutApprovalGate;
+}
+
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -47,11 +76,21 @@ function renderSettings(existing) {
   const existingPermissions = base.permissions && typeof base.permissions === "object" && !Array.isArray(base.permissions)
     ? base.permissions
     : {};
+  const existingHooks = base.hooks && typeof base.hooks === "object" && !Array.isArray(base.hooks)
+    ? base.hooks
+    : {};
+  const existingPreToolUse = Array.isArray(existingHooks.PreToolUse)
+    ? existingHooks.PreToolUse
+    : [];
   return {
     ...base,
     permissions: {
       ...existingPermissions,
       allow: canonicalAllow(),
+    },
+    hooks: {
+      ...existingHooks,
+      PreToolUse: withApprovalGateMatcher(existingPreToolUse),
     },
   };
 }
@@ -105,7 +144,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  APPROVAL_GATE_MATCHER,
+  approvalGateHookEntry,
   canonicalAllow,
+  isAgentcoreBranch,
   renderSettings,
   updateSettings,
+  withApprovalGateMatcher,
 };

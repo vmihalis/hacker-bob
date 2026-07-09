@@ -338,5 +338,15 @@
   "test/derive-pack-confidence-modulation.test.js",
   "test/pipeline-analytics-pack-friction.test.js",
   "test/defender-disposition.test.js",
-  "test/run-event-curation.test.js"
+  "test/run-event-curation.test.js",
+  "test/callback-ssrf-guard.test.js",
+  "test/export-security-hub-finding.test.js",
+  "test/asff-builder.test.js",
+  "test/grade-freeze-store.test.js",
+  "test/export-security-hub-lambda.test.js",
+  "test/glassbox-template-approval-env.test.js",
+  "test/approval-gate-producer-to-resume-integration.test.js",
+  "test/engine-singleton-lock.test.js",
+  "test/engine-caller-auth.test.js",
+  "test/fork-snapshot-secret-redaction.test.js"
 ]

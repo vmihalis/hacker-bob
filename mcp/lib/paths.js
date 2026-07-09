@@ -3,6 +3,7 @@
 const os = require("os");
 const path = require("path");
 const {
+  ENGINE_LOCK_NAME,
   HARNESS_ID_RE,
   SEED_CORPUS_ID_RE,
   SESSION_LOCK_NAME,
@@ -80,6 +81,14 @@ function sessionLockPath(domain) {
   return path.join(sessionDir(domain), SESSION_LOCK_NAME);
 }
 
+// fx-gate-bypass defense 1 — root-level (NOT per-domain): a second `node
+// mcp/server.js` engine instance must be refused before it ever learns a
+// target_domain, so this cannot key on sessionDir(domain) the way
+// sessionLockPath does. Lives directly under sessionsRoot() instead.
+function engineLockPath() {
+  return path.join(sessionsRoot(), ENGINE_LOCK_NAME);
+}
+
 function waveAssignmentsPath(domain, waveNumber) {
   return path.join(sessionDir(domain), `wave-${waveNumber}-assignments.json`);
 }
@@ -115,6 +124,10 @@ function scopeWarningsPath(domain) {
 
 function coverageJsonlPath(domain) {
   return path.join(sessionDir(domain), "coverage.jsonl");
+}
+
+function securityHubExportJsonlPath(domain) {
+  return path.join(sessionDir(domain), "aws-security-hub-export.jsonl");
 }
 
 function techniqueAttemptsJsonlPath(domain) {
@@ -794,6 +807,10 @@ const HOOK_MCP_OWNED_BASENAMES = Object.freeze([
   "auth-differential-results.json",
   "evm-role-table-results.json",
   "spawn-ledger.jsonl",
+  // T8 inventory closure — securityHubExportJsonlPath() ledger of exported AWS
+  // Security Hub findings (bob_export_security_hub_finding). MCP-write-only,
+  // not audit-graded: it is an export ledger, not a hash-bound verdict.
+  "aws-security-hub-export.jsonl",
 ]);
 // NB: brutalist/balanced/verified-final/evidence-packs/grade/chain-attempts/
 // diff-impact are intentionally NOT repeated here — they are already in
@@ -1044,6 +1061,12 @@ const SESSION_ROOT_NON_INVENTORY_RESOLVERS = Object.freeze([
   "telemetryToolInvocationsJsonlPath",
   "isAuditGradedPath",
   "resolveEvidencePath",
+  // fx-gate-bypass defense 1 — engineLockPath() is a SIBLING of every session
+  // dir (sessionsRoot()/.engine.lock), not a file WITHIN sessionDir(domain).
+  // It is out of scope for the per-domain write-guard/audit-graded inventory
+  // this registry drives (it is never agent-writable or MCP-tool-writable at
+  // all; only mcp/lib/engine-lock.js touches it, at process boot/shutdown).
+  "engineLockPath",
 ]);
 
 // Resolvers with arity > 1: the extra args needed to produce a concrete path.
@@ -1119,6 +1142,7 @@ module.exports = {
   chainAttemptsJsonlPath,
   chainsMarkdownPath,
   coverageJsonlPath,
+  securityHubExportJsonlPath,
   evidencePackPaths,
   gradeArtifactPaths,
   httpAuditJsonlPath,
@@ -1171,6 +1195,7 @@ module.exports = {
   compositionVerifiedJsonlPath,
   reproVerifiedJsonlPath,
   docDeltaResultsPath,
+  engineLockPath,
   frontierEventsJsonlPath,
   invariantRunsJsonlPath,
   invariantVerifiedJsonlPath,

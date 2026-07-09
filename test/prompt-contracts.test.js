@@ -1553,6 +1553,10 @@ test("CLAUDE_PROJECT_DIR appears only in adapter-scoped or compatibility-scoped 
     path.join("mcp", "lib", "runtime-resources.js"),
     path.join("scripts", "lib", "claude-role-renderer.js"),
     path.join("bin", "hacker-bob.js"),
+    // generate-claude-settings.js only emits the literal "${CLAUDE_PROJECT_DIR:-$PWD}"
+    // string into the generated settings.json, same reason bin/hacker-bob.js and
+    // runtime-resources.js are allow-listed above.
+    path.join("scripts", "generate-claude-settings.js"),
   ]);
   for (const root of ["mcp", "scripts", "bin"]) {
     for (const relativePath of allJsFiles(root)) {

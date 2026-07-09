@@ -81,6 +81,16 @@ const TOOL_MODULES = Object.freeze([
   require("./clear-operator-note.js"),
   require("./clear-terminal-block.js"),
   require("./finalize-report.js"),
+  // bob_export_security_hub_finding was REMOVED from the model-reachable
+  // tool registry (ARCHITECTURAL FIX, Eric-approved): AWS Security Hub
+  // export now runs ONLY as a downstream Step Functions Lambda
+  // (infra/aws/glassbox-stack/functions/export-security-hub/), invoked
+  // strictly AFTER the human's SendTaskSuccess, under its own dedicated IAM
+  // role that the model's execution role does not share. The implementation
+  // module (export-security-hub-finding.js) still exists as a library --
+  // its pure ASFF-building logic lives in mcp/lib/asff-builder.js, shared
+  // with the new Lambda -- but it is no longer required here, so it is
+  // never part of TOOL_MODULES / TOOL_REGISTRY / server.TOOLS.
   require("./compose-report.js"),
   require("./amend-report.js"),
   require("./write-chain-rollup.js"),

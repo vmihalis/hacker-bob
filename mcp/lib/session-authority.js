@@ -188,6 +188,8 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_finalize_report: "initialized_session_mutation",
   // Plane Y Cycle Y.3 — Y-D15b / Y-P13 MCP-rendered audit-graded artifacts.
   bob_compose_report: "initialized_session_mutation",
+  // bob_export_security_hub_finding removed from the model-reachable tool
+  // registry -- see mcp/lib/tools/index.js's comment at the same seam.
   bob_amend_report: "initialized_session_mutation",
   bob_write_chain_rollup: "initialized_session_mutation",
   bob_set_friction_scanners: "initialized_session_mutation",

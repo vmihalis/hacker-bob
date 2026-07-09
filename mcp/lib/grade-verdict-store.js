@@ -55,6 +55,9 @@ const {
   computeDefenderDisposition,
   DEFENDER_DISPOSITION_VALUES,
 } = require("./defender-disposition.js");
+const {
+  writeGradeFreezeBundleSync,
+} = require("./grade-freeze-store.js");
 
 function verificationLib() {
   return require("./verification.js");
@@ -733,6 +736,22 @@ function writeGradeVerdict(args) {
 
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");
+
+  // ARCHITECTURAL FIX (Eric-approved): additive, best-effort WORM freeze of
+  // the just-written grade verdict, taken HERE (at GRADE time, before any
+  // human approval exists) and keyed by grade_verdict_hash. See
+  // mcp/lib/grade-freeze-store.js's module header for the full rationale.
+  // No-ops when no bucket is configured (every non-AWS-branch session);
+  // never throws; never blocks this write.
+  {
+    const { findingPayloadsFromClaims } = require("./tools/record-candidate-claim.js");
+    writeGradeFreezeBundleSync({
+      domain,
+      document,
+      findingPayloads: findingPayloadsFromClaims(domain),
+      reportableFindingIds: finalReportableSeveritySet,
+    });
+  }
 
   const response = {
     verdict,

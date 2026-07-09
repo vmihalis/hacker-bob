@@ -10,6 +10,10 @@ toolkit — it adds **no offensive capability**.
 **Full runbook:** `aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md`
 **Targets (owned instances only, never live production/mainnet):**
 - `KYBERFORK-SPEC.md` — smart-contract / EVM pack, the deterministic anchor (anvil fork @ block 17050000).
+  Runs via the public-archive-fork path (`infra/aws/glassbox-stack/template.yaml`'s
+  `ArchiveRpcGatewayEgressRule`, fx-kyber-iac) — see `../aws/kyberfork/README.md`'s "Build-day egress
+  hygiene" section for the vendored-source + pre-baked-solc/svm requirement this scaffold's image
+  build must satisfy.
 - `LOCKER-SPEC.md` — web pack, the breadth demo (self-hosted CyStack Locker).
 
 ## Scaffold status: STUBS

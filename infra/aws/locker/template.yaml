@@ -1,0 +1,277 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+# locker — self-hosted Locker target inside the glassbox VPC.
+#
+# Scope: this template provisions only the private Locker breadth target:
+# an ECS-on-EC2 baked host that runs one preloaded task containing
+# lockerpm/core-api plus MySQL and Redis locally, a security group reachable
+# only from glassbox-deny-egress-sg, and a private Route 53 name
+# (locker.internal).
+# It does not touch mcp/**, scope gates, egress profiles, lifecycle state,
+# runner glue, seed files, or the AgentCore Runtime stack.
+#
+# Buildable, not necessarily deployable-today: `sam validate` / `sam deploy`
+# are HUMAN-GATED (see README.md "How to validate/deploy"). No live AWS
+# command was run while authoring this file.
+#
+# Full runbook: aabw-2026/projects/06-aws-glassbox/LOCKER-SPEC.md
+
+Description: >
+  locker: self-hosted lockerpm/core-api breadth target, private to the
+  glassbox VPC, with synthetic seed data and one disclosed BOLA/IDOR seed.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: >
+      Existing VPC shared with infra/aws/glassbox-stack. Use the same value
+      passed to that stack so locker.internal resolves only inside that VPC.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Private subnets shared with infra/aws/glassbox-stack. The Locker host is
+      placed in the first subnet and receives no public IP. These subnets are
+      expected to have no IGW/NAT route for this target path.
+
+  GlassboxDenyEgressSecurityGroupId:
+    Type: String
+    Description: >
+      Security group id of infra/aws/glassbox-stack's DenyEgressSecurityGroupId
+      Output. Pass !ImportValue from that stack's Output, or the raw sg-id,
+      mirroring glassbox-stack's own LockerSecurityGroupId parameter style.
+
+  LockerServicePort:
+    Type: Number
+    Default: 443
+    Description: Locker service port on locker.internal.
+
+  LockerHostAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      Baked AMI containing the seeded lockerpm/core-api image, MySQL image,
+      Redis image, Docker runtime, systemd unit, and local seed-data snapshot.
+      This stack intentionally does not pull from ECR at runtime.
+
+  LockerInstanceType:
+    Type: String
+    Default: t3.small
+    Description: EC2 instance type for the private Locker host.
+
+  LockerCoreApiImage:
+    Type: String
+    Default: lockerpm/core-api:local-seeded
+    Description: >
+      Local image tag already baked into LockerHostAmiId. Upstream commit is
+      pinned in MANIFEST.yaml at build day; do not use a network pull here.
+
+  LockerMysqlImage:
+    Type: String
+    Default: locker-mysql:local-seeded
+    Description: Local MySQL image already baked into LockerHostAmiId.
+
+  LockerRedisImage:
+    Type: String
+    Default: locker-redis:local-seeded
+    Description: Local Redis image already baked into LockerHostAmiId.
+
+Resources:
+  # ---------------------------------------------------------------------
+  # Private-only Locker service security group.
+  # No open internet ingress exists. The only ingress rule is SG-to-SG from
+  # glassbox-deny-egress-sg on LockerServicePort, matching the convention
+  # glassbox-stack uses for its KyberFork and Locker target references.
+  # SecurityGroupEgress is explicit so CloudFormation's implicit default
+  # allow-all outbound rule never applies.
+  # ---------------------------------------------------------------------
+  LockerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: locker-private-sg
+      GroupDescription: >
+        Private Locker service endpoint. Inbound only from
+        glassbox-deny-egress-sg on LockerServicePort; no internet ingress and
+        no runtime egress.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: Locker service from the AgentCore Runtime deny-egress SG.
+          IpProtocol: tcp
+          FromPort: !Ref LockerServicePort
+          ToPort: !Ref LockerServicePort
+          SourceSecurityGroupId: !Ref GlassboxDenyEgressSecurityGroupId
+      SecurityGroupEgress:
+        - Description: Suppress implicit default-allow egress (no-op self-loopback).
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: locker-private-sg
+
+  # ---------------------------------------------------------------------
+  # ECS-on-EC2 with a baked-AMI target host.
+  #
+  # Choice committed here: ECS EC2 with a baked AMI, not Fargate. The AMI is
+  # built elsewhere with lockerpm/core-api, MySQL, Redis, seed data, Docker,
+  # and the ECS agent already local. That mirrors the no-runtime-egress idiom
+  # used for the private target stacks: build where egress is allowed, then
+  # run inside the no-IGW/no-NAT VPC with no ECR/image pull path at runtime.
+  #
+  # The one task contains three containers and uses host networking on the
+  # single private host, so app to MySQL/Redis traffic is localhost and needs
+  # no extra security groups.
+  # ---------------------------------------------------------------------
+  LockerCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: locker-private-cluster
+
+  LockerEc2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: locker-ecs-ec2-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  LockerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref LockerEc2Role
+
+  LockerHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LockerHostAmiId
+      InstanceType: !Ref LockerInstanceType
+      IamInstanceProfile: !Ref LockerInstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: false
+          SubnetId: !Select [0, !Ref SubnetIds]
+          GroupSet:
+            - !Ref LockerSecurityGroup
+      MetadataOptions:
+        HttpTokens: required
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/sh
+          set -eu
+          install -d -m 0755 /etc/ecs
+          printf 'ECS_CLUSTER=%s\n' '${LockerCluster}' >/etc/ecs/ecs.config
+          install -d -m 0750 /opt/locker
+          cat >/opt/locker/runtime.env <<'EOF'
+          LOCKER_SERVICE_PORT=${LockerServicePort}
+          LOCKER_CORE_API_IMAGE=${LockerCoreApiImage}
+          LOCKER_MYSQL_IMAGE=${LockerMysqlImage}
+          LOCKER_REDIS_IMAGE=${LockerRedisImage}
+          MYSQL_HOST=127.0.0.1
+          REDIS_HOST=127.0.0.1
+          EOF
+          systemctl enable ecs
+          systemctl start ecs
+      Tags:
+        - Key: Name
+          Value: locker-private-host
+
+  LockerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: locker-local
+      RequiresCompatibilities:
+        - EC2
+      NetworkMode: host
+      Cpu: "1024"
+      Memory: "2048"
+      ContainerDefinitions:
+        - Name: mysql
+          Image: !Ref LockerMysqlImage
+          Essential: true
+          Environment:
+            - Name: MYSQL_DATABASE
+              Value: locker
+          PortMappings:
+            - ContainerPort: 3306
+              HostPort: 3306
+              Protocol: tcp
+        - Name: redis
+          Image: !Ref LockerRedisImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 6379
+              HostPort: 6379
+              Protocol: tcp
+        - Name: core-api
+          Image: !Ref LockerCoreApiImage
+          Essential: true
+          Environment:
+            - Name: MYSQL_HOST
+              Value: 127.0.0.1
+            - Name: REDIS_HOST
+              Value: 127.0.0.1
+            - Name: LOCKER_SEED_DATA_PATH
+              Value: /opt/locker/seed-data.json
+          PortMappings:
+            - ContainerPort: !Ref LockerServicePort
+              HostPort: !Ref LockerServicePort
+              Protocol: tcp
+          DependsOn:
+            - ContainerName: mysql
+              Condition: START
+            - ContainerName: redis
+              Condition: START
+
+  LockerService:
+    Type: AWS::ECS::Service
+    DependsOn: LockerHost
+    Properties:
+      ServiceName: locker-local
+      Cluster: !Ref LockerCluster
+      LaunchType: EC2
+      DesiredCount: 1
+      TaskDefinition: !Ref LockerTaskDefinition
+
+  # ---------------------------------------------------------------------
+  # Private DNS for the target.
+  # glassbox-stack receives VpcId as a parameter and does not create a
+  # Route 53 private hosted zone, so this stack creates the minimal private
+  # zone and record needed for locker.internal.
+  # ---------------------------------------------------------------------
+  LockerPrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: locker.internal
+      VPCs:
+        - VPCId: !Ref VpcId
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: Private hosted zone for the self-hosted Locker target only.
+
+  LockerInternalRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref LockerPrivateHostedZone
+      Name: locker.internal
+      Type: A
+      TTL: "60"
+      ResourceRecords:
+        - !GetAtt LockerHost.PrivateIp
+
+Outputs:
+  LockerSecurityGroupId:
+    Description: >
+      locker-private-sg id — pass to glassbox-stack's LockerSecurityGroupId
+      Parameter so glassbox-deny-egress-sg can reach locker.internal by SG
+      reference, not CIDR.
+    Value: !Ref LockerSecurityGroup
+
+  LockerInternalDnsName:
+    Description: Private DNS name for the self-hosted Locker target.
+    Value: locker.internal

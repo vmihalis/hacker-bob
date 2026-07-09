@@ -688,8 +688,22 @@ function advanceSession(args) {
       nucleus: priorNucleus,
     });
 
-    if (evaluation.blockers.length > 0 && override !== "operator_force") {
-      const first = evaluation.blockers[0];
+    // AgentCore rail-b: external_approval_pending (gradeToReportApprovalBlocker in
+    // lifecycle-gates.js) is NON-bypassable by operator_force -- in the headless
+    // --dangerously-skip-permissions deploy the MODEL is the sole caller of this tool, so
+    // letting operator_force wave through the GRADE->REPORT human-approval gate would let the
+    // model self-approve. This carve-out is scoped to ONLY the operator_force branch (a caller
+    // with no override is already blocked below unconditionally) and is keyed off the blocker's
+    // own blocked_by code rather than re-reading BOB_AGENTCORE here: gradeToReportApprovalBlocker
+    // is the sole producer of that code and is itself already inert unless BOB_AGENTCORE==="1",
+    // so off that branch nonBypassable is always null and this reduces byte-for-byte to the
+    // original `override !== "operator_force"` condition.
+    const bypassAttempted = override === "operator_force";
+    const nonBypassable = bypassAttempted
+      ? evaluation.blockers.find((b) => b.blocked_by === "external_approval_pending")
+      : null;
+    if (evaluation.blockers.length > 0 && (!bypassAttempted || nonBypassable)) {
+      const first = nonBypassable || evaluation.blockers[0];
       // Y.10 (Y-D12 / Y-P12) — propagate the blocker's structured
       // remediation string through the ToolError so MCP callers see it
       // verbatim in the response envelope (mcp/lib/envelope.js).

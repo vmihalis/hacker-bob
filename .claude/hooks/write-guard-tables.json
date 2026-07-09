@@ -95,7 +95,8 @@
     "doc-delta-results.json",
     "auth-differential-results.json",
     "evm-role-table-results.json",
-    "spawn-ledger.jsonl"
+    "spawn-ledger.jsonl",
+    "aws-security-hub-export.jsonl"
   ],
   "mcp_owned_filename_patterns": [
     "^wave-[0-9]+-assignments\\.json$",
