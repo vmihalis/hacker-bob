@@ -1,0 +1,8 @@
+{
+  "_comment": "Managed Claude Code settings overlay — layered onto .claude/settings.json AT CONTAINER BUILD (Dockerfile), NOT edited into the generator-owned file (that would fail the check:settings CI gate). Maps hacker-bob's two-tier role aliases onto Bedrock cross-region inference profiles. The 13-opus/6-sonnet .claude/agents/*.md frontmatter stays UNTOUCHED. Requires a Bedrock model-access grant for both IDs in us-east-1 (HARD prereq, else 403). Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md",
+  "modelOverrides": {
+    "opus": "us.anthropic.claude-opus-4-8",
+    "sonnet": "us.anthropic.claude-sonnet-5"
+  },
+  "_todo_build_day": "Confirm the exact modelOverrides key format the pinned claude CLI expects (modelOverrides map vs literal ANTHROPIC_MODEL) via a headless smoke test INSIDE the microVM — watch container logs for silent fallback to an older pinned model."
+}
