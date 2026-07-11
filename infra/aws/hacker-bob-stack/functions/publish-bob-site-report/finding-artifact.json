@@ -30,7 +30,8 @@
     "riskAxes": {
       "reachability": "Requires a crafted HEIF file to be processed by a vulnerable application.",
       "ecosystemImpact": "Can crash downstream image-processing applications that accept untrusted HEIF input."
-    }
+    },
+    "primaryAction": "Upgrade to libheif 1.22.1 or later, or backport the exact fix."
   },
   "severitySummary": "One medium-severity issue affects libheif <= 1.22.0: an integer-wrapped range check can cause a two-byte heap-buffer over-read. Upstream fixed it in 1.22.1; downstream consumers should upgrade or backport and retain regression coverage.",
   "findings": [
