@@ -309,6 +309,28 @@ def apply_runtime_session_home(payload: dict, env: dict) -> dict:
     return scoped
 
 
+def apply_request_context_session_id(payload: dict, context) -> dict:
+    """Use AgentCore's request-context session id when direct callers omit it.
+
+    Step Functions already threads runtime_session_id through the JSON payload so
+    its split GRADE/REPORT pair stays explicit. Direct InvokeAgentRuntime calls
+    usually carry the stable runtime session id only in the AgentCore request
+    context; copying it into the payload gives them the same isolated EFS HOME
+    behavior and avoids collisions with stale engine singleton locks on the
+    shared root home.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if isinstance(payload.get("runtime_session_id"), str) or isinstance(payload.get("runtimeSessionId"), str):
+        return payload
+    session_id = getattr(context, "session_id", None)
+    if not isinstance(session_id, str) or not session_id.strip():
+        return payload
+    patched = dict(payload)
+    patched["runtime_session_id"] = session_id
+    return patched
+
+
 def build_skill_prompt(target: str, resume: bool, target_domain: str = None,
                        no_auth: bool = False, mode: str = "normal",
                        private_targets: bool = False) -> str:
@@ -1037,8 +1059,9 @@ def run_invocation(payload: dict, env: dict, secrets_client=None,
 
 
 @app.entrypoint
-def invoke(payload):
+def invoke(payload, context):
     import boto3  # real client constructed only here, never inside run_invocation/build_model_env
+    payload = apply_request_context_session_id(payload, context)
     return run_invocation(payload, dict(os.environ), secrets_client=boto3.client("secretsmanager"))
 
 

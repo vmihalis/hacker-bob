@@ -245,6 +245,21 @@ def main():
         record(
             unscoped_env.get("HOME") == tmp_home,
             "apply_runtime_session_home is inert outside BOB_AGENTCORE")
+        context = types.SimpleNamespace(session_id="direct-proof-session")
+        source_payload = {"target": "127.0.0.1"}
+        context_payload = MODULE.apply_request_context_session_id(source_payload, context)
+        record(
+            context_payload.get("runtime_session_id") == "direct-proof-session"
+            and "runtime_session_id" not in source_payload,
+            "apply_request_context_session_id falls back to AgentCore context for direct invokes",
+            f"payload={context_payload!r}")
+        explicit_payload = MODULE.apply_request_context_session_id(
+            {"runtime_session_id": "payload-session"},
+            context,
+        )
+        record(
+            explicit_payload.get("runtime_session_id") == "payload-session",
+            "apply_request_context_session_id preserves explicit Step Functions runtime session id")
 
     # Prove the same image defaults survive build_model_env and reach the spawned Claude
     # process on the Bedrock path without consulting Secrets Manager.
