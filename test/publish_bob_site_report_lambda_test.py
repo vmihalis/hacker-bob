@@ -8,10 +8,12 @@ contract with Bob-site's /api/reports ingest.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
 import os
+import tempfile
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +33,15 @@ TARGET_LOCK_PATH = os.path.join(
     "demo-targets",
     "libheif-cve-2026-49271",
     "target.lock.json",
+)
+ARTIFACT_PATH = os.path.join(
+    REPO_ROOT,
+    "infra",
+    "aws",
+    "hacker-bob-stack",
+    "functions",
+    "publish-bob-site-report",
+    "finding-artifact.json",
 )
 GRADE_HASH = "03560c0f2980838d5b710c89522ac2eff22852bcc0063d630d7f2aac1cfc16d1"
 VERSION_ID = "YXA288siWQBctu_KF9zA.aJQng_Od64P"
@@ -104,6 +115,29 @@ def load_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def load_artifact():
+    with open(ARTIFACT_PATH, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@contextlib.contextmanager
+def artifact_override(module, artifact):
+    """Point the publisher at a temp artifact so tests can prove data-driven behavior."""
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump(artifact, tmp)
+    tmp.close()
+    prev = os.environ.get(module.LIBHEIF_ARTIFACT_ENV_VAR)
+    os.environ[module.LIBHEIF_ARTIFACT_ENV_VAR] = tmp.name
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(module.LIBHEIF_ARTIFACT_ENV_VAR, None)
+        else:
+            os.environ[module.LIBHEIF_ARTIFACT_ENV_VAR] = prev
+        os.unlink(tmp.name)
 
 
 class FakeSecrets:
@@ -636,6 +670,130 @@ def test_payload_matches_pinned_target_lock(module):
     assert finding["caveats"][0] == lock["honesty"]["caveat"]
 
 
+def test_report_is_built_from_committed_artifact(module):
+    """Static report content is sourced verbatim from the committed artifact."""
+    artifact = load_artifact()
+    assert artifact["schemaVersion"] == 1
+    assert artifact["targetKind"] == "oss_library"
+
+    model, business = module._build_libheif_model(sample_event(), MODEL_ID)
+
+    # Top-level static content flows straight from the artifact (not hardcoded).
+    assert model["domain"] == artifact["domain"]
+    assert model["targetKind"] == artifact["targetKind"]
+    assert model["target"] == artifact["target"]
+    assert model["reportKind"] == artifact["reportKind"]
+    assert model["disclosure"] == artifact["disclosure"]
+    assert model["severitySummary"] == artifact["severitySummary"]
+    assert model["globalSections"] == artifact["globalSections"]
+    assert model["brief"]["headline"] == artifact["brief"]["headline"]
+    assert model["brief"]["riskAxes"] == artifact["brief"]["riskAxes"]
+
+    finding = model["findings"][0]
+    art_finding = artifact["findings"][0]
+    assert finding["title"] == art_finding["title"]
+    assert finding["cvssVector"] == art_finding["cvssVector"]
+    assert finding["sections"] == art_finding["sections"]
+    assert finding["evidence"] == art_finding["evidence"]
+    assert finding["reproduction"] == art_finding["reproduction"]
+    assert finding["provenance"] == art_finding["provenance"]
+
+    # Business static projection also comes from the artifact.
+    assert business["bottomLine"] == artifact["business"]["bottomLine"]
+    assert business["dimensions"] == artifact["business"]["dimensions"]
+    assert business["ease"] == artifact["business"]["ease"]
+    assert business["held"] == artifact["business"]["held"]
+
+
+def test_editing_the_artifact_changes_the_published_report(module):
+    """The report tracks the artifact, proving de-hardcoded / data-driven behavior."""
+    artifact = load_artifact()
+    artifact["severitySummary"] = "EDITED severity summary sentinel."
+    artifact["findings"][0]["sections"][0]["prose"] = "EDITED impact prose sentinel."
+    artifact["business"]["bottomLine"] = "EDITED bottom line sentinel."
+    with artifact_override(module, artifact):
+        model, business = module._build_libheif_model(sample_event(), MODEL_ID)
+    assert model["severitySummary"] == "EDITED severity summary sentinel."
+    assert model["findings"][0]["sections"][0]["prose"] == "EDITED impact prose sentinel."
+    assert business["bottomLine"] == "EDITED bottom line sentinel."
+
+
+def test_receipt_is_transaction_derived_not_artifact_derived(module):
+    """The WORM receipt binds to the approved transaction, never the static artifact."""
+    artifact = load_artifact()
+    model, _business = module._build_libheif_model(sample_event(), MODEL_ID)
+    # The committed artifact ships a placeholder receipt with different hashes.
+    assert artifact["receipt"]["evidenceHash"] != GRADE_HASH
+    assert model["receipt"]["evidenceHash"] == GRADE_HASH
+    assert model["receipt"]["artifactVersion"] == VERSION_ID
+    assert model["receipt"]["bundleSha256"] == BUNDLE_SHA256
+    # The placeholder artifact hashes must never reach the published model.
+    dumped = json.dumps(model)
+    assert artifact["receipt"]["evidenceHash"] not in dumped
+    assert artifact["receipt"]["bundleSha256"] not in dumped
+    assert artifact["receipt"]["artifactVersion"] not in dumped
+
+
+def test_resolution_still_drives_reader_facing_content_over_the_artifact(module):
+    """Resolution overlay (reader/order/actions) wins over any static artifact values."""
+    event = sample_event()
+    event["resolution"] = sample_resolution(
+        "product_security_owner",
+        [
+            "map_downstream_exposure",
+            "upgrade_or_backport",
+            "retain_regression_coverage",
+        ],
+    )
+    model, business = module._build_libheif_model(event, MODEL_ID)
+    assert model["brief"]["primaryReader"] == "product_security_owner"
+    assert model["brief"]["primaryAction"].startswith("Map packages and products")
+    assert model["findings"][0]["remediation"]["downstreamActions"] == [
+        action["action"] for action in model["brief"]["stakeholderActions"]
+    ]
+    assert [decision["title"] for decision in business["decisions"]][0] == (
+        "Map releases, packages, and advisories"
+    )
+    # evidenceConfidence is not a published brief field even if present in an artifact.
+    assert "evidenceConfidence" not in model["brief"]
+
+
+def test_missing_artifact_fails_closed(module):
+    prev = os.environ.get(module.LIBHEIF_ARTIFACT_ENV_VAR)
+    os.environ[module.LIBHEIF_ARTIFACT_ENV_VAR] = os.path.join(
+        tempfile.gettempdir(), "definitely-missing-finding-artifact.json"
+    )
+    try:
+        assert_refused(module, sample_event(), "finding artifact is unavailable")
+    finally:
+        if prev is None:
+            os.environ.pop(module.LIBHEIF_ARTIFACT_ENV_VAR, None)
+        else:
+            os.environ[module.LIBHEIF_ARTIFACT_ENV_VAR] = prev
+
+
+def test_artifact_must_bind_to_approved_transaction(module):
+    artifact = load_artifact()
+    artifact["findings"][0]["affected"]["vulnerableCommit"] = "0" * 40
+    with artifact_override(module, artifact):
+        assert_refused(module, sample_event(), "artifact vulnerable commit mismatch")
+
+    artifact = load_artifact()
+    artifact["findings"][0]["fixed"]["exactFixCommit"] = "0" * 40
+    with artifact_override(module, artifact):
+        assert_refused(module, sample_event(), "artifact exact fix commit mismatch")
+
+    artifact = load_artifact()
+    artifact["findings"][0]["id"] = "F-99"
+    with artifact_override(module, artifact):
+        assert_refused(module, sample_event(), "artifact finding set does not match")
+
+    artifact = load_artifact()
+    artifact["findings"][0]["evidence"]["fixedMarker"] = "returned error? 0 output=1"
+    with artifact_override(module, artifact):
+        assert_refused(module, sample_event(), "artifact evidence fixed marker mismatch")
+
+
 def main():
     module = load_module()
     tests = [
@@ -653,6 +811,12 @@ def main():
         test_report_resolution_enums_and_model_pin_fail_closed,
         test_valid_resolution_reorders_only_fixed_report_content,
         test_payload_matches_pinned_target_lock,
+        test_report_is_built_from_committed_artifact,
+        test_editing_the_artifact_changes_the_published_report,
+        test_receipt_is_transaction_derived_not_artifact_derived,
+        test_resolution_still_drives_reader_facing_content_over_the_artifact,
+        test_missing_artifact_fails_closed,
+        test_artifact_must_bind_to_approved_transaction,
     ]
     for test in tests:
         test(module)

@@ -11,6 +11,7 @@ access password. Those secrets are only read here by this Lambda role.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import json
@@ -23,23 +24,31 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 
+# Profile-pinned identifiers used by the safety gates (transaction/resolution
+# validation), the WORM receipt, and the resolution/action map. Everything else
+# about the report — prose, section text, severity summary, business dimensions —
+# is now sourced from the committed finding artifact, not hardcoded here.
 LIBHEIF_PROFILE = "libheif-cve-2026-49271"
-LIBHEIF_DOMAIN = "libheif"
 LIBHEIF_FINDING_ID = "F-22"
-LIBHEIF_REPOSITORY = "https://github.com/strukturag/libheif"
-LIBHEIF_ADVISORY_ID = "GHSA-r7qj-cg5r-r6vf"
-LIBHEIF_ADVISORY_URL = (
-    "https://github.com/strukturag/libheif/security/advisories/GHSA-r7qj-cg5r-r6vf"
-)
-LIBHEIF_REPORTER = "@vmihalis"
 LIBHEIF_AFFECTED_VERSIONS = "<= 1.22.0"
 LIBHEIF_FIXED_VERSION = "1.22.1"
 LIBHEIF_VULNERABLE_COMMIT = "b12b733d1716595483413ccd7e2dfb73c44a8d69"
 LIBHEIF_EXACT_FIX_COMMIT = "5782bca04a70ebc01c59397205a3cfff22841311"
 LIBHEIF_PATCHED_RELEASE_COMMIT = "2b6d5a62fb6151e09d5f36757a5aa5e12f9c2045"
 LIBHEIF_SOURCE_FRAME = "libheif/codecs/uncompressed/unc_decoder.cc:178"
-LIBHEIF_CVSS_VECTOR = "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H"
 LIBHEIF_FIXED_MARKER = "returned error? 1 output=0"
+
+# The canonical finding artifact the publisher builds the report FROM. The same
+# load-and-shape code path serves any conforming artifact (web/repo/oss_library);
+# only the data varies. The env override lets a Lambda package point at the
+# bundled copy; the default resolves the committed in-repo demo artifact.
+LIBHEIF_ARTIFACT_ENV_VAR = "LIBHEIF_FINDING_ARTIFACT_PATH"
+# Packaged alongside index.py inside the Lambda CodeUri dir so it ships in the
+# deployment zip and resolves at runtime (/var/task/finding-artifact.json).
+LIBHEIF_DEFAULT_ARTIFACT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "finding-artifact.json",
+)
 LIBHEIF_VERIFIER_CHECKS = (
     "target_binding",
     "exact_s3_version",
@@ -166,17 +175,6 @@ def _secret_string(secrets_client: Any, secret_id: str) -> str:
     value = secrets_client.get_secret_value(SecretId=secret_id)
     secret = value.get("SecretString", "")
     return secret if isinstance(secret, str) else ""
-
-
-def _section(heading: str, section_id: str, kind: str, prose: str, provenance: str) -> dict[str, Any]:
-    return {
-        "heading": heading,
-        "section_id": section_id,
-        "kind": kind,
-        "provenance": provenance,
-        "prose": prose,
-        "evidence": [],
-    }
 
 
 def _require(condition: bool, message: str) -> None:
@@ -428,22 +426,96 @@ def _validate_libheif_transaction(event: dict[str, Any], expected_model_id: str)
     }
 
 
+def _load_finding_artifact() -> dict[str, Any]:
+    """Load the committed canonical finding artifact the report is built FROM.
+
+    The publisher no longer carries the report prose in Python; it reads a
+    schema-conforming artifact and shapes it. Any web/repo/oss_library artifact
+    flows this same path — only the data differs.
+    """
+    path = os.environ.get(LIBHEIF_ARTIFACT_ENV_VAR, "").strip() or LIBHEIF_DEFAULT_ARTIFACT_PATH
+    try:
+        with open(path, encoding="utf-8") as handle:
+            artifact = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"refusing to publish libheif report: finding artifact is unavailable ({exc})"
+        ) from exc
+    _require(isinstance(artifact, dict), "finding artifact is not an object")
+    _require(artifact.get("schemaVersion") == 1, "finding artifact schema version is unsupported")
+    findings = artifact.get("findings")
+    _require(isinstance(findings, list) and len(findings) >= 1, "finding artifact has no findings")
+    _require(isinstance(artifact.get("brief"), dict), "finding artifact brief is missing")
+    _require(isinstance(artifact.get("business"), dict), "finding artifact business projection is missing")
+    return artifact
+
+
+def _bind_artifact_to_transaction(artifact: dict[str, Any], transaction: dict[str, Any]) -> dict[str, Any]:
+    """Bind the loaded artifact to the already-approved transaction.
+
+    The transaction gates (grade/approval/export/report + resolution + WORM
+    freeze) are authoritative. This ensures the artifact the publisher shapes
+    describes THAT approved finding — a swapped or stale artifact cannot ride the
+    approved receipt to publish a different claim.
+    """
+    findings = artifact["findings"]
+    report_findings = transaction["report"].get("findings")
+    artifact_finding_ids = [f.get("id") for f in findings if isinstance(f, dict)]
+    _require(artifact_finding_ids == report_findings, "artifact finding set does not match the approved report")
+    _require(len(findings) == 1, "libheif artifact must carry exactly the approved finding")
+    finding = findings[0]
+    _require(isinstance(finding, dict), "artifact finding is not an object")
+    _require(finding.get("id") == LIBHEIF_FINDING_ID, "artifact finding id mismatch")
+
+    affected = finding.get("affected") if isinstance(finding.get("affected"), dict) else {}
+    fixed = finding.get("fixed") if isinstance(finding.get("fixed"), dict) else {}
+    evidence = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+    caveats = finding.get("caveats") if isinstance(finding.get("caveats"), list) else []
+    _require(affected.get("versions") == LIBHEIF_AFFECTED_VERSIONS, "artifact affected range mismatch")
+    _require(affected.get("vulnerableCommit") == LIBHEIF_VULNERABLE_COMMIT, "artifact vulnerable commit mismatch")
+    _require(affected.get("sourceFrame") == LIBHEIF_SOURCE_FRAME, "artifact source frame mismatch")
+    _require(fixed.get("version") == LIBHEIF_FIXED_VERSION, "artifact fixed version mismatch")
+    _require(fixed.get("exactFixCommit") == LIBHEIF_EXACT_FIX_COMMIT, "artifact exact fix commit mismatch")
+    _require(
+        fixed.get("patchedReleaseCommit") == LIBHEIF_PATCHED_RELEASE_COMMIT,
+        "artifact patched release commit mismatch",
+    )
+    _require(evidence.get("sourceFrame") == LIBHEIF_SOURCE_FRAME, "artifact evidence source frame mismatch")
+    _require(evidence.get("fixedMarker") == LIBHEIF_FIXED_MARKER, "artifact evidence fixed marker mismatch")
+    _require(bool(caveats) and caveats[0] == LIBHEIF_CAVEAT, "artifact caveat mismatch")
+    return finding
+
+
 def _build_libheif_model(
     event: dict[str, Any],
     expected_model_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Authoritative safety gates first: nothing is published unless the whole
+    # approved transaction (grade -> verifier quorum -> export -> report ->
+    # validated resolution) reconciles and the WORM freeze is bound.
     transaction = _validate_libheif_transaction(event, expected_model_id)
-    report = transaction["report"]
     grade_hash = transaction["grade_hash"]
     version_id = transaction["version_id"]
     bundle_sha256 = transaction["bundle_sha256"]
     resolution = transaction["resolution"]
+    report = transaction["report"]
     generated_at = _safe(report.get("generated_at"))
+
+    # Build the report FROM the committed artifact, bound to the approved finding.
+    artifact = _load_finding_artifact()
+    _bind_artifact_to_transaction(artifact, transaction)
+
+    # The validated stakeholder resolution drives ONLY the reorderable, reader-
+    # facing content (which reader, action order). The action/decision copy is the
+    # resolution feature's own map (part of the resolution gate), not report prose.
     primary_reader = resolution["primary_reader"]
     action_order = resolution["action_order"]
     stakeholder_actions = [LIBHEIF_ACTIONS[action]["stakeholder"] for action in action_order]
     business_decisions = [LIBHEIF_ACTIONS[action]["decision"] for action in action_order]
+    downstream_actions = [action["action"] for action in stakeholder_actions]
 
+    # The WORM/chain-of-custody receipt is derived from the approved transaction,
+    # never from the (static, placeholder-hashed) artifact receipt.
     receipt: dict[str, Any] = {
         "evidenceHash": grade_hash,
         "artifactVersion": version_id,
@@ -462,278 +534,54 @@ def _build_libheif_model(
         "generatedAt": generated_at,
     }
 
-    provenance_sentences = [
-        (
-            f"Public source binding: `{LIBHEIF_ADVISORY_ID}` / `CVE-2026-49271`, vulnerable commit "
-            f"`{LIBHEIF_VULNERABLE_COMMIT}`, and exact fix `{LIBHEIF_EXACT_FIX_COMMIT}`."
-        ),
-        "Claim mode: public historical reproduction; rediscovery: false.",
-    ]
-    provenance_prose = " ".join(provenance_sentences)
-
-    impact_prose = (
-        f"libheif {LIBHEIF_AFFECTED_VERSIONS} can read past a heap buffer while decoding a crafted "
-        "HEIF uncompressed item. In applications that accept untrusted HEIF files, the fault can terminate "
-        "the process and interrupt image-processing workflows. The published 6.5 medium score reflects high "
-        "availability impact without evidence of confidentiality or integrity impact."
-    )
-    root_cause_prose = (
-        f"At `{LIBHEIF_SOURCE_FRAME}`, the vulnerable range check evaluates "
-        "`unit_offset + unit_size` without first preventing integer wrap. A wrapped sum can pass the bounds "
-        "decision and drive a two-byte read outside heap storage."
-    )
-    evidence_prose = (
-        f"At vulnerable commit `{LIBHEIF_VULNERABLE_COMMIT}`, the parsed-equivalent harness produces "
-        f"`AddressSanitizer: heap-buffer-overflow`, `READ of size 2`, and `{LIBHEIF_SOURCE_FRAME}`. "
-        f"At exact fix `{LIBHEIF_EXACT_FIX_COMMIT}`, the same harness returns "
-        f"`{LIBHEIF_FIXED_MARKER}` and remains sanitizer-clean."
-    )
-    remediation_prose = (
-        f"Upstream fixed the defect in `{LIBHEIF_EXACT_FIX_COMMIT}`, released in libheif "
-        f"{LIBHEIF_FIXED_VERSION}. Downstream maintainers should upgrade to {LIBHEIF_FIXED_VERSION} or later "
-        "or backport the exact fix, retain the differential sanitizer case as a regression test, map packages "
-        f"and products still carrying libheif {LIBHEIF_AFFECTED_VERSIONS}, and align advisories with deployed backports."
-    )
-    repro_steps = [
-        f"Build vulnerable commit `{LIBHEIF_VULNERABLE_COMMIT}` with AddressSanitizer and the uncompressed codec enabled.",
-        "Run the pinned parsed-equivalent cmpC/icef harness and observe `AddressSanitizer: heap-buffer-overflow` with `READ of size 2`.",
-        f"Confirm the failing frame resolves to `{LIBHEIF_SOURCE_FRAME}`.",
-        f"Run the same harness against exact fix `{LIBHEIF_EXACT_FIX_COMMIT}`; confirm `{LIBHEIF_FIXED_MARKER}` and no sanitizer marker.",
-    ]
-
-    target = {
-        "kind": "oss_library",
-        "name": LIBHEIF_DOMAIN,
-        "repository": LIBHEIF_REPOSITORY,
-        "ecosystem": "C/C++ image-processing library consumed by applications, packages, and operating-system distributions",
-        "audiences": [
-            "maintainers",
-            "release_managers",
-            "downstream_packagers",
-            "dependent_vendors",
-            "security_response_teams",
-        ],
+    # Generic shaping: static report content passes through from the artifact;
+    # only the resolution-derived overlays and the receipt are applied here.
+    report_resolution = {
+        "status": resolution["status"],
+        "resolutionType": resolution["resolution_type"],
+        "schemaVersion": resolution["schema_version"],
+        "featureRegistry": resolution["feature_registry"],
+        "featureHash": resolution["feature_hash"],
+        "modelId": resolution["model_id"],
+        "primaryReader": primary_reader,
+        "actionOrder": action_order,
+        "decisionHash": resolution["decision_hash"],
     }
-    model = {
-        "domain": LIBHEIF_DOMAIN,
-        "targetKind": "oss_library",
-        "target": target,
-        "reportKind": "security_assessment",
-        "disclosure": {
-            "status": "public_historical_replay",
-            "freshTargetTesting": False,
-            "boundary": "Exact-library replay of a public historical finding using pinned vulnerable and fixed revisions.",
-        },
-        "reportResolution": {
-            "status": resolution["status"],
-            "resolutionType": resolution["resolution_type"],
-            "schemaVersion": resolution["schema_version"],
-            "featureRegistry": resolution["feature_registry"],
-            "featureHash": resolution["feature_hash"],
-            "modelId": resolution["model_id"],
-            "primaryReader": primary_reader,
-            "actionOrder": action_order,
-            "decisionHash": resolution["decision_hash"],
-        },
-        "brief": {
-            "status": "Fixed upstream · public historical reproduction",
+
+    brief = dict(artifact["brief"])
+    brief.pop("evidenceConfidence", None)
+    brief.update(
+        {
             "primaryReader": primary_reader,
             "resolvedFor": LIBHEIF_READER_LABELS[primary_reader],
-            "headline": (
-                f"libheif {LIBHEIF_AFFECTED_VERSIONS} is vulnerable to a crafted-file out-of-bounds heap read; "
-                f"the defect is fixed in {LIBHEIF_FIXED_VERSION}."
-            ),
             "primaryAction": stakeholder_actions[0]["action"],
-            "affected": LIBHEIF_AFFECTED_VERSIONS,
-            "fixed": LIBHEIF_FIXED_VERSION,
-            "confidence": "High for the exact vulnerable/fixed decoder-path differential, bounded by the parsed-equivalent harness caveat.",
-            "riskAxes": {
-                "reachability": "Requires a crafted HEIF file to be processed by a vulnerable application.",
-                "ecosystemImpact": "Can crash downstream image-processing applications that accept untrusted HEIF input.",
-            },
             "stakeholderActions": stakeholder_actions,
-        },
-        "severitySummary": (
-            f"One medium-severity issue affects libheif {LIBHEIF_AFFECTED_VERSIONS}: an integer-wrapped "
-            f"range check can cause a two-byte heap-buffer over-read. Upstream fixed it in {LIBHEIF_FIXED_VERSION}; "
-            "downstream consumers should upgrade or backport and retain regression coverage."
-        ),
-        "findings": [
-            {
-                "id": LIBHEIF_FINDING_ID,
-                "title": "CVE-2026-49271: wrapped icef range causes libheif out-of-bounds read",
-                "cwe": "CWE-125",
-                "severity": "medium",
-                "band": "medium",
-                "cvssVector": LIBHEIF_CVSS_VECTOR,
-                "cvssScore": "6.5",
-                "affected": {
-                    "versions": LIBHEIF_AFFECTED_VERSIONS,
-                    "vulnerableCommit": LIBHEIF_VULNERABLE_COMMIT,
-                    "component": "uncompressed HEIF decoder",
-                    "sourceFrame": LIBHEIF_SOURCE_FRAME,
-                },
-                "fixed": {
-                    "status": "upstream_fixed",
-                    "version": LIBHEIF_FIXED_VERSION,
-                    "exactFixCommit": LIBHEIF_EXACT_FIX_COMMIT,
-                    "patchedReleaseCommit": LIBHEIF_PATCHED_RELEASE_COMMIT,
-                    "fixedMarker": LIBHEIF_FIXED_MARKER,
-                    "sanitizerClean": True,
-                },
-                "impact": {
-                    "primary": "availability",
-                    "summary": "A crafted HEIF input can crash a vulnerable consuming process.",
-                    "notEstablished": ["confidentiality loss", "integrity loss", "code execution"],
-                },
-                "reachability": {
-                    "input": "crafted HEIF uncompressed item",
-                    "attackerControl": "unit_offset and unit_size",
-                    "preconditions": "A vulnerable application processes the supplied HEIF input; user interaction is required.",
-                },
-                "rootCause": {
-                    "sourceFrame": LIBHEIF_SOURCE_FRAME,
-                    "operation": "unit_offset + unit_size",
-                    "failure": "integer wrap before the range decision",
-                },
-                "reproduction": {
-                    "harness": "parsed-equivalent cmpC/icef decoder objects",
-                    "steps": repro_steps,
-                    "expectedVulnerable": [
-                        "AddressSanitizer: heap-buffer-overflow",
-                        "READ of size 2",
-                        LIBHEIF_SOURCE_FRAME,
-                    ],
-                    "expectedFixed": LIBHEIF_FIXED_MARKER,
-                },
-                "evidence": {
-                    "vulnerableSignal": "AddressSanitizer: heap-buffer-overflow",
-                    "access": "READ of size 2",
-                    "sourceFrame": LIBHEIF_SOURCE_FRAME,
-                    "fixedMarker": LIBHEIF_FIXED_MARKER,
-                    "fixedSanitizerClean": True,
-                },
-                "remediation": {
-                    "upstreamStatus": "fixed",
-                    "minimumFixedVersion": LIBHEIF_FIXED_VERSION,
-                    "exactFixCommit": LIBHEIF_EXACT_FIX_COMMIT,
-                    "downstreamActions": [action["action"] for action in stakeholder_actions],
-                },
-                "caveats": [LIBHEIF_CAVEAT, "This report is a public historical reproduction, not a fresh discovery."],
-                "provenance": {
-                    "claimMode": "public_historical_reproduction",
-                    "rediscovery": False,
-                    "advisory": LIBHEIF_ADVISORY_ID,
-                    "advisoryUrl": LIBHEIF_ADVISORY_URL,
-                    "reportedBy": LIBHEIF_REPORTER,
-                },
-                "sections": [
-                    _section(
-                        "F-22 — Impact",
-                        "f22-impact",
-                        "impact",
-                        impact_prose,
-                        "public_advisory",
-                    ),
-                    _section(
-                        "F-22 — Affected range and root cause",
-                        "f22-root-cause",
-                        "evidence",
-                        root_cause_prose,
-                        "pinned_source",
-                    ),
-                    _section(
-                        "F-22 — Vulnerable/fixed differential",
-                        "f22-differential-evidence",
-                        "evidence",
-                        evidence_prose,
-                        "sanitizer_differential",
-                    ),
-                    _section(
-                        "F-22 — Fix and downstream action",
-                        "f22-remediation",
-                        "remediation",
-                        remediation_prose,
-                        "upstream_fix",
-                    ),
-                    _section(
-                        "F-22 — Evidence provenance",
-                        "f22-provenance",
-                        "provenance",
-                        provenance_prose,
-                        "evidence_receipt",
-                    ),
-                ],
-                "repro": repro_steps,
-            }
-        ],
-        "globalSections": [
-            _section(
-                "Evidence boundary",
-                "evidence-boundary",
-                "provenance",
-                (
-                    f"{LIBHEIF_CAVEAT} The differential establishes behavior at the pinned vulnerable and fixed "
-                    "revisions; it does not extend the claim beyond that tested decoder path."
-                ),
-                "bounded_reproduction",
-            ),
-        ],
-        "amendments": [],
-    }
-    if receipt:
-        model["receipt"] = receipt
+        }
+    )
 
-    business = {
-        "bottomLine": (
-            f"libheif {LIBHEIF_AFFECTED_VERSIONS} can crash while processing a crafted HEIF input; "
-            f"{LIBHEIF_FIXED_VERSION} contains the fix. Downstream projects should upgrade or backport and map "
-            "products that still accept untrusted HEIF files through an affected version."
-        ),
-        "riskLevel": "moderate",
-        "dimensions": {
-            "ecosystem_impact": {
-                "label": "Ecosystem impact",
-                "exposure": "moderate",
-                "meaning": "Affected downstream applications can terminate while processing crafted HEIF input.",
-            },
-            "downstream_propagation": {
-                "label": "Downstream propagation",
-                "exposure": "moderate",
-                "meaning": f"Packages and products retaining libheif {LIBHEIF_AFFECTED_VERSIONS} remain exposed until upgraded or backported.",
-            },
-            "maintainer_urgency": {
-                "label": "Maintainer urgency",
-                "exposure": "moderate",
-                "meaning": "The upstream fix exists; the urgent work is release adoption, backport tracking, and regression coverage.",
-            },
-            "release_advisory": {
-                "label": "Release and advisory action",
-                "exposure": "moderate",
-                "meaning": "Downstream advisory status should reflect the version or backport actually shipped.",
-            },
-            "reachability": {
-                "label": "Exploit reachability",
-                "exposure": "moderate",
-                "meaning": "A crafted file must reach a vulnerable decoder and be processed; user interaction is required.",
-            },
-            "confidence_caveats": {
-                "label": "Evidence confidence",
-                "exposure": "low",
-                "meaning": "The exact-path vulnerable/fixed differential is strong; the harness does not model a complete malicious file through the public decoder API.",
-            },
-        },
-        "ease": {
-            "level": "moderate",
-            "reason": "The issue needs a crafted HEIF file, a vulnerable decoder, and user or application processing of that input.",
-        },
-        "decisions": business_decisions,
-        "held": [
-            f"The exact fix returned `{LIBHEIF_FIXED_MARKER}` for the same parsed-equivalent input.",
-            "The fixed revision completed without AddressSanitizer or undefined-behavior markers.",
-            "The public advisory, affected range, and pinned source revisions agree.",
-        ],
+    findings = copy.deepcopy(artifact["findings"])
+    for finding in findings:
+        remediation = finding.get("remediation")
+        if isinstance(remediation, dict):
+            remediation["downstreamActions"] = downstream_actions
+
+    model = {
+        "domain": artifact["domain"],
+        "targetKind": artifact["targetKind"],
+        "target": artifact["target"],
+        "reportKind": artifact["reportKind"],
+        "disclosure": artifact["disclosure"],
+        "reportResolution": report_resolution,
+        "brief": brief,
+        "severitySummary": artifact["severitySummary"],
+        "findings": findings,
+        "globalSections": artifact.get("globalSections", []),
+        "amendments": artifact.get("amendments", []),
+        "receipt": receipt,
     }
+
+    business = copy.deepcopy(artifact["business"])
+    business["decisions"] = business_decisions
     return model, business
 
 

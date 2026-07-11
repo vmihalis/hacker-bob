@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 1,
+  "targetKind": "oss_library",
+  "domain": "libheif",
+  "reportKind": "security_assessment",
+  "target": {
+    "kind": "oss_library",
+    "name": "libheif",
+    "repository": "https://github.com/strukturag/libheif",
+    "ecosystem": "C/C++ image-processing library consumed by applications, packages, and operating-system distributions",
+    "audiences": [
+      "maintainers",
+      "release_managers",
+      "downstream_packagers",
+      "dependent_vendors",
+      "security_response_teams"
+    ]
+  },
+  "disclosure": {
+    "status": "public_historical_replay",
+    "freshTargetTesting": false,
+    "boundary": "Exact-library replay of a public historical finding using pinned vulnerable and fixed revisions."
+  },
+  "brief": {
+    "status": "Fixed upstream · public historical reproduction",
+    "headline": "libheif <= 1.22.0 is vulnerable to a crafted-file out-of-bounds heap read; the defect is fixed in 1.22.1.",
+    "affected": "<= 1.22.0",
+    "fixed": "1.22.1",
+    "confidence": "High for the exact vulnerable/fixed decoder-path differential, bounded by the parsed-equivalent harness caveat.",
+    "riskAxes": {
+      "reachability": "Requires a crafted HEIF file to be processed by a vulnerable application.",
+      "ecosystemImpact": "Can crash downstream image-processing applications that accept untrusted HEIF input."
+    }
+  },
+  "severitySummary": "One medium-severity issue affects libheif <= 1.22.0: an integer-wrapped range check can cause a two-byte heap-buffer over-read. Upstream fixed it in 1.22.1; downstream consumers should upgrade or backport and retain regression coverage.",
+  "findings": [
+    {
+      "id": "F-22",
+      "title": "CVE-2026-49271: wrapped icef range causes libheif out-of-bounds read",
+      "band": "medium",
+      "severity": "medium",
+      "cwe": "CWE-125",
+      "cvssVector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+      "cvssScore": "6.5",
+      "affected": {
+        "versions": "<= 1.22.0",
+        "vulnerableCommit": "b12b733d1716595483413ccd7e2dfb73c44a8d69",
+        "component": "uncompressed HEIF decoder",
+        "sourceFrame": "libheif/codecs/uncompressed/unc_decoder.cc:178"
+      },
+      "fixed": {
+        "status": "upstream_fixed",
+        "version": "1.22.1",
+        "exactFixCommit": "5782bca04a70ebc01c59397205a3cfff22841311",
+        "patchedReleaseCommit": "2b6d5a62fb6151e09d5f36757a5aa5e12f9c2045",
+        "fixedMarker": "returned error? 1 output=0",
+        "sanitizerClean": true
+      },
+      "impact": {
+        "primary": "availability",
+        "summary": "A crafted HEIF input can crash a vulnerable consuming process.",
+        "notEstablished": [
+          "confidentiality loss",
+          "integrity loss",
+          "code execution"
+        ]
+      },
+      "reachability": {
+        "input": "crafted HEIF uncompressed item",
+        "attackerControl": "unit_offset and unit_size",
+        "preconditions": "A vulnerable application processes the supplied HEIF input; user interaction is required."
+      },
+      "rootCause": {
+        "sourceFrame": "libheif/codecs/uncompressed/unc_decoder.cc:178",
+        "operation": "unit_offset + unit_size",
+        "failure": "integer wrap before the range decision"
+      },
+      "reproduction": {
+        "harness": "parsed-equivalent cmpC/icef decoder objects",
+        "steps": [
+          "Build vulnerable commit `b12b733d1716595483413ccd7e2dfb73c44a8d69` with AddressSanitizer and the uncompressed codec enabled.",
+          "Run the pinned parsed-equivalent cmpC/icef harness and observe `AddressSanitizer: heap-buffer-overflow` with `READ of size 2`.",
+          "Confirm the failing frame resolves to `libheif/codecs/uncompressed/unc_decoder.cc:178`.",
+          "Run the same harness against exact fix `5782bca04a70ebc01c59397205a3cfff22841311`; confirm `returned error? 1 output=0` and no sanitizer marker."
+        ],
+        "expectedVulnerable": [
+          "AddressSanitizer: heap-buffer-overflow",
+          "READ of size 2",
+          "libheif/codecs/uncompressed/unc_decoder.cc:178"
+        ],
+        "expectedFixed": "returned error? 1 output=0"
+      },
+      "repro": [
+        "Build vulnerable commit `b12b733d1716595483413ccd7e2dfb73c44a8d69` with AddressSanitizer and the uncompressed codec enabled.",
+        "Run the pinned parsed-equivalent cmpC/icef harness and observe `AddressSanitizer: heap-buffer-overflow` with `READ of size 2`.",
+        "Confirm the failing frame resolves to `libheif/codecs/uncompressed/unc_decoder.cc:178`.",
+        "Run the same harness against exact fix `5782bca04a70ebc01c59397205a3cfff22841311`; confirm `returned error? 1 output=0` and no sanitizer marker."
+      ],
+      "evidence": {
+        "vulnerableSignal": "AddressSanitizer: heap-buffer-overflow",
+        "access": "READ of size 2",
+        "sourceFrame": "libheif/codecs/uncompressed/unc_decoder.cc:178",
+        "fixedMarker": "returned error? 1 output=0",
+        "fixedSanitizerClean": true
+      },
+      "remediation": {
+        "upstreamStatus": "fixed",
+        "minimumFixedVersion": "1.22.1",
+        "exactFixCommit": "5782bca04a70ebc01c59397205a3cfff22841311"
+      },
+      "caveats": [
+        "The harness constructs parsed-equivalent cmpC/icef decoder objects and exercises the exact vulnerable library path; it is not a complete malicious .heif parsed through the public decoder API.",
+        "This report is a public historical reproduction, not a fresh discovery."
+      ],
+      "provenance": {
+        "claimMode": "public_historical_reproduction",
+        "rediscovery": false,
+        "advisory": "GHSA-r7qj-cg5r-r6vf",
+        "advisoryUrl": "https://github.com/strukturag/libheif/security/advisories/GHSA-r7qj-cg5r-r6vf",
+        "reportedBy": "@vmihalis"
+      },
+      "sections": [
+        {
+          "heading": "F-22 — Impact",
+          "section_id": "f22-impact",
+          "kind": "impact",
+          "provenance": "public_advisory",
+          "prose": "libheif <= 1.22.0 can read past a heap buffer while decoding a crafted HEIF uncompressed item. In applications that accept untrusted HEIF files, the fault can terminate the process and interrupt image-processing workflows. The published 6.5 medium score reflects high availability impact without evidence of confidentiality or integrity impact.",
+          "evidence": []
+        },
+        {
+          "heading": "F-22 — Affected range and root cause",
+          "section_id": "f22-root-cause",
+          "kind": "evidence",
+          "provenance": "pinned_source",
+          "prose": "At `libheif/codecs/uncompressed/unc_decoder.cc:178`, the vulnerable range check evaluates `unit_offset + unit_size` without first preventing integer wrap. A wrapped sum can pass the bounds decision and drive a two-byte read outside heap storage.",
+          "evidence": []
+        },
+        {
+          "heading": "F-22 — Vulnerable/fixed differential",
+          "section_id": "f22-differential-evidence",
+          "kind": "evidence",
+          "provenance": "sanitizer_differential",
+          "prose": "At vulnerable commit `b12b733d1716595483413ccd7e2dfb73c44a8d69`, the parsed-equivalent harness produces `AddressSanitizer: heap-buffer-overflow`, `READ of size 2`, and `libheif/codecs/uncompressed/unc_decoder.cc:178`. At exact fix `5782bca04a70ebc01c59397205a3cfff22841311`, the same harness returns `returned error? 1 output=0` and remains sanitizer-clean.",
+          "evidence": []
+        },
+        {
+          "heading": "F-22 — Fix and downstream action",
+          "section_id": "f22-remediation",
+          "kind": "remediation",
+          "provenance": "upstream_fix",
+          "prose": "Upstream fixed the defect in `5782bca04a70ebc01c59397205a3cfff22841311`, released in libheif 1.22.1. Downstream maintainers should upgrade to 1.22.1 or later or backport the exact fix, retain the differential sanitizer case as a regression test, map packages and products still carrying libheif <= 1.22.0, and align advisories with deployed backports.",
+          "evidence": []
+        },
+        {
+          "heading": "F-22 — Evidence provenance",
+          "section_id": "f22-provenance",
+          "kind": "provenance",
+          "provenance": "evidence_receipt",
+          "prose": "Public source binding: `GHSA-r7qj-cg5r-r6vf` / `CVE-2026-49271`, vulnerable commit `b12b733d1716595483413ccd7e2dfb73c44a8d69`, and exact fix `5782bca04a70ebc01c59397205a3cfff22841311`. Claim mode: public historical reproduction; rediscovery: false.",
+          "evidence": []
+        }
+      ],
+      "code_differential": {
+        "language": "cpp",
+        "sourceFrame": "libheif/codecs/uncompressed/unc_decoder.cc:178",
+        "commit": "unci: prevent integer overflow when reading compressed data (GHSA-r7qj-cg5r-r6vf)",
+        "vulnerable": "if (unit_info.unit_offset + unit_info.unit_size > compressed_bytes.size()) {",
+        "fixed": "if (unit_info.unit_offset > compressed_bytes.size() ||\n    unit_info.unit_size > compressed_bytes.size() - unit_info.unit_offset) {"
+      },
+      "what_it_is": "While decoding a crafted HEIF uncompressed item, libheif validates the compressed-data slice with a range check that adds two attacker-influenced values (unit_offset + unit_size) before comparing against the buffer size. On a wrapped sum the check passes and the decoder performs a two-byte read past the end of heap-allocated compressed_bytes storage.",
+      "engineering_distinction": "A textbook integer-overflow-before-bounds-check: the additive form of the guard is the defect, not a missing guard. HIGH availability, NONE confidentiality/integrity — the primitive is a bounded two-byte over-read that crashes the consuming process, so it caps at 6.5 medium rather than escalating to memory disclosure or code execution. The fix is not a new check but a re-expression of the same check in subtraction form that cannot wrap.",
+      "grade_score": {
+        "total": 76,
+        "dimensions": [
+          [
+            "Impact",
+            24
+          ],
+          [
+            "Proof quality",
+            24
+          ],
+          [
+            "Severity accuracy",
+            14
+          ],
+          [
+            "Chain potential",
+            0
+          ],
+          [
+            "Report quality",
+            14
+          ]
+        ]
+      }
+    }
+  ],
+  "globalSections": [
+    {
+      "heading": "Evidence boundary",
+      "section_id": "evidence-boundary",
+      "kind": "provenance",
+      "provenance": "bounded_reproduction",
+      "prose": "The harness constructs parsed-equivalent cmpC/icef decoder objects and exercises the exact vulnerable library path; it is not a complete malicious .heif parsed through the public decoder API. The differential establishes behavior at the pinned vulnerable and fixed revisions; it does not extend the claim beyond that tested decoder path.",
+      "evidence": []
+    }
+  ],
+  "receipt": {
+    "evidenceHash": "3f1c2b9a7d6e5f4c3b2a1908f7e6d5c4b3a2918070605f4e3d2c1b0a9f8e7d6c",
+    "bundleSha256": "a1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
+    "artifactVersion": "hZ9kQwErTyUiOpAsDfGhJkLzXcVbNm12",
+    "verifierStatus": "approved",
+    "integrityChecksPassed": 6,
+    "verifierChecks": [
+      "target_binding",
+      "exact_s3_version",
+      "object_lock_compliance",
+      "body_sha256",
+      "embedded_grade_hash",
+      "canonical_grade_hash"
+    ],
+    "objectLockMode": "COMPLIANCE",
+    "sourceCommit": "b12b733d1716595483413ccd7e2dfb73c44a8d69",
+    "fixedCommit": "5782bca04a70ebc01c59397205a3cfff22841311",
+    "profile": "libheif-cve-2026-49271",
+    "generatedAt": "2026-07-12T00:00:00Z"
+  },
+  "business": {
+    "bottomLine": "libheif <= 1.22.0 can crash while processing a crafted HEIF input; 1.22.1 contains the fix. Downstream projects should upgrade or backport and map products that still accept untrusted HEIF files through an affected version.",
+    "riskLevel": "moderate",
+    "dimensions": {
+      "ecosystem_impact": {
+        "label": "Ecosystem impact",
+        "exposure": "moderate",
+        "meaning": "Affected downstream applications can terminate while processing crafted HEIF input."
+      },
+      "downstream_propagation": {
+        "label": "Downstream propagation",
+        "exposure": "moderate",
+        "meaning": "Packages and products retaining libheif <= 1.22.0 remain exposed until upgraded or backported."
+      },
+      "maintainer_urgency": {
+        "label": "Maintainer urgency",
+        "exposure": "moderate",
+        "meaning": "The upstream fix exists; the urgent work is release adoption, backport tracking, and regression coverage."
+      },
+      "release_advisory": {
+        "label": "Release and advisory action",
+        "exposure": "moderate",
+        "meaning": "Downstream advisory status should reflect the version or backport actually shipped."
+      },
+      "reachability": {
+        "label": "Exploit reachability",
+        "exposure": "moderate",
+        "meaning": "A crafted file must reach a vulnerable decoder and be processed; user interaction is required."
+      },
+      "confidence_caveats": {
+        "label": "Evidence confidence",
+        "exposure": "low",
+        "meaning": "The exact-path vulnerable/fixed differential is strong; the harness does not model a complete malicious file through the public decoder API."
+      }
+    },
+    "ease": {
+      "level": "moderate",
+      "reason": "The issue needs a crafted HEIF file, a vulnerable decoder, and user or application processing of that input."
+    },
+    "held": [
+      "The exact fix returned `returned error? 1 output=0` for the same parsed-equivalent input.",
+      "The fixed revision completed without AddressSanitizer or undefined-behavior markers.",
+      "The public advisory, affected range, and pinned source revisions agree."
+    ]
+  }
+}
