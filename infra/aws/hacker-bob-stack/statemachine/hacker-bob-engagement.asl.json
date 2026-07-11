@@ -184,25 +184,6 @@
       "ResultPath": "$.humanOnLoopNotification",
       "Next": "ExportToSecurityHub"
     },
-    "AwaitHumanApproval": {
-      "Type": "Task",
-      "Comment": "Zero-compute human boundary. The recorder persists the opaque task token and the verifier-bound target/profile, grade hash, exact VersionId, and exact body SHA-256. Returning from the recorder does not resolve this state; only an out-of-band named-human invocation of ApprovalWriterFunction can write the v2 HMAC artifact and call SendTaskSuccess. Rejection calls SendTaskFailure. The task fails closed after 24 hours, allowing an overnight pre-start without an unbounded token.",
-      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-      "Parameters": {
-        "FunctionName": "${ApprovalPendingRecorderFunctionArn}",
-        "Payload": {
-          "token.$": "$$.Task.Token",
-          "executionName.$": "$$.Execution.Name",
-          "profile.$": "$.profile",
-          "target.$": "$.gradeResult.target_domain",
-          "gradeResult.$": "$.gradeResult",
-          "verifiedFreeze.$": "$.verifierGate.Payload"
-        }
-      },
-      "TimeoutSeconds": 86400,
-      "ResultPath": "$.approval",
-      "Next": "ExportToSecurityHub"
-    },
     "ExportToSecurityHub": {
       "Type": "Task",
       "Comment": "Runs only after verifier approval resolves and reads only the exact verifier-approved GRADE-time WORM version under a Bob-unreachable role.",

@@ -1979,12 +1979,6 @@ Resources:
                 Effect: Allow
                 Action: sns:Publish
                 Resource: !Ref ApprovalNotificationTopic
-              # AwaitHumanApproval remains available as a break-glass/manual state. The
-              # recorder persists the token and notifies a human; it never calls a callback.
-              - Sid: InvokeApprovalPendingRecorder
-                Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !GetAtt ApprovalPendingRecorderFunction.Arn
               # ARCHITECTURAL FIX (Eric-approved): lets the state machine invoke the
               # downstream export Lambda from the new ExportToSecurityHub Task state
               # (statemachine/hacker-bob-engagement.asl.json), wired directly after
@@ -2003,7 +1997,6 @@ Resources:
         AgentRuntimeArn: !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn
         VerifierGateFunctionArn: !GetAtt VerifierGateFunction.Arn
         VerifierApprovalFunctionArn: !GetAtt VerifierApprovalFunction.Arn
-        ApprovalPendingRecorderFunctionArn: !GetAtt ApprovalPendingRecorderFunction.Arn
         ApprovalNotificationTopicArn: !Ref ApprovalNotificationTopic
         ExportSecurityHubFunctionArn: !GetAtt ExportSecurityHubFunction.Arn
       Role: !GetAtt GlassboxStateMachineRole.Arn

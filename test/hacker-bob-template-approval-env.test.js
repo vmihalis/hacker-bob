@@ -342,16 +342,7 @@ test("state machine advances on verifier approval and notifies human on the loop
   assert.equal(notify.Parameters["Message.$"], "States.JsonToString($.approval)");
   assert.equal(notify.Next, "ExportToSecurityHub");
 
-  // Break-glass/manual state remains present for old executions and recovery,
-  // but is no longer on the default verifier-driven path.
-  const human = asl.States.AwaitHumanApproval;
-  assert.equal(human.Resource, "arn:aws:states:::lambda:invoke.waitForTaskToken");
-  assert.equal(human.Parameters.FunctionName, "${ApprovalPendingRecorderFunctionArn}");
-  assert.equal(human.Parameters.Payload["token.$"], "$$.Task.Token");
-  assert.equal(human.Parameters.Payload["profile.$"], "$.profile");
-  assert.equal(human.Parameters.Payload["verifiedFreeze.$"], "$.verifierGate.Payload");
-  assert.equal(human.TimeoutSeconds, 86400);
-  assert.equal(human.Next, "ExportToSecurityHub");
+  assert.equal(Object.prototype.hasOwnProperty.call(asl.States, "AwaitHumanApproval"), false);
 });
 
 test("state machine preserves smoke and routes only the named immutable libheif profile through one stable session id", () => {
@@ -585,12 +576,12 @@ test("state-machine role invokes verifier writer and notification, but never the
   assert.match(role, /VerifierApprovalFunction\.Arn/);
   assert.match(role, /sns:Publish/);
   assert.match(role, /ApprovalNotificationTopic/);
-  assert.match(role, /ApprovalPendingRecorderFunction\.Arn/);
+  assert.doesNotMatch(role, /ApprovalPendingRecorderFunction\.Arn/);
   assert.doesNotMatch(role, /ApprovalWriterFunction\.Arn/);
   const machine = extractResourceBlock(readTemplate(), "GlassboxEngagementStateMachine");
   assert.match(machine, /VerifierApprovalFunctionArn:\s*!GetAtt VerifierApprovalFunction\.Arn/);
   assert.match(machine, /ApprovalNotificationTopicArn:\s*!Ref ApprovalNotificationTopic/);
-  assert.match(machine, /ApprovalPendingRecorderFunctionArn:\s*!GetAtt ApprovalPendingRecorderFunction\.Arn/);
+  assert.doesNotMatch(machine, /ApprovalPendingRecorderFunctionArn/);
 });
 
 test("GlassboxStateMachineRole may invoke ExportSecurityHubFunction", () => {

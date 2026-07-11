@@ -230,9 +230,10 @@ and final report state.
 
 ## Break-glass manual approval mode
 
-`AwaitHumanApproval` and `ApprovalWriterFunction` remain in the stack for manual
-break-glass/recovery and for old executions that started before the verifier-on-loop
-state machine was deployed. The stack intentionally does not grant the runtime role
+`ApprovalPendingRecorderFunction` and `ApprovalWriterFunction` remain in the stack
+for old executions that started before the verifier-on-loop state machine was
+deployed. They are not on the new default state-machine path. The stack
+intentionally does not grant the runtime role
 permission to invoke `ApprovalWriterFunction`; the state-machine role does not need
 it on the default verifier-on-loop path. Before the event, a human IAM
 administrator must grant `lambda:InvokeFunction` on exactly
