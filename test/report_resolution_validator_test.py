@@ -74,6 +74,7 @@ def sample_event(module):
                             "ToolUse": {
                                 "ToolUseId": "tool-1",
                                 "Name": module.TOOL_NAME,
+                                "Type": module.TOOL_USE_TYPE,
                                 "Input": tool_input,
                             }
                         }
@@ -139,6 +140,14 @@ def test_model_output_is_exact(module):
     event = sample_event(module)
     event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["ToolUseId"] = "bad id"
     refused(module, event, "tool-use id is invalid")
+
+    event = sample_event(module)
+    event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["Type"] = "text"
+    refused(module, event, "tool-use type")
+
+    event = sample_event(module)
+    del event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["Type"]
+    refused(module, event, "envelope keys")
 
     event = sample_event(module)
     event["modelId"] = "us.anthropic.some-other-model-v1:0"

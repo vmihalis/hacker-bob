@@ -19,6 +19,7 @@ SCHEMA_VERSION = 1
 FEATURE_REGISTRY = "libheif-impact-v1"
 RESOLUTION_TYPE = "bedrock_stakeholder_resolution"
 TOOL_NAME = "select_report_framing"
+TOOL_USE_TYPE = "tool_use"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 TOOL_USE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -83,7 +84,14 @@ def _extract_tool_input(model_result: dict[str, Any]) -> dict[str, Any]:
     block = _object(content[0])
     _require(set(block) == {"ToolUse"}, "Bedrock content must contain only one tool use")
     tool_use = _object(block.get("ToolUse"))
-    _require(set(tool_use) == {"ToolUseId", "Name", "Input"}, "tool-use envelope keys are invalid")
+    # Step Functions' optimized aws-sdk integration materializes Bedrock's
+    # content-block discriminator as `Type: "tool_use"`. Keep the boundary exact:
+    # accept the observed service envelope, not arbitrary extra model fields.
+    _require(
+        set(tool_use) == {"ToolUseId", "Name", "Input", "Type"},
+        "tool-use envelope keys are invalid",
+    )
+    _require(tool_use.get("Type") == TOOL_USE_TYPE, "unexpected Bedrock tool-use type")
     _require(tool_use.get("Name") == TOOL_NAME, "unexpected Bedrock tool name")
     _require(
         isinstance(tool_use.get("ToolUseId"), str)
