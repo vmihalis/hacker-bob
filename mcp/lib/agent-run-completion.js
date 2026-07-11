@@ -30,8 +30,10 @@ const {
 const {
   edgesFromAttackSurface,
 } = require("./surface-graph-builder.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 
 const EVIDENCE_MODE = "evidence";
+const FANOUT_CHILD_MODE = "fanout_child";
 
 function cleanString(value) {
   if (typeof value !== "string") return "";
@@ -177,6 +179,8 @@ function evidenceTelemetryInput({
   };
 }
 const {
+  buildCoverageSummaryForSurface,
+  latestCoverageRecordsByKey,
   readCoverageRecordsFromJsonl,
 } = require("./coverage.js");
 const {
@@ -244,6 +248,404 @@ function summarizeFindingsForRun(marker) {
     )).length;
   } catch {}
   return summary;
+}
+
+// NS-7 — evaluate the distinct nested-child stop attestation without touching
+// the wave AgentRun. Claude's supported topology is wave-root teammate -> one
+// anonymous synchronous child level. Every child deliberately reuses the root's
+// (wave, agent, surface) authority for MCP writes, so bob_finalize_agent_run or
+// a wave handoff from the child would race the root. The child instead emits an
+// MCP-cell-bound marker. Reconstruct the ROOT plan from coverage with this
+// run's rows removed (the plan as it existed before its children wrote), require
+// an exact emitted (cell_key, planning_key), then require terminal coverage from
+// the current run for that cell. This is attestation only: no handoff, no
+// finalize, and no AgentRun settlement/terminal mutation.
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function spawnPromptHasLine(prompt, label, value) {
+  if (typeof prompt !== "string" || !prompt) return false;
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*:\\s*${escapeRegExp(value)}\\s*(?:\\n|$)`,
+    "i",
+  );
+  return pattern.test(prompt);
+}
+
+function spawnPromptHasExactSingleLine(prompt, label, value) {
+  if (typeof prompt !== "string" || !prompt) return false;
+  const pattern = new RegExp(
+    `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*:\\s*([^\\n]*)`,
+    "gi",
+  );
+  const values = [];
+  let match;
+  while ((match = pattern.exec(prompt)) !== null) values.push(match[1].trim());
+  return values.length === 1 && values[0] === String(value);
+}
+
+// NS-7 — read-only pre-spawn attestation for the host PreToolUse boundary.
+// A proposed leaf must be both (a) in the immutable dispatch-time plan rebuilt
+// without this root run's coverage and (b) still present in the LIVE plan with
+// current coverage. The intersection prevents an originally budget-pruned cell
+// from sliding into a later slot and prevents a completed cell from spawning
+// again. Exact single header lines reject conflicting duplicate fields.
+function evaluateNestedChildSpawn(rootContext, spawnPrompt) {
+  const targetDomain = cleanString(rootContext && rootContext.target_domain);
+  const wave = cleanString(rootContext && rootContext.wave);
+  const agent = cleanString(rootContext && rootContext.agent);
+  if (!targetDomain || !/^w[1-9][0-9]*$/.test(wave) || !/^a[1-9][0-9]*$/.test(agent)) {
+    return {
+      ok: false,
+      block_code: "child_root_context_mismatch",
+      reason: "Fanout root Domain/Wave/Agent context is missing or malformed.",
+    };
+  }
+  if (typeof spawnPrompt !== "string" || !spawnPrompt.trim()) {
+    return {
+      ok: false,
+      block_code: "child_spawn_context_mismatch",
+      reason: "Fanout child spawn prompt is missing.",
+    };
+  }
+  if (/(?:^|\n)\s*Handoff token\s*:/i.test(spawnPrompt)) {
+    return {
+      ok: false,
+      block_code: "child_handoff_token_leak",
+      reason: "Fanout child spawn prompt must not contain the root Handoff token.",
+    };
+  }
+
+  try {
+    const waveNumber = Number(wave.slice(1));
+    const assignments = loadWaveAssignments(targetDomain, waveNumber);
+    const assignment = assignments.assignmentByAgent.get(agent) || null;
+    if (!assignment || assignment.evaluator_agent !== FANOUT_ROLE_REGISTRY.root.subagent_type) {
+      return {
+        ok: false,
+        block_code: "child_assignment_mismatch",
+        reason: `Fanout child does not resolve to an ${FANOUT_ROLE_REGISTRY.root.subagent_type} root assignment.`,
+      };
+    }
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const surface = (readAttackSurfaceStrict(targetDomain).document.surfaces || [])
+      .find((entry) => entry && entry.id === assignment.surface_id) || null;
+    if (!surface) {
+      return {
+        ok: false,
+        block_code: "child_plan_unavailable",
+        reason: "Fanout root assignment surface is absent from the attack-surface projection.",
+      };
+    }
+
+    const allRecords = readCoverageRecordsFromJsonl(targetDomain);
+    const baselineRecords = allRecords.filter((record) => !(
+      record.wave === wave
+      && record.agent === agent
+      && record.surface_id === assignment.surface_id
+    ));
+    const { buildChildFanoutPlanForSurface } = require("./assignment-brief.js");
+    const planFor = (records) => buildChildFanoutPlanForSurface({
+      domain: targetDomain,
+      surfaceObj: surface,
+      surfaceId: assignment.surface_id,
+      coverageSummary: buildCoverageSummaryForSurface(records, assignment.surface_id),
+      wave,
+    });
+    const baselinePlan = planFor(baselineRecords);
+    const livePlan = planFor(allRecords);
+    const exactPromptFor = (child) => child
+      && child.subagent_type === FANOUT_ROLE_REGISTRY.child.subagent_type
+      && child.remaining_depth === FANOUT_ROLE_REGISTRY.child.remaining_depth
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Nested child", "true")
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Domain", targetDomain)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Wave", wave)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "Agent", agent)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "surface_id", child.surface_id)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "cell_key", child.cell_key)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "planning_key", child.planning_key)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "bug_class", child.bug_class)
+      && spawnPromptHasExactSingleLine(spawnPrompt, "auth_profile", child.auth_profile || '""')
+      && spawnPromptHasExactSingleLine(spawnPrompt, "remaining_depth", "0");
+    const baselineChild = baselinePlan && Array.isArray(baselinePlan.children)
+      ? baselinePlan.children.find(exactPromptFor)
+      : null;
+    const liveChild = livePlan && Array.isArray(livePlan.children)
+      ? livePlan.children.find((child) => baselineChild
+        && child.cell_key === baselineChild.cell_key
+        && child.planning_key === baselineChild.planning_key
+        && exactPromptFor(child))
+      : null;
+    if (!baselineChild || !liveChild) {
+      return {
+        ok: false,
+        block_code: "child_cell_not_live_issued",
+        reason: "Fanout child prompt does not exactly match a cell present in both the dispatch and live MCP-issued plans.",
+      };
+    }
+    return {
+      ok: true,
+      block_code: null,
+      reason: `Fanout child ${liveChild.planning_key} is dispatch-issued and still live.`,
+      child: liveChild,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      block_code: "child_plan_unavailable",
+      reason: `Fanout child plan could not be attested: ${error.message || String(error)}`,
+    };
+  }
+}
+
+function evaluateNestedChildCompletion(marker, options = {}) {
+  const requiredStringFields = [
+    "target_domain",
+    "wave",
+    "agent",
+    "surface_id",
+    "cell_key",
+    "planning_key",
+    "bug_class",
+    "auth_profile",
+    "coverage_status",
+  ];
+  const missing = requiredStringFields.filter((field) => typeof marker?.[field] !== "string");
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: `Nested child marker is missing string field(s): ${missing.join(", ")}`,
+      marker,
+    };
+  }
+  if (!cleanString(marker.target_domain) || !cleanString(marker.surface_id)
+      || !cleanString(marker.cell_key) || !cleanString(marker.planning_key)
+      || !cleanString(marker.bug_class)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: "Nested child marker contains an empty required identity field.",
+      marker,
+    };
+  }
+  if (!/^w[1-9][0-9]*$/.test(marker.wave) || !/^a[1-9][0-9]*$/.test(marker.agent)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "malformed_child_marker",
+      reason: "Nested child marker wave/agent must look like positive wN/aN.",
+      marker,
+    };
+  }
+  if (!new Set(["tested", "blocked"]).has(marker.coverage_status)) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "nonterminal_child_coverage",
+      reason: "Nested child marker coverage_status must be terminal (tested or blocked).",
+      marker,
+    };
+  }
+
+  // Bind the self-reported marker to THIS subagent's host-owned transcript,
+  // not merely to a valid cell in the wave. SubagentStop supplies
+  // agent_transcript_path; its first user event is the immutable spawn prompt
+  // that the root constructed from the MCP-issued child. Requiring every exact
+  // tuple field plus remaining_depth:0 prevents a root echo, sibling marker, or
+  // stale cell marker from taking the no-settlement child path.
+  const spawnPrompt = typeof options.spawn_prompt === "string" ? options.spawn_prompt : "";
+  const spawnContextFields = [
+    ["Nested child", "true"],
+    ["Domain", marker.target_domain],
+    ["Wave", marker.wave],
+    ["Agent", marker.agent],
+    ["surface_id", marker.surface_id],
+    ["cell_key", marker.cell_key],
+    ["planning_key", marker.planning_key],
+    ["bug_class", marker.bug_class],
+    ["auth_profile", marker.auth_profile || '""'],
+    ["remaining_depth", "0"],
+  ];
+  const missingSpawnFields = spawnContextFields
+    .filter(([label, value]) => !spawnPromptHasLine(spawnPrompt, label, value))
+    .map(([label]) => label);
+  if (missingSpawnFields.length > 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_spawn_context_mismatch",
+      reason: `Nested child marker is not bound to its SubagentStop spawn context: ${missingSpawnFields.join(", ")}`,
+      marker,
+    };
+  }
+
+  let assignment;
+  let surface;
+  let baselineRecords;
+  let currentRecords;
+  let plan;
+  try {
+    const waveNumber = Number(marker.wave.slice(1));
+    const assignments = loadWaveAssignments(marker.target_domain, waveNumber);
+    assignment = assignments.assignmentByAgent.get(marker.agent) || null;
+    if (!assignment || assignment.surface_id !== marker.surface_id
+        || assignment.evaluator_agent !== FANOUT_ROLE_REGISTRY.root.subagent_type) {
+      return {
+        ok: false,
+        status: "blocked",
+        block_code: "child_assignment_mismatch",
+        reason: `Nested child marker does not resolve to an ${FANOUT_ROLE_REGISTRY.root.subagent_type} wave assignment.`,
+        marker,
+      };
+    }
+    const { readAttackSurfaceStrict } = require("./attack-surface.js");
+    const surfaces = readAttackSurfaceStrict(marker.target_domain).document.surfaces || [];
+    surface = surfaces.find((entry) => entry && entry.id === marker.surface_id) || null;
+    if (!surface) {
+      return {
+        ok: false,
+        status: "blocked",
+        block_code: "child_plan_unavailable",
+        reason: "Nested child marker surface is absent from the attack-surface projection.",
+        marker,
+      };
+    }
+    const allRecords = readCoverageRecordsFromJsonl(marker.target_domain);
+    baselineRecords = allRecords.filter((record) => !(
+      record.wave === marker.wave
+      && record.agent === marker.agent
+      && record.surface_id === marker.surface_id
+    ));
+    currentRecords = allRecords.filter((record) => (
+      record.wave === marker.wave
+      && record.agent === marker.agent
+      && record.surface_id === marker.surface_id
+    ));
+    const { buildChildFanoutPlanForSurface } = require("./assignment-brief.js");
+    plan = buildChildFanoutPlanForSurface({
+      domain: marker.target_domain,
+      surfaceObj: surface,
+      surfaceId: marker.surface_id,
+      coverageSummary: buildCoverageSummaryForSurface(baselineRecords, marker.surface_id),
+      wave: marker.wave,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_plan_unavailable",
+      reason: `Nested child plan could not be reconstructed: ${error.message || String(error)}`,
+      marker,
+    };
+  }
+
+  const child = plan && Array.isArray(plan.children)
+    ? plan.children.find((entry) => entry
+      && entry.cell_key === marker.cell_key
+      && entry.planning_key === marker.planning_key)
+    : null;
+  if (!child) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_cell_not_issued",
+      reason: "Nested child marker does not match a cell emitted by the reconstructed root plan.",
+      marker,
+    };
+  }
+  // NS-7 — bind completion to the registry-issued leaf role. A root-role
+  // marker is never accepted as a child even when every cell field matches.
+  if (child.subagent_type !== FANOUT_ROLE_REGISTRY.child.subagent_type
+      || child.surface_id !== marker.surface_id
+      || child.bug_class !== marker.bug_class
+      || (child.auth_profile || "") !== marker.auth_profile
+      || child.remaining_depth !== 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_cell_identity_mismatch",
+      reason: "Nested child marker fields do not match the MCP-issued leaf cell.",
+      marker,
+    };
+  }
+
+  const latest = Array.from(latestCoverageRecordsByKey(currentRecords).values());
+  const matching = latest.filter((record) => (
+    record.bug_class === child.bug_class.toLowerCase()
+    && (record.auth_profile || "") === (child.auth_profile || "")
+  ));
+  const hasBlocked = matching.some((record) => record.status === "blocked");
+  const hasUnfinished = matching.some((record) => ["promising", "needs_auth", "requeue"].includes(record.status));
+  const hasTested = matching.some((record) => record.status === "tested");
+  const terminalStatus = hasBlocked ? "blocked" : (hasTested && !hasUnfinished ? "tested" : null);
+  if (!terminalStatus) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "missing_child_terminal_coverage",
+      reason: "Nested child has no terminal current-run coverage for its issued bug_class/auth_profile cell.",
+      marker,
+      child,
+    };
+  }
+  if (marker.coverage_status !== terminalStatus) {
+    return {
+      ok: false,
+      status: "blocked",
+      block_code: "child_coverage_status_mismatch",
+      reason: `Nested child marker claims ${marker.coverage_status}, but durable coverage resolves to ${terminalStatus}.`,
+      marker,
+      child,
+    };
+  }
+  return {
+    ok: true,
+    status: "allowed",
+    block_code: null,
+    reason: `Nested child cell ${marker.planning_key} accepted with terminal ${terminalStatus} coverage.`,
+    marker,
+    child,
+    coverage: {
+      total: matching.length,
+      by_status: matching.reduce((counts, record) => {
+        counts[record.status] = (counts[record.status] || 0) + 1;
+        return counts;
+      }, {}),
+    },
+  };
+}
+
+function nestedChildTelemetryInput(evaluation, {
+  transcript_path: transcriptPath = null,
+  now = new Date(),
+} = {}) {
+  const marker = evaluation && evaluation.marker ? evaluation.marker : null;
+  return {
+    runType: FANOUT_CHILD_MODE,
+    status: evaluation && evaluation.ok ? "allowed" : "blocked",
+    block_code: evaluation && evaluation.block_code ? evaluation.block_code : null,
+    target_domain: marker && marker.target_domain,
+    wave: marker && marker.wave,
+    agent: marker && marker.agent,
+    surface_id: marker && marker.surface_id,
+    transcript_path: transcriptPath,
+    handoff: {
+      present: false,
+      valid: true,
+      provenance: "root_owned",
+      surface_status: "child_cell",
+      summary_present: false,
+      chain_notes_count: 0,
+    },
+    coverage: evaluation && evaluation.coverage ? evaluation.coverage : { total: 0, by_status: {} },
+    findings: { count: 0 },
+    telemetry_source: "fanout-child-stop",
+    now,
+  };
 }
 
 function evaluateOssCompletionCoverage(marker, assignment, handoff) {
@@ -529,6 +931,13 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // builds it directly because evidence runs have no wave/agent and skip the
   // structured-handoff evaluation path). Detect that shape by the runType
   // field and pass it through to the recorders unchanged.
+  if (evaluation && evaluation.runType === FANOUT_CHILD_MODE) {
+    // A child completion is recorded as tool-invocation telemetry only. Do not
+    // emit evaluator_stopped: that pipeline event denotes the wave root and
+    // would make an accepted child look like premature root settlement.
+    safeRecordToolInvocationTelemetry(evaluation);
+    return evaluation;
+  }
   if (evaluation && evaluation.runType === "evidence") {
     safeRecordToolInvocationTelemetry(evaluation);
     safeRecordEvaluatorStoppedPipelineEvent(
@@ -581,17 +990,21 @@ function finalizeAgentRun(args) {
 
 module.exports = {
   EVIDENCE_MODE,
+  FANOUT_CHILD_MODE,
   evaluateEvidenceCompletion,
   evaluateAgentCompletion,
   evaluateAuthDifferentialCompletionCoverage,
   evaluateTechniqueAttemptRequirement,
   evidenceMarkerValidationError,
   evidenceTelemetryInput,
+  evaluateNestedChildCompletion,
+  evaluateNestedChildSpawn,
   finalizeAgentCompletion,
   finalizeAgentRun,
   handoffTelemetry,
   isEvidenceMarker,
   markerMode,
+  nestedChildTelemetryInput,
   recordAgentCompletionTelemetry,
   summarizeCoverageForRun,
   summarizeFindingsForRun,

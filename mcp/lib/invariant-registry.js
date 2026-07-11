@@ -127,8 +127,11 @@ const REGISTRY = Object.freeze({
     class: "nested_fanout",
     title:
       "Single declared spawner (Y-P8): exactly ONE registry role (evaluator-fanout) "
-      + "may hold the host Task primitive; spawnCapableAgentNames().length === 1.",
+      + "may hold a host spawn primitive, and its grant is the exact parameterized "
+      + "Agent(evaluator-fanout-child) allowlist rather than bare Agent/Task.",
     enforced_by: Object.freeze([
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeSpawnGrantForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "NS-1" }), // tag anchor
       Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "spawnCapableAgentNames" }),
       Object.freeze({ file: "test/single-spawner-topology.test.js", symbol: "NS-1" }), // tag anchor
     ]),
@@ -148,9 +151,13 @@ const REGISTRY = Object.freeze({
     kind: "invariant",
     class: "nested_fanout",
     title:
-      "Host-only nesting: depth>1 is reachable only on host==claude and is clamped "
-      + "by the host nesting ceiling before the plan is emitted (fail-closed elsewhere).",
+      "Host-only nesting: depth>1 is reachable only when host==claude and "
+      + "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 is explicitly asserted. The topology "
+      + "requires Claude >=2.1.172 (an operator prerequisite, not a runtime version probe) "
+      + "and is clamped before plan emission; default Claude and every other host fail closed.",
     enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "runtimeNestingEnabledForHost" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-3" }), // tag anchor
       Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "effectiveSpawnDepth" }),
       Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "NS-3" }), // tag anchor
     ]),
@@ -160,11 +167,17 @@ const REGISTRY = Object.freeze({
     class: "nested_fanout",
     title:
       "Bounded brain-owned fan-out: the depth-1 width is preventively capped to the "
-      + "spawn budget (maxBranchingForBudget); validateSpawnFanout is the finalize "
-      + "detective bound (depth/count/type/budget) over self-reported children.",
+      + "root-plus-descendant spawn budget (maxBranchingForBudget); handoff validation "
+      + "reconstructs the dispatch-time plan and bounds depth/count/type/exact issued cell.",
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "validateSpawnFanout" }),
       Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "buildChildFanoutPlanForSurface" }),
+      Object.freeze({ file: "mcp/lib/assignment-brief.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-scheduler.js", symbol: "startWaveLocked" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-scheduler.js", symbol: "NS-4" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "spawnFanoutBudgetForSurface" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "NS-4" }), // tag anchor
     ]),
   }),
   "NS-5": Object.freeze({
@@ -178,6 +191,59 @@ const REGISTRY = Object.freeze({
     enforced_by: Object.freeze([
       Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "DEFAULT_QUEUE_POLICY" }),
       Object.freeze({ file: "mcp/lib/queue-policy.js", symbol: "NS-5" }), // tag anchor
+    ]),
+  }),
+  "NS-6": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Routing variants retain canonical technique compatibility: every technique "
+      + "selection/read/log consumer resolves web_fanout through the capability-pack "
+      + "registry while preserving web_fanout as audit metadata.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/capability-packs.js", symbol: "techniqueCompatibilityPackId" }),
+      Object.freeze({ file: "mcp/lib/capability-packs.js", symbol: "NS-6" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/technique-packs.js", symbol: "techniquePackSupportsCapability" }),
+      Object.freeze({ file: "mcp/lib/technique-packs.js", symbol: "NS-6" }), // tag anchor
+    ]),
+  }),
+  "NS-7": Object.freeze({
+    kind: "invariant",
+    class: "nested_fanout",
+    title:
+      "Nested child authority and completion are cell-bound and root-owned: a distinct "
+      + "registry-generated evaluator-fanout-child receives no host-local tools and no "
+      + "handoff/finalize authority at spawn time, while the root's parameterized Agent "
+      + "grant and PreTool guard admit only that anonymous synchronous child; "
+      + "BOB_CHILD_CELL_DONE must match an "
+      + "MCP-issued cell plus terminal durable coverage, and only the root may hand off, "
+      + "finalize, or settle the shared AgentRun.",
+    enforced_by: Object.freeze([
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "FANOUT_ROLE_REGISTRY" }),
+      Object.freeze({ file: "mcp/lib/nested-spawn.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/role-model.js", symbol: "ROLE_DEFINITIONS" }),
+      Object.freeze({ file: "mcp/lib/role-model.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeAllowedToolsForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "claudeSpawnGrantForRole" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "fanoutChildAgentNames" }),
+      Object.freeze({ file: "scripts/lib/claude-role-renderer.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "subagentStopAttestedAgentNames" }),
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "fanoutChildScopeGuardHookEntry" }),
+      Object.freeze({ file: "adapters/claude/config.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "SubagentStart" }),
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "SubagentStop" }),
+      Object.freeze({ file: "scripts/generate-claude-settings.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "prompts/roles/evaluator-fanout-child.md", symbol: "BOB_CHILD_CELL_DONE" }),
+      Object.freeze({ file: "prompts/roles/evaluator-fanout-child.md", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateNestedChildSpawn" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "evaluateNestedChildCompletion" }),
+      Object.freeze({ file: "mcp/lib/agent-run-completion.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "CHILD_MARKER" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "rootFanoutInvocationViolation" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "denyPreTool" }),
+      Object.freeze({ file: ".claude/hooks/agent-run-stop.js", symbol: "NS-7" }), // tag anchor
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "assertSpawnFanoutWithinBudget" }),
+      Object.freeze({ file: "mcp/lib/waves/wave-assignment-store.js", symbol: "NS-7" }), // tag anchor
     ]),
   }),
 

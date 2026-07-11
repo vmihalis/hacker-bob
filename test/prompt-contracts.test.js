@@ -37,6 +37,7 @@ const {
 } = require("../mcp/lib/tool-registry.js");
 const { ADAPTERS, getAdapter } = require("../adapters/index.js");
 const {
+  FANOUT_CHILD_SCOPE_GUARD_MATCHER,
   hackerBobSkillAllowedTools,
   defaultClaudeSettings,
   defaultGlobalMcpPermissions,
@@ -54,9 +55,12 @@ const {
 const {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
+  claudeAllowedToolsForRole,
+  fanoutChildAgentNames,
   renderClaudeRole,
   spawnCapableAgentNames,
 } = require("../scripts/lib/claude-role-renderer.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 const {
   CODEX_SKILL_SPECS,
   CODEX_WORKER_CONTRACT_ROLE_IDS,
@@ -1485,32 +1489,43 @@ test("settings.json registers session guards on Bash, Read, and Write", () => {
   assert.ok(bash.hooks.some((h) => h.command.includes("session-read-guard.sh")));
 });
 
-test("settings hooks register only the write-confirm HITL gate on MCP tools (never a scope/enforcement guard)", () => {
+test("settings MCP hooks are closed to write-confirm and the transcript-bound fanout child guard", () => {
   const settings = JSON.parse(readFile(".claude/settings.json"));
-  // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS the
-  // operator before a target-mutating bob_http_scan (inert unless BOB_HTTP_WRITE_CONFIRM is set) and
-  // does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where a hook edit can't bypass
-  // it. Any other MCP-tool matcher, or a scope/enforcement guard on an MCP tool, remains forbidden.
-  // Anchored exact-command match — a bare substring check would pass on a chained command, weakening
-  // this security contract; the only allowed MCP-tool hook command is exactly the write-confirm gate.
+  // The write-confirm hook is operator HITL for target mutation. The sole
+  // enforcement exception is NS-7's host-context boundary: MCP cannot see
+  // Claude's root-vs-child identity, so the tracked lifecycle hook denies the
+  // two root-only MCP calls before execution. All ordinary target/scope policy
+  // remains server-enforced.
   const isWriteConfirmOnlyCommand = (command) =>
     /^\s*bash\s+["'][^"']*\/\.claude\/hooks\/bob-http-write-confirm\.sh["']\s*$/.test(String(command || ""));
+  const isFanoutGuardOnlyCommand = (command) =>
+    /^\s*node\s+["'][^"']*\/\.claude\/hooks\/agent-run-stop\.js["']\s*$/.test(String(command || ""));
   const mcpEntries = (settings.hooks.PreToolUse || []).filter((e) => e.matcher.startsWith(MCP_PERMISSION_PREFIX));
+  const expectedMatchers = new Set([
+    "mcp__hacker-bob__bob_http_scan",
+    FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+  ]);
   for (const entry of mcpEntries) {
-    assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", `unexpected MCP-tool matcher ${entry.matcher} in settings`);
-    assert.ok(
-      (entry.hooks || []).every((h) => isWriteConfirmOnlyCommand(h.command)),
-      "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
-    );
+    assert.ok(expectedMatchers.has(entry.matcher), `unexpected MCP-tool matcher ${entry.matcher} in settings`);
+    const commandCheck = entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER
+      ? isFanoutGuardOnlyCommand
+      : isWriteConfirmOnlyCommand;
+    assert.ok((entry.hooks || []).every((h) => commandCheck(h.command)),
+      `unexpected command for MCP-tool hook ${entry.matcher}`);
   }
+  assert.deepEqual(new Set(mcpEntries.map((entry) => entry.matcher)), expectedMatchers);
 });
 
-test("SubagentStop hooks match every wave evaluator (capability-pack + spawn-capable)", () => {
+test("SubagentStop hooks match wave evaluators plus transcript-attested fanout children", () => {
   // The agent-run lifecycle fires for every evaluator that writes a wave handoff
-  // + the BOB_AGENT_RUN_DONE marker: the routed capability-pack evaluators PLUS
-  // the spawn-capable evaluator-fanout (CN Step B). Still EXACT (no wildcard).
+  // + the BOB_AGENT_RUN_DONE marker, plus the distinct child that emits
+  // BOB_CHILD_CELL_DONE. SubagentStart intentionally remains root-only.
   const expected = Array.from(
-    new Set([...evaluatorAgentNamesForCapabilityPacks(), ...spawnCapableAgentNames()]),
+    new Set([
+      ...evaluatorAgentNamesForCapabilityPacks(),
+      ...spawnCapableAgentNames(),
+      ...fanoutChildAgentNames(),
+    ]),
   ).sort();
   for (const settings of [defaultClaudeSettings(), JSON.parse(readFile(".claude/settings.json"))]) {
     const configured = (settings.hooks.SubagentStop || [])
@@ -1518,6 +1533,13 @@ test("SubagentStop hooks match every wave evaluator (capability-pack + spawn-cap
       .map((entry) => entry.matcher)
       .sort();
     assert.deepEqual(configured, expected);
+    const started = (settings.hooks.SubagentStart || [])
+      .filter((entry) => (entry.hooks || []).some((hook) => /agent-run-start\.js/.test(hook.command)))
+      .map((entry) => entry.matcher);
+    for (const childName of fanoutChildAgentNames()) {
+      assert.equal(started.includes(childName), false,
+        `${childName} must never mutate the shared root AgentRun through SubagentStart`);
+    }
   }
 });
 
@@ -1540,9 +1562,10 @@ test("standard hook test script runs both write and read guards", () => {
 test("Claude adapter config never leaks into the neutral MCP runtime", () => {
   assert.equal(fs.existsSync(path.join(ROOT, "mcp", "lib", "claude-config.js")), false);
   for (const relativePath of allJsFiles("mcp")) {
+    const source = readFile(relativePath);
     assert.doesNotMatch(
-      readFile(relativePath),
-      /claude-config|adapters\/claude/,
+      source,
+      /(?:require\s*\(\s*["'][^"']*(?:claude-config|adapters\/claude)[^"']*["']\s*\)|from\s+["'][^"']*(?:claude-config|adapters\/claude)[^"']*["'])/,
       `${relativePath} imports Claude adapter config`,
     );
   }
@@ -1778,10 +1801,11 @@ test("auth.json is never instructed for direct read in user-facing prompts", () 
   }
 });
 
-test("rendered evaluator agents carry the handoff field limits block", () => {
-  const renderedEvaluators = fs.readdirSync(path.join(ROOT, ".claude/agents"))
-    .filter((name) => name.startsWith("evaluator") && name.endsWith(".md"))
-    .map((name) => `.claude/agents/${name}`);
+test("rendered evaluator roles with handoff authority carry the handoff field limits block", () => {
+  const renderedEvaluators = Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent"
+      && mcpToolNamesForRole(spec.role_id).includes("bob_write_wave_handoff"))
+    .map((spec) => spec.output_path);
   for (const relativePath of renderedEvaluators) {
     const body = readFile(relativePath);
     assert.match(
@@ -1798,7 +1822,20 @@ test("evaluator-fanout body carries the brain-owned actuation contract (CN Step 
   assert.match(body, /child_fanout_plan/, "reads the brain-owned plan");
   assert.match(body, /Do NOT add, merge, split, or invent children/, "forbids discretionary children");
   assert.match(body, /remaining_depth/, "carries the depth gate");
-  assert.match(body, /subagent_type: "evaluator-fanout"/, "spawns the pinned spawn role, self-recursive");
+  assert.match(body, /subagent_type: "evaluator-fanout-child"/, "spawns the distinct pinned leaf role");
+  assert.match(body, /run_in_background: false/, "uses Claude's supported synchronous child edge");
+  assert.match(body, /Claude Code >=2\.1\.172/, "documents the minimum nested-subagent host version");
+  assert.match(body, /CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1/, "documents the explicit agent-teams runtime gate");
+  assert.match(body, /agent teams are off by default/i, "does not imply the experimental topology is default-on");
+  assert.match(body, /Omit `name` completely/, "does not attempt to add children to the flat teammate roster");
+  assert.match(body, /remaining_depth: 0/, "injects a non-recursive leaf depth");
+  assert.match(body, /planning_key: \[entry\.planning_key\]/, "injects the MCP-issued planning identity into the child prompt");
+  assert.match(body, /BOB_CHILD_CELL_DONE/, "uses the distinct child completion marker consumed by SubagentStop");
+  assert.match(body, /spawn-time tools exclude `Agent`, `Task`, `bob_write_wave_handoff`, and `bob_finalize_agent_run`/,
+    "root documents the distinct child's spawn-time authority boundary");
+  assert.match(body, /spawned_children/, "the root self-reports the direct brain-owned children it actuated");
+  assert.notEqual(CLAUDE_ROLE_SPECS["evaluator-fanout"].background, true,
+    "the renderer must not force synchronous fanout children into background mode");
   // B2 — coverage reconcile so the parent's next fan-out prunes the cell.
   assert.match(body, /bob_log_coverage/, "reconciles cell coverage");
   // B1/HE-6 — transition-blind: pivots reported up, not proposed.
@@ -1807,6 +1844,46 @@ test("evaluator-fanout body carries the brain-owned actuation contract (CN Step 
   assert.match(body, /do not hold `?bob_propose_transition/, "does not hold the propose-transition tool");
   // B4 — per-cell technique weapon (the depth-3 technique-pack variant).
   assert.match(body, /technique_pack_ids/, "carries the per-cell technique packs");
+});
+
+test("NS-7 distinct fanout child is spawn-time least-authority and completion-bound", () => {
+  const rootRole = FANOUT_ROLE_REGISTRY.root.role_id;
+  const childRole = FANOUT_ROLE_REGISTRY.child.role_id;
+  const rootTools = new Set(claudeAllowedToolsForRole(rootRole));
+  const childTools = new Set(claudeAllowedToolsForRole(childRole));
+  const childBody = readFile("prompts/roles/evaluator-fanout-child.md");
+
+  assert.deepEqual(fanoutChildAgentNames(), [FANOUT_ROLE_REGISTRY.child.subagent_type]);
+  assert.equal(CLAUDE_ROLE_SPECS[childRole].spawn_capable, undefined);
+  assert.deepEqual(CLAUDE_ROLE_SPECS[childRole].local_tools, []);
+  for (const forbidden of [
+    "Agent",
+    "Task",
+    mcpPermissionForTool("bob_write_wave_handoff"),
+    mcpPermissionForTool("bob_finalize_agent_run"),
+  ]) {
+    assert.equal(childTools.has(forbidden), false, `child leaked ${forbidden}`);
+  }
+  for (const retained of [
+    "bob_read_assignment_brief",
+    "bob_read_technique_pack",
+    "bob_log_technique_attempt",
+    "bob_record_candidate_claim",
+    "bob_log_coverage",
+  ]) {
+    assert.equal(childTools.has(mcpPermissionForTool(retained)), true, `child lost ${retained}`);
+  }
+  const scopedGrant = `Agent(${FANOUT_ROLE_REGISTRY.child.subagent_type})`;
+  assert.equal(rootTools.has(scopedGrant), true, "wave root retains only the child-scoped host spawn primitive");
+  assert.equal(rootTools.has("Agent"), false, "wave root must not receive unrestricted Agent");
+  assert.equal(rootTools.has("Task"), false, "wave root must not receive the unrestricted legacy alias");
+  assert.equal(rootTools.has("Agent(evaluator-agent)"), false, "wave root must not spawn a foreign role");
+  assert.equal(rootTools.has(mcpPermissionForTool("bob_write_wave_handoff")), true);
+  assert.equal(rootTools.has(mcpPermissionForTool("bob_finalize_agent_run")), true);
+  assert.match(childBody, /BOB_CHILD_CELL_DONE/);
+  assert.match(childBody, /remaining_depth: 0/);
+  assert.match(childBody, /Do NOT call `bob_write_wave_handoff`/);
+  assert.match(childBody, /Do NOT call `bob_finalize_agent_run`/);
 });
 
 test("evaluator prompt sources do not hand-code handoff field limits", () => {
@@ -1894,6 +1971,20 @@ test("generated surfaces describe central session authority and target_domain se
   ].map(readFile).join("\n");
   assert.match(surfaces, /`target_domain` selects the session record/);
   assert.match(surfaces, /authority error.*session-integrity blocker/);
+});
+
+test("orchestrator surfaces preserve an attested private URL hostname as target_domain", () => {
+  const surfaces = [
+    ".claude/skills/bob-evaluate-runner/SKILL.md",
+    "adapters/codex/skills/bob-evaluate/SKILL.md",
+    "adapters/kimi/skills/bob-evaluate/SKILL.md",
+  ].map(readFile);
+  for (const surface of surfaces) {
+    assert.match(surface, /target_domain: "127\.0\.0\.1"/);
+    assert.match(surface, /never invent a `localhost-\*` slug or include the port/);
+    assert.match(surface, /call `bob_init_session` through MCP first/);
+    assert.match(surface, /session-read-guard.*is not evidence that MCP is unavailable/);
+  }
 });
 
 test("bob-diff-review skill advances to OPEN_FRONTIER before evaluator waves", () => {

@@ -26,7 +26,8 @@
 //       violation.
 //
 //   (d) Every producer_agent resolves to a real .claude/agents/<name>.md
-//       whose frontmatter tools line excludes Task and Agent AND whose name
+//       whose frontmatter tools line excludes every bare or parameterized
+//       Task/Agent spawn grant AND whose name
 //       is absent from spawnCapableAgentNames() (single-spawner topology).
 //
 //   (e) scratch_namespace values are pairwise prefix-disjoint (all unique and
@@ -265,7 +266,7 @@ function checkLegD(root) {
         producer_agent: agent,
         detail: `${relPath} does not open with a YAML frontmatter block`,
       });
-    } else if (tokens.includes("Task") || tokens.includes("Agent")) {
+    } else if (tokens.some((token) => /^(?:Agent|Task)(?:\([^)]*\))?$/.test(token))) {
       violations.push({
         kind: "producer_agent_carries_spawn_tool",
         producer_agent: agent,

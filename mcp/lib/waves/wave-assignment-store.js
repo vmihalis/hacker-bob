@@ -17,6 +17,7 @@ const {
 const {
   loadQueuePolicy,
 } = require("../queue-policy.js");
+const { FANOUT_ROLE_REGISTRY } = require("../nested-spawn.js");
 const {
   appendJsonlLine,
   withSessionLock,
@@ -250,9 +251,9 @@ function removeWaveAssignmentsDocument(assignmentsPath) {
   }
 }
 
-// The single brain-pinned spawn role a nesting child is dispatched as. A
-// reported child of any other type is rejected by the allowlist leg below.
-const SPAWN_CHILD_SUBAGENT_TYPE = "evaluator-fanout";
+// NS-7 — the single brain-pinned LEAF role a nesting root may report. It is
+// deliberately not the spawn-capable root role; a different type is rejected.
+const SPAWN_CHILD_SUBAGENT_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;
 
 // The live detective backstop on actuated fan-out. The brain owns the per-surface
 // fan-out budget (buildChildFanoutPlanForSurface); a worker self-reports the children
@@ -260,26 +261,25 @@ const SPAWN_CHILD_SUBAGENT_TYPE = "evaluator-fanout";
 // the reported children against the budget the brain handed this surface so the
 // "a leaf worker must not fan out" rule is mechanical, not prose.
 //
-// The budget is RE-DERIVED from the same brain function the dispatch used, so it
-// matches what the agent was handed. The discriminator is remaining_depth, which is
-// host/policy-derived (effectiveSpawnDepth minus one) and therefore stable between
-// dispatch and handoff write — unlike max_children/children[], which the cell-floor
-// dedup can only SHRINK as coverage advances. So:
+// The budget is RE-DERIVED from the same brain function the dispatch used. Child
+// coverage is written under the root's shared (wave, agent, surface) coordinates,
+// so those rows MUST be excluded before rebuilding the dispatch-time plan; using
+// all current coverage would prune the children after they completed and reject a
+// truthful root handoff as depth-0/out-of-budget. So:
 //   - No plan, or remaining_depth <= 0  => a leaf worker (the default-off path, every
 //     normal evaluator, and the new flat fan-outs: recon angles, per-finding
 //     verifiers). Budget depth 0 / max_children 0 — ANY reported child is rejected.
 //   - remaining_depth > 0               => the surface was handed a real fan-out plan
 //     (the opt-in nested evaluator-fanout). Children up to the plan's count, of the
-//     pinned spawn type, pass. The count leg uses the live plan's max_children; a
-//     legitimate parent's reported count never exceeds the dispatch-time width
-//     because the live recompute only shrinks, so an honest parent stays within
-//     budget. The allowlist leg pins the child type.
+//     pinned spawn type and exact issued cell_key, pass. The count leg uses the
+//     reconstructed emitted width, not merely the policy ceiling; duplicate or
+//     invented cells are rejected.
 //
-// Best-effort recompute: if the plan cannot be derived (missing surface, transient
-// read error), fall back to a depth-0 leaf budget so an unbudgeted child is still
-// caught and a budgeted parent is never falsely rejected by a recompute failure —
-// instead its width leg is skipped while the leaf leg stays on.
-function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
+// Fail-closed recompute: if the plan cannot be derived (missing surface or read
+// error), fall back to a depth-0 leaf budget. The root keeps its durable child
+// evidence, but no unverified spawn report is signed into a wave handoff.
+// NS-4 — reconstruct the bounded dispatch-time root+descendant envelope.
+function spawnFanoutBudgetForSurface(domain, surfaceId, wave, agent) {
   let plan = null;
   try {
     const { buildChildFanoutPlanForSurface } = require("../assignment-brief.js");
@@ -287,7 +287,11 @@ function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
     const surfaces = readAttackSurfaceStrict(domain).document.surfaces || [];
     const surfaceObj = surfaces.find((s) => s && s.id === surfaceId);
     if (surfaceObj) {
-      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      const coverageRecords = readCoverageRecordsFromJsonl(domain).filter((record) => !(
+        record.wave === wave
+        && record.agent === agent
+        && record.surface_id === surfaceId
+      ));
       plan = buildChildFanoutPlanForSurface({
         domain,
         surfaceObj,
@@ -300,20 +304,42 @@ function spawnFanoutBudgetForSurface(domain, surfaceId, wave) {
     plan = null;
   }
   if (plan && Number.isInteger(plan.remaining_depth) && plan.remaining_depth > 0) {
+    const children = Array.isArray(plan.children) ? plan.children : [];
     return {
       remaining_depth: plan.remaining_depth,
-      max_children: Number.isInteger(plan.max_children) ? plan.max_children : 0,
+      max_children: children.length,
       child_type_allowlist: [SPAWN_CHILD_SUBAGENT_TYPE],
+      child_cell_allowlist: children
+        .map((child) => child && child.cell_key)
+        .filter((cellKey) => typeof cellKey === "string" && cellKey.length > 0),
     };
   }
   return { remaining_depth: 0, max_children: 0 };
 }
 
+// NS-7 — only the root may sign the exact direct cells the brain issued; child
+// coverage cannot erase that issuance before the single root handoff is written.
 function assertSpawnFanoutWithinBudget(domain, wave, agent, surfaceId, spawnedChildren) {
   if (!Array.isArray(spawnedChildren) || spawnedChildren.length === 0) return;
   const { validateSpawnFanout } = require("../nested-spawn.js");
-  const budget = spawnFanoutBudgetForSurface(domain, surfaceId, wave);
+  const budget = spawnFanoutBudgetForSurface(domain, surfaceId, wave, agent);
   const result = validateSpawnFanout(spawnedChildren, budget);
+  const issuedCells = new Set(budget.child_cell_allowlist || []);
+  const seenCells = new Set();
+  for (const child of spawnedChildren) {
+    const cellKey = child && child.cell_key;
+    if (typeof cellKey !== "string" || !issuedCells.has(cellKey)) {
+      result.violations.push(
+        `child cell_key "${typeof cellKey === "string" ? cellKey : "(missing)"}" was not emitted in the child_fanout_plan`,
+      );
+      continue;
+    }
+    if (seenCells.has(cellKey)) {
+      result.violations.push(`child cell_key "${cellKey}" was reported more than once`);
+    }
+    seenCells.add(cellKey);
+  }
+  result.ok = result.violations.length === 0;
   if (!result.ok) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,

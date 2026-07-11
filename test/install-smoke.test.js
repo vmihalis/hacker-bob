@@ -7,6 +7,7 @@ const path = require("node:path");
 const { getAdapter } = require("../adapters/index.js");
 const { installProject } = require("../scripts/install.js");
 const update = require("../mcp/lib/update-check.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 
 const ROOT = path.join(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "hacker-bob.js");
@@ -126,6 +127,10 @@ test("installer copies a require-able complete MCP runtime", () => {
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentstatus", "SKILL.md")));
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "bountyagentdebug", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "agent-run-stop.js")));
+    assert.ok(
+      fs.existsSync(path.join(workspace, ".claude", "agents", `${FANOUT_ROLE_REGISTRY.child.subagent_type}.md`)),
+      "installer must ship the distinct fanout child role",
+    );
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-egress.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-export.js")));
     assert.ok(fs.existsSync(path.join(workspace, ".claude", "hooks", "bob-update.js")));
@@ -202,6 +207,16 @@ test("installer copies a require-able complete MCP runtime", () => {
     const settingsText = JSON.stringify(settings);
     assert.match(settingsText, /\$\{CLAUDE_PROJECT_DIR:-\$PWD\}/);
     assert.doesNotMatch(settingsText, /\$CLAUDE_PROJECT_DIR(?!:-)/);
+    const childStop = (settings.hooks.SubagentStop || []).filter((entry) => (
+      entry.matcher === FANOUT_ROLE_REGISTRY.child.subagent_type
+      && (entry.hooks || []).some((hook) => /agent-run-stop\.js/.test(hook.command))
+    ));
+    assert.equal(childStop.length, 1, "installed child must be transcript-attested by exactly one SubagentStop hook");
+    assert.equal(
+      (settings.hooks.SubagentStart || []).some((entry) => entry.matcher === FANOUT_ROLE_REGISTRY.child.subagent_type),
+      false,
+      "installed child must never receive the shared-root AgentRun start hook",
+    );
     const installMeta = JSON.parse(fs.readFileSync(path.join(workspace, ".claude", "bob", "install.json"), "utf8"));
     assert.equal(installMeta.schema_version, 1);
     assert.equal(installMeta.bob_version, PACKAGE_VERSION);

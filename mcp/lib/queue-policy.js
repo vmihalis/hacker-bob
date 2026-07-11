@@ -113,19 +113,24 @@ const DEFAULT_QUEUE_POLICY = Object.freeze({
   // residual flags advisory Tier-2 re-probes dispatched after all Tier-1 breadth;
   // a Tier-2 re-probe never blocks closure (the gate counts only the Tier-1 floor).
   residual_depth_reprobe_enabled: true,
-  // CN (coverage-nesting) — MCP-owned bound on bounded recursive evaluator
-  // fan-out. The brain owns the decomposition decision (which
+  // CN (coverage-nesting) — MCP-owned bound on evaluator fan-out. The brain
+  // owns the decomposition decision (which
   // (bug_class x auth_role) child cells to probe) and the budget; the host
-  // CLI is the muscle (native nested spawn on Claude/Codex, flat extra wave
-  // assignments on Kimi/generic). `max_spawn_depth` counts evaluator spawn
+  // CLI is the muscle (one teammate->subagent level on current Claude, host-
+  // configured nesting on Codex, flat extra wave assignments on Kimi/generic).
+  // `max_spawn_depth` counts evaluator spawn
   // levels below the orchestrator: 1 = flat topology (per-surface evaluators
   // are leaves, NO fan-out); 2 lets a per-surface evaluator spawn one level of
-  // child sub-evaluators; etc. The cross-role fan-out default sets depth 3 so a
-  // per-surface evaluator-fanout can nest one level of (bug_class x auth_role)
-  // child cells. The per-host nesting ceiling (e.g. Claude Code's fixed depth 5)
-  // further clamps this via the adapter capability descriptor, and a non-nesting
-  // host degrades depth to 1, so the default fans deep ONLY on a self-managing
-  // host. `max_spawn_children` caps the child cells a single fan-out plan may
+  // child sub-evaluators; etc. The cross-role fan-out default requests depth 3;
+  // Claude's current flat-team adapter clamps that to depth 2 only when its
+  // experimental agent-teams runtime flag is explicitly enabled, so a per-surface
+  // evaluator-fanout can spawn one level of (bug_class x auth_role) child cells.
+  // Default Claude (flag absent) clamps to depth 1 and stays flat.
+  // The per-host nesting ceiling
+  // further clamps this via the adapter capability descriptor. Default Claude
+  // (agent-teams flag absent) and non-nesting hosts degrade depth to 1, so the
+  // requested default fans deep only on an explicitly enabled capable host.
+  // `max_spawn_children` caps the child cells a single fan-out plan may
   // mint (64 = the normalizeQueuePolicy max, so an operator can't be throttled
   // below the real cell count). LEAN_PROFILE below restores depth 1 / children 8.
   max_spawn_depth: 3,

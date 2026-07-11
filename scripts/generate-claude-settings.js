@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const {
   defaultClaudeSettings,
+  FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+  fanoutChildScopeGuardHookEntry,
   permissionsForAllTools,
 } = require("../adapters/claude/config.js");
 const {
@@ -60,6 +62,14 @@ function withApprovalGateMatcher(preToolUseHooks) {
   return withoutApprovalGate;
 }
 
+function withFanoutChildScopeGuard(preToolUseHooks) {
+  const withoutGuard = preToolUseHooks.filter((entry) => (
+    !(entry && entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER)
+  ));
+  withoutGuard.push(fanoutChildScopeGuardHookEntry());
+  return withoutGuard;
+}
+
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -82,6 +92,7 @@ function renderSettings(existing) {
   const existingPreToolUse = Array.isArray(existingHooks.PreToolUse)
     ? existingHooks.PreToolUse
     : [];
+  const canonicalHooks = defaultClaudeSettings().hooks;
   return {
     ...base,
     permissions: {
@@ -90,7 +101,12 @@ function renderSettings(existing) {
     },
     hooks: {
       ...existingHooks,
-      PreToolUse: withApprovalGateMatcher(existingPreToolUse),
+      PreToolUse: withApprovalGateMatcher(withFanoutChildScopeGuard(existingPreToolUse)),
+      // NS-7 — lifecycle matchers are generated from the role registry. The
+      // distinct child is stop-attested but never start-attributed to the
+      // shared root AgentRun, so stale source settings cannot invert that split.
+      SubagentStart: canonicalHooks.SubagentStart,
+      SubagentStop: canonicalHooks.SubagentStop,
     },
   };
 }
@@ -151,4 +167,5 @@ module.exports = {
   renderSettings,
   updateSettings,
   withApprovalGateMatcher,
+  withFanoutChildScopeGuard,
 };

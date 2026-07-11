@@ -72,6 +72,7 @@ const {
 const {
   normalizeAssignmentRouteMetadata,
 } = require("./capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 const {
   readFrontierEvents,
 } = require("./frontier-events.js");
@@ -1240,11 +1241,10 @@ function cellFloorPlanningKeysForSurface(domain, surfaceId) {
   return keys;
 }
 
-// CN (coverage-nesting) Step B — the brain-pinned spawn role a nesting child is
-// dispatched as. It is the single registry spawn_capable agent (Y-P8 length-1
-// allowlist; spawnCapableAgentNames() === [SPAWN_SUBAGENT_TYPE]); validateSpawnFanout
-// rejects any other child subagent_type.
-const SPAWN_SUBAGENT_TYPE = "evaluator-fanout";
+// NS-7 — the brain-pinned leaf role is distinct from the single registry
+// spawn-capable root. validateSpawnFanout rejects any other child type, while
+// role-model.js removes recursion and settlement authority before spawn.
+const SPAWN_SUBAGENT_TYPE = FANOUT_ROLE_REGISTRY.child.subagent_type;
 
 // EARNED-DONE COMPOSITION INVARIANT (do not sever): child (bug_class × auth) cells are NOT
 // minted as wave assignments — they reuse the PARENT's (wave, agent) and re-read the parent's
@@ -1267,13 +1267,14 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   // NS-3 (B3 / FIX-6) — host-depth clamp. Nesting is reachable ONLY on host==claude: the
   // MCP-side runtimeClient() resolves to "claude" or "unknown" (never codex/kimi),
   // and effectiveSpawnDepth('codex') is UNCAPPED — so gate
-  // depth>1 on host==="claude" SPECIFICALLY and clamp by the host nesting ceiling
-  // (claude: 5). A non-claude host gets remainingDepth 0 => no nested plan (the fan-out
-  // degrades to flat wave assignments the orchestrator dispatches). The shipped default
-  // max_spawn_depth is 3, so on a claude host a fanned-out surface gets remainingDepth 2 (the
-  // fan-out fires); a max_spawn_depth=1 policy OR any non-claude host yields remainingDepth 0
-  // (flat, byte-identical to the pre-nesting path). The router only routes a surface HERE
-  // (evaluator-fanout) on the same claude+depth>1 predicate, so the two gates never desync.
+  // depth>1 on host==="claude" SPECIFICALLY and clamp by the host nesting registry
+  // (claude: 2 only when CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 — a named wave
+  // teammate may spawn one anonymous synchronous child level; Bob's distinct
+  // child role cannot recurse because it has no Agent grant and the hook denies
+  // it). Default Claude, a max_spawn_depth=1 policy, or any non-Claude host
+  // gets remainingDepth 0 => no nested plan, so fan-out degrades to flat wave
+  // assignments. The router calls the same effectiveSpawnDepth predicate before
+  // selecting evaluator-fanout, so routing and child-plan emission cannot desync.
   const hostId = require("./runtime-resources.js").runtimeClient();
   const hostCeiling = hostId === "claude"
     ? require("./nested-spawn.js").effectiveSpawnDepth(policy.max_spawn_depth, hostId)
@@ -1286,10 +1287,11 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   const remainingDepth = Number.isInteger(remainingDepthOverride)
     ? Math.max(0, Math.min(remainingDepthOverride, hostCeiling))
     : Math.max(0, hostCeiling - 1);
-  // Read-path width bound (CN Step B, preventive at depth-1 width): when the session
+  // NS-4 — read-path width bound: when the session
   // spawn budget governor is set, cap this root's branching so its worst-case subtree
-  // allocation fits the remaining budget (max_total_spawned_agents minus the MCP-owned
-  // ledger's running total). Read-only — the brief is mutating:false, so the ledger is
+  // allocation fits the remaining DESCENDANT budget: max_total_spawned_agents minus
+  // the MCP-owned ledger's running total minus one slot for this root itself. Read-only —
+  // the brief is mutating:false, so the ledger is
   // READ here and WRITTEN at the mutating dispatch step (startWaveLocked, per
   // spawn-capable root, greedy-sequential). The running total therefore accumulates
   // across roots AND waves; passing the current root's (wave, surfaceId) excludes ITS
@@ -1302,11 +1304,17 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   if (Number.isInteger(policy.max_total_spawned_agents)) {
     const { spawnLedgerTotal } = require("./spawn-ledger.js");
     const { maxBranchingForBudget } = require("./nested-spawn.js");
-    const remainingBudget = Math.max(
+    const remainingDescendantBudget = Math.max(
       0,
-      policy.max_total_spawned_agents - spawnLedgerTotal(domain, { excludeWave: wave, excludeSurfaceId: surfaceId }),
+      policy.max_total_spawned_agents
+        - spawnLedgerTotal(domain, { excludeWave: wave, excludeSurfaceId: surfaceId })
+        - 1,
     );
-    maxChildren = maxBranchingForBudget(remainingDepth, remainingBudget, policy.max_spawn_children);
+    maxChildren = maxBranchingForBudget(
+      remainingDepth,
+      remainingDescendantBudget,
+      policy.max_spawn_children,
+    );
   }
   const plan = planCellsForSurface({
     domain,
@@ -1323,16 +1331,17 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
   // byte-identical (INV-6 default-off). Each child carries the brain-pinned spawn role
   // plus its own one-level-smaller depth budget, so a depth-2 child knows how far it
   // may itself fan out. (Per-child max_children is partitioned at wave-dispatch in C5.)
-  // The child is dispatched AS evaluator-fanout, so its brief may only name tools that
-  // role actually holds: filter allowed_tools_for_node to the role's granted set, which
-  // the deny strips of bob_propose_transition — keeping the brief coherent with the
-  // frontmatter and disjoint from the coverage-cell tools (G2).
+  // The child is dispatched AS the distinct evaluator-fanout-child role, so its
+  // brief may name only tools that role actually holds. The role-model deny strips
+  // transition, handoff, and finalize writes, keeping this MCP-issued allowlist in
+  // exact lockstep with generated child frontmatter rather than maintaining a
+  // second ad-hoc subtraction list here.
   // D6 nested-spawn-time dedup: drop a nested child whose (bug_class, auth) cell the
   // cell floor has already proposed for this surface, so a nested child and a closure
   // cell never double-probe the same cell within one materialize window. Nesting-only
   // (the floor is untouched); empty in the normal wave phase, so byte-identical there.
   const inFlightKeys = cellFloorPlanningKeysForSurface(domain, surfaceId);
-  const grantedByFanout = new Set(require("./role-model.js").mcpToolNamesForRole(SPAWN_SUBAGENT_TYPE));
+  const grantedByChild = new Set(require("./role-model.js").mcpToolNamesForRole(SPAWN_SUBAGENT_TYPE));
   const childRemainingDepth = Math.max(0, plan.remaining_depth - 1);
   const children = plan.children
     .filter((child) => !inFlightKeys.has(child.planning_key))
@@ -1340,7 +1349,7 @@ function buildChildFanoutPlanForSurface({ domain, surfaceObj, surfaceId, coverag
       Object.freeze({
         ...child,
         allowed_tools_for_node: Object.freeze(
-          (child.allowed_tools_for_node || []).filter((toolName) => grantedByFanout.has(toolName)),
+          (child.allowed_tools_for_node || []).filter((toolName) => grantedByChild.has(toolName)),
         ),
         subagent_type: SPAWN_SUBAGENT_TYPE,
         remaining_depth: childRemainingDepth,

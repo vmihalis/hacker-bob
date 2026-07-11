@@ -159,10 +159,15 @@ test("MAX_COVERAGE_PROFILE differs from the on-default ONLY by setting a finite 
 
 // ── host-fail-closed under the on-default ────────────────────────────────────
 
-test("host-fail-closed: the on-default in-flight cap and depth degrade to 1/1 on non-self-managing hosts", () => {
-  // claude/codex self-manage -> honor the requested width/depth.
+test("host-fail-closed: the on-default in-flight cap and depth follow each host's supported topology", () => {
+  // Claude keeps the requested top-level width but stays flat until the experimental
+  // agent-teams feature is explicitly enabled; then it exposes one child edge.
   assert.equal(effectiveConcurrencyCap(DEFAULT_QUEUE_POLICY.max_concurrent_evaluators, "claude"), 128);
-  assert.equal(effectiveSpawnDepth(DEFAULT_QUEUE_POLICY.max_spawn_depth, "claude"), 3);
+  assert.equal(effectiveSpawnDepth(DEFAULT_QUEUE_POLICY.max_spawn_depth, "claude", {}), 1);
+  assert.equal(effectiveSpawnDepth(DEFAULT_QUEUE_POLICY.max_spawn_depth, "claude", {
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+  }), 2);
+  // Codex honors the requested depth; its operator-owned config is the host backstop.
   assert.equal(effectiveSpawnDepth(DEFAULT_QUEUE_POLICY.max_spawn_depth, "codex"), 3);
   // finite-pool / unknown / empty hosts clamp the raised default to a single agent.
   for (const host of ["kimi", "generic-mcp", "unknown-host", ""]) {

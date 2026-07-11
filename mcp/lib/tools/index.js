@@ -84,7 +84,7 @@ const TOOL_MODULES = Object.freeze([
   // bob_export_security_hub_finding was REMOVED from the model-reachable
   // tool registry (ARCHITECTURAL FIX, Eric-approved): AWS Security Hub
   // export now runs ONLY as a downstream Step Functions Lambda
-  // (infra/aws/glassbox-stack/functions/export-security-hub/), invoked
+  // (infra/aws/hacker-bob-stack/functions/export-security-hub/), invoked
   // strictly AFTER the human's SendTaskSuccess, under its own dedicated IAM
   // role that the model's execution role does not share. The implementation
   // module (export-security-hub-finding.js) still exists as a library --

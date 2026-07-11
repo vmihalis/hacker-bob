@@ -82,10 +82,10 @@ module.exports = wrapWriteTool({
         "maxItems": 64,
         "items": {
           "type": "object",
-          "required": ["subagent_type"],
+          "required": ["subagent_type", "cell_key"],
           "properties": {
             "subagent_type": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "cell_key": { "type": "string", "maxLength": 300 }
+            "cell_key": { "type": "string", "minLength": 1, "maxLength": 300 }
           }
         }
       },

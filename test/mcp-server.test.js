@@ -19754,8 +19754,12 @@ test("validateScanUrl rejects malformed URLs", () => {
   assert.throws(() => validateScanUrl("not-a-url"), /Invalid URL/);
 });
 
-test("Claude settings register only artifact guards; scoped HTTP policy is enforced by MCP runtime", () => {
-  const { defaultClaudeSettings } = require("../adapters/claude/config.js");
+test("Claude settings register canonical artifact and fanout-ownership guards; scoped HTTP policy stays in MCP", () => {
+  const {
+    defaultClaudeSettings,
+    FANOUT_CHILD_SCOPE_GUARD_MATCHER,
+    fanoutChildScopeGuardHookEntry,
+  } = require("../adapters/claude/config.js");
   const { mergeSettings } = require("../scripts/merge-claude-config.js");
   const generated = defaultClaudeSettings();
   const installed = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude", "settings.json"), "utf8"));
@@ -19773,18 +19777,28 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
     assert.ok(bash, "Bash hook entry should remain for session artifact guards");
     assert.ok(bash.hooks.some((hook) => /session-write-guard\.sh/.test(hook.command)));
     assert.ok(bash.hooks.some((hook) => /session-read-guard\.sh/.test(hook.command)));
-    // The ONLY permitted MCP-tool PreToolUse hook is the flag-gated write-confirm HITL gate: it ASKS
-    // the operator before a target-mutating bob_http_scan (and is inert unless BOB_HTTP_WRITE_CONFIRM
-    // is set). It does NOT enforce scope/HTTP policy — that stays in the MCP runtime, where it can't be
-    // bypassed by editing a hook. So an MCP matcher is allowed ONLY when it is exactly that gate; a
-    // scope/enforcement guard on an MCP tool remains forbidden.
+    // Exactly two canonical MCP matchers are permitted: the opt-in HTTP write-confirm HITL gate and
+    // the host-context guard that prevents a nested evaluator-fanout child from invoking root-owned
+    // handoff/finalize tools. Target scope and HTTP policy remain MCP-runtime responsibilities.
     const mcpEntries = settings.hooks.PreToolUse.filter((entry) => /^mcp__(hacker-bob|bountyagent)__/.test(entry.matcher || ""));
+    assert.deepEqual(
+      mcpEntries.map((entry) => entry.matcher).sort(),
+      ["mcp__hacker-bob__bob_http_scan", FANOUT_CHILD_SCOPE_GUARD_MATCHER].sort(),
+      "only the canonical HTTP confirmation and fanout ownership guards may hook MCP tools",
+    );
     for (const entry of mcpEntries) {
-      assert.equal(entry.matcher, "mcp__hacker-bob__bob_http_scan", "only the write-confirm gate may hook an MCP tool");
-      assert.ok(
-        entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
-        "an MCP-tool PreToolUse hook must be the write-confirm HITL gate, never a scope/enforcement guard",
-      );
+      if (entry.matcher === "mcp__hacker-bob__bob_http_scan") {
+        assert.ok(
+          entry.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
+          "the HTTP-scan matcher must contain only the write-confirm HITL gate",
+        );
+      } else {
+        assert.deepEqual(
+          entry,
+          fanoutChildScopeGuardHookEntry(),
+          "the fanout ownership matcher and command must stay exact",
+        );
+      }
     }
   }
 
@@ -19828,6 +19842,14 @@ test("Claude settings register only artifact guards; scoped HTTP policy is enfor
   assert.ok(
     mergedScan.hooks.every((hook) => isWriteConfirmOnlyCommand(hook.command)),
     "only the write-confirm HITL hook survives; the stale scope-guard-mcp.sh is stripped",
+  );
+  const mergedFanoutGuard = merged.hooks.PreToolUse.find((entry) => (
+    entry.matcher === FANOUT_CHILD_SCOPE_GUARD_MATCHER
+  ));
+  assert.deepEqual(
+    mergedFanoutGuard,
+    fanoutChildScopeGuardHookEntry(),
+    "the canonical fanout child/root ownership guard survives merge unchanged",
   );
 });
 

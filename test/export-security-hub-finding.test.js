@@ -112,16 +112,38 @@ async function withTempHome(fn) {
 // (i.e. after drivePipelineToFinalizedReport) so the bound hash matches what
 // bob_export_security_hub_finding's chokepoint will independently recompute.
 const APPROVAL_HMAC_KEY_TEST = "test-approval-hmac-key";
+const APPROVAL_FREEZE_BODY_SHA256 = "b".repeat(64);
+const APPROVAL_FREEZE_VERSION_ID = "export-tool-test-freeze-version-1";
+
+function approvalArtifact(domain, gradeVerdictHash, key = APPROVAL_HMAC_KEY_TEST) {
+  const profile = domain === "libheif-cve-2026-49271" ? domain : "smoke";
+  const hmac = crypto.createHmac("sha256", key)
+    .update(JSON.stringify([
+      profile,
+      domain,
+      gradeVerdictHash,
+      APPROVAL_FREEZE_BODY_SHA256,
+      APPROVAL_FREEZE_VERSION_ID,
+    ]), "utf8")
+    .digest("hex");
+  return JSON.stringify({
+    schema_version: 2,
+    binding_version: "grade-freeze-v2",
+    profile,
+    target_domain: domain,
+    grade_verdict_hash: gradeVerdictHash,
+    grade_freeze_bundle_sha256: APPROVAL_FREEZE_BODY_SHA256,
+    grade_freeze_version_id: APPROVAL_FREEZE_VERSION_ID,
+    hmac,
+  });
+}
 
 function installApprovalArtifact(domain) {
   const gradeVerdictHash = loadGradeVerdictHash(domain);
-  const hmac = crypto.createHmac("sha256", APPROVAL_HMAC_KEY_TEST)
-    .update(`${domain}|${gradeVerdictHash}`, "utf8")
-    .digest("hex");
   _setApprovalHmacKeyForTest(APPROVAL_HMAC_KEY_TEST);
   _setApprovalBackendForTest((targetDomain) => {
     if (targetDomain !== domain) return null;
-    return JSON.stringify({ hmac, grade_verdict_hash: gradeVerdictHash });
+    return approvalArtifact(domain, gradeVerdictHash);
   });
 }
 
@@ -557,13 +579,10 @@ test("bob_export_security_hub_finding refuses when an injected approval backend 
     // amend-and-reexport gap fx-hmac-content already closes for the other
     // two approval layers must hold here too.
     const staleHash = "0".repeat(64);
-    const hmac = crypto.createHmac("sha256", APPROVAL_HMAC_KEY_TEST)
-      .update(`${domain}|${staleHash}`, "utf8")
-      .digest("hex");
     _setApprovalHmacKeyForTest(APPROVAL_HMAC_KEY_TEST);
     _setApprovalBackendForTest((targetDomain) => (
       targetDomain === domain
-        ? JSON.stringify({ hmac, grade_verdict_hash: staleHash })
+        ? approvalArtifact(domain, staleHash)
         : null
     ));
     const { securityHubCalls, s3Calls } = installAwsFakes();
@@ -741,7 +760,7 @@ test("bob_write_grade_verdict triggers the GRADE-time WORM freeze write when BOB
   await withTempHome(async () => {
     const domain = "grade-freeze-wiring.example.com";
     const previousFreezeBucket = process.env.BOB_GRADE_FREEZE_BUCKET;
-    process.env.BOB_GRADE_FREEZE_BUCKET = "glassbox-evidence-test";
+    process.env.BOB_GRADE_FREEZE_BUCKET = "hacker-bob-evidence-test";
     const calls = [];
     _setSyncPutObjectForTest((args) => { calls.push(args); });
     try {
@@ -749,7 +768,7 @@ test("bob_write_grade_verdict triggers the GRADE-time WORM freeze write when BOB
 
       const gradeVerdictHash = loadGradeVerdictHash(domain);
       assert.equal(calls.length, 1, "exactly one grade write happened in the pipeline");
-      assert.equal(calls[0].bucket, "glassbox-evidence-test");
+      assert.equal(calls[0].bucket, "hacker-bob-evidence-test");
       assert.equal(calls[0].key, gradeFreezeS3Key(domain, gradeVerdictHash));
       const bundle = JSON.parse(calls[0].bodyString);
       assert.equal(bundle.grade_verdict_hash, gradeVerdictHash);

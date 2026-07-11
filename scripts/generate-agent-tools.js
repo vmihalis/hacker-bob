@@ -66,11 +66,19 @@ const AGENT_TOOL_SPECS = Object.freeze({
   },
   // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator. Rendered
   // via the role-id path so the tools line tracks mcpToolNamesForRole including
-  // the bob_propose_transition deny and the spawn_capable Task grant.
+  // the bob_propose_transition deny and parameterized spawn-capable Agent grant.
   "evaluator-fanout.md": {
     roleId: "evaluator-fanout",
     roleBundles: ["evaluator-shared", "evaluator-web"],
     extras: ["Bash", "Read", "Grep", "Glob"],
+  },
+  // NS-7 — distinct synchronous leaf. The role-id path renders its denied MCP
+  // settlement tools out of frontmatter; an empty extras list also proves the
+  // child receives no host-local Agent/Task/Bash/file surface at spawn time.
+  "evaluator-fanout-child.md": {
+    roleId: "evaluator-fanout-child",
+    roleBundles: ["evaluator-shared", "evaluator-web"],
+    extras: [],
   },
   "brutalist-verifier.md": {
     roleId: "brutalist-verifier",

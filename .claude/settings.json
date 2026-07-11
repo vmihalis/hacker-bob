@@ -268,6 +268,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__hacker-bob__bob_write_wave_handoff|mcp__hacker-bob__bob_finalize_agent_run|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-stop.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -294,6 +304,16 @@
         ]
       },
       {
+        "matcher": "evaluator-fanout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-start.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "evaluator-evm-agent",
         "hooks": [
           {
@@ -335,16 +355,6 @@
       },
       {
         "matcher": "evaluator-cosmwasm-agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-start.js\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "evaluator-fanout",
         "hooks": [
           {
             "type": "command",
@@ -366,6 +376,16 @@
         ]
       },
       {
+        "matcher": "evaluator-fanout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/agent-run-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "evaluator-evm-agent",
         "hooks": [
           {
@@ -416,7 +436,7 @@
         ]
       },
       {
-        "matcher": "evaluator-fanout",
+        "matcher": "evaluator-fanout-child",
         "hooks": [
           {
             "type": "command",

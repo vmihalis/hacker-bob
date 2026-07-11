@@ -6,7 +6,7 @@
 # in lifecycle-gates.js gateGradeToReport. This is a defensive human-in-the-loop gate — it adds
 # no offensive capability; it only WITHHOLDS the report step until a human approves.
 #
-# Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+# Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 #
 # Fail CLOSED on exec failure (P1-4): if python3 is missing or not executable, a bare failed
 # `exec` would exit this non-interactive shell with 127/126 — a non-2 code Claude Code treats as

@@ -8,10 +8,10 @@
 // fx-gate-hardening REMOVED the model-writable-artifact PRODUCER that used to live inside
 // infra/runner/agentcore-entrypoint.py's run_invocation (see test/agentcore_entrypoint_test.py's
 // dedicated regression test confirming that removal). The real production producer is now the
-// out-of-band ApprovalWriterFunction Lambda declared in
-// infra/aws/glassbox-stack/template.yaml -- not unit-testable via node --test without live AWS
+// out-of-band VerifierGateFunction Lambda declared in
+// infra/aws/hacker-bob-stack/template.yaml -- not unit-testable via node --test without live AWS
 // (that Lambda's own inline Python source is syntax/structure-checked by
-// test/glassbox-template-approval-env.test.js instead).
+// test/hacker-bob-template-approval-env.test.js instead).
 //
 // What THIS test still verifies end-to-end, without either consumer diverging:
 //   1. Both consumers (mcp/lib/lifecycle-gates.js's gradeToReportApprovalBlocker, the
@@ -50,15 +50,41 @@ const { loadGradeVerdictHash } = require("../mcp/lib/report-finalize.js");
 
 const TARGET_DOMAIN = "10.0.0.42"; // the port-stripped form both consumers key by
 const HMAC_KEY = "integration-test-only-hmac-key-do-not-use-in-prod";
+const FREEZE_BODY_SHA256 = "b".repeat(64);
+const FREEZE_VERSION_ID = "integration-freeze-version-1";
 
 // fx-hmac-content: the artifact is bound to `${target_domain}|${grade_verdict_hash}`, not just
-// target_domain -- mirrors the production ApprovalWriterFunction's signing scheme AND both
+// target_domain -- mirrors the production VerifierGateFunction's signing scheme AND both
 // consumers' recompute-and-compare (mcp/lib/approval-store.js, bob-approval-gate-impl.py).
 function signedArtifact(targetDomain, gradeVerdictHash, key = HMAC_KEY) {
+  const profile = targetDomain === "libheif-cve-2026-49271"
+    ? "libheif-cve-2026-49271"
+    : "smoke";
   const hmac = crypto.createHmac("sha256", key)
-    .update(`${targetDomain}|${gradeVerdictHash}`, "utf8")
+    .update(JSON.stringify([
+      profile,
+      targetDomain,
+      gradeVerdictHash,
+      FREEZE_BODY_SHA256,
+      FREEZE_VERSION_ID,
+    ]), "utf8")
     .digest("hex");
-  return JSON.stringify({ hmac, grade_verdict_hash: gradeVerdictHash });
+  return JSON.stringify({
+    schema_version: 2,
+    binding_version: "grade-freeze-v2",
+    profile,
+    target_domain: targetDomain,
+    grade_verdict_hash: gradeVerdictHash,
+    grade_freeze_bundle_sha256: FREEZE_BODY_SHA256,
+    grade_freeze_version_id: FREEZE_VERSION_ID,
+    hmac,
+  });
+}
+
+function writeApprovalArtifact(artifactDir, targetDomain, gradeVerdictHash, body) {
+  const targetDir = path.join(artifactDir, targetDomain);
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(path.join(targetDir, `${gradeVerdictHash}.approved`), body);
 }
 
 // fx-hmac-content: both consumers resolve their own "current" grade_verdict_hash from
@@ -119,8 +145,8 @@ function runHook({ home, artifactDir, agentcoreEnabled }) {
 }
 
 test("both consumers block before the artifact exists, allow after a single valid write, and BOTH re-block after amend (no naming/keying divergence)", () => {
-  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "glassbox-integration-artifacts-"));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "glassbox-integration-home-"));
+  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-integration-artifacts-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-integration-home-"));
   const previousAgentcore = process.env.BOB_AGENTCORE;
   const previousArtifactDir = process.env.BOB_APPROVAL_ARTIFACT_DIR;
   const previousHome = process.env.HOME;
@@ -144,8 +170,10 @@ test("both consumers block before the artifact exists, allow after a single vali
     //     bob-approval-gate-impl.py's _fetch_approval_artifact_bytes) AND the identical HOME
     //     both resolve grade.json under.
     const gradeVerdictHash = writeTestGradeVerdict(home, TARGET_DOMAIN);
-    fs.writeFileSync(
-      path.join(artifactDir, `${TARGET_DOMAIN}.approved`),
+    writeApprovalArtifact(
+      artifactDir,
+      TARGET_DOMAIN,
+      gradeVerdictHash,
       signedArtifact(TARGET_DOMAIN, gradeVerdictHash),
     );
 
@@ -187,8 +215,8 @@ test("both consumers block before the artifact exists, allow after a single vali
 });
 
 test("both consumers stay blocked on a tampered/wrong-signature artifact (existence alone is not enough)", () => {
-  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "glassbox-integration-tampered-"));
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "glassbox-integration-tampered-home-"));
+  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-integration-tampered-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-integration-tampered-home-"));
   const previousAgentcore = process.env.BOB_AGENTCORE;
   const previousArtifactDir = process.env.BOB_APPROVAL_ARTIFACT_DIR;
   const previousHome = process.env.HOME;
@@ -202,8 +230,10 @@ test("both consumers stay blocked on a tampered/wrong-signature artifact (existe
     // CURRENT grade (mere existence, or even a matching content-binding, would have allowed
     // this under the old raw-existence check this hardening replaces) -- but signed with a
     // DIFFERENT key.
-    fs.writeFileSync(
-      path.join(artifactDir, `${TARGET_DOMAIN}.approved`),
+    writeApprovalArtifact(
+      artifactDir,
+      TARGET_DOMAIN,
+      gradeVerdictHash,
       signedArtifact(TARGET_DOMAIN, gradeVerdictHash, "a-different-attacker-controlled-key"),
     );
 
@@ -228,13 +258,15 @@ test("both consumers stay blocked on a tampered/wrong-signature artifact (existe
 });
 
 test("both consumers allow/abstain when BOB_AGENTCORE != \"1\", regardless of artifact state (inert-by-default end-to-end)", () => {
-  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "glassbox-integration-inert-"));
+  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "hacker-bob-integration-inert-"));
   try {
     // Even a VALID (content-bound) artifact present must not matter off the AWS branch -- the
     // gate itself must not fire at all (BOB_AGENTCORE !== "1" is gradeToReportApprovalBlocker's
     // own first check), so the grade_verdict_hash value here is arbitrary -- inert either way.
-    fs.writeFileSync(
-      path.join(artifactDir, `${TARGET_DOMAIN}.approved`),
+    writeApprovalArtifact(
+      artifactDir,
+      TARGET_DOMAIN,
+      "0".repeat(64),
       signedArtifact(TARGET_DOMAIN, "0".repeat(64)),
     );
 
@@ -249,4 +281,15 @@ test("both consumers allow/abstain when BOB_AGENTCORE != \"1\", regardless of ar
   } finally {
     fs.rmSync(artifactDir, { recursive: true, force: true });
   }
+});
+
+test("Node production approval backend resolves Secrets Manager through image-owned Python+boto3, never an absent AWS CLI", () => {
+  const source = fs.readFileSync(path.join(ROOT, "mcp", "lib", "approval-store.js"), "utf8");
+  const dockerfile = fs.readFileSync(path.join(ROOT, "infra", "runner", "Dockerfile"), "utf8");
+  assert.match(source, /execFileSync\(\s*"python3"/);
+  assert.match(source, /boto3\.client\('secretsmanager'\)/);
+  assert.doesNotMatch(source, /execFileSync\(\s*"aws"/);
+  assert.match(source, /approvals\/\$\{targetDomain\}\/\$\{currentGradeVerdictHash\}\.approved/);
+  assert.match(dockerfile, /boto3==1\.43\.46/);
+  assert.match(dockerfile, /ENV PATH=\/opt\/agentcore-venv\/bin:\$PATH/);
 });

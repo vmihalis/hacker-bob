@@ -1,0 +1,1894 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+# hacker-bob-stack — AgentCore Runtime + containment VPC + evidence/verifier sinks.
+#
+# Scope: this template provisions the SUBSTRATE the AgentCore-hosted hacker-bob
+# runs on top of. It does not touch mcp/**, the v2 FSM, or any of the 19 role
+# files — those run UNCHANGED inside the microVM this stack boots. It does not
+# author the agentcore-entrypoint.py wrapper, the Dockerfile, or
+# export-security-hub-finding.js — those are separate nodes (h2-deploy et al.)
+# that run/deploy on top of what's declared here.
+#
+# Deploy and invoke with the AWS CLI runbook in README.md. Scope authorization
+# remains out of band. An automated verifier proves the exact GRADE-time WORM
+# bytes, then Step Functions pauses until an out-of-band named human invokes the
+# separately-IAM-scoped approval writer.
+#
+# Full runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
+
+Description: >
+  hacker-bob-stack: native AgentCore Runtime (networkMode:VPC),
+  a deny-by-default egress security group, EFS for $HOME persistence,
+  an Object Lock (COMPLIANCE) evidence bucket, a mutable S3 human-approval
+  store, HMAC signing key, automated integrity verifier, task-token pending
+  recorder, and separately-IAM-scoped human approval writer (the model's
+  execution role can read signed approvals but never write them), Security Hub
+  custom-product ARN, a Step Functions human-gated state machine, a
+  least-privilege execution role, and a CloudTrail trail.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: >
+      Existing VPC the Runtime, EFS mount targets, and Bedrock VPC endpoint
+      attach to. This template assumes the VPC (and its NAT/routing, if any
+      is needed for the interim Z.ai egress path) already exists — VPC/NAT
+      topology is out of this node's remit.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Private subnets (>= 2, distinct AZs recommended) for EFS mount targets
+      and the Runtime's ENIs. Two EFS mount targets are declared below,
+      indexed [0] and [1] into this list — add/remove MountTarget resources
+      by hand if you pass more or fewer than 2 subnets.
+
+  PrivateRouteTableIds:
+    Type: CommaDelimitedList
+    Description: >
+      Route tables used by the Runtime's private subnets. The free S3 gateway
+      endpoint attaches here so ECR layers and the two stack-owned S3 stores
+      remain reachable without NAT.
+
+  S3GatewayPrefixListId:
+    Type: String
+    Default: pl-63a5400a
+    AllowedPattern: ^pl-[a-fA-F0-9]+$
+    Description: >
+      Regional AWS-managed S3 prefix list id for the Runtime security group's
+      443 egress rule. For us-east-1 this is pl-63a5400a; verify with
+      `aws ec2 describe-managed-prefix-lists --query
+      "PrefixLists[?PrefixListName=='com.amazonaws.<region>.s3']"` before
+      deploying in another region.
+
+  AgentContainerRepositoryArn:
+    Type: String
+    AllowedPattern: ^arn:aws:ecr:[a-z0-9-]+:[0-9]{12}:repository/.+$
+    Description: >
+      Exact ECR repository ARN containing AgentContainerImageUri. Used to
+      scope the Runtime execution role's image-pull permissions.
+
+  LockerSecurityGroupId:
+    Type: String
+    Default: sg-00000000000000000
+    AllowedPattern: ^sg-([a-fA-F0-9]{8}|[a-fA-F0-9]{17})$
+    Description: >
+      Security group id of the i3-locker-iac stack's self-hosted Locker
+      service (locker.internal). Cross-stack import placeholder — pass
+      !ImportValue from that stack's Output, or the raw sg-id, once i3 is
+      deployed.
+
+  EnableLockerEgress:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      Enables the optional SG-to-SG path to a separately deployed owned Locker
+      target. The built-in loopback demo target does not need this path.
+
+  LockerServicePort:
+    Type: Number
+    Default: 443
+    Description: Locker (lockerpm/core-api) service port on locker.internal.
+
+  EnableZaiEgress:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      Emergency non-AWS model fallback only. The hacker-bob AWS entry defaults
+      to Bedrock and keeps this hole closed. Enabling it is a separate human
+      decision and requires an explicit gateway host/CIDR.
+
+  ZaiGatewayHost:
+    Type: String
+    Default: ""
+    Description: >
+      FQDN of the Z.ai model gateway. NOT documentation-only: when
+      EnableZaiEgress="true", this value is load-bearing for DNS resolution —
+      ArchiveRpcAllowedDomainList only admits the real Z.ai FQDN into the
+      Route 53 Resolver DNS Firewall allow-list when this parameter is
+      non-empty (see ZaiGatewayHostKnownCondition). Security groups still
+      can't match on FQDN (see ZaiGatewayCidr for the IP/CIDR-level companion
+      control), so this field gates the DNS layer and must be set to the real
+      FQDN before deploy whenever EnableZaiEgress="true".
+
+  ZaiGatewayCidr:
+    Type: String
+    Default: "203.0.113.1/32"
+    Description: >
+      Resolved IP/CIDR for ZaiGatewayHost, /32 strongly preferred. THIS IS A
+      PLACEHOLDER (TEST-NET-3, RFC 5737) — a human must override it with the
+      real resolved address before deploy, and refresh it if the gateway's
+      IP changes (see README "Known limitations"). Never widen this to
+      0.0.0.0/0.
+
+  EnableArchiveRpcEgress:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      Toggles the single declared archive-RPC egress path (fx-kyber-iac):
+      lets bob_foundry_run(chain_id=1, fork_block=17050000) reach exactly
+      ONE pinned public archive-RPC host from inside the deny-egress
+      microVM, mirroring the EnableZaiEgress toggle pattern. Flip to
+      "false" and redeploy to close the hole entirely.
+
+  ArchiveRpcHost:
+    Type: String
+    Default: disabled.invalid
+    Description: >
+      FQDN of the single pinned archive-RPC host that bob_foundry_run's
+      KyberFork EVM pack fork (chain_id=1, fork_block=17050000) is allowed
+      to reach. Defaults to disabled.invalid and must be overridden with the
+      exact archive-RPC provider host when EnableArchiveRpcEgress=true.
+      Threaded into the Runtime env as BOB_EVM_RPCS_1 (see
+      GlassboxAgentCoreRuntime below) and into the Route 53 Resolver DNS
+      Firewall allow-list (see ArchiveRpcAllowedDomainList below).
+
+  ArchiveRpcCidr:
+    Type: String
+    Default: "198.51.100.1/32"
+    Description: >
+      Resolved IP/CIDR for ArchiveRpcHost, /32 strongly preferred. THIS IS
+      A PLACEHOLDER (TEST-NET-2, RFC 5737, deliberately distinct from
+      ZaiGatewayCidr's TEST-NET-3 placeholder) — a human must override it
+      with the real resolved archive-RPC IP/CIDR before deploy, and refresh
+      it if that address changes. Security groups can't match on FQDN, so
+      this CIDR is the SG-level enforcement companion to the DNS Firewall
+      ALLOW/BLOCK-all pair below (same two-layer pattern as ZaiGatewayCidr
+      / ZaiGatewayHost). Never widen this to an open/wildcard CIDR.
+
+  AgentContainerImageUri:
+    Type: String
+    Description: >
+      ECR image URI for the Runtime's container artifact (built from
+      infra/runner/Dockerfile by a separate node — this stack only
+      references the URI, it does not build or push the image).
+
+  BedrockOpusModelId:
+    Type: String
+    Default: us.anthropic.claude-opus-4-8
+    Description: >
+      Bedrock inference-profile id for the opus tier. Confirm the exact
+      suffix against `aws bedrock list-inference-profiles` (acct
+      <ACCOUNT_ID>, us-east-1) before deploy — this only matters once
+      MODEL_PROVIDER=bedrock is flipped.
+
+  BedrockOpusFoundationModelId:
+    Type: String
+    Default: anthropic.claude-opus-4-8
+    Description: Base foundation-model id backing the Opus US inference profile.
+
+  BedrockSonnetModelId:
+    Type: String
+    Default: us.anthropic.claude-sonnet-5
+    Description: Bedrock inference-profile id for the sonnet tier.
+
+  BedrockSonnetFoundationModelId:
+    Type: String
+    Default: anthropic.claude-sonnet-5
+    Description: Base foundation-model id backing the Sonnet US inference profile.
+
+  BedrockFallbackModelId:
+    Type: String
+    Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: >
+      Known-working Bedrock fallback profile for low-cost demo rehearsals while
+      newest-model account enablement is pending. This remains AI/ML on AWS and
+      does not make the Opus/Sonnet H1 gate green.
+
+  BedrockFallbackFoundationModelId:
+    Type: String
+    Default: anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: Base foundation-model id backing BedrockFallbackModelId.
+
+  UseBedrockFallback:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      When true, pin both opus and sonnet aliases to BedrockFallbackModelId.
+      Use only for explicitly-labelled rehearsal/demo fallback runs; false
+      preserves the intended Opus 4.8 / Sonnet 5 mapping.
+
+  EvidenceBucketNamePrefix:
+    Type: String
+    Default: glassbox-evidence
+    Description: Prefix for the Object Lock evidence bucket name.
+
+  EvidenceObjectLockRetentionDays:
+    Type: Number
+    Default: 365
+    Description: >
+      COMPLIANCE-mode default retention (days) for the evidence bucket.
+      COMPLIANCE, never GOVERNANCE — objects cannot be deleted or shortened
+      by anyone, including the account root, until retention expires.
+
+  ApprovalNotificationEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Optional named-human email subscribed to the approval-request SNS topic.
+      Leave blank to manage subscriptions separately. Notifications never carry
+      the Step Functions task token; the human reviews the pending record and
+      invokes ApprovalWriterFunction out of band.
+
+  BobLabTarget:
+    Type: String
+    Default: 127.0.0.1
+    Description: >
+      The engagement's exact RFC1918/loopback IPv4 HOST, without scheme or
+      port. Defaults to the image-owned loopback demo target. External owned
+      targets must override this value and disable EnableBuiltInDemoTarget.
+      See README.md "Scope-gate attestation" and
+      mcp/lib/lab-target-attest.js. Human-supplied at deploy time, out of
+      the model's reach for external targets.
+      Threaded straight through to the AgentCore Runtime's BOB_LAB_TARGET
+      env var, which scope.js then permits as the ONLY eligible target.
+
+  EnableBuiltInDemoTarget:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: >
+      Starts the deterministic synthetic API fixture on 127.0.0.1:8081 in
+      the Runtime container. This is the cheapest owned-target demo path.
+
+Conditions:
+  LockerEgressEnabledCondition: !Equals [!Ref EnableLockerEgress, "true"]
+  ZaiEgressEnabledCondition: !Equals [!Ref EnableZaiEgress, "true"]
+  ArchiveRpcEgressEnabledCondition: !Equals [!Ref EnableArchiveRpcEgress, "true"]
+  BedrockFallbackEnabledCondition: !Equals [!Ref UseBedrockFallback, "true"]
+  HasApprovalNotificationEmail: !Not [!Equals [!Ref ApprovalNotificationEmail, ""]]
+  # fx-kyber-iac (wave 2): "Zai egress is enabled AND a real host was supplied" — mirrors
+  # the !Not/!Equals-empty-string idiom above. ZaiGatewayHost defaults to "" and
+  # (post P2-fx: it is NOT documentation/tagging-only — see the parameter's own Description) is
+  # load-bearing for the DNS Firewall allow-list below, so this condition is what lets
+  # ArchiveRpcAllowedDomainList.Domains below branch to a real FQDN string only when one is
+  # actually known, never an empty-string domain. The Rules: block below additionally refuses to
+  # deploy at all with EnableZaiEgress="true" and ZaiGatewayHost left blank, so the
+  # zai-gateway-egress-disabled.invalid. fallback this condition guards should be unreachable in
+  # practice — it stays as defense-in-depth for a deploy that bypasses template validation.
+  ZaiGatewayHostKnownCondition: !And
+    - !Condition ZaiEgressEnabledCondition
+    - !Not [!Equals [!Ref ZaiGatewayHost, ""]]
+
+# Zai DNS deploy footgun: if the optional SG-level ZaiGatewayEgressRule is enabled, the
+# DNS Firewall allow-list must also admit the real Z.ai FQDN. ZaiGatewayHostKnownCondition
+# only does that when ZaiGatewayHost is non-empty. This validation refuses a deploy that
+# opens the CIDR rule while leaving DNS blackholed by the deny-all catch-all.
+Rules:
+  LockerSecurityGroupRequiredWhenEnabled:
+    RuleCondition: !Equals [!Ref EnableLockerEgress, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LockerSecurityGroupId, sg-00000000000000000]]
+        AssertDescription: LockerSecurityGroupId must be a real target SG when enabled.
+
+  ArchiveRpcHostRequiredWhenEnabled:
+    RuleCondition: !Equals [!Ref EnableArchiveRpcEgress, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ArchiveRpcHost, disabled.invalid]]
+        AssertDescription: >-
+          ArchiveRpcHost is required when EnableArchiveRpcEgress is true.
+
+  BuiltInDemoTargetUsesLoopback:
+    RuleCondition: !Equals [!Ref EnableBuiltInDemoTarget, "true"]
+    Assertions:
+      - Assert: !Equals [!Ref BobLabTarget, 127.0.0.1]
+        AssertDescription: >-
+          BobLabTarget must be 127.0.0.1 when EnableBuiltInDemoTarget is true.
+
+  ZaiGatewayHostRequiredWhenEgressEnabled:
+    RuleCondition: !Equals [!Ref EnableZaiEgress, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ZaiGatewayHost, ""]]
+        AssertDescription: >-
+          ZaiGatewayHost must be set to the real Z.ai model gateway FQDN when
+          EnableZaiEgress is "true" — it is load-bearing for the
+          Route 53 Resolver DNS Firewall allow-list, not documentation/tagging-only.
+          Left blank, the Z.ai path's DNS resolution is blackholed by the
+          deny-by-default catch-all. Set ZaiGatewayHost, or pass
+          EnableZaiEgress=false if the Z.ai interim path is not needed for this deploy.
+
+Resources:
+  # ---------------------------------------------------------------------
+  # (b) Deny-by-default egress security group.
+  # No 0.0.0.0/0 rule exists anywhere in this template — every SG below
+  # (this one, the Bedrock endpoint's, and EFS's) explicitly declares its
+  # own SecurityGroupEgress list specifically so CloudFormation's implicit
+  # "allow all outbound" default (which it silently adds to any SG that
+  # omits SecurityGroupEgress) never applies.
+  # ---------------------------------------------------------------------
+  GlassboxDenyEgressSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: glassbox-deny-egress-sg
+      GroupDescription: Deny-by-default AgentCore egress; only explicit target and AWS endpoint rules.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: AWS service interface endpoints. No internet egress.
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref BedrockEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: glassbox-deny-egress-sg
+
+  S3GatewayEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref GlassboxDenyEgressSg
+      Description: HTTPS to S3 through the regional gateway endpoint prefix list.
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationPrefixListId: !Ref S3GatewayPrefixListId
+
+  LockerEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: LockerEgressEnabledCondition
+    Properties:
+      GroupId: !Ref GlassboxDenyEgressSg
+      Description: HTTPS to the separately deployed owned Locker target.
+      IpProtocol: tcp
+      FromPort: !Ref LockerServicePort
+      ToPort: !Ref LockerServicePort
+      DestinationSecurityGroupId: !Ref LockerSecurityGroupId
+
+  # The single declared MODEL_PROVIDER=zai interim hole. A standalone
+  # resource (not inlined above) specifically so it can be toggled off by
+  # flipping EnableZaiEgress and redeploying, without touching the SG's
+  # other rules. Exactly one rule, host-scoped via ZaiGatewayCidr, HTTPS
+  # only. Never an open exit.
+  ZaiGatewayEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ZaiEgressEnabledCondition
+    Properties:
+      GroupId: !Ref GlassboxDenyEgressSg
+      Description: !Sub >-
+        SINGLE DECLARED MODEL_PROVIDER=zai INTERIM HOLE — HTTPS-only egress
+        to the Z.ai model gateway (${ZaiGatewayHost}). Toggle via
+        EnableZaiEgress; remove once MODEL_PROVIDER=bedrock is live.
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref ZaiGatewayCidr
+
+  # fx-kyber-iac: the single declared archive-RPC egress path. A standalone
+  # resource (not inlined into GlassboxDenyEgressSg above) for the same
+  # reason as ZaiGatewayEgressRule — so it can be toggled off by flipping
+  # EnableArchiveRpcEgress and redeploying, without touching the SG's other
+  # rules. Exactly one rule, host-scoped via ArchiveRpcCidr, HTTPS only.
+  # Consumer: bob_foundry_run(chain_id=1, fork_block=17050000) — the
+  # KyberFork EVM pack's public-archive-fork run (KYBERFORK-SPEC.md's
+  # REFRAMED retarget), reached from inside the deny-egress microVM instead
+  # of the moot private in-VPC anvil node. This is the SG-level enforcement
+  # layer; the Route 53 Resolver DNS Firewall block below is the DNS-level
+  # companion for the SAME one path, never a second hole.
+  ArchiveRpcGatewayEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ArchiveRpcEgressEnabledCondition
+    Properties:
+      GroupId: !Ref GlassboxDenyEgressSg
+      Description: !Sub >-
+        SINGLE DECLARED archive-RPC HOLE for bob_foundry_run(chain_id=1,
+        fork_block=17050000) — HTTPS-only egress to the pinned archive-RPC
+        host (${ArchiveRpcHost}). Toggle via EnableArchiveRpcEgress.
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: !Ref ArchiveRpcCidr
+
+  # ---------------------------------------------------------------------
+  # Bedrock VPC endpoint (the target MODEL_PROVIDER=bedrock path — no
+  # internet egress hole once flipped).
+  # ---------------------------------------------------------------------
+  BedrockEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: glassbox-aws-service-endpoints-sg
+      GroupDescription: Inbound 443 from glassbox-deny-egress-sg only.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        # Explicitly suppresses CloudFormation's implicit 0.0.0.0/0 default
+        # egress rule. This endpoint SG only needs to accept inbound; it has
+        # no legitimate outbound traffic of its own.
+        - Description: Suppress implicit default-allow egress (no-op self-loopback).
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: glassbox-aws-service-endpoints-sg
+
+  AwsServiceEndpointIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BedrockEndpointSecurityGroup
+      Description: HTTPS from AgentCore Runtime deny-egress SG.
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref GlassboxDenyEgressSg
+
+  BedrockRuntimeVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.bedrock-runtime
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+  EcrApiVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+  EcrDkrVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+  LogsVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+  SecretsManagerVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+  S3GatewayVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref PrivateRouteTableIds
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadRegionalEcrLayers
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::prod-${AWS::Region}-starport-layer-bucket/*
+          - Sid: WriteWormEvidence
+            Effect: Allow
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${EvidenceBucket.Arn}/*
+          - Sid: ReadWormGradeFreezeVersions
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: !Sub ${EvidenceBucket.Arn}/hacker-bob/grade-freeze/*
+          - Sid: ReadHumanApprovals
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/*/*.approved
+
+  # ---------------------------------------------------------------------
+  # fx-kyber-iac: Route 53 Resolver DNS Firewall — the DNS-level enforcement
+  # companion to ArchiveRpcGatewayEgressRule above, for the SAME single
+  # archive-RPC path (never a second hole). Security groups can't match on
+  # FQDN (that's what ArchiveRpcCidr is for); this is what pins the actual
+  # *domain* a compromised bob could resolve to, independent of whatever IP
+  # it currently answers.
+  #
+  # IMPORTANT: Route 53 Resolver DNS Firewall's own undeclared default is
+  # ALLOW (an allow-list rule group with no catch-all block rule does NOT
+  # become deny-by-default on its own). ArchiveRpcDenyAllRule below is what
+  # actually makes this deny-by-default — it BLOCKs the Domains:["*"]
+  # catch-all at a numerically later (i.e. lower-priority-first-evaluated
+  # is wrong; Resolver DNS Firewall evaluates rules in ascending Priority
+  # order and returns "the first rule matched" — see FirewallRule Priority
+  # semantics) priority than the ALLOW rule, so the pinned ArchiveRpcHost
+  # resolves normally and every other domain resolves to NODATA.
+  # VERIFY the exact Route53Resolver::FirewallRule/FirewallRuleGroup
+  # property names and evaluation-order semantics against the live AWS
+  # docs before deploy — same honesty discipline as the AgentCore custom-
+  # resource schema above (this node made no live AWS call while
+  # authoring).
+  # ---------------------------------------------------------------------
+  # fx-kyber-iac (wave 2, CRITICAL fix): this list is misnamed now — it's no longer JUST the
+  # archive-RPC host. As originally written, Domains:[!Ref ArchiveRpcHost] meant the Priority-200
+  # "*" BLOCK below blackholed DNS resolution for every OTHER legit domain the microVM needs
+  # whenever EnableArchiveRpcEgress=true — locker.internal (Locker's own engagement target!),
+  # the Bedrock runtime endpoint, S3/SecretsManager/SecurityHub/StepFunctions control-plane calls
+  # (*.amazonaws.com), and the Z.ai gateway host when EnableZaiEgress is also on. Expanded here so
+  # the catch-all BLOCK only blocks genuinely-unexpected domains — this is a DNS-resolution
+  # allow-list widening only, NOT a new SG-layer egress hole: reachability still depends entirely
+  # on GlassboxDenyEgressSg's SecurityGroupEgress list (Locker SG-ref, Bedrock SG-ref, the Zai
+  # CIDR hole, the ArchiveRpc CIDR hole), which this list does not touch.
+  ArchiveRpcAllowedDomainList:
+    Type: AWS::Route53Resolver::FirewallDomainList
+    Condition: ArchiveRpcEgressEnabledCondition
+    Properties:
+      Name: hacker-bob-archive-rpc-allowed
+      Domains:
+        - !Ref ArchiveRpcHost
+        - locker.internal.
+        - !Sub bedrock-runtime.${AWS::Region}.amazonaws.com.
+        - "*.amazonaws.com."
+        - !If
+          - ZaiGatewayHostKnownCondition
+          - !Ref ZaiGatewayHost
+          - zai-gateway-egress-disabled.invalid.
+
+  ArchiveRpcDenyAllDomainList:
+    Type: AWS::Route53Resolver::FirewallDomainList
+    Condition: ArchiveRpcEgressEnabledCondition
+    Properties:
+      Name: hacker-bob-archive-rpc-deny-all
+      Domains:
+        - "*"
+
+  # CFN CORRECTNESS (fixed 2026-07-09b, verified vs live AWS docs): there is NO
+  # standalone `AWS::Route53Resolver::FirewallRule` resource type. Rules are a
+  # nested `FirewallRules:` list PROPERTY on the FirewallRuleGroup itself. Rules
+  # evaluate in ascending Priority; first match wins. Priority 100 ALLOW the one
+  # pinned host; Priority 200 BLOCK (NODATA — fail-closed, not a spoofable
+  # override) the "*" catch-all, which is what makes the allow-list deny-by-default
+  # (Resolver DNS Firewall's own undeclared default is ALLOW).
+  ArchiveRpcFirewallRuleGroup:
+    Type: AWS::Route53Resolver::FirewallRuleGroup
+    Condition: ArchiveRpcEgressEnabledCondition
+    Properties:
+      Name: hacker-bob-archive-rpc-firewall-rule-group
+      FirewallRules:
+        - FirewallDomainListId: !Ref ArchiveRpcAllowedDomainList
+          Priority: 100
+          Action: ALLOW
+        - FirewallDomainListId: !Ref ArchiveRpcDenyAllDomainList
+          Priority: 200
+          Action: BLOCK
+          BlockResponse: NODATA
+
+  # No other Route 53 Resolver DNS Firewall rule group is associated to
+  # this VPC yet in this template, so Priority 101 cannot collide.
+  ArchiveRpcFirewallRuleGroupAssociation:
+    Type: AWS::Route53Resolver::FirewallRuleGroupAssociation
+    Condition: ArchiveRpcEgressEnabledCondition
+    Properties:
+      Name: hacker-bob-archive-rpc-firewall-association
+      FirewallRuleGroupId: !GetAtt ArchiveRpcFirewallRuleGroup.Id
+      VpcId: !Ref VpcId
+      Priority: 101
+
+  # ---------------------------------------------------------------------
+  # (c) EFS for $HOME persistence across the split invoke-GRADE /
+  # resume-REPORT Runtime invocations. mcp/lib/paths.js:44 sessionsRoot()
+  # has no env override — $HOME/hacker-bob-sessions must land on this mount
+  # at the container/task layer (Dockerfile / entrypoint concern, a
+  # separate node); this stack only supplies the durable mount + access
+  # point.
+  # ---------------------------------------------------------------------
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: glassbox-efs-sg
+      GroupDescription: NFS (2049) inbound from glassbox-deny-egress-sg only.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: NFS from AgentCore Runtime deny-egress SG.
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref GlassboxDenyEgressSg
+      SecurityGroupEgress:
+        - Description: Suppress implicit default-allow egress (no-op self-loopback).
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: glassbox-efs-sg
+
+  EfsNfsEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref GlassboxDenyEgressSg
+      Description: NFS/TLS mount traffic to the AgentCore-managed EFS access point.
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      DestinationSecurityGroupId: !Ref EfsSecurityGroup
+
+  HomeFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: hacker-bob-home
+
+  HomeMountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref HomeFileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  HomeMountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref HomeFileSystem
+      SubnetId: !Select [1, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  HomeAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref HomeFileSystem
+      PosixUser:
+        Uid: "1000"
+        Gid: "1000"
+      RootDirectory:
+        # Live glassbox-agentcore-demo data-continuity identity. Changing this
+        # replacement-sensitive path would strand the existing EFS sessions.
+        Path: /home/glassbox
+        CreationInfo:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0750"
+      AccessPointTags:
+        - Key: Name
+          Value: hacker-bob-home-access-point
+
+  # ---------------------------------------------------------------------
+  # (d) Evidence bucket — Object Lock, COMPLIANCE mode (never GOVERNANCE).
+  # Holds the evidence pack + report.md + grade.json + snapshot row that
+  # export-security-hub-finding.js (a separate node) writes and points its
+  # ASFF ProductFields s3:// URI at.
+  # ---------------------------------------------------------------------
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${EvidenceBucketNamePrefix}-${AWS::AccountId}-${AWS::Region}
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: COMPLIANCE
+            Days: !Ref EvidenceObjectLockRetentionDays
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: hacker-bob-evidence
+
+  # ---------------------------------------------------------------------
+  # (d2) The GRADE->REPORT human-approval control store. Deliberately a SEPARATE
+  # bucket from EvidenceBucket above, not a sub-prefix of it: EvidenceBucket has
+  # ObjectLockEnabled:true (COMPLIANCE WORM). No Object Lock here — approvals/ objects
+  # are small, short-lived control artifacts, not evidence.
+  #
+  # Two IAM postures (see GlassboxAgentRuntimeExecutionRole and ApprovalWriterRole):
+  #   approvals/<target>/<grade_hash>.approved — schema-v2 human decision whose
+  #     HMAC input is compact UTF-8 JSON [profile,target,grade_hash,body_sha256,version_id].
+  #     It binds the exact profile, target, canonical grade verdict, WORM body bytes, and
+  #     WORM VersionId the named human reviewed. Written ONLY by ApprovalWriterRole.
+  #     GlassboxAgentRuntimeExecutionRole (the model's role) gets s3:GetObject ONLY on this
+  #     prefix, scoped to the *.approved suffix specifically so the grant can never reach into
+  #     approvals/pending/ (see GetHumanApprovalArtifacts below) — this deny-write posture is the PRIMARY enforcement;
+  #     the HMAC is defense-in-depth on top of it (mcp/lib/approval-store.js,
+  #     .claude/hooks/bob-approval-gate-impl.py). Re-export of amended content is already
+  #     blocked by this content binding; see also the approvals/ S3 lifecycle TTL below
+  #     (belt-and-suspenders, not load-bearing).
+  # ---------------------------------------------------------------------
+  GlassboxApprovalsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub glassbox-approvals-${AWS::AccountId}-${AWS::Region}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # Current and noncurrent versions both expire. Versioning must not preserve stale
+      # task-token records after current-version expiry.
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireApprovalArtifacts
+            Prefix: approvals/
+            Status: Enabled
+            ExpirationInDays: 7
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: RemoveExpiredApprovalDeleteMarkers
+            Prefix: approvals/
+            Status: Enabled
+            ExpiredObjectDeleteMarker: true
+      Tags:
+        - Key: Name
+          Value: hacker-bob-approvals
+
+  # HMAC-SHA256 signing key for the human approval artifact. A generated (never hand-supplied,
+  # never repo-literal) random string — GenerateSecretString with no GenerateStringKey/
+  # SecretStringTemplate produces a raw string as SecretString directly (no JSON
+  # wrapping), matching how every consumer reads it (ApprovalWriterFunction below,
+  # mcp/lib/approval-store.js, .claude/hooks/bob-approval-gate-impl.py — all three treat
+  # SecretString as the literal key bytes, never JSON-parsed).
+  GlassboxApprovalHmacKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: glassbox/approval-hmac-key
+      Description: >
+        HMAC-SHA256 signing key for schema-v2 GRADE->REPORT human approval artifacts.
+        The compact JSON-array signature binds profile, target, grade verdict hash,
+        exact WORM body SHA-256, and exact WORM VersionId. Written only by
+        ApprovalWriterFunction. Read-only by
+        GlassboxAgentRuntimeExecutionRole (defense-in-depth verification only — the model's
+        role can never PutObject to approvals/*, so knowing this key alone cannot let it
+        forge a stored artifact).
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # ---------------------------------------------------------------------
+  # (e) Security Hub custom product registration.
+  # Enables Security Hub for the account/region (NOTE: if Security Hub is
+  # already enabled in this account/region by another stack, this resource
+  # will fail on create — adopt/remove per README "Known limitations").
+  # Once the Hub exists, the account's own default product ARN
+  # (arn:aws:securityhub:<region>:<account>:product/<account>/default) is
+  # automatically usable by BatchImportFindings for self-owned custom
+  # findings — no separate CreateProductSubscription call is required for
+  # your own account's findings, so the Output below IS the registration.
+  # ---------------------------------------------------------------------
+  GlassboxSecurityHub:
+    Type: AWS::SecurityHub::Hub
+    Properties:
+      EnableDefaultStandards: false
+      AutoEnableControls: false
+      Tags:
+        Name: glassbox-security-hub
+
+  # ---------------------------------------------------------------------
+  # (h) CloudTrail — independent second witness. Config only.
+  # ---------------------------------------------------------------------
+  CloudTrailLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub glassbox-cloudtrail-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: glassbox-cloudtrail-logs
+
+  CloudTrailLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailLogBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailLogBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${CloudTrailLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  GlassboxTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailLogBucketPolicy
+    Properties:
+      TrailName: glassbox-engagement-trail
+      S3BucketName: !Ref CloudTrailLogBucket
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+          DataResources:
+            # Optional S3 data events scoped to the evidence bucket only —
+            # who touched the WORM-locked evidence, not a blanket S3 trail.
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub ${EvidenceBucket.Arn}/
+      Tags:
+        - Key: Name
+          Value: glassbox-engagement-trail
+
+  # ---------------------------------------------------------------------
+  # (g) IAM execution role for the AgentCore Runtime. Least-privilege: no
+  # wildcard Action, no wildcard Resource, in any statement below.
+  # ---------------------------------------------------------------------
+  GlassboxAgentRuntimeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-agent-runtime-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
+      Policies:
+        - PolicyName: glassbox-agent-runtime-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeBedrockModels
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  # Scoped to exactly the two inference profiles named in
+                  # AGENTCORE-BRANCH-PLAN.md. Confirm the exact suffix
+                  # against `aws bedrock list-inference-profiles` before the
+                  # MODEL_PROVIDER=bedrock flip (account-gated, not needed for
+                  # the interim MODEL_PROVIDER=zai path).
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockOpusModelId}
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockSonnetModelId}
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockFallbackModelId}
+                  - !Sub arn:aws:bedrock:us-east-1::foundation-model/${BedrockOpusFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-2::foundation-model/${BedrockOpusFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-west-2::foundation-model/${BedrockOpusFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-1::foundation-model/${BedrockSonnetFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-2::foundation-model/${BedrockSonnetFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-west-2::foundation-model/${BedrockSonnetFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-1::foundation-model/${BedrockFallbackFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-2::foundation-model/${BedrockFallbackFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-west-2::foundation-model/${BedrockFallbackFoundationModelId}
+              - Sid: PullAgentImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Ref AgentContainerRepositoryArn
+              - Sid: GetEcrAuthorizationToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: MountPersistentHome
+                Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !GetAtt HomeFileSystem.Arn
+                Condition:
+                  StringEquals:
+                    elasticfilesystem:AccessPointArn: !GetAtt HomeAccessPoint.Arn
+              - Sid: DescribePersistentHome
+                Effect: Allow
+                Action:
+                  - elasticfilesystem:DescribeAccessPoints
+                  - elasticfilesystem:DescribeMountTargets
+                Resource: "*"
+              - Sid: RuntimeLogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DescribeLogStreams
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+              - Sid: RuntimeLogStreams
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*
+              - Sid: DescribeRuntimeLogGroups
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+              - Sid: RuntimeTracing
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: "*"
+              - Sid: RuntimeMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: bedrock-agentcore
+              # PutEvidenceObjects also covers the GRADE-time WORM freeze write
+              # (mcp/lib/grade-freeze-store.js's writeGradeFreezeBundleSync, called
+              # from writeGradeVerdict BEFORE any verifier attestation exists) — it lands
+              # under EvidenceBucket's hacker-bob/grade-freeze/ prefix, the SAME
+              # bucket, no new Sid needed. The model's role is granted s3:PutObject
+              # here but NEVER s3:DeleteObject and the bucket is Object Lock
+              # COMPLIANCE (see EvidenceBucket above). Object Lock protects an
+              # immutable VERSION, not the key: this role can create a newer version
+              # at the same key. GRADE returns the exact VersionId + body SHA-256;
+              # verifier, human HMAC, and exporter all bind that version explicitly,
+              # so a newer version cannot replace what was reviewed and released.
+              - Sid: PutEvidenceObjects
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub ${EvidenceBucket.Arn}/*
+              # ARCHITECTURAL FIX (Eric-approved): ExportSecurityHubFindings
+              # (securityhub:BatchImportFindings) was REMOVED from this role
+              # entirely. AWS Security Hub export is no longer a model-reachable
+              # capability at all -- neither via the (now-deregistered)
+              # bob_export_security_hub_finding MCP tool NOR via any live AWS
+              # credential this role holds. It runs ONLY as the downstream
+              # ExportSecurityHubFunction Lambda (below), under its OWN dedicated
+              # ExportSecurityHubRole, invoked by Step Functions strictly AFTER
+              # AwaitHumanApproval. See ExportSecurityHubRole's own Sid for the
+              # sole remaining securityhub:BatchImportFindings grant in this stack.
+              # fx-gate-hardening (P0-1 / P0-2): read-ONLY on the *.approved artifacts —
+              # deliberately NO s3:PutObject, s3:DeleteObject, or s3:ListBucket anywhere in
+              # this role. This is the PRIMARY enforcement that makes the GRADE->REPORT
+              # human approval un-forgeable by the model: only ApprovalWriterRole (a separate role
+              # this Runtime never assumes) can write here. The Resource suffix-scopes to
+              # *.approved specifically so this grant can never reach a broader approvals/ prefix.
+              - Sid: GetHumanApprovalArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/*/*.approved
+              # P1-2: the optional MODEL_PROVIDER=zai path (build_model_env in
+              # infra/runner/agentcore-entrypoint.py) calls secrets_client.get_secret_value
+              # for zai/agt-token. Also grants
+              # read of the fx-gate-hardening HMAC key (defense-in-depth only: the PRIMARY
+              # enforcement is GetHumanApprovalArtifacts' read-only scope above, plus
+              # ApprovalWriterRole being the sole s3:PutObject principal on final approvals — see
+              # that role below — so the model knowing this key cannot let it forge a stored
+              # artifact it still cannot write).
+              - Sid: ReadModelSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  # zai/agt-token is externally-created (no AWS::SecretsManager::Secret
+                  # resource for it in this template — see README "Known limitations"), so
+                  # this is scoped to Secrets Manager's own documented ARN-suffix convention
+                  # (a random 6-character suffix always appended to the secret name) rather
+                  # than a wildcard Resource. Confirm the exact suffix against the live
+                  # secret before deploy.
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:zai/agt-token-??????
+                  - !Ref GlassboxApprovalHmacKey
+      Tags:
+        - Key: Name
+          Value: glassbox-agent-runtime-execution-role
+
+  # ---------------------------------------------------------------------
+  # (a) AgentCore Runtime — native CloudFormation resource, verified against
+  # the live us-east-1 public type schema on 2026-07-11. Native filesystem
+  # configuration mounts the EFS access point before each invocation; no
+  # guessed custom-resource API, ARN/ID translation, or partial Update path.
+  # ---------------------------------------------------------------------
+  GlassboxAgentCoreRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    DependsOn:
+      - HomeMountTargetA
+      - HomeMountTargetB
+      - BedrockRuntimeVpcEndpoint
+      - EcrApiVpcEndpoint
+      - EcrDkrVpcEndpoint
+      - LogsVpcEndpoint
+      - SecretsManagerVpcEndpoint
+      - S3GatewayVpcEndpoint
+      - S3GatewayEgressRule
+      - AwsServiceEndpointIngressRule
+      - EfsNfsEgressRule
+    Properties:
+      AgentRuntimeName: glassbox_agent_runtime
+      Description: >
+        Hacker-bob authorized-security demo runtime: Bedrock-only model path,
+        VPC-contained egress, persistent EFS home, and verifier-gated reporting.
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Ref AgentContainerImageUri
+      RoleArn: !GetAtt GlassboxAgentRuntimeExecutionRole.Arn
+      NetworkConfiguration:
+        NetworkMode: VPC
+        NetworkModeConfig:
+          SecurityGroups:
+            - !Ref GlassboxDenyEgressSg
+          Subnets: !Ref SubnetIds
+      ProtocolConfiguration: HTTP
+      LifecycleConfiguration:
+        # EFS, not idle microVM lifetime, is the persistence boundary. Keeping
+        # the idle timeout at 15 minutes limits spend during split GRADE/REPORT runs.
+        IdleRuntimeSessionTimeout: 900
+        MaxLifetime: 28800
+      EnvironmentVariables:
+        BOB_AGENTCORE: "1"
+        BOB_BUILTIN_DEMO_TARGET: !Ref EnableBuiltInDemoTarget
+        BOB_INVOCATION_TIMEOUT_SECONDS: "780"
+        BOB_MAX_BUDGET_USD: "2.00"
+        BOB_LAB_TARGET_ACK: i-own-and-am-authorized-to-test-these-private-targets
+        BOB_LAB_TARGET: !Ref BobLabTarget
+        BOB_APPROVAL_BUCKET: !Ref GlassboxApprovalsBucket
+        BOB_APPROVAL_HMAC_SECRET_ID: !Ref GlassboxApprovalHmacKey
+        BOB_GRADE_FREEZE_BUCKET: !Ref EvidenceBucket
+        MODEL_PROVIDER: bedrock
+        CLAUDE_CODE_USE_BEDROCK: "1"
+        AWS_REGION: !Ref AWS::Region
+        AWS_DEFAULT_REGION: !Ref AWS::Region
+        ANTHROPIC_MODEL: !If
+          - BedrockFallbackEnabledCondition
+          - !Ref BedrockFallbackModelId
+          - !Ref BedrockSonnetModelId
+        ANTHROPIC_DEFAULT_OPUS_MODEL: !If
+          - BedrockFallbackEnabledCondition
+          - !Ref BedrockFallbackModelId
+          - !Ref BedrockOpusModelId
+        ANTHROPIC_DEFAULT_SONNET_MODEL: !If
+          - BedrockFallbackEnabledCondition
+          - !Ref BedrockFallbackModelId
+          - !Ref BedrockSonnetModelId
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: !Ref BedrockFallbackModelId
+        BOB_EVM_RPCS_1: !If
+          - ArchiveRpcEgressEnabledCondition
+          - !Sub https://${ArchiveRpcHost}
+          - !Ref AWS::NoValue
+      FilesystemConfigurations:
+        - EfsAccessPoint:
+            AccessPointArn: !GetAtt HomeAccessPoint.Arn
+            MountPath: /mnt/efs
+      Tags:
+        Purpose: hacker-bob-demo
+        ManagedBy: cloudformation
+  # (f) Step Functions state machine — automated integrity verification,
+  # followed by a real human callback boundary. The verifier is read-only and
+  # cannot approve or resume. AwaitHumanApproval invokes the pending recorder
+  # with .waitForTaskToken; only the out-of-band ApprovalWriterFunction owns
+  # the final .approved write and SendTaskSuccess permission.
+  # ---------------------------------------------------------------------
+  VerifierGateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: hacker-bob-verifier-gate-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: hacker-bob-verifier-gate-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadGradeFreezeVersion
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectRetention
+                Resource: !Sub ${EvidenceBucket.Arn}/hacker-bob/grade-freeze/*
+              - Sid: VerifierGateLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/hacker-bob-verifier-gate*
+
+  VerifierGateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: hacker-bob-verifier-gate
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt VerifierGateRole.Arn
+      Environment:
+        Variables:
+          GRADE_FREEZE_BUCKET: !Ref EvidenceBucket
+      InlineCode: |
+        import hashlib
+        import json
+        import os
+        import re
+        from datetime import datetime, timezone
+
+        HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+        ALLOWED_PROFILES = {"smoke", "libheif-cve-2026-49271"}
+        MAX_FREEZE_BYTES = 5 * 1024 * 1024
+        SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+
+        def _target_domain(raw_target):
+            host, sep, port = str(raw_target).rpartition(":")
+            return host if (sep and port.isdigit()) else str(raw_target)
+
+        def _require_hash(value, field):
+            if not isinstance(value, str) or not HASH_RE.fullmatch(value):
+                raise RuntimeError(f"{field} must be a lowercase SHA-256 hex digest")
+            return value
+
+        def _require_version_id(value):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 1024
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in value)
+            ):
+                raise RuntimeError("gradeResult.grade_freeze_version_id is invalid")
+            return value
+
+        def _canonical_hash(document):
+            canonical = json.dumps(
+                document,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+        def handler(event, context):
+            import boto3
+            s3 = boto3.client("s3")
+
+            grade_result = event.get("gradeResult") if isinstance(event.get("gradeResult"), dict) else {}
+            profile = event.get("profile")
+            if profile not in ALLOWED_PROFILES:
+                raise RuntimeError("unsupported or missing engagement profile")
+            target_domain = _target_domain(event["target"])
+            if (
+                not SAFE_TARGET_RE.fullmatch(target_domain)
+                or target_domain.startswith(".")
+                or ".." in target_domain
+            ):
+                raise RuntimeError("verifier target is invalid")
+            if _target_domain(grade_result.get("target_domain")) != target_domain:
+                raise RuntimeError("gradeResult.target_domain does not match verifier target")
+            grade_verdict_hash = _require_hash(
+                grade_result.get("grade_verdict_hash"),
+                "gradeResult.grade_verdict_hash",
+            )
+            expected_body_sha256 = _require_hash(
+                grade_result.get("grade_freeze_bundle_sha256"),
+                "gradeResult.grade_freeze_bundle_sha256",
+            )
+            grade_freeze_version_id = _require_version_id(
+                grade_result.get("grade_freeze_version_id")
+            )
+
+            grade_freeze_key = f"hacker-bob/grade-freeze/{target_domain}/{grade_verdict_hash}.json"
+            grade_freeze_object = s3.get_object(
+                Bucket=os.environ["GRADE_FREEZE_BUCKET"],
+                Key=grade_freeze_key,
+                VersionId=grade_freeze_version_id,
+            )
+            if grade_freeze_object.get("VersionId") != grade_freeze_version_id:
+                raise RuntimeError("S3 returned a different grade-freeze VersionId")
+            retention = s3.get_object_retention(
+                Bucket=os.environ["GRADE_FREEZE_BUCKET"],
+                Key=grade_freeze_key,
+                VersionId=grade_freeze_version_id,
+            ).get("Retention") or {}
+            retain_until = retention.get("RetainUntilDate")
+            if retention.get("Mode") != "COMPLIANCE":
+                raise RuntimeError("grade-freeze version is not Object Lock COMPLIANCE protected")
+            if (
+                not isinstance(retain_until, datetime)
+                or retain_until.tzinfo is None
+                or retain_until.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+            ):
+                raise RuntimeError("grade-freeze COMPLIANCE retention is absent or expired")
+            content_length = grade_freeze_object.get("ContentLength")
+            if isinstance(content_length, int) and content_length > MAX_FREEZE_BYTES:
+                raise RuntimeError("grade-freeze object exceeds verifier size limit")
+            body = grade_freeze_object["Body"].read(MAX_FREEZE_BYTES + 1)
+            if len(body) > MAX_FREEZE_BYTES:
+                raise RuntimeError("grade-freeze object exceeds verifier size limit")
+            actual_body_sha256 = hashlib.sha256(body).hexdigest()
+            if actual_body_sha256 != expected_body_sha256:
+                raise RuntimeError("grade-freeze exact-body SHA-256 mismatch")
+            try:
+                bundle = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise RuntimeError("grade-freeze body is not valid UTF-8 JSON") from error
+            if not isinstance(bundle, dict):
+                raise RuntimeError("grade-freeze bundle must be a JSON object")
+            if bundle.get("target_domain") != target_domain:
+                raise RuntimeError("grade-freeze bundle target mismatch")
+            if bundle.get("grade_verdict_hash") != grade_verdict_hash:
+                raise RuntimeError("grade-freeze embedded grade hash mismatch")
+            if not isinstance(bundle.get("grade"), dict):
+                raise RuntimeError("grade-freeze bundle.grade must be an object")
+            if _canonical_hash(bundle["grade"]) != grade_verdict_hash:
+                raise RuntimeError("grade-freeze canonical grade hash mismatch")
+
+            # Read-only automated proof. This role has no approval-bucket write,
+            # HMAC-secret read, or Step Functions callback permission.
+            return {
+                "profile": profile,
+                "target": target_domain,
+                "grade_freeze_version_id": grade_freeze_version_id,
+                "grade_verdict_hash": grade_verdict_hash,
+                "grade_freeze_bundle_sha256": actual_body_sha256,
+                "object_lock_mode": "COMPLIANCE",
+                "retain_until": retain_until.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "verification_type": "automated_integrity",
+            }
+
+  ApprovalNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: glassbox-approval-notifications
+      DisplayName: Hacker Bob GRADE-to-REPORT human approval
+
+  ApprovalNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasApprovalNotificationEmail
+    Properties:
+      TopicArn: !Ref ApprovalNotificationTopic
+      Protocol: email
+      Endpoint: !Ref ApprovalNotificationEmail
+
+  ApprovalPendingRecorderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-approval-pending-recorder-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-approval-pending-recorder-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WritePendingApprovalRecord
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/pending/*
+              - Sid: PublishApprovalRequest
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref ApprovalNotificationTopic
+              - Sid: PendingRecorderLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-approval-pending-recorder*
+
+  ApprovalPendingRecorderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-approval-pending-recorder
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt ApprovalPendingRecorderRole.Arn
+      Environment:
+        Variables:
+          APPROVALS_BUCKET: !Ref GlassboxApprovalsBucket
+          APPROVAL_TOPIC_ARN: !Ref ApprovalNotificationTopic
+      InlineCode: |
+        import json
+        import os
+        import re
+        from datetime import datetime, timezone
+
+        HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+        EXECUTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+        SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+        ALLOWED_PROFILES = {"smoke", "libheif-cve-2026-49271"}
+
+        def _require_hash(value, field):
+            if not isinstance(value, str) or not HASH_RE.fullmatch(value):
+                raise RuntimeError(f"{field} must be a lowercase SHA-256 hex digest")
+            return value
+
+        def _require_version_id(value):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 1024
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in value)
+            ):
+                raise RuntimeError("grade-freeze VersionId is invalid")
+            return value
+
+        def handler(event, context):
+            import boto3
+            s3 = boto3.client("s3")
+            sns = boto3.client("sns")
+
+            execution_name = event.get("executionName")
+            if not isinstance(execution_name, str) or not EXECUTION_RE.fullmatch(execution_name):
+                raise RuntimeError("executionName cannot safely key a pending approval record")
+            profile = event.get("profile")
+            if profile not in ALLOWED_PROFILES:
+                raise RuntimeError("unsupported or missing engagement profile")
+            target = event.get("target")
+            if (
+                not isinstance(target, str)
+                or not SAFE_TARGET_RE.fullmatch(target)
+                or target.startswith(".")
+                or ".." in target
+            ):
+                raise RuntimeError("target is invalid")
+            grade_result = event.get("gradeResult") if isinstance(event.get("gradeResult"), dict) else {}
+            verified = event.get("verifiedFreeze") if isinstance(event.get("verifiedFreeze"), dict) else {}
+            grade_hash = _require_hash(grade_result.get("grade_verdict_hash"), "grade verdict hash")
+            body_sha256 = _require_hash(
+                grade_result.get("grade_freeze_bundle_sha256"),
+                "grade-freeze body hash",
+            )
+            version_id = _require_version_id(grade_result.get("grade_freeze_version_id"))
+            expected = {
+                "profile": profile,
+                "target": target,
+                "grade_verdict_hash": grade_hash,
+                "grade_freeze_bundle_sha256": body_sha256,
+                "grade_freeze_version_id": version_id,
+            }
+            if any(verified.get(key) != value for key, value in expected.items()):
+                raise RuntimeError("automated verifier result does not match the GRADE freeze binding")
+
+            pending_key = f"approvals/pending/{execution_name}.json"
+            record = {
+                "schema_version": 2,
+                "taskToken": event["token"],
+                "execution_name": execution_name,
+                **expected,
+                "requested_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            s3.put_object(
+                Bucket=os.environ["APPROVALS_BUCKET"],
+                Key=pending_key,
+                Body=json.dumps(record, separators=(",", ":")).encode("utf-8"),
+                ContentType="application/json",
+            )
+            sns.publish(
+                TopicArn=os.environ["APPROVAL_TOPIC_ARN"],
+                Subject=f"Hacker Bob approval: {profile}",
+                Message=json.dumps({
+                    "profile": profile,
+                    "target": target,
+                    "grade_verdict_hash": grade_hash,
+                    "grade_freeze_version_id": version_id,
+                    "grade_freeze_bundle_sha256": body_sha256,
+                    "pending_record_key": pending_key,
+                    "instructions": (
+                        "Review the exact WORM version, then invoke glassbox-approval-writer "
+                        "with decision=approve and this pendingRecordKey; use decision=reject to fail closed."
+                    ),
+                }, separators=(",", ":")),
+            )
+            # Returning cannot resolve lambda:invoke.waitForTaskToken.
+            return {"pending_record_key": pending_key}
+
+  ApprovalWriterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-approval-writer-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-approval-writer-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadDeletePendingApprovalRecord
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/pending/*
+              - Sid: WriteHumanApprovalArtifact
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/*/*.approved
+              - Sid: ReadApprovalHmacKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref GlassboxApprovalHmacKey
+              # Step Functions callback APIs do not support resource-level IAM.
+              - Sid: ResolveHumanApprovalTask
+                Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: "*"
+              - Sid: ApprovalWriterLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-approval-writer*
+
+  ApprovalWriterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-approval-writer
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt ApprovalWriterRole.Arn
+      Environment:
+        Variables:
+          APPROVALS_BUCKET: !Ref GlassboxApprovalsBucket
+          HMAC_SECRET_ID: !Ref GlassboxApprovalHmacKey
+      InlineCode: |
+        import hashlib
+        import hmac
+        import json
+        import os
+        import re
+        from datetime import datetime, timezone
+
+        HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+        PENDING_KEY_RE = re.compile(r"^approvals/pending/[A-Za-z0-9_-]{1,80}\.json$")
+        SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+        ALLOWED_PROFILES = {"smoke", "libheif-cve-2026-49271"}
+        BINDING_VERSION = "grade-freeze-v2"
+
+        def _require_hash(value, field):
+            if not isinstance(value, str) or not HASH_RE.fullmatch(value):
+                raise RuntimeError(f"{field} must be a lowercase SHA-256 hex digest")
+            return value
+
+        def _require_version_id(value):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 1024
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in value)
+            ):
+                raise RuntimeError("grade-freeze VersionId is invalid")
+            return value
+
+        def handler(event, context):
+            import boto3
+            s3 = boto3.client("s3")
+            secretsmanager = boto3.client("secretsmanager")
+            sfn = boto3.client("stepfunctions")
+
+            decision = event.get("decision")
+            if decision not in {"approve", "reject"}:
+                raise RuntimeError("decision must be explicitly approve or reject")
+            pending_key = event.get("pendingRecordKey")
+            if not isinstance(pending_key, str) or not PENDING_KEY_RE.fullmatch(pending_key):
+                raise RuntimeError("pendingRecordKey is invalid")
+            bucket = os.environ["APPROVALS_BUCKET"]
+            pending_obj = s3.get_object(Bucket=bucket, Key=pending_key)
+            pending = json.loads(pending_obj["Body"].read())
+            if not isinstance(pending, dict) or pending.get("schema_version") != 2:
+                raise RuntimeError("pending approval record schema is invalid")
+            task_token = pending.get("taskToken")
+            if not isinstance(task_token, str) or not task_token:
+                raise RuntimeError("pending approval record has no task token")
+
+            if decision == "reject":
+                reason = event.get("reason") or "Named human rejected the grade-freeze release"
+                sfn.send_task_failure(
+                    taskToken=task_token,
+                    error="HumanRejected",
+                    cause=str(reason)[:256],
+                )
+                try:
+                    s3.delete_object(Bucket=bucket, Key=pending_key)
+                except Exception as error:
+                    print(f"pending record cleanup failed after rejection: {error}")
+                return {"decision": "rejected", "pending_record_key": pending_key}
+
+            profile = pending.get("profile")
+            if profile not in ALLOWED_PROFILES:
+                raise RuntimeError("pending approval profile is invalid")
+            target = pending.get("target")
+            if (
+                not isinstance(target, str)
+                or not SAFE_TARGET_RE.fullmatch(target)
+                or target.startswith(".")
+                or ".." in target
+            ):
+                raise RuntimeError("pending approval target is invalid")
+            grade_hash = _require_hash(pending.get("grade_verdict_hash"), "grade verdict hash")
+            body_sha256 = _require_hash(
+                pending.get("grade_freeze_bundle_sha256"),
+                "grade-freeze body hash",
+            )
+            version_id = _require_version_id(pending.get("grade_freeze_version_id"))
+
+            binding = [profile, target, grade_hash, body_sha256, version_id]
+            binding_bytes = json.dumps(
+                binding,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            secret = secretsmanager.get_secret_value(
+                SecretId=os.environ["HMAC_SECRET_ID"]
+            )["SecretString"].encode("utf-8")
+            signature = hmac.new(secret, binding_bytes, hashlib.sha256).hexdigest()
+            approved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            artifact = {
+                "schema_version": 2,
+                "binding_version": BINDING_VERSION,
+                "profile": profile,
+                "target_domain": target,
+                "grade_verdict_hash": grade_hash,
+                "grade_freeze_bundle_sha256": body_sha256,
+                "grade_freeze_version_id": version_id,
+                "hmac": signature,
+                "execution_name": pending.get("execution_name"),
+                "approval_request_id": context.aws_request_id,
+                "approved_at": approved_at,
+            }
+            artifact_key = f"approvals/{target}/{grade_hash}.approved"
+            s3.put_object(
+                Bucket=bucket,
+                Key=artifact_key,
+                Body=json.dumps(artifact, separators=(",", ":")).encode("utf-8"),
+                ContentType="application/json",
+            )
+            callback_output = {
+                "decision": "approved",
+                "profile": profile,
+                "target": target,
+                "grade_verdict_hash": grade_hash,
+                "grade_freeze_bundle_sha256": body_sha256,
+                "grade_freeze_version_id": version_id,
+                "approval_artifact_key": artifact_key,
+            }
+            # The only success callback path, and it occurs after the durable,
+            # v2 content-bound artifact write.
+            sfn.send_task_success(
+                taskToken=task_token,
+                output=json.dumps(callback_output, separators=(",", ":")),
+            )
+            try:
+                s3.delete_object(Bucket=bucket, Key=pending_key)
+            except Exception as error:
+                print(f"pending record cleanup failed after approval: {error}")
+            return callback_output
+
+  # ---------------------------------------------------------------------
+  # ARCHITECTURAL FIX (Eric-approved): the downstream Security Hub export
+  # step. Wired into the state machine (below) as a Task invoked strictly
+  # AFTER AwaitHumanApproval is resolved by the named-human callback.
+  # The model's own process/role can never reach this
+  # function: it is a separate Lambda under its OWN role
+  # (ExportSecurityHubRole), which GlassboxAgentRuntimeExecutionRole neither
+  # assumes nor shares, and GlassboxAgentRuntimeExecutionRole no longer holds
+  # securityhub:BatchImportFindings at all (see that role's comment above).
+  #
+  # Reads ONLY the GRADE-time WORM freeze object
+  # (mcp/lib/grade-freeze-store.js, written by writeGradeVerdict BEFORE any
+  # human approval exists) at
+  # s3://<EvidenceBucket>/hacker-bob/grade-freeze/<target_domain>/<grade_verdict_hash>.json
+  # -- never live EFS session state, never claims.jsonl, never a re-run
+  # bob_finalize_report snapshot -- so this role needs (and is granted)
+  # nothing but read access to that one prefix plus BatchImportFindings.
+  #
+  # Handler: infra/aws/hacker-bob-stack/functions/export-security-hub/index.js.
+  # CodeUri is the repo root (not just the function's own directory) so the
+  # packaged Lambda can require ../../../../../mcp/lib/asff-builder.js -- the
+  # SAME pure ASFF-building module the (now-deregistered)
+  # mcp/lib/tools/export-security-hub-finding.js library imports, so this
+  # Lambda and that legacy code path can never silently diverge in how an
+  # ASFF record is built. This is the standard, if unglamorous, "vendor the
+  # whole repo into the zip" SAM pattern -- acceptable here since no build
+  # step exists yet to produce a slimmer bundle (see h2-deploy for a future
+  # slimming pass); node_modules already carries @aws-sdk/client-s3 and
+  # @aws-sdk/client-securityhub as direct package.json dependencies.
+  # ---------------------------------------------------------------------
+  ExportSecurityHubRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-export-security-hub-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-export-security-hub-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Read-only, scoped to the grade-freeze prefix specifically --
+              # never a bare EvidenceBucket/* grant, and never s3:PutObject/
+              # DeleteObject anywhere: this role must not be able to write or
+              # remove the very evidence it is exporting from.
+              - Sid: ReadGradeFreezeEvidence
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub ${EvidenceBucket.Arn}/hacker-bob/grade-freeze/*
+              # The ONLY securityhub:BatchImportFindings grant left in this
+              # entire stack -- see GlassboxAgentRuntimeExecutionRole's comment
+              # confirming that role no longer holds it.
+              - Sid: ExportToSecurityHub
+                Effect: Allow
+                Action:
+                  - securityhub:BatchImportFindings
+                Resource: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
+              - Sid: ExportSecurityHubLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-export-security-hub*
+
+  AsffBuilderLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: glassbox-asff-builder
+      Description: Hacker Bob pure ASFF builder and its local dependencies.
+      ContentUri: .build/asff-builder-layer
+      CompatibleRuntimes:
+        - nodejs22.x
+
+  ExportSecurityHubFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-export-security-hub
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt ExportSecurityHubRole.Arn
+      CodeUri: functions/export-security-hub
+      Layers:
+        - !Ref AsffBuilderLayer
+      Environment:
+        Variables:
+          ASFF_BUILDER_PATH: /opt/lib/asff-builder.js
+          VERIFICATION_CONTRACTS_PATH: /opt/lib/verification-contracts.js
+          GRADE_FREEZE_BUCKET: !Ref EvidenceBucket
+          SECURITY_HUB_PRODUCT_ARN: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
+
+  GlassboxStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-state-machine-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-state-machine-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeHackerBobRuntime
+                Effect: Allow
+                Action:
+                  # Live Step Functions integration evaluates InvokeAgentRuntime
+                  # against the runtime endpoint ARN, not only the parent Runtime ARN.
+                  - bedrock-agentcore:InvokeAgentRuntime
+                Resource:
+                  - !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn
+                  - !Sub
+                    - ${RuntimeArn}/runtime-endpoint/DEFAULT
+                    - RuntimeArn: !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn
+              # RunVerifierGate invokes a read-only Lambda that validates the exact
+              # GRADE-returned WORM version and body. It cannot approve or resume.
+              - Sid: InvokeVerifierGate
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt VerifierGateFunction.Arn
+              # AwaitHumanApproval uses lambda:invoke.waitForTaskToken. The recorder
+              # persists the token and notifies a human; it never calls a callback.
+              - Sid: InvokeApprovalPendingRecorder
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ApprovalPendingRecorderFunction.Arn
+              # ARCHITECTURAL FIX (Eric-approved): lets the state machine invoke the
+              # downstream export Lambda from the new ExportToSecurityHub Task state
+              # (statemachine/hacker-bob-engagement.asl.json), wired directly after
+              # AwaitHumanApproval succeeds.
+              - Sid: InvokeExportSecurityHub
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ExportSecurityHubFunction.Arn
+
+  GlassboxEngagementStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: glassbox-engagement
+      DefinitionUri: statemachine/hacker-bob-engagement.asl.json
+      DefinitionSubstitutions:
+        AgentRuntimeArn: !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn
+        VerifierGateFunctionArn: !GetAtt VerifierGateFunction.Arn
+        ApprovalPendingRecorderFunctionArn: !GetAtt ApprovalPendingRecorderFunction.Arn
+        ExportSecurityHubFunctionArn: !GetAtt ExportSecurityHubFunction.Arn
+      Role: !GetAtt GlassboxStateMachineRole.Arn
+      Type: STANDARD
+
+Outputs:
+  DenyEgressSecurityGroupId:
+    Description: glassbox-deny-egress-sg id — attach Locker's SG to this for i3.
+    Value: !Ref GlassboxDenyEgressSg
+
+  EfsAccessPointArn:
+    Description: EFS access point ARN for $HOME persistence (paths.js:44 sessionsRoot()).
+    Value: !GetAtt HomeAccessPoint.Arn
+
+  EfsFileSystemId:
+    Description: EFS filesystem id.
+    Value: !Ref HomeFileSystem
+
+  EvidenceBucketArn:
+    Description: S3 Object Lock (COMPLIANCE) evidence bucket ARN.
+    Value: !GetAtt EvidenceBucket.Arn
+
+  VerifierAttestationBucketArn:
+    Description: >
+      The mutable GRADE->REPORT human-control store. The runtime can read only
+      approvals/*/*.approved; pending records and final writes remain unreachable.
+    Value: !GetAtt GlassboxApprovalsBucket.Arn
+
+  # Backward-compatible live-stack output retained for operators and scripts
+  # already bound to glassbox-agentcore-demo.
+  ApprovalsBucketArn:
+    Description: Mutable GRADE->REPORT human-approval store ARN.
+    Value: !GetAtt GlassboxApprovalsBucket.Arn
+
+  HumanApprovalsBucketName:
+    Description: >
+      Bucket name used to list approvals/pending/ keys without opening the
+      token-bearing pending JSON on a projector.
+    Value: !Ref GlassboxApprovalsBucket
+
+  VerifierAttestationHmacSecretArn:
+    Description: >
+      HMAC-SHA256 key for schema-v2 human approval artifacts. Read by the runtime
+      for defense-in-depth verification and ApprovalWriterRole for signing.
+    Value: !Ref GlassboxApprovalHmacKey
+
+  # Backward-compatible live-stack output retained for in-place updates.
+  ApprovalHmacSecretArn:
+    Description: HMAC-SHA256 key ARN for human approval artifacts.
+    Value: !Ref GlassboxApprovalHmacKey
+
+  SecurityHubProductArn:
+    Description: Security Hub custom product ARN for BatchImportFindings.
+    Value: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
+
+  ExportSecurityHubFunctionArn:
+    Description: >
+      ARCHITECTURAL FIX (Eric-approved): the downstream Security Hub export Lambda,
+      invoked by the state machine strictly AFTER AwaitHumanApproval, under
+      its own ExportSecurityHubRole (securityhub:BatchImportFindings +
+      s3:GetObject scoped to EvidenceBucket's hacker-bob/grade-freeze/ prefix only).
+      GlassboxAgentRuntimeExecutionRole (the model's role) holds neither this
+      function's ARN nor securityhub:BatchImportFindings.
+    Value: !GetAtt ExportSecurityHubFunction.Arn
+
+  ApprovalWriterFunctionArn:
+    Description: >
+      Invoke this function only as a named human, out of band, with an exact
+      approvals/pending/<execution>.json key and explicit approve/reject decision.
+      Neither the state-machine role nor the runtime role can invoke it.
+    Value: !GetAtt ApprovalWriterFunction.Arn
+
+  ApprovalNotificationTopicArn:
+    Description: SNS topic carrying token-free human approval requests.
+    Value: !Ref ApprovalNotificationTopic
+
+  StateMachineArn:
+    Description: hacker-bob-engagement Step Functions state machine ARN.
+    Value: !Ref GlassboxEngagementStateMachine
+
+  ExecutionRoleArn:
+    Description: AgentCore Runtime execution role ARN (h2-deploy attaches this).
+    Value: !GetAtt GlassboxAgentRuntimeExecutionRole.Arn
+
+  AgentRuntimeArn:
+    Description: AgentCore Runtime ARN (h2-deploy invokes this).
+    Value: !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn

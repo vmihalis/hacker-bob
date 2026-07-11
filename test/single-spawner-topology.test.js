@@ -41,6 +41,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { spawnCapableAgentNames } = require("../scripts/lib/claude-role-renderer.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const AGENTS_DIR = path.join(REPO_ROOT, ".claude", "agents");
@@ -61,32 +62,37 @@ function listAgentFiles() {
     .map((f) => path.join(AGENTS_DIR, f));
 }
 
-// Pure classifier shared by the real-tree assertion and the synthetic
-// controls. Given an agent name, whether its frontmatter carries Task, and the
-// registry-derived spawn-capable allowlist, return a violation reason or null.
-function classifyTaskGrant(agentName, hasTask, allowedSet) {
+function spawnGrantTokens(toolsLine) {
+  return String(toolsLine || "").match(/\b(?:Agent|Task)(?:\([^)]*\))?/g) || [];
+}
+
+// Pure classifier shared by the real-tree assertion and synthetic controls.
+// The one registry-declared root must carry exactly the parameterized current
+// Agent(child) grant; bare Agent/Task, legacy Task(child), and foreign types are
+// all violations because they widen preventive spawn authority.
+function classifySpawnGrant(agentName, grants, allowedSet, expectedGrant) {
   const isAllowed = allowedSet.has(agentName);
-  if (hasTask && !isAllowed) {
-    return "Task granted to a non-spawn-capable agent (Y-P8: only declared spawners may spawn)";
+  if (grants.length > 0 && !isAllowed) {
+    return "Agent/Task granted to a non-spawn-capable agent (Y-P8: only declared spawners may spawn)";
   }
-  if (!hasTask && isAllowed) {
-    return "spawn_capable agent is MISSING Task — the nested-spawn grant did not render";
+  if (isAllowed && (grants.length !== 1 || grants[0] !== expectedGrant)) {
+    return `spawn_capable agent must carry exactly ${expectedGrant}; got ${JSON.stringify(grants)}`;
   }
   return null;
 }
 
-test("topology: Task appears in agent frontmatter IFF the role is registry-declared spawn_capable (Y-P8, CN)", () => {
+test("topology: only the declared root carries exact Agent(evaluator-fanout-child) (Y-P8, NS-7)", () => {
   const allowed = new Set(spawnCapableAgentNames());
+  const expectedGrant = `Agent(${FANOUT_ROLE_REGISTRY.child.subagent_type})`;
   const offenders = [];
   for (const file of listAgentFiles()) {
     const fm = readAgentFrontmatter(file);
     if (!fm) continue;
     const toolsLineMatch = fm.match(/^tools:\s*(.*)$/m);
     if (!toolsLineMatch) continue;
-    // Match `Task` as a standalone token (comma- or whitespace-separated).
-    const hasTask = /\bTask\b/.test(toolsLineMatch[1]);
+    const grants = spawnGrantTokens(toolsLineMatch[1]);
     const agentName = path.basename(file, ".md");
-    const reason = classifyTaskGrant(agentName, hasTask, allowed);
+    const reason = classifySpawnGrant(agentName, grants, allowed, expectedGrant);
     if (reason) {
       offenders.push({ file: path.relative(REPO_ROOT, file), reason, toolsLine: toolsLineMatch[1] });
     }
@@ -99,20 +105,26 @@ test("topology: Task appears in agent frontmatter IFF the role is registry-decla
 });
 
 test("topology: the gate still bites — synthetic controls (CN)", () => {
-  const allowed = new Set(["evaluator-fanout"]);
-  // Negative control: a non-allowlisted agent carrying Task is a violation.
+  const allowed = new Set([FANOUT_ROLE_REGISTRY.root.subagent_type]);
+  const expected = `Agent(${FANOUT_ROLE_REGISTRY.child.subagent_type})`;
+  // Negative control: a non-allowlisted agent carrying any spawn grant.
   assert.match(
-    classifyTaskGrant("evaluator-agent", true, allowed) || "",
+    classifySpawnGrant("evaluator-agent", [expected], allowed, expected) || "",
     /non-spawn-capable/,
   );
-  // Negative control: an allowlisted agent that did NOT render Task is a violation.
+  // Missing, unrestricted, legacy-alias, and foreign grants all violate the exact boundary.
   assert.match(
-    classifyTaskGrant("evaluator-fanout", false, allowed) || "",
-    /MISSING Task/,
+    classifySpawnGrant(FANOUT_ROLE_REGISTRY.root.subagent_type, [], allowed, expected) || "",
+    /must carry exactly/,
   );
-  // Positive controls: allowlisted-with-Task and non-allowlisted-without-Task are clean.
-  assert.equal(classifyTaskGrant("evaluator-fanout", true, allowed), null);
-  assert.equal(classifyTaskGrant("evaluator-agent", false, allowed), null);
+  for (const widened of ["Agent", "Task", `Task(${FANOUT_ROLE_REGISTRY.child.subagent_type})`, "Agent(evaluator-agent)"]) {
+    assert.match(
+      classifySpawnGrant(FANOUT_ROLE_REGISTRY.root.subagent_type, [widened], allowed, expected) || "",
+      /must carry exactly/,
+    );
+  }
+  assert.equal(classifySpawnGrant(FANOUT_ROLE_REGISTRY.root.subagent_type, [expected], allowed, expected), null);
+  assert.equal(classifySpawnGrant("evaluator-agent", [], allowed, expected), null);
 });
 
 test("topology: the spawn-capable allowlist is CLOSED to exactly one declared spawner (Y-P8 length-1, CN)", () => {
@@ -124,7 +136,7 @@ test("topology: the spawn-capable allowlist is CLOSED to exactly one declared sp
   // (validateSpawnFanout child_type_allowlist) is registry-derived from this set.
   assert.deepEqual(
     spawnCapableAgentNames(),
-    ["evaluator-fanout"],
+    [FANOUT_ROLE_REGISTRY.root.subagent_type],
     `Y-P8: expected exactly one declared spawner (evaluator-fanout); got ${JSON.stringify(spawnCapableAgentNames())}`,
   );
 });
@@ -134,7 +146,10 @@ test("topology: the closed-allowlist guard bites a second spawner (negative cont
   // ["evaluator-fanout"] — a second declared spawner, or a renamed one — must fail
   // the same deepEqual the real-tree assertion uses.
   assert.throws(
-    () => assert.deepEqual(["evaluator-fanout", "evaluator-rogue"], ["evaluator-fanout"]),
+    () => assert.deepEqual(
+      [FANOUT_ROLE_REGISTRY.root.subagent_type, "evaluator-rogue"],
+      [FANOUT_ROLE_REGISTRY.root.subagent_type],
+    ),
     "a second declared spawner must violate the closed-allowlist contract",
   );
 });

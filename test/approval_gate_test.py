@@ -39,6 +39,8 @@ ADVANCE = "mcp__hacker-bob__bob_advance_session"
 FINALIZE = "mcp__hacker-bob__bob_finalize_report"
 DOMAIN = "example.com"
 TEST_HMAC_KEY = "test-only-approval-hmac-key-do-not-use-in-prod"
+FREEZE_BODY_SHA256 = "b" * 64
+FREEZE_VERSION_ID = "test-freeze-version-1"
 
 
 def advance(to_state, target_domain=DOMAIN):
@@ -94,12 +96,29 @@ def with_home_and_grade(domain=DOMAIN, document=None):
 
 
 def signed_artifact_json(target_domain, grade_verdict_hash, key=TEST_HMAC_KEY):
+    profile = "libheif-cve-2026-49271" if target_domain == "libheif-cve-2026-49271" else "smoke"
+    binding = [
+        profile,
+        target_domain,
+        grade_verdict_hash,
+        FREEZE_BODY_SHA256,
+        FREEZE_VERSION_ID,
+    ]
     signature = hmac_module.new(
         key.encode("utf-8"),
-        f"{target_domain}|{grade_verdict_hash}".encode("utf-8"),
+        json.dumps(binding, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return json.dumps({"hmac": signature, "grade_verdict_hash": grade_verdict_hash})
+    return json.dumps({
+        "schema_version": 2,
+        "binding_version": "grade-freeze-v2",
+        "profile": profile,
+        "target_domain": target_domain,
+        "grade_verdict_hash": grade_verdict_hash,
+        "grade_freeze_bundle_sha256": FREEZE_BODY_SHA256,
+        "grade_freeze_version_id": FREEZE_VERSION_ID,
+        "hmac": signature,
+    })
 
 
 def run(env_overrides, stdin_payload, hmac_key=TEST_HMAC_KEY, home=None):
@@ -122,7 +141,9 @@ def run(env_overrides, stdin_payload, hmac_key=TEST_HMAC_KEY, home=None):
 
 def with_approved_artifact(domain=DOMAIN, grade_verdict_hash=None, key=TEST_HMAC_KEY):
     tmpdir = tempfile.mkdtemp(prefix="bob-approval-gate-test-")
-    with open(os.path.join(tmpdir, f"{domain}.approved"), "w") as fh:
+    artifact_dir = os.path.join(tmpdir, domain)
+    os.makedirs(artifact_dir, exist_ok=True)
+    with open(os.path.join(artifact_dir, f"{grade_verdict_hash}.approved"), "w") as fh:
         fh.write(signed_artifact_json(domain, grade_verdict_hash, key))
     return tmpdir
 
@@ -135,9 +156,11 @@ def with_tampered_artifact(domain=DOMAIN, grade_verdict_hash=None):
     return with_approved_artifact(domain, grade_verdict_hash, key="a-different-attacker-controlled-key")
 
 
-def with_malformed_artifact(domain=DOMAIN, content="not json"):
+def with_malformed_artifact(domain=DOMAIN, grade_verdict_hash=None, content="not json"):
     tmpdir = tempfile.mkdtemp(prefix="bob-approval-gate-test-malformed-")
-    with open(os.path.join(tmpdir, f"{domain}.approved"), "w") as fh:
+    artifact_dir = os.path.join(tmpdir, domain)
+    os.makedirs(artifact_dir, exist_ok=True)
+    with open(os.path.join(artifact_dir, f"{grade_verdict_hash}.approved"), "w") as fh:
         fh.write(content)
     return tmpdir
 
@@ -146,7 +169,9 @@ def with_traversal_forgery():
     base_dir = tempfile.mkdtemp(prefix="bob-approval-gate-test-traversal-")
     artifact_dir = os.path.join(base_dir, "artifacts")
     os.mkdir(artifact_dir)
-    with open(os.path.join(base_dir, "pwned.approved"), "w") as fh:
+    outside_dir = os.path.join(base_dir, "pwned")
+    os.mkdir(outside_dir)
+    with open(os.path.join(outside_dir, f"{'0' * 64}.approved"), "w") as fh:
         # _is_safe_engagement_id rejects the "../pwned" engagement_id before this content is
         # ever read, so the grade_verdict_hash value here is a placeholder -- never resolved.
         fh.write(signed_artifact_json("pwned", "0" * 64))
@@ -167,13 +192,16 @@ def build_tests():
     empty_dir = tempfile.mkdtemp(prefix="bob-approval-gate-test-empty-")
     traversal_forgery_dir = with_traversal_forgery()
     tampered_dir = with_tampered_artifact(DOMAIN, grade_verdict_hash)
-    malformed_not_json_dir = with_malformed_artifact(DOMAIN, "not json")
-    malformed_no_hmac_dir = with_malformed_artifact(DOMAIN, json.dumps({"status": "approved"}))
+    malformed_not_json_dir = with_malformed_artifact(DOMAIN, grade_verdict_hash, "not json")
+    malformed_no_hmac_dir = with_malformed_artifact(
+        DOMAIN, grade_verdict_hash, json.dumps({"status": "approved"}),
+    )
     malformed_no_grade_hash_dir = with_malformed_artifact(
         DOMAIN,
+        grade_verdict_hash,
         json.dumps({
             "hmac": hmac_module.new(
-                TEST_HMAC_KEY.encode("utf-8"), f"{DOMAIN}|{grade_verdict_hash}".encode("utf-8"), hashlib.sha256
+                TEST_HMAC_KEY.encode("utf-8"), b"irrelevant", hashlib.sha256
             ).hexdigest(),
         }),
     )

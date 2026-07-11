@@ -1,0 +1,272 @@
+{
+  "Comment": "hacker-bob-engagement: preserves the legacy owned-target smoke while routing an explicit, immutable public historical-replay profile through the same grade-freeze, verifier/export, and report boundaries.",
+  "StartAt": "SelectEngagementProfile",
+  "States": {
+    "SelectEngagementProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "IsPresent": true,
+          "Next": "RouteNamedProfile"
+        }
+      ],
+      "Default": "PrepareLegacySmoke"
+    },
+    "RouteNamedProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "smoke",
+          "Next": "PrepareNamedSmoke"
+        },
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "PrepareLibheifReplay"
+        }
+      ],
+      "Default": "RejectUnknownProfile"
+    },
+    "RejectUnknownProfile": {
+      "Type": "Fail",
+      "Error": "UnsupportedEngagementProfile",
+      "Cause": "profile must be smoke or libheif-cve-2026-49271"
+    },
+    "PrepareLegacySmoke": {
+      "Type": "Pass",
+      "Comment": "Backward-compatible target-only input shape used by the deployed low-cost plumbing smoke.",
+      "Parameters": {
+        "profile": "smoke",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildSmokeGradePayload"
+    },
+    "PrepareNamedSmoke": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile": "smoke",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildSmokeGradePayload"
+    },
+    "PrepareLibheifReplay": {
+      "Type": "Pass",
+      "Comment": "No commit, path, or expected marker is accepted from execution input; those values are image-owned and independently lock-validated.",
+      "Parameters": {
+        "profile": "libheif-cve-2026-49271",
+        "target": "libheif-cve-2026-49271",
+        "fixtureId": "libheif-cve-2026-49271",
+        "runtimeSessionId.$": "States.UUID()"
+      },
+      "Next": "BuildLibheifGradePayload"
+    },
+    "BuildSmokeGradePayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradePayload": {
+          "target.$": "$.target",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "GRADE",
+          "demo_smoke": true,
+          "no_auth": true,
+          "private_targets": true,
+          "mode": "normal"
+        }
+      },
+      "Next": "InvokeAgentRuntimeThroughGrade"
+    },
+    "BuildLibheifGradePayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradePayload": {
+          "target.$": "$.target",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "GRADE",
+          "fixture_id.$": "$.fixtureId"
+        }
+      },
+      "Next": "InvokeAgentRuntimeThroughGrade"
+    },
+    "InvokeAgentRuntimeThroughGrade": {
+      "Type": "Task",
+      "Comment": "Invoke the AgentCore data plane. Smoke is a health path; libheif is a bounded historical differential, explicitly not fresh discovery.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn": "${AgentRuntimeArn}",
+        "RuntimeSessionId.$": "$.runtimeSessionId",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload.$": "States.JsonToString($.gradePayload)"
+      },
+      "TimeoutSeconds": 840,
+      "ResultPath": "$.gradeInvoke",
+      "Next": "DecodeGradeResult"
+    },
+    "DecodeGradeResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "States.StringToJson($.gradeInvoke.Response)"
+      },
+      "Next": "RunVerifierGate"
+    },
+    "RunVerifierGate": {
+      "Type": "Task",
+      "Comment": "Automated integrity only: reads the exact GRADE-returned WORM VersionId, recomputes the exact body SHA-256 and canonical grade hash, and never writes an approval artifact or resumes this execution.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${VerifierGateFunctionArn}",
+        "Payload": {
+          "executionName.$": "$$.Execution.Name",
+          "profile.$": "$.profile",
+          "target.$": "$.gradeResult.target_domain",
+          "gradeResult.$": "$.gradeResult"
+        }
+      },
+      "ResultPath": "$.verifierGate",
+      "Next": "AwaitHumanApproval"
+    },
+    "AwaitHumanApproval": {
+      "Type": "Task",
+      "Comment": "Zero-compute human boundary. The recorder persists the opaque task token and the verifier-bound target/profile, grade hash, exact VersionId, and exact body SHA-256. Returning from the recorder does not resolve this state; only an out-of-band named-human invocation of ApprovalWriterFunction can write the v2 HMAC artifact and call SendTaskSuccess. Rejection calls SendTaskFailure. The task fails closed after 24 hours, allowing an overnight pre-start without an unbounded token.",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${ApprovalPendingRecorderFunctionArn}",
+        "Payload": {
+          "token.$": "$$.Task.Token",
+          "executionName.$": "$$.Execution.Name",
+          "profile.$": "$.profile",
+          "target.$": "$.gradeResult.target_domain",
+          "gradeResult.$": "$.gradeResult",
+          "verifiedFreeze.$": "$.verifierGate.Payload"
+        }
+      },
+      "TimeoutSeconds": 86400,
+      "ResultPath": "$.approval",
+      "Next": "ExportToSecurityHub"
+    },
+    "ExportToSecurityHub": {
+      "Type": "Task",
+      "Comment": "Runs only after the callback resolves and reads only the exact human-approved GRADE-time WORM version under a Bob-unreachable role.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ExportSecurityHubFunctionArn}",
+        "Payload": {
+          "target.$": "$.approval.target",
+          "gradeVerdictHash.$": "$.approval.grade_verdict_hash",
+          "gradeFreezeVersionId.$": "$.approval.grade_freeze_version_id",
+          "gradeFreezeBundleSha256.$": "$.approval.grade_freeze_bundle_sha256"
+        }
+      },
+      "ResultPath": "$.exportResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "SelectReportProfile"
+    },
+    "SelectReportProfile": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "BuildLibheifReportPayload"
+        }
+      ],
+      "Default": "BuildSmokeReportPayload"
+    },
+    "BuildSmokeReportPayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportPayload": {
+          "target.$": "$.target",
+          "target_domain.$": "$.gradeResult.target_domain",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "REPORT",
+          "resume": true,
+          "demo_smoke": true,
+          "no_auth": true,
+          "private_targets": true,
+          "mode": "normal"
+        }
+      },
+      "Next": "ResumeAgentRuntimeThroughReport"
+    },
+    "BuildLibheifReportPayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportPayload": {
+          "target.$": "$.target",
+          "target_domain.$": "$.gradeResult.target_domain",
+          "runtime_session_id.$": "$.runtimeSessionId",
+          "stage": "REPORT",
+          "resume": true,
+          "fixture_id": "libheif-cve-2026-49271"
+        }
+      },
+      "Next": "ResumeAgentRuntimeThroughReport"
+    },
+    "ResumeAgentRuntimeThroughReport": {
+      "Type": "Task",
+      "Comment": "Resumes from the EFS-mounted HOME scoped by the same runtime session id used during GRADE.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Parameters": {
+        "AgentRuntimeArn": "${AgentRuntimeArn}",
+        "RuntimeSessionId.$": "$.runtimeSessionId",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload.$": "States.JsonToString($.reportPayload)"
+      },
+      "TimeoutSeconds": 840,
+      "ResultPath": "$.reportInvoke",
+      "Next": "DecodeReportResult"
+    },
+    "DecodeReportResult": {
+      "Type": "Pass",
+      "Parameters": {
+        "profile.$": "$.profile",
+        "target.$": "$.target",
+        "runtimeSessionId.$": "$.runtimeSessionId",
+        "gradeResult.$": "$.gradeResult",
+        "approval.$": "$.approval",
+        "exportResult.$": "$.exportResult",
+        "reportResult.$": "States.StringToJson($.reportInvoke.Response)"
+      },
+      "End": true
+    }
+  }
+}

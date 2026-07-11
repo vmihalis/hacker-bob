@@ -231,7 +231,7 @@ function renderEvaluateCommand() {
     "description: Run or resume a Hacker Bob bug bounty evaluate.",
     "allowed-tools:",
     ...allowedTools.map((tool) => `  - ${tool}`),
-    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
+    'argument-hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]"',
     "---",
     "Run or resume a Hacker Bob bug bounty evaluate.",
     "",

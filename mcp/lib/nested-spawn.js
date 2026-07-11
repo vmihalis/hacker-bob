@@ -8,8 +8,15 @@
 // deriveChildFanoutPlan + queue-policy max_spawn_depth/max_spawn_children).
 // The host CLI is the muscle that ACTUATES it. Hosts differ in whether a
 // spawned worker may itself spawn children:
-//   - claude: native nested subagents to a FIXED ceiling of depth 5
-//     (Claude Code v2.1.172); a worker nests by holding the Agent/Task tool.
+//   - claude: one supported nesting edge through agent teams: the wave root is
+//     a named background teammate, which may spawn anonymous SYNCHRONOUS
+//     subagents. Agent teams are experimental and off by default, so this edge
+//     runtime environment on Claude Code >=2.1.172 (the documented minimum for
+//     nested subagents; Bob
+//     does not probe the CLI version at runtime). Current Claude releases can
+//     support deeper generic nesting, but Bob deliberately fixes this topology
+//     at depth 2: the generated child has no Agent grant and the host hook denies
+//     recursion (wave root + one child level).
 //   - codex:  opt-in nesting via ~/.codex/config.toml `[agents] max_depth`
 //     (default 1 = workers are leaves). The brain cannot read the operator's
 //     config.toml, so max_native_depth is null = "honor the queue-policy depth,
@@ -19,8 +26,9 @@
 //
 // Unknown host -> fail-closed to no-nesting (the portable flat-wave fallback).
 //
-// Everything here is PURE (no clock, random, env, or I/O) so it is trivially
-// testable and deterministic.
+// The registry and budget functions are pure. runtimeNestingEnabledForHost and
+// effectiveSpawnDepth receive an injectable env object (default process.env) so
+// the one host-owned feature gate remains deterministic in tests.
 
 // max_concurrent_subagents (D3) — the host's simultaneous-live-subagent pool
 // ceiling. null = the host SELF-MANAGES a bounded pool (claude/codex queue and
@@ -28,13 +36,38 @@
 // max_concurrent_evaluators plus C5's spawn budget, not a brain-imposed number.
 // A finite value (non-nesting/unknown hosts: 1) is the hard host ceiling and
 // fail-closes so the orchestrator never emits a nested plan such a host can't drain.
+// NS-7 — one registry-owned identity pair for the Claude nesting edge. The
+// wave root is the only spawn-capable role; every emitted leaf is dispatched
+// as the distinct child role so its generated frontmatter can subtract spawn
+// and settlement authority before the child starts. All plan, handoff, hook,
+// and completion consumers import these identities instead of maintaining
+// string aliases.
+const FANOUT_ROLE_REGISTRY = Object.freeze({
+  root: Object.freeze({
+    role_id: "evaluator-fanout",
+    subagent_type: "evaluator-fanout",
+    spawn_capable: true,
+  }),
+  child: Object.freeze({
+    role_id: "evaluator-fanout-child",
+    subagent_type: "evaluator-fanout-child",
+    spawn_capable: false,
+    remaining_depth: 0,
+  }),
+});
+
 const HOST_NESTING_CAPABILITIES = Object.freeze({
   claude: Object.freeze({
     host: "claude",
     supports_nesting: true,
-    nesting_mechanism: "native_subagent",
-    max_native_depth: 5,
+    nesting_mechanism: "agent_team_sync_subagent",
+    max_native_depth: 2,
     max_concurrent_subagents: null,
+    minimum_host_version: "2.1.172",
+    runtime_enablement: Object.freeze({
+      env_var: "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+      enabled_value: "1",
+    }),
   }),
   codex: Object.freeze({
     host: "codex",
@@ -42,6 +75,8 @@ const HOST_NESTING_CAPABILITIES = Object.freeze({
     nesting_mechanism: "codex_agents_max_depth",
     max_native_depth: null,
     max_concurrent_subagents: null,
+    minimum_host_version: null,
+    runtime_enablement: null,
   }),
   kimi: Object.freeze({
     host: "kimi",
@@ -49,6 +84,8 @@ const HOST_NESTING_CAPABILITIES = Object.freeze({
     nesting_mechanism: "none",
     max_native_depth: 1,
     max_concurrent_subagents: 1,
+    minimum_host_version: null,
+    runtime_enablement: null,
   }),
   "generic-mcp": Object.freeze({
     host: "generic-mcp",
@@ -56,6 +93,8 @@ const HOST_NESTING_CAPABILITIES = Object.freeze({
     nesting_mechanism: "none",
     max_native_depth: 1,
     max_concurrent_subagents: 1,
+    minimum_host_version: null,
+    runtime_enablement: null,
   }),
 });
 
@@ -65,11 +104,26 @@ const FALLBACK_CAPABILITY = Object.freeze({
   nesting_mechanism: "none",
   max_native_depth: 1,
   max_concurrent_subagents: 1,
+  minimum_host_version: null,
+  runtime_enablement: null,
 });
 
 function nestingCapabilityForHost(hostId) {
   if (typeof hostId !== "string" || hostId.length === 0) return FALLBACK_CAPABILITY;
   return HOST_NESTING_CAPABILITIES[hostId] || FALLBACK_CAPABILITY;
+}
+
+// NS-3 — runtimeNestingEnabledForHost is the registry-driven host feature gate. A host may
+// advertise a supported topology while still requiring an explicit runtime
+// opt-in. Unknown/non-nesting hosts fail closed. Values are exact after trimming:
+// Claude's documented gate is `=1`; truthy aliases such as `true` do not enable it.
+function runtimeNestingEnabledForHost(hostId, env = process.env) {
+  const capability = nestingCapabilityForHost(hostId);
+  if (!capability.supports_nesting) return false;
+  const gate = capability.runtime_enablement;
+  if (!gate) return true;
+  const rawValue = env && env[gate.env_var];
+  return typeof rawValue === "string" && rawValue.trim() === gate.enabled_value;
 }
 
 // hostPoolCeiling (D3) — the host's concurrent-subagent pool ceiling, or null when
@@ -100,12 +154,13 @@ function effectiveConcurrencyCap(maxConcurrentEvaluators, hostId) {
 // effectiveSpawnDepth — clamp the operator's queue-policy max_spawn_depth by
 // what the host actually supports. Returns an integer >= 1.
 //   - host doesn't support nesting          -> 1 (leaf workers; fan-out flat).
-//   - host has a fixed ceiling (claude: 5)  -> min(policyDepth, ceiling).
+//   - host runtime gate is disabled         -> 1 (Claude agent teams default).
+//   - host has a fixed ceiling (claude: 2)  -> min(policyDepth, ceiling).
 //   - host ceiling unknown/null (codex)     -> policyDepth as given.
-function effectiveSpawnDepth(policyDepth, hostId) {
+function effectiveSpawnDepth(policyDepth, hostId, env = process.env) {
   const cap = nestingCapabilityForHost(hostId);
   const depth = Number.isInteger(policyDepth) && policyDepth >= 1 ? policyDepth : 1;
-  if (!cap.supports_nesting) return 1;
+  if (!runtimeNestingEnabledForHost(hostId, env)) return 1;
   if (Number.isInteger(cap.max_native_depth) && cap.max_native_depth >= 1) {
     return Math.min(depth, cap.max_native_depth);
   }
@@ -204,8 +259,10 @@ function validateSpawnFanout(reportedChildren, budget) {
 }
 
 module.exports = {
+  FANOUT_ROLE_REGISTRY,
   HOST_NESTING_CAPABILITIES,
   nestingCapabilityForHost,
+  runtimeNestingEnabledForHost,
   hostPoolCeiling,
   effectiveConcurrencyCap,
   effectiveSpawnDepth,

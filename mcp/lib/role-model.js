@@ -6,6 +6,7 @@ const {
   toolNamesForRoleBundle,
 } = require("./tool-registry.js");
 const { evaluatorRoleSpecs } = require("./capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
 
 const ROLE_PROMPT_DIR = path.join("prompts", "roles");
 
@@ -118,12 +119,28 @@ const ROLE_DEFINITIONS = Object.freeze({
   // VALID_ROLE_BUNDLES is frozen). Transition-blind by construction — discovered
   // cross-surface pivots ride discovered_pivots[] up to the orchestrator, which
   // owns + proposes transitions.
-  "evaluator-fanout": Object.freeze({
-    id: "evaluator-fanout",
+  [FANOUT_ROLE_REGISTRY.root.role_id]: Object.freeze({
+    id: FANOUT_ROLE_REGISTRY.root.role_id,
     family: "evaluator",
     prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-fanout.md"),
     mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
     deny_mcp_tools: Object.freeze(["bob_propose_transition"]),
+  }),
+  // NS-7 — the synchronous leaf is a distinct role, not a second execution
+  // mode of the root. Its generated Claude frontmatter therefore lacks the
+  // host spawn primitive and subtracts both root-owned settlement writes at
+  // spawn time. The shared evaluator bundles retain assignment/technique reads,
+  // candidate-claim writes, coverage writes, and bounded web probes.
+  [FANOUT_ROLE_REGISTRY.child.role_id]: Object.freeze({
+    id: FANOUT_ROLE_REGISTRY.child.role_id,
+    family: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator-fanout-child.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
+    deny_mcp_tools: Object.freeze([
+      "bob_propose_transition",
+      "bob_write_wave_handoff",
+      "bob_finalize_agent_run",
+    ]),
   }),
   chain: Object.freeze({
     id: "chain",

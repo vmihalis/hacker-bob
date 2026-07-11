@@ -38,15 +38,19 @@ const HINTS = ["idor", "ssrf", "xss", "ssti", "auth_bypass"];
 function withClaudeHome(fn) {
   const prevHome = process.env.HOME;
   const prevClient = process.env.BOB_CLIENT;
+  const prevAgentTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-ledger-dispatch-"));
   process.env.HOME = home;
-  process.env.BOB_CLIENT = "claude"; // nesting is claude-only (NS-3)
+  process.env.BOB_CLIENT = "claude"; // nesting is explicitly-enabled Claude-only (NS-3)
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
   try {
     return fn(home);
   } finally {
     process.env.HOME = prevHome;
     if (prevClient === undefined) delete process.env.BOB_CLIENT;
     else process.env.BOB_CLIENT = prevClient;
+    if (prevAgentTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prevAgentTeams;
     try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   }
 }
@@ -85,15 +89,15 @@ test("dispatch writer: a nested wave start reserves a non-empty spawn-ledger ent
 test("dispatch writer: K roots accumulate greedy-sequentially within budget; exclude-self isolates each", () => {
   withClaudeHome(() => {
     const domain = "ledger-k.example.com";
-    // Tight budget so the greedy split is observable: root1 takes the lion's share,
-    // root2 is sized against what remains.
+    // Tight budget so the greedy split is observable under Claude's one-child-level
+    // topology: root1 can reserve all five candidate cells, root2 sees only two left.
     bootstrap(domain, [
       { id: "surface:api", hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS },
       { id: "surface:admin", hosts: [`https://${domain}`], priority: "HIGH", bug_class_hints: HINTS },
     ], {
       max_spawn_depth: 3,
       max_spawn_children: 8,
-      max_total_spawned_agents: 100,
+      max_total_spawned_agents: 7,
     });
 
     startWave({
@@ -108,7 +112,7 @@ test("dispatch writer: K roots accumulate greedy-sequentially within budget; exc
     const rows = readSpawnLedgerEntries(domain);
     assert.equal(rows.length, 2, "one reservation per nested root");
     const total = rows.reduce((acc, r) => acc + Number(r.worst_case_tree), 0);
-    assert.ok(total <= 100, `cumulative worst case (${total}) stays within max_total_spawned_agents`);
+    assert.ok(total <= 7, `cumulative worst case (${total}) stays within max_total_spawned_agents`);
     assert.equal(spawnLedgerTotal(domain), total);
 
     // Greedy-sequential: the two reservations differ (the second was sized against the

@@ -17,7 +17,7 @@ Transform: AWS::Serverless-2016-10-31
 # fork_block=17050000) resolves through hacker-bob's own DEFAULT_PUBLIC_RPC_LADDER
 # (mcp/lib/evm-rpc-pool.js), reached from inside the deny-egress microVM over
 # exactly ONE declared archive-RPC egress path — see
-# infra/aws/glassbox-stack/template.yaml's ArchiveRpcGatewayEgressRule +
+# infra/aws/hacker-bob-stack/template.yaml's ArchiveRpcGatewayEgressRule +
 # ArchiveRpcAllowedDomainList/ArchiveRpcDenyAllDomainList Route 53 Resolver
 # DNS Firewall pair (fx-kyber-iac), and that stack's README.md for the full
 # egress path description. BOB_EVM_RPCS_1 (set at Runtime-provisioning time,
@@ -40,7 +40,7 @@ Description: >
   anvil node + kyberfork.internal private DNS zone. That design is moot — see
   the SUPERSEDED banner above. Kept as a placeholder for traceability only;
   not deployed. Kyber's live target is the public-archive-fork path declared
-  in infra/aws/glassbox-stack/template.yaml.
+  in infra/aws/hacker-bob-stack/template.yaml.
 
 Resources:
   # Intentionally empty. The KyberForkSecurityGroup / KyberForkInstance /

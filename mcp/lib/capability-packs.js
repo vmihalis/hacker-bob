@@ -1,5 +1,7 @@
 "use strict";
 
+const { FANOUT_ROLE_REGISTRY } = require("./nested-spawn.js");
+
 // Capability pack manifest. Each pack is the single source of truth for:
 //   id              — string used in surface-routes.json and findings.jsonl
 //   evaluator_agent    — Claude/Codex subagent name spawned for this pack
@@ -48,6 +50,12 @@ const SC_OBJECTIVE_LEAD = "Objective: break an invariant or demonstrate attacker
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
   capability_pack_version: 1,
+  // Technique guidance is keyed by capability family, not by the evaluator
+  // routing variant that happens to execute it. Routing variants derive from
+  // this pack and inherit the canonical family, so every technique-pack
+  // consumer can resolve compatibility through CAPABILITY_PACKS instead of
+  // maintaining local aliases (for example, web_fanout -> web).
+  technique_compatibility_pack: "web",
   evaluator_agent: "evaluator-agent",
   brief_profile: "web",
   role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
@@ -84,7 +92,7 @@ const WEB_CAPABILITY_PACK = Object.freeze({
 const WEB_FANOUT_CAPABILITY_PACK = Object.freeze({
   ...WEB_CAPABILITY_PACK,
   id: "web_fanout",
-  evaluator_agent: "evaluator-fanout",
+  evaluator_agent: FANOUT_ROLE_REGISTRY.root.subagent_type,
 });
 
 // Select the web evaluator pack for a classified WEB surface: the spawn-capable web_fanout
@@ -504,6 +512,30 @@ function normalizeSurfaceType(value) {
 
 function getCapabilityPack(packId) {
   return CAPABILITY_PACKS[packId] || null;
+}
+
+// NS-6 — Resolve the canonical capability-pack id used by the technique registry.
+// Most packs are their own technique family. Routing-only variants declare
+// `technique_compatibility_pack` on their registry entry (or inherit it via a
+// SPREAD-derived entry such as web_fanout), keeping the relation registry-owned
+// and automatically shared by selection, full reads, and attempt logging.
+function techniqueCompatibilityPackId(packId) {
+  const pack = getCapabilityPack(packId);
+  if (!pack) return null;
+  const compatibilityPackId = pack.technique_compatibility_pack || pack.id;
+  const compatibilityPack = getCapabilityPack(compatibilityPackId);
+  if (!compatibilityPack) {
+    throw new Error(
+      `Capability pack ${pack.id} references unknown technique_compatibility_pack ${compatibilityPackId}`,
+    );
+  }
+  const canonicalTarget = compatibilityPack.technique_compatibility_pack || compatibilityPack.id;
+  if (canonicalTarget !== compatibilityPackId) {
+    throw new Error(
+      `Capability pack ${pack.id} references non-canonical technique_compatibility_pack ${compatibilityPackId}; use ${canonicalTarget}`,
+    );
+  }
+  return compatibilityPackId;
 }
 
 function cloneContextBudget(budget) {
@@ -998,6 +1030,7 @@ module.exports = {
   familyTagForCapabilityPackId,
   normalizeAssignmentRouteMetadata,
   selectWebEvaluatorPack,
+  techniqueCompatibilityPackId,
   normalizeContextBudget,
   normalizeSurfaceType,
   SMART_CONTRACT_CONTEXT_BUDGET,

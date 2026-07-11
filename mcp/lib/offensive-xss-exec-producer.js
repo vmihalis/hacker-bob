@@ -96,6 +96,7 @@ const {
   auditConfirmRequest,
   assertNoForbiddenInputs,
   sensitiveShapesPresent,
+  mintSensitiveShapeSafeToken,
   SCOPE_VALIDATION_OPTS,
 } = require("./offensive-http-common.js");
 const {
@@ -116,8 +117,6 @@ const {
   assertExpressionSandbox,
   parseProxyUrlForPlaywright,
 } = require("./browser-tools-shared.js");
-
-const crypto = require("crypto");
 
 const TOOL_ID = "bob_http_xss_confirm";
 // GET-only by construction (idempotent, read-only-safe, re-producible). The tool
@@ -167,12 +166,6 @@ function normalizeParamLocus(value) {
     rejectInvalidArguments(`param_locus ordinal must be between 0 and ${MAX_PARAM_LOCUS}`);
   }
   return index;
-}
-
-function mintToken(prefix) {
-  // prefix + 128 bits hex. Alphanumeric and a valid JS identifier tail, so the
-  // marker key window.__bobxe_<nonce> and the read-back expression are clean.
-  return `${prefix}${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function isWafStatus(nav) {
@@ -391,7 +384,7 @@ async function confirmXssExecution(args = {}, { driver = null } = {}) {
   // network-free svg-onload payload that sets ONLY window[markerKey] = nonce IFF
   // it executes. `"><svg onload=…>` breaks out of text-node / double-quoted-attr /
   // unquoted-attr contexts (single-quoted-attr is a documented v1 miss).
-  const nonce = mintToken("bxe");
+  const nonce = mintSensitiveShapeSafeToken("bxe");
   const markerKey = `__bobxe_${nonce}`;
   const controlValue = nonce;
   const probeValue = `"><svg onload="window.${markerKey}='${nonce}'">`;

@@ -71,8 +71,22 @@ function materializeReleaseCandidate({ workDir, indexFile }) {
 
   const head = git(["rev-parse", "HEAD"]).stdout.trim();
   const trackedChanges = git(["diff", "--name-status", "HEAD"]).stdout.trim().split(/\n/).filter(Boolean);
+  // The isolated candidate index starts at HEAD, so `git add -u` below sees
+  // modified/deleted tracked paths but cannot see intentional net-new source.
+  // Import only additions already staged in the caller's real index. Ordinary
+  // untracked files still block release, and package-policy exclusions remain
+  // excluded even if an operator accidentally stages one.
+  const stagedAdditions = splitNul(
+    // --name-only reports the destination path for copies and renames. Those
+    // paths are just as absent from the HEAD-seeded isolated index as ordinary
+    // additions, so import all three kinds before checking for untracked files.
+    git(["diff", "--cached", "--name-only", "--diff-filter=ACR", "-z", "HEAD"]).stdout,
+  ).filter((file) => !shouldExcludeUntracked(file));
   git(["read-tree", "HEAD"], { env });
   git(["add", "-u", "--", "."], { env });
+  if (stagedAdditions.length > 0) {
+    git(["add", "--", ...stagedAdditions], { env });
+  }
 
   const untracked = splitNul(git(["ls-files", "--others", "--exclude-standard", "-z"], { env }).stdout);
   const excludedUntracked = untracked.filter(shouldExcludeUntracked).sort();

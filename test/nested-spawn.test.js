@@ -2,8 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  FANOUT_ROLE_REGISTRY,
   HOST_NESTING_CAPABILITIES,
   nestingCapabilityForHost,
+  runtimeNestingEnabledForHost,
   hostPoolCeiling,
   effectiveConcurrencyCap,
   effectiveSpawnDepth,
@@ -46,11 +48,26 @@ test("queue policy accepts opt-in depth/children and clamps to ceiling", () => {
 
 test("host capability registry matches the per-CLI research", () => {
   assert.equal(HOST_NESTING_CAPABILITIES.claude.supports_nesting, true);
-  assert.equal(HOST_NESTING_CAPABILITIES.claude.max_native_depth, 5);
+  assert.equal(HOST_NESTING_CAPABILITIES.claude.nesting_mechanism, "agent_team_sync_subagent");
+  assert.equal(HOST_NESTING_CAPABILITIES.claude.max_native_depth, 2);
+  assert.equal(HOST_NESTING_CAPABILITIES.claude.minimum_host_version, "2.1.172");
+  assert.deepEqual(HOST_NESTING_CAPABILITIES.claude.runtime_enablement, {
+    env_var: "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    enabled_value: "1",
+  });
   assert.equal(HOST_NESTING_CAPABILITIES.codex.supports_nesting, true);
   assert.equal(HOST_NESTING_CAPABILITIES.codex.max_native_depth, null);
   assert.equal(HOST_NESTING_CAPABILITIES.kimi.supports_nesting, false);
   assert.equal(HOST_NESTING_CAPABILITIES["generic-mcp"].supports_nesting, false);
+});
+
+test("Claude nesting is runtime-gated by the exact experimental agent-teams flag", () => {
+  assert.equal(runtimeNestingEnabledForHost("claude", {}), false, "agent teams are off by default");
+  assert.equal(runtimeNestingEnabledForHost("claude", { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0" }), false);
+  assert.equal(runtimeNestingEnabledForHost("claude", { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "true" }), false);
+  assert.equal(runtimeNestingEnabledForHost("claude", { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: " 1 " }), true);
+  assert.equal(runtimeNestingEnabledForHost("codex", {}), true, "Codex has no registry-declared env gate");
+  assert.equal(runtimeNestingEnabledForHost("unknown", { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" }), false);
 });
 
 test("unknown / empty host fails closed to no-nesting", () => {
@@ -60,9 +77,12 @@ test("unknown / empty host fails closed to no-nesting", () => {
 });
 
 test("effectiveSpawnDepth clamps by host and never drops below 1", () => {
-  // claude: fixed ceiling 5
-  assert.equal(effectiveSpawnDepth(8, "claude"), 5);
-  assert.equal(effectiveSpawnDepth(3, "claude"), 3);
+  const agentTeamsEnabled = { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" };
+  // claude: flat by default; an explicitly enabled named teammate may spawn
+  // one anonymous synchronous child level.
+  assert.equal(effectiveSpawnDepth(8, "claude", {}), 1);
+  assert.equal(effectiveSpawnDepth(8, "claude", agentTeamsEnabled), 2);
+  assert.equal(effectiveSpawnDepth(3, "claude", agentTeamsEnabled), 2);
   // codex: operator-set ceiling (null) -> honor policy depth
   assert.equal(effectiveSpawnDepth(4, "codex"), 4);
   // kimi/generic/unknown: no nesting -> always 1
@@ -70,7 +90,7 @@ test("effectiveSpawnDepth clamps by host and never drops below 1", () => {
   assert.equal(effectiveSpawnDepth(4, "generic-mcp"), 1);
   assert.equal(effectiveSpawnDepth(4, "unknown-host"), 1);
   // degenerate policy depth -> floored to 1
-  assert.equal(effectiveSpawnDepth(0, "claude"), 1);
+  assert.equal(effectiveSpawnDepth(0, "claude", agentTeamsEnabled), 1);
   assert.equal(effectiveSpawnDepth(undefined, "codex"), 1);
 });
 
@@ -173,20 +193,20 @@ test("maxBranchingForBudget is default-off: null/Infinity budget leaves the hard
 test("validateSpawnFanout 4th leg: the session spawn budget bounds the running total", () => {
   // total_spawned already at 6, this plan adds 4 => 10 > max 8 is a violation.
   const over = validateSpawnFanout(
-    [{ subagent_type: "evaluator-fanout" }, { subagent_type: "evaluator-fanout" }, { subagent_type: "evaluator-fanout" }, { subagent_type: "evaluator-fanout" }],
+    Array.from({ length: 4 }, () => ({ subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type })),
     { remaining_depth: 1, max_children: 8, total_spawned: 6, max_total_spawned_agents: 8 },
   );
   assert.equal(over.ok, false);
   assert.ok(over.violations.some((v) => /max_total_spawned_agents/.test(v)));
   // Within budget passes.
   const ok = validateSpawnFanout(
-    [{ subagent_type: "evaluator-fanout" }],
+    [{ subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type }],
     { remaining_depth: 1, max_children: 8, total_spawned: 6, max_total_spawned_agents: 8 },
   );
   assert.equal(ok.ok, true);
   // Default-off: null max_total => no session-budget leg.
   const off = validateSpawnFanout(
-    [{ subagent_type: "evaluator-fanout" }],
+    [{ subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type }],
     { remaining_depth: 1, max_children: 8, total_spawned: 9999 },
   );
   assert.equal(off.ok, true);

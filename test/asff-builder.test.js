@@ -3,7 +3,7 @@
 // Unit tests for the PURE, AWS/fs-free ASFF-building layer extracted out of
 // mcp/lib/tools/export-security-hub-finding.js so it can be shared verbatim
 // by the downstream ExportSecurityHubFunction Lambda
-// (infra/aws/glassbox-stack/functions/export-security-hub/index.js).
+// (infra/aws/hacker-bob-stack/functions/export-security-hub/index.js).
 //
 // These tests deliberately never touch fs/network/session-state -- they
 // only exercise the module's exported pure functions -- so they double as
@@ -118,11 +118,17 @@ test("productFieldsFor emits only present hash fields, all under the hacker_bob/
   // report_content_hash yet) omits the missing fields rather than emitting
   // "undefined" keys.
   const partial = productFieldsFor({
-    hashes: { grade_verdict_hash: "d".repeat(64) },
+    hashes: {
+      grade_verdict_hash: "d".repeat(64),
+      grade_freeze_version_id: "version-1",
+      grade_freeze_bundle_sha256: "f".repeat(64),
+    },
     s3Uri: "s3://bucket/grade-freeze.json",
   });
   assert.deepEqual(partial, {
     [`${PRODUCT_FIELD_PREFIX}grade_verdict_hash`]: "d".repeat(64),
+    [`${PRODUCT_FIELD_PREFIX}grade_freeze_version_id`]: "version-1",
+    [`${PRODUCT_FIELD_PREFIX}grade_freeze_bundle_sha256`]: "f".repeat(64),
     [`${PRODUCT_FIELD_PREFIX}s3_uri`]: "s3://bucket/grade-freeze.json",
   });
 });

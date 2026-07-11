@@ -50,7 +50,7 @@
 // the architecture depends on this object existing by the time a human is
 // asked to approve the grade.
 //
-// Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+// Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 
 const {
   hashCanonicalJson,
@@ -103,14 +103,16 @@ function buildGradeFreezeBundle({ domain, document, findingPayloads, reportableF
   };
 }
 
-// Bridges a synchronous S3 PutObject (Object Lock COMPLIANCE) through a
-// short-lived child process, mirroring approval-store.js's readS3Artifact.
+// Bridges a synchronous S3 PutObject through a short-lived child process,
+// mirroring approval-store.js's readS3Artifact. The stack-owned bucket's
+// default Object Lock rule applies COMPLIANCE retention; omitting per-request
+// retention headers keeps this writer at s3:PutObject-only privilege.
 // The body is written to a temp file first (rather than passed as a CLI
 // argv value) so an arbitrarily large grade-freeze bundle never risks
 // hitting an OS argv-length limit.
-function putObjectSync({ bucket, key, bodyString, retainUntilIso }) {
+function putObjectSync({ bucket, key, bodyString }) {
   if (syncPutObjectForTest) {
-    syncPutObjectForTest({ bucket, key, bodyString, retainUntilIso });
+    syncPutObjectForTest({ bucket, key, bodyString });
     return;
   }
   const fs = require("fs");
@@ -126,18 +128,16 @@ function putObjectSync({ bucket, key, bodyString, retainUntilIso }) {
       "const { S3Client, PutObjectCommand } = require(\"@aws-sdk/client-s3\");",
       "(async () => {",
       "  const client = new S3Client({});",
-      "  const body = fs.readFileSync(process.argv[5]);",
+      "  const body = fs.readFileSync(process.argv[4]);",
       "  await client.send(new PutObjectCommand({",
       "    Bucket: process.argv[2],",
       "    Key: process.argv[3],",
       "    Body: body,",
       "    ContentType: \"application/json\",",
-      "    ObjectLockMode: \"COMPLIANCE\",",
-      "    ObjectLockRetainUntilDate: new Date(process.argv[4]),",
       "  }));",
       "})().catch((err) => { process.stderr.write(String((err && err.message) || err)); process.exit(1); });",
     ].join("\n");
-    execFileSync(process.execPath, ["-e", script, bucket, key, retainUntilIso, tmpFile], {
+    execFileSync(process.execPath, ["-e", script, bucket, key, tmpFile], {
       encoding: "utf8",
       timeout: 10000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -160,14 +160,11 @@ function writeGradeFreezeBundleSync({ domain, document, findingPayloads, reporta
 
   const bundle = buildGradeFreezeBundle({ domain, document, findingPayloads, reportableFindingIds });
   const key = gradeFreezeS3Key(domain, bundle.grade_verdict_hash);
-  const retainUntilIso = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-
   try {
     putObjectSync({
       bucket,
       key,
       bodyString: `${JSON.stringify(bundle, null, 2)}\n`,
-      retainUntilIso,
     });
     return { skipped: false, bucket, key, grade_verdict_hash: bundle.grade_verdict_hash };
   } catch (error) {

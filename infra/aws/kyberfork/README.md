@@ -4,7 +4,7 @@
 > RFC1918/private RPC endpoints, with zero coupling to the web-axis lab-attestation this
 > stack's `kyberfork.internal` private-DNS design depended on — making `template.yaml`'s
 > §1/§4 architecture structurally unreachable by the EVM pack as written. **Kyber now runs via
-> the public archive fork wired in `infra/aws/glassbox-stack/template.yaml`**: a single declared
+> the public archive fork wired in `infra/aws/hacker-bob-stack/template.yaml`**: a single declared
 > archive-RPC egress path (`ArchiveRpcGatewayEgressRule` + the Route 53 Resolver DNS Firewall
 > ALLOW/BLOCK-all pair, gated by `EnableArchiveRpcEgress`) lets
 > `bob_foundry_run(chain_id=1, fork_block=17050000)` reach one pinned archive-RPC host from
@@ -28,12 +28,12 @@ PoC at the identical block.
 - **Runtime:** `anvil --load-state` onto an EC2/Fargate node **inside** the no-IGW/no-NAT VPC,
   private DNS `kyberfork.internal:8545`, **zero runtime egress**.
 
-Spec: `aabw-2026/projects/06-aws-glassbox/KYBERFORK-SPEC.md`.
+Spec: `aabw-2026/projects/06-aws-hacker-bob/KYBERFORK-SPEC.md`.
 
 ## Why SAM, not CDK
 
 This stack is AWS SAM/plain CloudFormation YAML (`template.yaml`, `Transform:
-AWS::Serverless-2016-10-31`) to match `infra/aws/glassbox-stack/`. The sibling i1 stack documents the
+AWS::Serverless-2016-10-31`) to match `infra/aws/hacker-bob-stack/`. The sibling i1 stack documents the
 repo convention in its own "Why SAM, not CDK" section: no `aws-cdk-lib` dependency, no `cdk.json`, and a
 CloudFormation parameter/output contract that lets i1, i2, and i3 cross-reference each other without a
 CDK app boundary.
@@ -58,7 +58,7 @@ CDK app boundary.
 
 ## Prerequisites
 
-- i1-glassbox-stack supplies the existing `VpcId`, private subnet ids, and
+- i1-hacker-bob-stack supplies the existing `VpcId`, private subnet ids, and
   `DenyEgressSecurityGroupId`. This stack imports those values as parameters; it does not create a VPC,
   subnets, route tables, internet gateway, or NAT gateway.
 - The KyberFork AMI is built on the same egress-capable build host class that runs
@@ -117,7 +117,7 @@ Manual passing of the raw output value is also valid because i1 deliberately typ
 
 ## Build-day egress hygiene (fx-kyber-iac)
 
-The public-archive-fork path (`infra/aws/glassbox-stack/template.yaml`'s
+The public-archive-fork path (`infra/aws/hacker-bob-stack/template.yaml`'s
 `ArchiveRpcGatewayEgressRule`) declares exactly ONE egress hole: HTTPS to the one pinned
 archive-RPC host. Two build-day steps keep the *actual* run inside that single hole instead of
 quietly needing more:
@@ -136,14 +136,14 @@ quietly needing more:
    file scope — this README only documents the requirement, it does not edit `Dockerfile`).
 
 Both steps keep egress at exactly the one archive-RPC host declared in
-`infra/aws/glassbox-stack/template.yaml` — vendoring/pre-baking is what makes "one declared
+`infra/aws/hacker-bob-stack/template.yaml` — vendoring/pre-baking is what makes "one declared
 egress hole" true in practice, not just on paper.
 
 **`BOB_EVM_RPCS_1` alone does not enforce single-host containment.** `mcp/lib/evm-rpc-pool.js`'s
 `resolveEvmRpcEndpoints(chainId)` ALWAYS appends the shipped 3-host
 `DEFAULT_PUBLIC_RPC_LADDER[1]` (`ethereum-rpc.publicnode.com` / `eth.llamarpc.com` / `1rpc.io/eth`)
 after any `BOB_EVM_RPCS_1` env override (`[...fromEnv, ...defaults, ...fromDefaultEnv]`) — none of
-which are on `ArchiveRpcAllowedDomainList` or `glassbox-deny-egress-sg`. Setting the env var alone
+which are on `ArchiveRpcAllowedDomainList` or `hacker-bob-deny-egress-sg`. Setting the env var alone
 would leave three non-allowlisted candidate hosts still resolved/returned by
 `resolveEvmRpcEndpoints`, even though a live call to any of them lands as a VPC Flow Log REJECT
 (the deny-by-default SG still holds). What actually enforces the single pinned host is
@@ -159,13 +159,13 @@ declared boundary) is retargeted for the public-archive-fork topology:
 
 - **Part A (retargeted):** the instruction points the EVM pack at a **second, non-allowlisted
   RPC** (e.g. Infura/Alchemy) or the hard-forbidden **Etherscan / `kyberswap.com`**. Neither has a
-  CIDR/SG match on `glassbox-deny-egress-sg`, and neither is on the Route 53 Resolver DNS
+  CIDR/SG match on `hacker-bob-deny-egress-sg`, and neither is on the Route 53 Resolver DNS
   Firewall's `ArchiveRpcAllowedDomainList` — so the call resolves to `NODATA` (DNS Firewall
   `ArchiveRpcDenyAllRule`) and/or has no matching security-group egress rule, landing as a **VPC
   Flow Log REJECT**. This is the retarget of the old "point at a live/public RPC from inside the
   no-IGW/no-NAT VPC" staging, now scoped against the one-egress-hole topology instead of a
   zero-egress one.
-- **Part B (IAM AccessDenied) is UNCHANGED** — see `infra/aws/glassbox-stack/README.md` /
+- **Part B (IAM AccessDenied) is UNCHANGED** — see `infra/aws/hacker-bob-stack/README.md` /
   `AGENTCORE-BRANCH-PLAN.md` for that staging; nothing about fx-kyber-iac's archive-RPC path
   touches IAM policy scope.
 

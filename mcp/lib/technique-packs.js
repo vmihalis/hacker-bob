@@ -32,6 +32,7 @@ const {
   classifySurfaceCapability,
   getCapabilityPack,
   normalizeContextBudget,
+  techniqueCompatibilityPackId,
 } = require("./capability-packs.js");
 const {
   readSurfaceRoutesStrict,
@@ -646,6 +647,12 @@ function normalizeRegistryEntry(entry, registryVersion) {
     if (!getCapabilityPack(capabilityPack)) {
       throw new Error(`Unknown capability_pack in technique pack ${id}: ${capabilityPack}`);
     }
+    const compatibilityTarget = techniqueCompatibilityPackId(capabilityPack);
+    if (compatibilityTarget !== capabilityPack) {
+      throw new Error(
+        `Non-canonical capability_pack in technique pack ${id}: ${capabilityPack}; use ${compatibilityTarget}`,
+      );
+    }
   }
   // Plane T cycle T.4 — optional `lens_affinity` field. When set, the brief
   // renderer foregrounds the pack for matching task lenses (e.g.
@@ -799,11 +806,6 @@ function selectTechniquePacksForSurface(surface, {
   includeAttempted = true,
   attempts = [],
 } = {}) {
-  // web_fanout is a spawn-capable ROUTING variant of web (same brief_profile/verifier); its
-  // technique packs are web's. Web technique packs default capability_packs to ["web"], so
-  // without this normalize a rerouted surface would get ZERO packs — stripping attack guidance
-  // from exactly the high-value id-bearing surfaces the fan-out means to deepen.
-  if (capabilityPack === "web_fanout") capabilityPack = "web";
   const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || EVALUATOR_KNOWLEDGE_MAX_ENTRIES;
   const registry = loadTechniqueRegistry();
   if (registry.packs.length === 0) {
@@ -822,7 +824,7 @@ function selectTechniquePacksForSurface(surface, {
   const attemptsByPack = latestAttemptByPack(attempts);
   const scoredPacks = [];
   for (const pack of registry.packs) {
-    if (!pack.capability_packs.includes(capabilityPack)) continue;
+    if (!techniquePackSupportsCapability(pack, capabilityPack)) continue;
     const scored = scoreTechniqueEntry(pack, surface || {});
     if (scored.score > 0) {
       scoredPacks.push({ pack, score: scored.score, matches: scored.matches });
@@ -831,7 +833,8 @@ function selectTechniquePacksForSurface(surface, {
 
   if (scoredPacks.length === 0) {
     const fallback = registry.packs.find(
-      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
+      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID
+        && techniquePackSupportsCapability(pack, capabilityPack),
     );
     if (fallback) {
       scoredPacks.push({ pack: fallback, score: 0, matches: ["fallback:generic-rest-api"] });
@@ -1055,15 +1058,28 @@ function assertFullReadContext(args) {
 }
 
 function assertTechniquePackMatchesCapability(techniquePack, capabilityPack) {
-  const capabilityPacks = techniquePack && Array.isArray(techniquePack.capability_packs)
-    ? techniquePack.capability_packs
-    : [];
-  if (!capabilityPacks.includes(capabilityPack)) {
+  if (!techniquePackSupportsCapability(techniquePack, capabilityPack)) {
     throw new ToolError(
       ERROR_CODES.INVALID_ARGUMENTS,
       `technique pack ${techniquePack && techniquePack.id ? techniquePack.id : "(unknown)"} is not compatible with capability_pack ${capabilityPack}`,
     );
   }
+}
+
+// NS-6 — every technique consumer resolves routing variants through the
+// capability-pack registry before deciding compatibility.
+function techniquePackSupportsCapability(techniquePack, capabilityPack) {
+  // Directed consumer relation: an assigned capability pack resolves to the
+  // canonical technique target it may consume. Technique registry entries must
+  // name that target literally (normalizeRegistryEntry rejects routing variants).
+  // We intentionally do NOT canonicalize the entry side: a future technique
+  // tagged only `web_fanout` must not become usable by flat `web` accidentally.
+  const requestedTarget = techniqueCompatibilityPackId(capabilityPack);
+  if (!requestedTarget) return false;
+  const capabilityPacks = techniquePack && Array.isArray(techniquePack.capability_packs)
+    ? techniquePack.capability_packs
+    : [];
+  return capabilityPacks.includes(requestedTarget);
 }
 
 function assertPackMatchesAssignment(packResult, assignment) {
@@ -1557,6 +1573,7 @@ module.exports = {
   assertTechniquePackMatchesCapability,
   summarizeTechniqueAttempt,
   techniquePackSummary,
+  techniquePackSupportsCapability,
   // Cycle O.6 — OSS technique-pack content + id alias map.
   OSS_TECHNIQUE_PACKS,
   OSS_TECHNIQUE_PACK_ID_ALIASES,

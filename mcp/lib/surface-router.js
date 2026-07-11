@@ -134,11 +134,12 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
     // when nesting can fire, so the (bug_class x auth) child fan-out actuates — the ns.com gap.
     // Overwrite the pack fields from the SELECTED pack so route.evaluator_agent===pack.evaluator_agent
     // stays green (idBearing is the frozen route.id_bearing, never re-derived here).
-    // Gate the reroute on the EXACT actuation predicate (assignment-brief: remainingDepth =
-    // hostId==="claude" ? effectiveSpawnDepth(max_spawn_depth, host)-1 : 0). Only host==="claude"
-    // nests — codex reports supports_nesting but the actuation still gives it remainingDepth 0 —
-    // so a non-claude host keeps flat web routing and never gets the transition-blind
-    // evaluator-fanout for a fan-out that can never fire.
+    // Gate the reroute on the EXACT actuation predicate (assignment-brief:
+    // remainingDepth = hostId==="claude" ? effectiveSpawnDepth(...)-1 : 0).
+    // effectiveSpawnDepth consumes the registry-declared Claude runtime flag, so
+    // default Claude (agent teams off), non-Claude hosts, and depth-1 policies all
+    // keep flat web routing and never get a transition-blind evaluator-fanout whose
+    // child plan cannot fire.
     const routeHostId = runtimeClient();
     const routeSpawnDepth = routeHostId === "claude"
       ? effectiveSpawnDepth(queuePolicy && queuePolicy.max_spawn_depth, routeHostId)

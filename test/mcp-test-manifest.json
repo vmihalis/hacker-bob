@@ -344,7 +344,7 @@
   "test/asff-builder.test.js",
   "test/grade-freeze-store.test.js",
   "test/export-security-hub-lambda.test.js",
-  "test/glassbox-template-approval-env.test.js",
+  "test/hacker-bob-template-approval-env.test.js",
   "test/approval-gate-producer-to-resume-integration.test.js",
   "test/engine-singleton-lock.test.js",
   "test/engine-caller-auth.test.js",

@@ -6,13 +6,14 @@ Matched (via scripts/generate-claude-settings.js, gated behind an AWS-branch env
 interactive local use is unaffected) on:
     mcp__hacker-bob__bob_advance_session   AND   mcp__hacker-bob__bob_finalize_report
 
-Does a fast, non-blocking poll of an approval artifact in S3 (approvals/<engagementId>.approved,
-content {"hmac": "<hex>", "grade_verdict_hash": "<hex>"}) that ONLY a named human's Step
+Does a fast, non-blocking poll of a schema-v2 approval artifact in S3
+(approvals/<engagementId>/<grade_verdict_hash>.approved) that ONLY a named human's Step
 Functions SendTaskSuccess (via the ApprovalWriter Lambda) can write — the model's own execution
 role has s3:GetObject on that prefix but never s3:PutObject (see template.yaml
-GlassboxAgentRuntimeExecutionRole). A compromised bob can edit its own state.json but cannot
-forge that write. The artifact's HMAC-SHA256(f"{engagement_id}|{grade_verdict_hash}", key) is
-also recomputed and compared (defense-in-depth): existence alone is not enough, since IAM is the
+HackerBobAgentRuntimeExecutionRole). A compromised bob can edit its own state.json but cannot
+forge that write. The artifact's HMAC-SHA256 over compact UTF-8 JSON
+[profile,target,grade_hash,freeze_body_sha256,freeze_version_id] is also recomputed and
+compared (defense-in-depth): existence alone is not enough, since IAM is the
 PRIMARY enforcement but a mis-scoped bucket policy elsewhere in the account must not silently
 open a bypass. fx-hmac-content: the artifact is bound to the EXACT grade the human reviewed —
 the stored grade_verdict_hash must also equal the CURRENT grade.json's canonical hash, so an
@@ -21,7 +22,7 @@ amend+re-grade after approval invalidates the same previously-valid artifact.
   exit 0  -> allow: approval artifact present AND HMAC-verified (or hook out of scope / disabled).
 
 This is a defensive gate. It adds no offensive capability.
-Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 
 FAIL-CLOSED BY DESIGN: this is the opposite fail direction from the sibling
 bob-http-write-confirm-impl.py's "ask" default. There is no interactive human to ask inline
@@ -47,6 +48,8 @@ ADVANCE_SESSION_TOOL = "mcp__hacker-bob__bob_advance_session"
 FINALIZE_REPORT_TOOL = "mcp__hacker-bob__bob_finalize_report"
 GATED_TOOLS = {ADVANCE_SESSION_TOOL, FINALIZE_REPORT_TOOL}
 SAFE_ENGAGEMENT_ID_CHARS = set(string.ascii_letters + string.digits + "._:-")
+LIBHEIF_PROFILE = "libheif-cve-2026-49271"
+BINDING_VERSION = "grade-freeze-v2"
 
 
 def allow():
@@ -88,26 +91,32 @@ def _is_safe_engagement_id(engagement_id):
     return all(char in SAFE_ENGAGEMENT_ID_CHARS for char in engagement_id)
 
 
-def _fetch_approval_artifact_bytes(engagement_id):
+def _fetch_approval_artifact_bytes(engagement_id, current_grade_verdict_hash):
     """Fetch the raw bytes of the approval artifact, or None if absent/unreachable.
 
     Two backends, tried in order:
       1. Local-filesystem stand-in seam (dev/test only): when BOB_APPROVAL_ARTIFACT_DIR is
-         set, reads f"{dir}/{engagement_id}.approved". Post-fx-gate-hardening, template.yaml's
+         set, reads f"{dir}/{engagement_id}/{current_grade_verdict_hash}.approved".
+         Post-fx-gate-hardening, template.yaml's
          AgentCore provisioner no longer sets this in production — that writable-EFS path was
          exactly the forgeable design this hardening removes. Tests point it at a tmp dir.
       2. Real production backend: S3 GetObject on BOB_APPROVAL_BUCKET's
-         approvals/<engagement_id>.approved key — the prefix GlassboxAgentRuntimeExecutionRole
+         approvals/<engagement_id>/<current_grade_verdict_hash>.approved key — the prefix
+         HackerBobAgentRuntimeExecutionRole
          can only read, never write (see template.yaml). boto3's S3 client is natively
          synchronous, so no async bridge is needed here (contrast
          mcp/lib/approval-store.js's Node-side equivalent, which must shell out because the
          AWS SDK v3 JS clients are Promise-only).
     """
-    if not _is_safe_engagement_id(engagement_id):
+    if not _is_safe_engagement_id(engagement_id) or not _is_sha256(current_grade_verdict_hash):
         return None
     artifact_dir = os.environ.get("BOB_APPROVAL_ARTIFACT_DIR")
     if artifact_dir:
-        artifact_path = os.path.join(artifact_dir, f"{engagement_id}.approved")
+        artifact_path = os.path.join(
+            artifact_dir,
+            engagement_id,
+            f"{current_grade_verdict_hash}.approved",
+        )
         try:
             with open(artifact_path, "rb") as fh:
                 return fh.read()
@@ -119,7 +128,10 @@ def _fetch_approval_artifact_bytes(engagement_id):
     try:
         import boto3
         client = boto3.client("s3")
-        resp = client.get_object(Bucket=bucket, Key=f"approvals/{engagement_id}.approved")
+        resp = client.get_object(
+            Bucket=bucket,
+            Key=f"approvals/{engagement_id}/{current_grade_verdict_hash}.approved",
+        )
         return resp["Body"].read()
     except Exception:
         return None
@@ -131,7 +143,7 @@ def _resolve_hmac_key():
     Local/dev/test stand-in: BOB_APPROVAL_HMAC_KEY, a literal key value — never set in
     production (mirrors the BOB_APPROVAL_ARTIFACT_DIR stand-in above). Production fetches
     the real key from Secrets Manager via BOB_APPROVAL_HMAC_SECRET_ID, readable by
-    GlassboxAgentRuntimeExecutionRole via a narrowly-scoped secretsmanager:GetSecretValue
+    HackerBobAgentRuntimeExecutionRole via a narrowly-scoped secretsmanager:GetSecretValue
     grant (see template.yaml) — this is the DEFENSE-IN-DEPTH key; the IAM deny-write on
     approvals/* remains the PRIMARY enforcement, so the model knowing this key cannot let
     it forge a stored artifact it still cannot s3:PutObject.
@@ -192,12 +204,28 @@ def _current_grade_verdict_hash(engagement_id):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _is_sha256(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _valid_version_id(value):
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 1024
+        and not any(ord(char) < 0x20 or ord(char) == 0x7f for char in value)
+    )
+
+
 def _approval_artifact_present(engagement_id):
     """Look up whether a named human's HMAC-verified, content-bound approval artifact exists.
 
     Fetches the artifact (S3-backed in production; see _fetch_approval_artifact_bytes),
-    parses it as {"hmac": "<hex>", "grade_verdict_hash": "<hex>"}, and recomputes
-    HMAC-SHA256(f"{engagement_id}|{grade_verdict_hash}", key) to compare — mere existence of
+    requires the schema-v2 full freeze binding, and recomputes HMAC-SHA256 over
+    compact JSON [profile,target,grade_hash,body_sha256,version_id] — mere existence of
     a well-formed-looking object is NOT sufficient (IAM deny-write is the PRIMARY
     enforcement; this HMAC check is defense-in-depth against a write that lands in the
     bucket through some other, over-broad principal).
@@ -211,24 +239,41 @@ def _approval_artifact_present(engagement_id):
 
     Fails CLOSED on any ambiguity: unsafe engagement_id, missing/unreadable artifact,
     malformed JSON, missing hmac field, missing/unreadable grade.json (current hash is None),
-    missing grade_verdict_hash field on the artifact, a grade_verdict_hash mismatch,
+    missing/invalid profile, target, body hash, VersionId, or grade hash, a grade hash mismatch,
     unresolvable key, or an HMAC mismatch.
     """
-    raw = _fetch_approval_artifact_bytes(engagement_id)
+    current_grade_verdict_hash = _current_grade_verdict_hash(engagement_id)
+    if not _is_sha256(current_grade_verdict_hash):
+        return False
+    raw = _fetch_approval_artifact_bytes(engagement_id, current_grade_verdict_hash)
     if not raw:
         return False
     try:
         parsed = json.loads(raw)
     except Exception:
         return False
-    provided_hex = parsed.get("hmac") if isinstance(parsed, dict) else None
-    if not isinstance(provided_hex, str) or not provided_hex:
+    if not isinstance(parsed, dict):
         return False
-    stored_grade_verdict_hash = parsed.get("grade_verdict_hash") if isinstance(parsed, dict) else None
-    if not isinstance(stored_grade_verdict_hash, str) or not stored_grade_verdict_hash:
+    if parsed.get("schema_version") != 2 or parsed.get("binding_version") != BINDING_VERSION:
         return False
-    current_grade_verdict_hash = _current_grade_verdict_hash(engagement_id)
-    if not current_grade_verdict_hash or current_grade_verdict_hash != stored_grade_verdict_hash:
+    provided_hex = parsed.get("hmac")
+    if not _is_sha256(provided_hex):
+        return False
+    stored_grade_verdict_hash = parsed.get("grade_verdict_hash")
+    if not _is_sha256(stored_grade_verdict_hash):
+        return False
+    if current_grade_verdict_hash != stored_grade_verdict_hash:
+        return False
+    if parsed.get("target_domain") != engagement_id:
+        return False
+    expected_profile = LIBHEIF_PROFILE if engagement_id == LIBHEIF_PROFILE else "smoke"
+    if parsed.get("profile") != expected_profile:
+        return False
+    body_sha256 = parsed.get("grade_freeze_bundle_sha256")
+    if not _is_sha256(body_sha256):
+        return False
+    version_id = parsed.get("grade_freeze_version_id")
+    if not _valid_version_id(version_id):
         return False
     key = _resolve_hmac_key()
     if not key:
@@ -237,9 +282,19 @@ def _approval_artifact_present(engagement_id):
         provided = bytes.fromhex(provided_hex)
     except ValueError:
         return False
-    expected = hmac_module.new(
-        key, f"{engagement_id}|{stored_grade_verdict_hash}".encode("utf-8"), hashlib.sha256
-    ).digest()
+    binding = [
+        expected_profile,
+        engagement_id,
+        stored_grade_verdict_hash,
+        body_sha256,
+        version_id,
+    ]
+    binding_bytes = json.dumps(
+        binding,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    expected = hmac_module.new(key, binding_bytes, hashlib.sha256).digest()
     return hmac_module.compare_digest(provided, expected)
 
 

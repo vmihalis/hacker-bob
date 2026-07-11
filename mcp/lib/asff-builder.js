@@ -4,7 +4,7 @@
 // extracted out of mcp/lib/tools/export-security-hub-finding.js so it can be
 // required unmodified by BOTH:
 //   (1) the downstream ExportSecurityHubFunction Lambda
-//       (infra/aws/glassbox-stack/functions/export-security-hub/index.js),
+//       (infra/aws/hacker-bob-stack/functions/export-security-hub/index.js),
 //       which runs under its OWN dedicated IAM role, invoked by Step
 //       Functions strictly AFTER the human's SendTaskSuccess — the model's
 //       process can never reach it; and
@@ -16,7 +16,7 @@
 // This is a hard invariant — do not import mcp/lib/storage.js, mcp/lib/
 // paths.js, or any AWS SDK client from this file.
 //
-// Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+// Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 
 const {
   deriveCvss31,
@@ -68,6 +68,8 @@ function productFieldsFor({ hashes = {}, s3Uri }) {
   maybeSet("final_verification_hash", hashes.final_verification_hash);
   maybeSet("evidence_hash", hashes.evidence_hash);
   maybeSet("grade_verdict_hash", hashes.grade_verdict_hash);
+  maybeSet("grade_freeze_version_id", hashes.grade_freeze_version_id);
+  maybeSet("grade_freeze_bundle_sha256", hashes.grade_freeze_bundle_sha256);
   maybeSet("report_content_hash", hashes.report_content_hash);
   maybeSet("proof_bundle_hash", hashes.proof_bundle_hash);
   maybeSet("s3_uri", s3Uri);

@@ -4,7 +4,7 @@
 // findings-EXPORT / compliance sink: it reads the existing hash-chained pipeline and
 // emits an audit/compliance record. It performs no scanning and adds no offensive capability.
 //
-// Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+// Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 'use strict';
 
 const path = require("path");

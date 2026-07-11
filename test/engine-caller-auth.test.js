@@ -145,6 +145,15 @@ function spawnServer(env, { input } = {}) {
   return { child, exited, get stderr() { return stderr; }, get stdout() { return stdout; } };
 }
 
+async function waitUntil(predicate, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return predicate();
+}
+
 test("a real `node mcp/server.js` process exits non-zero on its first request when BOB_AGENTCORE=1 and no caller token is set, without echoing a JSON-RPC response", async () => {
   const fs = require("fs");
   const os = require("os");
@@ -168,14 +177,19 @@ test("a real `node mcp/server.js` process behaves identically to today (no BOB_M
   const fs = require("fs");
   const os = require("os");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "bob-caller-auth-inert-"));
+  let server = null;
   try {
     const initMessage = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-    const server = spawnServer({ HOME: home }, { input: `${initMessage}\n` });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.ok(server.stdout.includes("\"result\""), `must respond normally when enforcement is inactive; stdout=${server.stdout}`);
-    server.child.kill("SIGTERM");
-    await server.exited;
+    server = spawnServer({ HOME: home }, { input: `${initMessage}\n` });
+    const responded = await waitUntil(() => server.stdout.includes("\"result\""));
+    assert.ok(responded, `must respond normally when enforcement is inactive; stdout=${server.stdout}; stderr=${server.stderr}`);
   } finally {
+    // Under the full parallel MCP matrix process startup can exceed a fixed
+    // 500 ms sleep. Always tear the child down even when the readiness
+    // assertion fails, otherwise its open stdio handles wedge the entire test
+    // runner instead of reporting a bounded failure.
+    if (server && server.child.exitCode == null) server.child.kill("SIGTERM");
+    if (server) await server.exited;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

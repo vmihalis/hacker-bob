@@ -5,7 +5,7 @@
 // destinations before any callback write. It is a DEFENSIVE guard (blocks exfil / SSRF), not
 // offensive tooling.
 //
-// Runbook: aabw-2026/projects/06-aws-glassbox/AGENTCORE-BRANCH-PLAN.md
+// Runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 'use strict';
 
 const net = require('net');

@@ -7,8 +7,9 @@
 //      configured (the default posture for every non-AWS-branch session).
 //   3. writeGradeFreezeBundleSync performs a synchronous PutObject
 //      (via the injectable test seam) when a bucket IS configured, using
-//      the Object Lock COMPLIANCE parameters and a grade_verdict_hash-keyed
-//      key.
+//      a grade_verdict_hash-keyed key. Bucket-default Object Lock COMPLIANCE
+//      retention is deliberately relied upon, so no PutObjectRetention grant
+//      or per-request retention headers are needed.
 //   4. A PutObject failure never throws out of writeGradeVerdict's call
 //      chain (fail-soft by design).
 //   5. writeGradeVerdict (the real, full engine call) triggers this freeze
@@ -119,8 +120,8 @@ test("writeGradeFreezeBundleSync no-ops (skipped:true, no_bucket_configured) whe
   assert.equal(called, false);
 });
 
-test("writeGradeFreezeBundleSync performs a WORM PutObject (Object Lock COMPLIANCE) keyed by grade_verdict_hash when a bucket is configured", () => {
-  process.env.BOB_GRADE_FREEZE_BUCKET = "glassbox-evidence-test";
+test("writeGradeFreezeBundleSync performs a bucket-default-retained PutObject keyed by grade_verdict_hash when configured", () => {
+  process.env.BOB_GRADE_FREEZE_BUCKET = "hacker-bob-evidence-test";
   const calls = [];
   _setSyncPutObjectForTest((args) => { calls.push(args); });
 
@@ -133,22 +134,21 @@ test("writeGradeFreezeBundleSync performs a WORM PutObject (Object Lock COMPLIAN
   });
 
   assert.equal(result.skipped, false);
-  assert.equal(result.bucket, "glassbox-evidence-test");
+  assert.equal(result.bucket, "hacker-bob-evidence-test");
   assert.equal(result.grade_verdict_hash, hashCanonicalJson(document));
   assert.equal(result.key, gradeFreezeS3Key("example.com", result.grade_verdict_hash));
 
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].bucket, "glassbox-evidence-test");
+  assert.equal(calls[0].bucket, "hacker-bob-evidence-test");
   assert.equal(calls[0].key, result.key);
   const parsedBody = JSON.parse(calls[0].bodyString);
   assert.equal(parsedBody.grade_verdict_hash, result.grade_verdict_hash);
   assert.deepEqual(parsedBody.grade, document);
-  assert.ok(typeof calls[0].retainUntilIso === "string");
-  assert.ok(new Date(calls[0].retainUntilIso).getTime() > Date.now());
+  assert.equal(Object.hasOwn(calls[0], "retainUntilIso"), false);
 });
 
 test("writeGradeFreezeBundleSync fails soft: a PutObject error is swallowed, never thrown", () => {
-  process.env.BOB_GRADE_FREEZE_BUCKET = "glassbox-evidence-test";
+  process.env.BOB_GRADE_FREEZE_BUCKET = "hacker-bob-evidence-test";
   _setSyncPutObjectForTest(() => { throw new Error("simulated AWS error"); });
 
   let result;

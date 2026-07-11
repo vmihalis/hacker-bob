@@ -505,12 +505,25 @@ test("bob_finalize_report succeeds under BOB_AGENTCORE=1 once a valid, content-b
     _setApprovalHmacKeyForTest("finalize-approval-test-key");
     // fx-hmac-content: the artifact must be bound to the CURRENT grade_verdict_hash
     // (drivePipelineToReportWritten already wrote a real grade.json via writeGradeVerdict), not
-    // just target_domain -- mirrors the production ApprovalWriterFunction's signing scheme.
+    // just target_domain -- mirrors the production VerifierGateFunction's signing scheme.
     _setApprovalBackendForTest((targetDomain) => {
       const gradeVerdictHash = loadGradeVerdictHash(targetDomain);
+      const profile = targetDomain === "libheif-cve-2026-49271" ? targetDomain : "smoke";
+      const bodySha256 = "b".repeat(64);
+      const versionId = "report-snapshot-test-freeze-version-1";
       const hmac = crypto.createHmac("sha256", "finalize-approval-test-key")
-        .update(`${targetDomain}|${gradeVerdictHash}`, "utf8").digest("hex");
-      return JSON.stringify({ hmac, grade_verdict_hash: gradeVerdictHash });
+        .update(JSON.stringify([profile, targetDomain, gradeVerdictHash, bodySha256, versionId]), "utf8")
+        .digest("hex");
+      return JSON.stringify({
+        schema_version: 2,
+        binding_version: "grade-freeze-v2",
+        profile,
+        target_domain: targetDomain,
+        grade_verdict_hash: gradeVerdictHash,
+        grade_freeze_bundle_sha256: bodySha256,
+        grade_freeze_version_id: versionId,
+        hmac,
+      });
     });
     try {
       const response = JSON.parse(finalizeReportTool.handler({ target_domain: domain }));

@@ -273,7 +273,7 @@ function gateGradeToReport(context) {
 // unaffected -- mirrors .claude/hooks/bob-approval-gate-impl.py's own AWS-branch gate.
 // When active, verifies the un-forgeable S3-backed, HMAC-bound approval artifact via
 // mcp/lib/approval-store.js: the model's own execution role can only s3:GetObject the
-// approvals/ prefix (never PutObject -- see template.yaml GlassboxAgentRuntimeExecutionRole),
+// approvals/ prefix (never PutObject -- see template.yaml HackerBobAgentRuntimeExecutionRole),
 // and the artifact's HMAC is recomputed and compared, not merely its existence checked
 // (fx-gate-hardening: the old raw-existence-of-a-model-writable-file check was forgeable
 // by a headless --dangerously-skip-permissions model running as that same role). A single

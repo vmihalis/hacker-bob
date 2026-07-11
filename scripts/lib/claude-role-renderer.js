@@ -20,6 +20,7 @@ const {
   renderCapabilityPlaybookAppendix,
 } = require("../../mcp/lib/capability-playbooks.js");
 const { evaluatorRoleSpecs } = require("../../mcp/lib/capability-packs.js");
+const { FANOUT_ROLE_REGISTRY } = require("../../mcp/lib/nested-spawn.js");
 const { TOOL_REGISTRY } = require("../../mcp/lib/tool-registry.js");
 const { parseSkillText } = require("./skill-parser.js");
 
@@ -197,7 +198,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     name: "bob-evaluate-runner",
     description: "Hacker Bob orchestrator runtime — invoked by /bob-evaluate. Do not call directly.",
     disable_model_invocation: true,
-    argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
+    argument_hint: "[target-url | resume <domain> [force-merge]] [--no-auth] [--private-targets] [--normal|--paranoid|--yolo] [--deep] [--egress <profile>] [--block-internal-hosts|--allow-internal-hosts]",
     local_tools: Object.freeze(["Task", "Read"]),
   }),
   status: Object.freeze({
@@ -271,7 +272,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
   // read/fetch-only sc-recon bundle. It resolves proxies/diamonds/role holders/
   // linked addresses per chain and returns produced_surfaces[]; the server mints
   // surfaces at finalize, so it holds no record/promote/finalize. Not
-  // spawn_capable, so no host Task primitive renders into its frontmatter.
+  // spawn_capable, so no host Agent primitive renders into its frontmatter.
   "sc-recon-expander": Object.freeze({
     role_id: "sc-recon-expander",
     kind: "agent",
@@ -342,30 +343,52 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
   }),
   // CN (coverage-nesting) Step B — spawn_capable per-surface evaluator that
   // actuates the brain-owned child_fanout_plan. spawn_capable:true renders the
-  // host Task primitive into its frontmatter (the only registry-driven spawn
-  // grant; Y-P8 single-spawner-topology allows Task ONLY for spawn_capable
-  // roles). Its MCP toolset is the web evaluator union MINUS bob_propose_transition
+  // a parameterized host Agent(child-type) grant into its frontmatter (the only
+  // registry-driven spawn grant; Y-P8 single-spawner-topology rejects bare or
+  // foreign Agent/Task grants). Its MCP toolset is the web evaluator union MINUS bob_propose_transition
   // (the deny lives in role-model.js), so it stays disjoint from the coverage-cell
   // tools (G2). Bash is retained for OSS-style harness work; the spawn ledger is
   // therefore fenced by the session-write-guard hook (an mcp-owned basename),
-  // not by toolset absence.
-  "evaluator-fanout": Object.freeze({
-    role_id: "evaluator-fanout",
+  // not by toolset absence. Deliberately NOT background-forced: the orchestrator
+  // still launches each wave root with run_in_background:true, but Claude's flat
+  // team runtime permits that teammate to spawn a child only as an anonymous,
+  // synchronous subagent. A background:true definition would reject that legal
+  // child invocation before its prompt starts.
+  [FANOUT_ROLE_REGISTRY.root.role_id]: Object.freeze({
+    role_id: FANOUT_ROLE_REGISTRY.root.role_id,
     kind: "agent",
     output_path: path.join(".claude", "agents", "evaluator-fanout.md"),
-    name: "evaluator-fanout",
-    description: "Spawn-capable per-surface evaluator — actuates the brain-owned child_fanout_plan, recursively fanning out one child sub-evaluator per (bug_class × auth) cell (default-off; depth>1 opt-in on host==claude). Transition-blind: discovered cross-surface pivots ride discovered_pivots[] up to the orchestrator.",
+    name: FANOUT_ROLE_REGISTRY.root.subagent_type,
+    description: "Spawn-capable per-surface evaluator — actuates the brain-owned child_fanout_plan through Claude's one supported teammate-to-subagent edge, one child per (bug_class × auth) cell. Transition-blind: discovered cross-surface pivots ride discovered_pivots[] up to the orchestrator.",
     model: "opus",
     color: "yellow",
     // Turn-cap PARITY with the flat evaluator (99999), not 200: the routing predicate targets
     // the deepest, highest-value surfaces, and each leaf cell is itself capped by this value —
     // a 200 cap would truncate exactly the surfaces most worth exhausting. The fan-out's
-    // benefit is PARALLEL (bug_class × auth) cells, not shorter per-agent budgets.
+    // benefit is cell decomposition with isolated contexts, not shorter per-agent budgets.
     max_turns: 99999,
-    background: true,
     mcp_server: true,
     spawn_capable: true,
+    spawn_child_role_id: FANOUT_ROLE_REGISTRY.child.role_id,
     local_tools: Object.freeze(["Bash", "Read", "Grep", "Glob"]),
+  }),
+  // NS-7 — generated leaf role for the one legal Claude nesting edge. Unlike
+  // the wave root, this spec is not spawn_capable and has no local tools. Its
+  // MCP authority comes from the role model, whose deny list removes handoff,
+  // finalize, and transition writes before this child starts. The transcript
+  // hook remains a defense-in-depth completion/ownership boundary.
+  [FANOUT_ROLE_REGISTRY.child.role_id]: Object.freeze({
+    role_id: FANOUT_ROLE_REGISTRY.child.role_id,
+    kind: "agent",
+    output_path: path.join(".claude", "agents", "evaluator-fanout-child.md"),
+    name: FANOUT_ROLE_REGISTRY.child.subagent_type,
+    description: "Non-recursive evaluator-fanout leaf — tests one MCP-issued (bug_class × auth) cell, writes durable claim/coverage/technique state, and returns only BOB_CHILD_CELL_DONE.",
+    model: "opus",
+    color: "yellow",
+    max_turns: 99999,
+    mcp_server: true,
+    fanout_child: true,
+    local_tools: Object.freeze([]),
   }),
   chain: Object.freeze({
     role_id: "chain",
@@ -476,32 +499,48 @@ function claudeMcpToolsForRole(roleId) {
   return mcpToolNamesForRole(roleId).map(mcpPermissionForTool);
 }
 
+// NS-1 / NS-7 — render the root's host spawn grant from the same role registry that
+// emits child_fanout_plan.subagent_type. A bare Agent/Task grant would allow
+// discretionary foreign children before the detective handoff check runs.
+function claudeSpawnGrantForRole(roleId) {
+  const spec = CLAUDE_ROLE_SPECS[roleId];
+  if (!spec || spec.spawn_capable !== true) return [];
+  const childSpec = CLAUDE_ROLE_SPECS[spec.spawn_child_role_id];
+  if (!childSpec || childSpec.fanout_child !== true) {
+    throw new Error(`Claude spawn-capable role ${roleId} has no registered fanout child role`);
+  }
+  return [`Agent(${childSpec.name})`];
+}
+
 function claudeAllowedToolsForRole(roleId) {
   const spec = CLAUDE_ROLE_SPECS[roleId];
   if (!spec) throw new Error(`Missing Claude role spec for ${roleId}`);
   return uniqueStrings([
     ...(spec.local_tools || []),
-    // CN (coverage-nesting) — a spawn_capable role is granted the host Task
-    // (subagent-spawn) primitive so a per-surface evaluator can recursively
-    // fan out child sub-evaluators (Claude Code native nesting, depth 5).
-    // This is the controlled, registry-driven spawn grant: the Y-P8
-    // single-spawner-topology test allows Task ONLY for spawn_capable roles,
-    // so every other worker stays fail-closed (Task absent from frontmatter).
-    ...(spec.spawn_capable === true ? ["Task"] : []),
+    ...claudeSpawnGrantForRole(roleId),
     ...claudeMcpToolsForRole(roleId),
     ...(spec.extra_mcp_tools || []),
   ]);
 }
 
 // CN (coverage-nesting) — registry-derived allowlist of AGENT names (.md
-// basenames) permitted to carry the host Task spawn primitive. The Y-P8
+// basenames) permitted to carry the parameterized host Agent spawn primitive. The Y-P8
 // single-spawner-topology test consumes this so the gate stays a real
 // allowlist ("only declared spawners may spawn") rather than "exactly one
 // spawner". Skills (orchestrator/status/debug) are excluded — they are not
-// .claude/agents/*.md and the orchestrator skill carries Task via local_tools.
+// .claude/agents/*.md; the orchestrator skill's own unrestricted Task is separate.
 function spawnCapableAgentNames() {
   return Object.values(CLAUDE_ROLE_SPECS)
     .filter((spec) => spec.kind === "agent" && spec.spawn_capable === true)
+    .map((spec) => spec.name);
+}
+
+// NS-7 — registry-derived stop-hook matcher(s) for transcript-bound fanout
+// leaves. Kept separate from spawnCapableAgentNames: adding a child here must
+// never widen the unique Agent(child)-bearing root allowlist.
+function fanoutChildAgentNames() {
+  return Object.values(CLAUDE_ROLE_SPECS)
+    .filter((spec) => spec.kind === "agent" && spec.fanout_child === true)
     .map((spec) => spec.name);
 }
 
@@ -636,6 +675,8 @@ module.exports = {
   CLAUDE_ROLE_SPECS,
   SUPPORTED_CLAUDE_AGENT_COLORS,
   claudeAllowedToolsForRole,
+  claudeSpawnGrantForRole,
+  fanoutChildAgentNames,
   spawnCapableAgentNames,
   claudeMcpToolsForRole,
   claudeRoleOutputPath,

@@ -10,6 +10,7 @@ const {
   normalizeDiscoveredPivots,
   normalizeSpawnedChildren,
 } = require("../mcp/lib/wave-handoff-contracts.js");
+const { FANOUT_ROLE_REGISTRY } = require("../mcp/lib/nested-spawn.js");
 
 test("B5: normalizeDiscoveredPivots accepts bounded pivot entries and rejects malformed ones", () => {
   assert.deepEqual(normalizeDiscoveredPivots(undefined), [], "absent => empty");
@@ -28,23 +29,29 @@ test("B5: normalizeDiscoveredPivots accepts bounded pivot entries and rejects ma
 
 test("B6: normalizeSpawnedChildren bounds the self-report; validateSpawnFanout is the detective cross-check", () => {
   const { validateSpawnFanout } = require("../mcp/lib/nested-spawn.js");
+  const writeHandoffTool = require("../mcp/lib/tools/write-wave-handoff.js");
+  assert.deepEqual(
+    writeHandoffTool.inputSchema.properties.spawned_children.items.required,
+    ["subagent_type", "cell_key"],
+    "new MCP handoffs must bind every reported child to an issued cell",
+  );
   assert.deepEqual(normalizeSpawnedChildren(undefined), []);
   const reported = normalizeSpawnedChildren([
-    { subagent_type: "evaluator-fanout", cell_key: "k1" },
-    { subagent_type: "evaluator-fanout" },
+    { subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type, cell_key: "k1" },
+    { subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type },
   ]);
   assert.equal(reported.length, 2);
   assert.equal(reported[0].cell_key, "k1");
   assert.throws(() => normalizeSpawnedChildren([{}]), /subagent_type is required/);
   assert.throws(
-    () => normalizeSpawnedChildren(Array.from({ length: 65 }, () => ({ subagent_type: "evaluator-fanout" }))),
+    () => normalizeSpawnedChildren(Array.from({ length: 65 }, () => ({ subagent_type: FANOUT_ROLE_REGISTRY.child.subagent_type }))),
     /at most 64/,
   );
   // The orchestrator's finalize cross-check: validateSpawnFanout flags an off-allowlist
   // child type and an over-budget count on the reported children.
   const offType = validateSpawnFanout(
     [{ subagent_type: "evaluator-rogue" }],
-    { remaining_depth: 1, max_children: 8, child_type_allowlist: ["evaluator-fanout"] },
+    { remaining_depth: 1, max_children: 8, child_type_allowlist: [FANOUT_ROLE_REGISTRY.child.subagent_type] },
   );
   assert.equal(offType.ok, false);
   const overBudget = validateSpawnFanout(reported, { remaining_depth: 1, max_children: 1 });

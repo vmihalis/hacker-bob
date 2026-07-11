@@ -72,18 +72,38 @@ const {
 
 // fx-hmac-content test helper: the same HMAC-SHA256(`${target_domain}|${grade_verdict_hash}`,
 // key) content-bound scheme mcp/lib/approval-store.js's verifyApprovalArtifact (and the
-// S3-backed production ApprovalWriterFunction in template.yaml, and the sibling Python hook)
+// S3-backed production VerifierGateFunction in template.yaml, and the sibling Python hook)
 // use. Producing a syntactically-valid-but-wrong-signature artifact (a different key, or a
 // tampered hmac hex string) exercises the "existence is not enough" defense-in-depth path; a
 // STALE gradeVerdictHash (signed for a grade verdict that has since been amended) exercises the
 // content-binding path this node adds.
 const APPROVAL_TEST_HMAC_KEY = "test-only-approval-hmac-key-do-not-use-in-prod";
+const APPROVAL_FREEZE_BODY_SHA256 = "b".repeat(64);
+const APPROVAL_FREEZE_VERSION_ID = "lifecycle-test-freeze-version-1";
 
 function signedApprovalArtifact(targetDomain, gradeVerdictHash, key = APPROVAL_TEST_HMAC_KEY) {
+  const profile = targetDomain === "libheif-cve-2026-49271"
+    ? "libheif-cve-2026-49271"
+    : "smoke";
   const hmac = crypto.createHmac("sha256", key)
-    .update(`${targetDomain}|${gradeVerdictHash}`, "utf8")
+    .update(JSON.stringify([
+      profile,
+      targetDomain,
+      gradeVerdictHash,
+      APPROVAL_FREEZE_BODY_SHA256,
+      APPROVAL_FREEZE_VERSION_ID,
+    ]), "utf8")
     .digest("hex");
-  return JSON.stringify({ hmac, grade_verdict_hash: gradeVerdictHash });
+  return JSON.stringify({
+    schema_version: 2,
+    binding_version: "grade-freeze-v2",
+    profile,
+    target_domain: targetDomain,
+    grade_verdict_hash: gradeVerdictHash,
+    grade_freeze_bundle_sha256: APPROVAL_FREEZE_BODY_SHA256,
+    grade_freeze_version_id: APPROVAL_FREEZE_VERSION_ID,
+    hmac,
+  });
 }
 
 // fx-hmac-content test helper: gradeToReportApprovalBlocker binds the approval to
@@ -766,8 +786,9 @@ test("GRADE -> REPORT approval gate admits the transition once the HMAC-verified
     // established in mcp/lib/tools/export-security-hub-finding.js) rather than a bare
     // fs.writeFileSync stand-in -- this exercises the fetch+verify contract the real
     // S3 GetObject path also goes through, not merely "a file exists".
-    _setApprovalBackendForTest((targetDomain) => {
+    _setApprovalBackendForTest((targetDomain, currentGradeVerdictHash) => {
       assert.equal(targetDomain, domain, "backend must be queried by the exact target_domain");
+      assert.equal(currentGradeVerdictHash, loadGradeVerdictHash(domain));
       return signedApprovalArtifact(domain, gradeVerdictHash);
     });
     _setApprovalHmacKeyForTest(APPROVAL_TEST_HMAC_KEY);
@@ -855,9 +876,8 @@ test("GRADE -> REPORT approval gate blocks on malformed artifact content (not JS
       runInventory: true,
     });
     const gradeVerdictHash = writeTestGradeVerdict(domain);
-    const correctHmac = crypto.createHmac("sha256", APPROVAL_TEST_HMAC_KEY)
-      .update(`${domain}|${gradeVerdictHash}`, "utf8")
-      .digest("hex");
+    const correctHmac = JSON.parse(signedApprovalArtifact(domain, gradeVerdictHash)).hmac;
+    const validV2Artifact = JSON.parse(signedApprovalArtifact(domain, gradeVerdictHash));
 
     const previousAgentcore = process.env.BOB_AGENTCORE;
     process.env.BOB_AGENTCORE = "1";
@@ -873,6 +893,12 @@ test("GRADE -> REPORT approval gate blocks on malformed artifact content (not JS
         // grade_verdict_hash present but blank/non-string.
         JSON.stringify({ hmac: correctHmac, grade_verdict_hash: "" }),
         JSON.stringify({ hmac: correctHmac, grade_verdict_hash: 12345 }),
+        JSON.stringify({ ...validV2Artifact, schema_version: 1 }),
+        JSON.stringify({ ...validV2Artifact, binding_version: "legacy" }),
+        JSON.stringify({ ...validV2Artifact, profile: "libheif-cve-2026-49271" }),
+        JSON.stringify({ ...validV2Artifact, target_domain: "other-target" }),
+        JSON.stringify({ ...validV2Artifact, grade_freeze_bundle_sha256: "" }),
+        JSON.stringify({ ...validV2Artifact, grade_freeze_version_id: "bad\nversion" }),
         // grade_verdict_hash present and well-formed-looking, but STALE (does not equal the
         // current grade.json hash) -- the hmac itself was computed over a DIFFERENT stale
         // hash, so this also exercises "hmac recomputed over the wrong input" fails closed.
