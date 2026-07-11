@@ -436,9 +436,13 @@ def main():
                f"cmd={captured['cmd']}")
         record("call bob_init_session before any session-bound read"
                in MODULE.HEADLESS_MCP_READINESS_PROMPT
+               and "select:mcp__hacker-bob__<exact_tool_name>"
+               in MODULE.HEADLESS_MCP_READINESS_PROMPT
+               and "already provisioned in the MCP child"
+               in MODULE.HEADLESS_MCP_READINESS_PROMPT
                and "never replace it with a localhost slug"
                in MODULE.HEADLESS_MCP_READINESS_PROMPT,
-               "AgentCore headless prompt pins fresh private-target initialization and hostname semantics")
+               "AgentCore headless prompt pins deferred-tool discovery, pre-provisioned lab attestation, fresh initialization, and hostname semantics")
         record(captured["cmd"][-1] == "/bob-evaluate kyberfork.internal --normal",
                "run_invocation(resume=False) builds the non-resume skill prompt as the final arg")
 
