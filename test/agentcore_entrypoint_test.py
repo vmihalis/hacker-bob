@@ -434,15 +434,19 @@ def main():
                and MODULE.HEADLESS_MCP_READINESS_PROMPT in captured["cmd"],
                "run_invocation appends the headless MCP readiness instruction",
                f"cmd={captured['cmd']}")
-        record("call bob_init_session before any session-bound read"
-               in MODULE.HEADLESS_MCP_READINESS_PROMPT
-               and "select:mcp__hacker-bob__<exact_tool_name>"
-               in MODULE.HEADLESS_MCP_READINESS_PROMPT
-               and "already provisioned in the MCP child"
-               in MODULE.HEADLESS_MCP_READINESS_PROMPT
-               and "never replace it with a localhost slug"
-               in MODULE.HEADLESS_MCP_READINESS_PROMPT,
-               "AgentCore headless prompt pins deferred-tool discovery, pre-provisioned lab attestation, fresh initialization, and hostname semantics")
+        readiness_prompt = MODULE.HEADLESS_MCP_READINESS_PROMPT
+        first_tool_search = 'query: "select:mcp__hacker-bob__bob_init_session"'
+        record("call bob_init_session before any session-bound read" in readiness_prompt
+               and first_tool_search in readiness_prompt
+               and readiness_prompt.index(first_tool_search)
+               < readiness_prompt.index("invoke the returned tool")
+               and "not already loaded and directly callable" in readiness_prompt
+               and "<exact_tool_name>" not in readiness_prompt
+               and "is not authorization or proof of attestation" in readiness_prompt
+               and "actual structured MCP result as the only authority truth" in readiness_prompt
+               and "terminate/fail the invocation; never ask or propose setup" in readiness_prompt
+               and "never replace it with a localhost slug" in readiness_prompt,
+               "AgentCore headless prompt pins ToolSearch -> init, MCP authority, terminal attestation failure, and hostname semantics")
         record(captured["cmd"][-1] == "/bob-evaluate kyberfork.internal --normal",
                "run_invocation(resume=False) builds the non-resume skill prompt as the final arg")
 
