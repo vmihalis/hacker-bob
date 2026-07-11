@@ -450,6 +450,15 @@ def _build_libheif_model(
         "bundleSha256": bundle_sha256,
         "verifierStatus": "approved",
         "integrityChecksPassed": len(LIBHEIF_VERIFIER_CHECKS),
+        # Evidence-integrity provenance (chain of custody). Deliberately excludes
+        # delivery-plane identifiers (execution/runtime/finding ids) per the
+        # no-plumbing-in-the-report rule; these are the checks and pinned sources a
+        # reader can independently reconcile.
+        "verifierChecks": list(LIBHEIF_VERIFIER_CHECKS),
+        "objectLockMode": "COMPLIANCE",
+        "sourceCommit": LIBHEIF_VULNERABLE_COMMIT,
+        "fixedCommit": LIBHEIF_EXACT_FIX_COMMIT,
+        "profile": LIBHEIF_PROFILE,
         "generatedAt": generated_at,
     }
 

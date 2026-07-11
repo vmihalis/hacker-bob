@@ -401,6 +401,11 @@ def test_publish_posts_shaped_report(module):
         "bundleSha256": BUNDLE_SHA256,
         "verifierStatus": "approved",
         "integrityChecksPassed": 6,
+        "verifierChecks": VERIFIER_CHECKS,
+        "objectLockMode": "COMPLIANCE",
+        "sourceCommit": VULNERABLE_COMMIT,
+        "fixedCommit": EXACT_FIX_COMMIT,
+        "profile": "libheif-cve-2026-49271",
         "generatedAt": "2026-07-11T13:12:04Z",
     }
     provenance = next(section for section in finding["sections"] if section["section_id"] == "f22-provenance")
