@@ -84,14 +84,19 @@ def _extract_tool_input(model_result: dict[str, Any]) -> dict[str, Any]:
     block = _object(content[0])
     _require(set(block) == {"ToolUse"}, "Bedrock content must contain only one tool use")
     tool_use = _object(block.get("ToolUse"))
-    # Step Functions' optimized aws-sdk integration materializes Bedrock's
-    # content-block discriminator as `Type: "tool_use"`. Keep the boundary exact:
-    # accept the observed service envelope, not arbitrary extra model fields.
+    # Step Functions' optimized aws-sdk converse integration materializes Bedrock's
+    # content-block discriminator as `Type: "tool_use"` for some providers (Anthropic
+    # Haiku) and omits it for on-demand foundation models (e.g. zai.glm-5). Accept
+    # exactly those two observed service envelopes — never arbitrary extra model
+    # fields — and, when the discriminator is present, require its exact value.
+    envelope_keys = set(tool_use)
     _require(
-        set(tool_use) == {"ToolUseId", "Name", "Input", "Type"},
+        envelope_keys == {"ToolUseId", "Name", "Input"}
+        or envelope_keys == {"ToolUseId", "Name", "Input", "Type"},
         "tool-use envelope keys are invalid",
     )
-    _require(tool_use.get("Type") == TOOL_USE_TYPE, "unexpected Bedrock tool-use type")
+    if "Type" in tool_use:
+        _require(tool_use.get("Type") == TOOL_USE_TYPE, "unexpected Bedrock tool-use type")
     _require(tool_use.get("Name") == TOOL_NAME, "unexpected Bedrock tool name")
     _require(
         isinstance(tool_use.get("ToolUseId"), str)

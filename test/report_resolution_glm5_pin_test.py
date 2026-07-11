@@ -53,14 +53,16 @@ PUB_TEST = _load(
 )
 PUBLISHER = PUB_TEST.load_module()
 
-# Real GLM-5 forced-tool output (Bedrock Converse), PascalCased by the Step Functions
-# aws-sdk:bedrockruntime:converse integration exactly as the live state machine emits it.
+# Real GLM-5 forced-tool output captured from the LIVE state machine execution
+# (aws-sdk:bedrockruntime:converse). Unlike Anthropic Haiku, the Step Functions
+# integration does NOT add the Type discriminator for on-demand foundation models,
+# so this envelope has exactly {ToolUseId, Name, Input} — no Type. The validator
+# accepts both shapes.
 GLM5_MODEL_RESULT = {
     "StopReason": "tool_use",
     "Output": {"Message": {"Content": [{"ToolUse": {
-        "ToolUseId": "tooluse_8x4ecP8Yk6dzQHsY2riaQd",
+        "ToolUseId": "tooluse_TSwdJBDCTcGOTxLdxdTEap",
         "Name": "select_report_framing",
-        "Type": "tool_use",
         "Input": {
             "schema_version": 1,
             "primary_reader": "downstream_maintainer",

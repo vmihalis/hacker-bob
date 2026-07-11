@@ -145,8 +145,15 @@ def test_model_output_is_exact(module):
     event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["Type"] = "text"
     refused(module, event, "tool-use type")
 
+    # GLM-5 (on-demand foundation model) omits the Type discriminator; the 3-key
+    # envelope must VALIDATE, not fail closed.
     event = sample_event(module)
     del event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["Type"]
+    assert module.validate(event)["status"] == "validated", "3-key (no Type) envelope must validate"
+
+    # An unknown extra key in the envelope is still refused (no arbitrary fields).
+    event = sample_event(module)
+    event["modelResult"]["Output"]["Message"]["Content"][0]["ToolUse"]["Extra"] = "no"
     refused(module, event, "envelope keys")
 
     event = sample_event(module)
