@@ -24,8 +24,10 @@ cheap. External owned targets must disable `EnableBuiltInDemoTarget` and set
   recorder / human approval writer for break-glass manual mode.
 - Security Hub export Lambda under a separate role. The model runtime role never gets
   `securityhub:BatchImportFindings`.
+- Bob-site sealed-report publisher Lambda under a separate role. The model runtime
+  role never receives the Bob-site ingest token or report password.
 - Standard Step Functions state machine:
-  `InvokeAgentRuntimeThroughGrade -> RunVerifierGate -> WriteVerifierApproval -> NotifyHumanOnLoop -> ExportToSecurityHub -> ResumeAgentRuntimeThroughReport`.
+  `InvokeAgentRuntimeThroughGrade -> RunVerifierGate -> WriteVerifierApproval -> NotifyHumanOnLoop -> ExportToSecurityHub -> ResumeAgentRuntimeThroughReport -> PublishBobSiteReport`.
 
 GRADE returns the exact S3 `VersionId` and SHA-256 of the exact bytes it wrote.
 The verifier reads that version directly (never `HEAD`/latest), confirms active
@@ -190,7 +192,8 @@ operator-selected commit, harness, binary path, or expected sanitizer marker:
 
 Start it with a memorable execution name. The default path no longer pauses on a
 task token: verifier success writes the content-bound approval artifact, publishes
-a token-free notification, and continues to Security Hub + REPORT.
+a token-free notification, and continues to Security Hub + REPORT + optional
+Bob-site sealed-report publish.
 
 ```bash
 EXECUTION_NAME=hacker-bob-libheif-hero-<date-or-rehearsal-id>
@@ -207,7 +210,7 @@ The visible path is:
 ```text
 sealed replay -> exact WORM freeze -> automated integrity verifier
               -> verifier approval artifact -> human-on-loop notice
-              -> Security Hub -> deterministic REPORT
+              -> Security Hub -> deterministic REPORT -> Bob-site /r/<slug>
 ```
 
 The SNS notification contains only the safe verifier-approval summary: profile,
@@ -226,7 +229,14 @@ aws s3api list-objects-v2 \
 Critical demo opsec: do not project raw freeze bodies, raw sanitizer output, or
 CloudWatch logs. Show the graph nodes, execution name, grade hash, WORM VersionId,
 Object Lock status, verifier approval artifact key, Security Hub export result,
-and final report state.
+final report state, and the returned Bob-site `bob_site_url` / `bob_site_slug`
+when publishing is configured.
+
+Bob-site publishing is inert unless all three deploy parameters are set:
+`BobSiteReportBaseUrl`, `BobSiteReportIngestToken`, and
+`BobSiteReportAccessPassword`. The first is an HTTPS origin; the token must match
+Bob-site `INGEST_TOKEN`; the password is what unlocks `/r/<slug>` and must be
+sent out of band.
 
 ## Break-glass manual approval mode
 
@@ -281,6 +291,7 @@ aws stepfunctions validate-state-machine-definition \
   --region us-east-1 \
   --definition file://infra/aws/hacker-bob-stack/statemachine/hacker-bob-engagement.asl.json
 node --test test/export-security-hub-lambda.test.js test/asff-builder.test.js test/grade-freeze-store.test.js test/hacker-bob-template-approval-env.test.js
+python3 test/publish_bob_site_report_lambda_test.py
 ```
 
 ## Outputs
@@ -288,5 +299,5 @@ node --test test/export-security-hub-lambda.test.js test/asff-builder.test.js te
 Important outputs are `AgentRuntimeArn`, `ExecutionRoleArn`, `StateMachineArn`,
 `EvidenceBucketArn`, `VerifierAttestationBucketArn`, `VerifierAttestationHmacSecretArn`,
 `HumanApprovalsBucketName`, `ApprovalWriterFunctionArn`,
-`ApprovalNotificationTopicArn`, `ExportSecurityHubFunctionArn`, `EfsAccessPointArn`, and
-`DenyEgressSecurityGroupId`.
+`ApprovalNotificationTopicArn`, `ExportSecurityHubFunctionArn`,
+`PublishBobSiteReportFunctionArn`, `EfsAccessPointArn`, and `DenyEgressSecurityGroupId`.

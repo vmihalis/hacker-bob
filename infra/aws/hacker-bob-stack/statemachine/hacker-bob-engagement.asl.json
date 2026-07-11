@@ -293,6 +293,28 @@
         "exportResult.$": "$.exportResult",
         "reportResult.$": "States.StringToJson($.reportInvoke.Response)"
       },
+      "Next": "PublishBobSiteReport"
+    },
+    "PublishBobSiteReport": {
+      "Type": "Task",
+      "Comment": "Publishes the already-approved REPORT output to Bob-site's sealed /api/reports ingest. The AgentCore runtime/model never receives the Bob-site ingest token or access password.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PublishBobSiteReportFunctionArn}",
+        "Payload": {
+          "profile.$": "$.profile",
+          "target.$": "$.target",
+          "runtimeSessionId.$": "$.runtimeSessionId",
+          "executionArn.$": "$$.Execution.Id",
+          "executionName.$": "$$.Execution.Name",
+          "executionStartedAt.$": "$$.Execution.StartTime",
+          "gradeResult.$": "$.gradeResult",
+          "approval.$": "$.approval",
+          "exportResult.$": "$.exportResult",
+          "reportResult.$": "$.reportResult"
+        }
+      },
+      "ResultPath": "$.bobSiteReport",
       "End": true
     }
   }

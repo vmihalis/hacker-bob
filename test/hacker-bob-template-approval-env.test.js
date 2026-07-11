@@ -62,6 +62,10 @@ test("template preserves the deployed Glassbox identities for an in-place demo-s
     ["ApprovalWriterFunction", /FunctionName:\s*glassbox-approval-writer/],
     ["ExportSecurityHubRole", /RoleName:\s*glassbox-export-security-hub-role/],
     ["ExportSecurityHubFunction", /FunctionName:\s*glassbox-export-security-hub/],
+    ["BobSiteReportIngestTokenSecret", /Name:\s*glassbox\/bob-site\/ingest-token/],
+    ["BobSiteReportAccessPasswordSecret", /Name:\s*glassbox\/bob-site\/report-password/],
+    ["PublishBobSiteReportRole", /RoleName:\s*glassbox-publish-bob-site-report-role/],
+    ["PublishBobSiteReportFunction", /FunctionName:\s*glassbox-publish-bob-site-report/],
     ["AsffBuilderLayer", /LayerName:\s*glassbox-asff-builder/],
     ["HomeAccessPoint", /Path:\s*\/home\/glassbox/],
   ];
@@ -390,6 +394,16 @@ test("state machine preserves smoke and routes only the named immutable libheif 
   );
   assert.equal(asl.States.DecodeGradeResult.Parameters["gradeResult.$"], "States.StringToJson($.gradeInvoke.Response)");
   assert.equal(asl.States.DecodeReportResult.Parameters["reportResult.$"], "States.StringToJson($.reportInvoke.Response)");
+  assert.equal(asl.States.DecodeReportResult.Next, "PublishBobSiteReport");
+  const publish = asl.States.PublishBobSiteReport;
+  assert.equal(publish.Resource, "arn:aws:states:::lambda:invoke");
+  assert.equal(publish.Parameters.FunctionName, "${PublishBobSiteReportFunctionArn}");
+  assert.equal(publish.Parameters.Payload["profile.$"], "$.profile");
+  assert.equal(publish.Parameters.Payload["runtimeSessionId.$"], "$.runtimeSessionId");
+  assert.equal(publish.Parameters.Payload["executionName.$"], "$$.Execution.Name");
+  assert.equal(publish.Parameters.Payload["reportResult.$"], "$.reportResult");
+  assert.equal(publish.ResultPath, "$.bobSiteReport");
+  assert.equal(publish.End, true);
 });
 
 test("GlassboxStateMachineRole may invoke the AgentCore default runtime endpoint", () => {
@@ -405,7 +419,7 @@ test("GlassboxStateMachineRole may invoke the AgentCore default runtime endpoint
 // structurally lose securityhub:BatchImportFindings entirely.
 // ---------------------------------------------------------------------------------------
 
-test("state machine orders verifier -> verifier approval -> human-on-loop notice -> exact-version export -> REPORT", () => {
+test("state machine orders verifier -> verifier approval -> human-on-loop notice -> exact-version export -> REPORT -> Bob-site publish", () => {
   const aslPath = path.join(
     __dirname, "..", "infra", "aws", "hacker-bob-stack", "statemachine", "hacker-bob-engagement.asl.json",
   );
@@ -427,6 +441,10 @@ test("state machine orders verifier -> verifier approval -> human-on-loop notice
   assert.equal(exportState.Next, "SelectReportProfile");
   assert.equal(asl.States.BuildSmokeReportPayload.Next, "ResumeAgentRuntimeThroughReport");
   assert.equal(asl.States.BuildLibheifReportPayload.Next, "ResumeAgentRuntimeThroughReport");
+  assert.equal(asl.States.ResumeAgentRuntimeThroughReport.Next, "DecodeReportResult");
+  assert.equal(asl.States.DecodeReportResult.Next, "PublishBobSiteReport");
+  assert.equal(asl.States.PublishBobSiteReport.Parameters.FunctionName, "${PublishBobSiteReportFunctionArn}");
+  assert.equal(asl.States.PublishBobSiteReport.End, true);
 });
 
 test("libheif historical-replay target lock pins the original tested revision, exact fix, patched release, and harness", () => {
@@ -587,4 +605,38 @@ test("state-machine role invokes verifier writer and notification, but never the
 test("GlassboxStateMachineRole may invoke ExportSecurityHubFunction", () => {
   const role = extractResourceBlock(readTemplate(), "GlassboxStateMachineRole");
   assert.match(role, /Resource:\s*!GetAtt ExportSecurityHubFunction\.Arn/);
+});
+
+test("GlassboxStateMachineRole may invoke PublishBobSiteReportFunction", () => {
+  const role = extractResourceBlock(readTemplate(), "GlassboxStateMachineRole");
+  assert.match(role, /Resource:\s*!GetAtt PublishBobSiteReportFunction\.Arn/);
+  const machine = extractResourceBlock(readTemplate(), "GlassboxEngagementStateMachine");
+  assert.match(machine, /PublishBobSiteReportFunctionArn:\s*!GetAtt PublishBobSiteReportFunction\.Arn/);
+});
+
+test("PublishBobSiteReportFunction is Python, post-REPORT only, and receives only Bob-site publish config", () => {
+  const fn = extractResourceBlock(readTemplate(), "PublishBobSiteReportFunction");
+  assert.match(fn, /Runtime:\s*python3\.12/);
+  assert.match(fn, /Handler:\s*index\.handler/);
+  assert.match(fn, /CodeUri:\s*functions\/publish-bob-site-report/);
+  assert.match(fn, /Role:\s*!GetAtt PublishBobSiteReportRole\.Arn/);
+  assert.match(fn, /BOB_SITE_BASE_URL:\s*!Ref BobSiteReportBaseUrl/);
+  assert.match(fn, /INGEST_TOKEN_SECRET_ID:\s*!Ref BobSiteReportIngestTokenSecret/);
+  assert.match(fn, /REPORT_PASSWORD_SECRET_ID:\s*!Ref BobSiteReportAccessPasswordSecret/);
+  assert.match(fn, /REPORT_RECIPIENT:\s*!Ref BobSiteReportRecipient/);
+  assert.doesNotMatch(fn, /GRADE_FREEZE_BUCKET|BOB_APPROVAL_BUCKET|SECURITY_HUB_PRODUCT_ARN/);
+});
+
+test("PublishBobSiteReportRole can read only Bob-site publish secrets and cannot touch evidence, approvals, Security Hub, or callbacks", () => {
+  const role = stripYamlComments(extractResourceBlock(readTemplate(), "PublishBobSiteReportRole"));
+  assert.match(role, /secretsmanager:GetSecretValue/);
+  assert.match(role, /BobSiteReportIngestTokenSecret/);
+  assert.match(role, /BobSiteReportAccessPasswordSecret/);
+  assert.match(role, /logs:PutLogEvents/);
+  assert.doesNotMatch(role, /EvidenceBucket|GlassboxApprovalsBucket|securityhub:|states:SendTask|lambda:InvokeFunction|s3:/);
+});
+
+test("AgentCore runtime role cannot read Bob-site publish secrets", () => {
+  const role = stripYamlComments(extractResourceBlock(readTemplate(), "GlassboxAgentRuntimeExecutionRole"));
+  assert.doesNotMatch(role, /BobSiteReportIngestTokenSecret|BobSiteReportAccessPasswordSecret|glassbox\/bob-site/);
 });

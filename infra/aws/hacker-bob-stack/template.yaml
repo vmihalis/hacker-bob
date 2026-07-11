@@ -236,6 +236,35 @@ Parameters:
       the Step Functions task token; the human reviews the pending record and
       invokes ApprovalWriterFunction out of band.
 
+  BobSiteReportBaseUrl:
+    Type: String
+    Default: ""
+    Description: >
+      Optional HTTPS origin for Bob-site report ingest, e.g. https://bob.site.
+      Leave blank to keep the post-REPORT Bob-site publish step inert.
+
+  BobSiteReportIngestToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Bearer token matching Bob-site's INGEST_TOKEN. Stored in Secrets Manager
+      for the downstream publisher Lambda only; never threaded into AgentCore.
+
+  BobSiteReportAccessPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Password stored for the sealed /r/<slug> report. Stored in Secrets Manager
+      for the downstream publisher Lambda only; send it out of band if a report
+      is published.
+
+  BobSiteReportRecipient:
+    Type: String
+    Default: the program owner
+    Description: Recipient label rendered inside the hosted Bob-site report.
+
   BobLabTarget:
     Type: String
     Default: 127.0.0.1
@@ -263,6 +292,8 @@ Conditions:
   ArchiveRpcEgressEnabledCondition: !Equals [!Ref EnableArchiveRpcEgress, "true"]
   BedrockFallbackEnabledCondition: !Equals [!Ref UseBedrockFallback, "true"]
   HasApprovalNotificationEmail: !Not [!Equals [!Ref ApprovalNotificationEmail, ""]]
+  HasBobSiteReportIngestToken: !Not [!Equals [!Ref BobSiteReportIngestToken, ""]]
+  HasBobSiteReportAccessPassword: !Not [!Equals [!Ref BobSiteReportAccessPassword, ""]]
   # fx-kyber-iac (wave 2): "Zai egress is enabled AND a real host was supplied" — mirrors
   # the !Not/!Equals-empty-string idiom above. ZaiGatewayHost defaults to "" and
   # (post P2-fx: it is NOT documentation/tagging-only — see the parameter's own Description) is
@@ -1935,6 +1966,72 @@ Resources:
           GRADE_FREEZE_BUCKET: !Ref EvidenceBucket
           SECURITY_HUB_PRODUCT_ARN: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
 
+  BobSiteReportIngestTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: glassbox/bob-site/ingest-token
+      Description: >
+        Bob-site /api/reports bearer token for the downstream post-REPORT
+        publisher Lambda. AgentCore/runtime/model roles are not granted access.
+      SecretString: !If [HasBobSiteReportIngestToken, !Ref BobSiteReportIngestToken, disabled]
+
+  BobSiteReportAccessPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: glassbox/bob-site/report-password
+      Description: >
+        Password to set on Bob-site sealed /r/<slug> reports produced by the
+        downstream post-REPORT publisher Lambda. Send out of band when used.
+      SecretString: !If [HasBobSiteReportAccessPassword, !Ref BobSiteReportAccessPassword, disabled]
+
+  PublishBobSiteReportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-publish-bob-site-report-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-publish-bob-site-report-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadOnlyBobSitePublishSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref BobSiteReportIngestTokenSecret
+                  - !Ref BobSiteReportAccessPasswordSecret
+              - Sid: PublishBobSiteReportLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-publish-bob-site-report*
+
+  PublishBobSiteReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-publish-bob-site-report
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt PublishBobSiteReportRole.Arn
+      CodeUri: functions/publish-bob-site-report
+      Environment:
+        Variables:
+          BOB_SITE_BASE_URL: !Ref BobSiteReportBaseUrl
+          INGEST_TOKEN_SECRET_ID: !Ref BobSiteReportIngestTokenSecret
+          REPORT_PASSWORD_SECRET_ID: !Ref BobSiteReportAccessPasswordSecret
+          REPORT_RECIPIENT: !Ref BobSiteReportRecipient
+
   GlassboxStateMachineRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1987,6 +2084,13 @@ Resources:
                 Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt ExportSecurityHubFunction.Arn
+              # Publishes the post-REPORT shaped model to Bob-site's existing
+              # sealed-report ingest. This role only invokes the publisher; the
+              # Bob-site ingest token/password remain scoped to the publisher role.
+              - Sid: InvokePublishBobSiteReport
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt PublishBobSiteReportFunction.Arn
 
   GlassboxEngagementStateMachine:
     Type: AWS::Serverless::StateMachine
@@ -1999,6 +2103,7 @@ Resources:
         VerifierApprovalFunctionArn: !GetAtt VerifierApprovalFunction.Arn
         ApprovalNotificationTopicArn: !Ref ApprovalNotificationTopic
         ExportSecurityHubFunctionArn: !GetAtt ExportSecurityHubFunction.Arn
+        PublishBobSiteReportFunctionArn: !GetAtt PublishBobSiteReportFunction.Arn
       Role: !GetAtt GlassboxStateMachineRole.Arn
       Type: STANDARD
 
@@ -2068,6 +2173,13 @@ Outputs:
       GlassboxAgentRuntimeExecutionRole (the model's role) holds neither this
       function's ARN nor securityhub:BatchImportFindings.
     Value: !GetAtt ExportSecurityHubFunction.Arn
+
+  PublishBobSiteReportFunctionArn:
+    Description: >
+      Downstream post-REPORT publisher that sends approved report output to
+      Bob-site's sealed /api/reports ingest and returns the /r/<slug> review URL.
+      AgentCore/runtime/model roles cannot read the Bob-site token or password.
+    Value: !GetAtt PublishBobSiteReportFunction.Arn
 
   ApprovalWriterFunctionArn:
     Description: >
