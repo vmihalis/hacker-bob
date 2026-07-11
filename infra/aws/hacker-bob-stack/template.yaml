@@ -197,17 +197,28 @@ Parameters:
     Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
     AllowedValues:
       - us.anthropic.claude-haiku-4-5-20251001-v1:0
+      - zai.glm-5
     Description: >
-      Known-working Bedrock fallback profile for low-cost demo rehearsals while
-      newest-model account enablement is pending. This remains AI/ML on AWS and
-      does not make the Opus/Sonnet H1 gate green.
+      Bedrock model id for the bounded stakeholder resolver (Converse, forced tool
+      use) AND the deterministic validator/publisher model pin. zai.glm-5 is a
+      Bedrock-hosted frontier model whose forced-tool output is verified to pass the
+      validator end-to-end (test/report_resolution_glm5_pin_test.py); to select it,
+      deploy with this AND BedrockFallbackFoundationModelId set to zai.glm-5. The
+      Haiku profile is retained as the known-working fallback. Either choice remains
+      AI/ML on AWS and does not make the Opus/Sonnet H1 gate green.
 
   BedrockFallbackFoundationModelId:
     Type: String
     Default: anthropic.claude-haiku-4-5-20251001-v1:0
     AllowedValues:
       - anthropic.claude-haiku-4-5-20251001-v1:0
-    Description: Base foundation-model id backing BedrockFallbackModelId.
+      - zai.glm-5
+    Description: >
+      Base foundation-model id backing BedrockFallbackModelId — the IAM
+      foundation-model resource the resolver's on-demand InvokeModel is authorized
+      against. For zai.glm-5, set this to zai.glm-5 as well: it is invoked on-demand
+      as a foundation model, not via an us.-prefixed inference profile, so the
+      foundation-model grant (not the inference-profile grant) authorizes the call.
 
   UseBedrockFallback:
     Type: String

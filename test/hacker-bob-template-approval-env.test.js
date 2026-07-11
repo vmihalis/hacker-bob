@@ -800,21 +800,30 @@ test("state-machine report resolution IAM is pinned to the fallback Bedrock prof
   );
 });
 
-test("report-decision model parameters allow only the known-live Haiku ids", () => {
+test("report-decision model parameters allow only the vetted Bedrock ids (Haiku fallback + verified GLM-5)", () => {
   const text = readTemplate();
-  for (const [parameter, expected] of [
-    ["BedrockFallbackModelId", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
-    ["BedrockFallbackFoundationModelId", "anthropic.claude-haiku-4-5-20251001-v1:0"],
+  for (const [parameter, expectedDefault, expectedAllowed] of [
+    [
+      "BedrockFallbackModelId",
+      "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "zai.glm-5"],
+    ],
+    [
+      "BedrockFallbackFoundationModelId",
+      "anthropic.claude-haiku-4-5-20251001-v1:0",
+      ["anthropic.claude-haiku-4-5-20251001-v1:0", "zai.glm-5"],
+    ],
   ]) {
     const match = text.match(new RegExp(`\\n {2}${parameter}:\\n([\\s\\S]*?)(?=\\n {2}\\S)`));
     assert.ok(match, `${parameter} parameter block not found`);
     const block = match[1];
-    assert.ok(block.includes(`Default: ${expected}`), `${parameter} default must be pinned`);
+    // Default stays the known-live Haiku id; GLM-5 is opt-in via a deploy-time override.
+    assert.ok(block.includes(`Default: ${expectedDefault}`), `${parameter} default must be pinned to Haiku`);
     const allowed = block.match(/AllowedValues:\s*\n((?:\s+- .+\n)+)/);
     assert.ok(allowed, `${parameter} must declare AllowedValues`);
     assert.deepEqual(
       allowed[1].trim().split("\n").map((line) => line.replace(/^\s*-\s*/, "")),
-      [expected],
+      expectedAllowed,
     );
     assert.doesNotMatch(block, /\*/);
   }
