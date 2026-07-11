@@ -12,19 +12,20 @@ Transform: AWS::Serverless-2016-10-31
 #
 # Deploy and invoke with the AWS CLI runbook in README.md. Scope authorization
 # remains out of band. An automated verifier proves the exact GRADE-time WORM
-# bytes, then Step Functions pauses until an out-of-band named human invokes the
-# separately-IAM-scoped approval writer.
+# bytes, a verifier-only Lambda writes the content-bound approval artifact, and
+# Step Functions notifies a human observer before continuing to export/report.
 #
 # Full runbook: aabw-2026/projects/06-aws-hacker-bob/AGENTCORE-BRANCH-PLAN.md
 
 Description: >
   hacker-bob-stack: native AgentCore Runtime (networkMode:VPC),
   a deny-by-default egress security group, EFS for $HOME persistence,
-  an Object Lock (COMPLIANCE) evidence bucket, a mutable S3 human-approval
-  store, HMAC signing key, automated integrity verifier, task-token pending
-  recorder, and separately-IAM-scoped human approval writer (the model's
-  execution role can read signed approvals but never write them), Security Hub
-  custom-product ARN, a Step Functions human-gated state machine, a
+  an Object Lock (COMPLIANCE) evidence bucket, a mutable S3 approval
+  store, HMAC signing key, automated integrity verifier, verifier-only
+  approval artifact writer, task-token pending recorder for break-glass manual
+  mode, and separately-IAM-scoped human approval writer (the model's execution
+  role can read signed approvals but never write them), Security Hub
+  custom-product ARN, a Step Functions human-on-the-loop state machine, a
   least-privilege execution role, and a CloudTrail trail.
 
 Parameters:
@@ -1303,6 +1304,191 @@ Resources:
                 "object_lock_mode": "COMPLIANCE",
                 "retain_until": retain_until.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "verification_type": "automated_integrity",
+                "verifier_quorum": [
+                    "target_binding",
+                    "exact_s3_version",
+                    "object_lock_compliance",
+                    "body_sha256",
+                    "embedded_grade_hash",
+                    "canonical_grade_hash",
+                ],
+            }
+
+  VerifierApprovalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-verifier-approval-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-verifier-approval-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteVerifierApprovalArtifact
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${GlassboxApprovalsBucket.Arn}/approvals/*/*.approved
+              - Sid: ReadApprovalHmacKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref GlassboxApprovalHmacKey
+              - Sid: VerifierApprovalLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-verifier-approval*
+
+  VerifierApprovalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-verifier-approval
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt VerifierApprovalRole.Arn
+      Environment:
+        Variables:
+          APPROVALS_BUCKET: !Ref GlassboxApprovalsBucket
+          HMAC_SECRET_ID: !Ref GlassboxApprovalHmacKey
+      InlineCode: |
+        import hashlib
+        import hmac
+        import json
+        import os
+        import re
+        from datetime import datetime, timezone
+
+        HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+        EXECUTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+        SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
+        ALLOWED_PROFILES = {"smoke", "libheif-cve-2026-49271"}
+        BINDING_VERSION = "grade-freeze-v2"
+
+        def _require_hash(value, field):
+            if not isinstance(value, str) or not HASH_RE.fullmatch(value):
+                raise RuntimeError(f"{field} must be a lowercase SHA-256 hex digest")
+            return value
+
+        def _require_version_id(value):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 1024
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in value)
+            ):
+                raise RuntimeError("grade-freeze VersionId is invalid")
+            return value
+
+        def _require_safe_target(value, field):
+            if (
+                not isinstance(value, str)
+                or not SAFE_TARGET_RE.fullmatch(value)
+                or value.startswith(".")
+                or ".." in value
+            ):
+                raise RuntimeError(f"{field} is invalid")
+            return value
+
+        def _expected_tuple(profile, target, grade_result):
+            return {
+                "profile": profile,
+                "target": target,
+                "grade_verdict_hash": _require_hash(
+                    grade_result.get("grade_verdict_hash"),
+                    "gradeResult.grade_verdict_hash",
+                ),
+                "grade_freeze_bundle_sha256": _require_hash(
+                    grade_result.get("grade_freeze_bundle_sha256"),
+                    "gradeResult.grade_freeze_bundle_sha256",
+                ),
+                "grade_freeze_version_id": _require_version_id(
+                    grade_result.get("grade_freeze_version_id")
+                ),
+            }
+
+        def handler(event, context):
+            import boto3
+            s3 = boto3.client("s3")
+            secretsmanager = boto3.client("secretsmanager")
+
+            execution_name = event.get("executionName")
+            if not isinstance(execution_name, str) or not EXECUTION_RE.fullmatch(execution_name):
+                raise RuntimeError("executionName cannot safely key a verifier approval")
+            profile = event.get("profile")
+            if profile not in ALLOWED_PROFILES:
+                raise RuntimeError("unsupported or missing engagement profile")
+            target = _require_safe_target(event.get("target"), "target")
+            grade_result = event.get("gradeResult") if isinstance(event.get("gradeResult"), dict) else {}
+            verified = event.get("verifiedFreeze") if isinstance(event.get("verifiedFreeze"), dict) else {}
+            expected = _expected_tuple(profile, target, grade_result)
+            for key, value in expected.items():
+                if verified.get(key) != value:
+                    raise RuntimeError("automated verifier result does not match the GRADE freeze binding")
+            if verified.get("object_lock_mode") != "COMPLIANCE":
+                raise RuntimeError("automated verifier did not prove COMPLIANCE object lock")
+            quorum = verified.get("verifier_quorum")
+            if not isinstance(quorum, list) or len(quorum) < 6:
+                raise RuntimeError("automated verifier quorum is incomplete")
+
+            binding = [
+                profile,
+                target,
+                expected["grade_verdict_hash"],
+                expected["grade_freeze_bundle_sha256"],
+                expected["grade_freeze_version_id"],
+            ]
+            binding_bytes = json.dumps(
+                binding,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            secret = secretsmanager.get_secret_value(
+                SecretId=os.environ["HMAC_SECRET_ID"]
+            )["SecretString"].encode("utf-8")
+            signature = hmac.new(secret, binding_bytes, hashlib.sha256).hexdigest()
+            approved_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            artifact = {
+                "schema_version": 2,
+                "binding_version": BINDING_VERSION,
+                "approval_mode": "verifier_quorum",
+                "approved_by": "automated_verifier_gate",
+                "profile": profile,
+                "target_domain": target,
+                "grade_verdict_hash": expected["grade_verdict_hash"],
+                "grade_freeze_bundle_sha256": expected["grade_freeze_bundle_sha256"],
+                "grade_freeze_version_id": expected["grade_freeze_version_id"],
+                "hmac": signature,
+                "execution_name": execution_name,
+                "approval_request_id": context.aws_request_id,
+                "approved_at": approved_at,
+                "verifier_quorum": quorum,
+            }
+            artifact_key = f"approvals/{target}/{expected['grade_verdict_hash']}.approved"
+            s3.put_object(
+                Bucket=os.environ["APPROVALS_BUCKET"],
+                Key=artifact_key,
+                Body=json.dumps(artifact, separators=(",", ":")).encode("utf-8"),
+                ContentType="application/json",
+            )
+            return {
+                "decision": "approved",
+                "approval_mode": "verifier_quorum",
+                "profile": profile,
+                "target": target,
+                "grade_verdict_hash": expected["grade_verdict_hash"],
+                "grade_freeze_bundle_sha256": expected["grade_freeze_bundle_sha256"],
+                "grade_freeze_version_id": expected["grade_freeze_version_id"],
+                "approval_artifact_key": artifact_key,
+                "approved_at": approved_at,
+                "verifier_quorum": quorum,
             }
 
   ApprovalNotificationTopic:
@@ -1652,7 +1838,7 @@ Resources:
   # ---------------------------------------------------------------------
   # ARCHITECTURAL FIX (Eric-approved): the downstream Security Hub export
   # step. Wired into the state machine (below) as a Task invoked strictly
-  # AFTER AwaitHumanApproval is resolved by the named-human callback.
+  # AFTER verifier approval writes the content-bound .approved artifact.
   # The model's own process/role can never reach this
   # function: it is a separate Lambda under its OWN role
   # (ExportSecurityHubRole), which GlassboxAgentRuntimeExecutionRole neither
@@ -1782,8 +1968,19 @@ Resources:
                 Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt VerifierGateFunction.Arn
-              # AwaitHumanApproval uses lambda:invoke.waitForTaskToken. The recorder
-              # persists the token and notifies a human; it never calls a callback.
+              # WriteVerifierApproval lets a separate verifier-only Lambda write the
+              # content-bound .approved artifact. It has no Step Functions callback.
+              - Sid: InvokeVerifierApproval
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt VerifierApprovalFunction.Arn
+              # NotifyHumanOnLoop publishes safe receipt fields after verifier approval.
+              - Sid: PublishHumanOnLoopNotification
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref ApprovalNotificationTopic
+              # AwaitHumanApproval remains available as a break-glass/manual state. The
+              # recorder persists the token and notifies a human; it never calls a callback.
               - Sid: InvokeApprovalPendingRecorder
                 Effect: Allow
                 Action: lambda:InvokeFunction
@@ -1791,7 +1988,7 @@ Resources:
               # ARCHITECTURAL FIX (Eric-approved): lets the state machine invoke the
               # downstream export Lambda from the new ExportToSecurityHub Task state
               # (statemachine/hacker-bob-engagement.asl.json), wired directly after
-              # AwaitHumanApproval succeeds.
+              # verifier approval succeeds.
               - Sid: InvokeExportSecurityHub
                 Effect: Allow
                 Action: lambda:InvokeFunction
@@ -1805,7 +2002,9 @@ Resources:
       DefinitionSubstitutions:
         AgentRuntimeArn: !GetAtt GlassboxAgentCoreRuntime.AgentRuntimeArn
         VerifierGateFunctionArn: !GetAtt VerifierGateFunction.Arn
+        VerifierApprovalFunctionArn: !GetAtt VerifierApprovalFunction.Arn
         ApprovalPendingRecorderFunctionArn: !GetAtt ApprovalPendingRecorderFunction.Arn
+        ApprovalNotificationTopicArn: !Ref ApprovalNotificationTopic
         ExportSecurityHubFunctionArn: !GetAtt ExportSecurityHubFunction.Arn
       Role: !GetAtt GlassboxStateMachineRole.Arn
       Type: STANDARD
@@ -1829,14 +2028,14 @@ Outputs:
 
   VerifierAttestationBucketArn:
     Description: >
-      The mutable GRADE->REPORT human-control store. The runtime can read only
+      The mutable GRADE->REPORT approval-control store. The runtime can read only
       approvals/*/*.approved; pending records and final writes remain unreachable.
     Value: !GetAtt GlassboxApprovalsBucket.Arn
 
   # Backward-compatible live-stack output retained for operators and scripts
   # already bound to glassbox-agentcore-demo.
   ApprovalsBucketArn:
-    Description: Mutable GRADE->REPORT human-approval store ARN.
+    Description: Mutable GRADE->REPORT approval-control store ARN.
     Value: !GetAtt GlassboxApprovalsBucket.Arn
 
   HumanApprovalsBucketName:
@@ -1847,23 +2046,30 @@ Outputs:
 
   VerifierAttestationHmacSecretArn:
     Description: >
-      HMAC-SHA256 key for schema-v2 human approval artifacts. Read by the runtime
-      for defense-in-depth verification and ApprovalWriterRole for signing.
+      HMAC-SHA256 key for schema-v2 approval artifacts. Read by the runtime
+      for defense-in-depth verification and verifier/human approval writers for signing.
     Value: !Ref GlassboxApprovalHmacKey
 
   # Backward-compatible live-stack output retained for in-place updates.
   ApprovalHmacSecretArn:
-    Description: HMAC-SHA256 key ARN for human approval artifacts.
+    Description: HMAC-SHA256 key ARN for approval artifacts.
     Value: !Ref GlassboxApprovalHmacKey
 
   SecurityHubProductArn:
     Description: Security Hub custom product ARN for BatchImportFindings.
     Value: !Sub arn:aws:securityhub:${AWS::Region}:${AWS::AccountId}:product/${AWS::AccountId}/default
 
+  VerifierApprovalFunctionArn:
+    Description: >
+      Human-on-the-loop verifier writer. Invoked by Step Functions after
+      RunVerifierGate passes; writes the content-bound .approved artifact
+      consumed by REPORT and has no Step Functions callback permission.
+    Value: !GetAtt VerifierApprovalFunction.Arn
+
   ExportSecurityHubFunctionArn:
     Description: >
       ARCHITECTURAL FIX (Eric-approved): the downstream Security Hub export Lambda,
-      invoked by the state machine strictly AFTER AwaitHumanApproval, under
+      invoked by the state machine strictly AFTER verifier approval, under
       its own ExportSecurityHubRole (securityhub:BatchImportFindings +
       s3:GetObject scoped to EvidenceBucket's hacker-bob/grade-freeze/ prefix only).
       GlassboxAgentRuntimeExecutionRole (the model's role) holds neither this
@@ -1878,7 +2084,7 @@ Outputs:
     Value: !GetAtt ApprovalWriterFunction.Arn
 
   ApprovalNotificationTopicArn:
-    Description: SNS topic carrying token-free human approval requests.
+    Description: SNS topic carrying token-free human-on-the-loop verifier-advance notices.
     Value: !Ref ApprovalNotificationTopic
 
   StateMachineArn:

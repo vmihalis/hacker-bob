@@ -8,15 +8,15 @@
 // own env/Bash, so every in-process gate leaks. The robust fix moves the
 // ASFF Security Hub export OUT of the model-reachable MCP tools entirely and
 // makes it a Step Functions Task invoked ONLY after the automated integrity
-// verifier succeeds AND the out-of-band named-human callback resolves
-// AwaitHumanApproval (see statemachine/hacker-bob-engagement.asl.json). The
+// verifier succeeds AND a Bob-unreachable verifier writer materializes the
+// content-bound approval artifact (see statemachine/hacker-bob-engagement.asl.json). The
 // model's own process can never reach this Lambda: it runs under its OWN
 // dedicated IAM role (ExportSecurityHubRole, template.yaml), which the
 // model's HackerBobAgentRuntimeExecutionRole neither assumes nor shares --
 // and HackerBobAgentRuntimeExecutionRole itself no longer holds
 // securityhub:BatchImportFindings at all (that Sid was removed).
 //
-// What gets exported is the exact human-approved, verifier-checked finding set, protected by
+// What gets exported is the exact verifier-approved finding set, protected by
 // S3 Object Lock COMPLIANCE / WORM at GRADE time -- BEFORE any verifier
 // attestation exists -- by
 // mcp/lib/grade-freeze-store.js's
@@ -32,9 +32,9 @@
 // or (b) is refused outright because export reads the approved VersionId, not
 // whatever happens to be latest at that key.
 //
-// Step Functions topology IS the human-boundary enforcement here: the
-// separately-IAM-scoped ApprovalWriterFunction writes the HMAC artifact and
-// alone resolves the callback. This handler does not re-verify that artifact;
+// Step Functions topology IS the governance enforcement here: the verifier
+// approval writer writes the HMAC artifact before this state can run. This handler
+// does not re-verify that artifact;
 // it independently fetches the exact approved VersionId, verifies the raw
 // object's SHA-256, verifies the canonical hash of bundle.grade, and checks
 // the embedded grade_verdict_hash/target_domain. A key/version mixup, newer
@@ -298,8 +298,8 @@ async function handler(event) {
     targetDomain: domain,
     gradeFinding: finding,
     findingPayload: payload,
-    // The new grade-freeze-bound flow runs BEFORE report.md is composed
-    // (this Task is wired after verifier + human approval, but still ahead
+    // The grade-freeze-bound flow runs BEFORE report.md is composed
+    // (this Task is wired after verifier approval, but still ahead
     // of the REPORT-stage runtime invocation), so only grade_verdict_hash is
     // available here -- there is no report_content_hash/claim_freeze_hash/
     // evidence_hash/final_verification_hash to bind yet. buildAsffRecord's

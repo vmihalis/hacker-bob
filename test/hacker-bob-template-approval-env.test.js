@@ -54,6 +54,8 @@ test("template preserves the deployed Glassbox identities for an in-place demo-s
     ["EfsSecurityGroup", /GroupName:\s*glassbox-efs-sg/],
     ["CloudTrailLogBucket", /BucketName:\s*!Sub glassbox-cloudtrail-/],
     ["ApprovalNotificationTopic", /TopicName:\s*glassbox-approval-notifications/],
+    ["VerifierApprovalRole", /RoleName:\s*glassbox-verifier-approval-role/],
+    ["VerifierApprovalFunction", /FunctionName:\s*glassbox-verifier-approval/],
     ["ApprovalPendingRecorderRole", /RoleName:\s*glassbox-approval-pending-recorder-role/],
     ["ApprovalPendingRecorderFunction", /FunctionName:\s*glassbox-approval-pending-recorder/],
     ["ApprovalWriterRole", /RoleName:\s*glassbox-approval-writer-role/],
@@ -273,11 +275,12 @@ test("GlassboxAgentRuntimeExecutionRole has a scoped (non-wildcard-Resource) sec
   );
 });
 
-test("ApprovalWriterRole is the only principal granted PutObject on final .approved artifacts", () => {
+test("only verifier/human approval writers can PutObject final .approved artifacts", () => {
   const text = readTemplate();
   const roleNames = [
     "GlassboxAgentRuntimeExecutionRole",
     "VerifierGateRole",
+    "VerifierApprovalRole",
     "ApprovalPendingRecorderRole",
     "ApprovalWriterRole",
     "GlassboxStateMachineRole",
@@ -293,8 +296,8 @@ test("ApprovalWriterRole is the only principal granted PutObject on final .appro
   }
   assert.deepEqual(
     principalsWithPutOnApprovals,
-    ["ApprovalWriterRole"],
-    "ApprovalWriterRole must be the ONLY principal granted s3:PutObject on the final human approval "
+    ["VerifierApprovalRole", "ApprovalWriterRole"],
+    "Only verifier/human approval writers may be granted s3:PutObject on the final approval "
       + "prefix (the final .approved artifact) — found: " + JSON.stringify(principalsWithPutOnApprovals),
   );
 });
@@ -313,7 +316,7 @@ test("GlassboxApprovalHmacKey is declared as a Secrets Manager secret with a gen
   assert.match(secret, /GenerateSecretString/, "the HMAC key must be generated, never a hardcoded literal");
 });
 
-test("state machine inserts a bounded real human callback after read-only verification", () => {
+test("state machine advances on verifier approval and notifies human on the loop", () => {
   const aslPath = path.join(
     __dirname, "..", "infra", "aws", "hacker-bob-stack", "statemachine", "hacker-bob-engagement.asl.json",
   );
@@ -322,7 +325,25 @@ test("state machine inserts a bounded real human callback after read-only verifi
   assert.equal(verifier.Resource, "arn:aws:states:::lambda:invoke");
   assert.equal(verifier.Parameters.FunctionName, "${VerifierGateFunctionArn}");
   assert.equal(Object.prototype.hasOwnProperty.call(verifier.Parameters.Payload, "token.$"), false);
-  assert.equal(verifier.Next, "AwaitHumanApproval");
+  assert.equal(verifier.Next, "WriteVerifierApproval");
+  const writer = asl.States.WriteVerifierApproval;
+  assert.equal(writer.Resource, "arn:aws:states:::lambda:invoke");
+  assert.equal(writer.Parameters.FunctionName, "${VerifierApprovalFunctionArn}");
+  assert.equal(Object.prototype.hasOwnProperty.call(writer.Parameters.Payload, "token.$"), false);
+  assert.equal(writer.Parameters.Payload["verifiedFreeze.$"], "$.verifierGate.Payload");
+  assert.equal(writer.Next, "RecordVerifierApproval");
+  const record = asl.States.RecordVerifierApproval;
+  assert.equal(record.Parameters["approval_mode.$"], "$.verifierApproval.Payload.approval_mode");
+  assert.equal(record.Parameters["approval_artifact_key.$"], "$.verifierApproval.Payload.approval_artifact_key");
+  assert.equal(record.Next, "NotifyHumanOnLoop");
+  const notify = asl.States.NotifyHumanOnLoop;
+  assert.equal(notify.Resource, "arn:aws:states:::sns:publish");
+  assert.equal(notify.Parameters.TopicArn, "${ApprovalNotificationTopicArn}");
+  assert.equal(notify.Parameters["Message.$"], "States.JsonToString($.approval)");
+  assert.equal(notify.Next, "ExportToSecurityHub");
+
+  // Break-glass/manual state remains present for old executions and recovery,
+  // but is no longer on the default verifier-driven path.
   const human = asl.States.AwaitHumanApproval;
   assert.equal(human.Resource, "arn:aws:states:::lambda:invoke.waitForTaskToken");
   assert.equal(human.Parameters.FunctionName, "${ApprovalPendingRecorderFunctionArn}");
@@ -389,18 +410,20 @@ test("GlassboxStateMachineRole may invoke the AgentCore default runtime endpoint
 
 // ---------------------------------------------------------------------------------------
 // ARCHITECTURAL FIX: the downstream ExportSecurityHubFunction Lambda is
-// invoked ONLY after named-human callback approval, and the model's own execution role must
+// invoked ONLY after verifier approval, and the model's own execution role must
 // structurally lose securityhub:BatchImportFindings entirely.
 // ---------------------------------------------------------------------------------------
 
-test("state machine orders verifier -> human callback -> exact-version export -> REPORT", () => {
+test("state machine orders verifier -> verifier approval -> human-on-loop notice -> exact-version export -> REPORT", () => {
   const aslPath = path.join(
     __dirname, "..", "infra", "aws", "hacker-bob-stack", "statemachine", "hacker-bob-engagement.asl.json",
   );
   const asl = JSON.parse(fs.readFileSync(aslPath, "utf8"));
   assert.equal(asl.States.DecodeGradeResult.Next, "RunVerifierGate");
-  assert.equal(asl.States.RunVerifierGate.Next, "AwaitHumanApproval");
-  assert.equal(asl.States.AwaitHumanApproval.Next, "ExportToSecurityHub");
+  assert.equal(asl.States.RunVerifierGate.Next, "WriteVerifierApproval");
+  assert.equal(asl.States.WriteVerifierApproval.Next, "RecordVerifierApproval");
+  assert.equal(asl.States.RecordVerifierApproval.Next, "NotifyHumanOnLoop");
+  assert.equal(asl.States.NotifyHumanOnLoop.Next, "ExportToSecurityHub");
   const exportState = asl.States.ExportToSecurityHub;
   assert.ok(exportState, "ExportToSecurityHub state must exist");
   assert.equal(exportState.Type, "Task");
@@ -446,6 +469,7 @@ test("ExportSecurityHubRole is the only principal in template.yaml granted secur
   const roleNames = [
     "GlassboxAgentRuntimeExecutionRole",
     "VerifierGateRole",
+    "VerifierApprovalRole",
     "ApprovalPendingRecorderRole",
     "ApprovalWriterRole",
     "GlassboxStateMachineRole",
@@ -507,6 +531,26 @@ test("verifier reads and hashes only the exact GRADE-returned WORM VersionId and
   assert.doesNotMatch(gateRole, /GlassboxApprovalsBucket|secretsmanager|states:SendTask/);
 });
 
+test("verifier approval writer signs the full v2 freeze tuple without Step Functions callback permission", () => {
+  const writer = extractResourceBlock(readTemplate(), "VerifierApprovalFunction");
+  assert.match(writer, /FunctionName:\s*glassbox-verifier-approval/);
+  assert.match(writer, /binding = \[/);
+  assert.match(writer, /expected\["grade_verdict_hash"\]/);
+  assert.match(writer, /expected\["grade_freeze_bundle_sha256"\]/);
+  assert.match(writer, /expected\["grade_freeze_version_id"\]/);
+  assert.match(writer, /"approval_mode": "verifier_quorum"/);
+  assert.match(writer, /"approved_by": "automated_verifier_gate"/);
+  assert.match(writer, /approvals\/\{target\}\/\{expected\['grade_verdict_hash'\]\}\.approved/);
+  assert.match(writer, /s3\.put_object\(/);
+  assert.doesNotMatch(writer, /send_task_success|send_task_failure|taskToken|pendingRecordKey/);
+
+  const writerRole = stripYamlComments(extractResourceBlock(readTemplate(), "VerifierApprovalRole"));
+  assert.match(writerRole, /approvals\/\*\/\*\.approved/);
+  assert.match(writerRole, /s3:PutObject/);
+  assert.match(writerRole, /secretsmanager:GetSecretValue/);
+  assert.doesNotMatch(writerRole, /states:SendTask|approvals\/pending|EvidenceBucket/);
+});
+
 test("pending recorder cannot approve/callback and human writer binds the full v2 freeze tuple", () => {
   const recorder = extractResourceBlock(readTemplate(), "ApprovalPendingRecorderFunction");
   assert.match(recorder, /approvals\/pending\/\{execution_name\}\.json/);
@@ -536,11 +580,16 @@ test("pending recorder cannot approve/callback and human writer binds the full v
   assert.match(writerRole, /states:SendTaskFailure/);
 });
 
-test("state-machine role invokes the recorder but can never invoke the out-of-band writer", () => {
+test("state-machine role invokes verifier writer and notification, but never the out-of-band manual writer", () => {
   const role = stripYamlComments(extractResourceBlock(readTemplate(), "GlassboxStateMachineRole"));
+  assert.match(role, /VerifierApprovalFunction\.Arn/);
+  assert.match(role, /sns:Publish/);
+  assert.match(role, /ApprovalNotificationTopic/);
   assert.match(role, /ApprovalPendingRecorderFunction\.Arn/);
   assert.doesNotMatch(role, /ApprovalWriterFunction\.Arn/);
   const machine = extractResourceBlock(readTemplate(), "GlassboxEngagementStateMachine");
+  assert.match(machine, /VerifierApprovalFunctionArn:\s*!GetAtt VerifierApprovalFunction\.Arn/);
+  assert.match(machine, /ApprovalNotificationTopicArn:\s*!Ref ApprovalNotificationTopic/);
   assert.match(machine, /ApprovalPendingRecorderFunctionArn:\s*!GetAtt ApprovalPendingRecorderFunction\.Arn/);
 });
 

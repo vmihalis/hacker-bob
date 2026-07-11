@@ -19,22 +19,24 @@ cheap. External owned targets must disable `EnableBuiltInDemoTarget` and set
   - EFS SG on 2049.
   - Optional Locker, Z.ai, and archive-RPC egress paths, all disabled by default.
 - Object Lock COMPLIANCE evidence bucket for grade freeze bundles.
-- Mutable human-control bucket, HMAC signing key, read-only integrity-verifier
-  Lambda, task-token pending recorder, SNS notification, and separately scoped
-  human approval writer.
+- Mutable approval-control bucket, HMAC signing key, integrity-verifier Lambda,
+  verifier-only approval writer, SNS notification, plus task-token pending
+  recorder / human approval writer for break-glass manual mode.
 - Security Hub export Lambda under a separate role. The model runtime role never gets
   `securityhub:BatchImportFindings`.
 - Standard Step Functions state machine:
-  `InvokeAgentRuntimeThroughGrade -> RunVerifierGate -> AwaitHumanApproval -> ExportToSecurityHub -> ResumeAgentRuntimeThroughReport`.
+  `InvokeAgentRuntimeThroughGrade -> RunVerifierGate -> WriteVerifierApproval -> NotifyHumanOnLoop -> ExportToSecurityHub -> ResumeAgentRuntimeThroughReport`.
 
 GRADE returns the exact S3 `VersionId` and SHA-256 of the exact bytes it wrote.
 The verifier reads that version directly (never `HEAD`/latest), confirms active
 Object Lock COMPLIANCE retention, recomputes the byte hash and canonical grade
-hash, then stops. It has no approval-bucket write, HMAC-secret read, or callback
-permission. The named-human writer signs compact UTF-8 JSON
+hash. A separate verifier-only writer signs compact UTF-8 JSON
 `[profile,target,grade_hash,body_sha256,version_id]` and stores the result at
-`approvals/<target>/<grade_hash>.approved`. Export consumes the callback-bound
-version and byte hash, not mutable session state or the latest S3 version.
+`approvals/<target>/<grade_hash>.approved`. Export consumes the verifier-approved
+version and byte hash, not mutable session state or the latest S3 version. The
+human is on the loop via SNS and Step Functions observability, with stop/reject
+authority outside the model path; the default transition is owned by verifier
+success, not by a callback token.
 
 ## Model State
 
@@ -177,7 +179,7 @@ uv run --with boto3==1.43.46 --with 'botocore[crt]==1.43.46' python \
 
 Run the same helper with `--check-only` after deploys.
 
-## Human-gated libheif demo
+## Human-on-the-loop libheif demo
 
 The hero input is intentionally only the sealed profile name. It accepts no
 operator-selected commit, harness, binary path, or expected sanitizer marker:
@@ -186,9 +188,9 @@ operator-selected commit, harness, binary path, or expected sanitizer marker:
 {"profile":"libheif-cve-2026-49271"}
 ```
 
-Start it with a memorable execution name. A run may be pre-started overnight;
-`AwaitHumanApproval` is bounded at 24 hours and consumes no AgentCore compute while
-paused.
+Start it with a memorable execution name. The default path no longer pauses on a
+task token: verifier success writes the content-bound approval artifact, publishes
+a token-free notification, and continues to Security Hub + REPORT.
 
 ```bash
 EXECUTION_NAME=hacker-bob-libheif-hero-<date-or-rehearsal-id>
@@ -204,33 +206,35 @@ The visible path is:
 
 ```text
 sealed replay -> exact WORM freeze -> automated integrity verifier
-              -> AwaitHumanApproval -> Security Hub -> deterministic REPORT
+              -> verifier approval artifact -> human-on-loop notice
+              -> Security Hub -> deterministic REPORT
 ```
 
-When the execution reaches `AwaitHumanApproval`, select the request by the
-execution name. The pending key is deterministic:
-`approvals/pending/<execution-name>.json`. The SNS notification also contains this
-key plus the safe binding summary (profile, target, grade hash, exact body SHA-256,
-and exact VersionId), but never the task token. If SNS is not subscribed, list keys
-only:
+The SNS notification contains only the safe verifier-approval summary: profile,
+target, grade hash, exact body SHA-256, exact VersionId, approval artifact key,
+and verifier quorum names. There is no task token in the default path.
 
 ```bash
 aws s3api list-objects-v2 \
   --region <region> \
   --bucket <HumanApprovalsBucketName> \
-  --prefix approvals/pending/ \
-  --query "Contents[?Key=='approvals/pending/${EXECUTION_NAME}.json'].Key" \
-  --output text
+  --prefix approvals/libheif-cve-2026-49271/ \
+  --query 'Contents[].{Key:Key,LastModified:LastModified,Size:Size}' \
+  --output table
 ```
 
-Critical demo opsec: never open the pending S3 JSON or raw
-`AwaitHumanApproval` task payload on the projector. The pending JSON contains a
-live Step Functions task token. Show only the graph node, execution name, pending
-key, and safe SNS binding summary. Evidence review happens on the approver's
-private screen against the exact version identified in that summary.
+Critical demo opsec: do not project raw freeze bodies, raw sanitizer output, or
+CloudWatch logs. Show the graph nodes, execution name, grade hash, WORM VersionId,
+Object Lock status, verifier approval artifact key, Security Hub export result,
+and final report state.
 
-The stack intentionally grants neither the runtime role nor the state-machine role
-permission to invoke `ApprovalWriterFunction`. Before the event, a human IAM
+## Break-glass manual approval mode
+
+`AwaitHumanApproval` and `ApprovalWriterFunction` remain in the stack for manual
+break-glass/recovery and for old executions that started before the verifier-on-loop
+state machine was deployed. The stack intentionally does not grant the runtime role
+permission to invoke `ApprovalWriterFunction`; the state-machine role does not need
+it on the default verifier-on-loop path. Before the event, a human IAM
 administrator must grant `lambda:InvokeFunction` on exactly
 `<ApprovalWriterFunctionArn>` to the named approver. That access decision remains a
 human gate; this template does not invent or auto-assign an approver.
@@ -261,8 +265,8 @@ aws lambda invoke \
 ```
 
 The legacy target-only input and named `smoke` profile remain available for
-plumbing rehearsals. They traverse the same verifier and human callback boundary;
-they never bypass it.
+plumbing rehearsals. They traverse the same verifier and verifier-approval
+boundary by default; they never bypass WORM verification.
 
 ## Validation
 
