@@ -781,7 +781,11 @@ test("state-machine report resolution IAM is pinned to the fallback Bedrock prof
       new RegExp(`arn:aws:bedrock:${region}::foundation-model/\\$\\{BedrockFallbackFoundationModelId\\}`),
     );
   }
-  assert.match(foundationStatement, /Condition:\s*\n\s*StringEquals:/);
+  // The InferenceProfileArn condition is gated on ResolverViaInferenceProfile so
+  // Anthropic (us.* inference-profile) keeps it and on-demand foundation models
+  // (zai.glm-5) drop it via AWS::NoValue.
+  assert.match(foundationStatement, /Condition:\s*!If\s*\n\s*-\s*ResolverViaInferenceProfile\s*\n\s*-\s*StringEquals:/);
+  assert.match(foundationStatement, /-\s*!Ref\s+AWS::NoValue/);
   assert.match(
     foundationStatement,
     /bedrock:InferenceProfileArn:\s*!Sub arn:aws:bedrock:\$\{AWS::Region\}:\$\{AWS::AccountId\}:inference-profile\/\$\{BedrockFallbackModelId\}/,

@@ -220,6 +220,19 @@ Parameters:
       as a foundation model, not via an us.-prefixed inference profile, so the
       foundation-model grant (not the inference-profile grant) authorizes the call.
 
+  ResolverUsesInferenceProfile:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Whether the report-decision resolver model is invoked through a Bedrock
+      cross-region inference profile (Anthropic us.* ids -> "true") or on-demand as
+      a bare foundation model (e.g. zai.glm-5 -> "false"). When "false", the
+      foundation-model InvokeModel grant drops the bedrock:InferenceProfileArn
+      condition, because an on-demand invoke carries no inference-profile ARN.
+
   UseBedrockFallback:
     Type: String
     AllowedValues: ["true", "false"]
@@ -306,6 +319,7 @@ Conditions:
   ZaiEgressEnabledCondition: !Equals [!Ref EnableZaiEgress, "true"]
   ArchiveRpcEgressEnabledCondition: !Equals [!Ref EnableArchiveRpcEgress, "true"]
   BedrockFallbackEnabledCondition: !Equals [!Ref UseBedrockFallback, "true"]
+  ResolverViaInferenceProfile: !Equals [!Ref ResolverUsesInferenceProfile, "true"]
   HasApprovalNotificationEmail: !Not [!Equals [!Ref ApprovalNotificationEmail, ""]]
   HasBobSiteReportIngestToken: !Not [!Equals [!Ref BobSiteReportIngestToken, ""]]
   HasBobSiteReportAccessPassword: !Not [!Equals [!Ref BobSiteReportAccessPassword, ""]]
@@ -2160,9 +2174,15 @@ Resources:
                   - !Sub arn:aws:bedrock:us-east-1::foundation-model/${BedrockFallbackFoundationModelId}
                   - !Sub arn:aws:bedrock:us-east-2::foundation-model/${BedrockFallbackFoundationModelId}
                   - !Sub arn:aws:bedrock:us-west-2::foundation-model/${BedrockFallbackFoundationModelId}
-                Condition:
-                  StringEquals:
-                    bedrock:InferenceProfileArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockFallbackModelId}
+                # Anthropic us.* ids are invoked THROUGH an inference profile, so the
+                # foundation-model grant is condition-scoped to that profile arn. An
+                # on-demand foundation model (zai.glm-5) carries no InferenceProfileArn,
+                # so ResolverUsesInferenceProfile=false drops the condition entirely.
+                Condition: !If
+                  - ResolverViaInferenceProfile
+                  - StringEquals:
+                      bedrock:InferenceProfileArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockFallbackModelId}
+                  - !Ref AWS::NoValue
               # The deterministic validator has a logs-only execution role and must
               # accept the exact Bedrock model pin before publication can proceed.
               - Sid: InvokeReportDecisionValidator
