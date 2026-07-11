@@ -104,7 +104,7 @@
     "test:package": "node --test test/package.test.js",
     "test:policy-replay": "node --test test/policy-replay.test.js",
     "test:hooks": "python3 test/test-write-guard.py && python3 test/test-read-guard.py && python3 test/test-http-write-confirm.py && python3 test/approval_gate_test.py",
-    "test:agentcore": "python3 test/agentcore_entrypoint_test.py && python3 test/publish_bob_site_report_lambda_test.py",
+    "test:agentcore": "python3 test/agentcore_entrypoint_test.py && python3 test/report_resolution_validator_test.py && python3 test/publish_bob_site_report_lambda_test.py",
     "test": "npm run check:syntax && npm run check:authority-inventory && npm run test:mcp && npm run test:bob-diff-review && npm run test:prompts && npm run test:install && npm run test:update && npm run test:cli && npm run test:adapter-detection && npm run test:package && npm run release:check:clean && npm run test:policy-replay && npm run test:hooks && npm run test:agentcore",
     "release:check": "node scripts/release-check.js",
     "release:check:dependencies": "node scripts/dependency-freshness.js",

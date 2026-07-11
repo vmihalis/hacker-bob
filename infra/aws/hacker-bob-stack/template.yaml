@@ -195,6 +195,8 @@ Parameters:
   BedrockFallbackModelId:
     Type: String
     Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    AllowedValues:
+      - us.anthropic.claude-haiku-4-5-20251001-v1:0
     Description: >
       Known-working Bedrock fallback profile for low-cost demo rehearsals while
       newest-model account enablement is pending. This remains AI/ML on AWS and
@@ -203,6 +205,8 @@ Parameters:
   BedrockFallbackFoundationModelId:
     Type: String
     Default: anthropic.claude-haiku-4-5-20251001-v1:0
+    AllowedValues:
+      - anthropic.claude-haiku-4-5-20251001-v1:0
     Description: Base foundation-model id backing BedrockFallbackModelId.
 
   UseBedrockFallback:
@@ -1402,6 +1406,14 @@ Resources:
         SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
         ALLOWED_PROFILES = {"smoke", "libheif-cve-2026-49271"}
         BINDING_VERSION = "grade-freeze-v2"
+        EXPECTED_VERIFIER_CHECKS = [
+            "target_binding",
+            "exact_s3_version",
+            "object_lock_compliance",
+            "body_sha256",
+            "embedded_grade_hash",
+            "canonical_grade_hash",
+        ]
 
         def _require_hash(value, field):
             if not isinstance(value, str) or not HASH_RE.fullmatch(value):
@@ -1466,8 +1478,8 @@ Resources:
             if verified.get("object_lock_mode") != "COMPLIANCE":
                 raise RuntimeError("automated verifier did not prove COMPLIANCE object lock")
             quorum = verified.get("verifier_quorum")
-            if not isinstance(quorum, list) or len(quorum) < 6:
-                raise RuntimeError("automated verifier quorum is incomplete")
+            if quorum != EXPECTED_VERIFIER_CHECKS:
+                raise RuntimeError("automated verifier did not return the canonical integrity checks")
 
             binding = [
                 profile,
@@ -2031,6 +2043,45 @@ Resources:
           INGEST_TOKEN_SECRET_ID: !Ref BobSiteReportIngestTokenSecret
           REPORT_PASSWORD_SECRET_ID: !Ref BobSiteReportAccessPasswordSecret
           REPORT_RECIPIENT: !Ref BobSiteReportRecipient
+          REPORT_DECISION_MODEL_ID: !Ref BedrockFallbackModelId
+
+  ReportDecisionValidatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: glassbox-report-decision-validator-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: glassbox-report-decision-validator-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReportDecisionValidatorLogging
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/glassbox-validate-report-resolution*
+
+  ReportDecisionValidatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: glassbox-validate-report-resolution
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      MemorySize: 128
+      Role: !GetAtt ReportDecisionValidatorRole.Arn
+      CodeUri: functions/validate-report-resolution
+      Environment:
+        Variables:
+          REPORT_DECISION_MODEL_ID: !Ref BedrockFallbackModelId
 
   GlassboxStateMachineRole:
     Type: AWS::IAM::Role
@@ -2084,6 +2135,29 @@ Resources:
                 Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt ExportSecurityHubFunction.Arn
+              # ResolveImpactWithBedrock delegates only the closed stakeholder/action
+              # ordering. Converse authorizes through bedrock:InvokeModel and is pinned
+              # to the known-live fallback profile plus its possible US backing regions.
+              - Sid: InvokeReportDecisionInferenceProfile
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockFallbackModelId}
+              - Sid: InvokeReportDecisionFoundationModels
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:aws:bedrock:us-east-1::foundation-model/${BedrockFallbackFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-east-2::foundation-model/${BedrockFallbackFoundationModelId}
+                  - !Sub arn:aws:bedrock:us-west-2::foundation-model/${BedrockFallbackFoundationModelId}
+                Condition:
+                  StringEquals:
+                    bedrock:InferenceProfileArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockFallbackModelId}
+              # The deterministic validator has a logs-only execution role and must
+              # accept the exact Bedrock model pin before publication can proceed.
+              - Sid: InvokeReportDecisionValidator
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ReportDecisionValidatorFunction.Arn
               # Publishes the post-REPORT shaped model to Bob-site's existing
               # sealed-report ingest. This role only invokes the publisher; the
               # Bob-site ingest token/password remain scoped to the publisher role.
@@ -2103,6 +2177,8 @@ Resources:
         VerifierApprovalFunctionArn: !GetAtt VerifierApprovalFunction.Arn
         ApprovalNotificationTopicArn: !Ref ApprovalNotificationTopic
         ExportSecurityHubFunctionArn: !GetAtt ExportSecurityHubFunction.Arn
+        ReportDecisionModelId: !Ref BedrockFallbackModelId
+        ReportDecisionValidatorFunctionArn: !GetAtt ReportDecisionValidatorFunction.Arn
         PublishBobSiteReportFunctionArn: !GetAtt PublishBobSiteReportFunction.Arn
       Role: !GetAtt GlassboxStateMachineRole.Arn
       Type: STANDARD

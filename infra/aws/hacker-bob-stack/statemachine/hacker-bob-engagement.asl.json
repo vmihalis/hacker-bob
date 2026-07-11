@@ -293,6 +293,171 @@
         "exportResult.$": "$.exportResult",
         "reportResult.$": "States.StringToJson($.reportInvoke.Response)"
       },
+      "Next": "SelectReportResolutionProfile"
+    },
+    "SelectReportResolutionProfile": {
+      "Type": "Choice",
+      "Comment": "Only the pinned libheif replay receives a model-resolved stakeholder/action ordering. The legacy smoke remains a plumbing check and bypasses this decision path explicitly.",
+      "Choices": [
+        {
+          "Variable": "$.profile",
+          "StringEquals": "libheif-cve-2026-49271",
+          "Next": "BuildLibheifResolutionInput"
+        }
+      ],
+      "Default": "BypassReportResolution"
+    },
+    "BuildLibheifResolutionInput": {
+      "Type": "Pass",
+      "Comment": "Builds a closed, report-only feature registry. No finding prose, severity, exploit claim, or remediation text is delegated to the model.",
+      "Parameters": {
+        "featureRegistry": "libheif-impact-v1",
+        "featureHash": "ecb43ae1205d57aa76dd6c17e046530eb2e892e67a90c93818cc840ccf83da66",
+        "features": {
+          "target_kind": "oss_library",
+          "impact_axis": "availability",
+          "fix_state": "upstream_fixed",
+          "distribution_scope": "downstream_consumers",
+          "reachability": "crafted_file_with_user_interaction",
+          "evidence_confidence": "high_bounded"
+        }
+      },
+      "ResultPath": "$.reportResolutionInput",
+      "Next": "ResolveImpactWithBedrock"
+    },
+    "ResolveImpactWithBedrock": {
+      "Type": "Task",
+      "Comment": "Bedrock may select one reader and order three fixed action ids. Forced tool use plus the downstream deterministic validator prevents it from authoring or changing report facts.",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockruntime:converse",
+      "Parameters": {
+        "ModelId": "${ReportDecisionModelId}",
+        "Messages": [
+          {
+            "Role": "user",
+            "Content": [
+              {
+                "Text": "Resolve this verified OSS availability report for the stakeholder who should act first. The closed feature vector is: target_kind=oss_library; impact_axis=availability; fix_state=upstream_fixed; distribution_scope=downstream_consumers; reachability=crafted_file_with_user_interaction; evidence_confidence=high_bounded. Call select_report_framing exactly once and return no prose. Compatibility: release_manager starts with upgrade_or_backport; product_security_owner starts with map_downstream_exposure; downstream_maintainer starts with either of those."
+              }
+            ]
+          }
+        ],
+        "InferenceConfig": {
+          "MaxTokens": 256,
+          "Temperature": 0
+        },
+        "ToolConfig": {
+          "Tools": [
+            {
+              "ToolSpec": {
+                "Name": "select_report_framing",
+                "Description": "Select the primary report reader and prioritize the complete fixed action registry without changing any verified security fact.",
+                "InputSchema": {
+                  "Json": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "schema_version",
+                      "primary_reader",
+                      "action_order"
+                    ],
+                    "properties": {
+                      "schema_version": {
+                        "type": "integer",
+                        "enum": [
+                          1
+                        ]
+                      },
+                      "primary_reader": {
+                        "type": "string",
+                        "enum": [
+                          "downstream_maintainer",
+                          "release_manager",
+                          "product_security_owner"
+                        ]
+                      },
+                      "action_order": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "upgrade_or_backport",
+                            "map_downstream_exposure",
+                            "retain_regression_coverage"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "ToolChoice": {
+            "Tool": {
+              "Name": "select_report_framing"
+            }
+          }
+        }
+      },
+      "TimeoutSeconds": 15,
+      "ResultSelector": {
+        "StopReason.$": "$.StopReason",
+        "Output": {
+          "Message": {
+            "Content.$": "$.Output.Message.Content"
+          }
+        }
+      },
+      "ResultPath": "$.reportResolutionModel",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "BedrockRuntime.ThrottlingException",
+            "BedrockRuntime.ServiceUnavailableException",
+            "BedrockRuntime.InternalServerException",
+            "BedrockRuntime.ModelNotReadyException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "ValidateImpactResolution"
+    },
+    "ValidateImpactResolution": {
+      "Type": "Task",
+      "Comment": "Fail-closed deterministic boundary: validates the forced tool envelope, approved evidence binding, closed features, reader, and exact action permutation before publication.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ReportDecisionValidatorFunctionArn}",
+        "Payload": {
+          "profile.$": "$.profile",
+          "target.$": "$.target",
+          "gradeResult.$": "$.gradeResult",
+          "approval.$": "$.approval",
+          "reportResult.$": "$.reportResult",
+          "features.$": "$.reportResolutionInput.features",
+          "modelId": "${ReportDecisionModelId}",
+          "modelResult.$": "$.reportResolutionModel"
+        }
+      },
+      "ResultPath": "$.reportResolutionValidation",
+      "Next": "PublishBobSiteReport"
+    },
+    "BypassReportResolution": {
+      "Type": "Pass",
+      "Comment": "The owned-target smoke is not an AI report demo and is explicitly marked not applicable rather than receiving fabricated model output.",
+      "Result": {
+        "Payload": {
+          "status": "not_applicable",
+          "resolution_type": "not_applicable"
+        }
+      },
+      "ResultPath": "$.reportResolutionValidation",
       "Next": "PublishBobSiteReport"
     },
     "PublishBobSiteReport": {
@@ -311,7 +476,8 @@
           "gradeResult.$": "$.gradeResult",
           "approval.$": "$.approval",
           "exportResult.$": "$.exportResult",
-          "reportResult.$": "$.reportResult"
+          "reportResult.$": "$.reportResult",
+          "resolution.$": "$.reportResolutionValidation.Payload"
         }
       },
       "ResultPath": "$.bobSiteReport",

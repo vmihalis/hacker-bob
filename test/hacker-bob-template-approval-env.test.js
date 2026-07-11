@@ -66,6 +66,8 @@ test("template preserves the deployed Glassbox identities for an in-place demo-s
     ["BobSiteReportAccessPasswordSecret", /Name:\s*glassbox\/bob-site\/report-password/],
     ["PublishBobSiteReportRole", /RoleName:\s*glassbox-publish-bob-site-report-role/],
     ["PublishBobSiteReportFunction", /FunctionName:\s*glassbox-publish-bob-site-report/],
+    ["ReportDecisionValidatorRole", /RoleName:\s*glassbox-report-decision-validator-role/],
+    ["ReportDecisionValidatorFunction", /FunctionName:\s*glassbox-validate-report-resolution/],
     ["AsffBuilderLayer", /LayerName:\s*glassbox-asff-builder/],
     ["HomeAccessPoint", /Path:\s*\/home\/glassbox/],
   ];
@@ -287,6 +289,7 @@ test("only verifier/human approval writers can PutObject final .approved artifac
     "VerifierApprovalRole",
     "ApprovalPendingRecorderRole",
     "ApprovalWriterRole",
+    "ReportDecisionValidatorRole",
     "GlassboxStateMachineRole",
   ];
   const principalsWithPutOnApprovals = [];
@@ -394,7 +397,13 @@ test("state machine preserves smoke and routes only the named immutable libheif 
   );
   assert.equal(asl.States.DecodeGradeResult.Parameters["gradeResult.$"], "States.StringToJson($.gradeInvoke.Response)");
   assert.equal(asl.States.DecodeReportResult.Parameters["reportResult.$"], "States.StringToJson($.reportInvoke.Response)");
-  assert.equal(asl.States.DecodeReportResult.Next, "PublishBobSiteReport");
+  assert.equal(asl.States.DecodeReportResult.Next, "SelectReportResolutionProfile");
+  assert.equal(asl.States.SelectReportResolutionProfile.Default, "BypassReportResolution");
+  assert.equal(asl.States.BypassReportResolution.Next, "PublishBobSiteReport");
+  assert.equal(
+    asl.States.BypassReportResolution.Result.Payload.status,
+    "not_applicable",
+  );
   const publish = asl.States.PublishBobSiteReport;
   assert.equal(publish.Resource, "arn:aws:states:::lambda:invoke");
   assert.equal(publish.Parameters.FunctionName, "${PublishBobSiteReportFunctionArn}");
@@ -402,6 +411,10 @@ test("state machine preserves smoke and routes only the named immutable libheif 
   assert.equal(publish.Parameters.Payload["runtimeSessionId.$"], "$.runtimeSessionId");
   assert.equal(publish.Parameters.Payload["executionName.$"], "$$.Execution.Name");
   assert.equal(publish.Parameters.Payload["reportResult.$"], "$.reportResult");
+  assert.equal(
+    publish.Parameters.Payload["resolution.$"],
+    "$.reportResolutionValidation.Payload",
+  );
   assert.equal(publish.ResultPath, "$.bobSiteReport");
   assert.equal(publish.End, true);
 });
@@ -413,13 +426,134 @@ test("GlassboxStateMachineRole may invoke the AgentCore default runtime endpoint
   assert.match(role, /\$\{RuntimeArn\}\/runtime-endpoint\/DEFAULT/);
 });
 
+test("libheif REPORT uses one closed Bedrock tool decision and an exact fail-closed validator payload", () => {
+  const aslPath = path.join(
+    __dirname, "..", "infra", "aws", "hacker-bob-stack", "statemachine", "hacker-bob-engagement.asl.json",
+  );
+  const asl = JSON.parse(fs.readFileSync(aslPath, "utf8"));
+
+  const route = asl.States.SelectReportResolutionProfile;
+  assert.equal(route.Type, "Choice");
+  assert.deepEqual(route.Choices, [{
+    Variable: "$.profile",
+    StringEquals: "libheif-cve-2026-49271",
+    Next: "BuildLibheifResolutionInput",
+  }]);
+  assert.equal(route.Default, "BypassReportResolution");
+
+  const build = asl.States.BuildLibheifResolutionInput;
+  assert.equal(build.ResultPath, "$.reportResolutionInput");
+  assert.equal(build.Parameters.featureRegistry, "libheif-impact-v1");
+  assert.equal(
+    build.Parameters.featureHash,
+    "ecb43ae1205d57aa76dd6c17e046530eb2e892e67a90c93818cc840ccf83da66",
+  );
+  assert.deepEqual(build.Parameters.features, {
+    target_kind: "oss_library",
+    impact_axis: "availability",
+    fix_state: "upstream_fixed",
+    distribution_scope: "downstream_consumers",
+    reachability: "crafted_file_with_user_interaction",
+    evidence_confidence: "high_bounded",
+  });
+
+  const resolve = asl.States.ResolveImpactWithBedrock;
+  assert.equal(resolve.Resource, "arn:aws:states:::aws-sdk:bedrockruntime:converse");
+  assert.equal(resolve.Parameters.ModelId, "${ReportDecisionModelId}");
+  assert.deepEqual(resolve.Parameters.InferenceConfig, { MaxTokens: 256, Temperature: 0 });
+  assert.equal(resolve.Parameters.Messages.length, 1);
+  assert.equal(resolve.Parameters.Messages[0].Role, "user");
+  assert.equal(resolve.Parameters.Messages[0].Content.length, 1);
+  assert.equal(typeof resolve.Parameters.Messages[0].Content[0].Text, "string");
+
+  const toolConfig = resolve.Parameters.ToolConfig;
+  assert.deepEqual(toolConfig.ToolChoice, {
+    Tool: { Name: "select_report_framing" },
+  });
+  assert.equal(toolConfig.Tools.length, 1);
+  const tool = toolConfig.Tools[0].ToolSpec;
+  assert.equal(tool.Name, "select_report_framing");
+  const schema = tool.InputSchema.Json;
+  assert.equal(schema.type, "object");
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "schema_version", "primary_reader", "action_order",
+  ]);
+  assert.deepEqual(Object.keys(schema.properties), [
+    "schema_version", "primary_reader", "action_order",
+  ]);
+  assert.equal(Object.prototype.hasOwnProperty.call(schema.properties, "binding"), false);
+  assert.deepEqual(schema.properties.primary_reader.enum, [
+    "downstream_maintainer", "release_manager", "product_security_owner",
+  ]);
+  assert.deepEqual(schema.properties.action_order.items.enum, [
+    "upgrade_or_backport", "map_downstream_exposure", "retain_regression_coverage",
+  ]);
+  assert.equal(schema.properties.action_order.minItems, 3);
+  assert.equal(schema.properties.action_order.maxItems, 3);
+  assert.equal(schema.properties.action_order.uniqueItems, true);
+
+  // AWS SDK integrations use PascalCase service shapes. ResultSelector strips
+  // usage/metrics and deliberately forwards only the validator's expected tool envelope.
+  assert.deepEqual(resolve.ResultSelector, {
+    "StopReason.$": "$.StopReason",
+    Output: {
+      Message: {
+        "Content.$": "$.Output.Message.Content",
+      },
+    },
+  });
+  assert.equal(resolve.ResultPath, "$.reportResolutionModel");
+  assert.equal(resolve.TimeoutSeconds, 15);
+  assert.equal(Object.prototype.hasOwnProperty.call(resolve, "Catch"), false);
+  assert.deepEqual(resolve.Retry, [{
+    ErrorEquals: [
+      "States.Timeout",
+      "BedrockRuntime.ThrottlingException",
+      "BedrockRuntime.ServiceUnavailableException",
+      "BedrockRuntime.InternalServerException",
+      "BedrockRuntime.ModelNotReadyException",
+    ],
+    IntervalSeconds: 2,
+    MaxAttempts: 1,
+    BackoffRate: 2,
+  }]);
+
+  const validate = asl.States.ValidateImpactResolution;
+  assert.equal(validate.Resource, "arn:aws:states:::lambda:invoke");
+  assert.equal(validate.Parameters.FunctionName, "${ReportDecisionValidatorFunctionArn}");
+  assert.deepEqual(validate.Parameters.Payload, {
+    "profile.$": "$.profile",
+    "target.$": "$.target",
+    "gradeResult.$": "$.gradeResult",
+    "approval.$": "$.approval",
+    "reportResult.$": "$.reportResult",
+    "features.$": "$.reportResolutionInput.features",
+    modelId: "${ReportDecisionModelId}",
+    "modelResult.$": "$.reportResolutionModel",
+  });
+  assert.equal(validate.ResultPath, "$.reportResolutionValidation");
+  assert.equal(Object.prototype.hasOwnProperty.call(validate, "Catch"), false);
+
+  const publish = asl.States.PublishBobSiteReport;
+  assert.equal(
+    publish.Parameters.Payload["resolution.$"],
+    "$.reportResolutionValidation.Payload",
+  );
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(publish.Parameters.Payload, "reportResolutionModel.$"),
+    false,
+    "raw Bedrock output must never reach the publisher",
+  );
+});
+
 // ---------------------------------------------------------------------------------------
 // ARCHITECTURAL FIX: the downstream ExportSecurityHubFunction Lambda is
 // invoked ONLY after verifier approval, and the model's own execution role must
 // structurally lose securityhub:BatchImportFindings entirely.
 // ---------------------------------------------------------------------------------------
 
-test("state machine orders verifier -> verifier approval -> human-on-loop notice -> exact-version export -> REPORT -> Bob-site publish", () => {
+test("state machine orders verifier -> verifier approval -> human-on-loop notice -> exact-version export -> REPORT -> resolution -> Bob-site publish", () => {
   const aslPath = path.join(
     __dirname, "..", "infra", "aws", "hacker-bob-stack", "statemachine", "hacker-bob-engagement.asl.json",
   );
@@ -442,7 +576,15 @@ test("state machine orders verifier -> verifier approval -> human-on-loop notice
   assert.equal(asl.States.BuildSmokeReportPayload.Next, "ResumeAgentRuntimeThroughReport");
   assert.equal(asl.States.BuildLibheifReportPayload.Next, "ResumeAgentRuntimeThroughReport");
   assert.equal(asl.States.ResumeAgentRuntimeThroughReport.Next, "DecodeReportResult");
-  assert.equal(asl.States.DecodeReportResult.Next, "PublishBobSiteReport");
+  assert.equal(asl.States.DecodeReportResult.Next, "SelectReportResolutionProfile");
+  assert.equal(
+    asl.States.SelectReportResolutionProfile.Choices[0].Next,
+    "BuildLibheifResolutionInput",
+  );
+  assert.equal(asl.States.BuildLibheifResolutionInput.Next, "ResolveImpactWithBedrock");
+  assert.equal(asl.States.ResolveImpactWithBedrock.Next, "ValidateImpactResolution");
+  assert.equal(asl.States.ValidateImpactResolution.Next, "PublishBobSiteReport");
+  assert.equal(asl.States.BypassReportResolution.Next, "PublishBobSiteReport");
   assert.equal(asl.States.PublishBobSiteReport.Parameters.FunctionName, "${PublishBobSiteReportFunctionArn}");
   assert.equal(asl.States.PublishBobSiteReport.End, true);
 });
@@ -481,6 +623,7 @@ test("ExportSecurityHubRole is the only principal in template.yaml granted secur
     "VerifierApprovalRole",
     "ApprovalPendingRecorderRole",
     "ApprovalWriterRole",
+    "ReportDecisionValidatorRole",
     "GlassboxStateMachineRole",
     "ExportSecurityHubRole",
   ];
@@ -549,6 +692,8 @@ test("verifier approval writer signs the full v2 freeze tuple without Step Funct
   assert.match(writer, /expected\["grade_freeze_version_id"\]/);
   assert.match(writer, /"approval_mode": "verifier_quorum"/);
   assert.match(writer, /"approved_by": "automated_verifier_gate"/);
+  assert.match(writer, /EXPECTED_VERIFIER_CHECKS = \[/);
+  assert.match(writer, /quorum != EXPECTED_VERIFIER_CHECKS/);
   assert.match(writer, /approvals\/\{target\}\/\{expected\['grade_verdict_hash'\]\}\.approved/);
   assert.match(writer, /s3\.put_object\(/);
   assert.doesNotMatch(writer, /send_task_success|send_task_failure|taskToken|pendingRecordKey/);
@@ -614,6 +759,87 @@ test("GlassboxStateMachineRole may invoke PublishBobSiteReportFunction", () => {
   assert.match(machine, /PublishBobSiteReportFunctionArn:\s*!GetAtt PublishBobSiteReportFunction\.Arn/);
 });
 
+test("state-machine report resolution IAM is pinned to the fallback Bedrock profile and validator only", () => {
+  const role = stripYamlComments(extractResourceBlock(readTemplate(), "GlassboxStateMachineRole"));
+  const profileStatements = statementsReferencing(role, "InvokeReportDecisionInferenceProfile");
+  assert.equal(profileStatements.length, 1, "expected one report-decision profile statement");
+  const profileStatement = profileStatements[0];
+  assert.match(profileStatement, /bedrock:InvokeModel/);
+  assert.match(
+    profileStatement,
+    /Resource:\s*!Sub arn:aws:bedrock:\$\{AWS::Region\}:\$\{AWS::AccountId\}:inference-profile\/\$\{BedrockFallbackModelId\}/,
+  );
+  assert.doesNotMatch(profileStatement, /foundation-model|Condition:|Resource:\s*["']?\*["']?/);
+
+  const foundationStatements = statementsReferencing(role, "InvokeReportDecisionFoundationModels");
+  assert.equal(foundationStatements.length, 1, "expected one report-decision foundation statement");
+  const foundationStatement = foundationStatements[0];
+  assert.match(foundationStatement, /bedrock:InvokeModel/);
+  for (const region of ["us-east-1", "us-east-2", "us-west-2"]) {
+    assert.match(
+      foundationStatement,
+      new RegExp(`arn:aws:bedrock:${region}::foundation-model/\\$\\{BedrockFallbackFoundationModelId\\}`),
+    );
+  }
+  assert.match(foundationStatement, /Condition:\s*\n\s*StringEquals:/);
+  assert.match(
+    foundationStatement,
+    /bedrock:InferenceProfileArn:\s*!Sub arn:aws:bedrock:\$\{AWS::Region\}:\$\{AWS::AccountId\}:inference-profile\/\$\{BedrockFallbackModelId\}/,
+  );
+  assert.doesNotMatch(
+    foundationStatement,
+    /BedrockOpus|BedrockSonnet|Resource:\s*["']?\*["']?/,
+  );
+  assert.match(role, /Resource:\s*!GetAtt ReportDecisionValidatorFunction\.Arn/);
+
+  const machine = extractResourceBlock(readTemplate(), "GlassboxEngagementStateMachine");
+  assert.match(machine, /ReportDecisionModelId:\s*!Ref BedrockFallbackModelId/);
+  assert.match(
+    machine,
+    /ReportDecisionValidatorFunctionArn:\s*!GetAtt ReportDecisionValidatorFunction\.Arn/,
+  );
+});
+
+test("report-decision model parameters allow only the known-live Haiku ids", () => {
+  const text = readTemplate();
+  for (const [parameter, expected] of [
+    ["BedrockFallbackModelId", "us.anthropic.claude-haiku-4-5-20251001-v1:0"],
+    ["BedrockFallbackFoundationModelId", "anthropic.claude-haiku-4-5-20251001-v1:0"],
+  ]) {
+    const match = text.match(new RegExp(`\\n {2}${parameter}:\\n([\\s\\S]*?)(?=\\n {2}\\S)`));
+    assert.ok(match, `${parameter} parameter block not found`);
+    const block = match[1];
+    assert.ok(block.includes(`Default: ${expected}`), `${parameter} default must be pinned`);
+    const allowed = block.match(/AllowedValues:\s*\n((?:\s+- .+\n)+)/);
+    assert.ok(allowed, `${parameter} must declare AllowedValues`);
+    assert.deepEqual(
+      allowed[1].trim().split("\n").map((line) => line.replace(/^\s*-\s*/, "")),
+      [expected],
+    );
+    assert.doesNotMatch(block, /\*/);
+  }
+});
+
+test("report decision validator is model-pinned and its execution role is logs-only", () => {
+  const fn = extractResourceBlock(readTemplate(), "ReportDecisionValidatorFunction");
+  assert.match(fn, /FunctionName:\s*glassbox-validate-report-resolution/);
+  assert.match(fn, /Runtime:\s*python3\.12/);
+  assert.match(fn, /Handler:\s*index\.handler/);
+  assert.match(fn, /CodeUri:\s*functions\/validate-report-resolution/);
+  assert.match(fn, /Role:\s*!GetAtt ReportDecisionValidatorRole\.Arn/);
+  assert.match(fn, /REPORT_DECISION_MODEL_ID:\s*!Ref BedrockFallbackModelId/);
+
+  const role = stripYamlComments(extractResourceBlock(readTemplate(), "ReportDecisionValidatorRole"));
+  assert.match(role, /logs:CreateLogGroup/);
+  assert.match(role, /logs:CreateLogStream/);
+  assert.match(role, /logs:PutLogEvents/);
+  assert.match(role, /log-group:\/aws\/lambda\/glassbox-validate-report-resolution\*/);
+  assert.doesNotMatch(
+    role,
+    /bedrock:|s3:|secretsmanager:|securityhub:|states:|sns:|lambda:InvokeFunction|Resource:\s*["']?\*["']?/,
+  );
+});
+
 test("PublishBobSiteReportFunction is Python, post-REPORT only, and receives only Bob-site publish config", () => {
   const fn = extractResourceBlock(readTemplate(), "PublishBobSiteReportFunction");
   assert.match(fn, /Runtime:\s*python3\.12/);
@@ -624,6 +850,7 @@ test("PublishBobSiteReportFunction is Python, post-REPORT only, and receives onl
   assert.match(fn, /INGEST_TOKEN_SECRET_ID:\s*!Ref BobSiteReportIngestTokenSecret/);
   assert.match(fn, /REPORT_PASSWORD_SECRET_ID:\s*!Ref BobSiteReportAccessPasswordSecret/);
   assert.match(fn, /REPORT_RECIPIENT:\s*!Ref BobSiteReportRecipient/);
+  assert.match(fn, /REPORT_DECISION_MODEL_ID:\s*!Ref BedrockFallbackModelId/);
   assert.doesNotMatch(fn, /GRADE_FREEZE_BUCKET|BOB_APPROVAL_BUCKET|SECURITY_HUB_PRODUCT_ARN/);
 });
 
