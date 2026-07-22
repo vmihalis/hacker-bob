@@ -122,6 +122,7 @@ module.exports = Object.freeze({
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
+  required_session_axes: ["repo"],
   session_artifacts_written: [
     "repo-command-runs.jsonl",
     "repo-runs/",

@@ -28,9 +28,13 @@ function renderCapabilityPackVerifierTable() {
     const disambig = v.disambiguation && v.disambiguation.tool
       ? `\`${v.disambiguation.tool}\``
       : "—";
-    rows.push(`| \`${pack.id}\` | \`${replay}\` | \`${sample}\` | ${fresh} | ${blockRef} | ${disambig} |`);
+    const dispatchState = pack.dispatchable === false ? "staged / non-dispatchable" : "dispatchable";
+    rows.push(`| \`${pack.id}\` | \`${replay}\` | \`${sample}\` | ${fresh} | ${blockRef} | ${disambig} | ${dispatchState} |`);
     if (v.disambiguation && v.disambiguation.tool && v.disambiguation.fail_reason) {
       failReasonNotes.push(`- \`${pack.id}\` disambiguation deny reason: ${v.disambiguation.fail_reason}`);
+    }
+    if (pack.dispatchable === false) {
+      failReasonNotes.push(`- \`${pack.id}\` is staged and must not be dispatched: ${pack.dispatch_block_reason}`);
     }
   }
   return [
@@ -38,8 +42,8 @@ function renderCapabilityPackVerifierTable() {
     "",
     "Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.",
     "",
-    "| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |",
-    "|---|---|---|---|---|---|",
+    "| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read | dispatch state |",
+    "|---|---|---|---|---|---|---|",
     ...rows,
     "",
     "Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):",

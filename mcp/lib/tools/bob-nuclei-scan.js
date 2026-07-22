@@ -56,5 +56,6 @@ module.exports = Object.freeze({
   // DETECTION-only: never signs an offensive-runs row. The runner's reservation records a
   // CONTAINER_RUN row in http-audit.jsonl (nuclei egress IS target traffic, unlike the OOB
   // sink) so the circuit breaker accounts for it.
-  session_artifacts_written: ["http-audit.jsonl"],
+ session_artifacts_written: ["http-audit.jsonl"],
+  required_session_axes: ["url"],
 });

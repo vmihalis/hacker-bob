@@ -24,6 +24,9 @@ const {
   normalizeAuthorityTelemetry,
   validateSessionAuthorityState,
 } = require("./session-authority.js");
+const {
+  redactPhysicalSensitiveValues,
+} = require("./physical-sensitive-material.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
 const TOOL_INVOCATION_TELEMETRY_VERSION = 1;
@@ -97,7 +100,9 @@ function safeTelemetryLabel(value, maxChars = SAFE_LABEL_MAX_CHARS) {
   const text = capString(value, maxChars);
   if (!text) return null;
   if (/[:/?#@\\]/.test(text)) return null;
-  const redacted = redactSensitiveFragments(redactUrlsInText(text));
+  const redacted = redactPhysicalSensitiveValues(
+    redactSensitiveFragments(redactUrlsInText(text)),
+  );
   if (redacted !== text) return null;
   if (SENSITIVE_MESSAGE_RE.test(text)) return null;
   return text;
@@ -223,6 +228,7 @@ function registryMetadata(tool) {
     session_artifacts_written: Array.isArray(tool.session_artifacts_written)
       ? tool.session_artifacts_written.slice()
       : [],
+    effect_surface: Array.isArray(tool.effect_surface) ? tool.effect_surface.slice() : [],
   };
 }
 
@@ -326,12 +332,12 @@ function redactSessionPaths(text) {
 }
 
 function redactSensitiveFragments(text) {
-  return text
+  return redactPhysicalSensitiveValues(text
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 REDACTED")
     .replace(
       /\b(authorization|cookie|set-cookie|password|passwd|secret|token|session|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|handoff[_-]?token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
       "$1=REDACTED",
-    );
+    ));
 }
 
 function safeErrorMessage(message, { errorCode = null, registry = null } = {}) {

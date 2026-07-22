@@ -48,7 +48,14 @@ const {
 } = require("../storage.js");
 const { deriveCvss31 } = require("../cvss31.js");
 const { SEVERITY_VALUES } = require("../constants.js");
+const { hashCanonicalJson } = require("../verification-contracts.js");
 const { findingPayloadsFromClaims, degradedReportableFindingIds } = require("./record-candidate-claim.js");
+const {
+  buildCapabilityPackGradeBindings,
+} = require("../capability-pack-grade-adapters.js");
+const {
+  buildCapabilityPackReportSections,
+} = require("../capability-pack-report-adapters.js");
 
 const SECTION_KINDS = Object.freeze([
   "impact",
@@ -257,11 +264,34 @@ function validateChainAttemptRef(domain, id) {
 
 function validateEvidencePackRef(domain, id) {
   const paths = evidencePackPaths(domain);
-  if (!fs.existsSync(paths.json)) return false;
+  const finalPaths = verificationRoundPaths(domain, "final");
+  if (!fs.existsSync(paths.json) || !fs.existsSync(finalPaths.json)) return false;
   try {
-    const doc = JSON.parse(fs.readFileSync(paths.json, "utf8"));
-    const packs = Array.isArray(doc && doc.packs) ? doc.packs : [];
-    return packs.some((pack) => pack && pack.finding_id === id);
+    const document = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+    const finalRound = JSON.parse(fs.readFileSync(finalPaths.json, "utf8"));
+    const bindingFields = [
+      "verification_attempt_id",
+      "verification_snapshot_hash",
+      "final_verification_hash",
+    ];
+    const hasBinding = bindingFields.some((field) => document[field] != null);
+    let verificationBinding = null;
+    if (hasBinding) {
+      if (!bindingFields.every((field) => (
+        typeof document[field] === "string" && document[field].trim()
+        && document[field] === finalRound[field]
+      ))) return false;
+      verificationBinding = Object.fromEntries(
+        bindingFields.map((field) => [field, finalRound[field]]),
+      );
+    }
+    const normalized = require("../evidence.js").normalizeEvidencePacksDocument(document, {
+      expectedDomain: domain,
+      ...findingSetsFromFinalRound(finalRound),
+      verificationBinding,
+    });
+    return hashCanonicalJson(document) === hashCanonicalJson(normalized)
+      && normalized.packs.some((pack) => pack && pack.finding_id === id);
   } catch {
     return false;
   }
@@ -366,11 +396,38 @@ function assertComposedVerifiedSectionsAreExecuted(domain, sections) {
   }
   if (reportableFindingIds.size === 0) return;
 
+  // Pack-owned findings carry their own executed-evidence contract.  Resolve
+  // that contract before invoking the legacy web/native flip gates; a declared
+  // adapter that cannot prove its production binding fails here and may never
+  // fall through to an easier endpoint/PoC proof path.
+  let packProjection;
+  try {
+    packProjection = buildCapabilityPackGradeBindings(domain, [...reportableFindingIds].sort());
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `Refusing to render report.md: capability-pack grade binding failed closed: ${error.message || String(error)}`,
+      { code: "compose_report_capability_pack_grade_binding_failed" },
+      {
+        remediation:
+          "Complete the capability pack's production verification and closure contract, then write a fresh grade verdict before composing report.md.",
+      },
+    );
+  }
+  const legacyReportableFindingIds = new Set(packProjection.legacy_finding_ids);
+  if (legacyReportableFindingIds.size === 0) return;
+  const legacyFinalSeverities = new Map(
+    [...finalSeverities].filter(([findingId]) => legacyReportableFindingIds.has(findingId)),
+  );
+
   const {
     findingDifferentialGapForStandaloneReportableFindings,
     reproVerifiedGapForNativeReportableFindings,
   } = require("../claims.js");
-  const args = { reportableFindingIds, finalSeverities };
+  const args = {
+    reportableFindingIds: legacyReportableFindingIds,
+    finalSeverities: legacyFinalSeverities,
+  };
   const gaps = [
     ...findingDifferentialGapForStandaloneReportableFindings(domain, args).missing,
     ...reproVerifiedGapForNativeReportableFindings(domain, args).missing,
@@ -386,6 +443,87 @@ function assertComposedVerifiedSectionsAreExecuted(domain, sections) {
         "Run bob_verify_finding_differential (binding the executed positive run and its blocked control for the finding's surface) / bob_verify_repro_reproduction for native findings, or lower the finding below medium / drop it from the reportable set, before composing report.md.",
     },
   );
+}
+
+function finalReportableFindingIds(domain) {
+  return new Set(
+    [...readFinalVerificationByFinding(domain)]
+      .filter(([, entry]) => entry && entry.reportable === true)
+      .map(([findingId]) => findingId),
+  );
+}
+
+function packSectionFindingIds(domain, section) {
+  const findingIds = new Set();
+  for (const ref of section.evidence_refs || []) {
+    const classified = classifyEvidenceRef(ref);
+    if (!classified || classified.prefix !== "verification_round:") continue;
+    for (const findingId of verificationRoundRefFindingIds(domain, classified.id)) {
+      findingIds.add(findingId);
+    }
+  }
+  return findingIds;
+}
+
+function assertCallerDoesNotRenderPackFindings(domain, sections, handledFindingIds) {
+  if (handledFindingIds.size === 0) return;
+  const conflicts = [];
+  for (const section of sections) {
+    const bound = [...packSectionFindingIds(domain, section)]
+      .filter((findingId) => handledFindingIds.has(findingId));
+    if (bound.length > 0) {
+      conflicts.push({ section_id: section.section_id, finding_ids: bound.sort() });
+    }
+  }
+  if (conflicts.length === 0) return;
+  throw new ToolError(
+    ERROR_CODES.INVALID_ARGUMENTS,
+    "caller-supplied sections may not render capability-pack-owned findings; those sections are generated server-side from report-safe evidence",
+    { code: "compose_report_pack_section_override", conflicts },
+    {
+      remediation:
+        "Remove the caller-supplied section(s) bound to the named finding(s); bob_compose_report will generate their evidence-bound sections.",
+    },
+  );
+}
+
+function normalizeAndValidatePackSections(domain, projection, callerSections) {
+  const handledFindingIds = new Set(projection.handled_finding_ids);
+  assertCallerDoesNotRenderPackFindings(domain, callerSections, handledFindingIds);
+  const callerIds = new Set(callerSections.map((section) => section.section_id));
+  const generatedIds = new Set();
+  return projection.sections.map((section, index) => {
+    const normalized = normalizeSection(section, callerSections.length + index);
+    if (callerIds.has(normalized.section_id) || generatedIds.has(normalized.section_id)) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `capability-pack report section id collision: ${normalized.section_id}`,
+        { code: "compose_report_pack_section_id_collision", section_id: normalized.section_id },
+      );
+    }
+    generatedIds.add(normalized.section_id);
+    if (normalized.provenance !== "bob_verified") {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `capability-pack report section ${normalized.section_id} is not bob_verified`,
+        { code: "compose_report_pack_section_provenance_invalid" },
+      );
+    }
+    const resolvedFindingIds = [...packSectionFindingIds(domain, normalized)].sort();
+    const bound = resolvedFindingIds.filter((findingId) => handledFindingIds.has(findingId));
+    if (resolvedFindingIds.length !== 1 || bound.length !== 1) {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `capability-pack report section ${normalized.section_id} does not resolve to exactly one handled finding`,
+        {
+          code: "compose_report_pack_section_binding_invalid",
+          resolved_finding_ids: resolvedFindingIds,
+          handled_finding_ids: bound,
+        },
+      );
+    }
+    return normalized;
+  });
 }
 
 // Cycle C / F3 — verdict-level sandbox-isolation gate at the report door. This
@@ -935,8 +1073,8 @@ function handler(args) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "bob_compose_report args must be a plain object");
   }
   const domain = assertSafeDomain(args.target_domain);
-  if (!Array.isArray(args.sections) || args.sections.length === 0) {
-    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "sections must be a non-empty array");
+  if (!Array.isArray(args.sections)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "sections must be an array");
   }
   const normalizedSections = args.sections.map(normalizeSection);
   const severitySummary = args.severity_summary == null
@@ -968,6 +1106,34 @@ function handler(args) {
     // reportable verification round cannot launder a bob_verified medium+ vuln into
     // report.md without an EXECUTED differential whose negative control flips.
     assertComposedVerifiedSectionsAreExecuted(domain, sections);
+    const reportableFindingIds = finalReportableFindingIds(domain);
+    let packReportProjection;
+    try {
+      packReportProjection = buildCapabilityPackReportSections(domain, reportableFindingIds);
+    } catch (error) {
+      if (error instanceof ToolError) throw error;
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `Refusing to render report.md: capability-pack report projection failed closed: ${error.message || String(error)}`,
+        { code: "compose_report_capability_pack_projection_failed" },
+        {
+          remediation:
+            "Re-resolve the pack-owned finding against its production evidence, write a fresh grade verdict, and retry report composition.",
+        },
+      );
+    }
+    const generatedPackSections = normalizeAndValidatePackSections(
+      domain,
+      packReportProjection,
+      sections,
+    );
+    sections = [...sections, ...generatedPackSections];
+    if (sections.length === 0) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        "sections must contain at least one caller-supplied or capability-pack-generated section",
+      );
+    }
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
     const amendments = readAmendments(domain);
@@ -1005,6 +1171,13 @@ function handler(args) {
         warning: sandboxDowngrade.warning,
       };
     }
+    if (packReportProjection.handled_finding_ids.length > 0) {
+      result.capability_pack_report = {
+        finding_ids: packReportProjection.handled_finding_ids,
+        sections_rendered: generatedPackSections.length,
+        production_ready: packReportProjection.production_ready === true,
+      };
+    }
     return JSON.stringify(result);
   });
 }
@@ -1015,14 +1188,14 @@ module.exports = wrapWriteTool({
   name: "bob_compose_report",
   writes_audit_graded: true,
   description:
-    "Render the canonical session report.md from structured sections (Y-D15b / Y-P13). Agents emit closed-shape input; MCP renders markdown server-side, prepends the operator-edit-warning banner (Y-P13a), enforces provenance on bob_verified sections (Y-P13c — at least one evidence_ref must resolve to a verification_round result_id with reportable=true), caps prose per Y-P13b. Subsequent calls re-render with current report-amendments.jsonl appended (Y-P13a). bob_finalize_report still binds the hash-bound ReportSnapshot on top.",
+    "Render the canonical session report.md from structured sections (Y-D15b / Y-P13). Agents emit closed-shape input; capability-pack-owned findings emit their own evidence-bound report-safe sections server-side. MCP prepends the operator-edit-warning banner (Y-P13a), enforces provenance on caller bob_verified sections (Y-P13c — at least one evidence_ref must resolve to a verification_round result_id with reportable=true), caps prose per Y-P13b, and refuses caller overrides of pack-owned finding prose. An empty caller sections array is accepted only when a capability pack generates at least one section. Subsequent calls re-render with current report-amendments.jsonl appended (Y-P13a). bob_finalize_report still binds the hash-bound ReportSnapshot on top.",
   inputSchema: {
     type: "object",
     properties: {
       target_domain: { type: "string" },
       sections: {
         type: "array",
-        minItems: 1,
+        minItems: 0,
         items: {
           type: "object",
           properties: {

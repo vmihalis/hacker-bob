@@ -1803,7 +1803,10 @@ function readCandidateClaims(targetDomain) {
 // without a coverage row. Returns
 // { missing: [{ surface_id, finding_id, reason }] }; the grade door fails closed on a
 // non-empty missing[].
-function completionDepthGapForCompleteSurfaces(domain) {
+function completionDepthGapForCompleteSurfaces(domain, options = {}) {
+  const packExecutedFindingIds = options.packExecutedFindingIds instanceof Set
+    ? options.packExecutedFindingIds
+    : new Set();
   const { buildWaveHandoffsDocument, listWaveAssignmentNumbers } = require("./wave-handoff-store.js");
   // The handoff doc is the SOLE enumerator of which surfaces are 'complete'. Both reads that can
   // throw fail CLOSED (a single fail-open catch over both was the brutalist's HIGH finding — it
@@ -1863,6 +1866,12 @@ function completionDepthGapForCompleteSurfaces(domain) {
   // (a-executed) union of re-derived verified_pass by finding across the executed ledgers.
   // composition-verified is path-keyed (verified_by_finding absent → contributes {}).
   const executedFindings = new Set();
+  // Capability-pack grade adapters can contribute execution only through this
+  // explicit server-derived set.  For Plane-PH the adapter reaches this point
+  // only after re-resolving the production verdict and durable campaign
+  // closure, so a physical surface does not need a fake web differential row
+  // merely to satisfy the shared completion-depth gate.
+  for (const findingId of packExecutedFindingIds) executedFindings.add(findingId);
   const verifiedSummaryReaders = [
     () => require("./finding-differential-verifier.js").readFindingDifferentialVerifiedSummary(domain),
     () => require("./repro-replay-verifier.js").readReproVerifiedSummary(domain),

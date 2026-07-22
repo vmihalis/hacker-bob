@@ -29,6 +29,10 @@ const {
 const {
   extractChainTuples,
 } = require("./chain-authority.js");
+const {
+  PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
+  normalizePhysicalScopeNucleusAxis,
+} = require("./physical-scope-axis.js");
 
 const GOVERNANCE_VERSION = 1;
 const LIFECYCLE_STATE_VALUES = Object.freeze([
@@ -139,7 +143,7 @@ function sortChainTuples(tuples) {
     ));
 }
 
-function normalizeScopePolicy(input) {
+function normalizeScopePolicyInternal(input, { allowPhysicalOnly = false } = {}) {
   if (input == null || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("scope_policy must be an object");
   }
@@ -162,7 +166,7 @@ function normalizeScopePolicy(input) {
     throw new Error("scope_policy must carry exactly one of target_url or target_repo, not both");
   }
   // At least one scope axis must be present.
-  if (!hasUrl && !hasRepo && !hasContracts) {
+  if (!hasUrl && !hasRepo && !hasContracts && allowPhysicalOnly !== true) {
     throw new Error("scope_policy requires exactly one of target_url or target_repo, or a target_contracts axis");
   }
   const internalHostPolicy = blockInternalHostsPolicyFields(input);
@@ -186,6 +190,13 @@ function normalizeScopePolicy(input) {
     }
   }
   return policy;
+}
+
+// Public callers cannot opt into an empty cyber-axis shell. Only
+// buildSessionNucleus may do so, and only after it has successfully normalized
+// a compact physical_scope authority axis below.
+function normalizeScopePolicy(input) {
+  return normalizeScopePolicyInternal(input);
 }
 
 function normalizeEgressIdentity(input = {}) {
@@ -281,7 +292,12 @@ function buildSessionNucleus(input) {
   } else if (scopePolicyInput.chain_authority_hash != null) {
     mergedScopePolicy.chain_authority_hash = scopePolicyInput.chain_authority_hash;
   }
-  const scopePolicy = normalizeScopePolicy(mergedScopePolicy);
+  const physicalScope = input.physical_scope == null
+    ? null
+    : normalizePhysicalScopeNucleusAxis(input.physical_scope);
+  const scopePolicy = normalizeScopePolicyInternal(mergedScopePolicy, {
+    allowPhysicalOnly: physicalScope != null,
+  });
   const nucleus = {
     version: GOVERNANCE_VERSION,
     target_domain: scopePolicy.target_domain,
@@ -291,6 +307,11 @@ function buildSessionNucleus(input) {
     auth_context: normalizeAuthContext(input.auth_context),
     operator_constraint: normalizeOperatorConstraint(input.operator_constraint),
   };
+  // Legacy/session nuclei with no physical axis retain their existing hashes
+  // and mean physical-disabled. Presence is explicit and hash-bound.
+  if (physicalScope != null) {
+    nucleus.physical_scope = physicalScope;
+  }
   // Cycle O.1: repo sessions persist the session-init repo_hash so the
   // docker image tag derivation stays stable across the session lifetime
   // (Plane O O-D6 cache-bust contract). repo_hash is supplied by the
@@ -362,6 +383,9 @@ function sessionNucleusFromState(state) {
       args.chain_authority_hash = state.chain_authority_hash;
     }
   }
+  if (state.physical_scope != null) {
+    args.physical_scope = state.physical_scope;
+  }
   return buildSessionNucleus(args);
 }
 
@@ -372,12 +396,14 @@ function sessionNucleusHash(nucleus) {
 module.exports = {
   GOVERNANCE_VERSION,
   LIFECYCLE_STATE_VALUES,
+  PHYSICAL_SCOPE_NUCLEUS_AXIS_VERSION,
   assertRepoRootPath,
   buildSessionNucleus,
   normalizeAuthContext,
   normalizeEgressIdentity,
   normalizeLifecycleState,
   normalizeOperatorConstraint,
+  normalizePhysicalScopeNucleusAxis,
   normalizeScopePolicy,
   normalizeTargetRepo,
   sessionNucleusFromState,

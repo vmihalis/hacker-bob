@@ -2,6 +2,7 @@
 
 const { TOOL_MODULES } = require("./tools/index.js");
 const { chainSpecificEvaluatorBundles } = require("./capability-packs.js");
+const { normalizeEffectSurfaceMetadata } = require("./requested-effects.js");
 
 // Cross-cutting role bundles: orchestration, auth, verifier, evidence, etc.
 // — not chain-specific. The per-chain evaluator bundles are derived from
@@ -29,6 +30,7 @@ const VALID_ROLE_BUNDLES = Object.freeze([
   ...chainSpecificEvaluatorBundles(),
 ]);
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SESSION_AXIS_VALUES = Object.freeze(["url", "repo", "contracts", "physical"]);
 const REMOVED_TOOL_FIELDS = Object.freeze([
   ["hook", "required"].join("_"),
 ]);
@@ -121,6 +123,23 @@ function normalizeScopeUrlFields(entry) {
   return Object.freeze(entry.scope_url_fields.slice());
 }
 
+function normalizeRequiredSessionAxes(entry) {
+  if (!Object.prototype.hasOwnProperty.call(entry, "required_session_axes")) {
+    return Object.freeze([]);
+  }
+  assertStringArrayField(entry, "required_session_axes", {
+    allowEmpty: false,
+  });
+  const unique = [...new Set(entry.required_session_axes)];
+  if (unique.length !== entry.required_session_axes.length
+      || unique.some((axis) => !SESSION_AXIS_VALUES.includes(axis))) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid required_session_axes`);
+  }
+  // This field is conjunctive: a multi-axis declaration requires every axis.
+  // Session authority owns the corresponding runtime membership check.
+  return Object.freeze(unique);
+}
+
 function defineTool(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("tool registry entry must be an object");
@@ -154,7 +173,34 @@ function defineTool(entry) {
   assertBooleanField(entry, "browser_access");
   assertBooleanField(entry, "scope_required");
   assertBooleanField(entry, "sensitive_output");
+  const externalAccess = entry.network_access || entry.browser_access;
+  if (entry.global_preapproval && externalAccess) {
+    throw new Error(
+      `tool registry entry for ${entry.name} cannot globally preapprove network or browser access`,
+    );
+  }
+  const requiredSessionAxes = normalizeRequiredSessionAxes(entry);
+  if (externalAccess && requiredSessionAxes.length === 0) {
+    throw new Error(
+      `tool registry entry for ${entry.name} must bind network or browser access to a session axis`,
+    );
+  }
+  if (externalAccess && (
+    !Array.isArray(entry.inputSchema.required)
+    || !entry.inputSchema.required.includes("target_domain")
+  )) {
+    throw new Error(
+      `tool registry entry for ${entry.name} must require target_domain for network or browser access`,
+    );
+  }
   assertStringArrayField(entry, "session_artifacts_written");
+  const effectSurface = normalizeEffectSurfaceMetadata(
+    Object.prototype.hasOwnProperty.call(entry, "effect_surface") ? entry.effect_surface : [],
+    `tool registry entry for ${entry.name} effect_surface`,
+  );
+  if (effectSurface.some((surface) => !surface.endsWith(".observe")) && entry.mutating !== true) {
+    throw new Error(`tool registry entry for ${entry.name} declares an effectful surface without mutating`);
+  }
   return Object.freeze({
     ...entry,
     inputSchema: deepFreeze(cloneJsonCompatible(entry.inputSchema)),
@@ -162,6 +208,8 @@ function defineTool(entry) {
     session_artifacts_written: frozenStringArray(entry.session_artifacts_written),
     capability_id: normalizeCapabilityId(entry),
     scope_url_fields: normalizeScopeUrlFields(entry),
+    required_session_axes: requiredSessionAxes,
+    effect_surface: effectSurface,
   });
 }
 
@@ -210,6 +258,8 @@ const TOOL_MANIFEST = Object.freeze(TOOL_REGISTRY.reduce((manifest, tool) => {
     session_artifacts_written: frozenStringArray(tool.session_artifacts_written),
     capability_id: tool.capability_id,
     scope_url_fields: frozenStringArray(tool.scope_url_fields),
+    required_session_axes: frozenStringArray(tool.required_session_axes),
+    effect_surface: frozenStringArray(tool.effect_surface),
   };
   manifest[tool.name] = Object.freeze(base);
   return manifest;

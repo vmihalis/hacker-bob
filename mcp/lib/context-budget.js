@@ -13,6 +13,7 @@ const {
 const {
   getCapabilityPack,
   getCapabilityPackContextBudget,
+  isCapabilityPackDispatchable,
   normalizeContextBudget,
 } = require("./capability-packs.js");
 const {
@@ -25,6 +26,9 @@ function getContextBudget(args) {
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`Unknown capability_pack: ${capabilityPack}`);
+  }
+  if (!isCapabilityPackDispatchable(pack)) {
+    throw new Error(`Unavailable capability_pack ${capabilityPack}: ${pack.dispatch_block_reason}`);
   }
 
   const targetDomain = normalizeOptionalText(args.target_domain, "target_domain");

@@ -432,6 +432,27 @@ function gateClaimFreezeToVerify(context) {
 // precondition throw AND a materialization error both block.
 function gateSetupToOpenFrontier(context) {
   const blockers = [];
+  const nucleus = context && context.nucleus;
+  const scopePolicy = nucleus && nucleus.scope_policy;
+  const physicalOnly = !!(
+    nucleus && nucleus.physical_scope
+    && scopePolicy && scopePolicy.target_url == null
+    && scopePolicy.target_repo == null
+    && (!Array.isArray(scopePolicy.target_contracts) || scopePolicy.target_contracts.length === 0)
+  );
+  if (physicalOnly) {
+    blockers.push({
+      code: "physical_inventory_required",
+      blocked_by: "physical_inventory_required",
+      physical_scope_axis_digest: nucleus.physical_scope.axis_digest || null,
+      message:
+        "SETUP -> OPEN_FRONTIER blocked: physical-only sessions require a current signed physical inventory checkpoint",
+      remediation:
+        "ingest a future server-verified physical inventory checkpoint bound by reference and digest to this "
+        + "physical scope axis; generic/manual seed surfaces do not satisfy this authority prerequisite",
+    });
+    return blockers;
+  }
   let evaluation;
   try {
     evaluation = require("./scheduler-preconditions.js").evaluateSchedulerPrecondition(
@@ -571,6 +592,40 @@ function gateOpenFrontierToClaimFreeze(context) {
         "dispatch the coverage-cell floor to closure (bob_materialize_cell_floor "
         + "then the bob_schedule_graph_nodes loop) so every reachable cell is "
         + "covered by a verified probe, then retry the transition",
+    });
+  }
+
+  // PH-S12 campaign closure is self-activating. A physical campaign that was
+  // preflighted into bounded Frontier ledgers must reconstruct one branded,
+  // signed aggregate closure before CLAIM_FREEZE. Ordinary sessions have no
+  // campaign authority and remain unaffected.
+  let physicalCampaign;
+  try {
+    physicalCampaign = require("./physical-campaign-coordinator.js")
+      .physicalCampaignClosureReadiness(context.target_domain);
+  } catch (error) {
+    blockers.push({
+      code: "physical_campaign_closure_invalid",
+      blocked_by: "physical_campaign_closure_invalid",
+      message: `OPEN_FRONTIER -> CLAIM_FREEZE physical campaign verification failed: ${compactError(error)}`,
+      error: compactError(error),
+    });
+    return blockers;
+  }
+  if (physicalCampaign.active === true && physicalCampaign.satisfied !== true) {
+    blockers.push({
+      code: "physical_campaign_closure_required",
+      blocked_by: "physical_campaign_closure_required",
+      physical_campaign: physicalCampaign,
+      message: physicalCampaign.reason === "terminal_residue"
+        ? "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign retains terminal residue"
+        : physicalCampaign.reason === "campaign_anchor_not_production_attested"
+          ? "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign closure is integrity-only and lacks production authority"
+          : "OPEN_FRONTIER -> CLAIM_FREEZE blocked: physical campaign segments remain unreconciled",
+      remediation: physicalCampaign.reason === "campaign_anchor_not_production_attested"
+        ? "bind the campaign to a server-issued physical obligation, production-enrolled signer, independently attested external anchor, terminal witnesses, and durable zero-active-effects proof"
+        : "resume the exact PH-S12 campaign, reconcile every signed bounded segment, "
+          + "and resolve inconclusive/blocked residue before retrying the transition",
     });
   }
 

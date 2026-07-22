@@ -29,6 +29,7 @@ const TOOL_MODULES = Object.freeze([
   require("./ingest-sarif.js"),
   require("./read-static-analysis-index.js"),
   require("./record-candidate-claim.js"),
+  require("./record-physical-candidate-claim.js"),
   require("./read-candidate-claims.js"),
   require("./list-candidate-claims.js"),
   require("./write-chain-attempt.js"),
@@ -51,6 +52,8 @@ const TOOL_MODULES = Object.freeze([
   require("./init-session.js"),
   require("./init-repo-session.js"),
   require("./init-contract-session.js"),
+  require("./init-physical-session.js"),
+  require("./query-instrument-capabilities.js"),
   require("./repo-inventory.js"),
   require("./repo-prepare-env.js"),
   require("./repo-docker-run.js"),
@@ -203,6 +206,23 @@ const TOOL_MODULES = Object.freeze([
   // verdict for the residual classes; writes the audit-graded finding-differential-
   // verified.jsonl the grade-time standalone-finding gate grades on.
   require("./verify-finding-differential.js"),
+  // Plane-PH verifier adapter.  It only reprojects an already-committed,
+  // live-ledger-branded physical verdict; it has no provider or transport
+  // import and never invokes hardware.
+  require("./verify-physical-verdict.js"),
+  require("./verify-physical-candidate-claim.js"),
+  // Plane-PH PH-C1..PH-C7 provider-neutral execution adapters. Each accepts
+  // only a one-use opaque execution ref already bound to the exact assignment,
+  // coverage cell, broker grant, controls, resources, cleanup, and evidence
+  // plan. Provider operations, command IDs, frames, credential material, and
+  // transports remain behind the production composition root.
+  require("./physical-observe.js"),
+  require("./credential-acquire.js"),
+  require("./credential-recover.js"),
+  require("./credential-emulate.js"),
+  require("./credential-write.js"),
+  require("./protocol-transceive.js"),
+  require("./rf-trace.js"),
   // Plane X Cycle X.4 — Contract schema + attach with pre-dispatch
   // satisfiability check. Backed by mcp/lib/contracts.js (the X-D4 7-witness
   // schema + the X-D11 satisfiability gate). The attach tool emits

@@ -25,8 +25,9 @@ const {
 // `--dangerously-skip-permissions` (a rogue second instance controls its own
 // subprocess env, so any BOB_AGENTCORE-keyed approval gate is inert on it —
 // this lock never depends on that env var at all). See mcp/lib/engine-lock.js
-// for why this does NOT reuse the per-session lock's staleness-reclaim
-// policy.
+// for why this does NOT use an elapsed-time staleness policy. An exact
+// same-host crash-left lock is recoverable only after the kernel reports its
+// owner PID absent; a live or ambiguous owner is never displaced.
 function startServer() {
   const acquired = acquireEngineSingletonLock();
   if (!acquired) {

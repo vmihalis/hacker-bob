@@ -194,6 +194,20 @@ function sessionNucleusPath(domain) {
   return path.join(sessionDir(domain), "session-nucleus.json");
 }
 
+// PH-IP1 physical-only session creation journal. Pending is fail-closed;
+// complete is the authority kernel's durable proof that state + nucleus
+// bootstrap finished. Audit-graded so an agent cannot forge completion.
+function physicalSessionBootstrapPath(domain) {
+  return path.join(sessionDir(domain), "physical-session-bootstrap.json");
+}
+
+// PH-S12 segmented Frontier/TaskGraph campaign authority.  The directory is
+// audit-graded as a unit: immutable segment ledgers, signed checkpoints, the
+// monotonic anchor, and the aggregate manifest all remain MCP-write-only.
+function physicalCampaignDir(domain) {
+  return path.join(sessionDir(domain), "physical-campaign");
+}
+
 function sessionEventsJsonlPath(domain) {
   return path.join(sessionDir(domain), "session-events.jsonl");
 }
@@ -630,6 +644,7 @@ const AUDIT_GRADED_BASENAMES = Object.freeze([
   // runs under a separate uid" fact via the Write tool. Forensic only — no
   // verdict path gates on it.
   "sandbox-isolation.json",
+  "physical-session-bootstrap.json",
   "report.md",
   "chains.md",
   "evidence-packs.md",
@@ -697,6 +712,7 @@ const AUDIT_GRADED_RELATIVE_DIRS = Object.freeze([
   "wave-handoffs",
   "claim-freeze",
   "offensive-runs",
+  "physical-campaign",
 ]);
 
 // Wave-handoff per-agent files live at the session root and follow the
@@ -1149,6 +1165,8 @@ module.exports = {
   liveDeadEndsJsonlPath,
   pipelineEventsJsonlPath,
   proofBundlePaths,
+  physicalSessionBootstrapPath,
+  physicalCampaignDir,
   publicIntelPath,
   offensiveRunsDir,
   offensiveRunsJsonlPath,

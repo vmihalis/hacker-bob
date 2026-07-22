@@ -29,6 +29,7 @@ const {
 } = require("./validation.js");
 const {
   capabilityPackForLegacyFinding,
+  getCapabilityPack,
 } = require("./capability-packs.js");
 const {
   normalizeCvssInputs,
@@ -502,7 +503,7 @@ function normalizeSignatureVerificationStatus(value, { strict = false } = {}) {
   return SIGNATURE_VERIFICATION_STATUS_VALUES.includes(value) ? value : null;
 }
 
-function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
+function normalizeEndpointPocFindingRecord(record, { expectedDomain = null, lineNumber = null, requireCwe = false } = {}) {
   if (record == null || typeof record !== "object" || Array.isArray(record)) {
     throw new Error(lineNumber == null
       ? "finding record must be an object"
@@ -644,6 +645,37 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
   }
 }
 
+// Capability-pack finding adapters are selected from the pack manifest.  Core
+// lifecycle consumers call one normalizer and never branch on a physical/web
+// domain enum.  Packs without an explicit adapter retain the legacy
+// endpoint+PoC contract; a pack that declares an unknown adapter fails closed.
+const FINDING_RECORD_ADAPTER_LOADERS = Object.freeze({
+  physical_verified_transition_finding_v1: () => (
+    require("./physical-finding-record-adapter.js").normalizePhysicalFindingRecord
+  ),
+});
+
+function declaredFindingRecordAdapter(record) {
+  if (record == null || typeof record !== "object" || Array.isArray(record)) return null;
+  if (typeof record.capability_pack !== "string" || !record.capability_pack.trim()) return null;
+  const pack = getCapabilityPack(record.capability_pack.trim());
+  if (!pack || !pack.finding || typeof pack.finding.adapter !== "string") return null;
+  const adapterId = pack.finding.adapter;
+  const loader = FINDING_RECORD_ADAPTER_LOADERS[adapterId];
+  if (typeof loader !== "function") {
+    throw new Error(
+      `capability_pack ${pack.id} declares unsupported finding adapter ${adapterId}`,
+    );
+  }
+  return Object.freeze({ adapter_id: adapterId, normalize: loader() });
+}
+
+function normalizeFindingRecord(record, options = {}) {
+  const adapter = declaredFindingRecordAdapter(record);
+  if (adapter) return adapter.normalize(record, options);
+  return normalizeEndpointPocFindingRecord(record, options);
+}
+
 function renderFindingMarkdownEntry(finding) {
   const waveAgent = finding.wave || finding.agent
     ? `\n- **Wave/Agent:** ${finding.wave || "?"}/${finding.agent || "?"}`
@@ -722,6 +754,7 @@ function renderFindingMarkdownEntry(finding) {
 
 module.exports = {
   computeFindingDedupeKey,
+  declaredFindingRecordAdapter,
   normalizeBech32Address,
   normalizeFindingRecord,
   normalizeReachabilityAssertion,

@@ -70,5 +70,6 @@ module.exports = Object.freeze({
   scope_required: true,
   scope_url_fields: ["url"],
   sensitive_output: false,
-  session_artifacts_written: [],
+ session_artifacts_written: [],
+  required_session_axes: ["url"],
 });

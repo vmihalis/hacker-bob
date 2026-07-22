@@ -48,6 +48,7 @@ const {
   assertTaskGraphNodeId,
   appendNodeTransition,
   findAttachedContract,
+  normalizePhysicalResourceDispatchBinding,
   readHypothesisProposals,
   readNodeTransitions,
   readTransitionProposals,
@@ -83,6 +84,16 @@ const {
   TRANSITION_KIND_HUNTING_VOCAB,
   transitionKindBriefContent,
 } = require("../technique-packs.js");
+const {
+  readVerifiedSessionNucleus,
+} = require("../governance-store.js");
+const {
+  withSessionLock,
+} = require("../storage.js");
+const {
+  assertPhysicalResourceReservationEligibilityPort,
+  resolveHeldPhysicalResourceForNode,
+} = require("../../../packages/bob-instrument-broker/lib/resource-reservations.js");
 
 // X.8 Do step 1: only nodes in state contracted or ready may be prepared.
 // `ready` is reserved for X.9's graph-scheduler — the X.4 attach path
@@ -257,6 +268,58 @@ function findNodeInDocument(document, nodeId) {
     if (node && node.node_id === nodeId) return node;
   }
   return null;
+}
+
+function assertExactPhysicalPrepareSnapshot({
+  domain,
+  document,
+  nodeId,
+  expectedDispatch,
+}) {
+  const graphHash = document && document.hashes && document.hashes.graph_hash;
+  const nucleus = readVerifiedSessionNucleus(domain);
+  const node = findNodeInDocument(document, nodeId);
+  const attached = findAttachedContract(domain, nodeId);
+  if (graphHash !== expectedDispatch.source_graph_hash
+      || !nucleus
+      || nucleus.nucleus_hash !== expectedDispatch.session_nucleus_hash
+      || !node
+      || !PREPARE_NODE_LEGAL_STATES.includes(node.state)
+      || !node.physical_resource_bundle
+      || node.physical_resource_bundle.resource_bundle_digest
+        !== expectedDispatch.resource_bundle_digest
+      || !attached
+      || !attached.contract
+      || attached.contract.contract_hash !== node.contract_hash
+      || !attached.contract.physical_resource_bundle
+      || attached.contract.physical_resource_bundle.resource_bundle_digest
+        !== expectedDispatch.resource_bundle_digest) {
+    throw structuredError(
+      "physical_resource_prepare_binding_drift",
+      "the live TaskGraph, Contract, resource bundle, or session nucleus no longer matches the held reservation",
+      { node_id: nodeId },
+    );
+  }
+  return { attached, node };
+}
+
+function assertSamePhysicalDispatchBinding(actual, expected) {
+  for (const field of [
+    "source_graph_hash",
+    "session_nucleus_hash",
+    "resource_bundle_digest",
+    "reservation_ref",
+    "receipt_digest",
+    "allocation_plan_digest",
+    "eligibility_digest",
+  ]) {
+    if (actual[field] !== expected[field]) {
+      throw structuredError(
+        "physical_resource_reservation_drift",
+        "the broker eligibility proof changed immediately before TaskGraph dispatch",
+      );
+    }
+  }
 }
 
 // Collect prior failed transitions for a node (Do step 1 prior_attempt
@@ -850,14 +913,13 @@ function buildBriefContext({
   };
 }
 
-function handler(args) {
-  const input = args || {};
-  const domain = assertSafeDomain(
-    assertNonEmptyString(input.target_domain, "target_domain"),
-  );
-  const nodeId = assertTaskGraphNodeId(input.node_id, "node_id");
-
-  const result = materializeTaskGraph(domain, { write: false });
+function prepareNodeFromMaterialization({
+  input,
+  domain,
+  nodeId,
+  result,
+  resolvePhysicalDispatch = null,
+}) {
   const document = result.document;
   const dispatchedNode = findNodeInDocument(document, nodeId);
   if (!dispatchedNode) {
@@ -876,6 +938,20 @@ function handler(args) {
         current_state: dispatchedNode.state,
         legal_states: PREPARE_NODE_LEGAL_STATES.slice(),
       },
+    );
+  }
+  if (dispatchedNode.physical_resource_bundle && typeof resolvePhysicalDispatch !== "function") {
+    throw structuredError(
+      "physical_resource_reservation_required",
+      `node ${nodeId} requires an exact private broker-held physical resource eligibility capability`,
+      { node_id: nodeId },
+    );
+  }
+  if (!dispatchedNode.physical_resource_bundle && typeof resolvePhysicalDispatch === "function") {
+    throw structuredError(
+      "physical_resource_prepare_binding_drift",
+      `node ${nodeId} no longer carries the reserved physical resource bundle`,
+      { node_id: nodeId },
     );
   }
 
@@ -902,6 +978,20 @@ function handler(args) {
     node: dispatchedNode,
     contract: attached.contract,
   });
+  if (typeof resolvePhysicalDispatch !== "function"
+      && pack.brief_emphasis
+      && pack.brief_emphasis.physical_dispatch_blocked === true) {
+    throw structuredError(
+      "physical_capability_pack_unavailable",
+      `node ${nodeId} is bound to a physical surface while the physical capability pack is non-dispatchable`,
+      {
+        node_id: nodeId,
+        required_capability_pack: pack.brief_emphasis.required_capability_pack,
+        required_capability_pack_version:
+          pack.brief_emphasis.required_capability_pack_version,
+      },
+    );
+  }
   const graphContextHash = computeGraphContextHash(graphContext);
 
   // Plane X Cycle X.10 — family-tagged spawn label. Derives from the
@@ -934,6 +1024,16 @@ function handler(args) {
     graph_context_hash: graphContextHash,
     ...briefExtras,
   };
+  const physicalResourceDispatch = typeof resolvePhysicalDispatch === "function"
+    ? normalizePhysicalResourceDispatchBinding(resolvePhysicalDispatch({
+      attached,
+      dispatchedNode,
+      document,
+    }))
+    : null;
+  if (physicalResourceDispatch) {
+    brief.physical_resource_dispatch = physicalResourceDispatch;
+  }
   const briefJson = JSON.stringify(brief);
   // Node briefs may render nonce-fenced untrusted summaries; the prep token
   // binds the summary content and graph state, not the per-render nonce.
@@ -942,13 +1042,25 @@ function handler(args) {
   // Mint the prep_token. The token binds node_id + contract_hash + brief_hash
   // + materialized_at + graph_context_hash so any drift in the underlying
   // snapshot invalidates the token at finalize.
-  const prepToken = sha256Hex([
+  const prepTokenParts = [
     nodeId,
     attached.contract.contract_hash,
     briefHash,
     document.materialized_at,
     graphContextHash,
-  ].join("|"));
+  ];
+  if (physicalResourceDispatch) {
+    prepTokenParts.push(
+      physicalResourceDispatch.source_graph_hash,
+      physicalResourceDispatch.session_nucleus_hash,
+      physicalResourceDispatch.resource_bundle_digest,
+      physicalResourceDispatch.reservation_ref,
+      physicalResourceDispatch.receipt_digest,
+      physicalResourceDispatch.allocation_plan_digest,
+      physicalResourceDispatch.eligibility_digest,
+    );
+  }
+  const prepToken = sha256Hex(prepTokenParts.join("|"));
 
   // Emit the node.transitioned events. The X.1 frozen table requires
   // contracted → ready → dispatched (the table forbids a direct
@@ -969,7 +1081,7 @@ function handler(args) {
       actor: input.actor,
     });
   }
-  const event = appendNodeTransition({
+  const dispatchTransition = {
     target_domain: domain,
     node_id: nodeId,
     from_state: "ready",
@@ -979,7 +1091,11 @@ function handler(args) {
     ts: input.ts,
     source: { tool: "bob_prepare_node" },
     actor: input.actor,
-  });
+  };
+  if (physicalResourceDispatch) {
+    dispatchTransition.physical_resource_dispatch = physicalResourceDispatch;
+  }
+  const event = appendNodeTransition(dispatchTransition);
 
   try {
     scheduleMaterialization(domain);
@@ -987,7 +1103,7 @@ function handler(args) {
     // Best-effort materialization debounce; do not regress the append.
   }
 
-  return JSON.stringify({
+  const response = {
     version: 1,
     target_domain: domain,
     node_id: nodeId,
@@ -1009,10 +1125,134 @@ function handler(args) {
     event_id: event.event_id,
     event_hash: event.event_hash,
     to_state: event.payload.to_state,
+  };
+  if (physicalResourceDispatch) {
+    response.physical_resource_dispatch = physicalResourceDispatch;
+  }
+  return JSON.stringify(response);
+}
+
+function handler(args) {
+  const input = args || {};
+  const domain = assertSafeDomain(
+    assertNonEmptyString(input.target_domain, "target_domain"),
+  );
+  const nodeId = assertTaskGraphNodeId(input.node_id, "node_id");
+  return prepareNodeFromMaterialization({
+    input,
+    domain,
+    nodeId,
+    result: materializeTaskGraph(domain, { write: false }),
   });
 }
 
-module.exports = Object.freeze({
+// Broker-private entry point. The MCP registry receives only the enumerable
+// tool fields below; this function is deliberately non-enumerable and cannot
+// be represented in JSON. Its decisive authority is still the exact
+// WeakSet-branded eligibility port, not this function reference. Because both
+// live in one JavaScript isolate today, this is a same-isolate capability seam,
+// not an OS/process security boundary; production custody still belongs in the
+// separately authenticated broker process.
+function preparePhysicalResourceNode(args, eligibilityPort, expectedDispatchInput) {
+  try {
+    assertPhysicalResourceReservationEligibilityPort(eligibilityPort);
+  } catch {
+    throw structuredError(
+      "physical_resource_eligibility_capability_untrusted",
+      "physical TaskGraph preparation requires Bob's exact private broker eligibility capability",
+    );
+  }
+  const expectedDispatch = normalizePhysicalResourceDispatchBinding(
+    expectedDispatchInput,
+    "expected_physical_resource_dispatch",
+  );
+  const input = args || {};
+  const domain = assertSafeDomain(
+    assertNonEmptyString(input.target_domain, "target_domain"),
+  );
+  const nodeId = assertTaskGraphNodeId(input.node_id, "node_id");
+
+  return withSessionLock(domain, () => prepareNodeFromMaterialization({
+    input,
+    domain,
+    nodeId,
+    result: materializeTaskGraph(domain, { write: false }),
+    resolvePhysicalDispatch: ({ attached, dispatchedNode, document }) => {
+      const before = assertExactPhysicalPrepareSnapshot({
+        domain,
+        document,
+        nodeId,
+        expectedDispatch,
+      });
+      if (before.node !== dispatchedNode
+          || before.attached.contract.contract_hash !== attached.contract.contract_hash) {
+        throw structuredError(
+          "physical_resource_prepare_binding_drift",
+          "the physical node snapshot changed while its dispatch brief was assembled",
+        );
+      }
+
+      let eligibility;
+      try {
+        eligibility = resolveHeldPhysicalResourceForNode(eligibilityPort, {
+          node_id: nodeId,
+          contract_hash: attached.contract.contract_hash,
+          source_graph_hash: expectedDispatch.source_graph_hash,
+          session_nucleus_hash: expectedDispatch.session_nucleus_hash,
+          resource_bundle_digest: expectedDispatch.resource_bundle_digest,
+        });
+      } catch (cause) {
+        if (cause && typeof cause.code === "string") throw cause;
+        throw structuredError(
+          "physical_resource_eligibility_resolution_failed",
+          "the broker could not prove a unique live reservation for this physical node",
+        );
+      }
+      if (!eligibility
+          || eligibility.held !== true
+          || eligibility.node_id !== nodeId
+          || eligibility.contract_hash !== attached.contract.contract_hash) {
+        throw structuredError(
+          "physical_resource_reservation_not_eligible",
+          "the exact physical resource reservation is not held and effect-window current",
+        );
+      }
+      const actualDispatch = normalizePhysicalResourceDispatchBinding({
+        source_graph_hash: eligibility.source_graph_hash,
+        session_nucleus_hash: eligibility.session_nucleus_hash,
+        resource_bundle_digest: eligibility.resource_bundle_digest,
+        reservation_ref: eligibility.reservation_ref,
+        receipt_digest: eligibility.receipt_digest,
+        allocation_plan_digest: eligibility.allocation_plan_digest,
+        eligibility_digest: eligibility.eligibility_digest,
+      });
+      assertSamePhysicalDispatchBinding(actualDispatch, expectedDispatch);
+
+      // A broker clock/state callback can re-enter this isolate. Re-read the
+      // immutable nucleus and TaskGraph after that callback, before either
+      // transition is appended. The surrounding session lock excludes honest
+      // Bob writers in this and cooperating processes; it cannot constrain
+      // arbitrary code that ignores Bob's lock file.
+      const afterDocument = materializeTaskGraph(domain, { write: false }).document;
+      const after = assertExactPhysicalPrepareSnapshot({
+        domain,
+        document: afterDocument,
+        nodeId,
+        expectedDispatch,
+      });
+      if (after.attached.contract.contract_hash !== attached.contract.contract_hash
+          || after.node.contract_hash !== dispatchedNode.contract_hash) {
+        throw structuredError(
+          "physical_resource_prepare_binding_drift",
+          "the physical Contract changed after broker eligibility resolution",
+        );
+      }
+      return actualDispatch;
+    },
+  }));
+}
+
+const toolModule = {
   name: "bob_prepare_node",
   description:
     "Prepare a TaskGraph node for dispatch (clou-style three-call protocol, "
@@ -1029,7 +1269,9 @@ module.exports = Object.freeze({
     + "a failed node via bob_attach_contract per the X.8 re-contract path), "
     + "the brief surfaces the prior failure payloads in the `prior_attempt` "
     + "slice so the agent reasons against the prior verdict. Refuses on state "
-    + "∉ {contracted, ready} or when no Contract is attached. Orchestrator + "
+    + "∉ {contracted, ready} or when no Contract is attached. Nodes with a "
+    + "physical_resource_bundle are refused on this public MCP path and must "
+    + "be prepared through the broker-private physical graph coordinator. Orchestrator + "
     + "graph-scheduler only.",
   inputSchema: {
     type: "object",
@@ -1059,4 +1301,11 @@ module.exports = Object.freeze({
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: ["frontier-events.jsonl"],
+};
+Object.defineProperty(toolModule, "preparePhysicalResourceNode", {
+  value: preparePhysicalResourceNode,
+  enumerable: false,
+  configurable: false,
+  writable: false,
 });
+module.exports = Object.freeze(toolModule);

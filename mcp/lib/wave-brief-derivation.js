@@ -43,8 +43,13 @@ const {
   surfaceNodeId,
 } = require("./task-graph-materializer.js");
 const {
+  quarantinedRouteMetadata,
   readSurfaceRoutesStrict,
 } = require("./surface-router.js");
+const {
+  PHYSICAL_CAPABILITY_PACK,
+  isPhysicalSurfaceMetadata,
+} = require("./capability-packs.js");
 const {
   queuePolicyPath,
 } = require("./paths.js");
@@ -123,7 +128,8 @@ function resolveTargetClassForBrief({ explicitTargetClass, queuePolicy }) {
 // its chain pack instead of the DEFAULT web pack. Mirrors the canonical
 // `safeSurfaceRouteMap` shape at tools/prepare-node.js: read the routes
 // strictly, find the route for this surface, and stamp
-// `{ id, surface_type, chain_family, capability_pack, brief_profile }`.
+// `{ id, surface_type, surface_class?, chain_family, capability_pack,
+// required_capability_pack?, brief_profile }`.
 // When routing artifacts are absent OR this surface has no route yet, fall
 // back to the same shape from the in-hand assignment surface so the wave
 // path still routes. Never throws; returns `{}` only when there is truly
@@ -132,42 +138,86 @@ function resolveTargetClassForBrief({ explicitTargetClass, queuePolicy }) {
 // web/OSS surfaces.
 function buildRoutedSurfaceMetadataById(domain, surfaceId, surfaceObj) {
   if (typeof surfaceId !== "string" || surfaceId.length === 0) return {};
+  const source = isPlainObject(surfaceObj) ? surfaceObj : {};
   let routes = null;
+  let quarantined = null;
   try {
     const result = readSurfaceRoutesStrict(domain);
     const doc = result && result.document;
     if (doc && Array.isArray(doc.routes)) routes = doc.routes;
+    if (Array.isArray(result && result.malformed_routes)) {
+      quarantined = result.malformed_routes.find(
+        (entry) => entry && entry.surface_id === surfaceId,
+      ) || null;
+    }
   } catch {
     routes = null;
+  }
+  if (quarantined) {
+    return {
+      [surfaceId]: quarantinedRouteMetadata({
+        surfaceId,
+        reason: quarantined.reason,
+        rawMetadata: quarantined.route_metadata,
+        fallbackMetadata: source,
+      }),
+    };
+  }
+  // Surface-ledger deny provenance outranks a stale active route.
+  if (isPhysicalSurfaceMetadata(source)) {
+    return {
+      [surfaceId]: {
+        id: surfaceId,
+        surface_type: source.surface_type || "physical",
+        surface_class: "physical",
+        capability_pack: null,
+        required_capability_pack: PHYSICAL_CAPABILITY_PACK.id,
+        required_capability_pack_version: PHYSICAL_CAPABILITY_PACK.capability_pack_version,
+        disposition: "unroutable",
+        reason: PHYSICAL_CAPABILITY_PACK.dispatch_block_reason,
+      },
+    };
   }
   if (Array.isArray(routes)) {
     for (const route of routes) {
       if (!route || typeof route !== "object") continue;
       if (route.surface_id !== surfaceId) continue;
-      return {
-        [surfaceId]: {
-          id: surfaceId,
-          surface_type: route.surface_type || null,
-          chain_family: route.chain_family || null,
-          capability_pack: route.capability_pack || null,
-          brief_profile: route.brief_profile || null,
-          confidence: route.confidence || null,
-        },
+      const metadata = {
+        id: surfaceId,
+        surface_type: route.surface_type || null,
+        chain_family: route.chain_family || null,
+        capability_pack: route.capability_pack || null,
+        disposition: route.disposition || null,
+        reason: route.reason || null,
+        brief_profile: route.brief_profile || null,
+        confidence: route.confidence || null,
       };
+      if (route.surface_class != null) metadata.surface_class = route.surface_class;
+      if (route.required_capability_pack != null) {
+        metadata.required_capability_pack = route.required_capability_pack;
+        metadata.required_capability_pack_version = route.required_capability_pack_version;
+      }
+      return { [surfaceId]: metadata };
     }
   }
   // Fall back to the in-hand assignment surface. Pass `chain_family`
   // through faithfully (including null) so an ambiguous smart_contract is
   // never silently routed to web here — the deriver classifies the truth.
-  const source = isPlainObject(surfaceObj) ? surfaceObj : {};
   if (source.surface_type == null && source.chain_family == null) return {};
   const metadata = {
     id: surfaceId,
     surface_type: source.surface_type || null,
     chain_family: source.chain_family || null,
     confidence: source.confidence || null,
+    disposition: source.disposition || null,
+    reason: source.reason || null,
   };
   if (source.capability_pack != null) metadata.capability_pack = source.capability_pack;
+  if (source.surface_class != null) metadata.surface_class = source.surface_class;
+  if (source.required_capability_pack != null) {
+    metadata.required_capability_pack = source.required_capability_pack;
+    metadata.required_capability_pack_version = source.required_capability_pack_version;
+  }
   if (source.brief_profile != null) metadata.brief_profile = source.brief_profile;
   return { [surfaceId]: metadata };
 }
@@ -261,16 +311,23 @@ function buildWaveBriefDerivation({
   // pack stays on the role-bundle layer.
   const seenAdded = new Set();
   const addedTools = [];
-  for (const record of frictionHistory) {
-    if (!isPlainObject(record)) continue;
-    if (typeof record.wanted_tool === "string" && record.wanted_tool.length > 0) {
-      if (!seenAdded.has(record.wanted_tool)) {
-        seenAdded.add(record.wanted_tool);
-        addedTools.push(record.wanted_tool);
+  const physicalDispatchBlocked = derivation.brief_emphasis
+    && derivation.brief_emphasis.physical_dispatch_blocked === true;
+  const routeMetadataBlocked = derivation.brief_emphasis
+    && derivation.brief_emphasis.route_metadata_blocked === true;
+  const dispatchBlocked = physicalDispatchBlocked || routeMetadataBlocked;
+  if (!dispatchBlocked) {
+    for (const record of frictionHistory) {
+      if (!isPlainObject(record)) continue;
+      if (typeof record.wanted_tool === "string" && record.wanted_tool.length > 0) {
+        if (!seenAdded.has(record.wanted_tool)) {
+          seenAdded.add(record.wanted_tool);
+          addedTools.push(record.wanted_tool);
+        }
       }
     }
   }
-  const targetClassAuxTools = targetClass
+  const targetClassAuxTools = targetClass && !dispatchBlocked
     ? deriveAuxiliaryToolsForTargetClass(targetClass).slice()
     : [];
   for (const tool of targetClassAuxTools) {
@@ -308,6 +365,9 @@ function buildWaveBriefDerivation({
     capability_pack: derivation.brief_emphasis && derivation.brief_emphasis.capability_pack
       ? derivation.brief_emphasis.capability_pack
       : null,
+    dispatch_blocked: dispatchBlocked,
+    physical_dispatch_blocked: physicalDispatchBlocked,
+    route_metadata_blocked: routeMetadataBlocked,
     target_class: targetClass,
     friction_history_count: frictionHistory.length,
     friction_history_total_for_surface: allFrictionPayloads.length,

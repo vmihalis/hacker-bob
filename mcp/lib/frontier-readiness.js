@@ -102,10 +102,17 @@ function computeOpenRequeueSurfaceIds(records, options = {}) {
 function computeAttackSurfaceCoverage(surfaces, exploredSurfaceIds, terminallyBlockedSurfaceIds, openRequeueSurfaceIds) {
   const exploredSet = new Set(exploredSurfaceIds || []);
   const terminallyBlockedSet = new Set(terminallyBlockedSurfaceIds || []);
+  // Keep the readiness view aligned with pipeline-session-artifacts: legacy
+  // attack-surface rows without an explicit priority are conservatively HIGH.
+  // Otherwise bob_wave_status can omit the row from both its non-low
+  // denominator and its unexplored-HIGH blockers while pipeline analytics
+  // counts the same row as HIGH.
+  const priorityForCoverage = (surface) =>
+    String(surface.priority || "HIGH").toUpperCase();
   const isHighOrCritical = (surface) =>
-    ["CRITICAL", "HIGH"].includes(String(surface.priority || "").toUpperCase());
+    ["CRITICAL", "HIGH"].includes(priorityForCoverage(surface));
   const nonLowSurfaces = surfaces.filter(
-    (surface) => surface.priority && String(surface.priority).toUpperCase() !== "LOW",
+    (surface) => priorityForCoverage(surface) !== "LOW",
   );
   const nonLowExplored = nonLowSurfaces.filter((surface) => exploredSet.has(surface.id)).length;
   const nonLowTerminallyBlocked = nonLowSurfaces.filter((surface) => terminallyBlockedSet.has(surface.id)).length;
@@ -270,6 +277,33 @@ function computeFrontierReadiness(domain, state) {
         { error: compactErrorMessage(error) },
       ));
     }
+  }
+
+  // PH-S12 self-activating campaign closure. Ordinary sessions have no
+  // physical-campaign directory and remain byte-for-byte/vacuously ready.
+  // Active campaigns must reconstruct a branded aggregate manifest from the
+  // signed bounded ledgers; an incomplete chain or honest terminal residue is
+  // visible as a readiness blocker rather than collapsed into coverage.
+  try {
+    const campaign = require("./physical-campaign-coordinator.js")
+      .physicalCampaignClosureReadiness(domain);
+    if (campaign.active === true && campaign.satisfied !== true) {
+      blockers.push(blocker(
+        "physical_campaign_closure",
+        campaign.reason === "terminal_residue"
+          ? "physical campaign retains terminal residue"
+          : campaign.reason === "campaign_anchor_not_production_attested"
+            ? "physical campaign closure is integrity-only and lacks production authority"
+            : "physical campaign has not reconciled every bounded segment",
+        { physical_campaign: campaign },
+      ));
+    }
+  } catch (error) {
+    blockers.push(blocker(
+      "physical_campaign_closure_invalid",
+      "physical campaign closure authority could not be verified",
+      { error: compactErrorMessage(error) },
+    ));
   }
 
   return {

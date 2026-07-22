@@ -82,6 +82,15 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
   "owner",
   "priority",
   "surface_type",
+  // Capability-routing deny provenance.  A physical surface may deliberately
+  // retain an ordinary-looking type such as `api`; these explicit markers are
+  // therefore authoritative and must survive the ledger -> surface-index fold.
+  "surface_class",
+  "capability_pack",
+  "required_capability_pack",
+  "disposition",
+  "reason",
+  "brief_profile",
   "attack_vector",
   "severity_ceiling",
   "chain_family",
@@ -107,6 +116,8 @@ const SURFACE_SCALAR_TEXT_FIELDS = [
 // and OD4 depth-capping never fires on the persisted path.
 const SURFACE_SCALAR_INTEGER_FIELDS = [
   "depth",
+  "capability_pack_version",
+  "required_capability_pack_version",
 ];
 
 const SURFACE_BOOLEAN_FIELDS = [

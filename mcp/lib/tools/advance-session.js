@@ -13,7 +13,7 @@ module.exports = Object.freeze({
   description:
     "Advance the persisted SessionNucleus to a new lifecycle_state. " +
     "Enforces the allowedTransitions table from lifecycle-gates.js. " +
-    "Pass override: \"operator_force\" to bypass blockers; the override is " +
+    "Pass override: \"operator_force\" with a non-empty override_reason to bypass blockers; the override is " +
     "recorded as a governance.lifecycle.override event in session-events.jsonl.",
   inputSchema: {
     type: "object",
@@ -40,16 +40,22 @@ module.exports = Object.freeze({
         enum: ["operator_force"],
         description:
           "Operator opt-out used to advance despite structured blockers. " +
+          "Requires a non-empty override_reason. " +
           "Each override is recorded in session-events.jsonl as a " +
           "governance.lifecycle.override event with the blocker list.",
       },
       override_reason: {
         type: "string",
+        minLength: 1,
+        pattern: "\\S",
         description:
-          "Optional human-auditable reason recorded with the override event.",
+          "Human-auditable reason required whenever override is operator_force and recorded with the override event.",
       },
     },
     required: ["target_domain", "to_state"],
+    dependentRequired: {
+      override: ["override_reason"],
+    },
   },
   handler: advanceSession,
   role_bundles: ["orchestrator"],

@@ -151,8 +151,9 @@ const SESSION_LOCK_STALE_MS = 300_000;
 // fx-gate-bypass defense 1 — the process-lifetime, whole-engine singleton lock
 // (mcp/lib/engine-lock.js). Root-level (sessionsRoot(), not per-domain): the
 // engine's target_domain is unknown at process boot, so this cannot key on a
-// single session dir. Deliberately has NO staleness-reclaim policy (unlike
-// SESSION_LOCK_NAME/SESSION_LOCK_STALE_MS above) -- see engine-lock.js for why.
+// single session dir. A live owner is never displaced by a timeout;
+// engine-lock.js may reclaim only an exact same-host lock whose PID the kernel
+// proves absent. Ambiguous and foreign-host ownership still fails closed.
 const ENGINE_LOCK_NAME = ".engine.lock";
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
@@ -202,6 +203,10 @@ const SESSION_PUBLIC_STATE_FIELDS = [
   // normalization treats [] as absent).
   "target_contracts",
   "chain_authority_hash",
+  // Compact digest/epoch binding for an authenticated physical-scope import.
+  // Omitted entirely for legacy url/repo/contracts sessions so their public
+  // state projection and canonical hashes remain byte-stable.
+  "physical_scope",
 ];
 
 const VERIFICATION_ROUND_FILE_MAP = {

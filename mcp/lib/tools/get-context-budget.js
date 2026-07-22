@@ -16,7 +16,7 @@ module.exports = Object.freeze({
     required: ["capability_pack"],
   },
   handler: getContextBudget,
-  role_bundles: ["evaluator-shared", "orchestrator"],
+  role_bundles: ["evaluator-shared", "evaluator-physical", "orchestrator"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

@@ -63,6 +63,22 @@
 // agent cannot forge a "the signer is isolated" fact.
 
 const fs = require("fs");
+const path = require("path");
+const { types: utilTypes } = require("node:util");
+
+// Capture the data-shape intrinsics at trusted module load. The production
+// signer owner must not let a later Array/Object prototype mutation turn option
+// validation into a caller-controlled branch.
+const arrayIsArray = Array.isArray;
+const arrayEvery = Function.call.bind(Array.prototype.every);
+const arrayFind = Function.call.bind(Array.prototype.find);
+const arrayIncludes = Function.call.bind(Array.prototype.includes);
+const arrayMap = Function.call.bind(Array.prototype.map);
+const arraySome = Function.call.bind(Array.prototype.some);
+const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const objectGetPrototypeOf = Object.getPrototypeOf;
+const objectHasOwn = Function.call.bind(Object.prototype.hasOwnProperty);
+const reflectOwnKeys = Reflect.ownKeys;
 
 // Operator attestation channel. The ack is an ENVIRONMENT variable, NOT a tool
 // argument: a model that can call bob_init_session must not be able to assert
@@ -287,6 +303,290 @@ function probeKeyPathIsolation(keyPath) {
   });
 }
 
+// Hardened Mechanism-A probe for a production signing owner.  Unlike the
+// legacy verdict probe above, this binds one exact private-key inode to an
+// exact owner-only custody subtree and rechecks the whole parent chain around
+// a no-follow descriptor open.  `custodyRoot` is the outer trusted root (for
+// Plane-PH this is the exact session directory); `expectedRoot` is the
+// component-owned root below it (for example experiment-trust).  Returning a
+// path-less structural projection lets an owner port bind the proof without
+// exposing a signer home or private-key pathname to model-facing consumers.
+function probeExactSigningKeyPathIsolation(keyPathInput, options = {}) {
+  if (typeof keyPathInput !== "string" || keyPathInput.length === 0
+      || !path.isAbsolute(keyPathInput) || path.normalize(keyPathInput) !== keyPathInput) {
+    throw new Error("exact signing-key isolation requires a normalized absolute key path");
+  }
+  if (options == null || typeof options !== "object" || arrayIsArray(options)
+      || utilTypes.isProxy(options)) {
+    throw new Error("exact signing-key isolation options must be an object");
+  }
+  const optionsPrototype = objectGetPrototypeOf(options);
+  if (optionsPrototype !== Object.prototype && optionsPrototype !== null) {
+    throw new Error("exact signing-key isolation options must be a plain object");
+  }
+  const optionKeys = reflectOwnKeys(options);
+  if (arraySome(optionKeys, (key) => typeof key !== "string")
+      || arraySome(optionKeys, (key) => !arrayIncludes(["expectedRoot", "custodyRoot"], key))) {
+    throw new Error("exact signing-key isolation options have unknown fields");
+  }
+  for (const key of optionKeys) {
+    const descriptor = objectGetOwnPropertyDescriptor(options, key);
+    if (!descriptor || !objectHasOwn(descriptor, "value")
+        || descriptor.enumerable !== true) {
+      throw new Error(`exact signing-key isolation option ${key} must be an enumerable data field`);
+    }
+  }
+  if (!objectHasOwn(options, "expectedRoot")) {
+    throw new Error("exact signing-key isolation requires expectedRoot");
+  }
+  const expectedRootInput = options.expectedRoot;
+  const custodyRootInput = options.custodyRoot == null
+    ? expectedRootInput
+    : options.custodyRoot;
+  for (const [label, value] of [
+    ["expectedRoot", expectedRootInput],
+    ["custodyRoot", custodyRootInput],
+  ]) {
+    if (typeof value !== "string" || value.length === 0
+        || !path.isAbsolute(value) || path.normalize(value) !== value) {
+      throw new Error(`exact signing-key isolation ${label} must be a normalized absolute path`);
+    }
+  }
+
+  const keyPath = keyPathInput;
+  const expectedRoot = expectedRootInput;
+  const custodyRoot = custodyRootInput;
+  const me = typeof process.getuid === "function" ? process.getuid() : null;
+  const signerUid = operatorSignerUid();
+  const agentUid = operatorAgentUid();
+  const ackPresent = operatorSandboxAckPresent();
+  const notRoot = me != null && me !== 0;
+  const processIsSigner = me != null && signerUid != null && me === signerUid;
+  const agentDistinct = signerUid != null && agentUid != null
+    && agentUid !== signerUid && agentUid !== 0;
+  const noFollowSupported = Number.isInteger(fs.constants.O_NOFOLLOW)
+    && fs.constants.O_NOFOLLOW !== 0;
+
+  const result = {
+    version: 1,
+    assurance: "mechanism_a_exact_signing_key_path_isolation",
+    operator_ack_present: ackPresent,
+    process_uid: me,
+    declared_signer_uid: signerUid,
+    declared_agent_uid: agentUid,
+    process_is_signer: processIsSigner,
+    agent_distinct: agentDistinct,
+    not_root: notRoot,
+    expected_root_within_custody_root: false,
+    key_within_expected_root: false,
+    custody_root_present: false,
+    custody_root_real_directory: false,
+    custody_root_owner_only_mode: false,
+    custody_root_owner_uid: null,
+    custody_root_identity: null,
+    expected_root_present: false,
+    expected_root_real_directory: false,
+    expected_root_owner_only_mode: false,
+    expected_root_owner_uid: null,
+    expected_root_identity: null,
+    parent_chain_real_directories: false,
+    parent_chain_owner_only_mode: false,
+    parent_chain_owned_by_signer: false,
+    parent_chain_stable: false,
+    nofollow_open_supported: noFollowSupported,
+    key_present: false,
+    key_regular_file: false,
+    key_single_link: false,
+    key_owner_only_mode: false,
+    key_owner_read_only_mode: false,
+    key_owner_uid: null,
+    key_identity: null,
+    process_owns_key: false,
+    key_inode_stable: false,
+    isolated: false,
+  };
+
+  function freezeResult() {
+    return Object.freeze({ ...result });
+  }
+
+  function isContained(root, child, { allowSame }) {
+    const relative = path.relative(root, child);
+    if (relative === "") return allowSame;
+    return !path.isAbsolute(relative)
+      && relative !== ".."
+      && !relative.startsWith(`..${path.sep}`);
+  }
+
+  result.expected_root_within_custody_root = isContained(
+    custodyRoot,
+    expectedRoot,
+    { allowSame: true },
+  );
+  result.key_within_expected_root = isContained(
+    expectedRoot,
+    keyPath,
+    { allowSame: false },
+  );
+  if (!result.expected_root_within_custody_root || !result.key_within_expected_root) {
+    return freezeResult();
+  }
+
+  function identity(stats) {
+    return `${String(stats.dev)}:${String(stats.ino)}`;
+  }
+
+  function ownerOnly(stats) {
+    const mode = Number(stats.mode);
+    return Number.isInteger(mode) && (mode & 0o077) === 0;
+  }
+
+  function sameNode(left, right) {
+    return left != null && right != null
+      && left.dev === right.dev
+      && left.ino === right.ino
+      && left.uid === right.uid
+      && left.mode === right.mode
+      && left.nlink === right.nlink;
+  }
+
+  const keyParent = path.dirname(keyPath);
+  const relativeParent = path.relative(custodyRoot, keyParent);
+  const components = relativeParent === "" ? [] : relativeParent.split(path.sep);
+  const chainPaths = [custodyRoot];
+  let cursor = custodyRoot;
+  for (const component of components) {
+    if (!component || component === "." || component === "..") return freezeResult();
+    cursor = path.join(cursor, component);
+    chainPaths.push(cursor);
+  }
+  if (cursor !== keyParent || !arrayIncludes(chainPaths, expectedRoot)) return freezeResult();
+
+  const chainBefore = [];
+  try {
+    for (const directoryPath of chainPaths) {
+      chainBefore.push({ directoryPath, stats: fs.lstatSync(directoryPath) });
+    }
+  } catch {
+    return freezeResult();
+  }
+  const custodyEntry = chainBefore[0];
+  const expectedEntry = arrayFind(
+    chainBefore,
+    (entry) => entry.directoryPath === expectedRoot,
+  );
+  result.custody_root_present = true;
+  result.custody_root_owner_uid = custodyEntry.stats.uid;
+  result.custody_root_identity = identity(custodyEntry.stats);
+  result.custody_root_real_directory = custodyEntry.stats.isDirectory()
+    && !custodyEntry.stats.isSymbolicLink();
+  result.custody_root_owner_only_mode = ownerOnly(custodyEntry.stats);
+  if (expectedEntry) {
+    result.expected_root_present = true;
+    result.expected_root_owner_uid = expectedEntry.stats.uid;
+    result.expected_root_identity = identity(expectedEntry.stats);
+    result.expected_root_real_directory = expectedEntry.stats.isDirectory()
+      && !expectedEntry.stats.isSymbolicLink();
+    result.expected_root_owner_only_mode = ownerOnly(expectedEntry.stats);
+  }
+  result.parent_chain_real_directories = arrayEvery(chainBefore, ({ stats }) => (
+    stats.isDirectory() && !stats.isSymbolicLink()
+  ));
+  result.parent_chain_owner_only_mode = arrayEvery(
+    chainBefore,
+    ({ stats }) => ownerOnly(stats),
+  );
+  result.parent_chain_owned_by_signer = signerUid != null
+    && arrayEvery(chainBefore, ({ stats }) => stats.uid === signerUid);
+  if (!result.parent_chain_real_directories
+      || !result.parent_chain_owner_only_mode
+      || !result.parent_chain_owned_by_signer) {
+    return freezeResult();
+  }
+
+  let keyBefore;
+  try {
+    keyBefore = fs.lstatSync(keyPath);
+  } catch {
+    return freezeResult();
+  }
+  result.key_present = true;
+  result.key_owner_uid = keyBefore.uid;
+  result.key_identity = identity(keyBefore);
+  result.key_regular_file = keyBefore.isFile() && !keyBefore.isSymbolicLink();
+  result.key_single_link = keyBefore.nlink === 1;
+  result.key_owner_only_mode = ownerOnly(keyBefore);
+  result.key_owner_read_only_mode = Number.isInteger(Number(keyBefore.mode))
+    && (Number(keyBefore.mode) & 0o777) === 0o400;
+  result.process_owns_key = me != null && keyBefore.uid === me;
+  if (!result.key_regular_file || !result.key_single_link
+      || !result.key_owner_only_mode || !result.key_owner_read_only_mode
+      || !result.process_owns_key || !noFollowSupported) {
+    return freezeResult();
+  }
+
+  let descriptor = null;
+  let descriptorStats = null;
+  try {
+    descriptor = fs.openSync(
+      keyPath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    descriptorStats = fs.fstatSync(descriptor);
+  } catch {
+    return freezeResult();
+  } finally {
+    if (descriptor != null) {
+      try { fs.closeSync(descriptor); } catch {}
+    }
+  }
+
+  let keyAfter;
+  let chainAfter;
+  try {
+    keyAfter = fs.lstatSync(keyPath);
+    chainAfter = arrayMap(chainBefore, ({ directoryPath }) => ({
+      directoryPath,
+      stats: fs.lstatSync(directoryPath),
+    }));
+  } catch {
+    return freezeResult();
+  }
+  result.key_inode_stable = sameNode(keyBefore, descriptorStats)
+    && sameNode(keyBefore, keyAfter)
+    && descriptorStats.isFile()
+    && descriptorStats.nlink === 1;
+  result.parent_chain_stable = chainAfter.length === chainBefore.length
+    && arrayEvery(chainAfter, (entry, index) => (
+      entry.directoryPath === chainBefore[index].directoryPath
+      && sameNode(entry.stats, chainBefore[index].stats)
+    ));
+  result.isolated = Boolean(
+    ackPresent
+      && processIsSigner
+      && agentDistinct
+      && notRoot
+      && result.expected_root_within_custody_root
+      && result.key_within_expected_root
+      && result.custody_root_real_directory
+      && result.custody_root_owner_only_mode
+      && result.expected_root_real_directory
+      && result.expected_root_owner_only_mode
+      && result.parent_chain_real_directories
+      && result.parent_chain_owner_only_mode
+      && result.parent_chain_owned_by_signer
+      && result.parent_chain_stable
+      && result.key_regular_file
+      && result.key_single_link
+      && result.key_owner_only_mode
+      && result.key_owner_read_only_mode
+      && result.process_owns_key
+      && result.key_inode_stable
+      && noFollowSupported,
+  );
+  return freezeResult();
+}
+
 // Combine the live probe with the operator env channel. attested:true requires
 // ALL of: the ack token present AND a declared signer uid AND the probe proves
 // isolation (legs (a)-(e), which already subsume process==signer and
@@ -401,6 +701,7 @@ module.exports = {
   resolveSandboxAttestationMode,
   probeSigningKeyIsolation,
   probeVerdictLedgerKeyIsolation,
+  probeExactSigningKeyPathIsolation,
   evaluateSandboxIsolation,
   recordSandboxIsolationAttestation,
   readSandboxIsolationAttestation,

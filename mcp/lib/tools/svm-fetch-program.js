@@ -178,12 +178,13 @@ module.exports = Object.freeze({
   handler,
   role_bundles: ["evaluator-svm", "verifier", "evidence", "sc-recon"],
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["contracts"],
   // Exposed for tests
   _internals: { base58Encode, parseProgramAccount, parseProgramDataAccount },
 });

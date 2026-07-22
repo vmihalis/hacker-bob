@@ -44,6 +44,7 @@ module.exports = Object.freeze({
   inputSchema: {
     "type": "object",
     "properties": {
+      "target_domain": { "type": "string" },
       "chain_id": { "type": "integer", "minimum": 1 },
       "to": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
       "data": { "type": "string", "pattern": "^0x[0-9a-fA-F]*$" },
@@ -56,15 +57,16 @@ module.exports = Object.freeze({
       "from": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
       "endpoints": { "type": "array", "items": { "type": "string", "format": "uri" }, "maxItems": 8 }
     },
-    "required": ["chain_id", "to", "data"]
+    "required": ["target_domain", "chain_id", "to", "data"]
   },
   handler,
   role_bundles: ["evaluator-evm", "verifier", "evidence", "sc-recon"],
   mutating: false,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: false,
   session_artifacts_written: [],
+  required_session_axes: ["contracts"],
 });

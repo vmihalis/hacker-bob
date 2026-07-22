@@ -1251,6 +1251,7 @@ module.exports = Object.freeze({
   findingPayloadsFromClaims,
   degradedReportableFindingIds,
   computeFindingDedupeKey,
+  scanExistingFindingFootprint,
   CLAIM_TEXT_LIMITS,
   SECRET_DETECTION_BYPASS_FIELDS,
 });

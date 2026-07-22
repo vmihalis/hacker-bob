@@ -33,9 +33,12 @@ const {
   getTechniquePackById,
 } = require("./technique-packs.js");
 const {
-  CAPABILITY_PACKS,
+  PHYSICAL_CAPABILITY_PACK,
+  dispatchableCapabilityPacks,
   getCapabilityPack,
   classifySurfaceCapability,
+  isCapabilityPackDispatchable,
+  isPhysicalSurfaceMetadata,
   isBugClassRelevantForSurface,
 } = require("./capability-packs.js");
 const {
@@ -95,7 +98,8 @@ const RECOMMENDED_READS_PER_SURFACE = 3;
 // the purity divider.
 const EVALUATOR_ROLE_BUNDLES_BY_CAPABILITY_PACK = Object.freeze(
   Object.fromEntries(
-    Object.entries(CAPABILITY_PACKS).map(([packId, pack]) => {
+    dispatchableCapabilityPacks().map((pack) => {
+      const packId = pack.id;
       const bundles = Array.isArray(pack.role_bundles) ? pack.role_bundles : [];
       if (bundles.length === 0) {
         throw new Error(
@@ -184,20 +188,52 @@ function dedupePreserveOrder(values) {
 
 // The authoritative routability of a surface's metadata, consumed by the
 // single-surface deriver (and by downstream disposition recorders). Returns
-// `{ pack_id, routable, surface_type, reason }`. A smart_contract surface whose
-// chain_family is missing/unsupported is `routable:false` with a `null` pack and
-// a human-readable `reason`; it is NEVER laundered into the web pack. Web/OSS/
-// resolved-SC/unknown-type surfaces are `routable:true` with their resolved pack.
+// `{ pack_id, required_pack_id?, routable, surface_type, surface_class?, reason }`.
+// An unavailable physical pack and a smart_contract surface whose chain_family
+// is missing/unsupported are `routable:false` with a null active pack and a
+// human-readable reason; neither is ever laundered into the web pack. Web/OSS/
+// resolved-SC/unknown-type surfaces are routable with their resolved pack.
 // PURE: consults only classifySurfaceCapability + getCapabilityPack (both pure).
 function routabilityForSurfaceMetadata(metadata) {
   if (!isPlainObject(metadata)) {
     return { pack_id: DEFAULT_CAPABILITY_PACK_ID, routable: true, surface_type: "unknown", reason: null };
   }
+  // A persisted unroutable disposition and, especially, an in-memory
+  // quarantine tombstone are authority facts.  They must be interpreted
+  // before the historical unknown->web classifier fallback.
+  if (metadata.disposition === "unroutable" || metadata.dispatch_blocked === true) {
+    const surfaceClass = typeof metadata.surface_class === "string"
+      ? metadata.surface_class
+      : (isPhysicalSurfaceMetadata(metadata) ? "physical" : null);
+    return {
+      pack_id: null,
+      required_pack_id: typeof metadata.required_capability_pack === "string"
+        ? metadata.required_capability_pack
+        : null,
+      required_pack_version: Number.isInteger(metadata.required_capability_pack_version)
+        ? metadata.required_capability_pack_version
+        : null,
+      routable: false,
+      surface_type: typeof metadata.surface_type === "string" && metadata.surface_type.length > 0
+        ? metadata.surface_type
+        : "unknown",
+      surface_class: surfaceClass,
+      reason: typeof metadata.reason === "string" && metadata.reason.length > 0
+        ? metadata.reason
+        : "unroutable surface",
+      dispatch_blocked: metadata.dispatch_blocked === true,
+      route_metadata_status: typeof metadata.route_metadata_status === "string"
+        ? metadata.route_metadata_status
+        : null,
+    };
+  }
   // Pre-classified short-circuit: the metadata may already carry a resolved
   // `capability_pack` (the surface-routes.json shape). Honor it directly.
-  if (typeof metadata.capability_pack === "string" && metadata.capability_pack.length > 0) {
+  if (!isPhysicalSurfaceMetadata(metadata)
+      && typeof metadata.capability_pack === "string"
+      && metadata.capability_pack.length > 0) {
     const pack = getCapabilityPack(metadata.capability_pack);
-    if (pack) {
+    if (isCapabilityPackDispatchable(pack)) {
       return {
         pack_id: pack.id,
         routable: true,
@@ -205,6 +241,19 @@ function routabilityForSurfaceMetadata(metadata) {
           ? metadata.surface_type
           : "unknown",
         reason: null,
+      };
+    }
+    if (pack) {
+      return {
+        pack_id: null,
+        required_pack_id: pack.id,
+        required_pack_version: pack.capability_pack_version,
+        routable: false,
+        surface_type: typeof metadata.surface_type === "string" && metadata.surface_type.length > 0
+          ? metadata.surface_type
+          : "unknown",
+        surface_class: pack.surface_class || null,
+        reason: pack.dispatch_block_reason || `capability pack ${pack.id} is not dispatchable`,
       };
     }
   }
@@ -215,11 +264,14 @@ function routabilityForSurfaceMetadata(metadata) {
     if (classified.routable === false) {
       const reason = classified.unroutable_reason
         || (Array.isArray(classified.reasons) && classified.reasons[0])
-        || "unroutable smart_contract";
+        || "unroutable surface";
       return {
         pack_id: null,
+        required_pack_id: classified.required_capability_pack || null,
+        required_pack_version: classified.required_capability_pack_version || null,
         routable: false,
         surface_type: classified.surface_type || "unknown",
+        surface_class: classified.surface_class || null,
         reason,
       };
     }
@@ -227,29 +279,30 @@ function routabilityForSurfaceMetadata(metadata) {
       pack_id: classified.capability_pack,
       routable: true,
       surface_type: classified.surface_type || "unknown",
+      surface_class: classified.surface_class || null,
       reason: null,
     };
   } catch (err) {
-    // Defensive: any unexpected classifier error must not launder a
-    // smart_contract surface into the web pack; surface it as an unroutable
-    // disposition instead (fail-closed, Y-D21).
+    // Defensive: any unexpected classifier error must not launder a typed
+    // surface into the web pack; surface it as an unroutable disposition.
     return {
       pack_id: null,
       routable: false,
-      surface_type: "smart_contract",
-      reason: (err && err.message) ? err.message : "unroutable smart_contract",
+      surface_type: typeof metadata.surface_type === "string" && metadata.surface_type.length > 0
+        ? metadata.surface_type
+        : "unknown",
+      surface_class: null,
+      reason: (err && err.message) ? err.message : "unroutable surface",
     };
   }
 }
 
 function packIdForSurfaceMetadata(metadata) {
-  // String-returning contract preserved for the cross-stack union callers
-  // (deriveTransitionPack / deriveChildFanoutPlan): an unroutable endpoint
-  // contributes the graceful web baseline to the UNION, never a hard stop. The
-  // single-surface deriver consults routabilityForSurfaceMetadata directly so
-  // it can record the unroutable disposition instead of degrading to web.
+  // Only a genuinely routable surface owns a capability pack. Returning null
+  // for unavailable physical and ambiguous smart-contract surfaces prevents a
+  // caller from mistaking either for the historical web default.
   const r = routabilityForSurfaceMetadata(metadata);
-  return r.routable ? r.pack_id : DEFAULT_CAPABILITY_PACK_ID;
+  return r.routable ? r.pack_id : null;
 }
 
 function toolsForCapabilityPack(packId) {
@@ -262,6 +315,18 @@ function toolsForCapabilityPack(packId) {
     }
   }
   return Array.from(tools);
+}
+
+function toolsForUnroutableSurface(routability) {
+  // The legacy smart-contract disposition keeps the existing shared baseline.
+  // A physical surface gets no model-callable fallback tools at all: even the
+  // historical "shared" bundle contains web/browser/repo surfaces and would be
+  // an accidental authority expansion while the physical role is unregistered.
+  if (routability && (
+    routability.surface_class === "physical"
+    || routability.dispatch_blocked === true
+  )) return [];
+  return toolNamesForRoleBundle("evaluator-shared");
 }
 
 // Pull a stable set of artifact_refs from the bounded observation history.
@@ -310,20 +375,21 @@ function packsFromContractProductionPaths(contract) {
   if (!isPlainObject(contract) || !Array.isArray(contract.production_paths)) return [];
   // Group tools by their owning capability_pack so a Hypothesis-node pack
   // ends up with the union of every capability_pack the Contract's
-  // production_paths touch. Iterates the closed CAPABILITY_PACKS registry —
+  // production_paths touch. Iterates the dispatchable capability-pack registry —
   // a tool that doesn't fit a registered pack falls through silently here
   // (it's still surfaced via `allowed_tools_for_node[]` directly from the
   // Contract's production_paths.tool_call_pattern[].tool list at the
   // caller's discretion).
   const seenPacks = new Set();
   const orderedPacks = [];
+  const dispatchablePackIds = dispatchableCapabilityPacks().map((pack) => pack.id);
   for (const path of contract.production_paths) {
     if (!isPlainObject(path)) continue;
     const tcp = Array.isArray(path.tool_call_pattern) ? path.tool_call_pattern : [];
     for (const entry of tcp) {
       const tool = isPlainObject(entry) ? entry.tool : null;
       if (typeof tool !== "string") continue;
-      for (const packId of Object.keys(CAPABILITY_PACKS)) {
+      for (const packId of dispatchablePackIds) {
         if (seenPacks.has(packId)) continue;
         const packTools = toolsForCapabilityPack(packId);
         if (packTools.includes(tool)) {
@@ -462,10 +528,16 @@ function deriveSurfacePack(node, graph_context) {
   if (routability.routable === false) {
     return {
       capability_pack_ids: [],
-      allowed_tools: dedupeSorted(toolNamesForRoleBundle("evaluator-shared")),
+      allowed_tools: dedupeSorted(toolsForUnroutableSurface(routability)),
       brief_emphasis: {
         node_kind: "surface",
         capability_pack: null,
+        ...(routability.required_pack_id
+          ? {
+            required_capability_pack: routability.required_pack_id,
+            required_capability_pack_version: routability.required_pack_version,
+          }
+          : {}),
         routable: false,
         unroutable_reason: routability.reason,
         primary_surface_id: primarySurfaceId,
@@ -816,7 +888,7 @@ function deriveChildFanoutPlan(parentSurfaceId, surfaceMetadata, options) {
   const packId = r.routable === true ? r.pack_id : null;
   const allowedToolsForChild = r.routable === true
     ? dedupeSorted(toolsForCapabilityPack(r.pack_id))
-    : dedupeSorted(toolNamesForRoleBundle("evaluator-shared"));
+    : dedupeSorted(toolsForUnroutableSurface(r));
   const childCapabilityPackIds = r.routable === true
     ? Object.freeze([packId])
     : Object.freeze([]);
@@ -1037,9 +1109,9 @@ function deriveTransitionPack(node, graph_context) {
         allowedToolSet.add(tool);
       }
     } else {
-      // Unroutable endpoint: contribute the read-only evaluator-shared baseline
-      // (never a web attack toolset) and no capability_pack id.
-      for (const tool of toolNamesForRoleBundle("evaluator-shared")) {
+      // An unavailable physical endpoint contributes no model tools. Other
+      // legacy unroutable types retain their prior shared baseline.
+      for (const tool of toolsForUnroutableSurface(r)) {
         allowedToolSet.add(tool);
       }
     }
@@ -1121,6 +1193,23 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
     : { adjacent_nodes: [], incident_edges: [], surface_metadata_by_id: {} };
   const history = Array.isArray(observation_history) ? observation_history : [];
   const normalizedContract = isPlainObject(contract) ? contract : null;
+  // Physical is a deny-precedence family while its pack is registered but
+  // non-dispatchable. Apply that fact at the final per-node boundary, not just
+  // inside deriveSurfacePack: Transition, Hypothesis, and Cell nodes can carry
+  // physical refs too, and their other endpoint/Contract/overlay tool unions
+  // must not turn a physical-connected node into a web-shaped dispatch.
+  const physicalSurfaceRefs = dedupeSorted(
+    asStringArray(node.surface_refs).filter((surfaceId) => (
+      isPhysicalSurfaceMetadata(ctx.surface_metadata_by_id[surfaceId])
+    )),
+  );
+  const physicalDispatchBlocked = physicalSurfaceRefs.length > 0;
+  const quarantinedSurfaceRefs = dedupeSorted(
+    asStringArray(node.surface_refs).filter((surfaceId) => (
+      routabilityForSurfaceMetadata(ctx.surface_metadata_by_id[surfaceId]).dispatch_blocked === true
+    )),
+  );
+  const hardDispatchBlocked = physicalDispatchBlocked || quarantinedSurfaceRefs.length > 0;
 
   // Plane Y Cycle Y.4 — optional bounded inputs (Y-P4 + Y-P6 + O5).
   //
@@ -1268,7 +1357,7 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
       frictionWantedTools.push(wantedTool);
     }
   }
-  const targetClassAuxTools = targetClass
+  const targetClassAuxTools = targetClass && !hardDispatchBlocked
     ? deriveAuxiliaryToolsForTargetClass(targetClass).slice()
     : [];
   // PACK-level friction widening (Y-P6). A chronic deficiency observed on ANY
@@ -1285,7 +1374,7 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
     ? opts.pack_friction_aggregate
     : null;
   const packWidenedToolSet = new Set();
-  if (packFrictionAggregate) {
+  if (packFrictionAggregate && !hardDispatchBlocked) {
     for (const packId of perKind.capability_pack_ids) {
       const toolBuckets = packFrictionAggregate[packId];
       if (!isPlainObject(toolBuckets)) continue;
@@ -1305,22 +1394,53 @@ function derivePackForNode(node, graph_context, observation_history, contract, o
     }
   }
   const packWidenedTools = Array.from(packWidenedToolSet).sort();
-  const unionedAllowedTools = dedupeSorted([
-    ...perKind.allowed_tools,
-    ...frictionWantedTools,
-    ...targetClassAuxTools,
-    ...packWidenedTools,
-  ]);
+  const unionedAllowedTools = hardDispatchBlocked
+    ? []
+    : dedupeSorted([
+      ...perKind.allowed_tools,
+      ...frictionWantedTools,
+      ...targetClassAuxTools,
+      ...packWidenedTools,
+    ]);
+  const resultTechniquePacks = hardDispatchBlocked ? [] : techniquePacks;
+  const resultCapabilityPackIds = hardDispatchBlocked
+    ? []
+    : perKind.capability_pack_ids.slice();
+  const resultBriefEmphasis = physicalDispatchBlocked
+    ? {
+      ...perKind.brief_emphasis,
+      capability_pack: null,
+      endpoint_capability_packs: [],
+      capability_pack_ids: [],
+      required_capability_pack: PHYSICAL_CAPABILITY_PACK.id,
+      required_capability_pack_version: PHYSICAL_CAPABILITY_PACK.capability_pack_version,
+      routable: false,
+      physical_dispatch_blocked: true,
+      physical_surface_refs: physicalSurfaceRefs,
+    }
+    : quarantinedSurfaceRefs.length > 0
+      ? {
+        ...perKind.brief_emphasis,
+        capability_pack: null,
+        endpoint_capability_packs: [],
+        capability_pack_ids: [],
+        routable: false,
+        route_metadata_blocked: true,
+        blocked_surface_refs: quarantinedSurfaceRefs,
+      }
+      : {
+      ...perKind.brief_emphasis,
+      capability_pack_ids: resultCapabilityPackIds,
+      };
 
   return Object.freeze({
-    technique_packs: Object.freeze(techniquePacks),
+    technique_packs: Object.freeze(resultTechniquePacks),
     cli_tool_packs: Object.freeze([]),
     allowed_tools_for_node: Object.freeze(unionedAllowedTools),
     recommended_reads_for_node: Object.freeze(recommendedReads),
     brief_emphasis: Object.freeze({
-      ...perKind.brief_emphasis,
-      capability_pack_ids: perKind.capability_pack_ids.slice(),
-      technique_pack_ids: Array.from(techniquePackIds).sort(),
+      ...resultBriefEmphasis,
+      technique_pack_ids: hardDispatchBlocked ? [] : Array.from(techniquePackIds).sort(),
       target_class: targetClass,
       friction_history_count: frictionHistory.length,
       pack_friction_widened_tools_count: packWidenedTools.length,

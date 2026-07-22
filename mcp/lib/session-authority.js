@@ -31,6 +31,20 @@ const {
 const {
   isChainTupleInAuthority,
 } = require("./chain-authority.js");
+const {
+  derivePhysicalSessionIdentity,
+  isPhysicalSessionTargetDomain,
+  PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN,
+} = require("./physical-session-identity.js");
+const {
+  readVerifiedPhysicalSessionBootstrapJournal,
+} = require("./physical-session-journal.js");
+const {
+  readVerifiedSessionNucleus,
+} = require("./governance-store.js");
+const {
+  sessionNucleusFromState,
+} = require("./governance-contracts.js");
 
 const AUTHORITY_VERSION = 1;
 const AUTHORITY_MODE_ENV = "BOB_SESSION_AUTHORITY_MODE";
@@ -86,10 +100,10 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_cosmwasm_smart_query: "smart_contract_contextual",
   bob_diff_verification_attempts: "initialized_session_read",
   bob_evaluate_capabilities: "global_read",
-  bob_evm_call: "global_preapproval",
+  bob_evm_call: "smart_contract_contextual",
   bob_evm_fetch_source: "smart_contract_contextual",
-  bob_evm_role_table: "global_preapproval",
-  bob_evm_storage_read: "global_preapproval",
+  bob_evm_role_table: "smart_contract_contextual",
+  bob_evm_storage_read: "smart_contract_contextual",
   bob_extract_routes: "initialized_session_read",
   bob_finalize_agent_run: "initialized_session_mutation",
   bob_foundry_run: "smart_contract_contextual",
@@ -116,6 +130,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   // session-bound mutation path (which would deadlock on a pre-existing
   // state.json + a target_domain argument this tool's schema does not carry).
   bob_init_contract_session: "bootstrap_session",
+  bob_init_physical_session: "bootstrap_session",
   bob_list_auth_profiles: "initialized_session_read",
   bob_list_candidate_claims: "initialized_session_read",
   bob_log_capability_friction: "initialized_session_mutation",
@@ -220,6 +235,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_read_verification_round: "initialized_session_read",
   bob_read_wave_handoffs: "initialized_session_read",
   bob_record_candidate_claim: "initialized_session_mutation",
+  bob_record_physical_candidate_claim: "initialized_session_mutation",
   bob_record_surface_leads: "initialized_session_mutation",
   // Writes the mechanism-candidates.jsonl session ledger (a knowledge ingest like
   // bob_ingest_audit_report); it mutates session state and is not a belief signal,
@@ -233,6 +249,23 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_verify_oracle_differential: "initialized_session_mutation",
   bob_verify_invariant_differential: "initialized_session_mutation",
   bob_verify_finding_differential: "initialized_session_mutation",
+  // Plane-PH read-only verdict adapter.  Explicitly session-bound so its
+  // global_preapproval UI metadata can never downgrade it to a global read;
+  // required_session_axes:[physical] is enforced inside authorizeSessionBound.
+  bob_verify_physical_verdict: "initialized_session_read",
+  bob_verify_physical_candidate_claim: "initialized_session_read",
+  // PH-I1 exposes only signed, current, report-safe capability projections;
+  // it is still bound to the initialized physical-session authority axis.
+  bob_query_instrument_capabilities: "initialized_session_read",
+  // PH-C execution adapters consume one-use server-owned execution refs and
+  // can cause bounded physical effects, so every family is a session mutation.
+  bob_physical_observe: "initialized_session_mutation",
+  bob_credential_acquire: "initialized_session_mutation",
+  bob_credential_recover: "initialized_session_mutation",
+  bob_credential_emulate: "initialized_session_mutation",
+  bob_credential_write: "initialized_session_mutation",
+  bob_protocol_transceive: "initialized_session_mutation",
+  bob_rf_trace: "initialized_session_mutation",
   bob_repo_inventory: "initialized_session_mutation",
   bob_repo_prepare_env: "initialized_session_mutation",
   bob_resolve_body: "initialized_session_read",
@@ -258,7 +291,7 @@ const EXPLICIT_AUTHORITY_CLASS_BY_TOOL = Object.freeze({
   bob_summarize_diff_impact: "initialized_session_mutation",
   bob_svm_fetch_account: "smart_contract_contextual",
   bob_svm_fetch_program: "smart_contract_contextual",
-  bob_temp_email: "global_preapproval",
+  bob_temp_email: "scoped_http_network",
   bob_wave_handoff_status: "initialized_session_read",
   bob_wave_status: "initialized_session_read",
   bob_write_chain_attempt: "initialized_session_mutation",
@@ -349,6 +382,9 @@ function targetDomainPresent(args) {
 
 function safeArgumentTargetDomain(args) {
   if (!targetDomainPresent(args)) return null;
+  if (isPhysicalSessionTargetDomain(args.target_domain.trim())) {
+    return args.target_domain.trim();
+  }
   try {
     return assertHttpScopeDomain(args.target_domain);
   } catch {
@@ -641,6 +677,11 @@ function normalizeArgumentTarget(rule, args, opts = {}) {
     args.target_domain = trimmed;
     return trimmed;
   }
+  if (PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN.test(args.target_domain.trim())) {
+    const trimmed = args.target_domain.trim();
+    args.target_domain = trimmed;
+    return trimmed;
+  }
   try {
     const normalized = assertHttpScopeDomain(args.target_domain, opts);
     args.target_domain = normalized;
@@ -728,6 +769,9 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
   // target_repo presence check.
   const isRepoAuthority = isRepoTargetDomain(authorityTargetDomain);
   const isContractAuthority = isContractTargetDomain(authorityTargetDomain);
+  const isPhysicalAuthority = isPhysicalSessionTargetDomain(authorityTargetDomain);
+  let physicalJournal = null;
+  let physicalNucleus = null;
   if (isRepoAuthority) {
     if (raw.target !== authorityTargetDomain || !isRepoTargetDomain(raw.target)) {
       throw blockedDecision(rule, args, {
@@ -797,6 +841,59 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
         match: true,
       });
     }
+  } else if (isPhysicalAuthority) {
+    if (raw.target !== authorityTargetDomain || !isPhysicalSessionTargetDomain(raw.target)) {
+      throw blockedDecision(rule, args, {
+        errorCode: "raw_target_drift",
+        envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+        message: `Physical session authority target drift for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
+    const physicalOnly = hasOwn(raw, "physical_scope") && raw.physical_scope != null
+      && raw.target_url == null
+      && raw.target_repo == null
+      && (!Array.isArray(raw.target_contracts) || raw.target_contracts.length === 0);
+    if (!physicalOnly) {
+      throw blockedDecision(rule, args, {
+        errorCode: "physical_scope_binding_missing",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: `Physical-only session authority binding is malformed for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
+    try {
+      physicalJournal = readVerifiedPhysicalSessionBootstrapJournal(
+        authorityTargetDomain,
+        { requireComplete: true },
+      );
+      physicalNucleus = readVerifiedSessionNucleus(authorityTargetDomain);
+    } catch (error) {
+      throw blockedDecision(rule, args, {
+        errorCode: "physical_bootstrap_incomplete",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: `Physical session bootstrap authority is incomplete for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+        details: { reason: error.message || String(error) },
+      });
+    }
+    if (!physicalNucleus.physical_scope
+        || physicalNucleus.physical_scope.axis_digest !== physicalJournal.physical_scope.axis_digest) {
+      throw blockedDecision(rule, args, {
+        errorCode: "physical_bootstrap_drift",
+        envelopeCode: ERROR_CODES.STATE_CONFLICT,
+        message: `Physical session bootstrap authority drift for ${authorityTargetDomain}`,
+        authorityTargetDomain,
+        sessionPresent: true,
+        match: false,
+      });
+    }
   } else {
     let rawTarget;
     try {
@@ -850,8 +947,9 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
 
   assertLegacyFailClosedFields(raw, rule, args, authorityTargetDomain);
 
+  let normalizedState;
   try {
-    normalizeSessionStateDocument(raw, authorityTargetDomain);
+    normalizedState = normalizeSessionStateDocument(raw, authorityTargetDomain);
   } catch {
     throw blockedDecision(rule, args, {
       errorCode: "malformed_state",
@@ -860,6 +958,20 @@ function readRawAuthorityState(authorityTargetDomain, rule, args) {
       authorityTargetDomain,
       sessionPresent: true,
       match: true,
+    });
+  }
+
+  if (isPhysicalAuthority
+      && (!normalizedState.physical_scope
+        || normalizedState.physical_scope.axis_digest !== physicalJournal.physical_scope.axis_digest
+        || sessionNucleusFromState(normalizedState).nucleus_hash !== physicalNucleus.nucleus_hash)) {
+    throw blockedDecision(rule, args, {
+      errorCode: "physical_bootstrap_drift",
+      envelopeCode: ERROR_CODES.STATE_CONFLICT,
+      message: `Physical session state no longer matches completed bootstrap authority for ${authorityTargetDomain}`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
     });
   }
 
@@ -889,6 +1001,41 @@ function normalizeRepoBootstrapTarget(rule, args) {
 }
 
 function authorizeBootstrap(rule, args) {
+  if (args && args.physical_scope_import_ref != null) {
+    const carriesCyberAxis = args.target_url != null
+      || args.target_repo != null
+      || args.repo_path != null
+      || args.target_contracts != null
+      || args.contracts != null
+      || args.target_domain != null;
+    if (carriesCyberAxis) {
+      throw blockedDecision(rule, args, {
+        errorCode: "normalization_failed",
+        envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+        message: "physical-only bootstrap accepts only physical_scope_import_ref",
+        sessionPresent: false,
+        match: false,
+      });
+    }
+    let identity;
+    try {
+      identity = derivePhysicalSessionIdentity(args.physical_scope_import_ref);
+    } catch (error) {
+      throw blockedDecision(rule, args, {
+        errorCode: "normalization_failed",
+        envelopeCode: ERROR_CODES.INVALID_ARGUMENTS,
+        message: error.message || String(error),
+        sessionPresent: false,
+        match: false,
+      });
+    }
+    return allowedDecision(rule, args, {
+      authorityTargetDomain: identity.target_domain,
+      source: "bootstrap",
+      sessionPresent: false,
+      match: true,
+    });
+  }
   // Cycle O.1 + O-P6 MIXED program: bootstrap accepts a target_url (web) XOR a
   // repo_path / target_repo (OSS) PRIMARY axis, plus an OPTIONAL `contracts`
   // companion that may ride either primary axis OR stand alone (pure-SC). The
@@ -1035,12 +1182,54 @@ function authorizeBootstrap(rule, args) {
 
 function authorizeSessionBound(tool, rule, args) {
   const authorityTargetDomain = normalizeArgumentTarget(rule, args);
+  let raw;
   try {
-    readRawAuthorityState(authorityTargetDomain, rule, args);
+    raw = readRawAuthorityState(authorityTargetDomain, rule, args);
   } catch (error) {
     const shadow = shadowDecision(error, tool, rule);
     if (shadow) return shadow;
     throw error;
+  }
+  const physicalOnly = raw && raw.physical_scope != null
+    && raw.target_url == null
+    && raw.target_repo == null
+    && (!Array.isArray(raw.target_contracts) || raw.target_contracts.length === 0);
+  const currentAxes = [
+    raw && raw.target_url != null ? "url" : null,
+    raw && raw.target_repo != null ? "repo" : null,
+    raw && Array.isArray(raw.target_contracts) && raw.target_contracts.length > 0 ? "contracts" : null,
+    raw && raw.physical_scope != null ? "physical" : null,
+  ].filter(Boolean);
+  const requiredAxes = tool && Array.isArray(tool.required_session_axes)
+    ? tool.required_session_axes
+    : [];
+  // A physical-only slug never lends authority to cyber effects. Keep this
+  // denial ahead of generic axis membership so every network/browser attempt
+  // reports the stronger physical boundary violation regardless of the tool's
+  // URL/contracts axis declaration.
+  if (physicalOnly && (
+    rule.authority_class === "scoped_http_network"
+    || rule.authority_class === "smart_contract_contextual"
+    || (tool && (tool.network_access === true || tool.browser_access === true))
+  )) {
+    throw blockedDecision(rule, args, {
+      errorCode: "physical_axis_effect_denied",
+      envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+      message: `Physical-only session ${authorityTargetDomain} cannot authorize HTTP, browser, or smart-contract effects`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
+    });
+  }
+  if (requiredAxes.length > 0 && !requiredAxes.every((axis) => currentAxes.includes(axis))) {
+    throw blockedDecision(rule, args, {
+      errorCode: "session_axis_mismatch",
+      envelopeCode: ERROR_CODES.SCOPE_BLOCKED,
+      message: `${tool.name} requires every session axis in ${requiredAxes.join(", ")}; current axes are ${currentAxes.join(", ") || "none"}`,
+      authorityTargetDomain,
+      sessionPresent: true,
+      match: false,
+    });
   }
   return allowedDecision(rule, args, {
     authorityTargetDomain,
@@ -1078,31 +1267,17 @@ function validateSessionAuthorityState(targetDomain, {
 // tool's contract/object/account argument. Tools absent from this table are
 // never chain-scope-gated.
 //
-// This table lists ONLY the target_domain-bearing, session-bound chain FETCH
-// tools (authority class smart_contract_contextual). The gate binds a tuple to
-// a bound authority solely through the caller's target_domain
-// (sessionChainContext(args.target_domain)); a tool that cannot carry a
-// target_domain cannot be resolved to a session here and so cannot be gated.
-//
-// The three global_preapproval EVM read/call tools — bob_evm_call,
-// bob_evm_storage_read, bob_evm_role_table — are deliberately NOT listed. Their
-// input schemas admit no target_domain (additionalProperties defaults closed in
-// tool-validation.validateObject, so a target_domain argument is rejected
-// before authority even runs), and this authority layer has no cwd/ambient
-// active-session resolver that could recover the caller's bound session without
-// that argument: sessions are keyed by target_domain slug in a persistent,
-// manually-purged shared home root, so enumerating them cannot identify THE
-// caller's session and a stale contract session would silently block unrelated
-// global recon. Those three therefore remain globally preapproved (recon-open),
-// exactly as they were before the chain-scope gate existed. This is a KNOWN,
-// first-class residual scope gap: for a bounded contract session the gate
-// cannot stop these three tools from reading an arbitrary same-chain contract.
-// Closing it requires a session handle these tools do not carry (schema-level
-// target_domain plus session binding), not a change in this table. substrate
-// fetch tools are likewise excluded: a runtime/storage_key read carries no
-// contract-address argument, so it cannot form a tuple and must not be blocked.
+// This table lists target_domain-bearing chain tools that carry a concrete
+// address tuple. The gate binds each tuple to the caller-selected session via
+// sessionChainContext(args.target_domain). Substrate runtime/storage fetches
+// remain absent because they carry no contract-address argument from which to
+// form an exact tuple; their contracts-axis requirement still prevents use from
+// URL/repo/physical-only sessions.
 const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
+  bob_evm_call: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.to }),
   bob_evm_fetch_source: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.address }),
+  bob_evm_role_table: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.contract }),
+  bob_evm_storage_read: (args) => ({ chain_family: "evm", chain_id: args.chain_id, address: args.address }),
   bob_sui_fetch_object: (args) => ({ chain_family: "sui", chain_id: args.network, address: args.object_id }),
   bob_sui_fetch_package: (args) => ({ chain_family: "sui", chain_id: args.network, address: args.package_id }),
   bob_aptos_fetch_module: (args) => ({ chain_family: "aptos", chain_id: args.network, address: args.address }),
@@ -1138,14 +1313,11 @@ const CHAIN_SCOPE_TUPLE_BY_TOOL = Object.freeze({
 //      node's job). Because this gate admits ONLY exact members of the bound
 //      set, bob_evm_fetch_source is scope_blocked for every transitively-
 //      discovered (depth>1) address.
-// Net: scoped/verified source-fetch reaches only the depth-1 contracts an
+// Net: scoped EVM reads and verified source-fetch reach only the depth-1 contracts an
 // operator bound at init. This holds until the deferred provenance-detection
 // node lands (which will both flip OD3 to provenanced and feed discovered
-// addresses back into the bound set). Discovery of the deeper contract graph is
-// NOT blocked — it still proceeds through the ungated probe tools
-// (bob_evm_call / bob_evm_storage_read / bob_evm_role_table, the
-// global_preapproval trio noted above); only the scoped verified source-fetch
-// is depth-1-bounded.
+// addresses back into the bound set). Deeper addresses must first be explicitly
+// rebound into session authority before any of these EVM reads can target them.
 function authorizeChainScope(tool, rule, args) {
   const toTuple = tool && CHAIN_SCOPE_TUPLE_BY_TOOL[tool.name];
   if (!toTuple) return null;
@@ -1290,6 +1462,7 @@ module.exports = {
   AUTHORITY_VERSION,
   EXPLICIT_AUTHORITY_CLASS_BY_TOOL,
   CONTRACT_TARGET_DOMAIN_PATTERN,
+  PHYSICAL_SESSION_TARGET_DOMAIN_PATTERN,
   LEGACY_DEFAULTABLE_FIELDS,
   LEGACY_FAIL_CLOSED_FIELDS,
   REPO_TARGET_DOMAIN_PATTERN,
@@ -1297,6 +1470,7 @@ module.exports = {
   baseRuleForTool,
   classForTool,
   isContractTargetDomain,
+  isPhysicalSessionTargetDomain,
   isRepoTargetDomain,
   normalizeAuthorityTelemetry,
   scopedUrlDriftError,

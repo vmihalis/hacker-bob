@@ -47,8 +47,22 @@ const {
   hashCanonicalJson,
 } = require("./verification-contracts.js");
 const {
-  TASK_GRAPH_NODE_ID_PREFIX,
+  normalizePhysicalResourceBundleBinding,
+} = require("./physical-resource-contract.js");
+const {
+  normalizePhysicalResourceDispatchBinding,
 } = require("./task-graph-events.js");
+const {
+  NODE_STATE_VALUES,
+  TASK_GRAPH_NODE_ID_PREFIX,
+  cellNodeId,
+  claimNodeId,
+  hypothesisNodeId,
+  isAllowedNodeTransition,
+  producerNodeId,
+  surfaceNodeId,
+  transitionNodeId,
+} = require("./task-graph-state-machine.js");
 // X.3 / X-P6: the SURFACE_KIND_VALUES enum is the canonical SoT for the
 // closed set of TaskGraph node kinds AND the kind discriminator persisted
 // in surface-index.json. The X.2 materializer alias TASK_GRAPH_NODE_KIND_VALUES
@@ -93,70 +107,6 @@ const TASK_GRAPH_EDGE_KIND_VALUES = Object.freeze([
 // "medium" default for unattributed tasks.
 const DEFAULT_NODE_PRIORITY = "medium";
 
-function shortHash(input) {
-  return hashCanonicalJson({ v: String(input) }).slice(0, 16);
-}
-
-// Mint a deterministic TG- node id for a Surface. Surface_ids contain colons
-// (e.g. "surface:billing"); the TG_NODE_ID_PATTERN allows those, so we keep
-// the surface_id verbatim with an `S-` discriminator. The discriminator keeps
-// hypothesis / transition / claim node ids in separate sub-namespaces so a
-// surface called "hypothesis" doesn't collide with a TG-H-* hypothesis.
-function surfaceNodeId(surfaceId) {
-  if (typeof surfaceId !== "string" || !surfaceId.trim()) return null;
-  return `${TASK_GRAPH_NODE_ID_PREFIX}S-${surfaceId.trim()}`;
-}
-
-function hypothesisNodeId({ proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}H-${proposalId.trim()}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}H-${shortHash(eventId)}`;
-}
-
-function transitionNodeId({ proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}T-${proposalId.trim()}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}T-${shortHash(eventId)}`;
-}
-
-function claimNodeId(claimId) {
-  if (typeof claimId !== "string" || !claimId.trim()) return null;
-  return `${TASK_GRAPH_NODE_ID_PREFIX}C-${claimId.trim()}`;
-}
-
-// Mint a TG- node id for a coverage cell. The raw cell_key is a JSON array
-// (e.g. ["surface:billing","","","idor","admin"]) and fails TASK_GRAPH_NODE_ID_PATTERN,
-// so the id is a hash of the cell_key (deterministic — equal cells dedupe to one
-// node). The `cell-` discriminator (distinct from S-/T-/H-/C-) keeps the cell
-// sub-namespace separate so node.transitioned kind-inference never mis-types it.
-function cellNodeId({ cellKey, proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${proposalId.trim()}`;
-  }
-  if (typeof cellKey === "string" && cellKey.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(cellKey)}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}cell-${shortHash(eventId)}`;
-}
-
-// Mint a TG- node id for a producer. A producer is a TaskGraph-only node
-// (kind "producer", outside SURFACE_KIND_VALUES) — never persisted as a surface.
-// Mirrors cellNodeId's hashing exactly: prefer the proposal_id verbatim, else a
-// shortHash of the producer_key, else a shortHash of the event id. The `producer-`
-// discriminator (distinct from S-/T-/H-/C-/cell-) keeps the producer sub-namespace
-// separate so node.transitioned kind-inference never mis-types it.
-function producerNodeId({ producerKey, proposalId, eventId }) {
-  if (typeof proposalId === "string" && proposalId.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${proposalId.trim()}`;
-  }
-  if (typeof producerKey === "string" && producerKey.trim()) {
-    return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${shortHash(producerKey)}`;
-  }
-  return `${TASK_GRAPH_NODE_ID_PREFIX}producer-${shortHash(eventId)}`;
-}
-
 function ensureNode(nodesById, nodeId, kind, ts) {
   if (!nodesById.has(nodeId)) {
     nodesById.set(nodeId, {
@@ -176,6 +126,8 @@ function ensureNode(nodesById, nodeId, kind, ts) {
       // from the raw fold so it stays bounded — only the most recent failure
       // is retained per node.
       _last_failure_reason: null,
+      _physical_resource_bundle: null,
+      _physical_resource_dispatch: null,
     });
   } else {
     const existing = nodesById.get(nodeId);
@@ -362,28 +314,48 @@ function foldEvent(event, { nodesById, edgesByKey }) {
     const payload = event.payload;
     const nodeId = typeof payload.node_id === "string" ? payload.node_id : null;
     if (!nodeId) return;
-    // The materializer only folds states onto an existing node — node ids
-    // arrive via the proposal event (hypothesis_proposed / transition_proposed)
-    // before the first node.transitioned for that node. If the node hasn't
-    // been seen yet, ensureNode creates a synthetic shell with kind
-    // "hypothesis" or "transition" based on the id prefix; that keeps the
-    // graph well-formed even when the proposal event is missing.
-    let inferredKind = "hypothesis";
-    if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}T-`)) inferredKind = "transition";
-    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}S-`)) inferredKind = "surface";
-    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}C-`)) inferredKind = "claim";
-    else if (nodeId.startsWith(`${TASK_GRAPH_NODE_ID_PREFIX}cell-`)) inferredKind = "cell";
-    const node = ensureNode(nodesById, nodeId, inferredKind, ts);
-    addSourceEvent(node, event.event_id);
-    // The to_state replaces any prior state because the state machine is
-    // monotonic forward per the X.1 frozen transition table; appendNodeTransition
-    // refuses out-of-order transitions at write time so the fold can trust
-    // them in append order.
-    if (typeof payload.to_state === "string" && payload.to_state.trim()) {
-      node.state = payload.to_state.trim();
+    // A transition cannot create a node.  Proposal/observation events are the
+    // sole node-establishment authority.  This also makes replay fail closed
+    // for legacy ledgers that contain a raw or forged transition: an orphan,
+    // stale, or invalid edge is ignored instead of synthesizing a dispatchable
+    // node or replacing its current state.
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+    const fromState = typeof payload.from_state === "string"
+      ? payload.from_state.trim()
+      : "";
+    const toState = typeof payload.to_state === "string"
+      ? payload.to_state.trim()
+      : "";
+    if (!NODE_STATE_VALUES.includes(fromState)
+        || !NODE_STATE_VALUES.includes(toState)
+        || node.state !== fromState
+        || !isAllowedNodeTransition(fromState, toState)) {
+      return;
     }
+    addSourceEvent(node, event.event_id);
+    node.state = toState;
+    if (Date.parse(ts) < Date.parse(node.ts_first)) node.ts_first = ts;
+    if (Date.parse(ts) > Date.parse(node.ts_last)) node.ts_last = ts;
     if (typeof payload.contract_hash === "string" && payload.contract_hash.trim()) {
       node.contract_hash = payload.contract_hash.trim();
+    }
+    if (payload.to_state === "contracted" && payload.contract && typeof payload.contract === "object") {
+      node._physical_resource_bundle = payload.contract.physical_resource_bundle == null
+        ? null
+        : normalizePhysicalResourceBundleBinding(
+          payload.contract.physical_resource_bundle,
+          "node.transitioned.contract.physical_resource_bundle",
+        );
+      // A re-contract after a failed attempt begins a new dispatch epoch. Do
+      // not let the prior attempt's reservation proof masquerade as current.
+      node._physical_resource_dispatch = null;
+    }
+    if (payload.to_state === "dispatched" && payload.physical_resource_dispatch != null) {
+      node._physical_resource_dispatch = normalizePhysicalResourceDispatchBinding(
+        payload.physical_resource_dispatch,
+        "node.transitioned.physical_resource_dispatch",
+      );
     }
     if (typeof payload.severity_floor === "string" && payload.severity_floor.trim()) {
       node.severity_floor = payload.severity_floor.trim();
@@ -450,11 +422,23 @@ function finalizeNode(node) {
   // for every Tier-1 node, keeping the canonical nodes[] hash byte-identical for
   // sessions with no depth re-probe.
   if (Number.isInteger(node.tier) && node.tier > 1) out.tier = node.tier;
+  if (node._physical_resource_bundle != null) {
+    out.physical_resource_bundle = node._physical_resource_bundle;
+  }
+  if (node._physical_resource_dispatch != null) {
+    out.physical_resource_dispatch = node._physical_resource_dispatch;
+  }
   return out;
 }
 
-function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
-  const events = readFrontierEvents(domain);
+function materializeTaskGraphEvents(domain, events, { now = new Date() } = {}) {
+  if (!Array.isArray(events)) throw new Error("TaskGraph event fold input must be an array");
+  for (const event of events) {
+    if (!event || typeof event !== "object" || Array.isArray(event)
+        || event.target_domain !== domain) {
+      throw new Error("TaskGraph event fold input must contain events bound to target_domain");
+    }
+  }
   const eventCount = events.length;
 
   // Ledger-pressure refusal (Do step 5). Surfaced as a structured error
@@ -537,6 +521,10 @@ function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
     ledgerPressureWarning,
     eventCount,
   };
+}
+
+function materializeTaskGraphDocument(domain, { now = new Date() } = {}) {
+  return materializeTaskGraphEvents(domain, readFrontierEvents(domain), { now });
 }
 
 function materializeTaskGraph(targetDomain, options = {}) {
@@ -729,6 +717,7 @@ module.exports = {
   claimNodeId,
   hypothesisNodeId,
   materializeTaskGraph,
+  materializeTaskGraphEvents,
   producerNodeId,
   readTaskGraph,
   summarizeTaskGraph,

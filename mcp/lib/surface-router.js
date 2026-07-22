@@ -29,6 +29,8 @@ const {
   selectWebEvaluatorPack,
   deriveConfidenceAdjustment,
   getCapabilityPack,
+  isCapabilityPackDispatchable,
+  isPhysicalSurfaceMetadata,
   normalizeContextBudget,
 } = require("./capability-packs.js");
 const {
@@ -64,9 +66,10 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
     seenSurfaceIds.add(surfaceId);
 
     const classification = classifySurfaceCapability(surface);
-    // An unroutable smart-contract surface (unknown/unresolved chain_family)
-    // carries no capability pack: it is recorded as a disposition-only route
-    // with an evidenced reason, never laundered into the web pack.
+    // An unroutable typed surface carries no active capability pack: it is
+    // recorded as a disposition-only route with an evidenced reason, never
+    // laundered into the web pack. A registered-but-unavailable family also
+    // persists the exact pack/version it requires without granting that pack.
     if (classification.routable === false) {
       const route = {
         surface_id: surfaceId,
@@ -76,6 +79,13 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null, friction
         confidence: classification.confidence,
         reasons: classification.reasons,
       };
+      if (classification.surface_class != null) {
+        route.surface_class = classification.surface_class;
+      }
+      if (classification.required_capability_pack != null) {
+        route.required_capability_pack = classification.required_capability_pack;
+        route.required_capability_pack_version = classification.required_capability_pack_version;
+      }
       if (classification.chain_family != null) {
         route.chain_family = classification.chain_family;
       }
@@ -195,14 +205,66 @@ function validateSurfaceRoute(route, index, filePath) {
   if (route == null || typeof route !== "object" || Array.isArray(route)) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] must be an object)`);
   }
-  // An unroutable smart-contract route carries a disposition + reason and no
-  // pack; validate it as a disposition-only record so it reads back cleanly
-  // (a plain Error on bad data keeps a malformed row quarantinable, not a
-  // re-thrown code bug).
+  // An unroutable route carries a disposition + reason and no active pack.
+  // Registered-but-unavailable families may name the exact required pack and
+  // version, but that marker is descriptive only and must never carry active
+  // evaluator/brief/budget authority.
   if (isUnroutableRoute(route)) {
     const unroutableId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
     assertNonEmptyString(route.reason, `routes[${index}].reason`);
-    return { ...route, surface_id: unroutableId };
+    const hasRequiredPack = route.required_capability_pack != null;
+    const hasRequiredPackVersion = route.required_capability_pack_version != null;
+    if (hasRequiredPack !== hasRequiredPackVersion) {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack and required_capability_pack_version must be provided together)`);
+    }
+    const routeSurfaceClass = route.surface_class == null
+      ? null
+      : assertNonEmptyString(route.surface_class, `routes[${index}].surface_class`);
+    const carriesPhysicalSignal = isPhysicalSurfaceMetadata(route);
+    if (carriesPhysicalSignal && routeSurfaceClass !== "physical") {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with physical surface metadata requires surface_class physical)`);
+    }
+    if (carriesPhysicalSignal && !hasRequiredPack) {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with surface_class physical requires required_capability_pack physical and its version)`);
+    }
+    let requiredPackId = null;
+    if (hasRequiredPack) {
+      requiredPackId = assertNonEmptyString(
+        route.required_capability_pack,
+        `routes[${index}].required_capability_pack`,
+      );
+      const requiredPack = getCapabilityPack(requiredPackId);
+      if (!requiredPack) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown required_capability_pack: ${requiredPackId})`);
+      }
+      if (isCapabilityPackDispatchable(requiredPack)) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack ${requiredPackId} is dispatchable and cannot describe an unroutable route)`);
+      }
+      if (requiredPack.surface_class != null && routeSurfaceClass !== requiredPack.surface_class) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].surface_class ${routeSurfaceClass || "(missing)"} does not match required_capability_pack ${requiredPackId} surface_class ${requiredPack.surface_class})`);
+      }
+      if (routeSurfaceClass === "physical" && requiredPackId !== "physical") {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] with surface_class physical requires required_capability_pack physical)`);
+      }
+      if (!Number.isInteger(route.required_capability_pack_version)
+          || route.required_capability_pack_version <= 0) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack_version must be a positive integer)`);
+      }
+      if (route.required_capability_pack_version !== requiredPack.capability_pack_version) {
+        throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].required_capability_pack_version ${route.required_capability_pack_version} does not match pack ${requiredPackId})`);
+      }
+      for (const field of ["capability_pack", "evaluator_agent", "brief_profile", "context_budget"]) {
+        if (route[field] != null) {
+          throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].${field} must be absent for required_capability_pack ${requiredPackId})`);
+        }
+      }
+    }
+    return {
+      ...route,
+      surface_id: unroutableId,
+      ...(routeSurfaceClass != null ? { surface_class: routeSurfaceClass } : {}),
+      ...(requiredPackId != null ? { required_capability_pack: requiredPackId } : {}),
+    };
   }
   const surfaceId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
   const capabilityPack = assertNonEmptyString(route.capability_pack, `routes[${index}].capability_pack`);
@@ -211,6 +273,12 @@ function validateSurfaceRoute(route, index, filePath) {
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown capability_pack: ${capabilityPack})`);
+  }
+  if (!isCapabilityPackDispatchable(pack)) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references non-dispatchable capability_pack: ${capabilityPack})`);
+  }
+  if (isPhysicalSurfaceMetadata(route)) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] carries physical surface metadata and cannot bind active capability_pack: ${capabilityPack})`);
   }
   if (evaluatorAgent !== pack.evaluator_agent) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].evaluator_agent ${evaluatorAgent} does not match pack ${capabilityPack})`);
@@ -269,6 +337,66 @@ function sanitizeRouteReason(message, filePath) {
   return filePath ? text.split(filePath).join("surface-routes.json") : text;
 }
 
+const QUARANTINED_ROUTE_METADATA_STATUS = "quarantined";
+
+// Preserve only routing-relevant, non-sensitive fields from a quarantined raw
+// row.  The full row may contain stale context or future fields and must never
+// become an alternate authority surface.
+function compactQuarantinedRouteMetadata(route) {
+  if (route == null || typeof route !== "object" || Array.isArray(route)) return null;
+  const out = {};
+  for (const field of [
+    "surface_type",
+    "surface_class",
+    "capability_pack",
+    "required_capability_pack",
+    "disposition",
+  ]) {
+    if (typeof route[field] === "string" && route[field].trim()) {
+      out[field] = route[field].trim();
+    }
+  }
+  for (const field of ["capability_pack_version", "required_capability_pack_version"]) {
+    if (Number.isInteger(route[field])) out[field] = route[field];
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// A quarantined route is represented in memory as an explicit deny tombstone,
+// never as missing metadata.  Consumers can therefore distinguish a legacy
+// surface with no routing artifact from a surface whose routing authority was
+// present but failed validation.  Physical provenance wins over every other
+// field, including a stale active web pack in the malformed row.
+function quarantinedRouteMetadata({ surfaceId, reason, rawMetadata = null, fallbackMetadata = null }) {
+  const id = assertNonEmptyString(surfaceId, "quarantined route surface_id");
+  const raw = rawMetadata && typeof rawMetadata === "object" ? rawMetadata : {};
+  const fallback = fallbackMetadata && typeof fallbackMetadata === "object"
+    ? fallbackMetadata
+    : {};
+  const physical = isPhysicalSurfaceMetadata(raw) || isPhysicalSurfaceMetadata(fallback);
+  const surfaceType = [raw.surface_type, fallback.surface_type]
+    .find((value) => typeof value === "string" && value.trim()) || "unknown";
+  const tombstone = {
+    id,
+    surface_id: id,
+    surface_type: surfaceType.trim(),
+    capability_pack: null,
+    disposition: "unroutable",
+    reason: typeof reason === "string" && reason.trim()
+      ? reason.trim()
+      : "route metadata was quarantined",
+    route_metadata_status: QUARANTINED_ROUTE_METADATA_STATUS,
+    dispatch_blocked: true,
+  };
+  if (physical) {
+    const physicalPack = getCapabilityPack("physical");
+    tombstone.surface_class = "physical";
+    tombstone.required_capability_pack = "physical";
+    tombstone.required_capability_pack_version = physicalPack.capability_pack_version;
+  }
+  return tombstone;
+}
+
 function readSurfaceRoutesStrict(domain) {
   const filePath = surfaceRoutesPath(domain);
   if (!fs.existsSync(filePath)) {
@@ -325,11 +453,17 @@ function readSurfaceRoutesStrict(domain) {
         // whitespace-padded id (e.g. " surface:api ") would otherwise EVADE that rejection.
         surface_id: (typeof rawSurfaceId === "string" ? rawSurfaceId.trim() : rawSurfaceId) || null,
         reason: sanitizeRouteReason(error.message || String(error), filePath),
+        route_metadata: compactQuarantinedRouteMetadata(route),
       });
       return;
     }
     if (seenSurfaceIds.has(normalized.surface_id)) {
-      malformedRoutes.push({ index, surface_id: normalized.surface_id, reason: `duplicate surface_id: ${normalized.surface_id}` });
+      malformedRoutes.push({
+        index,
+        surface_id: normalized.surface_id,
+        reason: `duplicate surface_id: ${normalized.surface_id}`,
+        route_metadata: compactQuarantinedRouteMetadata(route),
+      });
       return;
     }
     seenSurfaceIds.add(normalized.surface_id);
@@ -387,6 +521,13 @@ function deriveUnroutableSurfacesFromRoutes(domain) {
       surfaces.push({
         surface_id: route.surface_id,
         surface_type: route.surface_type,
+        ...(route.surface_class != null ? { surface_class: route.surface_class } : {}),
+        ...(route.required_capability_pack != null
+          ? {
+            required_capability_pack: route.required_capability_pack,
+            required_capability_pack_version: route.required_capability_pack_version,
+          }
+          : {}),
         unroutable_reason: route.reason,
       });
     }
@@ -448,10 +589,12 @@ function routeSurfaces(args, { idBearingDetector = null, idBearingEndpoints = nu
 module.exports = {
   SURFACE_ROUTE_VERSION,
   SURFACE_ROUTES_VERSION,
+  QUARANTINED_ROUTE_METADATA_STATUS,
   buildSurfaceRoutesDocument,
   countRoutesByCapabilityPack,
   deriveUnroutableSurfacesFromRoutes,
   isUnroutableRoute,
+  quarantinedRouteMetadata,
   readSurfaceRoutesStrict,
   routeSurfaces,
   routeSurfacesInternal,

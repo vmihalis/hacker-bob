@@ -43,10 +43,11 @@ module.exports = Object.freeze({
   handler: httpScan,
   role_bundles: ["evaluator-web", "verifier", "auth", "chain", "evidence"],
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: true,
   sensitive_output: true,
   session_artifacts_written: ["http-audit.jsonl"],
+  required_session_axes: ["url"],
 });

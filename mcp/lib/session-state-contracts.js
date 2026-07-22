@@ -16,6 +16,9 @@ const {
 const {
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
+const {
+  normalizePhysicalScopeNucleusAxis,
+} = require("./physical-scope-axis.js");
 
 // Local copy of the lifecycle enum. The canonical source is
 // governance-contracts.js, but that module depends on
@@ -379,6 +382,7 @@ function buildInitialSessionState(domain, targetUrl, {
   repoHash = null,
   targetContracts = [],
   chainAuthorityHash = null,
+  physicalScope = null,
 } = {}) {
   const egressFields = egressProfileStateFields(egressProfile);
   const internalHostPolicy = blockInternalHostsPolicy
@@ -393,7 +397,7 @@ function buildInitialSessionState(domain, targetUrl, {
   // leave them null. The mutually-exclusive contract is enforced by the
   // governance scope policy and normalizeSessionStateDocument; this helper
   // is just the document constructor.
-  return {
+  const state = {
     target: domain,
     target_url: targetUrl,
     target_repo: targetRepo,
@@ -437,6 +441,10 @@ function buildInitialSessionState(domain, targetUrl, {
     // serialize the field as true; legacy sessions roundtrip as-is.
     handoff_provenance_required: true,
   };
+  if (physicalScope != null) {
+    state.physical_scope = normalizePhysicalScopeNucleusAxis(physicalScope);
+  }
+  return state;
 }
 
 // state.prereq_registry_snapshots stores per-wave registry HANDLE SETS so
@@ -571,6 +579,9 @@ function publicSessionState(state) {
     if (field === "chain_authority_hash" && value == null) {
       return result;
     }
+    if (field === "physical_scope" && value == null) {
+      return result;
+    }
     result[field] = value;
     return result;
   }, {});
@@ -594,7 +605,7 @@ function compactSessionState(state) {
       // to zero/empty rather than failing the compact serialization.
     }
   }
-  return {
+  const compact = {
     target: state.target,
     deep_mode: state.deep_mode === true,
     checkpoint_mode: state.checkpoint_mode,
@@ -628,6 +639,10 @@ function compactSessionState(state) {
     verification_entered_at: state.verification_entered_at,
     handoff_provenance_required: state.handoff_provenance_required === true,
   };
+  if (state.physical_scope != null) {
+    compact.physical_scope = normalizePhysicalScopeNucleusAxis(state.physical_scope);
+  }
+  return compact;
 }
 
 function normalizeSessionStateDocument(document, requestedDomain) {
@@ -686,9 +701,13 @@ function normalizeSessionStateDocument(document, requestedDomain) {
   const hasRepoField = document.target_repo != null;
   const hasContractsField = Array.isArray(document.target_contracts)
     && document.target_contracts.length > 0;
-  const axisCount = (hasUrlField ? 1 : 0) + (hasRepoField ? 1 : 0) + (hasContractsField ? 1 : 0);
+  const hasPhysicalField = document.physical_scope != null;
+  const axisCount = (hasUrlField ? 1 : 0)
+    + (hasRepoField ? 1 : 0)
+    + (hasContractsField ? 1 : 0)
+    + (hasPhysicalField ? 1 : 0);
   if (axisCount === 0) {
-    throw new Error("session state requires at least one of target_url, target_repo, or target_contracts");
+    throw new Error("session state requires at least one of target_url, target_repo, target_contracts, or physical_scope");
   }
   if (hasUrlField && hasRepoField) {
     throw new Error("session state must not carry both target_url and target_repo (mutually exclusive primary axes)");
@@ -796,6 +815,9 @@ function normalizeSessionStateDocument(document, requestedDomain) {
       ? false
       : assertBoolean(document.handoff_provenance_required, "handoff_provenance_required"),
   };
+  if (hasPhysicalField) {
+    normalized.physical_scope = normalizePhysicalScopeNucleusAxis(document.physical_scope);
+  }
 
   // Cycle D.3 removed state.explored and state.terminally_blocked from the
   // contract; the disjointness invariant was lifted because the frontier

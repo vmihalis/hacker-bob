@@ -177,5 +177,6 @@ module.exports = Object.freeze({
   scope_required: true,
   scope_url_fields: ["base_url"],
   sensitive_output: true,
-  session_artifacts_written: ["composition-verified.jsonl", "composition-results.jsonl"],
+ session_artifacts_written: ["composition-verified.jsonl", "composition-results.jsonl"],
+  required_session_axes: ["url"],
 });

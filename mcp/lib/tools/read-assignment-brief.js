@@ -41,7 +41,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: readAssignmentBrief,
-  role_bundles: ["evaluator-shared"],
+  role_bundles: ["evaluator-shared", "evaluator-physical"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

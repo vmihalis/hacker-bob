@@ -9,6 +9,9 @@ module.exports = Object.freeze({
   inputSchema: {
     "type": "object",
     "properties": {
+      "target_domain": {
+        "type": "string"
+      },
       "operation": {
         "type": "string",
         "enum": [
@@ -35,6 +38,7 @@ module.exports = Object.freeze({
       }
     },
     "required": [
+      "target_domain",
       "operation"
     ]
   },
@@ -42,10 +46,11 @@ module.exports = Object.freeze({
   role_bundles: ["auth"],
   capability_id: "S3_stepup_registration", // S3-cap: registry-typed step-up capability so capabilityToolMapFromRegistry can answer "does Bob own a tool for the email-OTP / account-registration step" (M6b ceiling)
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: false,
   sensitive_output: true,
   session_artifacts_written: [],
+  required_session_axes: ["url"],
 });

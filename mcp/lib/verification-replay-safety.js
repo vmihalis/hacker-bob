@@ -25,8 +25,8 @@ const {
   ToolError,
 } = require("./envelope.js");
 const {
-  CAPABILITY_PACKS,
   DEFAULT_REPLAY_SAFETY,
+  dispatchableCapabilityPacks,
 } = require("./capability-packs.js");
 const {
   isPlainObject,
@@ -66,7 +66,7 @@ function replaySafetyForTool(toolName) {
   // replay tool (bob_http_scan) so concurrent rounds can't add ungoverned live
   // requests. Resolve it via the pack whose replay_tool is bob_http_scan.
   const lookupName = toolName === "bob_http_confirm" ? "bob_http_scan" : toolName;
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (!pack || !pack.verifier) continue;
     if (pack.verifier.replay_tool === lookupName || (pack.evidence && pack.evidence.runner === lookupName)) {
       return {
@@ -435,7 +435,7 @@ async function runWithReplaySafety(tool, args, handler) {
 
 function replayExecutionPolicy(targetDomain) {
   const activeLeases = targetDomain ? listActiveReplayLeases(targetDomain) : [];
-  return Object.values(CAPABILITY_PACKS).map((pack) => {
+  return dispatchableCapabilityPacks().map((pack) => {
     const safety = pack.verifier.replay_safety || DEFAULT_REPLAY_SAFETY;
     const active = activeLeases
       .filter((lease) => lease.capability_pack === pack.id)

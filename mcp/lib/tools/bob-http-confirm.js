@@ -38,10 +38,11 @@ module.exports = Object.freeze({
   // traffic), so it is a session-artifact writer like bob_http_scan
   // (telemetry/role classification keys off this flag).
   mutating: true,
-  global_preapproval: true,
+  global_preapproval: false,
   network_access: true,
   browser_access: false,
   scope_required: true,
   sensitive_output: true,
   session_artifacts_written: ["http-audit.jsonl"],
+  required_session_axes: ["url"],
 });

@@ -51,6 +51,16 @@ const FRONTIER_EVENT_KINDS = Object.freeze([
   "node.transitioned",
 ]);
 
+// `node.transitioned` is part of the durable frontier vocabulary, but it is
+// not a generic append capability.  The TaskGraph state machine has a single
+// writer (`appendNodeTransition`) that validates the live node head while the
+// session lock is held.  Keeping a separate public/direct set prevents the
+// model-facing append tool from minting state transitions with an arbitrary
+// payload while preserving the full vocabulary for readers and predicates.
+const DIRECT_FRONTIER_EVENT_KINDS = Object.freeze(
+  FRONTIER_EVENT_KINDS.filter((kind) => kind !== "node.transitioned"),
+);
+
 // Producer observation subtypes. These are observation_kind VALUES that ride
 // INSIDE observation.recorded payloads — they are NOT new top-level
 // FRONTIER_EVENT_KINDS, so the frozen FRONTIER_EVENT_KINDS array above is
@@ -161,14 +171,53 @@ function normalizeFrontierEvent(input, { targetDomain = null, now = new Date() }
   return withDocumentHash(event, "event_hash");
 }
 
-function appendFrontierEvent(input, options = {}) {
-  const event = normalizeFrontierEvent(input, options);
+function appendNormalizedFrontierEvent(event, options = {}, beforeAppend = null) {
   return withSessionLock(event.target_domain, () => {
+    if (beforeAppend != null) {
+      if (typeof beforeAppend !== "function") {
+        throw new Error("frontier append validator must be a function");
+      }
+      // Read under the same lock as the append.  This makes a transition's
+      // current-state check and ledger write one compare-and-append operation;
+      // two writers cannot both validate the same state head.
+      beforeAppend({
+        event,
+        existing_events: readFrontierEvents(event.target_domain),
+      });
+    }
     appendJsonlLine(frontierEventsJsonlPath(event.target_domain), event, {
       maxRecords: options.maxRecords == null ? FRONTIER_EVENTS_MAX_RECORDS : options.maxRecords,
     });
     return event;
   });
+}
+
+function appendFrontierEvent(input, options = {}) {
+  const event = normalizeFrontierEvent(input, options);
+  if (event.kind === "node.transitioned") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "node.transitioned is TaskGraph state authority and cannot be appended generically; use the sanctioned TaskGraph transition writer",
+      { kind: event.kind },
+    );
+  }
+  return appendNormalizedFrontierEvent(event, options);
+}
+
+// Internal TaskGraph append funnel.  The event vocabulary remains owned by
+// this module, while task-graph-events.js supplies the state-machine validator
+// so this low-level ledger module does not acquire a materializer dependency.
+// Callers cannot omit the validator, and the public MCP tool never calls this
+// function.
+function appendTaskGraphTransitionEvent(input, validateCurrentState, options = {}) {
+  const event = normalizeFrontierEvent(input, options);
+  if (event.kind !== "node.transitioned") {
+    throw new Error("appendTaskGraphTransitionEvent accepts only node.transitioned");
+  }
+  if (typeof validateCurrentState !== "function") {
+    throw new Error("appendTaskGraphTransitionEvent requires a live-state validator");
+  }
+  return appendNormalizedFrontierEvent(event, options, validateCurrentState);
 }
 
 function readFrontierEvents(targetDomain) {
@@ -260,9 +309,11 @@ module.exports = {
   FRONTIER_EVENTS_MAX_RECORDS,
   FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_VERSION,
+  DIRECT_FRONTIER_EVENT_KINDS,
   PRODUCER_OBSERVATION_SUBTYPES,
   aggregateFrictionByPack,
   appendFrontierEvent,
+  appendTaskGraphTransitionEvent,
   capabilityFrictionPayloads,
   frontierEventContentHash,
   generatedFrontierEventId,

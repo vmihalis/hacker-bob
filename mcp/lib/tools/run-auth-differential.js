@@ -151,5 +151,6 @@ module.exports = Object.freeze({
   scope_required: true,
   scope_url_fields: ["base_url"],
   sensitive_output: true,
-  session_artifacts_written: ["auth-differential-results.json"],
+ session_artifacts_written: ["auth-differential-results.json"],
+  required_session_axes: ["url"],
 });

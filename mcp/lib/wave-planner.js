@@ -392,6 +392,17 @@ function planNextWave({
         routes_error: derived.error,
       };
     }
+    if (derived.malformed_route_count > 0) {
+      return {
+        ...basePlan,
+        decision: "routes_quarantined",
+        reason: `surface routing contains ${derived.malformed_route_count} quarantined row(s); regenerate routes before planning`,
+        routes_quarantine: {
+          malformed_route_count: derived.malformed_route_count,
+          repair_hint: derived.repair_hint,
+        },
+      };
+    }
     unroutableSurfaceIds = derived.surfaceIds;
   }
 
