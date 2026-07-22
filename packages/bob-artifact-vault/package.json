@@ -1,0 +1,25 @@
+{
+  "name": "@bobnetsec/bob-artifact-vault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privilege-separated opaque artifact vault for Hacker Bob physical-security providers",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "index.js",
+    "worker.js",
+    "operator.js",
+    "lib/**/*.js"
+  ],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./worker": "./worker.js",
+    "./operator": "./operator.js"
+  },
+  "scripts": {
+    "test": "node --test ../../test/physical-artifact-vault.test.js ../../test/provider-response-vault-sink.test.js ../../test/native-provider-response-vault.test.js"
+  }
+}
