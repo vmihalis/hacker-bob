@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/hacker-bob.png" alt="Hacker Bob" width="320" />
-</p>
-
 <h1 align="center">Hacker Bob</h1>
 
 <p align="center"><i>A local MCP workflow framework for authorized bug bounty research.</i></p>
