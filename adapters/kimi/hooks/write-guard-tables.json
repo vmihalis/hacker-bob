@@ -2,6 +2,7 @@
   "audit_graded_basenames": [
     "lab-authorization.json",
     "sandbox-isolation.json",
+    "physical-session-bootstrap.json",
     "report.md",
     "chains.md",
     "evidence-packs.md",
@@ -41,7 +42,8 @@
     "verification-replay-leases",
     "wave-handoffs",
     "claim-freeze",
-    "offensive-runs"
+    "offensive-runs",
+    "physical-campaign"
   ],
   "mcp_owned_basenames": [
     "state.json",

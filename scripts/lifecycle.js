@@ -3,10 +3,10 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawnSync } = require("child_process");
 
 const {
   BOB_RESOURCE_DIR,
+  MCP_TOP_LEVEL_RUNTIME_FILES,
   NEUTRAL_INSTALL_SCHEMA_VERSION,
   RESOURCE_SETS,
   commandExists,
@@ -21,6 +21,25 @@ const {
   detectAdapterId,
   getAdapter,
 } = require("../adapters/index.js");
+const {
+  CANONICAL_INSTALL_SUPPORT_FILES,
+  CANONICAL_RUNTIME_OWNED_ROOTS,
+  CANONICAL_RUNTIME_PACKAGE_ROOTS,
+  canonicalInstalledRuntimeFiles,
+} = require("./lib/package-policy.js");
+const {
+  optionalProviderDoctorChecks,
+  retainDirectoryAncestry,
+  uninstallAllOptionalProviders,
+} = require("./lib/optional-provider-lifecycle.js");
+const {
+  executeLifecycleMutation,
+  lifecycleCustodianStatus,
+} = require("./lib/lifecycle-custodian.js");
+const {
+  inspectBobOwnedRuntimeStatically,
+  inspectMcpServerStatically,
+} = require("./lib/static-runtime-inspection.js");
 
 // When --adapter is omitted on doctor/uninstall, prefer to act on whatever is
 // actually installed in this project rather than the install-time default.
@@ -224,17 +243,6 @@ function expectedMcpServer(targetAbs) {
   };
 }
 
-function loadServerCheck(serverPath) {
-  const script = [
-    "const server = require(process.argv[1]);",
-    "if (!Array.isArray(server.TOOLS) || server.TOOLS.length === 0) process.exit(2);",
-  ].join(" ");
-  return spawnSync(process.execPath, ["-e", script, serverPath], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
 function fileNamesInDir(targetAbs, relativeDir, predicate) {
   const dir = path.join(targetAbs, relativeDir);
   if (!dirExists(dir)) return [];
@@ -289,6 +297,45 @@ function addRuntimeResourceChecks(checks, targetAbs) {
         `Bob ${label} files are missing from ${resourceSet.destination}`,
       );
     }
+  }
+}
+
+function addInstallSupportChecks(checks, sourceRoot, targetAbs) {
+  for (const entry of CANONICAL_INSTALL_SUPPORT_FILES) {
+    const source = path.join(sourceRoot, entry.source);
+    const installed = path.join(targetAbs, entry.destination);
+    let matches = false;
+    let reason = "missing";
+    try {
+      const sourceStat = fs.lstatSync(source);
+      const installedStat = fs.lstatSync(installed);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+        reason = "source_not_regular";
+      } else if (!installedStat.isFile() || installedStat.isSymbolicLink()) {
+        reason = "installed_not_regular";
+      } else if (!fs.readFileSync(source).equals(fs.readFileSync(installed))) {
+        reason = "content_drift";
+      } else {
+        matches = true;
+        reason = "exact_source_match";
+      }
+    } catch (error) {
+      reason = error && error.code === "ENOENT" ? "missing" : "unreadable";
+    }
+    addCheck(
+      checks,
+      matches ? "ok" : "error",
+      `install_support_${entry.id}`,
+      matches
+        ? `${entry.destination} matches the packaged operator support surface`
+        : `${entry.destination} is missing, substituted, or stale`,
+      {
+        source: entry.source,
+        destination: entry.destination,
+        exact_source_match: matches,
+        reason,
+      },
+    );
   }
 }
 
@@ -356,7 +403,7 @@ function doctorProject(projectDir, options = {}) {
         relativeDisplay,
       });
     } else {
-      const adapterResult = adapter.doctor({ targetAbs });
+      const adapterResult = adapter.doctor({ targetAbs, sourceRoot });
       checks.push(...adapterResult.checks);
     }
   }
@@ -366,18 +413,96 @@ function doctorProject(projectDir, options = {}) {
     addCheck(checks, "error", "mcp_server_file", "mcp/server.js is missing");
   } else {
     addCheck(checks, "ok", "mcp_server_file", "mcp/server.js is installed");
-    const loadResult = loadServerCheck(serverPath);
-    if (loadResult.status === 0) {
-      addCheck(checks, "ok", "mcp_server_loadable", "mcp/server.js loads successfully");
+    const inspection = inspectMcpServerStatically({
+      sourceRoot,
+      serverPath,
+      runtimeManifest: MCP_TOP_LEVEL_RUNTIME_FILES,
+    });
+    if (inspection.ok) {
+      addCheck(
+        checks,
+        "ok",
+        "mcp_server_loadable",
+        "mcp/server.js matches the runtime manifest and passes static CommonJS syntax validation",
+        inspection,
+      );
     } else {
-      addCheck(checks, "error", "mcp_server_loadable", "mcp/server.js failed to load", {
-        exit_status: loadResult.status,
-        stderr: (loadResult.stderr || "").trim(),
-      });
+      addCheck(
+        checks,
+        "error",
+        "mcp_server_loadable",
+        "mcp/server.js failed static manifest, digest, or syntax validation",
+        inspection,
+      );
     }
   }
 
+  const runtimeInspection = inspectBobOwnedRuntimeStatically({
+    sourceRoot,
+    targetRoot: targetAbs,
+    runtimeFiles: canonicalInstalledRuntimeFiles(sourceRoot),
+    ownedRoots: CANONICAL_RUNTIME_OWNED_ROOTS,
+  });
+  addCheck(
+    checks,
+    runtimeInspection.ok ? "ok" : "error",
+    "bob_owned_runtime_integrity",
+    runtimeInspection.ok
+      ? "Bob-owned MCP and nested package runtime files match the static source manifest"
+      : "Bob-owned MCP or nested package runtime files failed static manifest validation",
+    runtimeInspection,
+  );
+
+  const runtimeDependencies = path.join(targetAbs, "mcp", "node_modules");
+  addCheck(
+    checks,
+    dirExists(runtimeDependencies) ? "warn" : "error",
+    "runtime_dependency_custody",
+    dirExists(runtimeDependencies)
+      ? "Transitive mcp/node_modules dependencies are present after a source-preflighted direct copy; installed bytes are not statically verified, stale and foreign packages are not pruned, npm .bin shims are not generated, and the copy is not race-qualified or crash-atomic"
+      : "Transitive mcp/node_modules dependencies are missing",
+    {
+      coverage: "unverified_transitive_dependencies",
+      integrity_verified: false,
+      same_uid_race_qualified: false,
+      crash_atomic: false,
+      descriptor_relative_custody: false,
+      stale_dependency_pruning: false,
+      foreign_package_pruning: false,
+      npm_bin_shims_generated: false,
+    },
+  );
+
   addRuntimeResourceChecks(checks, targetAbs);
+  addInstallSupportChecks(checks, sourceRoot, targetAbs);
+
+  const custodianStatus = lifecycleCustodianStatus();
+  addCheck(
+    checks,
+    custodianStatus.mutation_authorized ? "ok" : "warn",
+    "lifecycle_custodian_mutation",
+    custodianStatus.mutation_authorized
+      ? (custodianStatus.production_ready
+        ? "descriptor-relative lifecycle mutation is qualified"
+        : "descriptor-relative lifecycle mutation is active in a non-production test process")
+      : custodianStatus.blocker,
+    custodianStatus,
+  );
+
+  try {
+    checks.push(...optionalProviderDoctorChecks({
+      target_abs: targetAbs,
+      host: null,
+      qualification_inputs: null,
+    }));
+  } catch {
+    addCheck(
+      checks,
+      "error",
+      "optional_provider_lifecycle",
+      "optional_provider_lifecycle_probe_rejected",
+    );
+  }
 
   for (const tool of ["subfinder", "nuclei", "amass", "assetfinder", "chaos", "dnsx", "tlsx", "katana", "subzy"]) {
     if (commandOrGoBinAvailable(tool)) {
@@ -469,6 +594,7 @@ function managedNeutralResourceFiles(sourceRoot) {
   return [
     path.join(BOB_RESOURCE_DIR, "VERSION"),
     path.join(BOB_RESOURCE_DIR, "install.json"),
+    ...CANONICAL_INSTALL_SUPPORT_FILES.map((entry) => entry.destination),
     ...RESOURCE_SETS.flatMap((resourceSet) => sourceDirFiles(
       sourceRoot,
       resourceSet.source,
@@ -492,7 +618,13 @@ function managedLegacyResourceFiles(sourceRoot) {
 }
 
 function managedRuntimeFiles(sourceRoot) {
-  return sourceTreeFiles(sourceRoot, "mcp");
+  // Uninstall only the exact Bob-owned MCP surface admitted by the installer
+  // and static doctor. mcp/node_modules is a shared, unverified direct-copy
+  // target: it can contain preserved foreign packages, stale dependencies, and
+  // operator-owned .bin shims, so source-tree enumeration must never turn it
+  // into an uninstall ownership claim.
+  return canonicalInstalledRuntimeFiles(sourceRoot)
+    .filter((relativePath) => relativePath.startsWith("mcp/"));
 }
 
 function maybeRemoveFile(targetAbs, relativePath, result) {
@@ -513,6 +645,71 @@ function maybeRemoveEmptyDir(targetAbs, relativePath, result) {
   if (fs.readdirSync(dirPath).length !== 0) return;
   result.actions.push({ type: "remove_empty_dir", path: relativePath });
   if (!result.dry_run) fs.rmdirSync(dirPath);
+}
+
+function maybeRemoveOwnedTree(targetAbs, relativePath, result, targetAuthority) {
+  if (!CANONICAL_RUNTIME_PACKAGE_ROOTS.includes(relativePath)) {
+    result.skipped.push({ type: "directory", path: relativePath, reason: "invalid Bob-owned root" });
+    result.ok = false;
+    return;
+  }
+  const treePath = path.join(targetAbs, ...relativePath.split("/"));
+  try {
+    if (!result.dry_run) {
+      if (targetAuthority != null) {
+        const mutation = executeLifecycleMutation(targetAuthority, {
+          operation: "remove",
+          selection: `canonical:${relativePath}`,
+          files: [],
+        });
+        if (mutation.status === "absent") return;
+      } else {
+        const parentGuard = retainDirectoryAncestry(
+          path.dirname(treePath),
+          "canonical_target_ancestry_rejected",
+        );
+        try {
+          parentGuard.revalidate();
+          const existing = (() => {
+            try { return fs.lstatSync(treePath); } catch (error) {
+              if (error && error.code === "ENOENT") return null;
+              throw error;
+            }
+          })();
+          if (existing == null) return;
+          if (existing.isSymbolicLink()) {
+            // Remove only the exclusively owned leaf entry. Never follow a
+            // substituted link into an operator-owned tree.
+            fs.unlinkSync(treePath);
+          } else if (existing.isDirectory()) {
+            fs.rmSync(treePath, { recursive: true, force: false });
+          } else {
+            throw new Error("Bob-owned package root is not a directory or leaf symlink");
+          }
+          parentGuard.sync();
+        } finally {
+          parentGuard.close();
+        }
+      }
+    } else {
+      try {
+        fs.lstatSync(treePath);
+      } catch (error) {
+        if (error && error.code === "ENOENT") return;
+        throw error;
+      }
+    }
+    result.actions.push({ type: "remove_owned_tree", path: relativePath });
+  } catch (error) {
+    result.skipped.push({
+      type: "directory",
+      path: relativePath,
+      reason: error && error.reason_code
+        ? error.reason_code
+        : "Bob-owned ancestry rejected",
+    });
+    result.ok = false;
+  }
 }
 
 function appendAdapterUninstallResult(result, adapterResult) {
@@ -565,6 +762,7 @@ function pruneManagedDirs(targetAbs, result, { adapterIds, removeShared }) {
     dirs.push(
       path.join(BOB_RESOURCE_DIR, "bypass-tables"),
       path.join(BOB_RESOURCE_DIR, "knowledge"),
+      path.join(BOB_RESOURCE_DIR, "docs"),
       BOB_RESOURCE_DIR,
       path.join("mcp", "lib", "tools"),
       path.join("mcp", "lib", "body-resolvers"),
@@ -578,7 +776,7 @@ function pruneManagedDirs(targetAbs, result, { adapterIds, removeShared }) {
   }
 }
 
-function uninstallProject(projectDir, options = {}) {
+function uninstallProjectWithTargetAuthority(projectDir, options, targetAuthority) {
   const sourceRoot = path.resolve(options.sourceRoot || path.join(__dirname, ".."));
   const targetAbs = path.resolve(projectDir || ".");
   if (!dirExists(targetAbs)) {
@@ -645,6 +843,46 @@ function uninstallProject(projectDir, options = {}) {
     ]) {
       maybeRemoveFile(targetAbs, relativePath, result);
     }
+    for (const relativeRoot of CANONICAL_RUNTIME_PACKAGE_ROOTS) {
+      maybeRemoveOwnedTree(targetAbs, relativeRoot, result, targetAuthority);
+    }
+    const optionalRoot = path.join(targetAbs, ".hacker-bob", "optional-providers");
+    let optionalResults = [];
+    if (fs.existsSync(optionalRoot)) {
+      try {
+        optionalResults = uninstallAllOptionalProviders({
+          target_abs: targetAbs,
+          dry_run: result.dry_run,
+        }, targetAuthority);
+      } catch (error) {
+        result.skipped.push({
+          type: "optional_provider_root",
+          path: path.join(BOB_RESOURCE_DIR, "optional-providers"),
+          reason: error && (error.reason_code || error.code)
+            ? (error.reason_code || error.code)
+            : "qualified lifecycle custodian unavailable",
+        });
+        result.ok = false;
+      }
+    }
+    for (const optionalResult of optionalResults) {
+      const displayPath = path.join(
+        BOB_RESOURCE_DIR,
+        "optional-providers",
+        optionalResult.provider_id,
+        optionalResult.package_id,
+      );
+      if (optionalResult.operation === "blocked") {
+        result.skipped.push({
+          type: "optional_provider_package",
+          path: displayPath,
+          reason: optionalResult.reason_code,
+        });
+        result.ok = false;
+      } else if (optionalResult.operation !== "absent") {
+        result.actions.push({ type: "remove_optional_provider_package", path: displayPath });
+      }
+    }
   } else {
     updateNeutralMetadataAfterUninstall(targetAbs, remainingIds, result);
   }
@@ -656,6 +894,11 @@ function uninstallProject(projectDir, options = {}) {
 
   pruneManagedDirs(targetAbs, result, { adapterIds, removeShared });
   return result;
+}
+
+function uninstallProject(projectDir, options = {}) {
+  const targetAbs = path.resolve(projectDir || ".");
+  return uninstallProjectWithTargetAuthority(targetAbs, options, null);
 }
 
 function printUninstallReport(result, stream = process.stdout) {

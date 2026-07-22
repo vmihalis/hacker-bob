@@ -61,6 +61,7 @@ const AGENT_TOOL_SPECS = Object.freeze({
       "evaluator-move",
       "evaluator-substrate",
       "evaluator-cosmwasm",
+      "evaluator-physical",
     ],
     extras: ["Bash", "Read", "Write", "Grep", "Glob"],
   },

@@ -8,6 +8,8 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   LOCAL_INSTALL_METADATA_FILES,
+  isInternalPlaneDeltaDetailDoc,
+  isInternalPlanePhysicalDoc,
   isInternalRefactorDoc,
   isInternalRefactorScratch,
 } = require("./lib/package-policy.js");
@@ -148,7 +150,9 @@ function forbiddenPackedFiles(files) {
     EXCLUDED_RELEASE_CANDIDATE_PATHS.has(file) ||
     LOCAL_INSTALL_METADATA_FILES.has(file) ||
     isInternalRefactorScratch(file) ||
-    isInternalRefactorDoc(file)
+    isInternalRefactorDoc(file) ||
+    isInternalPlaneDeltaDetailDoc(file) ||
+    isInternalPlanePhysicalDoc(file)
   );
 }
 

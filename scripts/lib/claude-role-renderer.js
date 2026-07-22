@@ -318,7 +318,15 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
         max_turns: 99999,
         background: true,
         mcp_server: true,
-        local_tools: Object.freeze(["Bash", "Read", "Write", "Grep", "Glob"]),
+        // Evaluator roles normally receive the local harness toolset.  A role
+        // may narrow it in the evaluator registry; evaluator-physical uses an
+        // empty set so it cannot bypass the broker through a shell or device
+        // path while its pack is being completed.
+        local_tools: Object.freeze(
+          Array.isArray(role.local_tools)
+            ? role.local_tools.slice()
+            : ["Bash", "Read", "Write", "Grep", "Glob"],
+        ),
       }),
     ]),
   ),

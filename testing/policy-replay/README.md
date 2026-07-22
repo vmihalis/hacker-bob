@@ -63,6 +63,7 @@ Live replay requires `@anthropic-ai/claude-agent-sdk` and a working local Claude
 ## Live Smoke Design
 
 The live `query()` smoke is intentionally not part of default CI until the
-repository has an owned Claude credential and rotation policy. See
-`testing/policy-replay/LIVE_SMOKE_DESIGN.md` for the gated workflow, fixture
-shape, acceptance criteria, and failure-mode runbook.
+repository has an owned Claude credential and rotation policy. Maintainer-only
+workflow design and credential-rotation material remain in the source tree and
+are not installed with the policy-replay runner. The installed dry-run and
+schema checks never require credentials or invoke Claude.
