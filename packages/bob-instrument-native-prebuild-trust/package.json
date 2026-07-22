@@ -1,0 +1,28 @@
+{
+  "name": "@hacker-bob/instrument-native-prebuild-trust",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Provider-neutral signed native-prebuild release verification and non-authorizing diagnostics for Hacker Bob",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20 <21"
+  },
+  "main": "lib/index.js",
+  "files": [
+    "lib/**/*.js",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./release-trust": "./lib/release-trust.js",
+    "./doctor": "./lib/doctor.js",
+    "./release-trust-v2": "./lib/release-trust-v2.js",
+    "./doctor-v2": "./lib/doctor-v2.js",
+    "./javascript-worker-closure": "./lib/javascript-worker-closure.js"
+  },
+  "scripts": {
+    "check:syntax": "node --check lib/data-contract.js && node --check lib/release-trust.js && node --check lib/doctor.js && node --check lib/release-trust-v2.js && node --check lib/doctor-v2.js && node --check lib/javascript-worker-closure.js && node --check lib/index.js && node --check test/native-prebuild-trust.test.js && node --check test/native-prebuild-trust-v2.test.js",
+    "test": "node --test test/native-prebuild-trust.test.js test/native-prebuild-trust-v2.test.js"
+  }
+}
