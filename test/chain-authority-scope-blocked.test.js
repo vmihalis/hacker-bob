@@ -16,7 +16,7 @@ const path = require("path");
 
 const { executeTool } = require("../mcp/lib/dispatch.js");
 const { authorizeToolCall } = require("../mcp/lib/session-authority.js");
-const { getRegisteredTool } = require("../mcp/lib/tool-registry.js");
+const { getRegisteredTool, TOOL_REGISTRY } = require("../mcp/lib/tool-registry.js");
 const { validateToolArguments } = require("../mcp/lib/tool-validation.js");
 
 async function withTempHome(fn) {
@@ -91,7 +91,7 @@ test("an out-of-set chain tuple is SCOPE_BLOCKED pre-handler", async () => {
   });
 });
 
-test("a web session (empty target_contracts) is untouched by the gate", async () => {
+test("a web session cannot lend URL-axis authority to a contracts-axis tool", async () => {
   await withTempHome(async () => {
     const boot = await executeTool("bob_init_session", {
       target_domain: "example.com",
@@ -103,71 +103,145 @@ test("a web session (empty target_contracts) is untouched by the gate", async ()
     const read = await executeTool("bob_read_session_state", { target_domain: "example.com" });
     assert.equal(read.ok, true, `expected ok:true, got ${JSON.stringify(read)}`);
 
-    // A chain tool on a web session resolves an empty target_contracts[], so the
-    // gate is a no-op: the base path handles it and never chain-scope-blocks.
+    // The tuple gate is a no-op for an empty target_contracts[] set, then the
+    // base authority path rejects the missing contracts axis before dispatch.
     const env = await executeTool("bob_evm_fetch_source", {
       target_domain: "example.com",
       chain_id: 1,
       address: "0x0000000000000000000000000000000000000001",
     });
-    assert.notEqual(
-      env.error && env.error.details && env.error.details.authority
-        && env.error.details.authority.authority_block_reason,
-      "chain_scope_blocked",
-      `web session must not be chain-scope-blocked, got ${JSON.stringify(env)}`,
-    );
+    assert.equal(env.ok, false, `expected ok:false, got ${JSON.stringify(env)}`);
+    assert.equal(env.error.code, "SCOPE_BLOCKED", `expected SCOPE_BLOCKED, got ${JSON.stringify(env.error)}`);
+    assert.equal(env.error.details.authority.authority_error_code, "session_axis_mismatch");
   });
 });
 
-// ── Residual scope gap: the three global_preapproval EVM read/call tools ──────
-// bob_evm_call / bob_evm_storage_read / bob_evm_role_table are authority class
-// global_preapproval and their schemas carry no target_domain. The chain-scope
-// gate binds a tuple to a session ONLY through target_domain, and this layer has
-// no ambient active-session resolver, so these three are honestly excluded from
-// CHAIN_SCOPE_TUPLE_BY_TOOL and remain globally preapproved. These tests pin
-// that exclusion as a first-class, known gap (not a silent no-op) so a future
-// schema-level session handle is the only thing that can close it.
+const CONTRACT_EXECUTION_TOOLS = Object.freeze([
+  "bob_run_invariant_for_finding",
+  "bob_foundry_run",
+  "bob_anchor_run",
+  "bob_aptos_run",
+  "bob_sui_run",
+  "bob_substrate_run",
+  "bob_cosmwasm_run",
+]);
 
-const GLOBAL_PREAPPROVAL_CHAIN_TOOLS = [
+test("URL-only sessions cannot authorize any chain execution tool", async () => {
+  await withTempHome(async () => {
+    const boot = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+    });
+    assert.equal(boot.ok, true, JSON.stringify(boot));
+
+    for (const name of CONTRACT_EXECUTION_TOOLS) {
+      assert.throws(
+        () => authorizeToolCall(getRegisteredTool(name), { target_domain: "example.com" }),
+        (error) => error && error.code === "SCOPE_BLOCKED"
+          && error.authority.authority_error_code === "session_axis_mismatch",
+        `${name} must require a contracts axis`,
+      );
+    }
+  });
+});
+
+test("a mixed URL plus contracts session can authorize chain execution tools", async () => {
+  await withTempHome(async () => {
+    const boot = await executeTool("bob_init_session", {
+      target_domain: "example.com",
+      target_url: "https://example.com",
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1",
+        address: "0x0000000000000000000000000000000000000001",
+      }],
+    });
+    assert.equal(boot.ok, true, JSON.stringify(boot));
+
+    for (const name of CONTRACT_EXECUTION_TOOLS) {
+      const decision = authorizeToolCall(getRegisteredTool(name), { target_domain: "example.com" });
+      assert.equal(decision.authority_result, "allowed", `${name}: ${JSON.stringify(decision)}`);
+      assert.equal(decision.authority_class, "smart_contract_contextual");
+    }
+  });
+});
+
+test("contracts-only sessions cannot authorize any URL-axis network or browser tool", async () => {
+  await withTempHome(async () => {
+    const boot = await executeTool("bob_init_contract_session", {
+      contracts: [{
+        chain_family: "evm",
+        chain_id: "1",
+        address: "0x0000000000000000000000000000000000000001",
+      }],
+    });
+    assert.equal(boot.ok, true, JSON.stringify(boot));
+    const urlAxisExternalTools = TOOL_REGISTRY.filter((tool) => (
+      (tool.network_access || tool.browser_access)
+      && tool.required_session_axes.includes("url")
+    ));
+    assert.ok(urlAxisExternalTools.length > 0);
+
+    for (const tool of urlAxisExternalTools) {
+      assert.throws(
+        () => authorizeToolCall(tool, { target_domain: boot.data.target_domain }),
+        (error) => error && error.code === "SCOPE_BLOCKED"
+          && error.authority.authority_error_code === "session_axis_mismatch",
+        `${tool.name} must require a URL axis`,
+      );
+    }
+  });
+});
+
+// ── Closed residual gap: EVM read/call tools are exact-tuple session-bound ────
+
+const SESSION_BOUND_EVM_TOOLS = [
   {
     name: "bob_evm_call",
-    args: {
+    bound_args: {
       chain_id: 1,
-      to: "0x0000000000000000000000000000000000000002",
+      to: "0x0000000000000000000000000000000000000001",
       data: "0x",
     },
+    outside_args: { to: "0x0000000000000000000000000000000000000002" },
   },
   {
     name: "bob_evm_storage_read",
-    args: {
+    bound_args: {
       chain_id: 1,
-      address: "0x0000000000000000000000000000000000000002",
+      address: "0x0000000000000000000000000000000000000001",
       slot: "0x0",
     },
+    outside_args: { address: "0x0000000000000000000000000000000000000002" },
   },
   {
     name: "bob_evm_role_table",
-    args: {
+    bound_args: {
       chain_id: 1,
-      contract: "0x0000000000000000000000000000000000000002",
+      contract: "0x0000000000000000000000000000000000000001",
       accounts: ["0x0000000000000000000000000000000000000003"],
     },
+    outside_args: { contract: "0x0000000000000000000000000000000000000002" },
   },
 ];
 
-for (const { name, args } of GLOBAL_PREAPPROVAL_CHAIN_TOOLS) {
-  test(`${name} schema rejects target_domain (no session handle can reach the gate)`, () => {
-    // additionalProperties defaults closed, so a target_domain argument is
-    // rejected at validation before authority runs. This is WHY the gate cannot
-    // bind these tools to a bound contract session.
+for (const { name, bound_args: boundArgs, outside_args: outsideArgs } of SESSION_BOUND_EVM_TOOLS) {
+  test(`${name} schema requires the session handle and registry requires contracts authority`, () => {
     assert.throws(
-      () => validateToolArguments(name, { ...args, target_domain: "sc-evm-1-00000000" }),
-      /target_domain is not allowed/,
-      `${name} must reject target_domain`,
+      () => validateToolArguments(name, boundArgs),
+      /target_domain is required/,
+      `${name} must require target_domain`,
     );
+    assert.doesNotThrow(() => validateToolArguments(name, {
+      target_domain: "sc-evm-1-00000000",
+      ...boundArgs,
+    }));
+    const tool = getRegisteredTool(name);
+    assert.equal(tool.global_preapproval, false);
+    assert.deepEqual(tool.required_session_axes, ["contracts"]);
   });
 
-  test(`${name} stays global preapproval even with a bound contract session (residual gap)`, async () => {
+  test(`${name} admits only an exact tuple in the bound contract session`, async () => {
     await withTempHome(async () => {
       const boot = await executeTool("bob_init_contract_session", {
         contracts: [{
@@ -177,16 +251,27 @@ for (const { name, args } of GLOBAL_PREAPPROVAL_CHAIN_TOOLS) {
         }],
       });
       assert.equal(boot.ok, true, `expected ok:true, got ${JSON.stringify(boot)}`);
+      const domain = boot.data.target_domain;
 
-      // A non-bound same-chain address (0x..02) is outside the bound authority
-      // (0x..01), yet the gate cannot see the session for these tools: the
-      // decision is global preapproval, never SCOPE_BLOCKED / chain_scope_blocked.
       const tool = getRegisteredTool(name);
       assert.ok(tool, `tool ${name} must be registered`);
-      const decision = authorizeToolCall(tool, args);
-      assert.equal(decision.authority_result, "allowed", `expected allowed, got ${JSON.stringify(decision)}`);
-      assert.equal(decision.authority_class, "global_preapproval", `expected global_preapproval, got ${JSON.stringify(decision)}`);
-      assert.notEqual(decision.authority_block_reason, "chain_scope_blocked");
+      const boundDecision = authorizeToolCall(tool, {
+        target_domain: domain,
+        ...boundArgs,
+      });
+      assert.equal(boundDecision.authority_result, "allowed", `expected allowed, got ${JSON.stringify(boundDecision)}`);
+      assert.equal(boundDecision.authority_class, "smart_contract_contextual");
+
+      assert.throws(
+        () => authorizeToolCall(tool, {
+          target_domain: domain,
+          ...boundArgs,
+          ...outsideArgs,
+        }),
+        (error) => error && error.code === "SCOPE_BLOCKED"
+          && error.authority.authority_error_code === "chain_scope_blocked",
+        `${name} must reject a same-chain address outside the exact bound tuple`,
+      );
     });
   });
 }

@@ -9,7 +9,8 @@
 //   * the rendered custody plan: session dir 0700, ed25519 private key 0400,
 //     symmetric key 0600, all owned by the signer uid;
 //   * octalModeString formats modes the way chmod expects;
-//   * the plan covers BOTH signing secrets (verdict key + handoff-provenance key);
+//   * the plan covers all THREE signing secrets (verdict key,
+//     handoff-provenance key, and Plane-PH experiment-trust key);
 //   * the launcher script reads the perms from the helper (no hand-typed modes)
 //     and fail-closes when the signer uid is not separate from the current uid.
 
@@ -24,7 +25,7 @@ const custody = require("../mcp/lib/signing-key-custody.js");
 const REPO_ROOT = path.join(__dirname, "..");
 const LAUNCHER = path.join(REPO_ROOT, "scripts", "launch-bob-signer.sh");
 
-test("custody plan: session dir 0700, ed25519 key 0400, symmetric key 0600, signer-owned", () => {
+test("custody plan: session dir 0700, private keys 0400, symmetric key 0600, signer-owned", () => {
   const plan = custody.renderCustodyPlan("/home/bob-signer/hacker-bob-sessions", 7777);
   assert.equal(plan.sessions_root.mode, 0o700, "session root must be owner-only 0700");
   assert.equal(plan.sessions_root.owner, "7777");
@@ -33,18 +34,28 @@ test("custody plan: session dir 0700, ed25519 key 0400, symmetric key 0600, sign
   const byBase = new Map(plan.secrets.map((s) => [s.basename, s]));
   const priv = byBase.get(".handoff-signing-key-ed25519.json");
   const sym = byBase.get(".handoff-signing-key.json");
+  const physicalPriv = byBase.get(
+    custody.PHYSICAL_EXPERIMENT_TRUST_PRIVATE_KEY_BASENAME,
+  );
   assert.ok(priv, "plan must cover the ed25519 verdict-ledger private key");
   assert.ok(sym, "plan must cover the symmetric handoff-provenance key");
+  assert.ok(physicalPriv, "plan must cover the Plane-PH experiment-trust private key");
   assert.equal(priv.mode, 0o400, "ed25519 private key intended mode is owner-read-only 0400");
   assert.equal(sym.mode, 0o600, "symmetric key intended mode is owner read/write 0600");
+  assert.equal(physicalPriv.mode, 0o400, "experiment-trust private key intended mode is owner-read-only 0400");
   assert.equal(priv.owner, "7777");
   assert.equal(sym.owner, "7777");
+  assert.equal(physicalPriv.owner, "7777");
 });
 
-test("custody plan covers BOTH signing secrets behind one boundary", () => {
+test("custody plan covers all THREE signing secrets behind one boundary", () => {
   assert.deepEqual(
     [...custody.SIGNING_SECRET_BASENAMES].sort(),
-    [".handoff-signing-key-ed25519.json", ".handoff-signing-key.json"].sort(),
+    [
+      ".handoff-signing-key-ed25519.json",
+      ".handoff-signing-key.json",
+      "physical-experiment-trust-signing-key-private.json",
+    ].sort(),
   );
 });
 

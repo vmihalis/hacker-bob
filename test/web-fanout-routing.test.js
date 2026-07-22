@@ -8,6 +8,7 @@ const path = require("node:path");
 
 const {
   CAPABILITY_PACKS,
+  dispatchableCapabilityPacks,
   getCapabilityPack,
   selectWebEvaluatorPack,
   techniqueCompatibilityPackId,
@@ -66,8 +67,8 @@ test("web_fanout pack is a SPREAD variant of web — only evaluator_agent/id dif
   assert.equal(techniqueCompatibilityPackId("smart_contract_evm"), "smart_contract_evm");
 });
 
-test("technique compatibility targets are closed, known, and self-resolving for every capability pack", () => {
-  for (const packId of Object.keys(CAPABILITY_PACKS)) {
+test("technique compatibility targets are closed, known, and self-resolving for every dispatchable capability pack", () => {
+  for (const packId of dispatchableCapabilityPacks().map((pack) => pack.id)) {
     const targetId = techniqueCompatibilityPackId(packId);
     assert.ok(CAPABILITY_PACKS[targetId], `${packId} must resolve to a registered technique target`);
     assert.equal(
@@ -76,6 +77,7 @@ test("technique compatibility targets are closed, known, and self-resolving for 
       `${packId} must terminate at a canonical self-resolving target (no chains or cycles)`,
     );
   }
+  assert.equal(techniqueCompatibilityPackId("physical"), null);
 });
 
 test("technique compatibility is directed from consumer to canonical target, not variant equivalence", () => {

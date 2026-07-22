@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "programs": {
+    "identityTransform": {
+      "version": 1,
+      "outputs": [
+        {
+          "plaintext": { "op": "input_bytes", "input_index": 0 },
+          "data_class": { "op": "input_data_class", "input_index": 0 },
+          "media_type": { "op": "input_media_type", "input_index": 0 }
+        }
+      ]
+    },
+    "reverseBytesTransform": {
+      "version": 1,
+      "outputs": [
+        {
+          "plaintext": {
+            "op": "reverse",
+            "value": { "op": "input_bytes", "input_index": 0 }
+          },
+          "data_class": { "op": "input_data_class", "input_index": 0 },
+          "media_type": { "op": "input_media_type", "input_index": 0 }
+        }
+      ]
+    },
+    "twoOutputTransform": {
+      "version": 1,
+      "outputs": [
+        {
+          "plaintext": { "op": "literal_base64", "value": "Zmlyc3Q=" },
+          "data_class": { "op": "literal", "value": "credential_secret" },
+          "media_type": { "op": "literal", "value": "application/octet-stream" }
+        },
+        {
+          "plaintext": { "op": "literal_base64", "value": "c2Vjb25k" },
+          "data_class": { "op": "literal", "value": "credential_secret" },
+          "media_type": { "op": "literal", "value": "application/octet-stream" }
+        }
+      ]
+    }
+  }
+}

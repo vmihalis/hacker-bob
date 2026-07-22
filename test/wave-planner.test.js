@@ -464,10 +464,15 @@ function writeUnroutableRoutes(domain, unroutableIds, routableIds = []) {
     ...routableIds.map((id) => ({
       surface_id: id,
       surface_type: "api",
-      capability_pack: "web_generic",
+      capability_pack: "web",
       capability_pack_version: 1,
-      evaluator_agent: "evaluator-web",
-      brief_profile: "web_generic",
+      evaluator_agent: "evaluator-agent",
+      brief_profile: "web",
+      context_budget: {
+        candidate_pack_limit: 5,
+        full_pack_read_limit: 2,
+        attempt_log_required: true,
+      },
       confidence: "high",
       reasons: [],
     })),
@@ -606,6 +611,42 @@ test("planNextWave FAILS CLOSED on a corrupt routes file: no plan, no resurrecti
       !plan.reason.includes(surfaceRoutesPath(domain)),
       "the planner routes_error basename-sanitizes (no absolute session path leak)",
     );
+  });
+});
+
+test("planNextWave FAILS CLOSED when any route row is quarantined", () => {
+  withTempHome(() => {
+    const domain = "planner-quarantined-route.example.com";
+    writeCorruptRoutes(domain, JSON.stringify({
+      version: SURFACE_ROUTES_VERSION,
+      route_version: SURFACE_ROUTE_VERSION,
+      routes: [{
+        surface_id: "surface:physical",
+        surface_type: "api",
+        surface_class: "physical",
+        capability_pack: "web",
+        capability_pack_version: 1,
+        evaluator_agent: "evaluator-agent",
+        brief_profile: "web",
+        context_budget: {
+          candidate_pack_limit: 5,
+          full_pack_read_limit: 2,
+          attempt_log_required: true,
+        },
+      }],
+    }));
+
+    const plan = planNextWave({
+      state: { target: domain, evaluation_wave: 0, pending_wave: null },
+      surfaces: [surface("surface:physical", "HIGH", 90)],
+      queuePolicy: DEFAULT_QUEUE_POLICY,
+    });
+
+    assert.equal(plan.decision, "routes_quarantined");
+    assert.deepEqual(plan.assignments, []);
+    assert.deepEqual(plan.candidate_surface_ids, []);
+    assert.equal(plan.routes_quarantine.malformed_route_count, 1);
+    assert.match(plan.routes_quarantine.repair_hint, /bob_route_surfaces/);
   });
 });
 

@@ -79,10 +79,10 @@ const {
   toolsForSpec,
 } = require("../scripts/generate-agent-tools.js");
 const {
-  CAPABILITY_PACKS,
   DEFAULT_CONTEXT_BUDGET,
   EVALUATOR_ROLES,
   SMART_CONTRACT_CONTEXT_BUDGET,
+  dispatchableCapabilityPacks,
   evaluatorAgentNamesForCapabilityPacks,
 } = require("../mcp/lib/capability-packs.js");
 const {
@@ -355,13 +355,21 @@ test("checked-in settings, generated settings, and registry agree on global prea
 // SECTION 4 — Role-bundle contracts (CandidateClaim handler)
 // =============================================================================
 
-test("evaluator role-bundles include exactly one tool that writes CandidateClaim records", () => {
-  // The evaluator (web) and every per-chain evaluator role have an entry that
-  // mutates claims.jsonl. The role-bundle contract is: exactly one such tool,
-  // with a handler that imports the CandidateClaim writer from claims.js.
+test("evaluator role-bundles use their native finding writer contract", () => {
+  // Web/OSS/SC evaluators retain the generic CandidateClaim writer. Physical
+  // findings use their dedicated writer so an opaque asset plus server-owned
+  // verdict projection can never be squeezed through endpoint/PoC fields.
   const evaluatorRoleIds = ["evaluator", ...Object.values(EVALUATOR_ROLES).map((role) => role.role_id)];
   for (const roleId of evaluatorRoleIds) {
     const claimRecorders = uniqueClaimRecordingToolsForRole(roleId);
+    if (roleId === "evaluator-physical") {
+      assert.deepEqual(claimRecorders, ["bob_record_physical_candidate_claim"]);
+      assert.equal(
+        mcpToolNamesForRole(roleId).includes("bob_record_candidate_claim"),
+        false,
+        "physical evaluator must not inherit the web-shaped CandidateClaim writer",
+      );
+    }
     assert.equal(
       claimRecorders.length,
       1,
@@ -431,6 +439,32 @@ test("reporter prompt renders reachability graded severity when C9 stamps it", (
   assert.match(reporterPrompt, /reachability\.graded_severity/);
   assert.match(reporterPrompt, /public severity/);
   assert.match(reporterPrompt, /reachability disposition/);
+});
+
+test("physical verifier and evidence prompts use only the no-hardware verdict adapter", () => {
+  for (const file of [
+    "prompts/roles/brutalist-verifier.md",
+    "prompts/roles/balanced-verifier.md",
+    "prompts/roles/final-verifier.md",
+    "prompts/roles/evidence.md",
+  ]) {
+    const prompt = readFile(file);
+    assert.match(prompt, /bob_verify_physical_verdict/);
+    assert.match(prompt, /asset_locator/);
+    assert.match(prompt, /verified_verdict_ref/);
+    assert.match(prompt, /never invokes? hardware|never invoke hardware/i);
+  }
+
+  const graderPrompt = readFile("prompts/roles/grader.md");
+  assert.match(
+    graderPrompt,
+    /physical grade binding requires the unavailable durable no-active-effects completion projection/,
+  );
+  const reporterPrompt = readFile("prompts/roles/reporter.md");
+  assert.match(
+    reporterPrompt,
+    /physical report rendering requires the unavailable durable physical grade binding/,
+  );
 });
 
 test("reporter OSS branch carries CWE, server-derived CVSS v3.1, and references guidance", () => {
@@ -1042,7 +1076,7 @@ test("orchestrator skill stays bounded and reflects the lifecycle topology", () 
   // block (one line per tool in the orchestrator role bundle). It is registry-
   // driven: bundle and PRODUCER_PACKS changes move it. Set the cap to the exact
   // post-regen trimmed line count.
-  assert.ok(lines <= 455, `bob-evaluate-runner skill is ${lines} lines (cap 455)`);
+  assert.ok(lines <= 456, `bob-evaluate-runner skill is ${lines} lines (cap 456)`);
   const skill = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
   assert.match(
     skill,
@@ -1073,14 +1107,14 @@ test("status and debug skills are read-only and reject orchestration mutators", 
 // SECTION 9 — Capability-pack registry contracts
 // =============================================================================
 
-test("each capability pack's role_bundles match the routed Claude role's mcp_role_bundles", () => {
+test("each dispatchable capability pack's role_bundles match the routed Claude role's mcp_role_bundles", () => {
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind === "agent" && typeof spec.output_path === "string") {
       agentNameToRoleId[path.basename(spec.output_path).replace(/\.md$/, "")] = roleId;
     }
   }
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
     assert.ok(roleId, `pack ${pack.id} evaluator_agent ${pack.evaluator_agent} has no Claude role spec`);
     const role = roleDefinition(roleId);
@@ -1113,9 +1147,9 @@ test("EVALUATOR_ROLES is the single source of truth across consumers", () => {
   }
 });
 
-test("capability packs expose versioned context budgets and complete spawn metadata", () => {
+test("dispatchable capability packs expose versioned context budgets and complete spawn metadata", () => {
   const { BLOCKED_HARNESS_RUN_KINDS } = require("../mcp/lib/capability-packs-rendering.js");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assert.equal(pack.capability_pack_version, 1);
     assert.ok(pack.evaluator_agent);
     assert.ok(pack.brief_profile);
@@ -1150,9 +1184,9 @@ test("capability packs expose versioned context budgets and complete spawn metad
   }
 });
 
-test("every capability pack declares replay + evidence runners that resolve to registered tools", () => {
+test("every dispatchable capability pack declares replay + evidence runners that resolve to registered tools", () => {
   const toolNames = new Set(Object.keys(TOOL_MANIFEST));
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assert.ok(pack.verifier && pack.evidence, `pack ${pack.id} must declare verifier + evidence`);
     assert.ok(toolNames.has(pack.verifier.replay_tool), `pack ${pack.id} replay_tool not registered`);
     assert.ok(toolNames.has(pack.evidence.runner), `pack ${pack.id} evidence.runner not registered`);
@@ -1199,7 +1233,7 @@ test("identifier_hint and bypass_attempt min lengths match between schema and ru
 
 test("rendered orchestrator catalogue lists every smart-contract pack exactly once", () => {
   const rendered = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     const escaped = pack.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const lineRegex = new RegExp(
@@ -1322,7 +1356,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
       agentNameToRoleId[path.basename(spec.output_path).replace(/\.md$/, "")] = roleId;
     }
   }
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
     // web evaluator carries bob_run_auth_differential so it can run the sweep that
     // the auth-differential completion gate (AD1) requires before surface complete.
@@ -1423,7 +1457,7 @@ test("proof-bundle writer stays limited to orchestrator and final verifier", () 
 
 test("evidence-agent surfaces every SC-pack evidence runner via its role bundle", () => {
   const tools = agentToolsList(".claude/agents/evidence-agent.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     assertPermissionReferenced(
       tools,
       pack.evidence.runner,
@@ -1436,7 +1470,7 @@ test("SC role bundles include the evidence bundle for runner re-runs", () => {
   // Every SC pack runner must list `evidence` in its role bundle so the
   // evidence agent can replay across families.
   const familyRunners = new Set();
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     familyRunners.add(pack.verifier.replay_tool);
     familyRunners.add(pack.evidence.runner);
@@ -1642,7 +1676,7 @@ test("renderers do not inline per-chain workflow strings (pack.spawn is the only
 
 test("rendered orchestrator catalogue surfaces every SC pack route", () => {
   const rendered = readFile(".claude/skills/bob-evaluate-runner/SKILL.md");
-  for (const pack of Object.values(CAPABILITY_PACKS)) {
+  for (const pack of dispatchableCapabilityPacks()) {
     if (pack.spawn.profile !== "smart_contract") continue;
     const escaped = pack.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     assert.match(

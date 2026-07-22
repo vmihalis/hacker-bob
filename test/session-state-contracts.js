@@ -98,7 +98,7 @@ test("url+repo+contracts is still INVALID (url/repo still exclusive)", () => {
 test("no axis at all is INVALID", () => {
   assert.throws(
     () => normalizeSessionStateDocument(base({}), DOMAIN),
-    /at least one of target_url, target_repo, or target_contracts/,
+    /at least one of target_url, target_repo, target_contracts, or physical_scope/,
   );
 });
 
@@ -114,6 +114,6 @@ test("an empty target_contracts is NOT the contracts axis", () => {
   // ...and an empty target_contracts with no url/repo is no axis at all.
   assert.throws(
     () => normalizeSessionStateDocument(base({ target_contracts: [] }), DOMAIN),
-    /at least one of target_url, target_repo, or target_contracts/,
+    /at least one of target_url, target_repo, target_contracts, or physical_scope/,
   );
 });

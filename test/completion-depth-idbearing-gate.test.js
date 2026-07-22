@@ -192,6 +192,29 @@ test("id-bearing complete surface does not clear on a hand-written coverage row 
   }));
 });
 
+test("a server-derived capability-pack completion binding counts as executed depth for its exact finding", () => {
+  withTempHome(() => withIsolatedSigner(() => {
+    const domain = "pack-completion-depth.example.com";
+    const { endpoint, surfaceId } = seedCompleteSurface(domain, { idBearing: true });
+    writeCoverageRow(domain, surfaceId, endpoint);
+
+    assert.equal(completionDepthGapForCompleteSurfaces(domain).missing.length, 1);
+    assert.deepEqual(
+      completionDepthGapForCompleteSurfaces(domain, {
+        packExecutedFindingIds: new Set(["F-1"]),
+      }).missing,
+      [],
+    );
+    assert.equal(
+      completionDepthGapForCompleteSurfaces(domain, {
+        packExecutedFindingIds: new Set(["F-999"]),
+      }).missing.length,
+      1,
+      "a pack binding for another finding cannot clear this surface",
+    );
+  }));
+});
+
 test("id-bearing complete surface clears with auth-differential coverage from two profiles", () => {
   withTempHome(() => withIsolatedSigner(() => {
     const domain = "idbearing-auth-diff.example.com";

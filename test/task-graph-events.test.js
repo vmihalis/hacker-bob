@@ -23,6 +23,7 @@ const os = require("os");
 const path = require("path");
 
 const {
+  DIRECT_FRONTIER_EVENT_KINDS,
   FRONTIER_EVENT_KINDS,
   appendFrontierEvent,
   readFrontierEvents,
@@ -49,7 +50,10 @@ const {
 const {
   materializeTaskGraph,
 } = require("../mcp/lib/task-graph-materializer.js");
-const { TOOL_HANDLERS } = require("../mcp/lib/tool-registry.js");
+const {
+  TOOL_HANDLERS,
+  getRegisteredTool,
+} = require("../mcp/lib/tool-registry.js");
 
 // X.3 Do step 3: bob_propose_transition validates both endpoints exist in
 // surface-index. Tests that exercise the tool roundtrip seed both endpoint
@@ -639,9 +643,16 @@ test("assertNodeTransitionAllowed throws a structured invalid_node_transition er
 test("appendNodeTransition emits node.transitioned with the canonical payload", () => {
   withTempHome(() => {
     const domain = "x1.example.com";
+    appendHypothesisProposal({
+      target_domain: domain,
+      hypothesis_statement: "Canonical transition writer fixture.",
+      surface_refs: ["surface:fixture"],
+      proposal_id: "hyp-001",
+      ts: "2026-05-30T23:59:59.000Z",
+    });
     const event = appendNodeTransition({
       target_domain: domain,
-      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}hyp-001`,
+      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-hyp-001`,
       from_state: "proposed",
       to_state: "contracted",
       contract_hash: "deadbeef",
@@ -649,7 +660,7 @@ test("appendNodeTransition emits node.transitioned with the canonical payload", 
     });
 
     assert.equal(event.kind, "node.transitioned");
-    assert.equal(event.payload.node_id, "TG-hyp-001");
+    assert.equal(event.payload.node_id, "TG-H-hyp-001");
     assert.equal(event.payload.from_state, "proposed");
     assert.equal(event.payload.to_state, "contracted");
     assert.equal(event.payload.contract_hash, "deadbeef");
@@ -666,6 +677,84 @@ test("appendNodeTransition emits node.transitioned with the canonical payload", 
     const transitions = readNodeTransitions(domain);
     assert.equal(transitions.length, 1);
     assert.equal(transitions[0].event_id, event.event_id);
+  });
+});
+
+test("physical dispatch proof is closed, dispatched-only, and materializes as a safe projection", () => {
+  withTempHome(() => {
+    const domain = "x1-physical-dispatch.example.com";
+    appendHypothesisProposal({
+      target_domain: domain,
+      hypothesis_statement: "Physical dispatch proof fixture.",
+      surface_refs: ["surface:physical-fixture"],
+      proposal_id: "physical-dispatch",
+    });
+    appendNodeTransition({
+      target_domain: domain,
+      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-physical-dispatch`,
+      from_state: "proposed",
+      to_state: "contracted",
+    });
+    appendNodeTransition({
+      target_domain: domain,
+      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-physical-dispatch`,
+      from_state: "contracted",
+      to_state: "ready",
+    });
+    const binding = {
+      source_graph_hash: "1".repeat(64),
+      session_nucleus_hash: "2".repeat(64),
+      resource_bundle_digest: "3".repeat(64),
+      reservation_ref: "reservation:v1:test",
+      receipt_digest: "4".repeat(64),
+      allocation_plan_digest: "5".repeat(64),
+      eligibility_digest: "6".repeat(64),
+    };
+    const event = appendNodeTransition({
+      target_domain: domain,
+      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-physical-dispatch`,
+      from_state: "ready",
+      to_state: "dispatched",
+      prep_token_hash: "7".repeat(64),
+      physical_resource_dispatch: binding,
+    });
+    assert.deepEqual(event.payload.physical_resource_dispatch, binding);
+    assert.equal(JSON.stringify(event).includes("fencing_token"), false);
+    assert.deepEqual(
+      materializeTaskGraph(domain, { write: false }).document.nodes[0]
+        .physical_resource_dispatch,
+      binding,
+    );
+    assert.throws(
+      () => appendNodeTransition({
+        target_domain: domain,
+        node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-wrong-state`,
+        from_state: "contracted",
+        to_state: "ready",
+        physical_resource_dispatch: binding,
+      }),
+      /valid only on a transition to dispatched/,
+    );
+    assert.throws(
+      () => appendNodeTransition({
+        target_domain: domain,
+        node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-open-proof`,
+        from_state: "ready",
+        to_state: "dispatched",
+        physical_resource_dispatch: { ...binding, raw_fence: "forbidden" },
+      }),
+      /unknown fields: raw_fence/,
+    );
+    assert.throws(
+      () => appendNodeTransition({
+        target_domain: domain,
+        node_id: `${TASK_GRAPH_NODE_ID_PREFIX}H-no-prep-binding`,
+        from_state: "ready",
+        to_state: "dispatched",
+        physical_resource_dispatch: binding,
+      }),
+      /requires an exact lowercase SHA-256 prep_token_hash/,
+    );
   });
 });
 
@@ -711,9 +800,30 @@ test("appendNodeTransition refuses a TaskGraph node id without the TG- prefix", 
 test("appendNodeTransition carries edge_added_to[] when ready/finalize unblocks downstream", () => {
   withTempHome(() => {
     const domain = "x1-edges.example.com";
+    appendHypothesisProposal({
+      target_domain: domain,
+      hypothesis_statement: "Finalized node unblocks downstream work.",
+      surface_refs: ["surface:root"],
+      proposal_id: "root",
+    });
+    const nodeId = `${TASK_GRAPH_NODE_ID_PREFIX}H-root`;
+    for (const [fromState, toState] of [
+      ["proposed", "contracted"],
+      ["contracted", "ready"],
+      ["ready", "dispatched"],
+      ["dispatched", "executed"],
+      ["executed", "verified"],
+    ]) {
+      appendNodeTransition({
+        target_domain: domain,
+        node_id: nodeId,
+        from_state: fromState,
+        to_state: toState,
+      });
+    }
     const event = appendNodeTransition({
       target_domain: domain,
-      node_id: `${TASK_GRAPH_NODE_ID_PREFIX}root`,
+      node_id: nodeId,
       from_state: "verified",
       to_state: "finalized",
       output_hash: "sha256:beef",
@@ -723,6 +833,71 @@ test("appendNodeTransition carries edge_added_to[] when ready/finalize unblocks 
       ],
     });
     assert.deepEqual(event.payload.edge_added_to, ["TG-child-a", "TG-child-b"]);
+  });
+});
+
+test("generic frontier append cannot mint TaskGraph state transitions", () => {
+  withTempHome(() => {
+    const domain = "x1-generic-transition-refusal.example.com";
+    assert.equal(DIRECT_FRONTIER_EVENT_KINDS.includes("node.transitioned"), false);
+    assert.throws(
+      () => appendFrontierEvent({
+        target_domain: domain,
+        kind: "node.transitioned",
+        payload: {
+          node_id: "TG-H-forged",
+          from_state: "proposed",
+          to_state: "finalized",
+        },
+      }),
+      (error) => error && error.code === "INVALID_ARGUMENTS",
+    );
+    assert.equal(readFrontierEvents(domain).length, 0);
+    assert.equal(
+      getRegisteredTool("bob_append_frontier_event").inputSchema.properties.kind.enum
+        .includes("node.transitioned"),
+      false,
+    );
+  });
+});
+
+test("sanctioned transition writer requires a proposal and atomically rejects a stale head", () => {
+  withTempHome(() => {
+    const domain = "x1-live-head-cas.example.com";
+    assert.throws(
+      () => appendNodeTransition({
+        target_domain: domain,
+        node_id: "TG-H-missing",
+        from_state: "proposed",
+        to_state: "contracted",
+      }),
+      (error) => error && error.code === "node_not_proposed"
+        && error.details.current_state === null,
+    );
+
+    appendHypothesisProposal({
+      target_domain: domain,
+      hypothesis_statement: "Only one writer may advance this graph head.",
+      surface_refs: ["surface:cas"],
+      proposal_id: "cas",
+    });
+    appendNodeTransition({
+      target_domain: domain,
+      node_id: "TG-H-cas",
+      from_state: "proposed",
+      to_state: "contracted",
+    });
+    assert.throws(
+      () => appendNodeTransition({
+        target_domain: domain,
+        node_id: "TG-H-cas",
+        from_state: "proposed",
+        to_state: "contracted",
+      }),
+      (error) => error && error.code === "stale_node_transition"
+        && error.details.current_state === "contracted",
+    );
+    assert.equal(readNodeTransitions(domain).length, 1);
   });
 });
 
@@ -893,6 +1068,7 @@ test("ledger preserves append order across mixed proposal + transition writes", 
       target_domain: domain,
       hypothesis_statement: "Hypothesis A.",
       surface_refs: ["surface:a"],
+      proposal_id: "node-1",
       ts: "2026-05-31T00:00:01.000Z",
     });
     const b = appendTransitionProposal({
@@ -905,7 +1081,7 @@ test("ledger preserves append order across mixed proposal + transition writes", 
     });
     const c = appendNodeTransition({
       target_domain: domain,
-      node_id: "TG-node-1",
+      node_id: "TG-H-node-1",
       from_state: "proposed",
       to_state: "contracted",
       contract_hash: "hash-1",

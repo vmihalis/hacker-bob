@@ -119,6 +119,15 @@ test("bob_write_evidence_packs FAILS CLOSED for a pack referencing an unsigned f
   withTempHome(() => {
     const domain = "evidence-degraded.example.com";
     appendUnsignedFinding(domain, "F-1");
+    buildClaimFreeze(domain, { write: true, now: new Date("2026-05-27T01:00:00.000Z") });
+    for (const round of ["brutalist", "balanced", "final"]) {
+      writeVerificationRound({
+        target_domain: domain,
+        round,
+        notes: null,
+        results: [verificationResult("F-1")],
+      });
+    }
 
     let err;
     try {

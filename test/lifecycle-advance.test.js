@@ -516,6 +516,36 @@ test("bob_advance_session with override: operator_force advances despite a no_tr
   });
 });
 
+test("bob_advance_session rejects operator_force without a non-empty override_reason before writing state", () => {
+  withTempHome(() => {
+    const domain = "override-reason-required.example.com";
+    bootstrapDomain(domain);
+    const priorNucleus = readSessionNucleus(domain);
+
+    for (const overrideReason of [undefined, "", "   ", null, 42]) {
+      assert.throws(
+        () => advanceSession({
+          target_domain: domain,
+          to_state: "VERIFY",
+          override: "operator_force",
+          ...(overrideReason === undefined ? {} : { override_reason: overrideReason }),
+        }),
+        (error) => {
+          assert.equal(error.code, "INVALID_ARGUMENTS");
+          assert.match(error.message, /override_reason must be a non-empty string/);
+          return true;
+        },
+      );
+    }
+
+    const persisted = readSessionNucleus(domain);
+    assert.equal(persisted.lifecycle_state, "SETUP");
+    assert.equal(persisted.nucleus_hash, priorNucleus.nucleus_hash);
+    assert.equal(lifecycleOverrideEvents(domain).length, 0);
+    assert.equal(lifecycleAdvancedEvents(domain).length, 0);
+  });
+});
+
 test("VERIFY -> GRADE blocks repo sessions when I9 exists but a reportable finding has no reachability stamp", () => {
   withTempHome((home) => {
     const domain = seedRepoVerification(home, {

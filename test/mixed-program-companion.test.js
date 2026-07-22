@@ -217,18 +217,15 @@ test("a control web-only init (no contracts) is unchanged", async () => {
     assert.equal(persisted.chain_authority_hash, undefined);
 
     // A chain tool on a web-only session resolves an empty target_contracts[],
-    // so the chain scope gate is a no-op: never chain-scope-blocked.
+    // so the tuple gate is a no-op and the contracts-axis gate rejects it.
     const chain = await executeTool("bob_evm_fetch_source", {
       target_domain: "example.com",
       chain_id: 1,
       address: ADDR_IN,
     });
-    assert.notEqual(
-      chain.error && chain.error.details && chain.error.details.authority
-        && chain.error.details.authority.authority_block_reason,
-      "chain_scope_blocked",
-      `web-only session must not be chain-scope-blocked, got ${JSON.stringify(chain)}`,
-    );
+    assert.equal(chain.ok, false, JSON.stringify(chain));
+    assert.equal(chain.error.code, "SCOPE_BLOCKED");
+    assert.equal(chain.error.details.authority.authority_error_code, "session_axis_mismatch");
   });
 });
 
