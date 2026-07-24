@@ -105,6 +105,7 @@
   "test/doc-delta-runner.test.js",
   "test/doc-delta-e2e.test.js",
   "test/http-scan-adapter.test.js",
+  "test/http-scan-credential-placeholders.test.js",
   "test/graphql-sdl-parser.test.js",
   "test/postman-parser.test.js",
   "test/schema-slice-brief.test.js",

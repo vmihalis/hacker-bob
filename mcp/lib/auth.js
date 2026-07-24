@@ -24,8 +24,22 @@ const {
   safeUrlObject,
 } = require("./url-surface.js");
 const { hashCanonicalJson } = require("./verification-contracts.js");
+// Leaf module (no requires of its own), so this cannot cycle back through auth.js.
+const { placeholderLabel } = require("./auth-placeholders.js");
 
 const authProfiles = new Map();
+
+// Bumped on every in-process auth.json write. The disk stamp below already catches a
+// cross-process write, but two writes inside the same filesystem timestamp tick with an
+// identical file size would be indistinguishable; the counter closes that window for the
+// only writer we control.
+let authWriteGeneration = 0;
+
+// Parallel to `authProfiles`, but keyed by auth.json PATH and holding the flattened
+// credential MATERIAL (every profile's credential/storage values) rather than one profile.
+// Read on every outbound request to build the domain-scoped response redactor, so it is
+// cached against a disk stamp instead of re-parsing auth.json per request.
+const credentialMaterialCache = new Map();
 
 function authCacheKey(domain, profileName) {
   const authPath = resolveAuthJsonPath(domain);
@@ -47,6 +61,14 @@ function buildHeaderProfile(headers, cookies, storage) {
     if (typeof v === "string" && v.startsWith("eyJ") && !profile["Authorization"]) {
       profile["Authorization"] = `Bearer ${v}`;
     }
+  }
+  // Retain the storage bag itself. Only a JWT-shaped value was promoted above, so an OAuth
+  // refresh_token / client_secret / csrf token stored by the operator was otherwise DISCARDED —
+  // which left the advertised refresh flow ({{auth.<profile>.refresh_token}}) permanently
+  // unsatisfiable. Bob-LOCAL metadata (local_storage is in PROFILE_METADATA_KEYS), so it is
+  // never emitted as an outbound header; it is addressable as credential material.
+  if (Object.keys(storage).length) {
+    profile["local_storage"] = { ...storage };
   }
   return profile;
 }
@@ -213,6 +235,7 @@ function persistAuthProfiles(domain, profilesByName) {
   for (const [profileName, profile] of Object.entries(profilesByName)) {
     authProfiles.set(authCacheKey(domain, profileName), profile);
   }
+  authWriteGeneration += 1;
 
   return result;
 }
@@ -328,6 +351,126 @@ function resolveAuthProfile(authProfile, urlValue, targetDomain) {
   }
 
   return null;
+}
+
+// The BOUNDED source set for server-side credential placeholder substitution
+// ({{auth.<profile>.<field>}} in a bob_http_scan body): a named profile's operator-supplied
+// credentials plus the token material captured from browser storage. Deliberately excludes
+// every other profile key — outbound headers (Authorization/Cookie) already reach the
+// target through applyAuthProfileHeaders, and the provenance/mailbox metadata is Bob-local.
+// This is what keeps the placeholder from becoming a general read primitive: there is no
+// path from a placeholder to a file, an env var, or another session's profile.
+const CREDENTIAL_MATERIAL_SOURCES = Object.freeze(["credentials", "local_storage", "session_storage"]);
+
+// Return the PLAINTEXT credential value for a field of an already-resolved profile, or null
+// when the field is absent/unusable. SERVER-SIDE ONLY: the return value is consumed at
+// request-build time and must never enter an agent-facing summary, an audit record, an
+// error message, or a tool result. summarizeAuthProfile (bob_list_auth_profiles) stays
+// name-only — it surfaces credential_fields, never values, and is unaffected by this.
+// Fails closed on a non-string or blank value so a present-but-empty credential refuses the
+// request instead of silently sending "".
+function resolveProfileCredentialValue(profile, field) {
+  if (!profile || typeof profile !== "object") return null;
+  const fieldName = typeof field === "string" ? field : "";
+  if (!fieldName) return null;
+  for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+    const bag = profile[source];
+    if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+    if (!Object.prototype.hasOwnProperty.call(bag, fieldName)) continue;
+    const value = bag[fieldName];
+    if (typeof value !== "string" || value.trim() === "") {
+      return { value: null, source, present: true };
+    }
+    return { value, source, present: true };
+  }
+  return null;
+}
+
+// A change stamp for auth.json: identity + last-write time + size. Cheap enough to take on
+// every outbound request, and it changes whenever the file is rewritten by ANY process, so a
+// credential stored by an earlier Bob run is picked up without a restart.
+function authMaterialStamp(authPath) {
+  try {
+    const stats = fs.statSync(authPath, { bigint: true });
+    return `${stats.ino}:${stats.mtimeNs}:${stats.size}`;
+  } catch {
+    try {
+      const stats = fs.statSync(authPath);
+      return `${stats.ino}:${stats.mtimeMs}:${stats.size}`;
+    } catch {
+      return "absent";
+    }
+  }
+}
+
+// Every credential VALUE the session holds for one domain, flattened out of every stored
+// profile. This is the redaction basis for outbound-request responses (auth-placeholders
+// makeCredentialRedactor), NOT a substitution source: substitution still resolves through a
+// NAMED placeholder against a NAMED profile (resolveProfileCredentialValue).
+//
+// Why the whole session and not just what THIS request substituted: a request-local basis is
+// laundering-open. An agent posts {{auth.victim.password}} into any writable-then-readable
+// field (a bio, a display name, a note) — that response is redacted — and then issues an
+// ORDINARY placeholder-free GET of the same field, which under a request-local redactor is
+// the identity function and hands back the plaintext. Redaction has to be a property of the
+// DOMAIN, not of the individual call, and it has to come off the auth STORE so it survives a
+// process restart and covers material a previous session wrote.
+function credentialMaterialForDomain(domain) {
+  let authPath = null;
+  try {
+    authPath = resolveAuthJsonPath(domain);
+  } catch {
+    return [];
+  }
+  if (!authPath) return [];
+  const stamp = `${authWriteGeneration}:${authMaterialStamp(authPath)}`;
+  const cached = credentialMaterialCache.get(authPath);
+  if (cached && cached.stamp === stamp) return cached.material;
+
+  const doc = migrateAuthJson(readAuthJson(authPath));
+  const material = [];
+  const seen = new Set();
+  for (const [profileName, profile] of Object.entries((doc && doc.profiles) || {})) {
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue;
+    for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+      const bag = profile[source];
+      if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+      for (const [field, value] of Object.entries(bag)) {
+        if (typeof value !== "string" || value.trim() === "") continue;
+        const label = placeholderLabel(profileName, field);
+        const key = `${label}\u0000${value}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        material.push({ label, profile: profileName, field, value });
+      }
+    }
+  }
+  credentialMaterialCache.set(authPath, { stamp, material });
+  return material;
+}
+
+// The credential material in scope for a request against `targetDomain`. Keyed on the
+// SESSION domain (the auth.json that a placeholder would resolve against), never on the
+// request URL — an off-target or scope-blocked URL must still have its response redacted,
+// and candidateAuthDomains would return nothing for one.
+function sessionCredentialMaterial(targetDomain) {
+  if (typeof targetDomain !== "string" || !targetDomain.trim()) return [];
+  const domain = targetDomain.toLowerCase().replace(/\.+$/, "");
+  return credentialMaterialForDomain(domain);
+}
+
+// The field names a profile can supply to a placeholder, for a fail-closed error message
+// that tells the agent what IS available without revealing any value.
+function credentialFieldNames(profile) {
+  const names = new Set();
+  if (profile && typeof profile === "object") {
+    for (const source of CREDENTIAL_MATERIAL_SOURCES) {
+      const bag = profile[source];
+      if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+      for (const key of Object.keys(bag)) names.add(key);
+    }
+  }
+  return Array.from(names).sort();
 }
 
 function parseCookieNames(cookieHeader) {
@@ -525,6 +668,8 @@ module.exports = {
   authStore,
   buildHeaderProfile,
   candidateAuthDomains,
+  credentialFieldNames,
+  CREDENTIAL_MATERIAL_SOURCES,
   hasUsableAuthProfile,
   listAuthProfiles,
   migrateAuthJson,
@@ -532,5 +677,7 @@ module.exports = {
   readAuthJson,
   resolveAuthJsonPath,
   resolveAuthProfile,
+  resolveProfileCredentialValue,
+  sessionCredentialMaterial,
   writeAuthFile,
 };
